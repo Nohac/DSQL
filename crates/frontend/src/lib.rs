@@ -2,7 +2,7 @@ use dashmap::DashMap;
 use dsql_core::{
     Catalog, CheckedFile, Definition, Diagnostic, FieldCheckResult, FormattedText, Interner,
     LoweredFile, ParseResult, PlannedFile, Selection, SourceFile, SourceSnapshot, SyntaxTree,
-    TableId, check_file_with_catalog, format_file, lower_file, parse_source,
+    TableId, TextRange, check_file_with_catalog, format_file, lower_file, parse_source,
     plan_file_with_catalog,
 };
 use facet::Facet;
@@ -89,6 +89,29 @@ pub enum CompletionKind {
 pub struct HoverInfo {
     pub label: String,
     pub detail: String,
+    pub markdown: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct DocumentSemanticTokens {
+    pub snapshot: DocumentSnapshot,
+    pub tokens: Vec<SemanticTokenInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticTokenInfo {
+    pub range: TextRange,
+    pub kind: SemanticTokenKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticTokenKind {
+    Schema,
+    Table,
+    Relation,
+    Column,
+    Fragment,
+    Alias,
 }
 
 pub trait CatalogProvider {
@@ -501,6 +524,16 @@ impl AnalysisHost {
         hover_at(&analysis.parse.source_file, &catalog, byte)
     }
 
+    pub async fn semantic_tokens(&self, uri: &str) -> Option<DocumentSemanticTokens> {
+        let snapshot = self.inner.documents.get(uri)?.snapshot();
+        let analysis = self.analyze(snapshot.file).await?;
+        let catalog = self.inner.db.catalog();
+        Some(DocumentSemanticTokens {
+            snapshot,
+            tokens: semantic_tokens_at(&analysis.parse, &catalog),
+        })
+    }
+
     fn alloc_file(&self) -> FileId {
         FileId(self.inner.next_file.fetch_add(1, Ordering::Relaxed))
     }
@@ -534,6 +567,7 @@ fn hover_at(source_file: &SourceFile, catalog: &Catalog, byte: usize) -> Option<
                         return Some(HoverInfo {
                             label: selection.name.text.clone(),
                             detail: format!("table {}.{}", table.schema, table.name),
+                            markdown: table_hover_markdown(table),
                         });
                     }
                     if let Some(info) =
@@ -557,6 +591,7 @@ fn hover_at(source_file: &SourceFile, catalog: &Catalog, byte: usize) -> Option<
                     return Some(HoverInfo {
                         label: on.text.clone(),
                         detail: format!("table {}.{}", table.schema, table.name),
+                        markdown: table_hover_markdown(table),
                     });
                 }
                 if let Some(info) =
@@ -568,6 +603,138 @@ fn hover_at(source_file: &SourceFile, catalog: &Catalog, byte: usize) -> Option<
         }
     }
     None
+}
+
+fn semantic_tokens_at(parse: &ParseResult, catalog: &Catalog) -> Vec<SemanticTokenInfo> {
+    let mut tokens = Vec::new();
+    for definition in parse.source_file.definitions() {
+        match definition {
+            Definition::Query(query) => {
+                if let Some(name) = &query.name {
+                    tokens.push(SemanticTokenInfo {
+                        range: name.range,
+                        kind: SemanticTokenKind::Fragment,
+                    });
+                }
+                for selection in &query.selections {
+                    add_table_ref_tokens(&mut tokens, &parse.source, selection.name.range);
+                    if let Some(table) = catalog.table_ref(&selection.name.text) {
+                        add_selection_tokens(
+                            &mut tokens,
+                            &parse.source,
+                            catalog,
+                            table.id,
+                            &selection.selections,
+                        );
+                    }
+                }
+            }
+            Definition::Fragment(fragment) => {
+                if let Some(name) = &fragment.name {
+                    tokens.push(SemanticTokenInfo {
+                        range: name.range,
+                        kind: SemanticTokenKind::Fragment,
+                    });
+                }
+                if let Some(on) = &fragment.on {
+                    add_table_ref_tokens(&mut tokens, &parse.source, on.range);
+                    if let Some(table) = catalog.table_ref(&on.text) {
+                        add_selection_tokens(
+                            &mut tokens,
+                            &parse.source,
+                            catalog,
+                            table.id,
+                            &fragment.selections,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    tokens.sort_by_key(|token| (token.range.start, token.range.end));
+    tokens
+}
+
+fn add_selection_tokens(
+    tokens: &mut Vec<SemanticTokenInfo>,
+    source: &SourceSnapshot,
+    catalog: &Catalog,
+    table: TableId,
+    selections: &[Selection],
+) {
+    for selection in selections {
+        if let Some(alias) = &selection.alias {
+            tokens.push(SemanticTokenInfo {
+                range: alias.range,
+                kind: SemanticTokenKind::Alias,
+            });
+        }
+        match catalog.check_field(table, &selection.name.text) {
+            FieldCheckResult::Column(_) => {
+                tokens.push(SemanticTokenInfo {
+                    range: selection.name.range,
+                    kind: SemanticTokenKind::Column,
+                });
+            }
+            FieldCheckResult::Relation(relation) => {
+                add_relation_ref_tokens(tokens, source, selection.name.range);
+                add_selection_tokens(
+                    tokens,
+                    source,
+                    catalog,
+                    relation.table.id,
+                    &selection.selections,
+                );
+            }
+            FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {}
+        }
+    }
+}
+
+fn add_table_ref_tokens(
+    tokens: &mut Vec<SemanticTokenInfo>,
+    source: &SourceSnapshot,
+    range: TextRange,
+) {
+    add_qualified_ref_tokens(tokens, source, range, SemanticTokenKind::Table);
+}
+
+fn add_relation_ref_tokens(
+    tokens: &mut Vec<SemanticTokenInfo>,
+    source: &SourceSnapshot,
+    range: TextRange,
+) {
+    add_qualified_ref_tokens(tokens, source, range, SemanticTokenKind::Relation);
+}
+
+fn add_qualified_ref_tokens(
+    tokens: &mut Vec<SemanticTokenInfo>,
+    source: &SourceSnapshot,
+    range: TextRange,
+    tail_kind: SemanticTokenKind,
+) {
+    let text = source.text(range);
+    if let Some(dot) = text.find('.') {
+        tokens.push(SemanticTokenInfo {
+            range: TextRange {
+                start: range.start,
+                end: range.start + dot as u32,
+            },
+            kind: SemanticTokenKind::Schema,
+        });
+        tokens.push(SemanticTokenInfo {
+            range: TextRange {
+                start: range.start + dot as u32 + 1,
+                end: range.end,
+            },
+            kind: tail_kind,
+        });
+    } else {
+        tokens.push(SemanticTokenInfo {
+            range,
+            kind: tail_kind,
+        });
+    }
 }
 
 fn hover_in_selections(
@@ -585,6 +752,7 @@ fn hover_in_selections(
                 return Some(HoverInfo {
                     label: selection.name.text.clone(),
                     detail: format!("column: {}", column.data_type.as_str()),
+                    markdown: column_hover_markdown(catalog, column),
                 });
             }
             FieldCheckResult::Relation(related) => {
@@ -595,6 +763,7 @@ fn hover_in_selections(
                             "relation: {}.{}",
                             related.table.schema, related.table.name
                         ),
+                        markdown: relation_hover_markdown(catalog, &related),
                     });
                 }
                 if let Some(info) =
@@ -609,6 +778,84 @@ fn hover_in_selections(
         }
     }
     None
+}
+
+fn table_hover_markdown(table: &dsql_core::Table) -> String {
+    format!(
+        "### Table `{}`\n\n- Schema: `{}`\n- Columns: {}\n- Primary key columns: {}\n- Outgoing foreign keys: {}\n- Incoming foreign keys: {}",
+        table.name,
+        table.schema,
+        table.columns.len(),
+        table.primary_key.len(),
+        table.foreign_keys_from.len(),
+        table.foreign_keys_to.len()
+    )
+}
+
+fn column_hover_markdown(catalog: &Catalog, column: &dsql_core::Column) -> String {
+    let table = catalog.table_by_id(column.table);
+    let primary_key = table.is_some_and(|table| table.primary_key.contains(&column.id));
+    let table_name = table.map_or("<unknown>", |table| table.name.as_str());
+    let schema_name = table.map_or("<unknown>", |table| table.schema.as_str());
+    format!(
+        "### Column `{}`\n\n- Table: `{}.{}`\n- Type: `{}`\n- Nullable: {}\n- Primary key: {}\n- Unique: {}\n- Indexed: {}",
+        column.name,
+        schema_name,
+        table_name,
+        column.data_type.as_str(),
+        yes_no(!column.not_null),
+        yes_no(primary_key),
+        yes_no(column.is_unique),
+        yes_no(column.is_indexed)
+    )
+}
+
+fn relation_hover_markdown(catalog: &Catalog, relation: &dsql_core::RelationField<'_>) -> String {
+    let from_table = catalog.table_by_id(relation.foreign_key.from_table);
+    let to_table = catalog.table_by_id(relation.foreign_key.to_table);
+    let from_columns = relation
+        .foreign_key
+        .from_columns
+        .iter()
+        .filter_map(|id| catalog.column_by_id(*id))
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let to_columns = relation
+        .foreign_key
+        .to_columns
+        .iter()
+        .filter_map(|id| catalog.column_by_id(*id))
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let from_table_name = from_table.map_or("<unknown>", |table| table.name.as_str());
+    let to_table_name = to_table.map_or("<unknown>", |table| table.name.as_str());
+    format!(
+        "### Relation `{}`\n\n- Target: `{}.{}`\n- Foreign key: `{}.{}` ({}) -> `{}.{}` ({})",
+        relation.name,
+        relation.table.schema,
+        relation.table.name,
+        from_table.map_or("<unknown>", |table| table.schema.as_str()),
+        from_table_name,
+        qualify_columns(from_table_name, &from_columns),
+        to_table.map_or("<unknown>", |table| table.schema.as_str()),
+        to_table_name,
+        qualify_columns(to_table_name, &to_columns)
+    )
+}
+
+fn qualify_columns(table: &str, columns: &str) -> String {
+    columns
+        .split(", ")
+        .filter(|column| !column.is_empty())
+        .map(|column| format!("{table}.{column}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 enum CompletionContext {
@@ -846,6 +1093,8 @@ mod tests {
         }));
         assert_eq!(hover.label, "title");
         assert_eq!(hover.detail, "column: text");
+        assert!(hover.markdown.contains("Primary key: no"));
+        assert!(hover.markdown.contains("Indexed: no"));
     }
 
     #[test]
@@ -864,5 +1113,35 @@ mod tests {
         }));
         assert_eq!(hover.label, "public.posts");
         assert_eq!(hover.detail, "relation: public.posts");
+        assert!(hover.markdown.contains("Foreign key"));
+        assert!(hover.markdown.contains("posts.user_id"));
+        assert!(hover.markdown.contains("users.id"));
+    }
+
+    #[test]
+    fn semantic_tokens_classify_schema_tables_relations_and_columns() {
+        let source = "query Q { public.users { id posts { title } } }";
+        let parse = parse_source(source.into());
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        let catalog = Catalog::hardcoded();
+
+        let tokens = semantic_tokens_at(&parse, &catalog);
+
+        assert!(tokens.iter().any(|token| {
+            token.kind == SemanticTokenKind::Schema
+                && parse.source.text(token.range).as_ref() == "public"
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.kind == SemanticTokenKind::Table
+                && parse.source.text(token.range).as_ref() == "users"
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.kind == SemanticTokenKind::Relation
+                && parse.source.text(token.range).as_ref() == "posts"
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.kind == SemanticTokenKind::Column
+                && parse.source.text(token.range).as_ref() == "title"
+        }));
     }
 }

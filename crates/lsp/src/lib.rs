@@ -1,7 +1,7 @@
 use dsql_core::Diagnostic;
 use dsql_frontend::{
-    AnalysisHost, CompletionKind, DocumentDiagnostics, TextEdit as FrontendTextEdit, TextEditRange,
-    TextPosition,
+    AnalysisHost, CompletionKind, DocumentDiagnostics, SemanticTokenKind,
+    TextEdit as FrontendTextEdit, TextEditRange, TextPosition,
 };
 use ropey::{LineType, Rope};
 use std::error::Error;
@@ -11,8 +11,11 @@ use tower_lsp_server::lsp_types::{
     Diagnostic as LspDiagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams, Hover,
     HoverContents, HoverParams, InitializeParams, InitializeResult, InitializedParams,
-    MarkedString, MessageType, OneOf, Position, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    MarkupContent, MarkupKind, MessageType, OneOf, Position, Range, SemanticToken,
+    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -63,6 +66,16 @@ impl LanguageServer for Backend {
                 completion_provider: Some(CompletionOptions::default()),
                 hover_provider: Some(
                     tower_lsp_server::lsp_types::HoverProviderCapability::Simple(true),
+                ),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: semantic_tokens_legend(),
+                            range: None,
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            ..SemanticTokensOptions::default()
+                        },
+                    ),
                 ),
                 ..ServerCapabilities::default()
             },
@@ -195,12 +208,40 @@ impl LanguageServer for Backend {
         };
 
         Ok(Some(Hover {
-            contents: HoverContents::Scalar(MarkedString::String(format!(
-                "{}\n{}",
-                info.label, info.detail
-            ))),
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: info.markdown,
+            }),
             range: None,
         }))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri;
+        let Some(tokens) = self.analysis.semantic_tokens(&uri.to_string()).await else {
+            return Ok(None);
+        };
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: Some(tokens.snapshot.revision.0.to_string()),
+            data: encode_semantic_tokens(&tokens.snapshot.rope, &tokens.tokens),
+        })))
+    }
+}
+
+fn semantic_tokens_legend() -> SemanticTokensLegend {
+    SemanticTokensLegend {
+        token_types: vec![
+            SemanticTokenType::NAMESPACE,
+            SemanticTokenType::CLASS,
+            SemanticTokenType::new("relation"),
+            SemanticTokenType::PROPERTY,
+            SemanticTokenType::new("fragment"),
+            SemanticTokenType::new("alias"),
+        ],
+        token_modifiers: Vec::new(),
     }
 }
 
@@ -225,6 +266,49 @@ fn to_lsp_diagnostic(diagnostic: &Diagnostic, rope: &Rope) -> LspDiagnostic {
         source: Some("dsql".to_string()),
         message: diagnostic.message.clone(),
         ..LspDiagnostic::default()
+    }
+}
+
+fn encode_semantic_tokens(
+    rope: &Rope,
+    tokens: &[dsql_frontend::SemanticTokenInfo],
+) -> Vec<SemanticToken> {
+    let mut encoded = Vec::new();
+    let mut previous_line = 0;
+    let mut previous_start = 0;
+    for token in tokens {
+        let start = byte_to_position(rope, token.range.start as usize);
+        let end = byte_to_position(rope, token.range.end as usize);
+        if start.line != end.line || start.character >= end.character {
+            continue;
+        }
+        let delta_line = start.line - previous_line;
+        let delta_start = if delta_line == 0 {
+            start.character - previous_start
+        } else {
+            start.character
+        };
+        encoded.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length: end.character - start.character,
+            token_type: semantic_token_type(token.kind),
+            token_modifiers_bitset: 0,
+        });
+        previous_line = start.line;
+        previous_start = start.character;
+    }
+    encoded
+}
+
+fn semantic_token_type(kind: SemanticTokenKind) -> u32 {
+    match kind {
+        SemanticTokenKind::Schema => 0,
+        SemanticTokenKind::Table => 1,
+        SemanticTokenKind::Relation => 2,
+        SemanticTokenKind::Column => 3,
+        SemanticTokenKind::Fragment => 4,
+        SemanticTokenKind::Alias => 5,
     }
 }
 
