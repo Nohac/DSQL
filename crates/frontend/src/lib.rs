@@ -1,8 +1,9 @@
 use dashmap::DashMap;
 use dsql_core::{
     Catalog, CheckedFile, Definition, Diagnostic, FieldCheckResult, FormattedText, Interner,
-    LoweredFile, ParseResult, Selection, SourceFile, SourceSnapshot, SyntaxTree, TableId,
-    check_file_with_catalog, format_file, lower_file, parse_source,
+    LoweredFile, ParseResult, PlannedFile, Selection, SourceFile, SourceSnapshot, SyntaxTree,
+    TableId, check_file_with_catalog, format_file, lower_file, parse_source,
+    plan_file_with_catalog,
 };
 use facet::Facet;
 use picante::PicanteResult;
@@ -21,6 +22,7 @@ pub struct AnalysisResult {
     pub parse: ParseResult,
     pub lower: LoweredFile,
     pub check: CheckedFile,
+    pub plan: PlannedFile,
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -171,6 +173,16 @@ pub async fn check_file_query<DB: CompilerDatabaseTrait>(
 }
 
 #[picante::tracked]
+pub async fn plan_file_query<DB: CompilerDatabaseTrait>(
+    db: &DB,
+    source: SourceInput,
+) -> PicanteResult<PlannedFile> {
+    let parse = parse_file(db, source).await?;
+    let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
+    Ok(plan_file_with_catalog(&parse.source_file, &catalog))
+}
+
+#[picante::tracked]
 pub async fn diagnostics_for_file<DB: CompilerDatabaseTrait>(
     db: &DB,
     source: SourceInput,
@@ -212,6 +224,7 @@ pub async fn formatted_text_for_file<DB: CompilerDatabaseTrait>(
         parse_file,
         lower_file_query,
         check_file_query,
+        plan_file_query,
         diagnostics_for_file,
         formatted_text_for_file
     ),
@@ -255,6 +268,7 @@ impl CompilerDb {
         let parsed = parse_file(self, source).await.ok()?;
         let lower = lower_file_query(self, source).await.ok()?;
         let check = check_file_query(self, source).await.ok()?;
+        let plan = plan_file_query(self, source).await.ok()?;
         let text = source.text(self).ok()?;
         Some(AnalysisResult {
             parse: ParseResult {
@@ -265,6 +279,7 @@ impl CompilerDb {
             },
             lower,
             check,
+            plan,
         })
     }
 
@@ -497,7 +512,7 @@ fn completions_at(source_file: &SourceFile, catalog: &Catalog, byte: usize) -> V
             .tables
             .iter()
             .map(|table| CompletionItem {
-                label: table.name.clone(),
+                label: completion_table_ref(&table.schema, &table.name),
                 kind: CompletionKind::Table,
                 detail: Some(format!("table {}.{}", table.schema, table.name)),
             })
@@ -576,16 +591,21 @@ fn hover_in_selections(
                 if contains(selection.name.range, byte) {
                     return Some(HoverInfo {
                         label: selection.name.text.clone(),
-                        detail: format!("relation: {}.{}", related.schema, related.name),
+                        detail: format!(
+                            "relation: {}.{}",
+                            related.table.schema, related.table.name
+                        ),
                     });
                 }
                 if let Some(info) =
-                    hover_in_selections(catalog, related.id, &selection.selections, byte)
+                    hover_in_selections(catalog, related.table.id, &selection.selections, byte)
                 {
                     return Some(info);
                 }
             }
-            FieldCheckResult::NotFound | FieldCheckResult::Column(_) => {}
+            FieldCheckResult::NotFound
+            | FieldCheckResult::Column(_)
+            | FieldCheckResult::AmbiguousRelation { .. } => {}
         }
     }
     None
@@ -645,12 +665,12 @@ fn nested_context(
         }
         return match catalog.check_field(table, &selection.name.text) {
             FieldCheckResult::Relation(related) => {
-                nested_context(catalog, related.id, &selection.selections, byte)
-                    .or(Some(CompletionContext::Table(related.id)))
+                nested_context(catalog, related.table.id, &selection.selections, byte)
+                    .or(Some(CompletionContext::Table(related.table.id)))
             }
-            FieldCheckResult::Column(_) | FieldCheckResult::NotFound => {
-                Some(CompletionContext::Table(table))
-            }
+            FieldCheckResult::Column(_)
+            | FieldCheckResult::NotFound
+            | FieldCheckResult::AmbiguousRelation { .. } => Some(CompletionContext::Table(table)),
         };
     }
     None
@@ -672,7 +692,7 @@ fn field_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
             .relation_fields_for_table(table)
             .into_iter()
             .map(|relation| CompletionItem {
-                label: relation.name.to_string(),
+                label: completion_table_ref(&relation.table.schema, relation.name),
                 kind: CompletionKind::Relation,
                 detail: Some(format!(
                     "relation to {}.{}",
@@ -683,6 +703,14 @@ fn field_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
     completions.sort_by(|left, right| left.label.cmp(&right.label));
     completions.dedup_by(|left, right| left.label == right.label);
     completions
+}
+
+fn completion_table_ref(schema: &str, table: &str) -> String {
+    if schema == Catalog::DEFAULT_SCHEMA {
+        table.to_string()
+    } else {
+        format!("{schema}.{table}")
+    }
 }
 
 fn contains(range: dsql_core::TextRange, byte: usize) -> bool {
@@ -721,10 +749,12 @@ pub fn analyze_source(source: SourceSnapshot) -> AnalysisResult {
     let mut interner = Interner::default();
     let lower = lower_file(&parse.source_file, &mut interner);
     let check = check_file_with_catalog(&parse.source_file, &Catalog::hardcoded());
+    let plan = plan_file_with_catalog(&parse.source_file, &Catalog::hardcoded());
     AnalysisResult {
         parse,
         lower,
         check,
+        plan,
     }
 }
 
@@ -784,8 +814,25 @@ mod tests {
     }
 
     #[test]
+    fn root_completions_qualify_non_public_tables() {
+        let source = "query Q {  }";
+        let source_file = parsed_source(source);
+        let catalog = Catalog::hardcoded();
+        let byte = source.find("  }").unwrap() + 1;
+
+        let completions = completions_at(&source_file, &catalog, byte);
+
+        assert!(completions.iter().any(|completion| {
+            completion.label == "users" && completion.kind == CompletionKind::Table
+        }));
+        assert!(completions.iter().any(|completion| {
+            completion.label == "other_schema.users" && completion.kind == CompletionKind::Table
+        }));
+    }
+
+    #[test]
     fn completions_and_hover_work_inside_fragments() {
-        let source = "fragment UserFields on users {\n  posts {\n    title\n  }\n}";
+        let source = "fragment UserFields on public.users {\n  posts {\n    title\n  }\n}";
         let source_file = parsed_source(source);
         let catalog = Catalog::hardcoded();
         let completion_byte = source.find("  posts").unwrap() + 1;
