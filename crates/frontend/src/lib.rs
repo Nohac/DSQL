@@ -1,9 +1,9 @@
 use dashmap::DashMap;
 use dsql_core::{
     Catalog, CheckedFile, Definition, Diagnostic, FieldCheckResult, FormattedText, Interner,
-    LoweredFile, ParseResult, PlannedFile, Selection, SourceFile, SourceSnapshot, SyntaxTree,
-    TableId, TextRange, check_file_with_catalog, format_file, lower_file, parse_source,
-    plan_file_with_catalog,
+    LintedFile, LoweredFile, ParseResult, PlannedFile, Selection, SourceFile, SourceSnapshot,
+    SyntaxTree, TableId, TextRange, check_file_with_catalog, format_file, lint_file_with_catalog,
+    lower_file, parse_source, plan_file_with_catalog,
 };
 use facet::Facet;
 use picante::PicanteResult;
@@ -22,6 +22,7 @@ pub struct AnalysisResult {
     pub parse: ParseResult,
     pub lower: LoweredFile,
     pub check: CheckedFile,
+    pub lint: LintedFile,
     pub plan: PlannedFile,
 }
 
@@ -206,6 +207,16 @@ pub async fn plan_file_query<DB: CompilerDatabaseTrait>(
 }
 
 #[picante::tracked]
+pub async fn lint_file_query<DB: CompilerDatabaseTrait>(
+    db: &DB,
+    source: SourceInput,
+) -> PicanteResult<LintedFile> {
+    let parse = parse_file(db, source).await?;
+    let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
+    Ok(lint_file_with_catalog(&parse.source_file, &catalog))
+}
+
+#[picante::tracked]
 pub async fn diagnostics_for_file<DB: CompilerDatabaseTrait>(
     db: &DB,
     source: SourceInput,
@@ -213,10 +224,12 @@ pub async fn diagnostics_for_file<DB: CompilerDatabaseTrait>(
     let parse = parse_file(db, source).await?;
     let lower = lower_file_query(db, source).await?;
     let check = check_file_query(db, source).await?;
+    let lint = lint_file_query(db, source).await?;
     Ok(collect_diagnostics_parts(
         &parse.diagnostics,
         &lower.diagnostics,
         &check.diagnostics,
+        &lint.diagnostics,
     ))
 }
 
@@ -248,6 +261,7 @@ pub async fn formatted_text_for_file<DB: CompilerDatabaseTrait>(
         lower_file_query,
         check_file_query,
         plan_file_query,
+        lint_file_query,
         diagnostics_for_file,
         formatted_text_for_file
     ),
@@ -291,6 +305,7 @@ impl CompilerDb {
         let parsed = parse_file(self, source).await.ok()?;
         let lower = lower_file_query(self, source).await.ok()?;
         let check = check_file_query(self, source).await.ok()?;
+        let lint = lint_file_query(self, source).await.ok()?;
         let plan = plan_file_query(self, source).await.ok()?;
         let text = source.text(self).ok()?;
         Some(AnalysisResult {
@@ -302,6 +317,7 @@ impl CompilerDb {
             },
             lower,
             check,
+            lint,
             plan,
         })
     }
@@ -996,11 +1012,13 @@ pub fn analyze_source(source: SourceSnapshot) -> AnalysisResult {
     let mut interner = Interner::default();
     let lower = lower_file(&parse.source_file, &mut interner);
     let check = check_file_with_catalog(&parse.source_file, &Catalog::hardcoded());
+    let lint = lint_file_with_catalog(&parse.source_file, &Catalog::hardcoded());
     let plan = plan_file_with_catalog(&parse.source_file, &Catalog::hardcoded());
     AnalysisResult {
         parse,
         lower,
         check,
+        lint,
         plan,
     }
 }
@@ -1010,6 +1028,7 @@ pub fn collect_diagnostics(analysis: &AnalysisResult) -> Vec<Diagnostic> {
         &analysis.parse.diagnostics,
         &analysis.lower.diagnostics,
         &analysis.check.diagnostics,
+        &analysis.lint.diagnostics,
     )
 }
 
@@ -1017,11 +1036,13 @@ fn collect_diagnostics_parts(
     parse: &[Diagnostic],
     lower: &[Diagnostic],
     check: &[Diagnostic],
+    lint: &[Diagnostic],
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(parse.iter().cloned());
     diagnostics.extend(lower.iter().cloned());
     diagnostics.extend(check.iter().cloned());
+    diagnostics.extend(lint.iter().cloned());
     diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
     diagnostics
 }

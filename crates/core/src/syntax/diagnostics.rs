@@ -31,6 +31,7 @@ pub enum DiagnosticCode {
     FieldNotFound,
     AmbiguousRelation,
     DuplicateOutputKey,
+    UnindexedJoinColumn,
     ScalarSelectionSet,
     RelationSelectionSet,
     FormatParseError,
@@ -42,6 +43,7 @@ pub enum DiagnosticSource {
     Parse,
     Lower,
     Check,
+    Lint,
     Format,
 }
 

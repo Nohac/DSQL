@@ -280,7 +280,7 @@ impl Catalog {
                     DataType::Uuid,
                     true,
                     false,
-                    true,
+                    false,
                 ),
                 Column::new(
                     posts_created_at,
