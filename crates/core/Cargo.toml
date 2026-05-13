@@ -1,0 +1,20 @@
+[package]
+name = "dsql-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+camino = "1"
+codespan-reporting = "0.13"
+facet = "0.44.1"
+indexmap = "2"
+lasso = "0.7"
+logos = "0.16"
+miette = "7"
+ropey = { version = "2.0.0-beta.1", features = ["metric_utf16"] }
+smallvec = "1"
+thiserror = "2"
+tracing = "0.1"
+
+[build-dependencies]
+lelwel = "0.10"

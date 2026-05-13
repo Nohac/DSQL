@@ -1,0 +1,40 @@
+token Query='query' Fragment='fragment' On='on' True='true' False='false' Null='null';
+token LBrace='{' RBrace='}' LPar='(' RPar=')' Colon=':' At='@' Comma=',';
+token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
+token Name='<name>' String='<string>' Number='<number>';
+token Whitespace Comment;
+
+skip Whitespace Comment;
+
+start document;
+
+document: definition*;
+definition^:
+  query_def
+| fragment_def
+;
+query_def: 'query' [Name] selection_set;
+fragment_def: 'fragment' Name 'on' Name selection_set;
+selection_set: '{' selection* '}';
+selection: field_selection;
+field_selection: Name field_selection_tail;
+field_selection_tail:
+  ':' Name field_suffix
+| field_suffix
+;
+field_suffix: [argument_list] directive* [selection_set];
+argument_list: '(' [argument (?1 ',' argument)* [',']] ')';
+argument: Name expr;
+directive: '@' Name;
+expr:
+  literal
+| Name
+| expr ('==' | '!=' | '>' | '>=' | '<' | '<=') expr @binary_expr
+;
+literal:
+  String
+| Number
+| 'true'
+| 'false'
+| 'null'
+;

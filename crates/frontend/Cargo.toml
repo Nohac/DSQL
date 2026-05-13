@@ -1,0 +1,18 @@
+[package]
+name = "dsql-frontend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dashmap = "6.1"
+dsql-core = { path = "../core" }
+facet = "0.44.1"
+facet-dessert = "=0.44.1"
+facet-format = "=0.44.1"
+facet-path = "=0.44.1"
+facet-postcard = "=0.44.1"
+facet-reflect = "=0.44.1"
+facet-value = "=0.44.1"
+picante = "1.0.0"
+ropey = { version = "2.0.0-beta.1", features = ["metric_utf16"] }
+tracing = "0.1"
