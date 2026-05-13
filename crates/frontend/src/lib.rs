@@ -1,7 +1,8 @@
 use dashmap::DashMap;
 use dsql_core::{
-    CheckedFile, Diagnostic, FormattedText, Interner, LoweredFile, ParseResult, SourceFile,
-    SourceSnapshot, SyntaxTree, check_file, format_file, lower_file, parse_source,
+    Catalog, CheckedFile, Definition, Diagnostic, FieldCheckResult, FormattedText, Interner,
+    LoweredFile, ParseResult, Selection, SourceFile, SourceSnapshot, SyntaxTree, TableId,
+    check_file_with_catalog, format_file, lower_file, parse_source,
 };
 use facet::Facet;
 use picante::PicanteResult;
@@ -68,6 +69,39 @@ pub struct TextEdit {
     pub text: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletionItem {
+    pub label: String,
+    pub kind: CompletionKind,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionKind {
+    Table,
+    Column,
+    Relation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HoverInfo {
+    pub label: String,
+    pub detail: String,
+}
+
+pub trait CatalogProvider {
+    fn load_catalog(&self) -> Catalog;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HardcodedCatalogProvider;
+
+impl CatalogProvider for HardcodedCatalogProvider {
+    fn load_catalog(&self) -> Catalog {
+        Catalog::hardcoded()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct DocumentState {
     file: FileId,
@@ -95,6 +129,11 @@ pub struct SourceInput {
     pub file: FileId,
     pub revision: RevisionId,
     pub text: Arc<str>,
+}
+
+#[picante::input]
+pub struct CatalogInput {
+    pub catalog: Catalog,
 }
 
 #[picante::tracked]
@@ -127,7 +166,8 @@ pub async fn check_file_query<DB: CompilerDatabaseTrait>(
     source: SourceInput,
 ) -> PicanteResult<CheckedFile> {
     let parse = parse_file(db, source).await?;
-    Ok(check_file(&parse.source_file))
+    let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
+    Ok(check_file_with_catalog(&parse.source_file, &catalog))
 }
 
 #[picante::tracked]
@@ -167,7 +207,7 @@ pub async fn formatted_text_for_file<DB: CompilerDatabaseTrait>(
 }
 
 #[picante::db(
-    inputs(SourceInput),
+    inputs(SourceInput, CatalogInput),
     tracked(
         parse_file,
         lower_file_query,
@@ -183,11 +223,18 @@ pub struct CompilerDb {
 
 impl Default for CompilerDb {
     fn default() -> Self {
-        Self::new(DashMap::new())
+        let db = Self::new(DashMap::new());
+        db.set_catalog(Catalog::hardcoded())
+            .expect("hardcoded catalog should be representable by Picante");
+        db
     }
 }
 
 impl CompilerDb {
+    fn set_catalog(&self, catalog: Catalog) -> PicanteResult<()> {
+        CatalogInput::set(self, catalog)
+    }
+
     fn set_source_rope(&self, file: FileId, revision: RevisionId, rope: Rope) -> PicanteResult<()> {
         let text = Arc::<str>::from(rope.to_string());
         let source = SourceInput::new(self, file, revision, text)?;
@@ -234,6 +281,13 @@ impl CompilerDb {
         };
         formatted_text_for_file(self, source).await
     }
+
+    fn catalog(&self) -> Catalog {
+        CatalogInput::catalog(self)
+            .ok()
+            .flatten()
+            .unwrap_or_else(Catalog::hardcoded)
+    }
 }
 
 #[derive(Clone)]
@@ -255,13 +309,27 @@ impl Default for AnalysisHost {
 
 impl AnalysisHost {
     pub fn new() -> Self {
+        Self::with_catalog_provider(HardcodedCatalogProvider)
+    }
+
+    pub fn with_catalog_provider(provider: impl CatalogProvider) -> Self {
+        let db = CompilerDb::default();
+        db.set_catalog(provider.load_catalog())
+            .expect("catalog should be representable by Picante");
         Self {
             inner: Arc::new(AnalysisHostInner {
-                db: CompilerDb::default(),
+                db,
                 next_file: AtomicU32::new(0),
                 documents: DashMap::new(),
             }),
         }
+    }
+
+    pub fn set_catalog(&self, catalog: Catalog) {
+        self.inner
+            .db
+            .set_catalog(catalog)
+            .expect("catalog should be representable by Picante");
     }
 
     pub fn create_file(&self, source: SourceSnapshot) -> FileId {
@@ -398,9 +466,227 @@ impl AnalysisHost {
         })
     }
 
+    pub async fn completions(
+        &self,
+        uri: &str,
+        position: TextPosition,
+    ) -> Option<Vec<CompletionItem>> {
+        let snapshot = self.inner.documents.get(uri)?.snapshot();
+        let byte = position_to_byte(&snapshot.rope, position);
+        let analysis = self.analyze(snapshot.file).await?;
+        let catalog = self.inner.db.catalog();
+        Some(completions_at(&analysis.parse.source_file, &catalog, byte))
+    }
+
+    pub async fn hover(&self, uri: &str, position: TextPosition) -> Option<HoverInfo> {
+        let snapshot = self.inner.documents.get(uri)?.snapshot();
+        let byte = position_to_byte(&snapshot.rope, position);
+        let analysis = self.analyze(snapshot.file).await?;
+        let catalog = self.inner.db.catalog();
+        hover_at(&analysis.parse.source_file, &catalog, byte)
+    }
+
     fn alloc_file(&self) -> FileId {
         FileId(self.inner.next_file.fetch_add(1, Ordering::Relaxed))
     }
+}
+
+fn completions_at(source_file: &SourceFile, catalog: &Catalog, byte: usize) -> Vec<CompletionItem> {
+    match selection_context(source_file, catalog, byte) {
+        CompletionContext::Root => catalog
+            .tables
+            .iter()
+            .map(|table| CompletionItem {
+                label: table.name.clone(),
+                kind: CompletionKind::Table,
+                detail: Some(format!("table {}.{}", table.schema, table.name)),
+            })
+            .collect(),
+        CompletionContext::Table(table) => field_completions(catalog, table),
+    }
+}
+
+fn hover_at(source_file: &SourceFile, catalog: &Catalog, byte: usize) -> Option<HoverInfo> {
+    for definition in source_file.definitions() {
+        match definition {
+            Definition::Query(query) => {
+                for selection in &query.selections {
+                    if !contains(selection.name.range, byte) && !contains(selection.range, byte) {
+                        continue;
+                    }
+                    let table = catalog.table_ref(&selection.name.text)?;
+                    if contains(selection.name.range, byte) {
+                        return Some(HoverInfo {
+                            label: selection.name.text.clone(),
+                            detail: format!("table {}.{}", table.schema, table.name),
+                        });
+                    }
+                    if let Some(info) =
+                        hover_in_selections(catalog, table.id, &selection.selections, byte)
+                    {
+                        return Some(info);
+                    }
+                }
+            }
+            Definition::Fragment(fragment) => {
+                if !contains(fragment.range, byte) {
+                    continue;
+                }
+                let Some(on) = &fragment.on else {
+                    continue;
+                };
+                let Some(table) = catalog.table_ref(&on.text) else {
+                    continue;
+                };
+                if contains(on.range, byte) {
+                    return Some(HoverInfo {
+                        label: on.text.clone(),
+                        detail: format!("table {}.{}", table.schema, table.name),
+                    });
+                }
+                if let Some(info) =
+                    hover_in_selections(catalog, table.id, &fragment.selections, byte)
+                {
+                    return Some(info);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn hover_in_selections(
+    catalog: &Catalog,
+    table: TableId,
+    selections: &[Selection],
+    byte: usize,
+) -> Option<HoverInfo> {
+    for selection in selections {
+        if !contains(selection.name.range, byte) && !contains(selection.range, byte) {
+            continue;
+        }
+        match catalog.check_field(table, &selection.name.text) {
+            FieldCheckResult::Column(column) if contains(selection.name.range, byte) => {
+                return Some(HoverInfo {
+                    label: selection.name.text.clone(),
+                    detail: format!("column: {}", column.data_type.as_str()),
+                });
+            }
+            FieldCheckResult::Relation(related) => {
+                if contains(selection.name.range, byte) {
+                    return Some(HoverInfo {
+                        label: selection.name.text.clone(),
+                        detail: format!("relation: {}.{}", related.schema, related.name),
+                    });
+                }
+                if let Some(info) =
+                    hover_in_selections(catalog, related.id, &selection.selections, byte)
+                {
+                    return Some(info);
+                }
+            }
+            FieldCheckResult::NotFound | FieldCheckResult::Column(_) => {}
+        }
+    }
+    None
+}
+
+enum CompletionContext {
+    Root,
+    Table(TableId),
+}
+
+fn selection_context(
+    source_file: &SourceFile,
+    catalog: &Catalog,
+    byte: usize,
+) -> CompletionContext {
+    for definition in source_file.definitions() {
+        match definition {
+            Definition::Query(query) => {
+                for selection in &query.selections {
+                    if !contains(selection.range, byte) {
+                        continue;
+                    }
+                    let Some(table) = catalog.table_ref(&selection.name.text) else {
+                        return CompletionContext::Root;
+                    };
+                    return nested_context(catalog, table.id, &selection.selections, byte)
+                        .unwrap_or(CompletionContext::Table(table.id));
+                }
+            }
+            Definition::Fragment(fragment) => {
+                if !contains(fragment.range, byte) {
+                    continue;
+                }
+                let Some(on) = &fragment.on else {
+                    return CompletionContext::Root;
+                };
+                let Some(table) = catalog.table_ref(&on.text) else {
+                    return CompletionContext::Root;
+                };
+                return nested_context(catalog, table.id, &fragment.selections, byte)
+                    .unwrap_or(CompletionContext::Table(table.id));
+            }
+        }
+    }
+    CompletionContext::Root
+}
+
+fn nested_context(
+    catalog: &Catalog,
+    table: TableId,
+    selections: &[Selection],
+    byte: usize,
+) -> Option<CompletionContext> {
+    for selection in selections {
+        if !contains(selection.range, byte) {
+            continue;
+        }
+        return match catalog.check_field(table, &selection.name.text) {
+            FieldCheckResult::Relation(related) => {
+                nested_context(catalog, related.id, &selection.selections, byte)
+                    .or(Some(CompletionContext::Table(related.id)))
+            }
+            FieldCheckResult::Column(_) | FieldCheckResult::NotFound => {
+                Some(CompletionContext::Table(table))
+            }
+        };
+    }
+    None
+}
+
+fn field_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
+    let mut completions = Vec::new();
+    completions.extend(
+        catalog
+            .columns_for_table(table)
+            .map(|column| CompletionItem {
+                label: column.name.clone(),
+                kind: CompletionKind::Column,
+                detail: Some(column.data_type.as_str().to_string()),
+            }),
+    );
+    completions.extend(
+        catalog
+            .relation_fields_for_table(table)
+            .into_iter()
+            .map(|relation| CompletionItem {
+                label: relation.name.to_string(),
+                kind: CompletionKind::Relation,
+                detail: Some(format!(
+                    "relation to {}.{}",
+                    relation.table.schema, relation.table.name
+                )),
+            }),
+    );
+    completions.sort_by(|left, right| left.label.cmp(&right.label));
+    completions.dedup_by(|left, right| left.label == right.label);
+    completions
+}
+
+fn contains(range: dsql_core::TextRange, byte: usize) -> bool {
+    (range.start as usize) <= byte && byte <= (range.end as usize)
 }
 
 fn apply_text_edits(rope: &mut Rope, edits: Vec<TextEdit>) {
@@ -434,7 +720,7 @@ pub fn analyze_source(source: SourceSnapshot) -> AnalysisResult {
     let parse = parse_source(source);
     let mut interner = Interner::default();
     let lower = lower_file(&parse.source_file, &mut interner);
-    let check = check_file(&parse.source_file);
+    let check = check_file_with_catalog(&parse.source_file, &Catalog::hardcoded());
     AnalysisResult {
         parse,
         lower,
@@ -461,4 +747,75 @@ fn collect_diagnostics_parts(
     diagnostics.extend(check.iter().cloned());
     diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
     diagnostics
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dsql_core::parse_source;
+
+    fn parsed_source(source: &str) -> SourceFile {
+        let parsed = parse_source(source.into());
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        parsed.source_file
+    }
+
+    #[test]
+    fn completions_include_exact_relation_names() {
+        let source = "query Q { posts {  } }";
+        let source_file = parsed_source(source);
+        let catalog = Catalog::hardcoded();
+        let byte = source.find("  }").unwrap() + 1;
+
+        let completions = completions_at(&source_file, &catalog, byte);
+
+        assert!(completions.iter().any(|completion| {
+            completion.label == "users" && completion.kind == CompletionKind::Relation
+        }));
+        assert!(
+            !completions
+                .iter()
+                .any(|completion| completion.label == "user")
+        );
+    }
+
+    #[test]
+    fn completions_and_hover_work_inside_fragments() {
+        let source = "fragment UserFields on users {\n  posts {\n    title\n  }\n}";
+        let source_file = parsed_source(source);
+        let catalog = Catalog::hardcoded();
+        let completion_byte = source.find("  posts").unwrap() + 1;
+        let hover_byte = source.find("title").unwrap();
+
+        let completions = completions_at(&source_file, &catalog, completion_byte);
+        let hover = hover_at(&source_file, &catalog, hover_byte).unwrap();
+
+        assert!(completions.iter().any(|completion| {
+            completion.label == "posts" && completion.kind == CompletionKind::Relation
+        }));
+        assert_eq!(hover.label, "title");
+        assert_eq!(hover.detail, "column: text");
+    }
+
+    #[test]
+    fn hover_and_completions_support_qualified_names() {
+        let source = "query Q { public.users { public.posts { title } } }";
+        let source_file = parsed_source(source);
+        let catalog = Catalog::hardcoded();
+        let completion_byte = source.find("public.posts").unwrap() - 1;
+        let hover_byte = source.find("public.posts").unwrap();
+
+        let completions = completions_at(&source_file, &catalog, completion_byte);
+        let hover = hover_at(&source_file, &catalog, hover_byte).unwrap();
+
+        assert!(completions.iter().any(|completion| {
+            completion.label == "posts" && completion.kind == CompletionKind::Relation
+        }));
+        assert_eq!(hover.label, "public.posts");
+        assert_eq!(hover.detail, "relation: public.posts");
+    }
 }

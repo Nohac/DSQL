@@ -26,6 +26,10 @@ pub enum DiagnosticCode {
     UnexpectedEof,
     DuplicateDefinition,
     UnknownFragment,
+    TableNotFound,
+    FieldNotFound,
+    ScalarSelectionSet,
+    RelationSelectionSet,
     FormatParseError,
 }
 

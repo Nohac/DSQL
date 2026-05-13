@@ -1,6 +1,9 @@
-use crate::syntax::{
-    Argument, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Document, Expr,
-    FragmentDef, Literal, QueryDef, Selection, Severity, SourceFile, TextRange,
+use crate::{
+    catalog::{Catalog, FieldCheckResult, TableId},
+    syntax::{
+        Argument, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Document, Expr,
+        FragmentDef, Literal, QueryDef, Selection, Severity, SourceFile, TextRange,
+    },
 };
 use facet::Facet;
 use indexmap::IndexMap;
@@ -69,12 +72,25 @@ pub fn lower_file(source_file: &SourceFile, interner: &mut Interner) -> LoweredF
 }
 
 pub fn check_file(source_file: &SourceFile) -> CheckedFile {
+    check_file_with_catalog(source_file, &Catalog::hardcoded())
+}
+
+pub fn check_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> CheckedFile {
     let document = source_file.document();
     let mut diagnostics = Vec::new();
+    check_queries(document, catalog, &mut diagnostics);
+    check_fragments(document, catalog, &mut diagnostics);
+    diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
+    CheckedFile { diagnostics }
+}
+
+fn check_fragments(document: &Document, catalog: &Catalog, diagnostics: &mut Vec<Diagnostic>) {
     let mut fragments = IndexMap::<String, TextRange>::new();
     for definition in &document.definitions {
-        if let Definition::Fragment(fragment) = definition
-            && let Some(name) = &fragment.name
+        let Definition::Fragment(fragment) = definition else {
+            continue;
+        };
+        if let Some(name) = &fragment.name
             && fragments.insert(name.text.clone(), name.range).is_some()
         {
             diagnostics.push(Diagnostic {
@@ -85,9 +101,114 @@ pub fn check_file(source_file: &SourceFile) -> CheckedFile {
                 source: DiagnosticSource::Check,
             });
         }
+        check_fragment_selection_set(fragment, catalog, diagnostics);
     }
-    diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
-    CheckedFile { diagnostics }
+}
+
+fn check_fragment_selection_set(
+    fragment: &FragmentDef,
+    catalog: &Catalog,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(on) = &fragment.on else {
+        return;
+    };
+    let Some(table) = catalog.table_ref(&on.text) else {
+        diagnostics.push(Diagnostic {
+            range: on.range,
+            severity: Severity::Error,
+            code: DiagnosticCode::TableNotFound,
+            message: format!("table `{}` not found", on.text),
+            source: DiagnosticSource::Check,
+        });
+        return;
+    };
+    check_selection_set(catalog, table.id, &fragment.selections, diagnostics);
+}
+
+fn check_queries(document: &Document, catalog: &Catalog, diagnostics: &mut Vec<Diagnostic>) {
+    for definition in &document.definitions {
+        let Definition::Query(query) = definition else {
+            continue;
+        };
+        for selection in &query.selections {
+            let Some(table) = catalog.table_ref(&selection.name.text) else {
+                diagnostics.push(Diagnostic {
+                    range: selection.name.range,
+                    severity: Severity::Error,
+                    code: DiagnosticCode::TableNotFound,
+                    message: format!("table `{}` not found", selection.name.text),
+                    source: DiagnosticSource::Check,
+                });
+                continue;
+            };
+            check_selection_set(catalog, table.id, &selection.selections, diagnostics);
+        }
+    }
+}
+
+fn check_selection_set(
+    catalog: &Catalog,
+    table: TableId,
+    selections: &[Selection],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for selection in selections {
+        match catalog.check_field(table, &selection.name.text) {
+            FieldCheckResult::Column(column) => {
+                if !selection.selections.is_empty() {
+                    diagnostics.push(Diagnostic {
+                        range: selection.name.range,
+                        severity: Severity::Error,
+                        code: DiagnosticCode::ScalarSelectionSet,
+                        message: format!(
+                            "field `{}` is a scalar ({}) and cannot have a selection set",
+                            selection.name.text,
+                            column.data_type.as_str()
+                        ),
+                        source: DiagnosticSource::Check,
+                    });
+                }
+            }
+            FieldCheckResult::Relation(related_table) => {
+                if selection.selections.is_empty() {
+                    diagnostics.push(Diagnostic {
+                        range: selection.name.range,
+                        severity: Severity::Error,
+                        code: DiagnosticCode::RelationSelectionSet,
+                        message: format!(
+                            "relation field `{}` must have a selection set",
+                            selection.name.text
+                        ),
+                        source: DiagnosticSource::Check,
+                    });
+                } else {
+                    check_selection_set(
+                        catalog,
+                        related_table.id,
+                        &selection.selections,
+                        diagnostics,
+                    );
+                }
+            }
+            FieldCheckResult::NotFound => {
+                let table_name = catalog
+                    .tables
+                    .get(table.0)
+                    .map_or("<unknown>", |table| table.name.as_str());
+                diagnostics.push(Diagnostic {
+                    range: selection.name.range,
+                    severity: Severity::Error,
+                    code: DiagnosticCode::FieldNotFound,
+                    message: format!(
+                        "field `{}` not found on table `{}`",
+                        selection.name.text, table_name
+                    ),
+                    source: DiagnosticSource::Check,
+                });
+            }
+        }
+    }
 }
 
 fn lower_document(
@@ -202,5 +323,99 @@ fn lower_expr(expr: &Expr, interner: &mut Interner) {
             | Literal::Bool { .. }
             | Literal::Null { .. },
         ) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syntax::parse_source;
+
+    fn diagnostics(source: &str) -> Vec<Diagnostic> {
+        let parsed = parse_source(source.into());
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        check_file(&parsed.source_file).diagnostics
+    }
+
+    #[test]
+    fn hardcoded_catalog_accepts_columns_and_relations() {
+        let diagnostics = diagnostics(
+            "query Q { users { id name posts { title users { name } } } posts { users { email } } }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn hardcoded_catalog_reports_unknown_table_and_field() {
+        let diagnostics = diagnostics("query Q { comments { id } users { missing } }");
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::TableNotFound
+                && diagnostic.message == "table `comments` not found"
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::FieldNotFound
+                && diagnostic.message == "field `missing` not found on table `users`"
+        }));
+    }
+
+    #[test]
+    fn hardcoded_catalog_reports_selection_set_shape_errors() {
+        let diagnostics = diagnostics("query Q { users { id { name } posts } }");
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::ScalarSelectionSet
+                && diagnostic
+                    .message
+                    .starts_with("field `id` is a scalar (uuid)")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::RelationSelectionSet
+                && diagnostic.message == "relation field `posts` must have a selection set"
+        }));
+    }
+
+    #[test]
+    fn hardcoded_catalog_checks_fragment_fields() {
+        let diagnostics = diagnostics("fragment UserFields on users { id posts { title } }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn hardcoded_catalog_accepts_qualified_table_and_relation_names() {
+        let diagnostics = diagnostics(
+            "query Q { public.users { id public.posts { title } } public.posts { public.users { email } } }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn hardcoded_catalog_accepts_qualified_fragment_type() {
+        let diagnostics =
+            diagnostics("fragment UserFields on public.users { id public.posts { title } }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn hardcoded_catalog_reports_fragment_field_errors() {
+        let diagnostics = diagnostics("fragment UserFields on users { missing }");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::FieldNotFound);
+        assert_eq!(
+            diagnostics[0].message,
+            "field `missing` not found on table `users`"
+        );
+    }
+
+    #[test]
+    fn hardcoded_catalog_reports_unknown_fragment_table() {
+        let diagnostics = diagnostics("fragment CommentFields on comments { id }");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::TableNotFound);
+        assert_eq!(diagnostics[0].message, "table `comments` not found");
     }
 }

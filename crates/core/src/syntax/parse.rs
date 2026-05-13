@@ -51,6 +51,7 @@ pub enum SyntaxRule {
     FragmentDef,
     Literal,
     QueryDef,
+    QualifiedName,
     Selection,
     SelectionSet,
 }
@@ -71,6 +72,7 @@ pub enum SyntaxToken {
     Colon,
     At,
     Comma,
+    Dot,
     Eq,
     Ne,
     Gt,
@@ -199,6 +201,7 @@ fn map_rule(rule: Rule) -> SyntaxRule {
         Rule::FragmentDef => SyntaxRule::FragmentDef,
         Rule::Literal => SyntaxRule::Literal,
         Rule::QueryDef => SyntaxRule::QueryDef,
+        Rule::QualifiedName => SyntaxRule::QualifiedName,
         Rule::Selection => SyntaxRule::Selection,
         Rule::SelectionSet => SyntaxRule::SelectionSet,
     }
@@ -219,6 +222,7 @@ fn map_token(token: Token) -> SyntaxToken {
         Token::Colon => SyntaxToken::Colon,
         Token::At => SyntaxToken::At,
         Token::Comma => SyntaxToken::Comma,
+        Token::Dot => SyntaxToken::Dot,
         Token::Eq => SyntaxToken::Eq,
         Token::Ne => SyntaxToken::Ne,
         Token::Gt => SyntaxToken::Gt,
@@ -270,10 +274,11 @@ impl<'a> AstBuilder<'a> {
 
     fn fragment(&self, node: NodeRef) -> FragmentDef {
         let names = self.direct_names(node);
+        let qualified_names = self.direct_qualified_names(node);
         FragmentDef {
             range: range(self.cst.span(node)),
             name: names.first().cloned(),
-            on: names.get(1).cloned(),
+            on: qualified_names.first().cloned(),
             selections: self
                 .direct_rule(node, Rule::SelectionSet)
                 .map_or_else(Vec::new, |selection_set| self.selection_set(selection_set)),
@@ -289,10 +294,10 @@ impl<'a> AstBuilder<'a> {
     }
 
     fn field_selection(&self, node: NodeRef) -> Selection {
-        let first_name = self.direct_names(node).into_iter().next();
+        let first_name = self.direct_qualified_names(node).into_iter().next();
         let tail = self.direct_rule(node, Rule::FieldSelectionTail);
         let (alias, name, suffix) = if let Some(tail) = tail {
-            let tail_names = self.direct_names(tail);
+            let tail_names = self.direct_qualified_names(tail);
             if tail_names.is_empty() {
                 (
                     None,
@@ -301,7 +306,10 @@ impl<'a> AstBuilder<'a> {
                 )
             } else {
                 (
-                    first_name,
+                    first_name.map(|name| NameRef {
+                        range: name.range,
+                        text: name.text,
+                    }),
                     tail_names
                         .first()
                         .cloned()
@@ -469,6 +477,27 @@ impl<'a> AstBuilder<'a> {
                 (token == Token::Name).then(|| NameRef {
                     range: token_range,
                     text: text.to_string(),
+                })
+            })
+            .collect()
+    }
+
+    fn direct_qualified_names(&self, node: NodeRef) -> Vec<NameRef> {
+        self.direct_rules(node, Rule::QualifiedName)
+            .into_iter()
+            .filter_map(|qualified| {
+                let names = self.direct_names(qualified);
+                if names.is_empty() {
+                    return None;
+                }
+                let text = names
+                    .iter()
+                    .map(|name| name.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                Some(NameRef {
+                    range: range(self.cst.span(qualified)),
+                    text,
                 })
             })
             .collect()

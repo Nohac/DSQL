@@ -108,9 +108,9 @@ impl<'a> CstFormatter<'a> {
             self.out.push_str(name);
         }
         self.out.push_str(" on");
-        if let Some(on) = names.get(1) {
+        if let Some(on) = self.direct_qualified_name_text(node) {
             self.out.push(' ');
-            self.out.push_str(on);
+            self.out.push_str(&on);
         }
         if let Some(selection_set) = self.direct_rule(node, SyntaxRule::SelectionSet) {
             self.selection_set(selection_set);
@@ -147,10 +147,10 @@ impl<'a> CstFormatter<'a> {
     }
 
     fn field_selection(&mut self, node: usize) {
-        let first = self.direct_token_text(node, SyntaxToken::Name);
+        let first = self.direct_qualified_name_text(node);
         let tail = self.direct_rule(node, SyntaxRule::FieldSelectionTail);
         let (alias, name, suffix) = if let Some(tail) = tail {
-            let tail_name = self.direct_token_text(tail, SyntaxToken::Name);
+            let tail_name = self.direct_qualified_name_text(tail);
             if tail_name.is_some() {
                 (
                     first,
@@ -340,6 +340,16 @@ impl<'a> CstFormatter<'a> {
             .filter(|child| self.token(*child) == Some(target))
             .map(|child| self.text(self.node(child).range))
             .collect()
+    }
+
+    fn direct_qualified_name_text(&self, node: usize) -> Option<String> {
+        let name = self.direct_rule(node, SyntaxRule::QualifiedName)?;
+        let parts = self.direct_token_texts(name, SyntaxToken::Name);
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("."))
+        }
     }
 
     fn direct_value_rule(&self, node: usize) -> Option<usize> {

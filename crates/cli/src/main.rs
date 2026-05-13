@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use dsql_core::SourceSnapshot;
-use dsql_frontend::{analyze_source, collect_diagnostics};
+use dsql_frontend::{AnalysisHost, collect_diagnostics};
 use miette::{IntoDiagnostic, Result};
 use std::path::PathBuf;
 
@@ -26,16 +26,16 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     match args.command {
         Command::Parse { file } => {
-            let analysis = analyze_file(file)?;
+            let analysis = analyze_file(file).await?;
             print!("{}", analysis.parse.tree);
             print_diagnostics(&collect_diagnostics(&analysis));
         }
         Command::Check { file } => {
-            let analysis = analyze_file(file)?;
+            let analysis = analyze_file(file).await?;
             print_diagnostics(&collect_diagnostics(&analysis));
         }
         Command::Fmt { file } => {
-            let analysis = analyze_file(file)?;
+            let analysis = analyze_file(file).await?;
             let formatted = dsql_core::format_file(&analysis.parse);
             for diagnostic in &formatted.diagnostics {
                 eprintln!(
@@ -52,9 +52,13 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn analyze_file(path: PathBuf) -> Result<dsql_frontend::AnalysisResult> {
+async fn analyze_file(path: PathBuf) -> Result<dsql_frontend::AnalysisResult> {
     let text = std::fs::read_to_string(path).into_diagnostic()?;
-    Ok(analyze_source(SourceSnapshot::from_string(text)))
+    let host = AnalysisHost::new();
+    let file = host.create_file(SourceSnapshot::from_string(text));
+    host.analyze(file)
+        .await
+        .ok_or_else(|| miette::miette!("analysis failed"))
 }
 
 fn print_diagnostics(diagnostics: &[dsql_core::Diagnostic]) {

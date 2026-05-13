@@ -1,15 +1,18 @@
 use dsql_core::Diagnostic;
 use dsql_frontend::{
-    AnalysisHost, DocumentDiagnostics, TextEdit as FrontendTextEdit, TextEditRange, TextPosition,
+    AnalysisHost, CompletionKind, DocumentDiagnostics, TextEdit as FrontendTextEdit, TextEditRange,
+    TextPosition,
 };
 use ropey::{LineType, Rope};
 use std::error::Error;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic as LspDiagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
-    InitializeParams, InitializeResult, InitializedParams, MessageType, OneOf, Position, Range,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams, Hover,
+    HoverContents, HoverParams, InitializeParams, InitializeResult, InitializedParams,
+    MarkedString, MessageType, OneOf, Position, Range, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -57,6 +60,10 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions::default()),
+                hover_provider: Some(
+                    tower_lsp_server::lsp_types::HoverProviderCapability::Simple(true),
+                ),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -134,6 +141,66 @@ impl LanguageServer for Backend {
             },
             new_text: format.formatted.text,
         }]))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let Some(items) = self
+            .analysis
+            .completions(
+                &uri.to_string(),
+                TextPosition {
+                    line: position.line,
+                    character: position.character,
+                },
+            )
+            .await
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(CompletionResponse::Array(
+            items
+                .into_iter()
+                .map(|item| CompletionItem {
+                    label: item.label,
+                    kind: Some(match item.kind {
+                        CompletionKind::Table => CompletionItemKind::CLASS,
+                        CompletionKind::Column => CompletionItemKind::FIELD,
+                        CompletionKind::Relation => CompletionItemKind::REFERENCE,
+                    }),
+                    detail: item.detail,
+                    ..CompletionItem::default()
+                })
+                .collect(),
+        )))
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(info) = self
+            .analysis
+            .hover(
+                &uri.to_string(),
+                TextPosition {
+                    line: position.line,
+                    character: position.character,
+                },
+            )
+            .await
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(Hover {
+            contents: HoverContents::Scalar(MarkedString::String(format!(
+                "{}\n{}",
+                info.label, info.detail
+            ))),
+            range: None,
+        }))
     }
 }
 
