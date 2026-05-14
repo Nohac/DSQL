@@ -905,8 +905,6 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "picante"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6150578603464b6f264b951a96e0b73a225bddd39d7cdd19d720cb15f0acd8da"
 dependencies = [
  "dashmap",
  "facet",
@@ -924,8 +922,6 @@ dependencies = [
 [[package]]
 name = "picante-macros"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2507150079d468379fb452aed2c4658e046bd6a66af1a3c0e82ae9d00dc64ab"
 dependencies = [
  "heck",
  "proc-macro2",
