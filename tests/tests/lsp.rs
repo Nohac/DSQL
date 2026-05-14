@@ -1,5 +1,8 @@
 use dsql_core::{Catalog, SourceSnapshot, parse_source};
-use dsql_frontend::{AnalysisHost, CompletionKind, TextPosition};
+use dsql_frontend::{
+    AnalysisHost, CatalogDefinition, CompletionKind, DefinitionResult, SourceDefinition,
+    SourceDefinitionKind, TextPosition,
+};
 use insta::Settings;
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
@@ -258,6 +261,99 @@ async fn imdb_keyword_and_operator_completion_contexts() {
     );
 }
 
+#[tokio::test]
+async fn lsp_definitions_resolve_fragment_spreads_across_open_documents() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let fragment_uri = "file:///tests/queries/lsp/imdb-fragments.dsql".to_string();
+    let query_uri = "file:///tests/queries/lsp/imdb-query.dsql".to_string();
+    let fragment = "fragment MovieInfoFields on movie_info {\n  id\n  note\n}";
+    let query = "query Movies {\n  movie_info {\n    ...MovieInfoFields\n  }\n}";
+    host.open_document(fragment_uri.clone(), 1, fragment.to_string())
+        .await;
+    host.open_document(query_uri.clone(), 1, query.to_string())
+        .await;
+
+    let definition = host
+        .definition(&query_uri, position_at(query, "MovieInfoFields"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        definition,
+        DefinitionResult::Source(SourceDefinition {
+            uri: fragment_uri,
+            range: dsql_core::TextRange::new("fragment ".len(), "fragment MovieInfoFields".len()),
+            kind: SourceDefinitionKind::Fragment,
+        })
+    );
+}
+
+#[tokio::test]
+async fn lsp_definitions_resolve_tables_relations_and_columns_to_catalog_targets() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let uri = "file:///tests/queries/lsp/imdb-definitions.dsql".to_string();
+    let source = "\
+query Movies {
+  movie_info(where id == 1) {
+    note
+    title {
+      id
+    }
+  }
+}";
+    host.open_document(uri.clone(), 1, source.to_string()).await;
+
+    let table = host
+        .definition(&uri, position_at(source, "movie_info"))
+        .await
+        .unwrap();
+    let where_column = host
+        .definition(&uri, position_at(source, "id == 1"))
+        .await
+        .unwrap();
+    let body_column = host
+        .definition(&uri, position_at(source, "note"))
+        .await
+        .unwrap();
+    let relation = host
+        .definition(&uri, position_at(source, "title {"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        table,
+        DefinitionResult::Catalog(CatalogDefinition::Table {
+            schema: "public".to_string(),
+            table: "movie_info".to_string(),
+        })
+    );
+    assert_eq!(
+        where_column,
+        DefinitionResult::Catalog(CatalogDefinition::Column {
+            schema: "public".to_string(),
+            table: "movie_info".to_string(),
+            column: "id".to_string(),
+        })
+    );
+    assert_eq!(
+        body_column,
+        DefinitionResult::Catalog(CatalogDefinition::Column {
+            schema: "public".to_string(),
+            table: "movie_info".to_string(),
+            column: "note".to_string(),
+        })
+    );
+    assert_eq!(
+        relation,
+        DefinitionResult::Catalog(CatalogDefinition::Table {
+            schema: "public".to_string(),
+            table: "title".to_string(),
+        })
+    );
+}
+
 fn format_completions(items: &[dsql_frontend::CompletionItem]) -> String {
     items
         .iter()
@@ -355,12 +451,12 @@ fn strip_markers(source: &str) -> (String, BTreeMap<String, usize>) {
 }
 
 fn byte_to_position(source: &str, byte: usize) -> TextPosition {
-    let prefix = &source[..byte];
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() as u32;
-    let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+    let rope = ropey::Rope::from_str(source);
+    let line = rope.byte_to_line_idx(byte, ropey::LineType::LF_CR);
+    let line_start = rope.line_to_byte_idx(line, ropey::LineType::LF_CR);
     TextPosition {
-        line,
-        character: prefix[line_start..].encode_utf16().count() as u32,
+        line: line as u32,
+        character: rope.slice(line_start..byte).len_utf16() as u32,
     }
 }
 

@@ -1,12 +1,13 @@
 use crate::convert::{semantic_tokens_legend, to_lsp_diagnostic};
 use crate::position::{byte_to_position, encode_semantic_tokens};
 use dsql_frontend::{
-    AnalysisHost, CompletionKind, DocumentDiagnostics, TextEdit as FrontendTextEdit, TextEditRange,
-    TextPosition,
+    AnalysisHost, CatalogDefinition, CompletionKind, DefinitionResult, DocumentDiagnostics,
+    TextEdit as FrontendTextEdit, TextEditRange, TextPosition,
 };
+use std::str::FromStr;
 use std::{
     error::Error,
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -14,13 +15,14 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, Hover, HoverContents, HoverParams, InitializeParams,
-    InitializeResult, InitializedParams, MarkupContent, MarkupKind, MessageType, OneOf, Position,
-    Range, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent,
+    MarkupKind, MessageType, OneOf, Position, Range, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri,
 };
-use tower_lsp_server::{Client, LanguageServer, LspService, Server};
+use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 use tracing::{info, warn};
 
 pub async fn run_stdio() -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
@@ -169,6 +171,7 @@ impl LanguageServer for Backend {
                 )),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions::default()),
+                definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(
                     tower_lsp_server::lsp_types::HoverProviderCapability::Simple(true),
                 ),
@@ -327,6 +330,61 @@ impl LanguageServer for Backend {
         }))
     }
 
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(definition) = self
+            .analysis
+            .definition(
+                &uri.to_string(),
+                TextPosition {
+                    line: position.line,
+                    character: position.character,
+                },
+            )
+            .await
+        else {
+            return Ok(None);
+        };
+
+        let location = match definition {
+            DefinitionResult::Source(source) => {
+                let Some(snapshot) = self.analysis.document_snapshot(&source.uri) else {
+                    return Ok(None);
+                };
+                let Ok(uri) = Uri::from_str(&source.uri) else {
+                    return Ok(None);
+                };
+                Location::new(
+                    uri,
+                    Range {
+                        start: byte_to_position(&snapshot.rope, source.range.start as usize),
+                        end: byte_to_position(&snapshot.rope, source.range.end as usize),
+                    },
+                )
+            }
+            DefinitionResult::Catalog(target) => {
+                let Some(path) =
+                    file_uri_to_path(uri.as_str()).and_then(|path| parent_or_self(&path))
+                else {
+                    return Ok(None);
+                };
+                let Some(project) = dsql_project::Project::try_load_from(&path) else {
+                    return Ok(None);
+                };
+                let Some(location) = catalog_location(&project.schema, &target) else {
+                    return Ok(None);
+                };
+                location
+            }
+        };
+
+        Ok(Some(GotoDefinitionResponse::Scalar(location)))
+    }
+
     async fn semantic_tokens_full(
         &self,
         params: SemanticTokensParams,
@@ -343,11 +401,49 @@ impl LanguageServer for Backend {
 }
 
 fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
-    let path = uri.strip_prefix("file://")?;
-    if path.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(percent_decode(path)))
+    Uri::from_str(uri)
+        .ok()?
+        .to_file_path()
+        .map(|path| path.into_owned())
+}
+
+fn catalog_location(schema_dir: &Path, target: &CatalogDefinition) -> Option<Location> {
+    let (schema, table, column) = match target {
+        CatalogDefinition::Table { schema, table } => (schema.as_str(), table.as_str(), None),
+        CatalogDefinition::Column {
+            schema,
+            table,
+            column,
+        } => (schema.as_str(), table.as_str(), Some(column.as_str())),
+    };
+    let path = schema_dir.join(schema).join(format!("{table}.yaml"));
+    let contents = fs::read_to_string(&path).ok()?;
+    let range = catalog_yaml_range(&contents, table, column);
+    Some(Location::new(path_to_uri(&path)?, range))
+}
+
+fn catalog_yaml_range(contents: &str, table: &str, column: Option<&str>) -> Range {
+    let line = column
+        .and_then(|column| yaml_column_line(contents, column))
+        .or_else(|| yaml_table_line(contents, table))
+        .unwrap_or(0);
+    Range::new(Position::new(line as u32, 0), Position::new(line as u32, 0))
+}
+
+fn yaml_table_line(contents: &str, table: &str) -> Option<usize> {
+    let expected = format!("name: {table}");
+    contents
+        .lines()
+        .position(|line| line.trim() == expected && !line.trim_start().starts_with("- "))
+}
+
+fn yaml_column_line(contents: &str, column: &str) -> Option<usize> {
+    let expected = format!("- name: {column}");
+    contents.lines().position(|line| line.trim() == expected)
+}
+
+fn path_to_uri(path: &Path) -> Option<Uri> {
+    Uri::from_file_path(path)
 }
 
 fn init_lsp_logging() {
@@ -380,31 +476,28 @@ fn parent_or_self(path: &Path) -> Option<PathBuf> {
     }
 }
 
-fn percent_decode(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%'
-            && index + 2 < bytes.len()
-            && let (Some(high), Some(low)) =
-                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
-        {
-            output.push(high << 4 | low);
-            index += 3;
-            continue;
-        }
-        output.push(bytes[index]);
-        index += 1;
-    }
-    String::from_utf8_lossy(&output).into_owned()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
+    #[test]
+    fn catalog_yaml_range_targets_column_lines() {
+        let yaml = "\
+---
+schema: public
+name: movie_info
+object_type: table
+columns:
+  - name: id
+    data_type: int
+  - name: note
+    data_type: text
+";
+
+        let table = catalog_yaml_range(yaml, "movie_info", None);
+        let column = catalog_yaml_range(yaml, "movie_info", Some("note"));
+
+        assert_eq!(table.start, Position::new(2, 0));
+        assert_eq!(column.start, Position::new(7, 0));
     }
 }

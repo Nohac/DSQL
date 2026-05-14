@@ -1,6 +1,10 @@
 use crate::AnalysisResult;
 use crate::completion::{CompletionItem, completions_at};
 use crate::db::CompilerDb;
+use crate::definition::{
+    DefinitionResult, DefinitionTarget, SourceDefinition, SourceDefinitionKind,
+    definition_target_at, find_fragment_definition,
+};
 use crate::document::{
     DocumentDiagnostics, DocumentFormat, DocumentSnapshot, DocumentState, FileId, RevisionId,
     TextEdit, TextPosition, apply_text_edits, position_to_byte,
@@ -177,6 +181,10 @@ impl AnalysisHost {
         Some(state.snapshot())
     }
 
+    pub fn document_snapshot(&self, uri: &str) -> Option<DocumentSnapshot> {
+        Some(self.inner.documents.get(uri)?.snapshot())
+    }
+
     pub async fn document_diagnostics(&self, uri: &str) -> Option<DocumentDiagnostics> {
         let snapshot = self.inner.documents.get(uri)?.snapshot();
         self.diagnostics_for_snapshot(snapshot).await
@@ -209,6 +217,17 @@ impl AnalysisHost {
         let analysis = self.analyze(snapshot.file).await?;
         let catalog = self.inner.db.catalog();
         hover_at(&analysis.parse.source_file, &catalog, byte)
+    }
+
+    pub async fn definition(&self, uri: &str, position: TextPosition) -> Option<DefinitionResult> {
+        let snapshot = self.inner.documents.get(uri)?.snapshot();
+        let byte = position_to_byte(&snapshot.rope, position);
+        let analysis = self.analyze(snapshot.file).await?;
+        let catalog = self.inner.db.catalog();
+        match definition_target_at(&analysis.parse.source_file, &catalog, byte)? {
+            DefinitionTarget::Catalog(target) => Some(DefinitionResult::Catalog(target)),
+            DefinitionTarget::Fragment { name } => self.find_fragment_definition(&name).await,
+        }
     }
 
     pub async fn semantic_tokens(&self, uri: &str) -> Option<DocumentSemanticTokens> {
@@ -255,5 +274,20 @@ impl AnalysisHost {
             snapshot,
             diagnostics,
         })
+    }
+
+    async fn find_fragment_definition(&self, name: &str) -> Option<DefinitionResult> {
+        for snapshot in self.open_document_snapshots() {
+            if let Some(analysis) = self.analyze(snapshot.file).await
+                && let Some(range) = find_fragment_definition(&analysis.parse.source_file, name)
+            {
+                return Some(DefinitionResult::Source(SourceDefinition {
+                    uri: snapshot.uri,
+                    range,
+                    kind: SourceDefinitionKind::Fragment,
+                }));
+            }
+        }
+        None
     }
 }

@@ -516,6 +516,7 @@ dependencies = [
  "dsql-frontend",
  "dsql-project",
  "insta",
+ "ropey",
  "serde_json",
  "sqlx",
  "tokio",
