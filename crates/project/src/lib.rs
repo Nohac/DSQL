@@ -15,6 +15,8 @@ use std::{
 #[derive(Clone, Debug, Facet)]
 pub struct Config {
     pub database_url: String,
+    #[facet(default = default_schema())]
+    pub default_schema: String,
     pub documents: Vec<DocumentConfig>,
 }
 
@@ -73,8 +75,13 @@ impl Project {
         let metadata = load_metadata_dir(&self.schema)?;
         metadata
             .into_catalog()
+            .map(|catalog| catalog.with_default_schema(self.config.default_schema.clone()))
             .map_err(|error| miette!("failed to build catalog from schema metadata: {error}"))
     }
+}
+
+fn default_schema() -> String {
+    Catalog::DEFAULT_SCHEMA.to_string()
 }
 
 pub fn find_root(start_dir: &Path) -> Option<PathBuf> {
@@ -94,6 +101,7 @@ pub fn init_project(base_path: &Path, database_url: Option<String>) -> Result<Pr
     fs::create_dir_all(&schema).into_diagnostic()?;
     let config = Config {
         database_url: database_url.unwrap_or_else(|| "<database url>".to_string()),
+        default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
         documents: Vec::new(),
     };
     let config_toml = facet_toml::to_string(&config)

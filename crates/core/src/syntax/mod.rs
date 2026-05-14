@@ -5,8 +5,9 @@ mod parse;
 mod text;
 
 pub use ast::{
-    Argument, BinaryOp, Definition, Document, Expr, FragmentDef, Literal, QueryDef, Selection,
-    SelectionKind, SourceFile,
+    Argument, BinaryOp, Clause, Definition, Document, Expr, FragmentDef, LimitClause, Literal,
+    OffsetClause, OrderByClause, OrderByItem, QueryDef, Selection, SelectionKind, SortDirection,
+    SourceFile, WhereClause,
 };
 pub use diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity};
 pub use parse::{

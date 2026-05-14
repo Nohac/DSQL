@@ -22,7 +22,7 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
             .with_message(message)
             .with_label(Label::primary((), span))
     }
-    fn predicate_argument_list_1(&self) -> bool {
+    fn predicate_order_by_clause_1(&self) -> bool {
         matches!(self.peek(1), Token::Name)
     }
 }

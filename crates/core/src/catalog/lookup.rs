@@ -28,7 +28,7 @@ impl Catalog {
             );
         }
 
-        self.table(Self::DEFAULT_SCHEMA, name).map_or_else(
+        self.table(&self.default_schema, name).map_or_else(
             || TableResolution::NotFound {
                 reference: reference.to_string(),
             },
@@ -118,7 +118,7 @@ impl Catalog {
             .into_iter()
             .filter(|relation| {
                 relation.name == field_name
-                    && relation.table.schema == field_schema.unwrap_or(Self::DEFAULT_SCHEMA)
+                    && relation.table.schema == field_schema.unwrap_or(&self.default_schema)
             })
             .collect::<Vec<_>>();
         match relation_candidates.as_slice() {

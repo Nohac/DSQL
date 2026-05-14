@@ -4,7 +4,10 @@ use crate::{
     definition::{
         DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
     },
-    syntax::{Definition, Document, Selection, SelectionKind, SourceFile, TextRange},
+    syntax::{
+        Clause, Definition, Document, Expr, Literal, Selection, SelectionKind, SourceFile,
+        TextRange,
+    },
 };
 use indexmap::IndexMap;
 use std::collections::HashSet;
@@ -173,6 +176,7 @@ fn check_root_selections(
                 continue;
             }
         };
+        check_clauses(catalog, table.id, selection, errors);
         check_selection_set(
             catalog,
             resolver,
@@ -255,6 +259,102 @@ fn check_selection_set(
                 });
             }
         }
+        check_clauses(catalog, table, selection, errors);
+    }
+}
+
+fn check_clauses(
+    catalog: &Catalog,
+    table: TableId,
+    selection: &Selection,
+    errors: &mut Vec<CheckError>,
+) {
+    for clause in &selection.clauses {
+        match clause {
+            Clause::Where(where_clause) => {
+                check_predicate_expr(catalog, table, &where_clause.predicate, errors)
+            }
+            Clause::OrderBy(order_by) => {
+                for item in &order_by.items {
+                    if !matches!(
+                        catalog.check_field(table, &item.field.text),
+                        FieldCheckResult::Column(_)
+                    ) {
+                        let table_name = catalog
+                            .tables
+                            .get(table.0)
+                            .map_or("<unknown>", |table| table.name.as_str());
+                        errors.push(CheckError {
+                            range: item.field.range,
+                            kind: CheckErrorKind::FieldNotFound {
+                                field: item.field.text.clone(),
+                                table: table_name.to_string(),
+                            },
+                        });
+                    }
+                }
+            }
+            Clause::Limit(limit) => {
+                check_non_negative_integer("limit", &limit.value, limit.range, errors)
+            }
+            Clause::Offset(offset) => {
+                check_non_negative_integer("offset", &offset.value, offset.range, errors);
+            }
+        }
+    }
+}
+
+fn check_predicate_expr(
+    catalog: &Catalog,
+    table: TableId,
+    expr: &Expr,
+    errors: &mut Vec<CheckError>,
+) {
+    match expr {
+        Expr::Name(name) => {
+            if !matches!(
+                catalog.check_field(table, &name.text),
+                FieldCheckResult::Column(_)
+            ) {
+                let table_name = catalog
+                    .tables
+                    .get(table.0)
+                    .map_or("<unknown>", |table| table.name.as_str());
+                errors.push(CheckError {
+                    range: name.range,
+                    kind: CheckErrorKind::FieldNotFound {
+                        field: name.text.clone(),
+                        table: table_name.to_string(),
+                    },
+                });
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            check_predicate_expr(catalog, table, left, errors);
+            check_predicate_expr(catalog, table, right, errors);
+        }
+        Expr::Literal(_) => {}
+    }
+}
+
+fn check_non_negative_integer(
+    clause: &str,
+    expr: &Expr,
+    range: TextRange,
+    errors: &mut Vec<CheckError>,
+) {
+    let valid = matches!(
+        expr,
+        Expr::Literal(Literal::Number { value, .. }) if value.parse::<u64>().is_ok()
+    );
+    if !valid {
+        errors.push(CheckError {
+            range,
+            kind: CheckErrorKind::ClauseValueTypeMismatch {
+                clause: clause.to_string(),
+                expected: "a non-negative integer".to_string(),
+            },
+        });
     }
 }
 

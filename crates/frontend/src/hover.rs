@@ -1,6 +1,7 @@
 use crate::range_contains;
 use dsql_core::{
-    Catalog, Definition, FieldCheckResult, Selection, SelectionKind, SourceFile, TableId,
+    Catalog, Clause, Definition, Expr, FieldCheckResult, Selection, SelectionKind, SourceFile,
+    TableId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +36,9 @@ pub(crate) fn hover_at(
                     if let Some(info) =
                         hover_in_selections(catalog, table.id, &selection.selections, byte)
                     {
+                        return Some(info);
+                    }
+                    if let Some(info) = hover_in_clauses(catalog, table.id, selection, byte) {
                         return Some(info);
                     }
                 }
@@ -109,6 +113,64 @@ fn hover_in_selections(
             | FieldCheckResult::Column(_)
             | FieldCheckResult::AmbiguousRelation { .. } => {}
         }
+        if let Some(info) = hover_in_clauses(catalog, table, selection, byte) {
+            return Some(info);
+        }
+    }
+    None
+}
+
+fn hover_in_clauses(
+    catalog: &Catalog,
+    table: TableId,
+    selection: &Selection,
+    byte: usize,
+) -> Option<HoverInfo> {
+    for clause in &selection.clauses {
+        match clause {
+            Clause::Where(where_clause) => {
+                if let Some(info) = hover_in_expr(catalog, table, &where_clause.predicate, byte) {
+                    return Some(info);
+                }
+            }
+            Clause::OrderBy(order_by) => {
+                for item in &order_by.items {
+                    if range_contains(item.field.range, byte)
+                        && let FieldCheckResult::Column(column) =
+                            catalog.check_field(table, &item.field.text)
+                    {
+                        return Some(HoverInfo {
+                            label: item.field.text.clone(),
+                            detail: format!("column: {}", column.data_type.as_str()),
+                            markdown: column_hover_markdown(catalog, column),
+                        });
+                    }
+                }
+            }
+            Clause::Limit(_) | Clause::Offset(_) => {}
+        }
+    }
+    None
+}
+
+fn hover_in_expr(catalog: &Catalog, table: TableId, expr: &Expr, byte: usize) -> Option<HoverInfo> {
+    match expr {
+        Expr::Name(name) => {
+            if range_contains(name.range, byte)
+                && let FieldCheckResult::Column(column) = catalog.check_field(table, &name.text)
+            {
+                return Some(HoverInfo {
+                    label: name.text.clone(),
+                    detail: format!("column: {}", column.data_type.as_str()),
+                    markdown: column_hover_markdown(catalog, column),
+                });
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            return hover_in_expr(catalog, table, left, byte)
+                .or_else(|| hover_in_expr(catalog, table, right, byte));
+        }
+        Expr::Literal(_) => {}
     }
     None
 }

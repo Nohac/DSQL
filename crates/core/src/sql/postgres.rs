@@ -1,7 +1,10 @@
-use crate::{Catalog, Column, ForeignKey, QueryPlan, SelectionPlan, SelectionPlanItem, Table};
+use crate::{
+    BinaryOp, Catalog, Column, FilterExpr, FilterLiteral, ForeignKey, QueryPlan, SelectionClauses,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, Table,
+};
 use sea_query::{
-    Alias, Asterisk, Condition, Expr, ExprTrait, Func, JoinType, PgFunc, PostgresQueryBuilder,
-    Query, SelectStatement,
+    Alias, Asterisk, Condition, Expr, ExprTrait, Func, JoinType, Order, PgFunc,
+    PostgresQueryBuilder, Query, SelectStatement,
 };
 use std::fmt::Write;
 use thiserror::Error;
@@ -113,10 +116,24 @@ fn generate_selection(
     } else {
         None
     };
+    let filter = selection
+        .clauses
+        .filter
+        .as_ref()
+        .map(|filter| filter_expr(catalog, &context, filter))
+        .transpose()?;
     if cardinality == RelationCardinality::Collection
-        && let Some(limit) = options.collection_limit
+        && should_use_source_subquery(&selection.clauses, options)
     {
-        let source = limited_source_query(current_table, &context, relation_condition, limit);
+        let source = limited_source_query(
+            catalog,
+            current_table,
+            &context,
+            relation_condition,
+            filter,
+            &selection.clauses,
+            effective_limit(&selection.clauses, options),
+        )?;
         query.from_subquery(source, Alias::new(&context.table_alias));
     } else {
         query.from_as(
@@ -129,6 +146,10 @@ fn generate_selection(
         if let Some(relation_condition) = relation_condition {
             query.cond_where(relation_condition);
         }
+        if let Some(filter) = filter {
+            query.and_where(filter);
+        }
+        apply_order_limit_offset(catalog, &context, &selection.clauses, &mut query)?;
     };
 
     for item in &selection.items {
@@ -177,23 +198,117 @@ fn generate_selection(
 }
 
 fn limited_source_query(
+    catalog: &Catalog,
     table: &Table,
     context: &SelectionContext,
     relation_condition: Option<Condition>,
-    limit: u64,
-) -> SelectStatement {
+    filter: Option<Expr>,
+    clauses: &SelectionClauses,
+    limit: Option<u64>,
+) -> Result<SelectStatement, SqlGenerationError> {
     let mut query = Query::select();
-    query
-        .column(Asterisk)
-        .from_as(
-            (Alias::new(&table.schema), Alias::new(&table.name)),
-            Alias::new(&context.table_alias),
-        )
-        .limit(limit);
+    query.column(Asterisk).from_as(
+        (Alias::new(&table.schema), Alias::new(&table.name)),
+        Alias::new(&context.table_alias),
+    );
+    if let Some(limit) = limit {
+        query.limit(limit);
+    }
     if let Some(relation_condition) = relation_condition {
         query.cond_where(relation_condition);
     }
-    query.to_owned()
+    if let Some(filter) = filter {
+        query.and_where(filter);
+    }
+    for order in &clauses.order_by {
+        let column = column(catalog, order.column)?;
+        query.order_by(
+            (Alias::new(&context.table_alias), Alias::new(&column.name)),
+            match order.direction {
+                SortDirectionPlan::Asc => Order::Asc,
+                SortDirectionPlan::Desc => Order::Desc,
+            },
+        );
+    }
+    if let Some(offset) = clauses.offset {
+        query.offset(offset);
+    }
+    Ok(query.to_owned())
+}
+
+fn effective_limit(clauses: &SelectionClauses, options: PostgresSqlOptions) -> Option<u64> {
+    match (clauses.limit, options.collection_limit) {
+        (Some(source), Some(guard)) => Some(std::cmp::Ord::min(source, guard)),
+        (Some(source), None) => Some(source),
+        (None, Some(guard)) => Some(guard),
+        (None, None) => None,
+    }
+}
+
+fn should_use_source_subquery(clauses: &SelectionClauses, options: PostgresSqlOptions) -> bool {
+    effective_limit(clauses, options).is_some()
+        || clauses.offset.is_some()
+        || !clauses.order_by.is_empty()
+}
+
+fn apply_order_limit_offset(
+    catalog: &Catalog,
+    context: &SelectionContext,
+    clauses: &SelectionClauses,
+    query: &mut SelectStatement,
+) -> Result<(), SqlGenerationError> {
+    for order in &clauses.order_by {
+        let column = column(catalog, order.column)?;
+        query.order_by(
+            (Alias::new(&context.table_alias), Alias::new(&column.name)),
+            match order.direction {
+                SortDirectionPlan::Asc => Order::Asc,
+                SortDirectionPlan::Desc => Order::Desc,
+            },
+        );
+    }
+    if let Some(limit) = clauses.limit {
+        query.limit(limit);
+    }
+    if let Some(offset) = clauses.offset {
+        query.offset(offset);
+    }
+    Ok(())
+}
+
+fn filter_expr(
+    catalog: &Catalog,
+    context: &SelectionContext,
+    filter: &FilterExpr,
+) -> Result<Expr, SqlGenerationError> {
+    Ok(match filter {
+        FilterExpr::Column(column_id) => {
+            let column = column(catalog, *column_id)?;
+            Expr::col((Alias::new(&context.table_alias), Alias::new(&column.name)))
+        }
+        FilterExpr::Literal(literal) => match literal {
+            FilterLiteral::String(value) => Expr::value(value.clone()),
+            FilterLiteral::Number(value) => value
+                .parse::<i64>()
+                .map(Expr::value)
+                .or_else(|_| value.parse::<f64>().map(Expr::value))
+                .unwrap_or_else(|_| Expr::value(value.clone())),
+            FilterLiteral::Bool(value) => Expr::value(*value),
+            FilterLiteral::Null => Expr::cust("null"),
+        },
+        FilterExpr::Binary { left, op, right } => {
+            let left = filter_expr(catalog, context, left)?;
+            let right = filter_expr(catalog, context, right)?;
+            match op {
+                BinaryOp::Eq => left.eq(right),
+                BinaryOp::Ne => left.ne(right),
+                BinaryOp::Gt => left.gt(right),
+                BinaryOp::Ge => left.gte(right),
+                BinaryOp::Lt => left.lt(right),
+                BinaryOp::Le => left.lte(right),
+            }
+        }
+    })
 }
 
 fn json_build_object(
@@ -394,5 +509,28 @@ mod tests {
         assert!(sql.contains("\"public\".\"posts\""));
         assert!(sql.contains("'posts'"));
         assert!(sql.contains("'[]'"));
+    }
+
+    #[test]
+    fn generates_clause_sql_shape() {
+        let catalog = Catalog::hardcoded();
+        let parsed = parse_source(
+            "query Q { posts(where id > 100 order by created_at desc limit 10 offset 5) { id title } }"
+                .into(),
+        );
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let planned = plan_file_with_catalog(&parsed.source_file, &catalog);
+        assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
+
+        let generated = generate_postgres_sql(&planned.queries[0], &catalog).unwrap();
+        let sql = generated.sql.to_ascii_lowercase();
+
+        assert!(sql.contains("where"));
+        assert!(sql.contains("\"posts_"));
+        assert!(sql.contains("\"id\" > 100"));
+        assert!(sql.contains("order by"));
+        assert!(sql.contains("\"created_at\" desc"));
+        assert!(sql.contains("limit"));
+        assert!(sql.contains("offset"));
     }
 }

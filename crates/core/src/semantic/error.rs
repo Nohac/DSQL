@@ -60,6 +60,10 @@ pub enum CheckErrorKind {
     CircularFragmentSpread {
         fragment: String,
     },
+    ClauseValueTypeMismatch {
+        clause: String,
+        expected: String,
+    },
 }
 
 impl CheckError {
@@ -127,6 +131,10 @@ impl CheckError {
             CheckErrorKind::CircularFragmentSpread { fragment } => (
                 DiagnosticCode::UnknownFragment,
                 format!("fragment `{fragment}` recursively spreads itself"),
+            ),
+            CheckErrorKind::ClauseValueTypeMismatch { clause, expected } => (
+                DiagnosticCode::ClauseValueTypeMismatch,
+                format!("clause `{clause}` expects {expected}"),
             ),
         };
         Diagnostic {

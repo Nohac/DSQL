@@ -105,11 +105,30 @@ impl<'a> CstFormatter<'a> {
     fn selection_set(&mut self, node: usize) {
         self.out.push_str(" {\n");
         self.indent += 1;
-        for child in self.node(node).children.clone() {
+        let children = self.node(node).children.clone();
+        let mut idx = 0;
+        while idx < children.len() {
+            let child = children[idx];
             match (self.rule(child), self.token(child)) {
                 (Some(SyntaxRule::Selection), _) => {
                     self.indent();
                     self.selection(child);
+                    let mut current = child;
+                    while self.selection_has_comma(current) {
+                        let Some(next_idx) = next_selection_index(&children, idx + 1, |node| {
+                            self.rule(node) == Some(SyntaxRule::Selection)
+                        }) else {
+                            break;
+                        };
+                        let next = children[next_idx];
+                        if self.text_between(current, next).contains('\n') {
+                            break;
+                        }
+                        self.out.push_str(", ");
+                        self.selection(next);
+                        current = next;
+                        idx = next_idx;
+                    }
                     self.out.push('\n');
                 }
                 (_, Some(SyntaxToken::Comment)) => {
@@ -119,6 +138,7 @@ impl<'a> CstFormatter<'a> {
                 }
                 _ => {}
             }
+            idx += 1;
         }
         self.indent = self.indent.saturating_sub(1);
         self.indent();
@@ -173,8 +193,8 @@ impl<'a> CstFormatter<'a> {
     }
 
     fn field_suffix(&mut self, node: usize) {
-        if let Some(arguments) = self.direct_rule(node, SyntaxRule::ArgumentList) {
-            self.argument_list(arguments);
+        if let Some(clauses) = self.direct_rule(node, SyntaxRule::ClauseList) {
+            self.clause_list(clauses);
         }
         for directive in self.direct_rules(node, SyntaxRule::Directive) {
             self.directive(directive);
@@ -184,28 +204,62 @@ impl<'a> CstFormatter<'a> {
         }
     }
 
-    fn argument_list(&mut self, node: usize) {
+    fn clause_list(&mut self, node: usize) {
         self.out.push('(');
-        for (idx, argument) in self
-            .direct_rules(node, SyntaxRule::Argument)
+        for (idx, clause) in self
+            .direct_rules(node, SyntaxRule::Clause)
             .into_iter()
             .enumerate()
         {
             if idx > 0 {
-                self.out.push_str(", ");
+                self.out.push(' ');
             }
-            self.argument(argument);
+            self.clause(clause);
         }
         self.out.push(')');
     }
 
-    fn argument(&mut self, node: usize) {
-        if let Some(name) = self.direct_token_text(node, SyntaxToken::Name) {
-            self.out.push_str(&name);
-            self.out.push(' ');
+    fn clause(&mut self, node: usize) {
+        if let Some(where_clause) = self.direct_rule(node, SyntaxRule::WhereClause) {
+            self.out.push_str("where ");
+            if let Some(value) = self.direct_value_rule(where_clause) {
+                self.expr(value);
+            }
+        } else if let Some(order_by) = self.direct_rule(node, SyntaxRule::OrderByClause) {
+            self.out.push_str("order by ");
+            for (idx, item) in self
+                .direct_rules(order_by, SyntaxRule::OrderItem)
+                .into_iter()
+                .enumerate()
+            {
+                if idx > 0 {
+                    self.out.push_str(", ");
+                }
+                self.order_item(item);
+            }
+        } else if let Some(limit) = self.direct_rule(node, SyntaxRule::LimitClause) {
+            self.out.push_str("limit ");
+            if let Some(value) = self.direct_value_rule(limit) {
+                self.expr(value);
+            }
+        } else if let Some(offset) = self.direct_rule(node, SyntaxRule::OffsetClause) {
+            self.out.push_str("offset ");
+            if let Some(value) = self.direct_value_rule(offset) {
+                self.expr(value);
+            }
         }
-        if let Some(value) = self.direct_value_rule(node) {
-            self.expr(value);
+    }
+
+    fn order_item(&mut self, node: usize) {
+        if let Some(name) = self.direct_qualified_name_text(node) {
+            self.out.push_str(&name);
+        }
+        if let Some(direction) = self.direct_token_text(node, SyntaxToken::Asc) {
+            self.out.push(' ');
+            self.out.push_str(&direction);
+        } else if let Some(direction) = self.direct_token_text(node, SyntaxToken::Desc) {
+            self.out.push(' ');
+            self.out.push_str(&direction);
         }
     }
 
@@ -225,7 +279,14 @@ impl<'a> CstFormatter<'a> {
                     self.binary_expr(binary);
                 } else if let Some(literal) = self.direct_rule(node, SyntaxRule::Literal) {
                     self.literal(literal);
+                } else if let Some(name) = self.direct_qualified_name_text(node) {
+                    self.out.push_str(&name);
                 } else if let Some(name) = self.direct_token_text(node, SyntaxToken::Name) {
+                    self.out.push_str(&name);
+                }
+            }
+            Some(SyntaxRule::QualifiedName) => {
+                if let Some(name) = self.direct_qualified_name_text(node) {
                     self.out.push_str(&name);
                 }
             }
@@ -353,7 +414,12 @@ impl<'a> CstFormatter<'a> {
         self.node(node).children.iter().copied().find(|child| {
             matches!(
                 self.rule(*child),
-                Some(SyntaxRule::Expr | SyntaxRule::BinaryExpr | SyntaxRule::Literal)
+                Some(
+                    SyntaxRule::Expr
+                        | SyntaxRule::BinaryExpr
+                        | SyntaxRule::Literal
+                        | SyntaxRule::QualifiedName
+                )
             )
         })
     }
@@ -373,6 +439,37 @@ impl<'a> CstFormatter<'a> {
             )
         })
     }
+
+    fn selection_has_comma(&self, node: usize) -> bool {
+        self.node(node)
+            .children
+            .iter()
+            .any(|child| self.token(*child) == Some(SyntaxToken::Comma))
+    }
+
+    fn text_between(&self, left: usize, right: usize) -> String {
+        let left_end = self.node(left).range.end;
+        let right_start = self.node(right).range.start;
+        if left_end > right_start {
+            return String::new();
+        }
+        self.parse
+            .source
+            .text(TextRange::new(left_end as usize, right_start as usize))
+            .into_owned()
+    }
+}
+
+fn next_selection_index(
+    children: &[usize],
+    start: usize,
+    is_selection: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    children
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(idx, child)| is_selection(*child).then_some(idx))
 }
 
 #[cfg(test)]
@@ -383,7 +480,7 @@ mod tests {
     #[test]
     fn formats_from_cst_selection_boundaries() {
         let parsed = parse_source(SourceSnapshot::from(
-            "query Users { users(where age > 18) { id name } }",
+            "query Users { users(where id > 18 order by name desc limit 10) { id name } }",
         ));
         let formatted = format_file(&parsed);
         assert!(
@@ -393,7 +490,24 @@ mod tests {
         );
         assert_eq!(
             formatted.text,
-            "query Users {\n  users(where age > 18) {\n    id\n    name\n  }\n}\n"
+            "query Users {\n  users(where id > 18 order by name desc limit 10) {\n    id\n    name\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn preserves_comma_line_groups() {
+        let parsed = parse_source(SourceSnapshot::from(
+            "query Users { users { id, name, email } }",
+        ));
+        let formatted = format_file(&parsed);
+        assert!(
+            formatted.diagnostics.is_empty(),
+            "{:?}",
+            formatted.diagnostics
+        );
+        assert_eq!(
+            formatted.text,
+            "query Users {\n  users {\n    id, name, email\n  }\n}\n"
         );
     }
 

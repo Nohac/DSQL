@@ -30,6 +30,20 @@ pub enum Token {
     Fragment,
     #[token("on")]
     On,
+    #[token("where")]
+    Where,
+    #[token("order")]
+    Order,
+    #[token("by")]
+    By,
+    #[token("limit")]
+    Limit,
+    #[token("offset")]
+    Offset,
+    #[token("asc")]
+    Asc,
+    #[token("desc")]
+    Desc,
     #[token("true")]
     True,
     #[token("false")]

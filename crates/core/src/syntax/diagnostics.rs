@@ -35,6 +35,7 @@ pub enum DiagnosticCode {
     UnindexedJoinColumn,
     ScalarSelectionSet,
     RelationSelectionSet,
+    ClauseValueTypeMismatch,
     FormatParseError,
 }
 

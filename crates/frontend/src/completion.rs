@@ -27,7 +27,7 @@ pub(crate) fn completions_at(
             .tables
             .iter()
             .map(|table| CompletionItem {
-                label: completion_table_ref(&table.schema, &table.name),
+                label: completion_table_ref(catalog, &table.schema, &table.name),
                 kind: CompletionKind::Table,
                 detail: Some(format!("table {}.{}", table.schema, table.name)),
             })
@@ -120,7 +120,7 @@ fn field_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
             .relation_fields_for_table(table)
             .into_iter()
             .map(|relation| CompletionItem {
-                label: completion_table_ref(&relation.table.schema, relation.name),
+                label: completion_table_ref(catalog, &relation.table.schema, relation.name),
                 kind: CompletionKind::Relation,
                 detail: Some(format!(
                     "relation to {}.{}",
@@ -133,8 +133,8 @@ fn field_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
     completions
 }
 
-fn completion_table_ref(schema: &str, table: &str) -> String {
-    if schema == Catalog::DEFAULT_SCHEMA {
+fn completion_table_ref(catalog: &Catalog, schema: &str, table: &str) -> String {
+    if schema == catalog.default_schema() {
         table.to_string()
     } else {
         format!("{schema}.{table}")

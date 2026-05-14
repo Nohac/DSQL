@@ -26,6 +26,7 @@ impl Catalog {
         let posts_user_fk = ForeignKeyId(0);
 
         Self {
+            default_schema: Self::DEFAULT_SCHEMA.to_string(),
             schemas: vec![
                 Schema::new(public, "public", vec![users, posts]),
                 Schema::new(other_schema, "other_schema", vec![other_users]),

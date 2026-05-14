@@ -1,7 +1,7 @@
 use crate::DocumentSnapshot;
 use dsql_core::{
-    Catalog, Definition, FieldCheckResult, ParseResult, Selection, SelectionKind, SourceSnapshot,
-    TableId, TextRange,
+    Catalog, Clause, Definition, Expr, FieldCheckResult, ParseResult, Selection, SelectionKind,
+    SourceSnapshot, TableId, TextRange,
 };
 
 #[derive(Clone, Debug)]
@@ -40,6 +40,7 @@ pub(crate) fn semantic_tokens_at(parse: &ParseResult, catalog: &Catalog) -> Vec<
                 for selection in &query.selections {
                     add_table_ref_tokens(&mut tokens, &parse.source, selection.name.range);
                     if let Some(table) = catalog.table_ref(&selection.name.text) {
+                        add_clause_tokens(&mut tokens, catalog, table.id, selection);
                         add_selection_tokens(
                             &mut tokens,
                             &parse.source,
@@ -116,6 +117,62 @@ fn add_selection_tokens(
             }
             FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {}
         }
+        add_clause_tokens(tokens, catalog, table, selection);
+    }
+}
+
+fn add_clause_tokens(
+    tokens: &mut Vec<SemanticTokenInfo>,
+    catalog: &Catalog,
+    table: TableId,
+    selection: &Selection,
+) {
+    for clause in &selection.clauses {
+        match clause {
+            Clause::Where(where_clause) => {
+                add_expr_tokens(tokens, catalog, table, &where_clause.predicate);
+            }
+            Clause::OrderBy(order_by) => {
+                for item in &order_by.items {
+                    if matches!(
+                        catalog.check_field(table, &item.field.text),
+                        FieldCheckResult::Column(_)
+                    ) {
+                        tokens.push(SemanticTokenInfo {
+                            range: item.field.range,
+                            kind: SemanticTokenKind::Column,
+                        });
+                    }
+                }
+            }
+            Clause::Limit(_) | Clause::Offset(_) => {}
+        }
+    }
+}
+
+fn add_expr_tokens(
+    tokens: &mut Vec<SemanticTokenInfo>,
+    catalog: &Catalog,
+    table: TableId,
+    expr: &Expr,
+) {
+    match expr {
+        Expr::Name(name) => {
+            if matches!(
+                catalog.check_field(table, &name.text),
+                FieldCheckResult::Column(_)
+            ) {
+                tokens.push(SemanticTokenInfo {
+                    range: name.range,
+                    kind: SemanticTokenKind::Column,
+                });
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            add_expr_tokens(tokens, catalog, table, left);
+            add_expr_tokens(tokens, catalog, table, right);
+        }
+        Expr::Literal(_) => {}
     }
 }
 

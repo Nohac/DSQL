@@ -290,6 +290,7 @@ impl Catalog {
         }
 
         Ok(Catalog {
+            default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
             schemas,
             tables,
             columns,

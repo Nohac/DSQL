@@ -3,6 +3,7 @@ use facet::Facet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct Catalog {
+    pub default_schema: String,
     pub schemas: Vec<Schema>,
     pub tables: Vec<Table>,
     pub columns: Vec<Column>,
@@ -96,6 +97,15 @@ pub struct RelationField<'a> {
 
 impl Catalog {
     pub const DEFAULT_SCHEMA: &'static str = "public";
+
+    pub fn with_default_schema(mut self, default_schema: impl Into<String>) -> Self {
+        self.default_schema = default_schema.into();
+        self
+    }
+
+    pub fn default_schema(&self) -> &str {
+        &self.default_schema
+    }
 }
 
 impl Schema {

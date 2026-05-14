@@ -1,4 +1,4 @@
-token Query='query' Fragment='fragment' On='on' True='true' False='false' Null='null';
+token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null';
 token LBrace='{' RBrace='}' LPar='(' RPar=')' Colon=':' At='@' Comma=',' Ellipsis='...' Dot='.';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
@@ -13,13 +13,13 @@ definition^:
   query_def
 | fragment_def
 ;
-query_def: 'query' [Name] selection_set;
+query_def: 'query' Name selection_set;
 fragment_def: 'fragment' Name 'on' qualified_name selection_set;
 qualified_name: Name ['.' Name];
 selection_set: '{' selection* '}';
 selection:
-  field_selection
-| fragment_spread
+  field_selection [',']
+| fragment_spread [',']
 ;
 fragment_spread: '...' Name directive*;
 field_selection: qualified_name field_selection_tail;
@@ -27,13 +27,23 @@ field_selection_tail:
   ':' qualified_name field_suffix
 | field_suffix
 ;
-field_suffix: [argument_list] directive* [selection_set];
-argument_list: '(' [argument (?1 ',' argument)* [',']] ')';
-argument: Name expr;
+field_suffix: [clause_list] directive* [selection_set];
+clause_list: '(' clause* ')';
+clause:
+  where_clause
+| order_by_clause
+| limit_clause
+| offset_clause
+;
+where_clause: 'where' expr;
+order_by_clause: 'order' 'by' order_item (?1 ',' order_item)* [','];
+order_item: qualified_name ['asc' | 'desc'];
+limit_clause: 'limit' expr;
+offset_clause: 'offset' expr;
 directive: '@' Name;
 expr:
   literal
-| Name
+| qualified_name
 | expr ('==' | '!=' | '>' | '>=' | '<' | '<=') expr @binary_expr
 ;
 literal:

@@ -179,6 +179,29 @@ mod tests {
     }
 
     #[test]
+    fn hover_and_semantic_tokens_work_for_clause_columns() {
+        let source = "query Q { posts(where id > 10 order by created_at desc limit 5) { title } }";
+        let source_file = parsed_source(source);
+        let parse = parse_source(source.into());
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        let catalog = Catalog::hardcoded();
+        let where_byte = source.find("id >").unwrap();
+        let order_byte = source.find("created_at").unwrap();
+
+        let where_hover = hover::hover_at(&source_file, &catalog, where_byte).unwrap();
+        let order_hover = hover::hover_at(&source_file, &catalog, order_byte).unwrap();
+        let tokens = semantic_tokens::semantic_tokens_at(&parse, &catalog);
+
+        assert_eq!(where_hover.label, "id");
+        assert_eq!(where_hover.detail, "column: uuid");
+        assert_eq!(order_hover.label, "created_at");
+        assert!(tokens.iter().any(|token| {
+            token.kind == semantic_tokens::SemanticTokenKind::Column
+                && parse.source.text(token.range).as_ref() == "created_at"
+        }));
+    }
+
+    #[test]
     fn query_diagnostics_follow_changed_fragment_inputs() {
         block_on(async {
             let host = AnalysisHost::new();

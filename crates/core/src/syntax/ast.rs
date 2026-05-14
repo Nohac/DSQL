@@ -35,6 +35,7 @@ pub struct Selection {
     pub alias: Option<NameRef>,
     pub name: NameRef,
     pub arguments: Vec<Argument>,
+    pub clauses: Vec<Clause>,
     pub directives: Vec<NameRef>,
     pub selections: Vec<Selection>,
 }
@@ -50,6 +51,53 @@ pub enum SelectionKind {
 pub struct Argument {
     pub range: TextRange,
     pub name: NameRef,
+    pub value: Expr,
+}
+
+#[derive(Clone, Debug, PartialEq, Facet)]
+#[repr(C)]
+pub enum Clause {
+    Where(WhereClause),
+    OrderBy(OrderByClause),
+    Limit(LimitClause),
+    Offset(OffsetClause),
+}
+
+#[derive(Clone, Debug, PartialEq, Facet)]
+pub struct WhereClause {
+    pub range: TextRange,
+    pub predicate: Expr,
+}
+
+#[derive(Clone, Debug, PartialEq, Facet)]
+pub struct OrderByClause {
+    pub range: TextRange,
+    pub items: Vec<OrderByItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Facet)]
+pub struct OrderByItem {
+    pub range: TextRange,
+    pub field: NameRef,
+    pub direction: SortDirection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[repr(u8)]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+#[derive(Clone, Debug, PartialEq, Facet)]
+pub struct LimitClause {
+    pub range: TextRange,
+    pub value: Expr,
+}
+
+#[derive(Clone, Debug, PartialEq, Facet)]
+pub struct OffsetClause {
+    pub range: TextRange,
     pub value: Expr,
 }
 

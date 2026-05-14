@@ -37,9 +37,9 @@ pub enum CstKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
 #[repr(u8)]
 pub enum SyntaxRule {
-    Argument,
-    ArgumentList,
     BinaryExpr,
+    Clause,
+    ClauseList,
     Definition,
     Directive,
     Document,
@@ -51,10 +51,15 @@ pub enum SyntaxRule {
     FragmentSpread,
     FragmentDef,
     Literal,
+    LimitClause,
+    OffsetClause,
+    OrderByClause,
+    OrderItem,
     QueryDef,
     QualifiedName,
     Selection,
     SelectionSet,
+    WhereClause,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
@@ -63,6 +68,13 @@ pub enum SyntaxToken {
     Query,
     Fragment,
     On,
+    Where,
+    Order,
+    By,
+    Limit,
+    Offset,
+    Asc,
+    Desc,
     True,
     False,
     Null,
@@ -166,7 +178,6 @@ fn push_node(cst: &Cst<'_>, node_ref: NodeRef, tree: &mut SyntaxTree) -> usize {
         CstKind::Rule(SyntaxRule::QueryDef) => AstNode::Query,
         CstKind::Rule(SyntaxRule::FragmentDef) => AstNode::Fragment,
         CstKind::Rule(SyntaxRule::Selection | SyntaxRule::FieldSelection) => AstNode::Selection,
-        CstKind::Rule(SyntaxRule::Argument) => AstNode::Argument,
         CstKind::Rule(SyntaxRule::Expr | SyntaxRule::BinaryExpr | SyntaxRule::Literal) => {
             AstNode::Expression
         }
@@ -189,9 +200,9 @@ fn push_node(cst: &Cst<'_>, node_ref: NodeRef, tree: &mut SyntaxTree) -> usize {
 
 fn map_rule(rule: Rule) -> SyntaxRule {
     match rule {
-        Rule::Argument => SyntaxRule::Argument,
-        Rule::ArgumentList => SyntaxRule::ArgumentList,
         Rule::BinaryExpr => SyntaxRule::BinaryExpr,
+        Rule::Clause => SyntaxRule::Clause,
+        Rule::ClauseList => SyntaxRule::ClauseList,
         Rule::Definition => SyntaxRule::Definition,
         Rule::Directive => SyntaxRule::Directive,
         Rule::Document => SyntaxRule::Document,
@@ -203,10 +214,15 @@ fn map_rule(rule: Rule) -> SyntaxRule {
         Rule::FragmentDef => SyntaxRule::FragmentDef,
         Rule::FragmentSpread => SyntaxRule::FragmentSpread,
         Rule::Literal => SyntaxRule::Literal,
+        Rule::LimitClause => SyntaxRule::LimitClause,
+        Rule::OffsetClause => SyntaxRule::OffsetClause,
+        Rule::OrderByClause => SyntaxRule::OrderByClause,
+        Rule::OrderItem => SyntaxRule::OrderItem,
         Rule::QueryDef => SyntaxRule::QueryDef,
         Rule::QualifiedName => SyntaxRule::QualifiedName,
         Rule::Selection => SyntaxRule::Selection,
         Rule::SelectionSet => SyntaxRule::SelectionSet,
+        Rule::WhereClause => SyntaxRule::WhereClause,
     }
 }
 
@@ -215,6 +231,13 @@ fn map_token(token: Token) -> SyntaxToken {
         Token::Query => SyntaxToken::Query,
         Token::Fragment => SyntaxToken::Fragment,
         Token::On => SyntaxToken::On,
+        Token::Where => SyntaxToken::Where,
+        Token::Order => SyntaxToken::Order,
+        Token::By => SyntaxToken::By,
+        Token::Limit => SyntaxToken::Limit,
+        Token::Offset => SyntaxToken::Offset,
+        Token::Asc => SyntaxToken::Asc,
+        Token::Desc => SyntaxToken::Desc,
         Token::True => SyntaxToken::True,
         Token::False => SyntaxToken::False,
         Token::Null => SyntaxToken::Null,
@@ -334,9 +357,9 @@ impl<'a> AstBuilder<'a> {
                 None,
             )
         };
-        let arguments = suffix
-            .and_then(|suffix| self.direct_rule(suffix, Rule::ArgumentList))
-            .map_or_else(Vec::new, |args| self.arguments(args));
+        let clauses = suffix
+            .and_then(|suffix| self.direct_rule(suffix, Rule::ClauseList))
+            .map_or_else(Vec::new, |clauses| self.clauses(clauses));
         let directives = suffix.map_or_else(Vec::new, |suffix| {
             self.direct_rules(suffix, Rule::Directive)
                 .into_iter()
@@ -352,7 +375,8 @@ impl<'a> AstBuilder<'a> {
             kind: SelectionKind::Field,
             alias,
             name,
-            arguments,
+            arguments: Vec::new(),
+            clauses,
             directives,
             selections,
         }
@@ -375,31 +399,104 @@ impl<'a> AstBuilder<'a> {
             alias: None,
             name,
             arguments: Vec::new(),
+            clauses: Vec::new(),
             directives,
             selections: Vec::new(),
         }
     }
 
-    fn arguments(&self, node: NodeRef) -> Vec<Argument> {
-        self.direct_rules(node, Rule::Argument)
+    fn clauses(&self, node: NodeRef) -> Vec<Clause> {
+        self.direct_rules(node, Rule::Clause)
             .into_iter()
-            .map(|argument| {
-                let name = self
-                    .direct_names(argument)
-                    .into_iter()
-                    .next()
-                    .unwrap_or_else(|| self.missing_name(argument));
-                let value = self.direct_value_rule(argument).map_or_else(
-                    || Expr::Literal(Literal::Null { range: name.range }),
-                    |expr| self.expr(expr),
-                );
-                Argument {
-                    range: range(self.cst.span(argument)),
-                    name,
-                    value,
+            .filter_map(|clause| {
+                if let Some(where_clause) = self.direct_rule(clause, Rule::WhereClause) {
+                    return Some(Clause::Where(self.where_clause(where_clause)));
                 }
+                if let Some(order_by_clause) = self.direct_rule(clause, Rule::OrderByClause) {
+                    return Some(Clause::OrderBy(self.order_by_clause(order_by_clause)));
+                }
+                if let Some(limit_clause) = self.direct_rule(clause, Rule::LimitClause) {
+                    return Some(Clause::Limit(self.limit_clause(limit_clause)));
+                }
+                if let Some(offset_clause) = self.direct_rule(clause, Rule::OffsetClause) {
+                    return Some(Clause::Offset(self.offset_clause(offset_clause)));
+                }
+                None
             })
             .collect()
+    }
+
+    fn where_clause(&self, node: NodeRef) -> WhereClause {
+        WhereClause {
+            range: range(self.cst.span(node)),
+            predicate: self.direct_value_rule(node).map_or_else(
+                || {
+                    Expr::Literal(Literal::Null {
+                        range: range(self.cst.span(node)),
+                    })
+                },
+                |expr| self.expr(expr),
+            ),
+        }
+    }
+
+    fn order_by_clause(&self, node: NodeRef) -> OrderByClause {
+        OrderByClause {
+            range: range(self.cst.span(node)),
+            items: self
+                .direct_rules(node, Rule::OrderItem)
+                .into_iter()
+                .map(|item| self.order_by_item(item))
+                .collect(),
+        }
+    }
+
+    fn order_by_item(&self, node: NodeRef) -> OrderByItem {
+        let direction = self.cst.children(node).find_map(|child| {
+            let (token, _, _) = token_text(self.cst, child)?;
+            match token {
+                Token::Asc => Some(SortDirection::Asc),
+                Token::Desc => Some(SortDirection::Desc),
+                _ => None,
+            }
+        });
+        OrderByItem {
+            range: range(self.cst.span(node)),
+            field: self
+                .direct_qualified_names(node)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| self.missing_name(node)),
+            direction: direction.unwrap_or(SortDirection::Asc),
+        }
+    }
+
+    fn limit_clause(&self, node: NodeRef) -> LimitClause {
+        LimitClause {
+            range: range(self.cst.span(node)),
+            value: self.direct_value_rule(node).map_or_else(
+                || {
+                    Expr::Literal(Literal::Null {
+                        range: range(self.cst.span(node)),
+                    })
+                },
+                |expr| self.expr(expr),
+            ),
+        }
+    }
+
+    fn offset_clause(&self, node: NodeRef) -> OffsetClause {
+        OffsetClause {
+            range: range(self.cst.span(node)),
+            value: self.direct_value_rule(node).map_or_else(
+                || {
+                    Expr::Literal(Literal::Null {
+                        range: range(self.cst.span(node)),
+                    })
+                },
+                |expr| self.expr(expr),
+            ),
+        }
     }
 
     fn expr(&self, node: NodeRef) -> Expr {
@@ -414,6 +511,9 @@ impl<'a> AstBuilder<'a> {
         }
         if let Some(literal) = self.direct_rule(node, Rule::Literal) {
             return self.literal(literal);
+        }
+        if let Some(name) = self.direct_qualified_names(node).into_iter().next() {
+            return Expr::Name(name);
         }
         if let Some(name) = self.direct_names(node).into_iter().next() {
             return Expr::Name(name);
@@ -544,7 +644,7 @@ impl<'a> AstBuilder<'a> {
         self.cst.children(node).find(|child| {
             matches!(
                 rule(self.cst, *child),
-                Some(Rule::Expr | Rule::BinaryExpr | Rule::Literal)
+                Some(Rule::Expr | Rule::BinaryExpr | Rule::Literal | Rule::QualifiedName)
             )
         })
     }
@@ -616,10 +716,18 @@ mod tests {
 
     #[test]
     fn parses_query_from_text() {
-        let src = "query Users { users(where age > 18) { id name } }";
+        let src = "query Users { users(where id > 18 order by name desc limit 10 offset 2) { id, name } }";
         let parsed = parse_source(SourceSnapshot::from(src));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         assert_eq!(parsed.source_file.queries().count(), 1);
+        let query = parsed.source_file.queries().next().unwrap();
+        assert_eq!(query.selections[0].clauses.len(), 4);
+    }
+
+    #[test]
+    fn rejects_anonymous_queries() {
+        let parsed = parse_source(SourceSnapshot::from("query { users { id } }"));
+        assert!(!parsed.diagnostics.is_empty());
     }
 
     #[test]

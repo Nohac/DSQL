@@ -25,8 +25,9 @@ pub use lint::{
     lint_query_definition,
 };
 pub use plan::{
-    NestedRelation, PlannedFile, Projection, QueryPlan, SelectionPlan, SelectionPlanItem,
-    plan_file, plan_file_with_catalog, plan_query_definition,
+    FilterExpr, FilterLiteral, NestedRelation, OrderByPlan, PlannedFile, Projection, QueryPlan,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, plan_file,
+    plan_file_with_catalog, plan_query_definition,
 };
 pub use semantic::{
     CheckError, CheckErrorKind, CheckedDefinition, CheckedFile, Interner, LoweredFile, NameId,
@@ -38,7 +39,7 @@ pub use sql::{
     generate_postgres_sql_with_options,
 };
 pub use syntax::{
-    Definition, Diagnostic, DiagnosticCode, DiagnosticSource, ParseResult, Selection,
-    SelectionKind, Severity, SourceFile, SourceSnapshot, SourceText, SyntaxTree, TextRange,
-    parse_source,
+    BinaryOp, Clause, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Expr, Literal,
+    ParseResult, Selection, SelectionKind, Severity, SortDirection, SourceFile, SourceSnapshot,
+    SourceText, SyntaxTree, TextRange, parse_source,
 };

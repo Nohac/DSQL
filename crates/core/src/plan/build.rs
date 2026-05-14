@@ -1,4 +1,7 @@
-use super::{NestedRelation, PlannedFile, Projection, QueryPlan, SelectionPlan, SelectionPlanItem};
+use super::{
+    FilterExpr, FilterLiteral, NestedRelation, OrderByPlan, PlannedFile, Projection, QueryPlan,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
+};
 use crate::{
     catalog::{Catalog, FieldCheckResult, TableId, TableKey, TableResolution},
     definition::{DefinitionResolver, FragmentMap, QueryRecord, extract_definitions},
@@ -24,10 +27,12 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
         for selection in &query.selections {
             match catalog.resolve_table_ref(&selection.name.text) {
                 TableResolution::Found(table) => {
+                    let clauses = plan_clauses(catalog, table.id, selection);
                     if let Some(selections) = plan_selection_set(
                         catalog,
                         &resolver,
                         table.id,
+                        &clauses,
                         &selection.selections,
                         &mut diagnostics,
                     ) {
@@ -37,6 +42,7 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
                                 .alias
                                 .as_ref()
                                 .map_or_else(|| table.name.clone(), |alias| alias.text.clone()),
+                            clauses,
                             selections,
                         });
                     }
@@ -86,10 +92,12 @@ pub fn plan_query_definition(
         }
         match catalog.resolve_table_ref(&selection.name.text) {
             TableResolution::Found(table) => {
+                let clauses = plan_clauses(catalog, table.id, selection);
                 if let Some(selections) = plan_selection_set(
                     catalog,
                     resolver,
                     table.id,
+                    &clauses,
                     &selection.selections,
                     &mut diagnostics,
                 ) {
@@ -99,6 +107,7 @@ pub fn plan_query_definition(
                             .alias
                             .as_ref()
                             .map_or_else(|| table.name.clone(), |alias| alias.text.clone()),
+                        clauses,
                         selections,
                     });
                 }
@@ -133,6 +142,7 @@ fn plan_selection_set(
     catalog: &Catalog,
     resolver: &impl DefinitionResolver,
     table: TableId,
+    clauses: &SelectionClauses,
     selections: &[Selection],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<SelectionPlan> {
@@ -140,8 +150,14 @@ fn plan_selection_set(
     for selection in selections {
         if selection.kind == SelectionKind::FragmentSpread {
             if let Some(fragment) = resolver.fragment(&selection.name.text)
-                && let Some(fragment_plan) =
-                    plan_selection_set(catalog, resolver, table, &fragment.selections, diagnostics)
+                && let Some(fragment_plan) = plan_selection_set(
+                    catalog,
+                    resolver,
+                    table,
+                    &SelectionClauses::default(),
+                    &fragment.selections,
+                    diagnostics,
+                )
             {
                 items.extend(fragment_plan.items);
             }
@@ -164,6 +180,7 @@ fn plan_selection_set(
                     catalog,
                     resolver,
                     relation.table.id,
+                    &plan_clauses(catalog, relation.table.id, selection),
                     &selection.selections,
                     diagnostics,
                 ) {
@@ -194,7 +211,79 @@ fn plan_selection_set(
             )),
         }
     }
-    Some(SelectionPlan { table, items })
+    Some(SelectionPlan {
+        table,
+        clauses: clauses.clone(),
+        items,
+    })
+}
+
+fn plan_clauses(catalog: &Catalog, table: TableId, selection: &Selection) -> SelectionClauses {
+    let mut clauses = SelectionClauses::default();
+    for clause in &selection.clauses {
+        match clause {
+            crate::Clause::Where(where_clause) => {
+                clauses.filter = plan_filter_expr(catalog, table, &where_clause.predicate);
+            }
+            crate::Clause::OrderBy(order_by) => {
+                clauses
+                    .order_by
+                    .extend(order_by.items.iter().filter_map(|item| {
+                        let crate::FieldCheckResult::Column(column) =
+                            catalog.check_field(table, &item.field.text)
+                        else {
+                            return None;
+                        };
+                        Some(OrderByPlan {
+                            column: column.id,
+                            direction: match item.direction {
+                                crate::SortDirection::Asc => SortDirectionPlan::Asc,
+                                crate::SortDirection::Desc => SortDirectionPlan::Desc,
+                            },
+                        })
+                    }));
+            }
+            crate::Clause::Limit(limit) => {
+                clauses.limit = literal_u64(&limit.value);
+            }
+            crate::Clause::Offset(offset) => {
+                clauses.offset = literal_u64(&offset.value);
+            }
+        }
+    }
+    clauses
+}
+
+fn plan_filter_expr(catalog: &Catalog, table: TableId, expr: &crate::Expr) -> Option<FilterExpr> {
+    match expr {
+        crate::Expr::Name(name) => {
+            let crate::FieldCheckResult::Column(column) = catalog.check_field(table, &name.text)
+            else {
+                return None;
+            };
+            Some(FilterExpr::Column(column.id))
+        }
+        crate::Expr::Literal(literal) => Some(FilterExpr::Literal(match literal {
+            crate::Literal::String { value, .. } => FilterLiteral::String(value.clone()),
+            crate::Literal::Number { value, .. } => FilterLiteral::Number(value.clone()),
+            crate::Literal::Bool { value, .. } => FilterLiteral::Bool(*value),
+            crate::Literal::Null { .. } => FilterLiteral::Null,
+        })),
+        crate::Expr::Binary {
+            left, op, right, ..
+        } => Some(FilterExpr::Binary {
+            left: Box::new(plan_filter_expr(catalog, table, left)?),
+            op: *op,
+            right: Box::new(plan_filter_expr(catalog, table, right)?),
+        }),
+    }
+}
+
+fn literal_u64(expr: &crate::Expr) -> Option<u64> {
+    let crate::Expr::Literal(crate::Literal::Number { value, .. }) = expr else {
+        return None;
+    };
+    value.parse().ok()
 }
 
 fn planner_diagnostic(
