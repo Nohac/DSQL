@@ -1,5 +1,5 @@
 use crate::{
-    catalog::{DataType, TableKey},
+    catalog::{DataType, LiteralKind, TableKey},
     syntax::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity, TextRange},
 };
 use facet::Facet;
@@ -71,104 +71,101 @@ pub enum CheckErrorKind {
     PredicateTypeMismatch {
         field: String,
         expected: DataType,
-        actual: String,
+        actual: LiteralKind,
     },
 }
 
 impl CheckError {
     pub fn to_diagnostic(&self) -> Diagnostic {
-        let (code, message) = match &self.kind {
-            CheckErrorKind::DuplicateFragment { name } => (
-                DiagnosticCode::DuplicateDefinition,
-                format!("duplicate fragment `{name}`"),
+        Diagnostic {
+            range: self.range,
+            severity: Severity::Error,
+            code: self.kind.code(),
+            message: self.kind.message(),
+            source: DiagnosticSource::Check,
+        }
+    }
+}
+
+impl CheckErrorKind {
+    pub fn code(&self) -> DiagnosticCode {
+        match self {
+            CheckErrorKind::DuplicateFragment { .. } => DiagnosticCode::DuplicateDefinition,
+            CheckErrorKind::TableNotFound { .. } => DiagnosticCode::TableNotFound,
+            CheckErrorKind::AmbiguousTable { .. } => DiagnosticCode::AmbiguousTable,
+            CheckErrorKind::FieldNotFound { .. } => DiagnosticCode::FieldNotFound,
+            CheckErrorKind::AmbiguousRelation { .. } => DiagnosticCode::AmbiguousRelation,
+            CheckErrorKind::DuplicateOutputKey { .. } => DiagnosticCode::DuplicateOutputKey,
+            CheckErrorKind::ScalarSelectionSet { .. } => DiagnosticCode::ScalarSelectionSet,
+            CheckErrorKind::ScalarClauses { .. } => DiagnosticCode::ScalarClauses,
+            CheckErrorKind::RelationSelectionSet { .. } => DiagnosticCode::RelationSelectionSet,
+            CheckErrorKind::UnknownFragment { .. } => DiagnosticCode::UnknownFragment,
+            CheckErrorKind::FragmentTypeMismatch { .. } => DiagnosticCode::FragmentTypeMismatch,
+            CheckErrorKind::CircularFragmentSpread { .. } => DiagnosticCode::UnknownFragment,
+            CheckErrorKind::ClauseValueTypeMismatch { .. } => {
+                DiagnosticCode::ClauseValueTypeMismatch
+            }
+            CheckErrorKind::PredicateTypeMismatch { .. } => DiagnosticCode::PredicateTypeMismatch,
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            CheckErrorKind::DuplicateFragment { name } => format!("duplicate fragment `{name}`"),
+            CheckErrorKind::TableNotFound { table } => format!("table `{table}` not found"),
+            CheckErrorKind::AmbiguousTable { table, candidates } => format!(
+                "table `{}` is ambiguous; use an alias with a schema-qualified name ({})",
+                table,
+                format_table_candidates(candidates),
             ),
-            CheckErrorKind::TableNotFound { table } => (
-                DiagnosticCode::TableNotFound,
-                format!("table `{table}` not found"),
-            ),
-            CheckErrorKind::AmbiguousTable { table, candidates } => (
-                DiagnosticCode::AmbiguousTable,
-                format!(
-                    "table `{}` is ambiguous; use an alias with a schema-qualified name ({})",
-                    table,
-                    format_table_candidates(candidates)
-                ),
-            ),
-            CheckErrorKind::FieldNotFound { field, table } => (
-                DiagnosticCode::FieldNotFound,
-                format!("field `{field}` not found on table `{table}`"),
-            ),
+            CheckErrorKind::FieldNotFound { field, table } => {
+                format!("field `{field}` not found on table `{table}`")
+            }
             CheckErrorKind::AmbiguousRelation {
                 relation,
                 candidates,
-            } => (
-                DiagnosticCode::AmbiguousRelation,
-                format!(
-                    "relation `{}` is ambiguous; use an alias with a schema-qualified name ({})",
-                    relation,
-                    format_table_candidates(candidates)
-                ),
+            } => format!(
+                "relation `{}` is ambiguous; use an alias with a schema-qualified name ({})",
+                relation,
+                format_table_candidates(candidates),
             ),
-            CheckErrorKind::DuplicateOutputKey { key } => (
-                DiagnosticCode::DuplicateOutputKey,
-                format!("selection output key `{key}` is ambiguous; use an alias"),
+            CheckErrorKind::DuplicateOutputKey { key } => {
+                format!("selection output key `{key}` is ambiguous; use an alias")
+            }
+            CheckErrorKind::ScalarSelectionSet { field, data_type } => {
+                format!("field `{field}` is a scalar ({data_type}) and cannot have a selection set",)
+            }
+            CheckErrorKind::ScalarClauses { field, data_type } => format!(
+                "field `{field}` is a scalar ({data_type}); only relations can have clauses",
             ),
-            CheckErrorKind::ScalarSelectionSet { field, data_type } => (
-                DiagnosticCode::ScalarSelectionSet,
-                format!(
-                    "field `{field}` is a scalar ({data_type}) and cannot have a selection set"
-                ),
-            ),
-            CheckErrorKind::ScalarClauses { field, data_type } => (
-                DiagnosticCode::ScalarClauses,
-                format!(
-                    "field `{field}` is a scalar ({data_type}); only relations can have clauses"
-                ),
-            ),
-            CheckErrorKind::RelationSelectionSet { field } => (
-                DiagnosticCode::RelationSelectionSet,
-                format!("relation field `{field}` must have a selection set"),
-            ),
-            CheckErrorKind::UnknownFragment { fragment } => (
-                DiagnosticCode::UnknownFragment,
-                format!("fragment `{fragment}` not found"),
-            ),
+            CheckErrorKind::RelationSelectionSet { field } => {
+                format!("relation field `{field}` must have a selection set")
+            }
+            CheckErrorKind::UnknownFragment { fragment } => {
+                format!("fragment `{fragment}` not found")
+            }
             CheckErrorKind::FragmentTypeMismatch {
                 fragment,
                 expected,
                 actual,
-            } => (
-                DiagnosticCode::FragmentTypeMismatch,
-                format!(
-                    "fragment `{fragment}` applies to `{actual}` and cannot be spread in `{expected}`"
-                ),
+            } => format!(
+                "fragment `{fragment}` applies to `{actual}` and cannot be spread in `{expected}`",
             ),
-            CheckErrorKind::CircularFragmentSpread { fragment } => (
-                DiagnosticCode::UnknownFragment,
-                format!("fragment `{fragment}` recursively spreads itself"),
-            ),
-            CheckErrorKind::ClauseValueTypeMismatch { clause, expected } => (
-                DiagnosticCode::ClauseValueTypeMismatch,
-                format!("clause `{clause}` expects {expected}"),
-            ),
+            CheckErrorKind::CircularFragmentSpread { fragment } => {
+                format!("fragment `{fragment}` recursively spreads itself")
+            }
+            CheckErrorKind::ClauseValueTypeMismatch { clause, expected } => {
+                format!("clause `{clause}` expects {expected}")
+            }
             CheckErrorKind::PredicateTypeMismatch {
                 field,
                 expected,
                 actual,
-            } => (
-                DiagnosticCode::PredicateTypeMismatch,
-                format!(
-                    "field `{field}` expects {} but predicate uses {actual}",
-                    expected.as_str()
-                ),
+            } => format!(
+                "field `{field}` expects {} but predicate uses {}",
+                expected.expected_literal_description(),
+                actual.as_str(),
             ),
-        };
-        Diagnostic {
-            range: self.range,
-            severity: Severity::Error,
-            code,
-            message,
-            source: DiagnosticSource::Check,
         }
     }
 }

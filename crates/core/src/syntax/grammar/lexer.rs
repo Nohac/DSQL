@@ -96,6 +96,9 @@ pub enum Token {
 impl Token {
     pub const fn completion_label(self) -> Option<&'static str> {
         match self {
+            Self::Query => Some("query"),
+            Self::Fragment => Some("fragment"),
+            Self::On => Some("on"),
             Self::Where => Some("where"),
             Self::Order => Some("order"),
             Self::By => Some("by"),

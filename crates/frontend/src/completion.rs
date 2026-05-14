@@ -8,6 +8,35 @@ pub struct CompletionItem {
     pub detail: Option<String>,
 }
 
+impl CompletionItem {
+    fn keyword_token(token: Token, detail: &'static str) -> Self {
+        Self::token(token, CompletionKind::Keyword, detail)
+    }
+
+    fn keyword_phrase(label: &'static str, detail: &'static str) -> Self {
+        Self {
+            label: label.to_string(),
+            kind: CompletionKind::Keyword,
+            detail: Some(detail.to_string()),
+        }
+    }
+
+    fn operator_token(token: Token) -> Self {
+        Self::token(token, CompletionKind::Operator, operator_detail(token))
+    }
+
+    fn token(token: Token, kind: CompletionKind, detail: &'static str) -> Self {
+        Self {
+            label: token
+                .completion_label()
+                .expect("completion token must have a label")
+                .to_string(),
+            kind,
+            detail: Some(detail.to_string()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionKind {
     Table,
@@ -27,7 +56,7 @@ pub(crate) fn completions_at(
         CursorContext::Invalid => Vec::new(),
         CursorContext::DocumentRoot => document_root_completions(),
         CursorContext::FragmentOnKeyword => {
-            keyword_completions(&[CompletionAtom::Phrase("on", "set fragment table")])
+            keyword_completions(&[CompletionAtom::Token(Token::On, "set fragment table")])
         }
         CursorContext::FragmentType => root_selection_completions(catalog),
         CursorContext::RootSelection => root_selection_completions(catalog),
@@ -74,8 +103,8 @@ fn fragment_completions(
 
 fn document_root_completions() -> Vec<CompletionItem> {
     keyword_completions(&[
-        CompletionAtom::Phrase("query", "define query"),
-        CompletionAtom::Phrase("fragment", "define fragment"),
+        CompletionAtom::Token(Token::Query, "define query"),
+        CompletionAtom::Token(Token::Fragment, "define fragment"),
     ])
 }
 
@@ -143,35 +172,24 @@ fn clause_keyword_completions(used: UsedClauses) -> Vec<CompletionItem> {
 }
 
 fn operator_completions(data_type: DataType) -> Vec<CompletionItem> {
-    match data_type {
-        DataType::Int | DataType::Timestamptz => operator_items(&[
-            (Token::Eq, "equals"),
-            (Token::Ne, "not equals"),
-            (Token::Gt, "greater than"),
-            (Token::Ge, "greater than or equal"),
-            (Token::Lt, "less than"),
-            (Token::Le, "less than or equal"),
-        ]),
-        DataType::Text
-        | DataType::Uuid
-        | DataType::Boolean
-        | DataType::Json
-        | DataType::Unknown => operator_items(&[(Token::Eq, "equals"), (Token::Ne, "not equals")]),
-    }
+    data_type
+        .operator_tokens()
+        .iter()
+        .copied()
+        .map(CompletionItem::operator_token)
+        .collect()
 }
 
-fn operator_items(items: &[(Token, &str)]) -> Vec<CompletionItem> {
-    items
-        .iter()
-        .map(|(token, detail)| CompletionItem {
-            label: token
-                .completion_label()
-                .expect("operator completion tokens must have labels")
-                .to_string(),
-            kind: CompletionKind::Operator,
-            detail: Some((*detail).to_string()),
-        })
-        .collect()
+fn operator_detail(token: Token) -> &'static str {
+    match token {
+        Token::Eq => "equals",
+        Token::Ne => "not equals",
+        Token::Gt => "greater than",
+        Token::Ge => "greater than or equal",
+        Token::Lt => "less than",
+        Token::Le => "less than or equal",
+        _ => "operator",
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -183,21 +201,9 @@ enum CompletionAtom {
 fn keyword_completions(items: &[CompletionAtom]) -> Vec<CompletionItem> {
     items
         .iter()
-        .map(|item| {
-            let (label, detail) = match item {
-                CompletionAtom::Token(token, detail) => (
-                    token
-                        .completion_label()
-                        .expect("keyword completion tokens must have labels"),
-                    *detail,
-                ),
-                CompletionAtom::Phrase(label, detail) => (*label, *detail),
-            };
-            CompletionItem {
-                label: label.to_string(),
-                kind: CompletionKind::Keyword,
-                detail: Some(detail.to_string()),
-            }
+        .map(|item| match item {
+            CompletionAtom::Token(token, detail) => CompletionItem::keyword_token(*token, detail),
+            CompletionAtom::Phrase(label, detail) => CompletionItem::keyword_phrase(label, detail),
         })
         .collect()
 }

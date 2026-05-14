@@ -1,4 +1,5 @@
 use super::{ColumnId, ColumnKey, ForeignKeyId, SchemaId, SchemaKey, TableId, TableKey};
+use crate::syntax::Token;
 use facet::Facet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -63,6 +64,15 @@ pub enum DataType {
     Boolean,
     Json,
     Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
+#[repr(u8)]
+pub enum LiteralKind {
+    String,
+    Number,
+    Boolean,
+    Null,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,6 +212,63 @@ impl DataType {
             "timestamptz" | "timestamp with time zone" => Self::Timestamptz,
             "uuid" => Self::Uuid,
             _ => Self::Unknown,
+        }
+    }
+
+    pub fn operator_tokens(self) -> &'static [Token] {
+        match self {
+            Self::Int | Self::Timestamptz => &[
+                Token::Eq,
+                Token::Ne,
+                Token::Gt,
+                Token::Ge,
+                Token::Lt,
+                Token::Le,
+            ],
+            Self::Text | Self::Uuid | Self::Boolean | Self::Json | Self::Unknown => {
+                &[Token::Eq, Token::Ne]
+            }
+        }
+    }
+
+    pub fn accepts_literal_kind(self, literal: LiteralKind) -> bool {
+        match self {
+            Self::Int => literal == LiteralKind::Number,
+            Self::Boolean => literal == LiteralKind::Boolean,
+            Self::Text | Self::Uuid | Self::Timestamptz | Self::Json => {
+                literal == LiteralKind::String
+            }
+            Self::Unknown => true,
+        }
+    }
+
+    pub fn accepts_literal_value(self, literal: LiteralKind, value: &str) -> bool {
+        if !self.accepts_literal_kind(literal) {
+            return false;
+        }
+        match (self, literal) {
+            (Self::Int, LiteralKind::Number) => value.parse::<i64>().is_ok(),
+            _ => true,
+        }
+    }
+
+    pub fn expected_literal_description(self) -> &'static str {
+        match self {
+            Self::Int => "number",
+            Self::Boolean => "boolean",
+            Self::Text | Self::Uuid | Self::Timestamptz | Self::Json => "string",
+            Self::Unknown => "value",
+        }
+    }
+}
+
+impl LiteralKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Number => "number",
+            Self::Boolean => "boolean",
+            Self::Null => "null",
         }
     }
 }

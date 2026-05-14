@@ -2,5 +2,5 @@
 source: tests/tests/fixtures.rs
 expression: contents
 ---
-Check Error PredicateTypeMismatch 50..56: field `id` expects int but predicate uses string
+Check Error PredicateTypeMismatch 50..56: field `id` expects number but predicate uses string
 Check Error ScalarClauses 71..75: field `note` is a scalar (text); only relations can have clauses

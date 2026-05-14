@@ -1,6 +1,6 @@
 use super::{CheckError, CheckErrorKind, CheckedFile};
 use crate::{
-    catalog::{Catalog, DataType, FieldCheckResult, TableId, TableResolution},
+    catalog::{Catalog, FieldCheckResult, LiteralKind, TableId, TableResolution},
     definition::{
         DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
     },
@@ -362,10 +362,14 @@ fn check_binary_predicate_types(
     let FieldCheckResult::Column(column) = catalog.check_field(table, &name.text) else {
         return;
     };
-    let Some(actual) = literal_type(literal) else {
+    let actual = literal_kind(literal);
+    if actual == LiteralKind::Null {
         return;
-    };
-    if !literal_matches_type(literal, column.data_type) {
+    }
+    if !column
+        .data_type
+        .accepts_literal_value(actual, literal_value(literal))
+    {
         errors.push(CheckError {
             range: literal_range(literal),
             kind: CheckErrorKind::PredicateTypeMismatch {
@@ -377,29 +381,27 @@ fn check_binary_predicate_types(
     }
 }
 
-fn literal_matches_type(literal: &Literal, data_type: DataType) -> bool {
-    match data_type {
-        DataType::Int => {
-            matches!(literal, Literal::Number { value, .. } if value.parse::<i64>().is_ok())
-        }
-        DataType::Boolean => matches!(literal, Literal::Bool { .. }),
-        DataType::Text | DataType::Uuid | DataType::Timestamptz | DataType::Json => {
-            matches!(literal, Literal::String { .. })
-        }
-        DataType::Unknown => true,
+fn literal_kind(literal: &Literal) -> LiteralKind {
+    match literal {
+        Literal::String { .. } => LiteralKind::String,
+        Literal::Number { .. } => LiteralKind::Number,
+        Literal::Bool { .. } => LiteralKind::Boolean,
+        Literal::Null { .. } => LiteralKind::Null,
     }
 }
 
-fn literal_type(literal: &Literal) -> Option<String> {
-    Some(
-        match literal {
-            Literal::String { .. } => "string",
-            Literal::Number { .. } => "number",
-            Literal::Bool { .. } => "boolean",
-            Literal::Null { .. } => return None,
+fn literal_value(literal: &Literal) -> &str {
+    match literal {
+        Literal::String { value, .. } | Literal::Number { value, .. } => value,
+        Literal::Bool { value, .. } => {
+            if *value {
+                "true"
+            } else {
+                "false"
+            }
         }
-        .to_string(),
-    )
+        Literal::Null { .. } => "null",
+    }
 }
 
 fn literal_range(literal: &Literal) -> TextRange {

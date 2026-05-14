@@ -9,9 +9,9 @@ pub mod syntax;
 
 pub use catalog::{
     Catalog, CatalogBuildError, Column, ColumnId, ColumnKey, ColumnMetadata, DataType,
-    DatabaseMetadata, FieldCheckResult, ForeignKey, ForeignKeyId, ForeignKeyMetadata, ObjectType,
-    RelationField, Schema, SchemaId, SchemaKey, SchemaMetadata, Table, TableId, TableKey,
-    TableMetadata, TableResolution, TypeMetadata, TypeMetadataFile, metadata_from_yaml,
+    DatabaseMetadata, FieldCheckResult, ForeignKey, ForeignKeyId, ForeignKeyMetadata, LiteralKind,
+    ObjectType, RelationField, Schema, SchemaId, SchemaKey, SchemaMetadata, Table, TableId,
+    TableKey, TableMetadata, TableResolution, TypeMetadata, TypeMetadataFile, metadata_from_yaml,
     metadata_to_yaml, table_metadata_from_yaml, table_metadata_to_yaml,
     type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
