@@ -1,5 +1,5 @@
 use crate::cursor::{CursorContext, UsedClauses, cursor_context};
-use dsql_core::{Catalog, DataType, TableId, Token};
+use dsql_core::{Catalog, DataType, Definition, SourceFile, TableId, Token};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
@@ -13,6 +13,7 @@ pub enum CompletionKind {
     Table,
     Column,
     Relation,
+    Fragment,
     Keyword,
     Operator,
 }
@@ -23,7 +24,16 @@ pub(crate) fn completions_at(
     byte: usize,
 ) -> Vec<CompletionItem> {
     match cursor_context(parse, catalog, byte) {
-        CursorContext::Root => root_completions(catalog),
+        CursorContext::Invalid => Vec::new(),
+        CursorContext::DocumentRoot => document_root_completions(),
+        CursorContext::FragmentOnKeyword => {
+            keyword_completions(&[CompletionAtom::Phrase("on", "set fragment table")])
+        }
+        CursorContext::FragmentType => root_selection_completions(catalog),
+        CursorContext::RootSelection => root_selection_completions(catalog),
+        CursorContext::FragmentSpread { table } => {
+            fragment_completions(catalog, &parse.source_file, table)
+        }
         CursorContext::SelectionBody { table } => field_completions(catalog, table),
         CursorContext::ClauseList { table: _, used } => clause_keyword_completions(used),
         CursorContext::WhereColumn { table } | CursorContext::OrderByColumn { table } => {
@@ -37,7 +47,39 @@ pub(crate) fn completions_at(
     }
 }
 
-fn root_completions(catalog: &Catalog) -> Vec<CompletionItem> {
+fn fragment_completions(
+    catalog: &Catalog,
+    source_file: &SourceFile,
+    table: TableId,
+) -> Vec<CompletionItem> {
+    let mut completions = source_file
+        .definitions()
+        .filter_map(|definition| {
+            let Definition::Fragment(fragment) = definition else {
+                return None;
+            };
+            let name = fragment.name.as_ref()?;
+            let on = fragment.on.as_ref()?;
+            let target = catalog.table_ref(&on.text)?;
+            (target.id == table).then(|| CompletionItem {
+                label: name.text.clone(),
+                kind: CompletionKind::Fragment,
+                detail: Some(format!("fragment on {}", on.text)),
+            })
+        })
+        .collect::<Vec<_>>();
+    completions.sort_by(|left, right| left.label.cmp(&right.label));
+    completions
+}
+
+fn document_root_completions() -> Vec<CompletionItem> {
+    keyword_completions(&[
+        CompletionAtom::Phrase("query", "define query"),
+        CompletionAtom::Phrase("fragment", "define fragment"),
+    ])
+}
+
+fn root_selection_completions(catalog: &Catalog) -> Vec<CompletionItem> {
     catalog
         .tables
         .iter()

@@ -80,6 +80,11 @@ async fn imdb_keyword_and_operator_completion_contexts() {
     host.set_catalog(imdb_catalog());
     host.open_document(uri.clone(), 1, source.clone()).await;
 
+    let document_root =
+        completions_at_marker(&host, &uri, &source, &markers, "document_root").await;
+    let fragment_on = completions_at_marker(&host, &uri, &source, &markers, "fragment_on").await;
+    let fragment_type =
+        completions_at_marker(&host, &uri, &source, &markers, "fragment_type").await;
     let clause_keywords =
         completions_at_marker(&host, &uri, &source, &markers, "clause_keywords").await;
     let int_operators = completions_at_marker(&host, &uri, &source, &markers, "int_operator").await;
@@ -103,6 +108,10 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         "relation_clause_exact_nested",
     )
     .await;
+    let scalar_clause =
+        completions_at_marker(&host, &uri, &source, &markers, "scalar_clause").await;
+    let unknown_clause =
+        completions_at_marker(&host, &uri, &source, &markers, "unknown_clause").await;
     let movie_info_body_after_clause = completions_at_marker(
         &host,
         &uri,
@@ -111,9 +120,21 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         "movie_info_body_after_clause",
     )
     .await;
+    let fragment_spread =
+        completions_at_marker(&host, &uri, &source, &markers, "fragment_spread").await;
     let title_body_after_clause =
         completions_at_marker(&host, &uri, &source, &markers, "title_body_after_clause").await;
 
+    assert_completion_labels("document root", &document_root, &["query", "fragment"]);
+    assert_no_completion_labels(
+        "document root",
+        &document_root,
+        &["id", "movie_info", "title"],
+    );
+    assert_completion_labels("fragment on", &fragment_on, &["on"]);
+    assert_no_completion_labels("fragment on", &fragment_on, &["id", "movie_info"]);
+    assert_completion_labels("fragment type", &fragment_type, &["title", "movie_info"]);
+    assert_no_completion_labels("fragment type", &fragment_type, &["id", "on"]);
     assert_completion_labels(
         "clause keywords",
         &clause_keywords,
@@ -163,6 +184,22 @@ async fn imdb_keyword_and_operator_completion_contexts() {
             "<=",
         ],
     );
+    assert!(
+        scalar_clause.is_empty(),
+        "scalar clause should not return completions; got {:?}",
+        scalar_clause
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        unknown_clause.is_empty(),
+        "unknown clause should not return completions; got {:?}",
+        unknown_clause
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>()
+    );
     assert_completion_labels(
         "movie info body after clause",
         &movie_info_body_after_clause,
@@ -172,6 +209,12 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         "movie info body after clause",
         &movie_info_body_after_clause,
         &["==", "!=", ">", ">=", "<", "<="],
+    );
+    assert_completion_labels("fragment spread", &fragment_spread, &["MoviesInfo"]);
+    assert_no_completion_labels(
+        "fragment spread",
+        &fragment_spread,
+        &["id", "note", "movie_id", "title"],
     );
     assert_completion_labels(
         "title body after clause",
@@ -192,6 +235,9 @@ async fn imdb_keyword_and_operator_completion_contexts() {
     snapshot(
         "lsp_completion_contexts",
         &[
+            ("document_root", &document_root),
+            ("fragment_on", &fragment_on),
+            ("fragment_type", &fragment_type),
             ("clause_keywords", &clause_keywords),
             ("int_operator", &int_operators),
             ("text_operator", &text_operators),
@@ -200,6 +246,9 @@ async fn imdb_keyword_and_operator_completion_contexts() {
                 "relation_clause_exact_nested",
                 &relation_clause_exact_nested,
             ),
+            ("scalar_clause", &scalar_clause),
+            ("unknown_clause", &unknown_clause),
+            ("fragment_spread", &fragment_spread),
             ("title_body_after_clause", &title_body_after_clause),
         ]
         .into_iter()

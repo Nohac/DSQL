@@ -401,9 +401,8 @@ impl<'a> AstBuilder<'a> {
                 None,
             )
         };
-        let clauses = suffix
-            .and_then(|suffix| self.direct_rule(suffix, Rule::ClauseList))
-            .map_or_else(Vec::new, |clauses| self.clauses(clauses));
+        let clause_list = suffix.and_then(|suffix| self.direct_rule(suffix, Rule::ClauseList));
+        let clauses = clause_list.map_or_else(Vec::new, |clauses| self.clauses(clauses));
         let directives = suffix.map_or_else(Vec::new, |suffix| {
             self.direct_rules(suffix, Rule::Directive)
                 .into_iter()
@@ -420,6 +419,7 @@ impl<'a> AstBuilder<'a> {
             alias,
             name,
             arguments: Vec::new(),
+            has_clause_list: clause_list.is_some(),
             clauses,
             directives,
             selections,
@@ -443,6 +443,7 @@ impl<'a> AstBuilder<'a> {
             alias: None,
             name,
             arguments: Vec::new(),
+            has_clause_list: false,
             clauses: Vec::new(),
             directives,
             selections: Vec::new(),

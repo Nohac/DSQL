@@ -35,6 +35,7 @@ pub struct Selection {
     pub alias: Option<NameRef>,
     pub name: NameRef,
     pub arguments: Vec<Argument>,
+    pub has_clause_list: bool,
     pub clauses: Vec<Clause>,
     pub directives: Vec<NameRef>,
     pub selections: Vec<Selection>,

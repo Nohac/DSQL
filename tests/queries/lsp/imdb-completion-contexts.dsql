@@ -1,3 +1,11 @@
+/*^document_root*/
+fragment MoviesInfo /*^fragment_on*/ on /*^fragment_type*/ movie_info {
+  id
+  title {
+    title
+  }
+}
+
 query CompletionContexts {
   title(/*^clause_keywords*/ where id /*^int_operator*/ > 0 order by /*^order_column*/ id /*^sort_direction*/ asc limit 2) {
     id
@@ -23,7 +31,10 @@ query CompletionContexts {
     id
     movie_id
     note
+    note(/*^scalar_clause*/)
+    missing_relation(/*^unknown_clause*/)
     /*^movie_info_body_after_clause*/
+    .../*^fragment_spread*/
     title(/*^relation_clause_exact_nested*/ {
       /*^title_body_after_clause*/
       id

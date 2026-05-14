@@ -290,6 +290,7 @@ impl LanguageServer for Backend {
                         CompletionKind::Table => CompletionItemKind::CLASS,
                         CompletionKind::Column => CompletionItemKind::FIELD,
                         CompletionKind::Relation => CompletionItemKind::REFERENCE,
+                        CompletionKind::Fragment => CompletionItemKind::MODULE,
                         CompletionKind::Keyword => CompletionItemKind::KEYWORD,
                         CompletionKind::Operator => CompletionItemKind::OPERATOR,
                     }),

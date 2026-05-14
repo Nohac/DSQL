@@ -1,0 +1,6 @@
+query ScalarClauseList {
+  movie_info {
+    id
+    note()
+  }
+}

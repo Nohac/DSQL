@@ -46,6 +46,10 @@ pub enum CheckErrorKind {
         field: String,
         data_type: String,
     },
+    ScalarClauses {
+        field: String,
+        data_type: String,
+    },
     RelationSelectionSet {
         field: String,
     },
@@ -108,6 +112,12 @@ impl CheckError {
                 DiagnosticCode::ScalarSelectionSet,
                 format!(
                     "field `{field}` is a scalar ({data_type}) and cannot have a selection set"
+                ),
+            ),
+            CheckErrorKind::ScalarClauses { field, data_type } => (
+                DiagnosticCode::ScalarClauses,
+                format!(
+                    "field `{field}` is a scalar ({data_type}); only relations can have clauses"
                 ),
             ),
             CheckErrorKind::RelationSelectionSet { field } => (

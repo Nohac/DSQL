@@ -204,7 +204,15 @@ fn check_selection_set(
         }
         match catalog.check_field(table, &selection.name.text) {
             FieldCheckResult::Column(column) => {
-                check_clauses(catalog, table, selection, errors);
+                if selection.has_clause_list {
+                    errors.push(CheckError {
+                        range: selection.name.range,
+                        kind: CheckErrorKind::ScalarClauses {
+                            field: selection.name.text.clone(),
+                            data_type: column.data_type.as_str().to_string(),
+                        },
+                    });
+                }
                 if !selection.selections.is_empty() {
                     errors.push(CheckError {
                         range: selection.name.range,
@@ -499,13 +507,19 @@ mod tests {
 
     #[test]
     fn hardcoded_catalog_reports_selection_set_shape_errors() {
-        let diagnostics = diagnostics("query Q { public.users { id { name } posts } }");
-        assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+        let diagnostics =
+            diagnostics("query Q { public.users { id { name } name(where id == 1) posts } }");
+        assert_eq!(diagnostics.len(), 3, "{diagnostics:?}");
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::ScalarSelectionSet
                 && diagnostic
                     .message
                     .starts_with("field `id` is a scalar (uuid)")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::ScalarClauses
+                && diagnostic.message
+                    == "field `name` is a scalar (text); only relations can have clauses"
         }));
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::RelationSelectionSet

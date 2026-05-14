@@ -6,7 +6,12 @@ use dsql_core::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CursorContext {
-    Root,
+    DocumentRoot,
+    FragmentOnKeyword,
+    FragmentType,
+    RootSelection,
+    Invalid,
+    FragmentSpread { table: TableId },
     SelectionBody { table: TableId },
     ClauseList { table: TableId, used: UsedClauses },
     WhereColumn { table: TableId },
@@ -24,13 +29,75 @@ pub(crate) struct UsedClauses {
 }
 
 pub(crate) fn cursor_context(parse: &ParseResult, catalog: &Catalog, byte: usize) -> CursorContext {
+    if let Some(context) = definition_header_context(parse, byte) {
+        return context;
+    }
+
+    if let Some(context) = fragment_spread_context(parse, catalog, byte) {
+        return context;
+    }
+
     if let Some(context) = clause_context(parse, catalog, byte) {
         return context;
     }
 
     cst_selection_body_context(parse, catalog, byte)
         .or_else(|| selection_body_context(parse, catalog, byte))
-        .unwrap_or(CursorContext::Root)
+        .unwrap_or(CursorContext::DocumentRoot)
+}
+
+fn fragment_spread_context(
+    parse: &ParseResult,
+    catalog: &Catalog,
+    byte: usize,
+) -> Option<CursorContext> {
+    let tokens = parse
+        .tree
+        .significant_token_nodes_before(byte)
+        .collect::<Vec<_>>();
+    if tokens.last().and_then(|token| token_kind(token)) != Some(SyntaxToken::Ellipsis) {
+        return None;
+    }
+
+    match cst_body_table_before(parse, catalog, &tokens) {
+        Some(BodyTarget::Table(table)) => Some(CursorContext::FragmentSpread { table }),
+        Some(BodyTarget::RootSelection | BodyTarget::Invalid) => Some(CursorContext::Invalid),
+        None => None,
+    }
+}
+
+fn definition_header_context(parse: &ParseResult, byte: usize) -> Option<CursorContext> {
+    let tokens = parse
+        .tree
+        .significant_token_nodes_before(byte)
+        .collect::<Vec<_>>();
+    if tokens.iter().rev().any(|token| {
+        matches!(
+            token_kind(token),
+            Some(SyntaxToken::LBrace | SyntaxToken::RBrace)
+        )
+    }) {
+        return None;
+    }
+
+    let fragment_index = tokens
+        .iter()
+        .rposition(|token| token_kind(token) == Some(SyntaxToken::Fragment))?;
+    let after_fragment = &tokens[fragment_index + 1..];
+    let has_name = after_fragment
+        .iter()
+        .any(|token| token_kind(token) == Some(SyntaxToken::Name));
+    if !has_name {
+        return None;
+    }
+    if after_fragment
+        .iter()
+        .any(|token| token_kind(token) == Some(SyntaxToken::On))
+    {
+        Some(CursorContext::FragmentType)
+    } else {
+        Some(CursorContext::FragmentOnKeyword)
+    }
 }
 
 fn selection_body_context(
@@ -46,7 +113,7 @@ fn selection_body_context(
                         continue;
                     }
                     let Some(table) = catalog.table_ref(&selection.name.text) else {
-                        return Some(CursorContext::Root);
+                        return Some(CursorContext::Invalid);
                     };
                     return nested_selection_body_context(
                         catalog,
@@ -63,10 +130,10 @@ fn selection_body_context(
                     continue;
                 }
                 let Some(on) = &fragment.on else {
-                    return Some(CursorContext::Root);
+                    return Some(CursorContext::Invalid);
                 };
                 let Some(table) = catalog.table_ref(&on.text) else {
-                    return Some(CursorContext::Root);
+                    return Some(CursorContext::Invalid);
                 };
                 return nested_selection_list_body_context(
                     catalog,
@@ -98,9 +165,7 @@ fn nested_selection_body_context(
         }
         FieldCheckResult::Column(_)
         | FieldCheckResult::NotFound
-        | FieldCheckResult::AmbiguousRelation { .. } => Some(CursorContext::SelectionBody {
-            table: parent_table,
-        }),
+        | FieldCheckResult::AmbiguousRelation { .. } => Some(CursorContext::Invalid),
     }
 }
 
@@ -135,7 +200,7 @@ fn cst_selection_body_context(
         .tree
         .significant_token_nodes_before(byte)
         .collect::<Vec<_>>();
-    let mut stack = Vec::new();
+    let mut stack = Vec::<BodyTarget>::new();
 
     for (index, token) in tokens.iter().enumerate() {
         match token_kind(token) {
@@ -151,10 +216,18 @@ fn cst_selection_body_context(
     }
 
     match stack.last().copied() {
-        Some(Some(table)) => Some(CursorContext::SelectionBody { table }),
-        Some(None) => Some(CursorContext::Root),
+        Some(BodyTarget::Table(table)) => Some(CursorContext::SelectionBody { table }),
+        Some(BodyTarget::RootSelection) => Some(CursorContext::RootSelection),
+        Some(BodyTarget::Invalid) => Some(CursorContext::Invalid),
         None => None,
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BodyTarget {
+    RootSelection,
+    Table(TableId),
+    Invalid,
 }
 
 fn table_for_lbrace(
@@ -162,26 +235,28 @@ fn table_for_lbrace(
     catalog: &Catalog,
     tokens: &[&SyntaxNode],
     lbrace_index: usize,
-    parent_table: Option<Option<TableId>>,
-) -> Option<TableId> {
-    let selection_ref = selection_ref_before_lbrace(parse, tokens, lbrace_index)?;
+    parent: Option<BodyTarget>,
+) -> BodyTarget {
+    let Some(selection_ref) = selection_ref_before_lbrace(parse, tokens, lbrace_index) else {
+        return BodyTarget::Invalid;
+    };
 
     if selection_ref.is_query_body {
-        return None;
+        return BodyTarget::RootSelection;
     }
 
-    if let Some(parent_table) = parent_table.flatten() {
-        return Some(
-            match catalog.check_field(parent_table, &selection_ref.name) {
-                FieldCheckResult::Relation(relation) => relation.table.id,
-                FieldCheckResult::Column(_)
-                | FieldCheckResult::NotFound
-                | FieldCheckResult::AmbiguousRelation { .. } => parent_table,
-            },
-        );
+    if let Some(BodyTarget::Table(parent_table)) = parent {
+        return match catalog.check_field(parent_table, &selection_ref.name) {
+            FieldCheckResult::Relation(relation) => BodyTarget::Table(relation.table.id),
+            FieldCheckResult::Column(_)
+            | FieldCheckResult::NotFound
+            | FieldCheckResult::AmbiguousRelation { .. } => BodyTarget::Invalid,
+        };
     }
 
-    catalog.table_ref(&selection_ref.name).map(|table| table.id)
+    catalog
+        .table_ref(&selection_ref.name)
+        .map_or(BodyTarget::Invalid, |table| BodyTarget::Table(table.id))
 }
 
 struct SelectionRef {
@@ -225,11 +300,12 @@ fn selection_ref_before_lbrace(
 
 fn clause_context(parse: &ParseResult, catalog: &Catalog, byte: usize) -> Option<CursorContext> {
     let cursor = clause_cursor(parse, catalog, byte)?;
+    let ClauseTarget::Table(table) = cursor.target else {
+        return Some(CursorContext::Invalid);
+    };
     let expected = expected_tokens_at(&parse.source, byte);
 
-    if let Some(context) =
-        parsed_clause_context(parse, catalog, cursor.table, &cursor.suffix_tokens)
-    {
+    if let Some(context) = parsed_clause_context(parse, catalog, table, &cursor.suffix_tokens) {
         return Some(context);
     }
 
@@ -244,7 +320,7 @@ fn clause_context(parse: &ParseResult, catalog: &Catalog, byte: usize) -> Option
         || expected.is_empty()
     {
         return Some(CursorContext::ClauseList {
-            table: cursor.table,
+            table,
             used: used_clauses_in_tokens(&cursor.suffix_tokens),
         });
     }
@@ -253,8 +329,14 @@ fn clause_context(parse: &ParseResult, catalog: &Catalog, byte: usize) -> Option
 }
 
 struct ClauseCursor<'a> {
-    table: TableId,
+    target: ClauseTarget,
     suffix_tokens: Vec<&'a SyntaxNode>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClauseTarget {
+    Table(TableId),
+    Invalid,
 }
 
 fn clause_cursor<'a>(
@@ -279,11 +361,16 @@ fn clause_cursor<'a>(
     }
 
     let table_ref = table_ref_before_lpar(parse, &tokens, lpar_index)?;
-    let table = selection_clause_table(parse, catalog, byte, &table_ref)
-        .or_else(|| catalog.table_ref(&table_ref).map(|table| table.id))?;
+    let target = selection_clause_target(parse, catalog, byte, &table_ref)
+        .or_else(|| cst_clause_target(parse, catalog, &tokens, lpar_index, &table_ref))
+        .or_else(|| {
+            catalog
+                .table_ref(&table_ref)
+                .map(|table| ClauseTarget::Table(table.id))
+        })?;
 
     Some(ClauseCursor {
-        table,
+        target,
         suffix_tokens,
     })
 }
@@ -354,15 +441,16 @@ fn parsed_clause_context(
 }
 
 fn name_expected_context(cursor: &ClauseCursor<'_>) -> Option<CursorContext> {
+    let ClauseTarget::Table(table) = cursor.target else {
+        return Some(CursorContext::Invalid);
+    };
     let clause_index = cursor
         .suffix_tokens
         .iter()
         .rposition(|token| is_clause_keyword(token_kind(token)))?;
 
     match token_kind(cursor.suffix_tokens[clause_index])? {
-        SyntaxToken::Where => Some(CursorContext::WhereColumn {
-            table: cursor.table,
-        }),
+        SyntaxToken::Where => Some(CursorContext::WhereColumn { table }),
         SyntaxToken::Order
             if cursor
                 .suffix_tokens
@@ -370,20 +458,18 @@ fn name_expected_context(cursor: &ClauseCursor<'_>) -> Option<CursorContext> {
                 .and_then(|token| token_kind(token))
                 == Some(SyntaxToken::By) =>
         {
-            Some(CursorContext::OrderByColumn {
-                table: cursor.table,
-            })
+            Some(CursorContext::OrderByColumn { table })
         }
         _ => None,
     }
 }
 
-fn selection_clause_table(
+fn selection_clause_target(
     parse: &ParseResult,
     catalog: &Catalog,
     byte: usize,
     field: &str,
-) -> Option<TableId> {
+) -> Option<ClauseTarget> {
     for definition in parse.source_file.definitions() {
         match definition {
             Definition::Query(query) => {
@@ -391,10 +477,13 @@ fn selection_clause_table(
                     let Some(table) = catalog.table_ref(&selection.name.text) else {
                         continue;
                     };
-                    if let Some(table) =
-                        nested_clause_table(catalog, table.id, selection, byte, field)
+                    if selection.name.text == field && byte >= selection.name.range.end as usize {
+                        return Some(ClauseTarget::Table(table.id));
+                    }
+                    if let Some(target) =
+                        nested_clause_target(catalog, table.id, selection, byte, field)
                     {
-                        return Some(table);
+                        return Some(target);
                     }
                 }
             }
@@ -406,10 +495,10 @@ fn selection_clause_table(
                     continue;
                 };
                 for selection in &fragment.selections {
-                    if let Some(table) =
-                        nested_clause_table(catalog, table.id, selection, byte, field)
+                    if let Some(target) =
+                        nested_clause_target(catalog, table.id, selection, byte, field)
                     {
-                        return Some(table);
+                        return Some(target);
                     }
                 }
             }
@@ -418,32 +507,89 @@ fn selection_clause_table(
     None
 }
 
-fn nested_clause_table(
+fn nested_clause_target(
     catalog: &Catalog,
     parent_table: TableId,
     selection: &Selection,
     byte: usize,
     field: &str,
-) -> Option<TableId> {
+) -> Option<ClauseTarget> {
     if selection.kind == SelectionKind::FragmentSpread || !range_contains(selection.range, byte) {
         return None;
     }
 
-    let current_table = match catalog.check_field(parent_table, &selection.name.text) {
+    let field_result = catalog.check_field(parent_table, &selection.name.text);
+    let current_table = match &field_result {
         FieldCheckResult::Relation(relation) => relation.table.id,
         FieldCheckResult::Column(_)
         | FieldCheckResult::NotFound
-        | FieldCheckResult::AmbiguousRelation { .. } => parent_table,
+        | FieldCheckResult::AmbiguousRelation { .. } => {
+            if selection.name.text == field && byte >= selection.name.range.end as usize {
+                parent_table
+            } else {
+                return Some(ClauseTarget::Invalid);
+            }
+        }
     };
 
     if selection.name.text == field && byte >= selection.name.range.end as usize {
-        return Some(current_table);
+        return Some(match field_result {
+            FieldCheckResult::Relation(relation) => ClauseTarget::Table(relation.table.id),
+            FieldCheckResult::Column(_) => ClauseTarget::Invalid,
+            FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {
+                ClauseTarget::Invalid
+            }
+        });
     }
 
     selection
         .selections
         .iter()
-        .find_map(|child| nested_clause_table(catalog, current_table, child, byte, field))
+        .find_map(|child| nested_clause_target(catalog, current_table, child, byte, field))
+}
+
+fn cst_clause_target(
+    parse: &ParseResult,
+    catalog: &Catalog,
+    tokens: &[&SyntaxNode],
+    lpar_index: usize,
+    field: &str,
+) -> Option<ClauseTarget> {
+    let parent_table = cst_body_table_before(parse, catalog, &tokens[..lpar_index]);
+    if let Some(BodyTarget::Table(parent_table)) = parent_table {
+        return Some(match catalog.check_field(parent_table, field) {
+            FieldCheckResult::Relation(relation) => ClauseTarget::Table(relation.table.id),
+            FieldCheckResult::Column(_) => ClauseTarget::Invalid,
+            FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {
+                ClauseTarget::Invalid
+            }
+        });
+    }
+
+    catalog
+        .table_ref(field)
+        .map(|table| ClauseTarget::Table(table.id))
+}
+
+fn cst_body_table_before(
+    parse: &ParseResult,
+    catalog: &Catalog,
+    tokens: &[&SyntaxNode],
+) -> Option<BodyTarget> {
+    let mut stack = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        match token_kind(token) {
+            Some(SyntaxToken::LBrace) => {
+                let table = table_for_lbrace(parse, catalog, tokens, index, stack.last().copied());
+                stack.push(table);
+            }
+            Some(SyntaxToken::RBrace) => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+    stack.last().copied()
 }
 
 fn matching_lpar_before(tokens: &[&SyntaxNode], rpar_index: usize) -> Option<usize> {

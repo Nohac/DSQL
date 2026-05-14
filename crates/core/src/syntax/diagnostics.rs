@@ -34,6 +34,7 @@ pub enum DiagnosticCode {
     DuplicateOutputKey,
     UnindexedJoinColumn,
     ScalarSelectionSet,
+    ScalarClauses,
     RelationSelectionSet,
     ClauseValueTypeMismatch,
     FormatParseError,

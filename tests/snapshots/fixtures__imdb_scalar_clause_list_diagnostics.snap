@@ -1,0 +1,5 @@
+---
+source: tests/tests/fixtures.rs
+expression: contents
+---
+Check Error ScalarClauses 51..55: field `note` is a scalar (text); only relations can have clauses
