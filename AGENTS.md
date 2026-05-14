@@ -48,6 +48,7 @@
 - Add abstractions only when they remove real duplication or make a provider/runtime boundary clearer.
 - Keep Picante details behind the frontend analysis API. Do not expose query ingredients or runtime internals to adapters.
 - Derive or implement reflection/serialization traits on shared data types where the existing code expects them.
+- Before version 1.0, do not preserve backward compatibility by default. Prefer clean formats, APIs, and data models over migration code unless the user explicitly asks for compatibility.
 
 ## Testing And Verification
 

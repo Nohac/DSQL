@@ -1,0 +1,10 @@
+[package]
+name = "dsql-project"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dsql-core = { path = "../core" }
+facet = "0.44.1"
+facet-toml = { version = "0.44.1", features = ["serialize"] }
+miette = { version = "7", features = ["fancy"] }

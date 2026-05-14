@@ -52,6 +52,7 @@ pub struct ForeignKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
+#[facet(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum DataType {
     Uuid,
@@ -60,6 +61,7 @@ pub enum DataType {
     Int,
     Boolean,
     Json,
+    Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -177,6 +179,19 @@ impl DataType {
             Self::Int => "int",
             Self::Boolean => "boolean",
             Self::Json => "json",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_database_type(database_type: &str) -> Self {
+        match database_type {
+            "bool" | "boolean" => Self::Boolean,
+            "int2" | "int4" | "int8" | "integer" | "smallint" | "bigint" => Self::Int,
+            "json" | "jsonb" => Self::Json,
+            "text" | "varchar" | "bpchar" | "char" | "name" => Self::Text,
+            "timestamptz" | "timestamp with time zone" => Self::Timestamptz,
+            "uuid" => Self::Uuid,
+            _ => Self::Unknown,
         }
     }
 }

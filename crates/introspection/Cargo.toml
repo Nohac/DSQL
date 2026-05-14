@@ -1,0 +1,9 @@
+[package]
+name = "dsql-introspection"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dsql-core = { path = "../core" }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "derive"] }
+thiserror = "2"

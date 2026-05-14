@@ -4,7 +4,12 @@ use dsql_frontend::{
     AnalysisHost, CompletionKind, DocumentDiagnostics, TextEdit as FrontendTextEdit, TextEditRange,
     TextPosition,
 };
-use std::error::Error;
+use std::{
+    error::Error,
+    fs::OpenOptions,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+};
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
@@ -16,8 +21,21 @@ use tower_lsp_server::lsp_types::{
     TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
+use tracing::{info, warn};
 
 pub async fn run_stdio() -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
+    init_lsp_logging();
+    info!("starting dsql lsp");
+    info!(
+        cwd = %std::env::current_dir()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|error| format!("<unavailable: {error}>")),
+        log_path = %lsp_log_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<unavailable>".to_string()),
+        "lsp process context"
+    );
+    info!("project lookup starts from cwd and walks parents looking for dsql/dsql.toml");
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::new(Backend::new);
@@ -28,6 +46,7 @@ pub async fn run_stdio() -> std::result::Result<(), Box<dyn Error + Send + Sync>
 struct Backend {
     client: Client,
     analysis: AnalysisHost,
+    project_catalog_loaded: AtomicBool,
 }
 
 impl Backend {
@@ -35,7 +54,88 @@ impl Backend {
         Self {
             client,
             analysis: AnalysisHost::new(),
+            project_catalog_loaded: AtomicBool::new(false),
         }
+    }
+
+    async fn load_project_catalog(&self) {
+        match dsql_project::Project::load() {
+            Ok(project) => {
+                info!(schema_dir = %project.schema.display(), "found dsql project");
+                self.apply_project_catalog(project).await;
+            }
+            Err(error) => {
+                warn!(error = ?error, "failed to find dsql project from cwd");
+                let current_dir = std::env::current_dir().ok();
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!(
+                            "dsql using hardcoded catalog; no dsql/dsql.toml found from {}",
+                            current_dir
+                                .as_deref()
+                                .map(Path::display)
+                                .map(|path| path.to_string())
+                                .unwrap_or_else(|| "<unknown cwd>".to_string())
+                        ),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    async fn apply_project_catalog(&self, project: dsql_project::Project) -> bool {
+        match project.load_catalog() {
+            Ok(catalog) => {
+                info!(schema_dir = %project.schema.display(), "loaded catalog");
+                self.analysis.set_catalog(catalog);
+                self.project_catalog_loaded.store(true, Ordering::Release);
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!("dsql loaded catalog from {}", project.schema.display()),
+                    )
+                    .await;
+                true
+            }
+            Err(error) => {
+                warn!(
+                    schema_dir = %project.schema.display(),
+                    error = ?error,
+                    "failed to load catalog"
+                );
+                self.client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!(
+                            "dsql failed to load catalog from {}: {error}",
+                            project.schema.display()
+                        ),
+                    )
+                    .await;
+                false
+            }
+        }
+    }
+
+    async fn load_project_catalog_for_document(&self, uri: &str) {
+        if self.project_catalog_loaded.load(Ordering::Acquire) {
+            return;
+        }
+        let Some(path) = file_uri_to_path(uri).and_then(|path| parent_or_self(&path)) else {
+            warn!(uri, "document fallback skipped; could not map uri to path");
+            return;
+        };
+        let Some(project) = dsql_project::Project::try_load_from(&path) else {
+            info!(path = %path.display(), "document fallback found no dsql project");
+            return;
+        };
+        info!(
+            path = %path.display(),
+            schema_dir = %project.schema.display(),
+            "document fallback found dsql project"
+        );
+        self.apply_project_catalog(project).await;
     }
 
     async fn publish_diagnostics(&self, result: DocumentDiagnostics) {
@@ -61,6 +161,7 @@ impl Backend {
 
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+        self.load_project_catalog().await;
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -101,6 +202,7 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         let version = params.text_document.version;
         let uri = uri.to_string();
+        self.load_project_catalog_for_document(&uri).await;
         self.analysis
             .open_document(uri.clone(), version, params.text_document.text)
             .await;
@@ -234,5 +336,72 @@ impl LanguageServer for Backend {
             result_id: Some(tokens.snapshot.revision.0.to_string()),
             data: encode_semantic_tokens(&tokens.snapshot.rope, &tokens.tokens),
         })))
+    }
+}
+
+fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+    let path = uri.strip_prefix("file://")?;
+    if path.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(percent_decode(path)))
+}
+
+fn init_lsp_logging() {
+    let Some(path) = lsp_log_path() else {
+        return;
+    };
+    let Ok(file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || {
+            file.try_clone()
+                .expect("failed to clone dsql lsp log file handle")
+        })
+        .try_init();
+}
+
+fn lsp_log_path() -> Option<PathBuf> {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir.parent()?.parent()?;
+    Some(workspace_root.join("lsp.log"))
+}
+
+fn parent_or_self(path: &Path) -> Option<PathBuf> {
+    if path.is_dir() {
+        Some(path.to_path_buf())
+    } else {
+        path.parent().map(Path::to_path_buf)
+    }
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+        {
+            output.push(high << 4 | low);
+            index += 3;
+            continue;
+        }
+        output.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&output).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
