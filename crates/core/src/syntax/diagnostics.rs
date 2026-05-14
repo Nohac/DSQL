@@ -26,6 +26,7 @@ pub enum DiagnosticCode {
     UnexpectedEof,
     DuplicateDefinition,
     UnknownFragment,
+    FragmentTypeMismatch,
     TableNotFound,
     AmbiguousTable,
     FieldNotFound,

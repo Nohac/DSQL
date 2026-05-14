@@ -1,19 +1,63 @@
 use super::{CheckError, CheckErrorKind, CheckedFile};
 use crate::{
     catalog::{Catalog, FieldCheckResult, TableId, TableResolution},
-    syntax::{Definition, Document, FragmentDef, Selection, SourceFile, TextRange},
+    definition::{
+        DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
+    },
+    syntax::{Definition, Document, Selection, SelectionKind, SourceFile, TextRange},
 };
 use indexmap::IndexMap;
+use std::collections::HashSet;
 
 pub fn check_file(source_file: &SourceFile) -> CheckedFile {
     check_file_with_catalog(source_file, &Catalog::hardcoded())
 }
 
 pub fn check_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> CheckedFile {
-    let document = source_file.document();
+    let extracted = extract_definitions(source_file);
+    let resolver = FragmentMap::from_file(&extracted);
     let mut errors = Vec::new();
-    check_queries(document, catalog, &mut errors);
-    check_fragments(document, catalog, &mut errors);
+    check_duplicate_fragments(source_file.document(), &mut errors);
+    for definition in &extracted.definitions {
+        match definition {
+            crate::DefinitionRecord::Query(query) => {
+                errors.extend(check_query_definition(query, &resolver, catalog).errors);
+            }
+            crate::DefinitionRecord::Fragment(fragment) => {
+                errors.extend(check_fragment_definition(fragment, &resolver, catalog).errors);
+            }
+        }
+    }
+    checked(errors)
+}
+
+pub fn check_query_definition(
+    query: &QueryRecord,
+    resolver: &impl DefinitionResolver,
+    catalog: &Catalog,
+) -> CheckedFile {
+    let mut errors = Vec::new();
+    check_root_selections(catalog, resolver, &query.selections, &mut errors);
+    checked(errors)
+}
+
+pub fn check_fragment_definition(
+    fragment: &FragmentRecord,
+    resolver: &impl DefinitionResolver,
+    catalog: &Catalog,
+) -> CheckedFile {
+    let mut errors = Vec::new();
+    check_fragment_record(
+        fragment,
+        resolver,
+        catalog,
+        &mut errors,
+        &mut HashSet::new(),
+    );
+    checked(errors)
+}
+
+fn checked(mut errors: Vec<CheckError>) -> CheckedFile {
     errors.sort_by_key(|error| (error.range.start, error.range.end));
     let mut diagnostics = errors
         .iter()
@@ -26,7 +70,7 @@ pub fn check_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> C
     }
 }
 
-fn check_fragments(document: &Document, catalog: &Catalog, errors: &mut Vec<CheckError>) {
+fn check_duplicate_fragments(document: &Document, errors: &mut Vec<CheckError>) {
     let mut fragments = IndexMap::<String, TextRange>::new();
     for definition in &document.definitions {
         let Definition::Fragment(fragment) = definition else {
@@ -42,23 +86,25 @@ fn check_fragments(document: &Document, catalog: &Catalog, errors: &mut Vec<Chec
                 },
             });
         }
-        check_fragment_selection_set(fragment, catalog, errors);
     }
 }
 
-fn check_fragment_selection_set(
-    fragment: &FragmentDef,
+fn check_fragment_record(
+    fragment: &FragmentRecord,
+    resolver: &impl DefinitionResolver,
     catalog: &Catalog,
     errors: &mut Vec<CheckError>,
+    visiting: &mut HashSet<String>,
 ) {
     let Some(on) = &fragment.on else {
         return;
     };
-    let table = match catalog.resolve_table_ref(&on.text) {
+    let range = fragment.on_range.unwrap_or(fragment.range);
+    let table = match catalog.resolve_table_ref(on) {
         TableResolution::Found(table) => table,
         TableResolution::NotFound { reference } => {
             errors.push(CheckError {
-                range: on.range,
+                range,
                 kind: CheckErrorKind::TableNotFound { table: reference },
             });
             return;
@@ -68,7 +114,7 @@ fn check_fragment_selection_set(
             candidates,
         } => {
             errors.push(CheckError {
-                range: on.range,
+                range,
                 kind: CheckErrorKind::AmbiguousTable {
                     table: reference,
                     candidates,
@@ -77,52 +123,81 @@ fn check_fragment_selection_set(
             return;
         }
     };
-    check_selection_set(catalog, table.id, &fragment.selections, errors);
+    check_selection_set(
+        catalog,
+        resolver,
+        table.id,
+        &fragment.selections,
+        errors,
+        visiting,
+    );
 }
 
-fn check_queries(document: &Document, catalog: &Catalog, errors: &mut Vec<CheckError>) {
-    for definition in &document.definitions {
-        let Definition::Query(query) = definition else {
-            continue;
-        };
-        check_duplicate_output_keys(&query.selections, errors);
-        for selection in &query.selections {
-            let table = match catalog.resolve_table_ref(&selection.name.text) {
-                TableResolution::Found(table) => table,
-                TableResolution::NotFound { reference } => {
-                    errors.push(CheckError {
-                        range: selection.name.range,
-                        kind: CheckErrorKind::TableNotFound { table: reference },
-                    });
-                    continue;
-                }
-                TableResolution::Ambiguous {
-                    reference,
-                    candidates,
-                } => {
-                    errors.push(CheckError {
-                        range: selection.name.range,
-                        kind: CheckErrorKind::AmbiguousTable {
-                            table: reference,
-                            candidates,
-                        },
-                    });
-                    continue;
-                }
-            };
-            check_selection_set(catalog, table.id, &selection.selections, errors);
-        }
-    }
-}
-
-fn check_selection_set(
+fn check_root_selections(
     catalog: &Catalog,
-    table: TableId,
+    resolver: &impl DefinitionResolver,
     selections: &[Selection],
     errors: &mut Vec<CheckError>,
 ) {
     check_duplicate_output_keys(selections, errors);
     for selection in selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            errors.push(CheckError {
+                range: selection.name.range,
+                kind: CheckErrorKind::UnknownFragment {
+                    fragment: selection.name.text.clone(),
+                },
+            });
+            continue;
+        }
+        let table = match catalog.resolve_table_ref(&selection.name.text) {
+            TableResolution::Found(table) => table,
+            TableResolution::NotFound { reference } => {
+                errors.push(CheckError {
+                    range: selection.name.range,
+                    kind: CheckErrorKind::TableNotFound { table: reference },
+                });
+                continue;
+            }
+            TableResolution::Ambiguous {
+                reference,
+                candidates,
+            } => {
+                errors.push(CheckError {
+                    range: selection.name.range,
+                    kind: CheckErrorKind::AmbiguousTable {
+                        table: reference,
+                        candidates,
+                    },
+                });
+                continue;
+            }
+        };
+        check_selection_set(
+            catalog,
+            resolver,
+            table.id,
+            &selection.selections,
+            errors,
+            &mut HashSet::new(),
+        );
+    }
+}
+
+fn check_selection_set(
+    catalog: &Catalog,
+    resolver: &impl DefinitionResolver,
+    table: TableId,
+    selections: &[Selection],
+    errors: &mut Vec<CheckError>,
+    visiting: &mut HashSet<String>,
+) {
+    check_duplicate_output_keys(selections, errors);
+    for selection in selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            check_fragment_spread(catalog, resolver, table, selection, errors, visiting);
+            continue;
+        }
         match catalog.check_field(table, &selection.name.text) {
             FieldCheckResult::Column(column) => {
                 if !selection.selections.is_empty() {
@@ -144,7 +219,14 @@ fn check_selection_set(
                         },
                     });
                 } else {
-                    check_selection_set(catalog, relation.table.id, &selection.selections, errors);
+                    check_selection_set(
+                        catalog,
+                        resolver,
+                        relation.table.id,
+                        &selection.selections,
+                        errors,
+                        visiting,
+                    );
                 }
             }
             FieldCheckResult::NotFound => {
@@ -176,9 +258,86 @@ fn check_selection_set(
     }
 }
 
+fn check_fragment_spread(
+    catalog: &Catalog,
+    resolver: &impl DefinitionResolver,
+    table: TableId,
+    selection: &Selection,
+    errors: &mut Vec<CheckError>,
+    visiting: &mut HashSet<String>,
+) {
+    let name = &selection.name.text;
+    let Some(fragment) = resolver.fragment(name) else {
+        errors.push(CheckError {
+            range: selection.name.range,
+            kind: CheckErrorKind::UnknownFragment {
+                fragment: name.clone(),
+            },
+        });
+        return;
+    };
+    if !visiting.insert(name.clone()) {
+        errors.push(CheckError {
+            range: selection.name.range,
+            kind: CheckErrorKind::CircularFragmentSpread {
+                fragment: name.clone(),
+            },
+        });
+        return;
+    }
+    let Some(on) = &fragment.on else {
+        visiting.remove(name);
+        return;
+    };
+    let fragment_table = match catalog.resolve_table_ref(on) {
+        TableResolution::Found(fragment_table) => fragment_table,
+        TableResolution::NotFound { reference } => {
+            errors.push(CheckError {
+                range: fragment.on_range.unwrap_or(fragment.range),
+                kind: CheckErrorKind::TableNotFound { table: reference },
+            });
+            visiting.remove(name);
+            return;
+        }
+        TableResolution::Ambiguous {
+            reference,
+            candidates,
+        } => {
+            errors.push(CheckError {
+                range: fragment.on_range.unwrap_or(fragment.range),
+                kind: CheckErrorKind::AmbiguousTable {
+                    table: reference,
+                    candidates,
+                },
+            });
+            visiting.remove(name);
+            return;
+        }
+    };
+    if fragment_table.id != table {
+        let expected = catalog
+            .table_by_id(table)
+            .map_or_else(|| "<unknown>".to_string(), |table| table.key.table.clone());
+        errors.push(CheckError {
+            range: selection.name.range,
+            kind: CheckErrorKind::FragmentTypeMismatch {
+                fragment: name.clone(),
+                expected,
+                actual: fragment_table.key.table.clone(),
+            },
+        });
+        visiting.remove(name);
+        return;
+    }
+    visiting.remove(name);
+}
+
 fn check_duplicate_output_keys(selections: &[Selection], errors: &mut Vec<CheckError>) {
     let mut keys = IndexMap::<String, TextRange>::new();
     for selection in selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            continue;
+        }
         let key = response_key(selection);
         if keys.insert(key.clone(), selection.name.range).is_some() {
             errors.push(CheckError {
@@ -257,6 +416,33 @@ mod tests {
     fn hardcoded_catalog_checks_fragment_fields() {
         let diagnostics = diagnostics("fragment UserFields on public.users { id posts { title } }");
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn fragment_spreads_are_checked_in_query_context() {
+        let diagnostics = diagnostics(
+            "fragment UserFields on public.users { id posts { title } }\nquery Q { users { ...UserFields } }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn unknown_fragment_spreads_are_reported() {
+        let diagnostics = diagnostics("query Q { users { ...MissingFields } }");
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::UnknownFragment);
+        assert_eq!(diagnostics[0].message, "fragment `MissingFields` not found");
+    }
+
+    #[test]
+    fn fragment_spreads_must_match_current_table() {
+        let diagnostics = diagnostics(
+            "fragment PostFields on posts { title }\nquery Q { users { ...PostFields } }",
+        );
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::FragmentTypeMismatch);
     }
 
     #[test]

@@ -128,6 +128,18 @@ impl<'a> CstFormatter<'a> {
     fn selection(&mut self, node: usize) {
         if let Some(field) = self.direct_rule(node, SyntaxRule::FieldSelection) {
             self.field_selection(field);
+        } else if let Some(spread) = self.direct_rule(node, SyntaxRule::FragmentSpread) {
+            self.fragment_spread(spread);
+        }
+    }
+
+    fn fragment_spread(&mut self, node: usize) {
+        if let Some(name) = self.direct_token_text(node, SyntaxToken::Name) {
+            self.out.push_str("...");
+            self.out.push_str(&name);
+        }
+        for directive in self.direct_rules(node, SyntaxRule::Directive) {
+            self.directive(directive);
         }
     }
 

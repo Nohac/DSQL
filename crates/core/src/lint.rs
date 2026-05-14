@@ -1,7 +1,9 @@
 use crate::{
     catalog::{Catalog, FieldCheckResult, RelationField, TableId, TableResolution},
+    definition::{FragmentMap, FragmentRecord, QueryRecord},
     syntax::{
-        Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Selection, Severity, SourceFile,
+        Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Selection, SelectionKind,
+        Severity, SourceFile,
     },
 };
 use facet::Facet;
@@ -10,6 +12,8 @@ use facet::Facet;
 pub struct LintedFile {
     pub diagnostics: Vec<Diagnostic>,
 }
+
+pub type LintedDefinition = LintedFile;
 
 pub fn lint_file(source_file: &SourceFile) -> LintedFile {
     lint_file_with_catalog(source_file, &Catalog::hardcoded())
@@ -47,6 +51,39 @@ pub fn lint_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Li
     LintedFile { diagnostics }
 }
 
+pub fn lint_query_definition(
+    query: &QueryRecord,
+    _resolver: &FragmentMap,
+    catalog: &Catalog,
+) -> LintedDefinition {
+    let mut diagnostics = Vec::new();
+    for selection in &query.selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            continue;
+        }
+        if let TableResolution::Found(table) = catalog.resolve_table_ref(&selection.name.text) {
+            lint_selection_set(catalog, table.id, &selection.selections, &mut diagnostics);
+        }
+    }
+    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+    LintedFile { diagnostics }
+}
+
+pub fn lint_fragment_definition(
+    fragment: &FragmentRecord,
+    _resolver: &FragmentMap,
+    catalog: &Catalog,
+) -> LintedDefinition {
+    let mut diagnostics = Vec::new();
+    if let Some(on) = &fragment.on
+        && let TableResolution::Found(table) = catalog.resolve_table_ref(on)
+    {
+        lint_selection_set(catalog, table.id, &fragment.selections, &mut diagnostics);
+    }
+    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+    LintedFile { diagnostics }
+}
+
 fn lint_selection_set(
     catalog: &Catalog,
     table: TableId,
@@ -54,6 +91,9 @@ fn lint_selection_set(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for selection in selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            continue;
+        }
         if let FieldCheckResult::Relation(relation) =
             catalog.check_field(table, &selection.name.text)
         {
@@ -129,5 +169,19 @@ mod tests {
         );
         assert_eq!(lint.diagnostics[0].severity, Severity::Info);
         assert!(lint.diagnostics[0].message.contains("posts.user_id"));
+    }
+
+    #[test]
+    fn reports_unindexed_join_columns_inside_fragment_spreads() {
+        let lint = lint(
+            "fragment UserFields on public.users { posts { title } }\nquery Q { public.users { ...UserFields } }",
+        );
+
+        assert_eq!(lint.diagnostics.len(), 1, "{:?}", lint.diagnostics);
+        assert!(
+            lint.diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code == DiagnosticCode::UnindexedJoinColumn)
+        );
     }
 }

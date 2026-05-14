@@ -27,6 +27,41 @@ fn range_contains(range: dsql_core::TextRange, byte: usize) -> bool {
 mod tests {
     use super::*;
     use dsql_core::{Catalog, SourceFile, parse_source};
+    use std::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+    };
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let waker = noop_waker();
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        loop {
+            match Pin::new(&mut future).poll(&mut context) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
+    }
+
+    fn noop_waker() -> Waker {
+        fn clone(_: *const ()) -> RawWaker {
+            raw_waker()
+        }
+        fn wake(_: *const ()) {}
+        fn wake_by_ref(_: *const ()) {}
+        fn drop(_: *const ()) {}
+        fn raw_waker() -> RawWaker {
+            RawWaker::new(
+                std::ptr::null(),
+                &RawWakerVTable::new(clone, wake, wake_by_ref, drop),
+            )
+        }
+        // SAFETY: the raw waker does not dereference its data pointer and all
+        // vtable functions are no-ops suitable for polling immediately-ready futures.
+        unsafe { Waker::from_raw(raw_waker()) }
+    }
 
     fn parsed_source(source: &str) -> SourceFile {
         let parsed = parse_source(source.into());
@@ -141,5 +176,121 @@ mod tests {
             token.kind == semantic_tokens::SemanticTokenKind::Column
                 && parse.source.text(token.range).as_ref() == "title"
         }));
+    }
+
+    #[test]
+    fn query_diagnostics_follow_changed_fragment_inputs() {
+        block_on(async {
+            let host = AnalysisHost::new();
+            let fragment_uri = "file:///fragments.dsql".to_string();
+            let query_uri = "file:///query.dsql".to_string();
+
+            host.open_document(
+                fragment_uri.clone(),
+                1,
+                "fragment UserFields on users { id }".to_string(),
+            )
+            .await;
+            let initial = host
+                .open_document(
+                    query_uri.clone(),
+                    1,
+                    "query Q { users { ...UserFields } }".to_string(),
+                )
+                .await;
+            assert!(
+                initial.diagnostics.is_empty(),
+                "initial diagnostics: {:?}",
+                initial.diagnostics
+            );
+
+            host.replace_document(
+                fragment_uri,
+                2,
+                "fragment UserFields on posts { title }".to_string(),
+            )
+            .await;
+            let updated = host.document_diagnostics(&query_uri).await.unwrap();
+
+            assert!(updated.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == dsql_core::DiagnosticCode::FragmentTypeMismatch
+            }));
+        });
+    }
+
+    #[test]
+    fn fragment_changes_report_dependent_open_document_diagnostics() {
+        block_on(async {
+            let host = AnalysisHost::new();
+            let fragment_uri = "file:///fragments.dsql".to_string();
+            let query_uri = "file:///query.dsql".to_string();
+
+            host.open_document(
+                fragment_uri.clone(),
+                1,
+                "fragment UserFields on users { id }".to_string(),
+            )
+            .await;
+            host.open_document(
+                query_uri.clone(),
+                1,
+                "query Q { users { ...UserFields } }".to_string(),
+            )
+            .await;
+
+            host.replace_document(
+                fragment_uri.clone(),
+                2,
+                "fragment UserFields on posts { title }".to_string(),
+            )
+            .await;
+            let related = host.open_document_diagnostics().await;
+            let query_diagnostics = related
+                .iter()
+                .find(|result| result.snapshot.uri == query_uri)
+                .expect("open query diagnostics should be included");
+
+            assert!(query_diagnostics.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == dsql_core::DiagnosticCode::FragmentTypeMismatch
+            }));
+        });
+    }
+
+    #[test]
+    fn removing_fragment_reports_dependent_open_document_diagnostics() {
+        block_on(async {
+            let host = AnalysisHost::new();
+            let fragment_uri = "file:///fragments.dsql".to_string();
+            let query_uri = "file:///query.dsql".to_string();
+
+            host.open_document(
+                fragment_uri.clone(),
+                1,
+                "fragment UserFields on users { id }".to_string(),
+            )
+            .await;
+            host.open_document(
+                query_uri.clone(),
+                1,
+                "query Q { users { ...UserFields } }".to_string(),
+            )
+            .await;
+
+            host.replace_document(
+                fragment_uri.clone(),
+                2,
+                "query Empty { users { id } }".to_string(),
+            )
+            .await;
+            let related = host.open_document_diagnostics().await;
+            let query_diagnostics = related
+                .iter()
+                .find(|result| result.snapshot.uri == query_uri)
+                .expect("open query diagnostics should be included");
+
+            assert!(query_diagnostics.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == dsql_core::DiagnosticCode::UnknownFragment
+            }));
+        });
     }
 }

@@ -166,6 +166,11 @@ impl AnalysisHost {
         self.document_diagnostics(&uri).await
     }
 
+    pub async fn open_document_diagnostics(&self) -> Vec<DocumentDiagnostics> {
+        self.diagnostics_for_snapshots(self.open_document_snapshots())
+            .await
+    }
+
     pub fn close_document(&self, uri: &str) -> Option<DocumentSnapshot> {
         let (_, state) = self.inner.documents.remove(uri)?;
         self.inner.db.remove_source(state.file);
@@ -174,11 +179,7 @@ impl AnalysisHost {
 
     pub async fn document_diagnostics(&self, uri: &str) -> Option<DocumentDiagnostics> {
         let snapshot = self.inner.documents.get(uri)?.snapshot();
-        let diagnostics = self.inner.db.diagnostics(snapshot.file).await.ok()?;
-        Some(DocumentDiagnostics {
-            snapshot,
-            diagnostics,
-        })
+        self.diagnostics_for_snapshot(snapshot).await
     }
 
     pub async fn document_format(&self, uri: &str) -> Option<DocumentFormat> {
@@ -222,5 +223,37 @@ impl AnalysisHost {
 
     fn alloc_file(&self) -> FileId {
         FileId(self.inner.next_file.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn open_document_snapshots(&self) -> Vec<DocumentSnapshot> {
+        self.inner
+            .documents
+            .iter()
+            .map(|document| document.snapshot())
+            .collect()
+    }
+
+    async fn diagnostics_for_snapshots(
+        &self,
+        snapshots: Vec<DocumentSnapshot>,
+    ) -> Vec<DocumentDiagnostics> {
+        let mut results = Vec::with_capacity(snapshots.len());
+        for snapshot in snapshots {
+            if let Some(result) = self.diagnostics_for_snapshot(snapshot).await {
+                results.push(result);
+            }
+        }
+        results
+    }
+
+    async fn diagnostics_for_snapshot(
+        &self,
+        snapshot: DocumentSnapshot,
+    ) -> Option<DocumentDiagnostics> {
+        let diagnostics = self.inner.db.diagnostics(snapshot.file).await.ok()?;
+        Some(DocumentDiagnostics {
+            snapshot,
+            diagnostics,
+        })
     }
 }

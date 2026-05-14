@@ -1,7 +1,7 @@
 use crate::DocumentSnapshot;
 use dsql_core::{
-    Catalog, Definition, FieldCheckResult, ParseResult, Selection, SourceSnapshot, TableId,
-    TextRange,
+    Catalog, Definition, FieldCheckResult, ParseResult, Selection, SelectionKind, SourceSnapshot,
+    TableId, TextRange,
 };
 
 #[derive(Clone, Debug)]
@@ -84,6 +84,13 @@ fn add_selection_tokens(
     selections: &[Selection],
 ) {
     for selection in selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            tokens.push(SemanticTokenInfo {
+                range: selection.name.range,
+                kind: SemanticTokenKind::Fragment,
+            });
+            continue;
+        }
         if let Some(alias) = &selection.alias {
             tokens.push(SemanticTokenInfo {
                 range: alias.range,

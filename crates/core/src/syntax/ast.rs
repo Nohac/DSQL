@@ -31,11 +31,19 @@ pub struct FragmentDef {
 #[derive(Clone, Debug, PartialEq, Facet)]
 pub struct Selection {
     pub range: TextRange,
+    pub kind: SelectionKind,
     pub alias: Option<NameRef>,
     pub name: NameRef,
     pub arguments: Vec<Argument>,
     pub directives: Vec<NameRef>,
     pub selections: Vec<Selection>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[repr(u8)]
+pub enum SelectionKind {
+    Field,
+    FragmentSpread,
 }
 
 #[derive(Clone, Debug, PartialEq, Facet)]

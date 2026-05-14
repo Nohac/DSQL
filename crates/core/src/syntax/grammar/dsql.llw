@@ -1,5 +1,5 @@
 token Query='query' Fragment='fragment' On='on' True='true' False='false' Null='null';
-token LBrace='{' RBrace='}' LPar='(' RPar=')' Colon=':' At='@' Comma=',' Dot='.';
+token LBrace='{' RBrace='}' LPar='(' RPar=')' Colon=':' At='@' Comma=',' Ellipsis='...' Dot='.';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
 token Whitespace Comment;
@@ -17,7 +17,11 @@ query_def: 'query' [Name] selection_set;
 fragment_def: 'fragment' Name 'on' qualified_name selection_set;
 qualified_name: Name ['.' Name];
 selection_set: '{' selection* '}';
-selection: field_selection;
+selection:
+  field_selection
+| fragment_spread
+;
+fragment_spread: '...' Name directive*;
 field_selection: qualified_name field_selection_tail;
 field_selection_tail:
   ':' qualified_name field_suffix

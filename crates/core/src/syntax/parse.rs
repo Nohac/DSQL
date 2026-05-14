@@ -48,6 +48,7 @@ pub enum SyntaxRule {
     FieldSelection,
     FieldSelectionTail,
     FieldSuffix,
+    FragmentSpread,
     FragmentDef,
     Literal,
     QueryDef,
@@ -72,6 +73,7 @@ pub enum SyntaxToken {
     Colon,
     At,
     Comma,
+    Ellipsis,
     Dot,
     Eq,
     Ne,
@@ -199,6 +201,7 @@ fn map_rule(rule: Rule) -> SyntaxRule {
         Rule::FieldSelectionTail => SyntaxRule::FieldSelectionTail,
         Rule::FieldSuffix => SyntaxRule::FieldSuffix,
         Rule::FragmentDef => SyntaxRule::FragmentDef,
+        Rule::FragmentSpread => SyntaxRule::FragmentSpread,
         Rule::Literal => SyntaxRule::Literal,
         Rule::QueryDef => SyntaxRule::QueryDef,
         Rule::QualifiedName => SyntaxRule::QualifiedName,
@@ -222,6 +225,7 @@ fn map_token(token: Token) -> SyntaxToken {
         Token::Colon => SyntaxToken::Colon,
         Token::At => SyntaxToken::At,
         Token::Comma => SyntaxToken::Comma,
+        Token::Ellipsis => SyntaxToken::Ellipsis,
         Token::Dot => SyntaxToken::Dot,
         Token::Eq => SyntaxToken::Eq,
         Token::Ne => SyntaxToken::Ne,
@@ -288,8 +292,14 @@ impl<'a> AstBuilder<'a> {
     fn selection_set(&self, node: NodeRef) -> Vec<Selection> {
         self.direct_rules(node, Rule::Selection)
             .into_iter()
-            .filter_map(|selection| self.direct_rule(selection, Rule::FieldSelection))
-            .map(|field| self.field_selection(field))
+            .filter_map(|selection| {
+                self.direct_rule(selection, Rule::FieldSelection)
+                    .map(|field| self.field_selection(field))
+                    .or_else(|| {
+                        self.direct_rule(selection, Rule::FragmentSpread)
+                            .map(|spread| self.fragment_spread(spread))
+                    })
+            })
             .collect()
     }
 
@@ -339,11 +349,34 @@ impl<'a> AstBuilder<'a> {
 
         Selection {
             range: range(self.cst.span(node)),
+            kind: SelectionKind::Field,
             alias,
             name,
             arguments,
             directives,
             selections,
+        }
+    }
+
+    fn fragment_spread(&self, node: NodeRef) -> Selection {
+        let name = self
+            .direct_names(node)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| self.missing_name(node));
+        let directives = self
+            .direct_rules(node, Rule::Directive)
+            .into_iter()
+            .filter_map(|directive| self.direct_names(directive).into_iter().next())
+            .collect();
+        Selection {
+            range: range(self.cst.span(node)),
+            kind: SelectionKind::FragmentSpread,
+            alias: None,
+            name,
+            arguments: Vec::new(),
+            directives,
+            selections: Vec::new(),
         }
     }
 

@@ -1,8 +1,10 @@
 use super::{NestedRelation, PlannedFile, Projection, QueryPlan, SelectionPlan};
 use crate::{
     catalog::{Catalog, FieldCheckResult, TableId, TableKey, TableResolution},
+    definition::{DefinitionResolver, FragmentMap, extract_definitions},
     syntax::{
-        Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Selection, Severity, SourceFile,
+        Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Selection, SelectionKind,
+        Severity, SourceFile,
     },
 };
 
@@ -11,6 +13,8 @@ pub fn plan_file(source_file: &SourceFile) -> PlannedFile {
 }
 
 pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> PlannedFile {
+    let extracted = extract_definitions(source_file);
+    let resolver = FragmentMap::from_file(&extracted);
     let mut queries = Vec::new();
     let mut diagnostics = Vec::new();
     for definition in source_file.definitions() {
@@ -22,6 +26,7 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
                 TableResolution::Found(table) => {
                     if let Some(selections) = plan_selection_set(
                         catalog,
+                        &resolver,
                         table.id,
                         &selection.selections,
                         &mut diagnostics,
@@ -61,6 +66,7 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
 
 fn plan_selection_set(
     catalog: &Catalog,
+    resolver: &impl DefinitionResolver,
     table: TableId,
     selections: &[Selection],
     diagnostics: &mut Vec<Diagnostic>,
@@ -68,6 +74,16 @@ fn plan_selection_set(
     let mut projections = Vec::new();
     let mut relations = Vec::new();
     for selection in selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            if let Some(fragment) = resolver.fragment(&selection.name.text)
+                && let Some(fragment_plan) =
+                    plan_selection_set(catalog, resolver, table, &fragment.selections, diagnostics)
+            {
+                projections.extend(fragment_plan.projections);
+                relations.extend(fragment_plan.relations);
+            }
+            continue;
+        }
         match catalog.check_field(table, &selection.name.text) {
             FieldCheckResult::Column(column) => {
                 if selection.selections.is_empty() {
@@ -80,6 +96,7 @@ fn plan_selection_set(
             FieldCheckResult::Relation(relation) => {
                 if let Some(nested) = plan_selection_set(
                     catalog,
+                    resolver,
                     relation.table.id,
                     &selection.selections,
                     diagnostics,

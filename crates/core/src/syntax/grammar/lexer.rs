@@ -50,6 +50,8 @@ pub enum Token {
     At,
     #[token(",")]
     Comma,
+    #[token("...")]
+    Ellipsis,
     #[token(".")]
     Dot,
     #[token("==")]

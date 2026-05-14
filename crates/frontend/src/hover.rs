@@ -1,5 +1,7 @@
 use crate::range_contains;
-use dsql_core::{Catalog, Definition, FieldCheckResult, Selection, SourceFile, TableId};
+use dsql_core::{
+    Catalog, Definition, FieldCheckResult, Selection, SelectionKind, SourceFile, TableId,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HoverInfo {
@@ -72,6 +74,9 @@ fn hover_in_selections(
     byte: usize,
 ) -> Option<HoverInfo> {
     for selection in selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            continue;
+        }
         if !range_contains(selection.name.range, byte) && !range_contains(selection.range, byte) {
             continue;
         }

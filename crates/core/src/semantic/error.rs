@@ -10,6 +10,8 @@ pub struct CheckedFile {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+pub type CheckedDefinition = CheckedFile;
+
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct CheckError {
     pub range: TextRange,
@@ -46,6 +48,17 @@ pub enum CheckErrorKind {
     },
     RelationSelectionSet {
         field: String,
+    },
+    UnknownFragment {
+        fragment: String,
+    },
+    FragmentTypeMismatch {
+        fragment: String,
+        expected: String,
+        actual: String,
+    },
+    CircularFragmentSpread {
+        fragment: String,
     },
 }
 
@@ -96,6 +109,24 @@ impl CheckError {
             CheckErrorKind::RelationSelectionSet { field } => (
                 DiagnosticCode::RelationSelectionSet,
                 format!("relation field `{field}` must have a selection set"),
+            ),
+            CheckErrorKind::UnknownFragment { fragment } => (
+                DiagnosticCode::UnknownFragment,
+                format!("fragment `{fragment}` not found"),
+            ),
+            CheckErrorKind::FragmentTypeMismatch {
+                fragment,
+                expected,
+                actual,
+            } => (
+                DiagnosticCode::FragmentTypeMismatch,
+                format!(
+                    "fragment `{fragment}` applies to `{actual}` and cannot be spread in `{expected}`"
+                ),
+            ),
+            CheckErrorKind::CircularFragmentSpread { fragment } => (
+                DiagnosticCode::UnknownFragment,
+                format!("fragment `{fragment}` recursively spreads itself"),
             ),
         };
         Diagnostic {

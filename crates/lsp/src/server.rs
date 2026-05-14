@@ -51,6 +51,12 @@ impl Backend {
                 .await;
         }
     }
+
+    async fn publish_document_diagnostics(&self, results: Vec<DocumentDiagnostics>) {
+        for result in results {
+            self.publish_diagnostics(result).await;
+        }
+    }
 }
 
 impl LanguageServer for Backend {
@@ -94,11 +100,12 @@ impl LanguageServer for Backend {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
         let version = params.text_document.version;
-        let result = self
-            .analysis
-            .open_document(uri.to_string(), version, params.text_document.text)
+        let uri = uri.to_string();
+        self.analysis
+            .open_document(uri.clone(), version, params.text_document.text)
             .await;
-        self.publish_diagnostics(result).await;
+        self.publish_document_diagnostics(self.analysis.open_document_diagnostics().await)
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -125,8 +132,9 @@ impl LanguageServer for Backend {
             .analysis
             .change_document(uri.to_string(), version, edits)
             .await;
-        if let Some(result) = result {
-            self.publish_diagnostics(result).await;
+        if result.is_some() {
+            self.publish_document_diagnostics(self.analysis.open_document_diagnostics().await)
+                .await;
         }
     }
 
