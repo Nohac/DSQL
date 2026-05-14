@@ -1,0 +1,54 @@
+---
+schema: public
+name: company_name
+object_type: table
+columns: 
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: true
+    unique: false
+    indexed: true
+  - name: name
+    database_type: text
+    data_type: text
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: false
+  - name: country_code
+    database_type: varchar
+    data_type: text
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: false
+  - name: imdb_id
+    database_type: int4
+    data_type: int
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: false
+  - name: name_pcode_nf
+    database_type: varchar
+    data_type: text
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: false
+  - name: name_pcode_sf
+    database_type: varchar
+    data_type: text
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: false
+  - name: md5sum
+    database_type: varchar
+    data_type: text
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: false

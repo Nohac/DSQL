@@ -1,0 +1,45 @@
+---
+schema: public
+name: complete_cast
+object_type: table
+columns: 
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: true
+    unique: false
+    indexed: true
+  - name: movie_id
+    database_type: int4
+    data_type: int
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: true
+    foreign_key: 
+      schema: public
+      table: title
+      column: id
+  - name: subject_id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: false
+    foreign_key: 
+      schema: public
+      table: comp_cast_type
+      column: id
+  - name: status_id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: false
+    foreign_key: 
+      schema: public
+      table: comp_cast_type
+      column: id

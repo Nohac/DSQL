@@ -1,0 +1,5 @@
+---
+source: tests/tests/fixtures.rs
+expression: contents
+---
+Check Error FieldNotFound 31..43: field `not_a_column` not found on table `title`

@@ -7,4 +7,5 @@ members = [
     "crates/frontend",
     "crates/cli",
     "crates/lsp",
+    "tests",
 ]

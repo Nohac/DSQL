@@ -1,0 +1,15 @@
+[package]
+name = "dsql-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dsql-core = { path = "../crates/core" }
+dsql-project = { path = "../crates/project" }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+insta = "1"

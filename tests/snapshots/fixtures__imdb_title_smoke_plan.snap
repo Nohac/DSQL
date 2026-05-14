@@ -1,0 +1,134 @@
+---
+source: tests/tests/fixtures.rs
+expression: contents
+---
+[
+    QueryPlan {
+        root: TableId(
+            20,
+        ),
+        output_name: "title",
+        clauses: SelectionClauses {
+            filter: Some(
+                Binary {
+                    left: Column(
+                        ColumnId(
+                            96,
+                        ),
+                    ),
+                    op: Gt,
+                    right: Literal(
+                        Number(
+                            "0",
+                        ),
+                    ),
+                },
+            ),
+            order_by: [
+                OrderByPlan {
+                    column: ColumnId(
+                        96,
+                    ),
+                    direction: Asc,
+                },
+            ],
+            limit: Some(
+                2,
+            ),
+            offset: None,
+        },
+        selections: SelectionPlan {
+            table: TableId(
+                20,
+            ),
+            clauses: SelectionClauses {
+                filter: Some(
+                    Binary {
+                        left: Column(
+                            ColumnId(
+                                96,
+                            ),
+                        ),
+                        op: Gt,
+                        right: Literal(
+                            Number(
+                                "0",
+                            ),
+                        ),
+                    },
+                ),
+                order_by: [
+                    OrderByPlan {
+                        column: ColumnId(
+                            96,
+                        ),
+                        direction: Asc,
+                    },
+                ],
+                limit: Some(
+                    2,
+                ),
+                offset: None,
+            },
+            items: [
+                Projection(
+                    Projection {
+                        column: ColumnId(
+                            96,
+                        ),
+                        output_name: "id",
+                    },
+                ),
+                Projection(
+                    Projection {
+                        column: ColumnId(
+                            97,
+                        ),
+                        output_name: "title",
+                    },
+                ),
+                Projection(
+                    Projection {
+                        column: ColumnId(
+                            100,
+                        ),
+                        output_name: "production_year",
+                    },
+                ),
+                Relation(
+                    NestedRelation {
+                        relation_name: "kind_type",
+                        output_name: "kind_type",
+                        table: TableId(
+                            10,
+                        ),
+                        foreign_key: ForeignKeyId(
+                            25,
+                        ),
+                        selections: SelectionPlan {
+                            table: TableId(
+                                10,
+                            ),
+                            clauses: SelectionClauses {
+                                filter: None,
+                                order_by: [],
+                                limit: None,
+                                offset: None,
+                            },
+                            items: [
+                                Projection(
+                                    Projection {
+                                        column: ColumnId(
+                                            55,
+                                        ),
+                                        output_name: "kind",
+                                    },
+                                ),
+                            ],
+                        },
+                    },
+                ),
+            ],
+        },
+    },
+]

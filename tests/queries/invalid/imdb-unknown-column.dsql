@@ -1,0 +1,6 @@
+query BadTitle {
+  title {
+    not_a_column
+  }
+}
+

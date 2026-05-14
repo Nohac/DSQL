@@ -1,0 +1,14 @@
+query MovieInfoSmoke {
+  movie_info(where id > 0 order by id asc limit 2) {
+    id
+    info
+    note
+    title {
+      title
+    }
+    info_type {
+      info
+    }
+  }
+}
+

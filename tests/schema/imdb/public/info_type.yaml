@@ -1,0 +1,19 @@
+---
+schema: public
+name: info_type
+object_type: table
+columns: 
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: true
+    unique: false
+    indexed: true
+  - name: info
+    database_type: varchar
+    data_type: text
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: false

@@ -1,0 +1,11 @@
+query TitleSmoke {
+  title(where id > 0 order by id asc limit 2) {
+    id
+    title
+    production_year
+    kind_type {
+      kind
+    }
+  }
+}
+

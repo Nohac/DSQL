@@ -1,0 +1,749 @@
+---
+types: 
+  - internal_type: _aclitem
+    readable_type: aclitem[]
+    schema: pg_catalog
+    operations: 
+      - +
+      - "-"
+      - "@>"
+  - internal_type: aclitem
+    readable_type: aclitem
+    schema: pg_catalog
+    operations: 
+      - =
+  - internal_type: anyarray
+    readable_type: anyarray
+    schema: pg_catalog
+    operations: 
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: anycompatible
+    readable_type: anycompatible
+    schema: pg_catalog
+    operations: 
+      - "||"
+  - internal_type: anycompatiblearray
+    readable_type: anycompatiblearray
+    schema: pg_catalog
+    operations: 
+      - "||"
+  - internal_type: anyelement
+    readable_type: anyelement
+    schema: pg_catalog
+    operations: 
+      - <@
+  - internal_type: anyenum
+    readable_type: anyenum
+    schema: pg_catalog
+    operations: 
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: anymultirange
+    readable_type: anymultirange
+    schema: pg_catalog
+    operations: 
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
+  - internal_type: anynonarray
+    readable_type: anynonarray
+    schema: pg_catalog
+    operations: 
+      - "||"
+  - internal_type: anyrange
+    readable_type: anyrange
+    schema: pg_catalog
+    operations: 
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
+  - internal_type: bit
+    readable_type: bit
+    schema: pg_catalog
+    operations: 
+      - "#"
+      - "&"
+      - <
+      - <<
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "|"
+  - internal_type: bool
+    readable_type: boolean
+    schema: pg_catalog
+    operations: 
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: box
+    readable_type: box
+    schema: pg_catalog
+    operations: 
+      - "#"
+      - "&&"
+      - "&<"
+      - "&<|"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <->
+      - <<
+      - <<|
+      - <=
+      - <@
+      - <^
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - ">^"
+      - "?#"
+      - "@>"
+      - "|&>"
+      - "|>>"
+      - ~=
+  - internal_type: bpchar
+    readable_type: character
+    schema: pg_catalog
+    operations: 
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
+  - internal_type: bytea
+    readable_type: bytea
+    schema: pg_catalog
+    operations: 
+      - "!~~"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "||"
+      - ~~
+  - internal_type: char
+    readable_type: "\"char\""
+    schema: pg_catalog
+    operations: 
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: cid
+    readable_type: cid
+    schema: pg_catalog
+    operations: 
+      - =
+  - internal_type: circle
+    readable_type: circle
+    schema: pg_catalog
+    operations: 
+      - "&&"
+      - "&<"
+      - "&<|"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <->
+      - <<
+      - <<|
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
+      - "|&>"
+      - "|>>"
+      - ~=
+  - internal_type: date
+    readable_type: date
+    schema: pg_catalog
+    operations: 
+      - +
+      - "-"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: float4
+    readable_type: real
+    schema: pg_catalog
+    operations: 
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: float8
+    readable_type: double precision
+    schema: pg_catalog
+    operations: 
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - ^
+  - internal_type: inet
+    readable_type: inet
+    schema: pg_catalog
+    operations: 
+      - "&"
+      - "&&"
+      - +
+      - "-"
+      - <
+      - <<
+      - <<=
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - ">>="
+      - "|"
+  - internal_type: int2
+    readable_type: smallint
+    schema: pg_catalog
+    operations: 
+      - "#"
+      - "%"
+      - "&"
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <<
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "|"
+  - internal_type: int4
+    readable_type: integer
+    schema: pg_catalog
+    operations: 
+      - "#"
+      - "%"
+      - "&"
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <<
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "|"
+  - internal_type: int8
+    readable_type: bigint
+    schema: pg_catalog
+    operations: 
+      - "#"
+      - "%"
+      - "&"
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <<
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "|"
+  - internal_type: interval
+    readable_type: interval
+    schema: pg_catalog
+    operations: 
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: json
+    readable_type: json
+    schema: pg_catalog
+    operations: 
+      - "#>"
+      - "#>>"
+      - "->"
+      - "->>"
+  - internal_type: jsonb
+    readable_type: jsonb
+    schema: pg_catalog
+    operations: 
+      - "#-"
+      - "#>"
+      - "#>>"
+      - "-"
+      - "->"
+      - "->>"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "?"
+      - "?&"
+      - "?|"
+      - "@>"
+      - "@?"
+      - "@@"
+      - "||"
+  - internal_type: line
+    readable_type: line
+    schema: pg_catalog
+    operations: 
+      - "#"
+      - "##"
+      - <->
+      - =
+      - "?#"
+      - "?-|"
+      - "?||"
+  - internal_type: lseg
+    readable_type: lseg
+    schema: pg_catalog
+    operations: 
+      - "#"
+      - "##"
+      - <
+      - <->
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "?#"
+      - "?-|"
+      - "?||"
+  - internal_type: macaddr
+    readable_type: macaddr
+    schema: pg_catalog
+    operations: 
+      - "&"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "|"
+  - internal_type: macaddr8
+    readable_type: macaddr8
+    schema: pg_catalog
+    operations: 
+      - "&"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "|"
+  - internal_type: money
+    readable_type: money
+    schema: pg_catalog
+    operations: 
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: name
+    readable_type: name
+    schema: pg_catalog
+    operations: 
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "~"
+      - ~*
+      - ~~
+      - ~~*
+  - internal_type: numeric
+    readable_type: numeric
+    schema: pg_catalog
+    operations: 
+      - "%"
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - ^
+  - internal_type: oid
+    readable_type: oid
+    schema: pg_catalog
+    operations: 
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: oidvector
+    readable_type: oidvector
+    schema: pg_catalog
+    operations: 
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: path
+    readable_type: path
+    schema: pg_catalog
+    operations: 
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <->
+      - <=
+      - =
+      - ">"
+      - ">="
+      - "?#"
+      - "@>"
+  - internal_type: pg_lsn
+    readable_type: pg_lsn
+    schema: pg_catalog
+    operations: 
+      - +
+      - "-"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: point
+    readable_type: point
+    schema: pg_catalog
+    operations: 
+      - "##"
+      - "*"
+      - +
+      - "-"
+      - /
+      - <->
+      - <<
+      - <<|
+      - <>
+      - <@
+      - <^
+      - ">>"
+      - ">^"
+      - "?-"
+      - "?|"
+      - "|>>"
+      - ~=
+  - internal_type: polygon
+    readable_type: polygon
+    schema: pg_catalog
+    operations: 
+      - "&&"
+      - "&<"
+      - "&<|"
+      - "&>"
+      - <->
+      - <<
+      - <<|
+      - <@
+      - ">>"
+      - "@>"
+      - "|&>"
+      - "|>>"
+      - ~=
+  - internal_type: record
+    readable_type: record
+    schema: pg_catalog
+    operations: 
+      - "*<"
+      - "*<="
+      - "*<>"
+      - "*="
+      - "*>"
+      - "*>="
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: text
+    readable_type: text
+    schema: pg_catalog
+    operations: 
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "@@"
+      - ^@
+      - "||"
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
+  - internal_type: tid
+    readable_type: tid
+    schema: pg_catalog
+    operations: 
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: time
+    readable_type: time without time zone
+    schema: pg_catalog
+    operations: 
+      - +
+      - "-"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: timestamp
+    readable_type: timestamp without time zone
+    schema: pg_catalog
+    operations: 
+      - +
+      - "-"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: timestamptz
+    readable_type: timestamp with time zone
+    schema: pg_catalog
+    operations: 
+      - +
+      - "-"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: timetz
+    readable_type: time with time zone
+    schema: pg_catalog
+    operations: 
+      - +
+      - "-"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: tsquery
+    readable_type: tsquery
+    schema: pg_catalog
+    operations: 
+      - "&&"
+      - <
+      - <->
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+      - "@@"
+      - "@@@"
+      - "||"
+  - internal_type: tsvector
+    readable_type: tsvector
+    schema: pg_catalog
+    operations: 
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "@@"
+      - "@@@"
+      - "||"
+  - internal_type: uuid
+    readable_type: uuid
+    schema: pg_catalog
+    operations: 
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: varbit
+    readable_type: bit varying
+    schema: pg_catalog
+    operations: 
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "||"
+  - internal_type: xid
+    readable_type: xid
+    schema: pg_catalog
+    operations: 
+      - <>
+      - =
+  - internal_type: xid8
+    readable_type: xid8
+    schema: pg_catalog
+    operations: 
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="

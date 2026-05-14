@@ -1,0 +1,26 @@
+---
+schema: public
+name: keyword
+object_type: table
+columns: 
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: true
+    unique: false
+    indexed: true
+  - name: keyword
+    database_type: text
+    data_type: text
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: false
+  - name: phonetic_code
+    database_type: varchar
+    data_type: text
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: false

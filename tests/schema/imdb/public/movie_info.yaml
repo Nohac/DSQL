@@ -1,0 +1,48 @@
+---
+schema: public
+name: movie_info
+object_type: table
+columns: 
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: true
+    unique: false
+    indexed: true
+  - name: movie_id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: true
+    foreign_key: 
+      schema: public
+      table: title
+      column: id
+  - name: info_type_id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: true
+    foreign_key: 
+      schema: public
+      table: info_type
+      column: id
+  - name: info
+    database_type: text
+    data_type: text
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: false
+  - name: note
+    database_type: text
+    data_type: text
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: false

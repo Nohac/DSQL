@@ -1,0 +1,70 @@
+---
+schema: public
+name: cast_info
+object_type: table
+columns: 
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: true
+    unique: false
+    indexed: true
+  - name: person_id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: true
+    foreign_key: 
+      schema: public
+      table: name
+      column: id
+  - name: movie_id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: true
+    foreign_key: 
+      schema: public
+      table: title
+      column: id
+  - name: person_role_id
+    database_type: int4
+    data_type: int
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: true
+    foreign_key: 
+      schema: public
+      table: char_name
+      column: id
+  - name: note
+    database_type: text
+    data_type: text
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: false
+  - name: nr_order
+    database_type: int4
+    data_type: int
+    not_null: false
+    primary_key: false
+    unique: false
+    indexed: false
+  - name: role_id
+    database_type: int4
+    data_type: int
+    not_null: true
+    primary_key: false
+    unique: false
+    indexed: true
+    foreign_key: 
+      schema: public
+      table: role_type
+      column: id
