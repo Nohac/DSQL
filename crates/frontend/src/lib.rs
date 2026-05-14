@@ -293,4 +293,45 @@ mod tests {
             }));
         });
     }
+
+    #[test]
+    fn query_plan_uses_fragment_from_another_file() {
+        block_on(async {
+            let host = AnalysisHost::new();
+            let fragment_uri = "file:///fragments.dsql".to_string();
+            let query_uri = "file:///query.dsql".to_string();
+
+            host.open_document(
+                fragment_uri,
+                1,
+                "fragment UserFields on users { id name }".to_string(),
+            )
+            .await;
+            let query = host
+                .open_document(
+                    query_uri.clone(),
+                    1,
+                    "query Q { users { ...UserFields } }".to_string(),
+                )
+                .await;
+            assert!(
+                query.diagnostics.is_empty(),
+                "query diagnostics: {:?}",
+                query.diagnostics
+            );
+
+            let diagnostics = host
+                .document_diagnostics(&query_uri)
+                .await
+                .expect("query diagnostics should be available");
+            let analysis = host
+                .analyze(diagnostics.snapshot.file)
+                .await
+                .expect("query analysis should be available");
+
+            assert!(analysis.plan.diagnostics.is_empty());
+            assert_eq!(analysis.plan.queries.len(), 1);
+            assert_eq!(analysis.plan.queries[0].selections.projections.len(), 2);
+        });
+    }
 }

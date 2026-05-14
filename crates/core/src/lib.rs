@@ -21,7 +21,7 @@ pub use lint::{
 };
 pub use plan::{
     NestedRelation, PlannedFile, Projection, QueryPlan, SelectionPlan, plan_file,
-    plan_file_with_catalog,
+    plan_file_with_catalog, plan_query_definition,
 };
 pub use semantic::{
     CheckError, CheckErrorKind, CheckedDefinition, CheckedFile, Interner, LoweredFile, NameId,

@@ -1,7 +1,7 @@
 use super::{NestedRelation, PlannedFile, Projection, QueryPlan, SelectionPlan};
 use crate::{
     catalog::{Catalog, FieldCheckResult, TableId, TableKey, TableResolution},
-    definition::{DefinitionResolver, FragmentMap, extract_definitions},
+    definition::{DefinitionResolver, FragmentMap, QueryRecord, extract_definitions},
     syntax::{
         Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Selection, SelectionKind,
         Severity, SourceFile,
@@ -55,6 +55,63 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
                     ),
                 )),
             }
+        }
+    }
+    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+    PlannedFile {
+        queries,
+        diagnostics,
+    }
+}
+
+pub fn plan_query_definition(
+    query: &QueryRecord,
+    resolver: &impl DefinitionResolver,
+    catalog: &Catalog,
+) -> PlannedFile {
+    let mut queries = Vec::new();
+    let mut diagnostics = Vec::new();
+    for selection in &query.selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            diagnostics.push(planner_diagnostic(
+                selection.name.range,
+                DiagnosticCode::UnknownFragment,
+                format!("fragment `{}` not found", selection.name.text),
+            ));
+            continue;
+        }
+        match catalog.resolve_table_ref(&selection.name.text) {
+            TableResolution::Found(table) => {
+                if let Some(selections) = plan_selection_set(
+                    catalog,
+                    resolver,
+                    table.id,
+                    &selection.selections,
+                    &mut diagnostics,
+                ) {
+                    queries.push(QueryPlan {
+                        root: table.id,
+                        selections,
+                    });
+                }
+            }
+            TableResolution::NotFound { reference } => diagnostics.push(planner_diagnostic(
+                selection.name.range,
+                DiagnosticCode::TableNotFound,
+                format!("table `{reference}` not found"),
+            )),
+            TableResolution::Ambiguous {
+                reference,
+                candidates,
+            } => diagnostics.push(planner_diagnostic(
+                selection.name.range,
+                DiagnosticCode::AmbiguousTable,
+                format!(
+                    "table `{}` is ambiguous; use an alias with a schema-qualified name ({})",
+                    reference,
+                    format_table_candidates(&candidates)
+                ),
+            )),
         }
     }
     diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));

@@ -6,7 +6,7 @@ use dsql_core::{
     LoweredFile, ParseResult, PlannedFile, QueryRecord, SourceFile, SourceSnapshot, SyntaxTree,
     check_file_with_catalog, check_fragment_definition, check_query_definition,
     extract_definitions, format_file, lint_file_with_catalog, lint_fragment_definition,
-    lint_query_definition, lower_file, parse_source, plan_file_with_catalog,
+    lint_query_definition, lower_file, parse_source, plan_file_with_catalog, plan_query_definition,
 };
 use facet::Facet;
 use picante::PicanteResult;
@@ -172,6 +172,19 @@ pub async fn lint_fragment_definition_query<DB: CompilerDatabaseTrait>(
 }
 
 #[picante::tracked]
+pub async fn plan_query_definition_query<DB: CompilerDatabaseTrait>(
+    db: &DB,
+    input: QueryDefinitionInput,
+) -> PicanteResult<PlannedFile> {
+    let Some(record) = input.record(db)? else {
+        return Ok(empty_planned());
+    };
+    let fragments = resolve_fragments(db, input.fragments(db)?)?;
+    let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
+    Ok(plan_query_definition(&record, &fragments, &catalog))
+}
+
+#[picante::tracked]
 pub async fn diagnostics_for_file<DB: CompilerDatabaseTrait>(
     db: &DB,
     source: SourceInput,
@@ -243,6 +256,13 @@ fn empty_linted() -> LintedFile {
     }
 }
 
+fn empty_planned() -> PlannedFile {
+    PlannedFile {
+        queries: Vec::new(),
+        diagnostics: Vec::new(),
+    }
+}
+
 #[picante::db(
     inputs(
         SourceInput,
@@ -260,6 +280,7 @@ fn empty_linted() -> LintedFile {
         check_fragment_definition_query,
         lint_query_definition_query,
         lint_fragment_definition_query,
+        plan_query_definition_query,
         diagnostics_for_file,
         formatted_text_for_file
     ),
@@ -321,7 +342,7 @@ impl CompilerDb {
         let lower = lower_file_query(self, source).await.ok()?;
         let check = self.definition_check(file).await.ok()?;
         let lint = self.definition_lint(file).await.ok()?;
-        let plan = plan_file_query(self, source).await.ok()?;
+        let plan = self.definition_plan(file).await.ok()?;
         let text = source.text(self).ok()?;
         Some(AnalysisResult {
             parse: ParseResult {
@@ -403,6 +424,25 @@ impl CompilerDb {
         }
         diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
         Ok(LintedFile { diagnostics })
+    }
+
+    async fn definition_plan(&self, file: FileId) -> PicanteResult<PlannedFile> {
+        let mut queries = Vec::new();
+        let mut diagnostics = Vec::new();
+        if let Some(query_keys) = self.file_queries.get(&file) {
+            for key in query_keys.iter() {
+                if let Some(input) = self.query_inputs.get(key).map(|input| *input) {
+                    let plan = plan_query_definition_query(self, input).await?;
+                    queries.extend(plan.queries);
+                    diagnostics.extend(plan.diagnostics);
+                }
+            }
+        }
+        diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+        Ok(PlannedFile {
+            queries,
+            diagnostics,
+        })
     }
 
     pub(crate) async fn formatted_text(&self, file: FileId) -> PicanteResult<Option<String>> {
