@@ -136,6 +136,50 @@ pub fn parse_source(source: SourceSnapshot) -> ParseResult {
     }
 }
 
+pub fn expected_tokens_at(source: &SourceSnapshot, byte: usize) -> Vec<SyntaxToken> {
+    let source_text = source.to_arc_str();
+    if byte > source_text.len() || !source_text.is_char_boundary(byte) {
+        return Vec::new();
+    }
+
+    let mut completion_text = String::with_capacity(source_text.len() + 1);
+    completion_text.push_str(&source_text[..byte]);
+    completion_text.push('@');
+    completion_text.push_str(&source_text[byte..]);
+
+    let mut diagnostics = Vec::new();
+    let cst = Parser::new(&completion_text, &mut diagnostics).parse(&mut diagnostics);
+    let mut tokens = cst
+        .expected_tokens()
+        .iter()
+        .filter(|expected| expected.span.start == byte)
+        .map(|expected| map_token(expected.token))
+        .collect::<Vec<_>>();
+    tokens.sort_by_key(|token| *token as u8);
+    tokens.dedup();
+    tokens
+}
+
+impl SyntaxTree {
+    pub fn token_nodes(&self) -> impl Iterator<Item = &SyntaxNode> {
+        self.nodes
+            .iter()
+            .filter(|node| matches!(node.cst_kind, CstKind::Token(_)))
+    }
+
+    pub fn significant_token_nodes_before(&self, byte: usize) -> impl Iterator<Item = &SyntaxNode> {
+        self.token_nodes().filter(move |node| {
+            (node.range.start as usize) < byte
+                && !matches!(
+                    node.cst_kind,
+                    CstKind::Token(
+                        SyntaxToken::Whitespace | SyntaxToken::Comment | SyntaxToken::Eof
+                    )
+                )
+        })
+    }
+}
+
 fn convert_diagnostic(diagnostic: super::grammar::parser::Diagnostic) -> Diagnostic {
     let range = diagnostic
         .labels
@@ -742,5 +786,26 @@ mod tests {
     fn reports_malformed_input() {
         let parsed = parse_source(SourceSnapshot::from("query Users { users("));
         assert!(!parsed.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn reports_expected_clause_tokens_at_cursor() {
+        let src = "query Users { users() { id } }";
+        let byte = src.find("()").unwrap() + 1;
+        let expected = expected_tokens_at(&SourceSnapshot::from(src), byte);
+
+        assert!(expected.contains(&SyntaxToken::Where), "{expected:?}");
+        assert!(expected.contains(&SyntaxToken::Order), "{expected:?}");
+        assert!(expected.contains(&SyntaxToken::Limit), "{expected:?}");
+        assert!(expected.contains(&SyntaxToken::Offset), "{expected:?}");
+    }
+
+    #[test]
+    fn reports_expected_name_after_where_at_cursor() {
+        let src = "query Users { users(where ) { id } }";
+        let byte = src.find("where ").unwrap() + "where ".len();
+        let expected = expected_tokens_at(&SourceSnapshot::from(src), byte);
+
+        assert!(expected.contains(&SyntaxToken::Name), "{expected:?}");
     }
 }

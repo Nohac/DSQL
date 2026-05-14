@@ -39,7 +39,8 @@ pub use sql::{
     generate_postgres_sql_with_options,
 };
 pub use syntax::{
-    BinaryOp, Clause, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Expr, Literal,
-    ParseResult, Selection, SelectionKind, Severity, SortDirection, SourceFile, SourceSnapshot,
-    SourceText, SyntaxTree, TextRange, parse_source,
+    BinaryOp, Clause, CstKind, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Expr,
+    Literal, ParseResult, Selection, SelectionKind, Severity, SortDirection, SourceFile,
+    SourceSnapshot, SourceText, SyntaxNode, SyntaxToken, SyntaxTree, TextRange, Token,
+    expected_tokens_at, parse_source,
 };

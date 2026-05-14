@@ -1,0 +1,8 @@
+---
+source: tests/tests/lsp.rs
+expression: contents
+---
+### Relation `kind_type`
+
+- Target: `public.kind_type`
+- Foreign key: `public.title` (title.kind_id) -> `public.kind_type` (kind_type.id)

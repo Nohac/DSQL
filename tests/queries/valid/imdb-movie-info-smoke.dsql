@@ -3,7 +3,7 @@ query MovieInfoSmoke {
     id
     info
     note
-    title {
+    title(where episode_nr == 100) {
       title
     }
     info_type {
@@ -11,4 +11,3 @@ query MovieInfoSmoke {
     }
   }
 }
-

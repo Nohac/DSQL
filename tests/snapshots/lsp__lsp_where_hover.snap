@@ -1,0 +1,12 @@
+---
+source: tests/tests/lsp.rs
+expression: contents
+---
+### Column `id`
+
+- Table: `public.title`
+- Type: `int`
+- Nullable: no
+- Primary key: yes
+- Unique: no
+- Indexed: yes

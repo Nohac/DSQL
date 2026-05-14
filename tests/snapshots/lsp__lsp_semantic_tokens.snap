@@ -1,0 +1,12 @@
+---
+source: tests/tests/lsp.rs
+expression: contents
+---
+Fragment LspTitle
+Table title
+Column id
+Column id
+Column id
+Column title
+Relation kind_type
+Column kind

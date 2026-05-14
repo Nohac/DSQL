@@ -200,7 +200,7 @@ impl AnalysisHost {
         let byte = position_to_byte(&snapshot.rope, position);
         let analysis = self.analyze(snapshot.file).await?;
         let catalog = self.inner.db.catalog();
-        Some(completions_at(&analysis.parse.source_file, &catalog, byte))
+        Some(completions_at(&analysis.parse, &catalog, byte))
     }
 
     pub async fn hover(&self, uri: &str, position: TextPosition) -> Option<HoverInfo> {

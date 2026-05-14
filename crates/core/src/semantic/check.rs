@@ -204,6 +204,7 @@ fn check_selection_set(
         }
         match catalog.check_field(table, &selection.name.text) {
             FieldCheckResult::Column(column) => {
+                check_clauses(catalog, table, selection, errors);
                 if !selection.selections.is_empty() {
                     errors.push(CheckError {
                         range: selection.name.range,
@@ -215,6 +216,7 @@ fn check_selection_set(
                 }
             }
             FieldCheckResult::Relation(relation) => {
+                check_clauses(catalog, relation.table.id, selection, errors);
                 if selection.selections.is_empty() {
                     errors.push(CheckError {
                         range: selection.name.range,
@@ -259,7 +261,6 @@ fn check_selection_set(
                 });
             }
         }
-        check_clauses(catalog, table, selection, errors);
     }
 }
 
@@ -550,6 +551,15 @@ mod tests {
         let diagnostics = diagnostics(
             "query Q { public.users { id public.posts { title } } public.posts { public.users { email } } }",
         );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn relation_clauses_are_checked_against_related_table() {
+        let diagnostics = diagnostics(
+            "query Q { public.users { posts(where title == \"hello\" order by title) { id } } }",
+        );
+
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 

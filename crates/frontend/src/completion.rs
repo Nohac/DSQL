@@ -1,7 +1,5 @@
-use crate::range_contains;
-use dsql_core::{
-    Catalog, Definition, FieldCheckResult, Selection, SelectionKind, SourceFile, TableId,
-};
+use crate::cursor::{CursorContext, UsedClauses, cursor_context};
+use dsql_core::{Catalog, DataType, TableId, Token};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
@@ -15,106 +13,45 @@ pub enum CompletionKind {
     Table,
     Column,
     Relation,
+    Keyword,
+    Operator,
 }
 
 pub(crate) fn completions_at(
-    source_file: &SourceFile,
+    parse: &dsql_core::ParseResult,
     catalog: &Catalog,
     byte: usize,
 ) -> Vec<CompletionItem> {
-    match selection_context(source_file, catalog, byte) {
-        CompletionContext::Root => catalog
-            .tables
-            .iter()
-            .map(|table| CompletionItem {
-                label: completion_table_ref(catalog, &table.schema, &table.name),
-                kind: CompletionKind::Table,
-                detail: Some(format!("table {}.{}", table.schema, table.name)),
-            })
-            .collect(),
-        CompletionContext::Table(table) => field_completions(catalog, table),
+    match cursor_context(parse, catalog, byte) {
+        CursorContext::Root => root_completions(catalog),
+        CursorContext::SelectionBody { table } => field_completions(catalog, table),
+        CursorContext::ClauseList { table: _, used } => clause_keyword_completions(used),
+        CursorContext::WhereColumn { table } | CursorContext::OrderByColumn { table } => {
+            column_completions(catalog, table)
+        }
+        CursorContext::WhereOperator { data_type } => operator_completions(data_type),
+        CursorContext::SortDirection => keyword_completions(&[
+            CompletionAtom::Token(Token::Asc, "sort ascending"),
+            CompletionAtom::Token(Token::Desc, "sort descending"),
+        ]),
     }
 }
 
-enum CompletionContext {
-    Root,
-    Table(TableId),
-}
-
-fn selection_context(
-    source_file: &SourceFile,
-    catalog: &Catalog,
-    byte: usize,
-) -> CompletionContext {
-    for definition in source_file.definitions() {
-        match definition {
-            Definition::Query(query) => {
-                for selection in &query.selections {
-                    if !range_contains(selection.range, byte) {
-                        continue;
-                    }
-                    let Some(table) = catalog.table_ref(&selection.name.text) else {
-                        return CompletionContext::Root;
-                    };
-                    return nested_context(catalog, table.id, &selection.selections, byte)
-                        .unwrap_or(CompletionContext::Table(table.id));
-                }
-            }
-            Definition::Fragment(fragment) => {
-                if !range_contains(fragment.range, byte) {
-                    continue;
-                }
-                let Some(on) = &fragment.on else {
-                    return CompletionContext::Root;
-                };
-                let Some(table) = catalog.table_ref(&on.text) else {
-                    return CompletionContext::Root;
-                };
-                return nested_context(catalog, table.id, &fragment.selections, byte)
-                    .unwrap_or(CompletionContext::Table(table.id));
-            }
-        }
-    }
-    CompletionContext::Root
-}
-
-fn nested_context(
-    catalog: &Catalog,
-    table: TableId,
-    selections: &[Selection],
-    byte: usize,
-) -> Option<CompletionContext> {
-    for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread {
-            continue;
-        }
-        if !range_contains(selection.range, byte) {
-            continue;
-        }
-        return match catalog.check_field(table, &selection.name.text) {
-            FieldCheckResult::Relation(related) => {
-                nested_context(catalog, related.table.id, &selection.selections, byte)
-                    .or(Some(CompletionContext::Table(related.table.id)))
-            }
-            FieldCheckResult::Column(_)
-            | FieldCheckResult::NotFound
-            | FieldCheckResult::AmbiguousRelation { .. } => Some(CompletionContext::Table(table)),
-        };
-    }
-    None
+fn root_completions(catalog: &Catalog) -> Vec<CompletionItem> {
+    catalog
+        .tables
+        .iter()
+        .map(|table| CompletionItem {
+            label: completion_table_ref(catalog, &table.schema, &table.name),
+            kind: CompletionKind::Table,
+            detail: Some(format!("table {}.{}", table.schema, table.name)),
+        })
+        .collect()
 }
 
 fn field_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
     let mut completions = Vec::new();
-    completions.extend(
-        catalog
-            .columns_for_table(table)
-            .map(|column| CompletionItem {
-                label: column.name.clone(),
-                kind: CompletionKind::Column,
-                detail: Some(column.data_type.as_str().to_string()),
-            }),
-    );
+    completions.extend(column_completions(catalog, table));
     completions.extend(
         catalog
             .relation_fields_for_table(table)
@@ -131,6 +68,96 @@ fn field_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
     completions.sort_by(|left, right| left.label.cmp(&right.label));
     completions.dedup_by(|left, right| left.label == right.label);
     completions
+}
+
+fn column_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
+    let mut completions = catalog
+        .columns_for_table(table)
+        .map(|column| CompletionItem {
+            label: column.name.clone(),
+            kind: CompletionKind::Column,
+            detail: Some(column.data_type.as_str().to_string()),
+        })
+        .collect::<Vec<_>>();
+    completions.sort_by(|left, right| left.label.cmp(&right.label));
+    completions
+}
+
+fn clause_keyword_completions(used: UsedClauses) -> Vec<CompletionItem> {
+    let mut keywords = Vec::new();
+    if !used.where_clause {
+        keywords.push(CompletionAtom::Token(Token::Where, "filter rows"));
+    }
+    if !used.order_by {
+        keywords.push(CompletionAtom::Phrase("order by", "sort rows"));
+    }
+    if !used.limit {
+        keywords.push(CompletionAtom::Token(Token::Limit, "limit rows"));
+    }
+    if !used.offset {
+        keywords.push(CompletionAtom::Token(Token::Offset, "skip rows"));
+    }
+    keyword_completions(&keywords)
+}
+
+fn operator_completions(data_type: DataType) -> Vec<CompletionItem> {
+    match data_type {
+        DataType::Int | DataType::Timestamptz => operator_items(&[
+            (Token::Eq, "equals"),
+            (Token::Ne, "not equals"),
+            (Token::Gt, "greater than"),
+            (Token::Ge, "greater than or equal"),
+            (Token::Lt, "less than"),
+            (Token::Le, "less than or equal"),
+        ]),
+        DataType::Text
+        | DataType::Uuid
+        | DataType::Boolean
+        | DataType::Json
+        | DataType::Unknown => operator_items(&[(Token::Eq, "equals"), (Token::Ne, "not equals")]),
+    }
+}
+
+fn operator_items(items: &[(Token, &str)]) -> Vec<CompletionItem> {
+    items
+        .iter()
+        .map(|(token, detail)| CompletionItem {
+            label: token
+                .completion_label()
+                .expect("operator completion tokens must have labels")
+                .to_string(),
+            kind: CompletionKind::Operator,
+            detail: Some((*detail).to_string()),
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CompletionAtom {
+    Token(Token, &'static str),
+    Phrase(&'static str, &'static str),
+}
+
+fn keyword_completions(items: &[CompletionAtom]) -> Vec<CompletionItem> {
+    items
+        .iter()
+        .map(|item| {
+            let (label, detail) = match item {
+                CompletionAtom::Token(token, detail) => (
+                    token
+                        .completion_label()
+                        .expect("keyword completion tokens must have labels"),
+                    *detail,
+                ),
+                CompletionAtom::Phrase(label, detail) => (*label, *detail),
+            };
+            CompletionItem {
+                label: label.to_string(),
+                kind: CompletionKind::Keyword,
+                detail: Some(detail.to_string()),
+            }
+        })
+        .collect()
 }
 
 fn completion_table_ref(catalog: &Catalog, schema: &str, table: &str) -> String {

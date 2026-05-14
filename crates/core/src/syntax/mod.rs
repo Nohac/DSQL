@@ -10,7 +10,9 @@ pub use ast::{
     SourceFile, WhereClause,
 };
 pub use diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity};
+pub use grammar::lexer::Token;
 pub use parse::{
-    AstNode, CstKind, ParseResult, SyntaxNode, SyntaxRule, SyntaxToken, SyntaxTree, parse_source,
+    AstNode, CstKind, ParseResult, SyntaxNode, SyntaxRule, SyntaxToken, SyntaxTree,
+    expected_tokens_at, parse_source,
 };
 pub use text::{SourceSnapshot, SourceText, TextRange};

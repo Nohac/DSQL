@@ -1,0 +1,11 @@
+---
+source: tests/tests/lsp.rs
+expression: contents
+---
+### Table `title`
+
+- Schema: `public`
+- Columns: 12
+- Primary key columns: 1
+- Outgoing foreign keys: 2
+- Incoming foreign keys: 11

@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 dsql-core = { path = "../crates/core" }
+dsql-frontend = { path = "../crates/frontend" }
 dsql-project = { path = "../crates/project" }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json"] }

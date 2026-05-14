@@ -1,5 +1,6 @@
 mod analysis;
 mod completion;
+mod cursor;
 mod db;
 mod document;
 mod host;
@@ -26,7 +27,7 @@ fn range_contains(range: dsql_core::TextRange, byte: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dsql_core::{Catalog, SourceFile, parse_source};
+    use dsql_core::{Catalog, ParseResult, SourceFile, parse_source};
     use std::{
         future::Future,
         pin::Pin,
@@ -73,14 +74,24 @@ mod tests {
         parsed.source_file
     }
 
+    fn parsed(source: &str) -> ParseResult {
+        let parsed = parse_source(source.into());
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        parsed
+    }
+
     #[test]
     fn completions_include_exact_relation_names() {
         let source = "query Q { posts {  } }";
-        let source_file = parsed_source(source);
+        let parsed = parsed(source);
         let catalog = Catalog::hardcoded();
         let byte = source.find("  }").unwrap() + 1;
 
-        let completions = completion::completions_at(&source_file, &catalog, byte);
+        let completions = completion::completions_at(&parsed, &catalog, byte);
 
         assert!(completions.iter().any(|completion| {
             completion.label == "users" && completion.kind == completion::CompletionKind::Relation
@@ -95,11 +106,11 @@ mod tests {
     #[test]
     fn root_completions_qualify_non_public_tables() {
         let source = "query Q {  }";
-        let source_file = parsed_source(source);
+        let parsed = parsed(source);
         let catalog = Catalog::hardcoded();
         let byte = source.find("  }").unwrap() + 1;
 
-        let completions = completion::completions_at(&source_file, &catalog, byte);
+        let completions = completion::completions_at(&parsed, &catalog, byte);
 
         assert!(completions.iter().any(|completion| {
             completion.label == "users" && completion.kind == completion::CompletionKind::Table
@@ -113,12 +124,13 @@ mod tests {
     #[test]
     fn completions_and_hover_work_inside_fragments() {
         let source = "fragment UserFields on public.users {\n  posts {\n    title\n  }\n}";
-        let source_file = parsed_source(source);
+        let parsed = parsed(source);
+        let source_file = parsed.source_file.clone();
         let catalog = Catalog::hardcoded();
         let completion_byte = source.find("  posts").unwrap() + 1;
         let hover_byte = source.find("title").unwrap();
 
-        let completions = completion::completions_at(&source_file, &catalog, completion_byte);
+        let completions = completion::completions_at(&parsed, &catalog, completion_byte);
         let hover = hover::hover_at(&source_file, &catalog, hover_byte).unwrap();
 
         assert!(completions.iter().any(|completion| {
@@ -133,12 +145,13 @@ mod tests {
     #[test]
     fn hover_and_completions_support_qualified_names() {
         let source = "query Q { public.users { public.posts { title } } }";
-        let source_file = parsed_source(source);
+        let parsed = parsed(source);
+        let source_file = parsed.source_file.clone();
         let catalog = Catalog::hardcoded();
         let completion_byte = source.find("public.posts").unwrap() - 1;
         let hover_byte = source.find("public.posts").unwrap();
 
-        let completions = completion::completions_at(&source_file, &catalog, completion_byte);
+        let completions = completion::completions_at(&parsed, &catalog, completion_byte);
         let hover = hover::hover_at(&source_file, &catalog, hover_byte).unwrap();
 
         assert!(completions.iter().any(|completion| {

@@ -1,0 +1,25 @@
+---
+source: tests/tests/lsp.rs
+expression: contents
+---
+Table aka_name table public.aka_name
+Table aka_title table public.aka_title
+Table cast_info table public.cast_info
+Table char_name table public.char_name
+Table comp_cast_type table public.comp_cast_type
+Table company_name table public.company_name
+Table company_type table public.company_type
+Table complete_cast table public.complete_cast
+Table info_type table public.info_type
+Table keyword table public.keyword
+Table kind_type table public.kind_type
+Table link_type table public.link_type
+Table movie_companies table public.movie_companies
+Table movie_info table public.movie_info
+Table movie_info_idx table public.movie_info_idx
+Table movie_keyword table public.movie_keyword
+Table movie_link table public.movie_link
+Table name table public.name
+Table person_info table public.person_info
+Table role_type table public.role_type
+Table title table public.title

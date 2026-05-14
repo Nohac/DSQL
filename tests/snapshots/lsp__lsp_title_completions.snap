@@ -1,0 +1,25 @@
+---
+source: tests/tests/lsp.rs
+expression: contents
+---
+Relation aka_title relation to public.aka_title
+Relation cast_info relation to public.cast_info
+Relation complete_cast relation to public.complete_cast
+Column episode_nr int
+Column episode_of_id int
+Column id int
+Column imdb_id int
+Column imdb_index text
+Column kind_id int
+Relation kind_type relation to public.kind_type
+Column md5sum text
+Relation movie_companies relation to public.movie_companies
+Relation movie_info relation to public.movie_info
+Relation movie_info_idx relation to public.movie_info_idx
+Relation movie_keyword relation to public.movie_keyword
+Relation movie_link relation to public.movie_link
+Column phonetic_code text
+Column production_year int
+Column season_nr int
+Column series_years text
+Column title text

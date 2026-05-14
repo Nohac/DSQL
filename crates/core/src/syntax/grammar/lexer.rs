@@ -93,6 +93,27 @@ pub enum Token {
     Error,
 }
 
+impl Token {
+    pub const fn completion_label(self) -> Option<&'static str> {
+        match self {
+            Self::Where => Some("where"),
+            Self::Order => Some("order"),
+            Self::By => Some("by"),
+            Self::Limit => Some("limit"),
+            Self::Offset => Some("offset"),
+            Self::Asc => Some("asc"),
+            Self::Desc => Some("desc"),
+            Self::Eq => Some("=="),
+            Self::Ne => Some("!="),
+            Self::Gt => Some(">"),
+            Self::Ge => Some(">="),
+            Self::Lt => Some("<"),
+            Self::Le => Some("<="),
+            _ => None,
+        }
+    }
+}
+
 pub fn tokenize(source: &str, diags: &mut Vec<Diagnostic>) -> (Vec<Token>, Vec<Span>) {
     let lexer = Token::lexer(source);
     let mut tokens = vec![];

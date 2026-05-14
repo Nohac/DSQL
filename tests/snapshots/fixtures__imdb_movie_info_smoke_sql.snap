@@ -41,6 +41,7 @@ from
       "public"."title" as "title_85df456e"
     where
       "title_85df456e"."id" = "movie_info_d37aaa02"."movie_id"
+      and "title_85df456e"."episode_nr" = 100
   ) as "title_json_85df456e" on true
   left join LATERAL (
     select

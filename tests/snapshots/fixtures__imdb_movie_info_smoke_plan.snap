@@ -110,7 +110,21 @@ expression: contents
                                 20,
                             ),
                             clauses: SelectionClauses {
-                                filter: None,
+                                filter: Some(
+                                    Binary {
+                                        left: Column(
+                                            ColumnId(
+                                                105,
+                                            ),
+                                        ),
+                                        op: Eq,
+                                        right: Literal(
+                                            Number(
+                                                "100",
+                                            ),
+                                        ),
+                                    },
+                                ),
                                 order_by: [],
                                 limit: None,
                                 offset: None,

@@ -20,4 +20,4 @@ thiserror = "2"
 tracing = "0.1"
 
 [build-dependencies]
-lelwel = "0.10"
+lelwel = { path = "/home/jonas/Development/Rust/lelwel" }
