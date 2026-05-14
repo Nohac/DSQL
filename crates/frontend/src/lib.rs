@@ -331,7 +331,7 @@ mod tests {
 
             assert!(analysis.plan.diagnostics.is_empty());
             assert_eq!(analysis.plan.queries.len(), 1);
-            assert_eq!(analysis.plan.queries[0].selections.projections.len(), 2);
+            assert_eq!(analysis.plan.queries[0].selections.items.len(), 2);
         });
     }
 }

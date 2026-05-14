@@ -4,6 +4,7 @@ pub mod format;
 pub mod lint;
 pub mod plan;
 pub mod semantic;
+pub mod sql;
 pub mod syntax;
 
 pub use catalog::{
@@ -24,13 +25,17 @@ pub use lint::{
     lint_query_definition,
 };
 pub use plan::{
-    NestedRelation, PlannedFile, Projection, QueryPlan, SelectionPlan, plan_file,
-    plan_file_with_catalog, plan_query_definition,
+    NestedRelation, PlannedFile, Projection, QueryPlan, SelectionPlan, SelectionPlanItem,
+    plan_file, plan_file_with_catalog, plan_query_definition,
 };
 pub use semantic::{
     CheckError, CheckErrorKind, CheckedDefinition, CheckedFile, Interner, LoweredFile, NameId,
     NameIndex, check_file, check_file_with_catalog, check_fragment_definition,
     check_query_definition, lower_file,
+};
+pub use sql::{
+    GeneratedSql, PostgresSqlOptions, SqlGenerationError, generate_postgres_sql,
+    generate_postgres_sql_with_options,
 };
 pub use syntax::{
     Definition, Diagnostic, DiagnosticCode, DiagnosticSource, ParseResult, Selection,

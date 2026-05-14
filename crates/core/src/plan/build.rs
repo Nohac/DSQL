@@ -1,4 +1,4 @@
-use super::{NestedRelation, PlannedFile, Projection, QueryPlan, SelectionPlan};
+use super::{NestedRelation, PlannedFile, Projection, QueryPlan, SelectionPlan, SelectionPlanItem};
 use crate::{
     catalog::{Catalog, FieldCheckResult, TableId, TableKey, TableResolution},
     definition::{DefinitionResolver, FragmentMap, QueryRecord, extract_definitions},
@@ -33,6 +33,10 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
                     ) {
                         queries.push(QueryPlan {
                             root: table.id,
+                            output_name: selection
+                                .alias
+                                .as_ref()
+                                .map_or_else(|| table.name.clone(), |alias| alias.text.clone()),
                             selections,
                         });
                     }
@@ -91,6 +95,10 @@ pub fn plan_query_definition(
                 ) {
                     queries.push(QueryPlan {
                         root: table.id,
+                        output_name: selection
+                            .alias
+                            .as_ref()
+                            .map_or_else(|| table.name.clone(), |alias| alias.text.clone()),
                         selections,
                     });
                 }
@@ -128,26 +136,27 @@ fn plan_selection_set(
     selections: &[Selection],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<SelectionPlan> {
-    let mut projections = Vec::new();
-    let mut relations = Vec::new();
+    let mut items = Vec::new();
     for selection in selections {
         if selection.kind == SelectionKind::FragmentSpread {
             if let Some(fragment) = resolver.fragment(&selection.name.text)
                 && let Some(fragment_plan) =
                     plan_selection_set(catalog, resolver, table, &fragment.selections, diagnostics)
             {
-                projections.extend(fragment_plan.projections);
-                relations.extend(fragment_plan.relations);
+                items.extend(fragment_plan.items);
             }
             continue;
         }
         match catalog.check_field(table, &selection.name.text) {
             FieldCheckResult::Column(column) => {
                 if selection.selections.is_empty() {
-                    projections.push(Projection {
+                    items.push(SelectionPlanItem::Projection(Projection {
                         column: column.id,
-                        alias: selection.alias.as_ref().map(|alias| alias.text.clone()),
-                    });
+                        output_name: selection
+                            .alias
+                            .as_ref()
+                            .map_or_else(|| column.name.clone(), |alias| alias.text.clone()),
+                    }));
                 }
             }
             FieldCheckResult::Relation(relation) => {
@@ -158,12 +167,16 @@ fn plan_selection_set(
                     &selection.selections,
                     diagnostics,
                 ) {
-                    relations.push(NestedRelation {
-                        field_name: selection.name.text.clone(),
+                    items.push(SelectionPlanItem::Relation(NestedRelation {
+                        relation_name: selection.name.text.clone(),
+                        output_name: selection
+                            .alias
+                            .as_ref()
+                            .map_or_else(|| relation.name.to_string(), |alias| alias.text.clone()),
                         table: relation.table.id,
                         foreign_key: relation.foreign_key.id,
                         selections: Box::new(nested),
-                    });
+                    }));
                 }
             }
             FieldCheckResult::NotFound => {}
@@ -181,11 +194,7 @@ fn plan_selection_set(
             )),
         }
     }
-    Some(SelectionPlan {
-        table,
-        projections,
-        relations,
-    })
+    Some(SelectionPlan { table, items })
 }
 
 fn planner_diagnostic(
@@ -231,11 +240,14 @@ mod tests {
 
         assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
         assert_eq!(planned.queries.len(), 1);
-        assert_eq!(planned.queries[0].selections.projections.len(), 2);
-        assert_eq!(planned.queries[0].selections.relations.len(), 1);
-        assert_eq!(
-            planned.queries[0].selections.relations[0].field_name,
-            "posts"
-        );
+        assert_eq!(planned.queries[0].selections.items.len(), 3);
+        assert!(matches!(
+            &planned.queries[0].selections.items[0],
+            SelectionPlanItem::Projection(Projection { output_name, .. }) if output_name == "id"
+        ));
+        assert!(matches!(
+            &planned.queries[0].selections.items[2],
+            SelectionPlanItem::Relation(NestedRelation { output_name, .. }) if output_name == "posts"
+        ));
     }
 }
