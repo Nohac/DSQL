@@ -2,7 +2,6 @@ use clap::{Parser, Subcommand};
 use dsql_core::{Catalog, SourceSnapshot};
 use dsql_frontend::{AnalysisHost, collect_diagnostics};
 use miette::{IntoDiagnostic, Result};
-use serde_json::{Map, Value};
 use sqlx::{Row, postgres::PgPoolOptions};
 use std::path::{Path, PathBuf};
 
@@ -144,21 +143,32 @@ async fn main() -> Result<()> {
                     .connect(&project.config.database_url)
                     .await
                     .map_err(|error| miette::miette!("failed to connect to database: {error}"))?;
-                let mut output = Map::new();
+                let mut output = String::from("{");
                 for generated in generated_queries {
-                    let row = sqlx::query(&generated.sql)
+                    let exec_sql = format!("select ({})::text", generated.sql);
+                    let row = sqlx::query(&exec_sql)
                         .fetch_one(&pool)
                         .await
                         .map_err(|error| miette::miette!("failed to execute SQL: {error}"))?;
                     let value = row
-                        .try_get::<Value, _>(0)
+                        .try_get::<String, _>(0)
                         .map_err(|error| miette::miette!("failed to read JSON result: {error}"))?;
-                    output.insert(generated.output_name, value);
+                    if output.len() > 1 {
+                        output.push(',');
+                    }
+                    output.push('\n');
+                    output.push_str("  ");
+                    output.push_str(
+                        &serde_json::to_string(&generated.output_name).into_diagnostic()?,
+                    );
+                    output.push_str(": ");
+                    output.push_str(&value);
                 }
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&Value::Object(output)).into_diagnostic()?
-                );
+                if output.len() > 1 {
+                    output.push('\n');
+                }
+                output.push('}');
+                println!("{output}");
             }
         }
         Command::Lsp => unreachable!("handled before tracing subscriber initialization"),

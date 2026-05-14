@@ -1,5 +1,5 @@
 query ScalarClauseList {
-  movie_info {
+  movie_info(where id == "test") {
     id
     note()
   }

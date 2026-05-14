@@ -1,5 +1,5 @@
 use crate::{
-    catalog::TableKey,
+    catalog::{DataType, TableKey},
     syntax::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity, TextRange},
 };
 use facet::Facet;
@@ -67,6 +67,11 @@ pub enum CheckErrorKind {
     ClauseValueTypeMismatch {
         clause: String,
         expected: String,
+    },
+    PredicateTypeMismatch {
+        field: String,
+        expected: DataType,
+        actual: String,
     },
 }
 
@@ -145,6 +150,17 @@ impl CheckError {
             CheckErrorKind::ClauseValueTypeMismatch { clause, expected } => (
                 DiagnosticCode::ClauseValueTypeMismatch,
                 format!("clause `{clause}` expects {expected}"),
+            ),
+            CheckErrorKind::PredicateTypeMismatch {
+                field,
+                expected,
+                actual,
+            } => (
+                DiagnosticCode::PredicateTypeMismatch,
+                format!(
+                    "field `{field}` expects {} but predicate uses {actual}",
+                    expected.as_str()
+                ),
             ),
         };
         Diagnostic {

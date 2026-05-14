@@ -37,6 +37,7 @@ pub enum DiagnosticCode {
     ScalarClauses,
     RelationSelectionSet,
     ClauseValueTypeMismatch,
+    PredicateTypeMismatch,
     FormatParseError,
 }
 

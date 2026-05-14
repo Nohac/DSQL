@@ -1,6 +1,6 @@
 use super::{CheckError, CheckErrorKind, CheckedFile};
 use crate::{
-    catalog::{Catalog, FieldCheckResult, TableId, TableResolution},
+    catalog::{Catalog, DataType, FieldCheckResult, TableId, TableResolution},
     definition::{
         DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
     },
@@ -339,10 +339,75 @@ fn check_predicate_expr(
             }
         }
         Expr::Binary { left, right, .. } => {
+            check_binary_predicate_types(catalog, table, left, right, errors);
             check_predicate_expr(catalog, table, left, errors);
             check_predicate_expr(catalog, table, right, errors);
         }
         Expr::Literal(_) => {}
+    }
+}
+
+fn check_binary_predicate_types(
+    catalog: &Catalog,
+    table: TableId,
+    left: &Expr,
+    right: &Expr,
+    errors: &mut Vec<CheckError>,
+) {
+    let (name, literal) = match (left, right) {
+        (Expr::Name(name), Expr::Literal(literal)) => (name, literal),
+        (Expr::Literal(literal), Expr::Name(name)) => (name, literal),
+        _ => return,
+    };
+    let FieldCheckResult::Column(column) = catalog.check_field(table, &name.text) else {
+        return;
+    };
+    let Some(actual) = literal_type(literal) else {
+        return;
+    };
+    if !literal_matches_type(literal, column.data_type) {
+        errors.push(CheckError {
+            range: literal_range(literal),
+            kind: CheckErrorKind::PredicateTypeMismatch {
+                field: name.text.clone(),
+                expected: column.data_type,
+                actual,
+            },
+        });
+    }
+}
+
+fn literal_matches_type(literal: &Literal, data_type: DataType) -> bool {
+    match data_type {
+        DataType::Int => {
+            matches!(literal, Literal::Number { value, .. } if value.parse::<i64>().is_ok())
+        }
+        DataType::Boolean => matches!(literal, Literal::Bool { .. }),
+        DataType::Text | DataType::Uuid | DataType::Timestamptz | DataType::Json => {
+            matches!(literal, Literal::String { .. })
+        }
+        DataType::Unknown => true,
+    }
+}
+
+fn literal_type(literal: &Literal) -> Option<String> {
+    Some(
+        match literal {
+            Literal::String { .. } => "string",
+            Literal::Number { .. } => "number",
+            Literal::Bool { .. } => "boolean",
+            Literal::Null { .. } => return None,
+        }
+        .to_string(),
+    )
+}
+
+fn literal_range(literal: &Literal) -> TextRange {
+    match literal {
+        Literal::String { range, .. }
+        | Literal::Number { range, .. }
+        | Literal::Bool { range, .. }
+        | Literal::Null { range } => *range,
     }
 }
 
