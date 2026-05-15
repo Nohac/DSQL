@@ -204,9 +204,9 @@ fn plan_selection_set(
                 selection.name.range,
                 DiagnosticCode::AmbiguousRelation,
                 format!(
-                    "relation `{}` is ambiguous; use an alias with a schema-qualified name ({})",
+                    "relation `{}` has multiple foreign-key paths; use one of: {}",
                     reference,
-                    format_table_candidates(&candidates)
+                    candidates.join(", ")
                 ),
             )),
         }

@@ -277,7 +277,8 @@ fn selection_ref_before_lbrace(
                 .and_then(|index| token_kind(tokens[index]))
                 == Some(SyntaxToken::Query);
             Some(SelectionRef {
-                name: parse.source.text(tokens[previous_index].range).to_string(),
+                name: relation_ref_ending_at(parse, tokens, previous_index)
+                    .unwrap_or_else(|| parse.source.text(tokens[previous_index].range).to_string()),
                 is_query_body,
             })
         }
@@ -361,12 +362,20 @@ fn clause_cursor<'a>(
     }
 
     let table_ref = table_ref_before_lpar(parse, &tokens, lpar_index)?;
-    let target = selection_clause_target(parse, catalog, byte, &table_ref)
-        .or_else(|| cst_clause_target(parse, catalog, &tokens, lpar_index, &table_ref))
+    let ast_target = selection_clause_target(parse, catalog, byte, &table_ref);
+    let cst_target = cst_clause_target(parse, catalog, &tokens, lpar_index, &table_ref);
+    let root_target = catalog
+        .table_ref(&table_ref)
+        .map(|table| ClauseTarget::Table(table.id));
+    let target = [ast_target, cst_target, root_target]
+        .into_iter()
+        .flatten()
+        .find(|target| matches!(target, ClauseTarget::Table(_)))
         .or_else(|| {
-            catalog
-                .table_ref(&table_ref)
-                .map(|table| ClauseTarget::Table(table.id))
+            [ast_target, cst_target, root_target]
+                .into_iter()
+                .flatten()
+                .find(|target| matches!(target, ClauseTarget::Invalid))
         })?;
 
     Some(ClauseCursor {
@@ -623,10 +632,20 @@ fn table_ref_before_lpar(
     tokens: &[&SyntaxNode],
     lpar_index: usize,
 ) -> Option<String> {
+    relation_ref_ending_at(parse, tokens, lpar_index.checked_sub(1)?)
+}
+
+fn relation_ref_ending_at(
+    parse: &ParseResult,
+    tokens: &[&SyntaxNode],
+    end_index: usize,
+) -> Option<String> {
     let mut parts = Vec::new();
-    let mut index = lpar_index.checked_sub(1)?;
-    let mut expected_end = tokens[lpar_index].range.start;
-    while let Some(SyntaxToken::Name | SyntaxToken::Dot) = token_kind(tokens[index]) {
+    let mut index = end_index;
+    let mut expected_end = tokens[end_index].range.end;
+    while let Some(SyntaxToken::Name | SyntaxToken::Dot | SyntaxToken::ColonColon) =
+        token_kind(tokens[index])
+    {
         if tokens[index].range.end != expected_end {
             break;
         }

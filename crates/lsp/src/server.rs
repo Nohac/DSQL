@@ -270,19 +270,49 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let Some(items) = self
+        let uri_string = uri.to_string();
+        let text_position = TextPosition {
+            line: position.line,
+            character: position.character,
+        };
+        let request_byte = self
             .analysis
-            .completions(
-                &uri.to_string(),
-                TextPosition {
-                    line: position.line,
-                    character: position.character,
-                },
-            )
-            .await
-        else {
+            .document_byte_offset(&uri_string, text_position);
+        let request_context = request_byte
+            .and_then(|byte| completion_source_context(&self.analysis, &uri_string, byte));
+        let frontend_context = self
+            .analysis
+            .completion_context_debug(&uri_string, text_position)
+            .await;
+        let Some(items) = self.analysis.completions(&uri_string, text_position).await else {
+            info!(
+                uri = uri.as_str(),
+                line = position.line,
+                character = position.character,
+                byte = request_byte,
+                context = request_context.as_deref().unwrap_or("<unavailable>"),
+                frontend_context = frontend_context.as_deref().unwrap_or("<unavailable>"),
+                "completion request returned no document"
+            );
             return Ok(None);
         };
+
+        info!(
+            uri = uri.as_str(),
+            line = position.line,
+            character = position.character,
+            byte = request_byte,
+            context = request_context.as_deref().unwrap_or("<unavailable>"),
+            frontend_context = frontend_context.as_deref().unwrap_or("<unavailable>"),
+            count = items.len(),
+            labels = %items
+                .iter()
+                .take(30)
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            "completion request"
+        );
 
         Ok(Some(CompletionResponse::Array(
             items
@@ -405,6 +435,23 @@ fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
         .ok()?
         .to_file_path()
         .map(|path| path.into_owned())
+}
+
+fn completion_source_context(analysis: &AnalysisHost, uri: &str, byte: usize) -> Option<String> {
+    let snapshot = analysis.document_snapshot(uri)?;
+    let start = byte.saturating_sub(80);
+    let end = (byte + 80).min(snapshot.rope.len());
+    let before = snapshot.rope.slice(start..byte).to_string();
+    let after = snapshot.rope.slice(byte..end).to_string();
+    Some(format!(
+        "{}<cursor>{}",
+        normalize_log_context(&before),
+        normalize_log_context(&after)
+    ))
+}
+
+fn normalize_log_context(value: &str) -> String {
+    value.replace('\n', "\\n").replace('\r', "\\r")
 }
 
 fn catalog_location(schema_dir: &Path, target: &CatalogDefinition) -> Option<Location> {

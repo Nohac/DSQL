@@ -1,0 +1,163 @@
+---
+source: tests/tests/fixtures.rs
+assertion_line: 185
+expression: contents
+---
+[
+    QueryPlan {
+        root: TableId(
+            13,
+        ),
+        output_name: "movie_info",
+        clauses: SelectionClauses {
+            filter: Some(
+                Binary {
+                    left: Column(
+                        ColumnId(
+                            63,
+                        ),
+                    ),
+                    op: Eq,
+                    right: Literal(
+                        Number(
+                            "1811435",
+                        ),
+                    ),
+                },
+            ),
+            order_by: [],
+            limit: Some(
+                1,
+            ),
+            offset: None,
+        },
+        selections: SelectionPlan {
+            table: TableId(
+                13,
+            ),
+            clauses: SelectionClauses {
+                filter: Some(
+                    Binary {
+                        left: Column(
+                            ColumnId(
+                                63,
+                            ),
+                        ),
+                        op: Eq,
+                        right: Literal(
+                            Number(
+                                "1811435",
+                            ),
+                        ),
+                    },
+                ),
+                order_by: [],
+                limit: Some(
+                    1,
+                ),
+                offset: None,
+            },
+            items: [
+                Projection(
+                    Projection {
+                        column: ColumnId(
+                            63,
+                        ),
+                        output_name: "id",
+                    },
+                ),
+                Relation(
+                    NestedRelation {
+                        relation_name: "title",
+                        output_name: "title",
+                        table: TableId(
+                            20,
+                        ),
+                        foreign_key: ForeignKeyId(
+                            14,
+                        ),
+                        selections: SelectionPlan {
+                            table: TableId(
+                                20,
+                            ),
+                            clauses: SelectionClauses {
+                                filter: None,
+                                order_by: [],
+                                limit: None,
+                                offset: None,
+                            },
+                            items: [
+                                Relation(
+                                    NestedRelation {
+                                        relation_name: "aka_title::movie_id",
+                                        output_name: "aliases",
+                                        table: TableId(
+                                            1,
+                                        ),
+                                        foreign_key: ForeignKeyId(
+                                            1,
+                                        ),
+                                        selections: SelectionPlan {
+                                            table: TableId(
+                                                1,
+                                            ),
+                                            clauses: SelectionClauses {
+                                                filter: None,
+                                                order_by: [],
+                                                limit: None,
+                                                offset: None,
+                                            },
+                                            items: [
+                                                Projection(
+                                                    Projection {
+                                                        column: ColumnId(
+                                                            8,
+                                                        ),
+                                                        output_name: "id",
+                                                    },
+                                                ),
+                                            ],
+                                        },
+                                    },
+                                ),
+                                Relation(
+                                    NestedRelation {
+                                        relation_name: "aka_title::episode_of_id",
+                                        output_name: "episodes",
+                                        table: TableId(
+                                            1,
+                                        ),
+                                        foreign_key: ForeignKeyId(
+                                            3,
+                                        ),
+                                        selections: SelectionPlan {
+                                            table: TableId(
+                                                1,
+                                            ),
+                                            clauses: SelectionClauses {
+                                                filter: None,
+                                                order_by: [],
+                                                limit: None,
+                                                offset: None,
+                                            },
+                                            items: [
+                                                Projection(
+                                                    Projection {
+                                                        column: ColumnId(
+                                                            8,
+                                                        ),
+                                                        output_name: "id",
+                                                    },
+                                                ),
+                                            ],
+                                        },
+                                    },
+                                ),
+                            ],
+                        },
+                    },
+                ),
+            ],
+        },
+    },
+]

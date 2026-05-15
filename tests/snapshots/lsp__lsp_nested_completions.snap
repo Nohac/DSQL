@@ -1,8 +1,9 @@
 ---
 source: tests/tests/lsp.rs
+assertion_line: 479
 expression: contents
 ---
-Relation aka_title relation to public.aka_title
+Relation aka_title relation to public.aka_title via kind_id
 Column id int
 Column kind text
-Relation title relation to public.title
+Relation title relation to public.title via kind_id

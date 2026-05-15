@@ -8,6 +8,7 @@ introspection is the only way to build the catalog.
 ## Sources To Consider
 
 - PostgreSQL introspection.
+- Hasura metadata.
 - Hardcoded or generated project metadata.
 - Drizzle schema metadata.
 - ORM metadata from other ecosystems.
@@ -26,6 +27,23 @@ Potential benefits:
 - Reuse existing TypeScript schema definitions.
 - Easier adoption in projects that already use Drizzle.
 
+## Hasura
+
+Hasura metadata is a useful source for named relationships that may not exist as
+database foreign keys.
+
+Potential imported metadata:
+
+- Object relationships.
+- Array relationships.
+- Relationship names.
+- Source and target tables or views.
+- Column mappings and manual join definitions.
+
+This could let projects migrate existing Hasura relationship names into dsql
+defined relationship aliases instead of exposing only raw foreign-key selectors
+such as `aka_title::movie_id`.
+
 ## Provider Swap Goal
 
 The query language should not care where metadata comes from. Swapping from
@@ -40,4 +58,3 @@ Open questions:
 - Whether generated metadata should be normalized into the existing project
   schema files.
 - How to keep output stable across provider changes.
-

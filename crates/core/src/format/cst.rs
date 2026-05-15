@@ -164,10 +164,10 @@ impl<'a> CstFormatter<'a> {
     }
 
     fn field_selection(&mut self, node: usize) {
-        let first = self.direct_qualified_name_text(node);
+        let first = self.direct_relation_ref_text(node);
         let tail = self.direct_rule(node, SyntaxRule::FieldSelectionTail);
         let (alias, name, suffix) = if let Some(tail) = tail {
-            let tail_name = self.direct_qualified_name_text(tail);
+            let tail_name = self.direct_relation_ref_text(tail);
             if tail_name.is_some() {
                 (
                     first,
@@ -408,6 +408,25 @@ impl<'a> CstFormatter<'a> {
         } else {
             Some(parts.join("."))
         }
+    }
+
+    fn direct_relation_ref_text(&self, node: usize) -> Option<String> {
+        let relation = self.direct_rule(node, SyntaxRule::RelationRef)?;
+        let qualified = self.direct_qualified_name_text(relation)?;
+        let selector = self
+            .node(relation)
+            .children
+            .iter()
+            .copied()
+            .skip_while(|child| self.token(*child) != Some(SyntaxToken::ColonColon))
+            .skip(1)
+            .find_map(|child| {
+                (self.token(child) == Some(SyntaxToken::Name))
+                    .then(|| self.text(self.node(child).range))
+            });
+        selector.map_or(Some(qualified.clone()), |selector| {
+            Some(format!("{qualified}::{selector}"))
+        })
     }
 
     fn direct_value_rule(&self, node: usize) -> Option<usize> {

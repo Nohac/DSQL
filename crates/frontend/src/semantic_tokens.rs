@@ -199,24 +199,30 @@ fn add_qualified_ref_tokens(
     tail_kind: SemanticTokenKind,
 ) {
     let text = source.text(range);
-    if let Some(dot) = text.find('.') {
+    let relation_end = text.find("::").unwrap_or(text.len());
+    let relation_range = TextRange {
+        start: range.start,
+        end: range.start + relation_end as u32,
+    };
+    let relation_text = &text[..relation_end];
+    if let Some(dot) = relation_text.find('.') {
         tokens.push(SemanticTokenInfo {
             range: TextRange {
-                start: range.start,
-                end: range.start + dot as u32,
+                start: relation_range.start,
+                end: relation_range.start + dot as u32,
             },
             kind: SemanticTokenKind::Schema,
         });
         tokens.push(SemanticTokenInfo {
             range: TextRange {
-                start: range.start + dot as u32 + 1,
-                end: range.end,
+                start: relation_range.start + dot as u32 + 1,
+                end: relation_range.end,
             },
             kind: tail_kind,
         });
     } else {
         tokens.push(SemanticTokenInfo {
-            range,
+            range: relation_range,
             kind: tail_kind,
         });
     }

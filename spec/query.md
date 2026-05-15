@@ -66,6 +66,17 @@ public.users
 other_schema.users
 ```
 
+Relationship paths may add a foreign-key selector after the table reference:
+
+```dsql
+public.aka_title::movie_id
+aka_title::episode_of_id
+```
+
+The part before `::` is still the table reference. The part after `::`
+selects which foreign-key path connects the current table to that relation
+target.
+
 The default schema is configured by the project. If it is not configured, the
 default schema is `public`.
 
@@ -74,6 +85,10 @@ default configuration, `users` resolves as `public.users`.
 
 The output key for a schema-qualified table or relation is still the table name
 unless an alias is provided. For example, `public.users` produces `users`.
+
+The output key for a relation with a foreign-key selector is also the table
+name unless an alias is provided. For example, `aka_title::movie_id` produces
+`aka_title`.
 
 ## Queries
 
@@ -226,37 +241,95 @@ query Users {
 
 The output key for `public.posts` is still `posts`.
 
-## Relationship Ambiguity
-
-A relation selection is ambiguous only when the catalog exposes more than one
-relationship with the same selectable name from the same parent table.
-
-For example, ambiguity can exist if project or catalog metadata exposes both of
-these relationships from `public.users` under the selectable name `posts`:
-
-```text
-public.posts.author_id -> public.users.id  as posts
-public.posts.editor_id -> public.users.id  as posts
-```
-
-Then this selection has no way to choose which foreign key to use:
+If multiple foreign-key paths connect the current table to the same relation
+target, the relation must include a foreign-key selector.
 
 ```dsql
-query Users {
-  users {
-    posts {
+query Titles {
+  title {
+    aka_title::movie_id {
       id
     }
   }
 }
 ```
 
-This is a catalog naming problem, not a syntax problem. The user should resolve
-it through distinct relationship names in catalog/project metadata, or by using
-whatever alias/relationship-disambiguation syntax the catalog provider exposes.
+The selector identifies the foreign-key path. The default selector is derived
+from the local foreign-key column names on the related table. For a single
+column foreign key, the selector is the local column name, such as `movie_id`.
+For a composite foreign key, the selector joins the local column names in
+constraint order with underscores, such as `tenant_id_order_id`.
 
-If the catalog only exposes one relationship named `posts`, the selection is not
-ambiguous.
+Schema qualification and foreign-key selectors may be combined:
+
+```dsql
+query Titles {
+  title {
+    public.aka_title::episode_of_id {
+      id
+    }
+  }
+}
+```
+
+When only one foreign-key path connects the current table to the relation
+target, the selector may be omitted.
+
+## Relationship Ambiguity
+
+A relation selection is ambiguous when it names a relation target but multiple
+foreign-key paths connect the current table to that target.
+
+For example, ambiguity exists if `public.aka_title` has both of these foreign
+keys to `public.title`:
+
+```text
+public.aka_title.movie_id -> public.title.id
+public.aka_title.episode_of_id -> public.title.id
+```
+
+Then this selection has no way to choose which foreign key to use:
+
+```dsql
+query Titles {
+  title {
+    aka_title {
+      id
+    }
+  }
+}
+```
+
+The selection must disambiguate the foreign-key path:
+
+```dsql
+query Titles {
+  title {
+    aka_title::movie_id {
+      id
+    }
+  }
+}
+```
+
+If multiple selected relations would produce the same output key, aliases are
+required.
+
+```dsql
+query Titles {
+  title {
+    aliases: aka_title::movie_id {
+      id
+    }
+
+    episodes: aka_title::episode_of_id {
+      id
+    }
+  }
+}
+```
+
+Without aliases, both selections would output `aka_title`.
 
 ## Clauses
 

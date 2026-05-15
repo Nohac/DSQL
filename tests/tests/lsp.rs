@@ -127,6 +127,30 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         completions_at_marker(&host, &uri, &source, &markers, "fragment_spread").await;
     let title_body_after_clause =
         completions_at_marker(&host, &uri, &source, &markers, "title_body_after_clause").await;
+    let relation_path_clause_recovery = completions_at_marker(
+        &host,
+        &uri,
+        &source,
+        &markers,
+        "relation_path_clause_recovery",
+    )
+    .await;
+    let relation_path_closed_clause_recovery = completions_at_marker(
+        &host,
+        &uri,
+        &source,
+        &markers,
+        "relation_path_closed_clause_recovery",
+    )
+    .await;
+    let relation_path_after_fragment = completions_at_marker(
+        &host,
+        &uri,
+        &source,
+        &markers,
+        "relation_path_after_fragment",
+    )
+    .await;
 
     assert_completion_labels("document root", &document_root, &["query", "fragment"]);
     assert_no_completion_labels(
@@ -234,6 +258,36 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         &clause_prefix,
         &["movie_keyword", "keyword"],
     );
+    assert_completion_labels(
+        "relation path clause recovery",
+        &relation_path_clause_recovery,
+        &["where", "order by", "limit", "offset"],
+    );
+    assert_no_completion_labels(
+        "relation path clause recovery",
+        &relation_path_clause_recovery,
+        &["id", "aka_title::movie_id", "aka_title::episode_of_id"],
+    );
+    assert_completion_labels(
+        "relation path closed clause recovery",
+        &relation_path_closed_clause_recovery,
+        &["where", "order by", "limit", "offset"],
+    );
+    assert_no_completion_labels(
+        "relation path closed clause recovery",
+        &relation_path_closed_clause_recovery,
+        &["id", "aka_title::movie_id", "aka_title::episode_of_id"],
+    );
+    assert_completion_labels(
+        "relation path after fragment",
+        &relation_path_after_fragment,
+        &["where", "order by", "limit", "offset"],
+    );
+    assert_no_completion_labels(
+        "relation path after fragment",
+        &relation_path_after_fragment,
+        &["id", "aka_title::movie_id", "aka_title::episode_of_id"],
+    );
 
     snapshot(
         "lsp_completion_contexts",
@@ -253,6 +307,18 @@ async fn imdb_keyword_and_operator_completion_contexts() {
             ("unknown_clause", &unknown_clause),
             ("fragment_spread", &fragment_spread),
             ("title_body_after_clause", &title_body_after_clause),
+            (
+                "relation_path_clause_recovery",
+                &relation_path_clause_recovery,
+            ),
+            (
+                "relation_path_closed_clause_recovery",
+                &relation_path_closed_clause_recovery,
+            ),
+            (
+                "relation_path_after_fragment",
+                &relation_path_after_fragment,
+            ),
         ]
         .into_iter()
         .map(|(name, items)| format!("{name}\n{}", format_completions(items)))

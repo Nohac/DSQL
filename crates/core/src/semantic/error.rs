@@ -37,7 +37,7 @@ pub enum CheckErrorKind {
     },
     AmbiguousRelation {
         relation: String,
-        candidates: Vec<TableKey>,
+        candidates: Vec<String>,
     },
     DuplicateOutputKey {
         key: String,
@@ -125,9 +125,9 @@ impl CheckErrorKind {
                 relation,
                 candidates,
             } => format!(
-                "relation `{}` is ambiguous; use an alias with a schema-qualified name ({})",
+                "relation `{}` has multiple foreign-key paths; use one of: {}",
                 relation,
-                format_table_candidates(candidates),
+                candidates.join(", "),
             ),
             CheckErrorKind::DuplicateOutputKey { key } => {
                 format!("selection output key `{key}` is ambiguous; use an alias")

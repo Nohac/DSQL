@@ -1,0 +1,80 @@
+---
+source: tests/tests/fixtures.rs
+assertion_line: 185
+expression: contents
+---
+-- movie_info
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'id',
+        "movie_info_d37aaa02"."id",
+        'title',
+        "title_json_85df456e"."title"
+      )
+    ),
+    '[]'
+  ) as "movie_info"
+from
+  (
+    select
+      *
+    from
+      "public"."movie_info" as "movie_info_d37aaa02"
+    where
+      "movie_info_d37aaa02"."id" = 1811435
+    limit
+      1
+  ) as "movie_info_d37aaa02"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'aliases',
+        "aliases_json_cbbc8bb8"."aliases",
+        'episodes',
+        "episodes_json_33e11afe"."episodes"
+      ) as "title"
+    from
+      "public"."title" as "title_85df456e"
+      left join LATERAL (
+        select
+          COALESCE(
+            JSON_AGG(JSON_BUILD_OBJECT('id', "aliases_cbbc8bb8"."id")),
+            '[]'
+          ) as "aliases"
+        from
+          (
+            select
+              *
+            from
+              "public"."aka_title" as "aliases_cbbc8bb8"
+            where
+              "aliases_cbbc8bb8"."movie_id" = "title_85df456e"."id"
+            limit
+              10
+          ) as "aliases_cbbc8bb8"
+      ) as "aliases_json_cbbc8bb8" on true
+      left join LATERAL (
+        select
+          COALESCE(
+            JSON_AGG(
+              JSON_BUILD_OBJECT('id', "episodes_33e11afe"."id")
+            ),
+            '[]'
+          ) as "episodes"
+        from
+          (
+            select
+              *
+            from
+              "public"."aka_title" as "episodes_33e11afe"
+            where
+              "episodes_33e11afe"."episode_of_id" = "title_85df456e"."id"
+            limit
+              10
+          ) as "episodes_33e11afe"
+      ) as "episodes_json_33e11afe" on true
+    where
+      "title_85df456e"."id" = "movie_info_d37aaa02"."movie_id"
+  ) as "title_json_85df456e" on true

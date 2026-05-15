@@ -57,6 +57,7 @@ pub enum SyntaxRule {
     OrderItem,
     QueryDef,
     QualifiedName,
+    RelationRef,
     Selection,
     SelectionSet,
     WhereClause,
@@ -82,6 +83,7 @@ pub enum SyntaxToken {
     RBrace,
     LPar,
     RPar,
+    ColonColon,
     Colon,
     At,
     Comma,
@@ -264,6 +266,7 @@ fn map_rule(rule: Rule) -> SyntaxRule {
         Rule::OrderItem => SyntaxRule::OrderItem,
         Rule::QueryDef => SyntaxRule::QueryDef,
         Rule::QualifiedName => SyntaxRule::QualifiedName,
+        Rule::RelationRef => SyntaxRule::RelationRef,
         Rule::Selection => SyntaxRule::Selection,
         Rule::SelectionSet => SyntaxRule::SelectionSet,
         Rule::WhereClause => SyntaxRule::WhereClause,
@@ -289,6 +292,7 @@ fn map_token(token: Token) -> SyntaxToken {
         Token::RBrace => SyntaxToken::RBrace,
         Token::LPar => SyntaxToken::LPar,
         Token::RPar => SyntaxToken::RPar,
+        Token::ColonColon => SyntaxToken::ColonColon,
         Token::Colon => SyntaxToken::Colon,
         Token::At => SyntaxToken::At,
         Token::Comma => SyntaxToken::Comma,
@@ -371,10 +375,10 @@ impl<'a> AstBuilder<'a> {
     }
 
     fn field_selection(&self, node: NodeRef) -> Selection {
-        let first_name = self.direct_qualified_names(node).into_iter().next();
+        let first_name = self.direct_relation_refs(node).into_iter().next();
         let tail = self.direct_rule(node, Rule::FieldSelectionTail);
         let (alias, name, suffix) = if let Some(tail) = tail {
-            let tail_names = self.direct_qualified_names(tail);
+            let tail_names = self.direct_relation_refs(tail);
             if tail_names.is_empty() {
                 (
                     None,
@@ -676,6 +680,41 @@ impl<'a> AstBuilder<'a> {
                 Some(NameRef {
                     range: range(self.cst.span(qualified)),
                     text,
+                })
+            })
+            .collect()
+    }
+
+    fn direct_relation_refs(&self, node: NodeRef) -> Vec<NameRef> {
+        self.direct_rules(node, Rule::RelationRef)
+            .into_iter()
+            .filter_map(|relation| {
+                let qualified = self.direct_qualified_names(relation).into_iter().next()?;
+                let selector = self
+                    .cst
+                    .children(relation)
+                    .filter_map(|child| token_text(self.cst, child))
+                    .scan(false, |after_colon_colon, (token, text, token_range)| {
+                        if *after_colon_colon && token == Token::Name {
+                            return Some(Some(NameRef {
+                                range: token_range,
+                                text: text.to_string(),
+                            }));
+                        }
+                        *after_colon_colon = token == Token::ColonColon;
+                        Some(None)
+                    })
+                    .flatten()
+                    .next();
+                let Some(selector) = selector else {
+                    return Some(qualified);
+                };
+                Some(NameRef {
+                    range: TextRange {
+                        start: qualified.range.start,
+                        end: selector.range.end,
+                    },
+                    text: format!("{}::{}", qualified.text, selector.text),
                 })
             })
             .collect()

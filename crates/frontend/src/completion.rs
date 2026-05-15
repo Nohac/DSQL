@@ -123,19 +123,27 @@ fn root_selection_completions(catalog: &Catalog) -> Vec<CompletionItem> {
 fn field_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
     let mut completions = Vec::new();
     completions.extend(column_completions(catalog, table));
-    completions.extend(
-        catalog
-            .relation_fields_for_table(table)
-            .into_iter()
-            .map(|relation| CompletionItem {
-                label: completion_table_ref(catalog, &relation.table.schema, relation.name),
-                kind: CompletionKind::Relation,
-                detail: Some(format!(
-                    "relation to {}.{}",
-                    relation.table.schema, relation.table.name
-                )),
-            }),
-    );
+    let relations = catalog.relation_fields_for_table(table);
+    completions.extend(relations.iter().map(|relation| {
+        let relation_count = relations
+            .iter()
+            .filter(|candidate| candidate.table.id == relation.table.id)
+            .count();
+        let table_ref = completion_table_ref(catalog, &relation.table.schema, relation.name);
+        let label = if relation_count > 1 {
+            format!("{table_ref}::{}", relation.selector)
+        } else {
+            table_ref
+        };
+        CompletionItem {
+            label,
+            kind: CompletionKind::Relation,
+            detail: Some(format!(
+                "relation to {}.{} via {}",
+                relation.table.schema, relation.table.name, relation.selector
+            )),
+        }
+    }));
     completions.sort_by(|left, right| left.label.cmp(&right.label));
     completions.dedup_by(|left, right| left.label == right.label);
     completions

@@ -76,6 +76,7 @@ impl Catalog {
             if let Some(related) = self.tables.get(fk.from_table.0) {
                 relations.push(RelationField {
                     name: related.name.as_str(),
+                    selector: self.foreign_key_selector(fk),
                     table: related,
                     foreign_key: fk,
                 });
@@ -89,6 +90,7 @@ impl Catalog {
             if let Some(related) = self.tables.get(fk.to_table.0) {
                 relations.push(RelationField {
                     name: related.name.as_str(),
+                    selector: self.foreign_key_selector(fk),
                     table: related,
                     foreign_key: fk,
                 });
@@ -97,12 +99,23 @@ impl Catalog {
         relations
     }
 
+    pub fn foreign_key_selector(&self, foreign_key: &ForeignKey) -> String {
+        foreign_key
+            .from_columns
+            .iter()
+            .filter_map(|id| self.columns.get(id.0))
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>()
+            .join("_")
+    }
+
     pub fn check_field(&self, table: TableId, field: &str) -> FieldCheckResult<'_> {
         let Some(table) = self.tables.get(table.0) else {
             return FieldCheckResult::NotFound;
         };
 
-        let (field_schema, field_name) = split_schema_ref(field);
+        let (field_ref, field_selector) = split_relation_selector(field);
+        let (field_schema, field_name) = split_schema_ref(field_ref);
         if field_schema.is_none()
             && let Some(column) = table
                 .columns
@@ -119,20 +132,34 @@ impl Catalog {
             .filter(|relation| {
                 relation.name == field_name
                     && relation.table.schema == field_schema.unwrap_or(&self.default_schema)
+                    && field_selector.is_none_or(|selector| selector == relation.selector)
             })
             .collect::<Vec<_>>();
         match relation_candidates.as_slice() {
             [] => FieldCheckResult::NotFound,
-            [relation] => FieldCheckResult::Relation(*relation),
+            [relation] => FieldCheckResult::Relation(relation.clone()),
             _ => FieldCheckResult::AmbiguousRelation {
                 reference: field.to_string(),
                 candidates: relation_candidates
                     .iter()
-                    .map(|relation| relation.table.key.clone())
+                    .map(|relation| {
+                        format!(
+                            "{}.{}::{}",
+                            relation.table.schema, relation.name, relation.selector
+                        )
+                    })
                     .collect(),
             },
         }
     }
+}
+
+fn split_relation_selector(reference: &str) -> (&str, Option<&str>) {
+    reference
+        .split_once("::")
+        .map_or((reference, None), |(relation, selector)| {
+            (relation, Some(selector))
+        })
 }
 
 fn split_schema_ref(reference: &str) -> (Option<&str>, &str) {

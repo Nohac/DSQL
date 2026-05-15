@@ -94,13 +94,14 @@ pub enum FieldCheckResult<'a> {
     NotFound,
     AmbiguousRelation {
         reference: String,
-        candidates: Vec<TableKey>,
+        candidates: Vec<String>,
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelationField<'a> {
     pub name: &'a str,
+    pub selector: String,
     pub table: &'a Table,
     pub foreign_key: &'a ForeignKey,
 }

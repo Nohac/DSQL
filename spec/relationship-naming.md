@@ -41,3 +41,59 @@ Open questions:
 - Whether output keys follow rewritten relation names or require explicit
   aliases.
 - How rewrite rules interact with schema-qualified relation references.
+
+## Defined Relationship Aliases
+
+Project metadata may eventually allow named relationships that alias an inferred
+foreign-key path.
+
+Example idea:
+
+```text
+aka_title_movies -> aka_title::movie_id
+aka_title_episodes -> aka_title::episode_of_id
+```
+
+Those names could then be selected directly:
+
+```dsql
+query Titles {
+  title {
+    aka_title_movies {
+      id
+      title
+    }
+
+    aka_title_episodes {
+      id
+      title
+    }
+  }
+}
+```
+
+This would provide stable, user-owned relationship names while keeping the raw
+`[schema.]table::foreign_key` selector available as an explicit lower-level
+reference.
+
+Potential benefits:
+
+- Avoid forcing query authors to use physical foreign-key column names
+  everywhere.
+- Preserve existing API relationship names when importing metadata from systems
+  such as Hasura.
+- Give views and other non-FK-backed objects relationship metadata.
+- Let introspection generate suggested aliases that users can edit.
+- Reduce query churn when database details change but the desired API shape does
+  not.
+
+Open questions:
+
+- Whether aliases are scoped globally, per source table, or per schema/table.
+- Whether an alias may point only to inferred FK paths or also to hand-authored
+  join definitions.
+- Whether alias selection output keys use the alias name by default.
+- How alias conflicts with table names, columns, and inferred relations are
+  reported.
+- Whether generated aliases should be checked into project metadata or remain
+  provider-owned.

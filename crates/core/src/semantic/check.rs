@@ -532,6 +532,7 @@ fn response_key(selection: &Selection) -> String {
 }
 
 fn unqualified_name(name: &str) -> &str {
+    let name = name.split_once("::").map_or(name, |(name, _)| name);
     name.rsplit_once('.').map_or(name, |(_, name)| name)
 }
 

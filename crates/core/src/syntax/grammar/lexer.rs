@@ -58,6 +58,8 @@ pub enum Token {
     LPar,
     #[token(")")]
     RPar,
+    #[token("::")]
+    ColonColon,
     #[token(":")]
     Colon,
     #[token("@")]

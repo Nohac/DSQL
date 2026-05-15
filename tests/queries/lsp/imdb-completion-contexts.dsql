@@ -50,3 +50,62 @@ query CompletionContexts {
     }
   }
 }
+
+query RelationPathClauseRecovery {
+  movie_info(limit 10) {
+    id
+    title(/*^relation_path_clause_recovery*/ {
+      movie: aka_title::movie_id {
+        id
+        title
+      }
+      episode: aka_title::episode_of_id {
+        id
+        title
+      }
+    }
+  }
+}
+
+query RelationPathClosedClauseRecovery {
+  movie_info(limit 10) {
+    id
+    title(/*^relation_path_closed_clause_recovery*/) {
+      movie: aka_title::movie_id {
+        id
+        title
+      }
+      episode: aka_title::episode_of_id {
+        id
+        title
+      }
+    }
+  }
+}
+
+fragment RelationPathPrefix on movie_info {
+  id
+  info_type_id
+  title {
+    aka_title::episode_of_id {
+      note
+    }
+    title
+  }
+}
+
+query RelationPathAfterFragment {
+  movie_info(limit 10) {
+    id
+    title(/*^relation_path_after_fragment*/ {
+      movie: aka_title::movie_id {
+        id
+        title
+      }
+      episode: aka_title::episode_of_id {
+        id
+        title
+      }
+    }
+  }
+}

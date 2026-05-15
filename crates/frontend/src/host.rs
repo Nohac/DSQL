@@ -1,5 +1,6 @@
 use crate::AnalysisResult;
 use crate::completion::{CompletionItem, completions_at};
+use crate::cursor::cursor_context;
 use crate::db::CompilerDb;
 use crate::definition::{
     DefinitionResult, DefinitionTarget, SourceDefinition, SourceDefinitionKind,
@@ -185,6 +186,11 @@ impl AnalysisHost {
         Some(self.inner.documents.get(uri)?.snapshot())
     }
 
+    pub fn document_byte_offset(&self, uri: &str, position: TextPosition) -> Option<usize> {
+        let snapshot = self.inner.documents.get(uri)?.snapshot();
+        Some(position_to_byte(&snapshot.rope, position))
+    }
+
     pub async fn document_diagnostics(&self, uri: &str) -> Option<DocumentDiagnostics> {
         let snapshot = self.inner.documents.get(uri)?.snapshot();
         self.diagnostics_for_snapshot(snapshot).await
@@ -209,6 +215,21 @@ impl AnalysisHost {
         let analysis = self.analyze(snapshot.file).await?;
         let catalog = self.inner.db.catalog();
         Some(completions_at(&analysis.parse, &catalog, byte))
+    }
+
+    pub async fn completion_context_debug(
+        &self,
+        uri: &str,
+        position: TextPosition,
+    ) -> Option<String> {
+        let snapshot = self.inner.documents.get(uri)?.snapshot();
+        let byte = position_to_byte(&snapshot.rope, position);
+        let analysis = self.analyze(snapshot.file).await?;
+        let catalog = self.inner.db.catalog();
+        Some(format!(
+            "{:?}",
+            cursor_context(&analysis.parse, &catalog, byte)
+        ))
     }
 
     pub async fn hover(&self, uri: &str, position: TextPosition) -> Option<HoverInfo> {
