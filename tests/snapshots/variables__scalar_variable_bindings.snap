@@ -1,0 +1,10 @@
+---
+source: tests/tests/variables.rs
+assertion_line: 45
+expression: contents
+---
+input.users.clause.where.id.min_id Structured WhereValue Uuid Some("min_id")
+params.title TopLevel WhereValue Text Some("title")
+input.users.clause.limit Structured Limit Int None
+params.offset TopLevel Offset Int None
+input.users.body.posts.clause.limit.post_limit Structured Limit Int Some("post_limit")

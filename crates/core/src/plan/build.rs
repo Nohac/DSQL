@@ -274,6 +274,7 @@ fn plan_filter_expr(
 ) -> Option<FilterExpr> {
     match expr {
         crate::Expr::Name(_) => None,
+        crate::Expr::Variable(_) => None,
         crate::Expr::Path(path) => {
             plan_filter_path(catalog, root_table, table, outer_current_table, path)
         }

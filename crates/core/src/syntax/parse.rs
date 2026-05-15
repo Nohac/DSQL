@@ -62,6 +62,7 @@ pub enum SyntaxRule {
     ScopedPathSegment,
     Selection,
     SelectionSet,
+    ValueVariable,
     WhereClause,
 }
 
@@ -96,6 +97,8 @@ pub enum SyntaxToken {
     DotDot,
     Dot,
     Tilde,
+    DollarDollar,
+    Dollar,
     Eq,
     Ne,
     Gt,
@@ -278,6 +281,7 @@ fn map_rule(rule: Rule) -> SyntaxRule {
         Rule::ScopedPathSegment => SyntaxRule::ScopedPathSegment,
         Rule::Selection => SyntaxRule::Selection,
         Rule::SelectionSet => SyntaxRule::SelectionSet,
+        Rule::ValueVariable => SyntaxRule::ValueVariable,
         Rule::WhereClause => SyntaxRule::WhereClause,
     }
 }
@@ -312,6 +316,8 @@ fn map_token(token: Token) -> SyntaxToken {
         Token::DotDot => SyntaxToken::DotDot,
         Token::Dot => SyntaxToken::Dot,
         Token::Tilde => SyntaxToken::Tilde,
+        Token::DollarDollar => SyntaxToken::DollarDollar,
+        Token::Dollar => SyntaxToken::Dollar,
         Token::Eq => SyntaxToken::Eq,
         Token::Ne => SyntaxToken::Ne,
         Token::Gt => SyntaxToken::Gt,
@@ -578,6 +584,9 @@ impl<'a> AstBuilder<'a> {
         if let Some(path) = self.direct_rule(node, Rule::ScopedPath) {
             return Expr::Path(self.scoped_path(path));
         }
+        if let Some(variable) = self.direct_rule(node, Rule::ValueVariable) {
+            return Expr::Variable(self.value_variable(variable));
+        }
         if let Some(name) = self.direct_qualified_names(node).into_iter().next() {
             return Expr::Name(name);
         }
@@ -806,9 +815,30 @@ impl<'a> AstBuilder<'a> {
                         | Rule::Literal
                         | Rule::QualifiedName
                         | Rule::ScopedPath
+                        | Rule::ValueVariable
                 )
             )
         })
+    }
+
+    fn value_variable(&self, node: NodeRef) -> ValueVariable {
+        let mut scope = VariableScope::Structured;
+        for child in self.cst.children(node) {
+            let Some((token, _, _)) = token_text(self.cst, child) else {
+                continue;
+            };
+            scope = match token {
+                Token::Dollar => VariableScope::Structured,
+                Token::DollarDollar => VariableScope::TopLevel,
+                _ => continue,
+            };
+            break;
+        }
+        ValueVariable {
+            range: range(self.cst.span(node)),
+            scope,
+            name: self.direct_names(node).into_iter().next(),
+        }
     }
 
     fn direct_rules(&self, node: NodeRef, target: Rule) -> Vec<NodeRef> {

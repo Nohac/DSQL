@@ -1,5 +1,5 @@
 token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or';
-token LBrace='{' RBrace='}' LPar='(' RPar=')' ColonColon='::' Colon=':' At='@' Comma=',' Ellipsis='...' DotDot='..' Dot='.' Tilde='~';
+token LBrace='{' RBrace='}' LPar='(' RPar=')' ColonColon='::' Colon=':' At='@' Comma=',' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
 token Whitespace Comment;
@@ -19,6 +19,7 @@ qualified_name: Name [?1 '.' Name];
 relation_ref: qualified_name ['::' Name];
 scoped_path_segment: Name ['::' Name];
 scoped_path: ('.' | '..' | '~') scoped_path_segment ('.' scoped_path_segment)*;
+value_variable: ('$' | '$$') [Name];
 selection_set: '{' selection* '}';
 selection:
   field_selection [',']
@@ -50,6 +51,7 @@ expr:
 | expr 'or' expr @binary_expr
 | literal
 | scoped_path
+| value_variable
 | '(' expr ')'
 ;
 literal:

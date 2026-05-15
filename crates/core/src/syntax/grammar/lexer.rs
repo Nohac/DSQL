@@ -80,6 +80,10 @@ pub enum Token {
     Dot,
     #[token("~")]
     Tilde,
+    #[token("$$")]
+    DollarDollar,
+    #[token("$")]
+    Dollar,
     #[token("==")]
     Eq,
     #[token("!=")]

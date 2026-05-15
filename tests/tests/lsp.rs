@@ -641,6 +641,41 @@ query Movies {
     );
 }
 
+#[tokio::test]
+async fn lsp_hovers_show_inferred_variable_bindings() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let uri = "file:///tests/queries/lsp/imdb-variable-hover.dsql".to_string();
+    let source = "\
+query KeywordDiscovery {
+  keyword(where .movie_keyword.title.production_year > $ order by keyword asc limit $) {
+    id
+  }
+}";
+    host.open_document(uri.clone(), 1, source.to_string()).await;
+
+    let where_variable = host
+        .hover(&uri, position_at(source, "$ order"))
+        .await
+        .expect("where variable should have hover info");
+    let limit_variable = host
+        .hover(&uri, position_at(source, "$) {"))
+        .await
+        .expect("limit variable should have hover info");
+    let query = host
+        .hover(&uri, position_at(source, "KeywordDiscovery"))
+        .await
+        .expect("query should show inferred variable input shape");
+
+    snapshot(
+        "lsp_variable_hover",
+        &format!(
+            "{}\n\n{}\n\n{}",
+            where_variable.markdown, limit_variable.markdown, query.markdown
+        ),
+    );
+}
+
 fn format_completions(items: &[dsql_frontend::CompletionItem]) -> String {
     items
         .iter()

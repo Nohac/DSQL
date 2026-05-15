@@ -384,6 +384,8 @@ impl<'a> CstFormatter<'a> {
                     self.literal(literal);
                 } else if let Some(path) = self.direct_rule(node, SyntaxRule::ScopedPath) {
                     self.scoped_path(path);
+                } else if let Some(variable) = self.direct_rule(node, SyntaxRule::ValueVariable) {
+                    self.value_variable(variable);
                 } else if let Some(name) = self.direct_qualified_name_text(node) {
                     self.out.push_str(&name);
                 } else if let Some(name) = self.direct_token_text(node, SyntaxToken::Name) {
@@ -399,11 +401,16 @@ impl<'a> CstFormatter<'a> {
                 }
             }
             Some(SyntaxRule::ScopedPath) => self.scoped_path(node),
+            Some(SyntaxRule::ValueVariable) => self.value_variable(node),
             _ => {}
         }
     }
 
     fn scoped_path(&mut self, node: usize) {
+        self.out.push_str(&self.text(self.node(node).range));
+    }
+
+    fn value_variable(&mut self, node: usize) {
         self.out.push_str(&self.text(self.node(node).range));
     }
 
@@ -640,6 +647,7 @@ impl<'a> CstFormatter<'a> {
                         | SyntaxRule::Literal
                         | SyntaxRule::QualifiedName
                         | SyntaxRule::ScopedPath
+                        | SyntaxRule::ValueVariable
                 )
             )
         })
@@ -783,6 +791,23 @@ mod tests {
         assert_eq!(
             formatted.text,
             "query Movies {\n  title(where .aka_title::episode_of_id.episode_nr > 0\n    order by production_year desc limit 25\n  ) {\n    id\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn preserves_variables_in_clauses() {
+        let parsed = parse_source(SourceSnapshot::from(
+            "query KeywordDiscovery { keyword(where .movie_keyword.title.production_year > $ order by keyword asc limit $movie_limit offset $$) { id } }",
+        ));
+        let formatted = format_file(&parsed);
+        assert!(
+            formatted.diagnostics.is_empty(),
+            "{:?}",
+            formatted.diagnostics
+        );
+        assert_eq!(
+            formatted.text,
+            "query KeywordDiscovery {\n  keyword(where .movie_keyword.title.production_year > $\n    order by keyword asc limit $movie_limit offset $$\n  ) {\n    id\n  }\n}\n"
         );
     }
 

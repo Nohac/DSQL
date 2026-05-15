@@ -1,0 +1,31 @@
+---
+source: tests/tests/lsp.rs
+assertion_line: 801
+expression: contents
+---
+### Variable `$`
+
+- Path: `input.keyword.clause.where.movie_keyword.title.production_year`
+- Type: `int`
+- Role: `where value`
+
+### Variable `$`
+
+- Path: `input.keyword.clause.limit`
+- Type: `int`
+- Role: `limit`
+
+### Query `KeywordDiscovery`
+
+#### Variables
+
+```yaml
+input:
+  keyword:
+    clause:
+      limit: int
+      where:
+        movie_keyword:
+          title:
+            production_year: int
+```

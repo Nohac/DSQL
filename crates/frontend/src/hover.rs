@@ -1,8 +1,9 @@
 use crate::range_contains;
 use dsql_core::{
     Catalog, Clause, Definition, Expr, FieldCheckResult, Selection, SelectionKind, SourceFile,
-    TableId,
+    TableId, VariableBinding, VariableRole, VariableSource, infer_variable_bindings,
 };
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HoverInfo {
@@ -16,9 +17,27 @@ pub(crate) fn hover_at(
     catalog: &Catalog,
     byte: usize,
 ) -> Option<HoverInfo> {
+    let variable_bindings = infer_variable_bindings(source_file, catalog).bindings;
+    if let Some(binding) = variable_bindings
+        .iter()
+        .find(|binding| range_contains(binding.range, byte))
+    {
+        return Some(variable_hover(binding));
+    }
+
     for definition in source_file.definitions() {
         match definition {
             Definition::Query(query) => {
+                if let Some(name) = query.name()
+                    && range_contains(name.range, byte)
+                {
+                    return Some(query_hover(
+                        &name.text,
+                        variable_bindings.iter().filter(|binding| {
+                            range_contains(query.range, binding.range.start as usize)
+                        }),
+                    ));
+                }
                 for selection in &query.selections {
                     if !range_contains(selection.name.range, byte)
                         && !range_contains(selection.range, byte)
@@ -69,6 +88,19 @@ pub(crate) fn hover_at(
         }
     }
     None
+}
+
+fn query_hover<'a>(name: &str, bindings: impl Iterator<Item = &'a VariableBinding>) -> HoverInfo {
+    let shape = variable_shape_markdown(bindings);
+    HoverInfo {
+        label: name.to_string(),
+        detail: "query".to_string(),
+        markdown: if shape.is_empty() {
+            format!("### Query `{name}`\n\nNo variables.")
+        } else {
+            format!("### Query `{name}`\n\n#### Variables\n\n```yaml\n{shape}```")
+        },
+    }
 }
 
 fn hover_in_selections(
@@ -171,6 +203,7 @@ fn hover_in_expr(catalog: &Catalog, table: TableId, expr: &Expr, byte: usize) ->
             return hover_in_expr(catalog, table, left, byte)
                 .or_else(|| hover_in_expr(catalog, table, right, byte));
         }
+        Expr::Variable(_) => {}
         Expr::Literal(_) => {}
     }
     None
@@ -215,6 +248,95 @@ fn hover_in_path(
         current_table = relation.table.id;
     }
     None
+}
+
+fn variable_hover(binding: &VariableBinding) -> HoverInfo {
+    let label = variable_label(binding);
+    HoverInfo {
+        label,
+        detail: format!("variable: {}", binding.data_type.as_str()),
+        markdown: variable_hover_markdown(binding),
+    }
+}
+
+fn variable_label(binding: &VariableBinding) -> String {
+    let prefix = match binding.source {
+        VariableSource::Structured => "$",
+        VariableSource::TopLevel => "$$",
+    };
+    binding.name.as_ref().map_or_else(
+        || prefix.to_string(),
+        |name| {
+            let mut label = prefix.to_string();
+            label.push_str(name);
+            label
+        },
+    )
+}
+
+fn variable_hover_markdown(binding: &VariableBinding) -> String {
+    format!(
+        "### Variable `{}`\n\n- Path: `{}`\n- Type: `{}`\n- Role: `{}`",
+        variable_label(binding),
+        binding.path,
+        binding.data_type.as_str(),
+        variable_role_label(binding.role)
+    )
+}
+
+#[derive(Default)]
+struct VariableShapeNode {
+    children: BTreeMap<String, VariableShapeNode>,
+    value: Option<String>,
+}
+
+fn variable_shape_markdown<'a>(bindings: impl Iterator<Item = &'a VariableBinding>) -> String {
+    let mut root = VariableShapeNode::default();
+    for binding in bindings {
+        insert_variable_shape(
+            &mut root,
+            &binding.path.split('.').collect::<Vec<_>>(),
+            binding.data_type.as_str(),
+        );
+    }
+    let mut out = String::new();
+    render_variable_shape(&root, 0, &mut out);
+    out
+}
+
+fn insert_variable_shape(node: &mut VariableShapeNode, path: &[&str], data_type: &str) {
+    let Some((head, tail)) = path.split_first() else {
+        node.value = Some(data_type.to_string());
+        return;
+    };
+    insert_variable_shape(
+        node.children.entry((*head).to_string()).or_default(),
+        tail,
+        data_type,
+    );
+}
+
+fn render_variable_shape(node: &VariableShapeNode, indent: usize, out: &mut String) {
+    for (key, child) in &node.children {
+        out.push_str(&"  ".repeat(indent));
+        out.push_str(key);
+        if child.children.is_empty() {
+            out.push_str(": ");
+            out.push_str(child.value.as_deref().unwrap_or("unknown"));
+            out.push('\n');
+        } else {
+            out.push_str(":\n");
+            render_variable_shape(child, indent + 1, out);
+        }
+    }
+}
+
+fn variable_role_label(role: VariableRole) -> &'static str {
+    match role {
+        VariableRole::WhereValue => "where value",
+        VariableRole::Limit => "limit",
+        VariableRole::Offset => "offset",
+    }
 }
 
 fn table_hover_markdown(table: &dsql_core::Table) -> String {

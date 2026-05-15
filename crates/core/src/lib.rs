@@ -32,8 +32,9 @@ pub use plan::{
 };
 pub use semantic::{
     CheckError, CheckErrorKind, CheckedDefinition, CheckedFile, Interner, LoweredFile, NameId,
-    NameIndex, check_file, check_file_with_catalog, check_fragment_definition,
-    check_query_definition, lower_file,
+    NameIndex, VariableBinding, VariableBindings, VariableRole, VariableSource, check_file,
+    check_file_with_catalog, check_fragment_definition, check_query_definition,
+    infer_variable_bindings, lower_file,
 };
 pub use sql::{
     GeneratedSql, PostgresSqlOptions, SqlGenerationError, generate_postgres_sql,
@@ -43,5 +44,5 @@ pub use syntax::{
     BinaryOp, Clause, CstKind, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Expr,
     Literal, ParseResult, PathScope, ScopedPath, ScopedPathSegment, Selection, SelectionKind,
     Severity, SortDirection, SourceFile, SourceSnapshot, SourceText, SyntaxNode, SyntaxToken,
-    SyntaxTree, TextRange, Token, expected_tokens_at, parse_source,
+    SyntaxTree, TextRange, Token, ValueVariable, VariableScope, expected_tokens_at, parse_source,
 };

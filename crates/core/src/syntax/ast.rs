@@ -108,12 +108,27 @@ pub enum Expr {
     Literal(Literal),
     Name(NameRef),
     Path(ScopedPath),
+    Variable(ValueVariable),
     Binary {
         range: TextRange,
         left: Box<Expr>,
         op: BinaryOp,
         right: Box<Expr>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct ValueVariable {
+    pub range: TextRange,
+    pub scope: VariableScope,
+    pub name: Option<NameRef>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[repr(u8)]
+pub enum VariableScope {
+    Structured,
+    TopLevel,
 }
 
 #[derive(Clone, Debug, PartialEq, Facet)]

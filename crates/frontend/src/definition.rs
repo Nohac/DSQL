@@ -212,6 +212,7 @@ fn definition_in_expr(
         Expr::Path(path) => definition_in_path(catalog, table, path, byte),
         Expr::Binary { left, right, .. } => definition_in_expr(catalog, table, left, byte)
             .or_else(|| definition_in_expr(catalog, table, right, byte)),
+        Expr::Variable(_) => None,
         Expr::Literal(_) => None,
     }
 }

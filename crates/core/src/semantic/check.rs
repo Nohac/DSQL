@@ -355,6 +355,7 @@ fn check_predicate_expr(
             check_predicate_expr(catalog, root_table, table, left, errors);
             check_predicate_expr(catalog, root_table, table, right, errors);
         }
+        Expr::Variable(_) => {}
         Expr::Literal(_) => {}
     }
 }
@@ -508,7 +509,7 @@ fn check_non_negative_integer(
     let valid = matches!(
         expr,
         Expr::Literal(Literal::Number { value, .. }) if value.parse::<u64>().is_ok()
-    );
+    ) || matches!(expr, Expr::Variable(_));
     if !valid {
         errors.push(CheckError {
             range,

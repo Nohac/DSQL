@@ -176,6 +176,11 @@ fn lower_expr(expr: &Expr, interner: &mut Interner) {
             lower_expr(left, interner);
             lower_expr(right, interner);
         }
+        Expr::Variable(variable) => {
+            if let Some(name) = &variable.name {
+                interner.intern(&name.text);
+            }
+        }
         Expr::Literal(
             Literal::String { .. }
             | Literal::Number { .. }

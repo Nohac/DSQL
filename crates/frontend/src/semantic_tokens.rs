@@ -173,6 +173,7 @@ fn add_expr_tokens(
             add_expr_tokens(tokens, catalog, table, left);
             add_expr_tokens(tokens, catalog, table, right);
         }
+        Expr::Variable(_) => {}
         Expr::Literal(_) => {}
     }
 }

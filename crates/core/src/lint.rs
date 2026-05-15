@@ -254,7 +254,7 @@ fn lint_expr_predicate_indexes(
             lint_expr_predicate_indexes(catalog, table, left, severity, diagnostics);
             lint_expr_predicate_indexes(catalog, table, right, severity, diagnostics);
         }
-        Expr::Name(_) | Expr::Literal(_) => {}
+        Expr::Name(_) | Expr::Variable(_) | Expr::Literal(_) => {}
     }
 }
 
