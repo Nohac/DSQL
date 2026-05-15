@@ -32,8 +32,8 @@ Aggregates may need their own filter scope.
 query Users {
   users {
     id
-    published_posts: posts.count(where status == "published")
-    draft_posts: posts.count(where status == "draft")
+    published_posts: posts.count(where .status == "published")
+    draft_posts: posts.count(where .status == "draft")
   }
 }
 ```
@@ -66,4 +66,3 @@ Open questions:
 - How aggregate aliases are inferred.
 - Which aggregate functions are built in.
 - How provider-specific aggregates are exposed.
-

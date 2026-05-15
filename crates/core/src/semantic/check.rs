@@ -130,6 +130,7 @@ fn check_fragment_record(
         catalog,
         resolver,
         table.id,
+        table.id,
         &fragment.selections,
         errors,
         visiting,
@@ -176,10 +177,11 @@ fn check_root_selections(
                 continue;
             }
         };
-        check_clauses(catalog, table.id, selection, errors);
+        check_clauses(catalog, table.id, table.id, selection, errors);
         check_selection_set(
             catalog,
             resolver,
+            table.id,
             table.id,
             &selection.selections,
             errors,
@@ -191,6 +193,7 @@ fn check_root_selections(
 fn check_selection_set(
     catalog: &Catalog,
     resolver: &impl DefinitionResolver,
+    root_table: TableId,
     table: TableId,
     selections: &[Selection],
     errors: &mut Vec<CheckError>,
@@ -224,7 +227,7 @@ fn check_selection_set(
                 }
             }
             FieldCheckResult::Relation(relation) => {
-                check_clauses(catalog, relation.table.id, selection, errors);
+                check_clauses(catalog, root_table, relation.table.id, selection, errors);
                 if selection.selections.is_empty() {
                     errors.push(CheckError {
                         range: selection.name.range,
@@ -236,6 +239,7 @@ fn check_selection_set(
                     check_selection_set(
                         catalog,
                         resolver,
+                        root_table,
                         relation.table.id,
                         &selection.selections,
                         errors,
@@ -274,6 +278,7 @@ fn check_selection_set(
 
 fn check_clauses(
     catalog: &Catalog,
+    root_table: TableId,
     table: TableId,
     selection: &Selection,
     errors: &mut Vec<CheckError>,
@@ -281,7 +286,7 @@ fn check_clauses(
     for clause in &selection.clauses {
         match clause {
             Clause::Where(where_clause) => {
-                check_predicate_expr(catalog, table, &where_clause.predicate, errors)
+                check_predicate_expr(catalog, root_table, table, &where_clause.predicate, errors)
             }
             Clause::OrderBy(order_by) => {
                 for item in &order_by.items {
@@ -315,33 +320,38 @@ fn check_clauses(
 
 fn check_predicate_expr(
     catalog: &Catalog,
+    root_table: TableId,
     table: TableId,
     expr: &Expr,
     errors: &mut Vec<CheckError>,
 ) {
     match expr {
         Expr::Name(name) => {
-            if !matches!(
-                catalog.check_field(table, &name.text),
-                FieldCheckResult::Column(_)
-            ) {
-                let table_name = catalog
-                    .tables
-                    .get(table.0)
-                    .map_or("<unknown>", |table| table.name.as_str());
+            errors.push(CheckError {
+                range: name.range,
+                kind: CheckErrorKind::FieldNotFound {
+                    field: name.text.clone(),
+                    table: table_name(catalog, table).to_string(),
+                },
+            });
+        }
+        Expr::Path(path) => {
+            if resolve_predicate_path(catalog, root_table, table, path).is_none() {
                 errors.push(CheckError {
-                    range: name.range,
+                    range: path.range,
                     kind: CheckErrorKind::FieldNotFound {
-                        field: name.text.clone(),
-                        table: table_name.to_string(),
+                        field: predicate_path_label(path),
+                        table: table_name(catalog, table).to_string(),
                     },
                 });
             }
         }
-        Expr::Binary { left, right, .. } => {
-            check_binary_predicate_types(catalog, table, left, right, errors);
-            check_predicate_expr(catalog, table, left, errors);
-            check_predicate_expr(catalog, table, right, errors);
+        Expr::Binary {
+            left, op, right, ..
+        } => {
+            check_binary_predicate_types(catalog, root_table, table, left, *op, right, errors);
+            check_predicate_expr(catalog, root_table, table, left, errors);
+            check_predicate_expr(catalog, root_table, table, right, errors);
         }
         Expr::Literal(_) => {}
     }
@@ -349,36 +359,96 @@ fn check_predicate_expr(
 
 fn check_binary_predicate_types(
     catalog: &Catalog,
+    root_table: TableId,
     table: TableId,
     left: &Expr,
+    op: crate::BinaryOp,
     right: &Expr,
     errors: &mut Vec<CheckError>,
 ) {
-    let (name, literal) = match (left, right) {
-        (Expr::Name(name), Expr::Literal(literal)) => (name, literal),
-        (Expr::Literal(literal), Expr::Name(name)) => (name, literal),
+    let (path, literal) = match (left, right) {
+        (Expr::Path(path), Expr::Literal(literal)) => (path, literal),
+        (Expr::Literal(literal), Expr::Path(path)) => (path, literal),
         _ => return,
     };
-    let FieldCheckResult::Column(column) = catalog.check_field(table, &name.text) else {
+    let Some(data_type) = resolve_predicate_path(catalog, root_table, table, path) else {
         return;
     };
     let actual = literal_kind(literal);
     if actual == LiteralKind::Null {
         return;
     }
-    if !column
-        .data_type
-        .accepts_literal_value(actual, literal_value(literal))
-    {
+    if op == crate::BinaryOp::Like && data_type != crate::DataType::Text {
         errors.push(CheckError {
             range: literal_range(literal),
             kind: CheckErrorKind::PredicateTypeMismatch {
-                field: name.text.clone(),
-                expected: column.data_type,
+                field: predicate_path_label(path),
+                expected: crate::DataType::Text,
+                actual,
+            },
+        });
+        return;
+    }
+    if !data_type.accepts_literal_value(actual, literal_value(literal)) {
+        errors.push(CheckError {
+            range: literal_range(literal),
+            kind: CheckErrorKind::PredicateTypeMismatch {
+                field: predicate_path_label(path),
+                expected: data_type,
                 actual,
             },
         });
     }
+}
+
+fn resolve_predicate_path(
+    catalog: &Catalog,
+    root_table: TableId,
+    table: TableId,
+    path: &crate::ScopedPath,
+) -> Option<crate::DataType> {
+    let (mut current_table, segments) = match path.scope {
+        crate::PathScope::Current => (table, path.segments.as_slice()),
+        crate::PathScope::Root => (root_table, path.segments.as_slice()),
+        crate::PathScope::Parent => return None,
+    };
+    let (last, relations) = segments.split_last()?;
+    for relation_ref in relations {
+        let FieldCheckResult::Relation(relation) =
+            catalog.check_field(current_table, &relation_ref.text)
+        else {
+            return None;
+        };
+        current_table = relation.table.id;
+    }
+    let FieldCheckResult::Column(column) = catalog.check_field(current_table, &last.text) else {
+        return None;
+    };
+    Some(column.data_type)
+}
+
+fn predicate_path_label(path: &crate::ScopedPath) -> String {
+    let prefix = match path.scope {
+        crate::PathScope::Current => ".",
+        crate::PathScope::Parent => "..",
+        crate::PathScope::Root => "~",
+    };
+    format!(
+        "{}{}",
+        prefix,
+        path.segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>()
+            .join(".")
+    )
+}
+
+fn table_name(catalog: &Catalog, table: TableId) -> &str {
+    catalog
+        .tables
+        .get(table.0)
+        .map_or("<unknown>", |table| table.name.as_str())
 }
 
 fn literal_kind(literal: &Literal) -> LiteralKind {
@@ -576,7 +646,7 @@ mod tests {
     #[test]
     fn hardcoded_catalog_reports_selection_set_shape_errors() {
         let diagnostics =
-            diagnostics("query Q { public.users { id { name } name(where id == 1) posts } }");
+            diagnostics("query Q { public.users { id { name } name(where .id == 1) posts } }");
         assert_eq!(diagnostics.len(), 3, "{diagnostics:?}");
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::ScalarSelectionSet
@@ -639,7 +709,7 @@ mod tests {
     #[test]
     fn relation_clauses_are_checked_against_related_table() {
         let diagnostics = diagnostics(
-            "query Q { public.users { posts(where title == \"hello\" order by title) { id } } }",
+            "query Q { public.users { posts(where .title == \"hello\" order by title) { id } } }",
         );
 
         assert!(diagnostics.is_empty(), "{diagnostics:?}");

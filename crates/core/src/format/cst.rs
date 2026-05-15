@@ -279,6 +279,8 @@ impl<'a> CstFormatter<'a> {
                     self.binary_expr(binary);
                 } else if let Some(literal) = self.direct_rule(node, SyntaxRule::Literal) {
                     self.literal(literal);
+                } else if let Some(path) = self.direct_rule(node, SyntaxRule::ScopedPath) {
+                    self.scoped_path(path);
                 } else if let Some(name) = self.direct_qualified_name_text(node) {
                     self.out.push_str(&name);
                 } else if let Some(name) = self.direct_token_text(node, SyntaxToken::Name) {
@@ -290,8 +292,13 @@ impl<'a> CstFormatter<'a> {
                     self.out.push_str(&name);
                 }
             }
+            Some(SyntaxRule::ScopedPath) => self.scoped_path(node),
             _ => {}
         }
+    }
+
+    fn scoped_path(&mut self, node: usize) {
+        self.out.push_str(&self.text(self.node(node).range));
     }
 
     fn binary_expr(&mut self, node: usize) {
@@ -438,6 +445,7 @@ impl<'a> CstFormatter<'a> {
                         | SyntaxRule::BinaryExpr
                         | SyntaxRule::Literal
                         | SyntaxRule::QualifiedName
+                        | SyntaxRule::ScopedPath
                 )
             )
         })
@@ -454,6 +462,7 @@ impl<'a> CstFormatter<'a> {
                         | SyntaxToken::Ge
                         | SyntaxToken::Lt
                         | SyntaxToken::Le
+                        | SyntaxToken::Like
                 )
             )
         })
@@ -499,7 +508,7 @@ mod tests {
     #[test]
     fn formats_from_cst_selection_boundaries() {
         let parsed = parse_source(SourceSnapshot::from(
-            "query Users { users(where id > 18 order by name desc limit 10) { id name } }",
+            "query Users { users(where .id > 18 order by name desc limit 10) { id name } }",
         ));
         let formatted = format_file(&parsed);
         assert!(
@@ -509,7 +518,7 @@ mod tests {
         );
         assert_eq!(
             formatted.text,
-            "query Users {\n  users(where id > 18 order by name desc limit 10) {\n    id\n    name\n  }\n}\n"
+            "query Users {\n  users(where .id > 18 order by name desc limit 10) {\n    id\n    name\n  }\n}\n"
         );
     }
 

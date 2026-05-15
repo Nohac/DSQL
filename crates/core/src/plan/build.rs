@@ -1,9 +1,9 @@
 use super::{
-    FilterExpr, FilterLiteral, NestedRelation, OrderByPlan, PlannedFile, Projection, QueryPlan,
-    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
+    FilterColumnScope, FilterExpr, FilterLiteral, NestedRelation, OrderByPlan, PlannedFile,
+    Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
 };
 use crate::{
-    catalog::{Catalog, FieldCheckResult, TableId, TableKey, TableResolution},
+    catalog::{Catalog, FieldCheckResult, ForeignKeyId, TableId, TableKey, TableResolution},
     definition::{DefinitionResolver, FragmentMap, QueryRecord, extract_definitions},
     syntax::{
         Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Selection, SelectionKind,
@@ -27,10 +27,11 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
         for selection in &query.selections {
             match catalog.resolve_table_ref(&selection.name.text) {
                 TableResolution::Found(table) => {
-                    let clauses = plan_clauses(catalog, table.id, selection);
+                    let clauses = plan_clauses(catalog, table.id, table.id, selection);
                     if let Some(selections) = plan_selection_set(
                         catalog,
                         &resolver,
+                        table.id,
                         table.id,
                         &clauses,
                         &selection.selections,
@@ -92,10 +93,11 @@ pub fn plan_query_definition(
         }
         match catalog.resolve_table_ref(&selection.name.text) {
             TableResolution::Found(table) => {
-                let clauses = plan_clauses(catalog, table.id, selection);
+                let clauses = plan_clauses(catalog, table.id, table.id, selection);
                 if let Some(selections) = plan_selection_set(
                     catalog,
                     resolver,
+                    table.id,
                     table.id,
                     &clauses,
                     &selection.selections,
@@ -141,6 +143,7 @@ pub fn plan_query_definition(
 fn plan_selection_set(
     catalog: &Catalog,
     resolver: &impl DefinitionResolver,
+    root_table: TableId,
     table: TableId,
     clauses: &SelectionClauses,
     selections: &[Selection],
@@ -153,6 +156,7 @@ fn plan_selection_set(
                 && let Some(fragment_plan) = plan_selection_set(
                     catalog,
                     resolver,
+                    root_table,
                     table,
                     &SelectionClauses::default(),
                     &fragment.selections,
@@ -179,8 +183,9 @@ fn plan_selection_set(
                 if let Some(nested) = plan_selection_set(
                     catalog,
                     resolver,
+                    root_table,
                     relation.table.id,
-                    &plan_clauses(catalog, relation.table.id, selection),
+                    &plan_clauses(catalog, root_table, relation.table.id, selection),
                     &selection.selections,
                     diagnostics,
                 ) {
@@ -218,12 +223,18 @@ fn plan_selection_set(
     })
 }
 
-fn plan_clauses(catalog: &Catalog, table: TableId, selection: &Selection) -> SelectionClauses {
+fn plan_clauses(
+    catalog: &Catalog,
+    root_table: TableId,
+    table: TableId,
+    selection: &Selection,
+) -> SelectionClauses {
     let mut clauses = SelectionClauses::default();
     for clause in &selection.clauses {
         match clause {
             crate::Clause::Where(where_clause) => {
-                clauses.filter = plan_filter_expr(catalog, table, &where_clause.predicate);
+                clauses.filter =
+                    plan_filter_expr(catalog, root_table, table, &where_clause.predicate);
             }
             crate::Clause::OrderBy(order_by) => {
                 clauses
@@ -254,15 +265,15 @@ fn plan_clauses(catalog: &Catalog, table: TableId, selection: &Selection) -> Sel
     clauses
 }
 
-fn plan_filter_expr(catalog: &Catalog, table: TableId, expr: &crate::Expr) -> Option<FilterExpr> {
+fn plan_filter_expr(
+    catalog: &Catalog,
+    root_table: TableId,
+    table: TableId,
+    expr: &crate::Expr,
+) -> Option<FilterExpr> {
     match expr {
-        crate::Expr::Name(name) => {
-            let crate::FieldCheckResult::Column(column) = catalog.check_field(table, &name.text)
-            else {
-                return None;
-            };
-            Some(FilterExpr::Column(column.id))
-        }
+        crate::Expr::Name(_) => None,
+        crate::Expr::Path(path) => plan_filter_path(catalog, root_table, table, path),
         crate::Expr::Literal(literal) => Some(FilterExpr::Literal(match literal {
             crate::Literal::String { value, .. } => FilterLiteral::String(value.clone()),
             crate::Literal::Number { value, .. } => FilterLiteral::Number(value.clone()),
@@ -271,12 +282,100 @@ fn plan_filter_expr(catalog: &Catalog, table: TableId, expr: &crate::Expr) -> Op
         })),
         crate::Expr::Binary {
             left, op, right, ..
-        } => Some(FilterExpr::Binary {
-            left: Box::new(plan_filter_expr(catalog, table, left)?),
-            op: *op,
-            right: Box::new(plan_filter_expr(catalog, table, right)?),
-        }),
+        } => {
+            if let crate::Expr::Path(path) = left.as_ref()
+                && let Some(RelationPredicateColumn {
+                    foreign_key,
+                    table: relation_table,
+                    column,
+                }) = relation_predicate_column(catalog, table, path)
+            {
+                return Some(FilterExpr::Exists {
+                    foreign_key,
+                    table: relation_table,
+                    filter: Box::new(FilterExpr::Binary {
+                        left: Box::new(FilterExpr::Column {
+                            scope: FilterColumnScope::Current,
+                            column,
+                        }),
+                        op: *op,
+                        right: Box::new(plan_filter_expr(
+                            catalog,
+                            root_table,
+                            relation_table,
+                            right,
+                        )?),
+                    }),
+                });
+            }
+            Some(FilterExpr::Binary {
+                left: Box::new(plan_filter_expr(catalog, root_table, table, left)?),
+                op: *op,
+                right: Box::new(plan_filter_expr(catalog, root_table, table, right)?),
+            })
+        }
     }
+}
+
+fn plan_filter_path(
+    catalog: &Catalog,
+    root_table: TableId,
+    table: TableId,
+    path: &crate::ScopedPath,
+) -> Option<FilterExpr> {
+    if path.segments.len() != 1 {
+        return None;
+    }
+    let scope = match path.scope {
+        crate::PathScope::Current => FilterColumnScope::Current,
+        crate::PathScope::Root => FilterColumnScope::Root,
+        crate::PathScope::Parent => return None,
+    };
+    let source_table = match path.scope {
+        crate::PathScope::Current => table,
+        crate::PathScope::Root => root_table,
+        crate::PathScope::Parent => return None,
+    };
+    let crate::FieldCheckResult::Column(column) =
+        catalog.check_field(source_table, &path.segments[0].text)
+    else {
+        return None;
+    };
+    Some(FilterExpr::Column {
+        scope,
+        column: column.id,
+    })
+}
+
+struct RelationPredicateColumn {
+    foreign_key: ForeignKeyId,
+    table: TableId,
+    column: crate::ColumnId,
+}
+
+fn relation_predicate_column(
+    catalog: &Catalog,
+    table: TableId,
+    path: &crate::ScopedPath,
+) -> Option<RelationPredicateColumn> {
+    if path.scope != crate::PathScope::Current || path.segments.len() != 2 {
+        return None;
+    }
+    let crate::FieldCheckResult::Relation(relation) =
+        catalog.check_field(table, &path.segments[0].text)
+    else {
+        return None;
+    };
+    let crate::FieldCheckResult::Column(column) =
+        catalog.check_field(relation.table.id, &path.segments[1].text)
+    else {
+        return None;
+    };
+    Some(RelationPredicateColumn {
+        foreign_key: relation.foreign_key.id,
+        table: relation.table.id,
+        column: column.id,
+    })
 }
 
 fn literal_u64(expr: &crate::Expr) -> Option<u64> {

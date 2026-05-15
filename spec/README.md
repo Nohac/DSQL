@@ -12,6 +12,7 @@ match the current design direction.
 ## Documents
 
 - [Query Language](query.md)
+- [Scoped Predicates](scoped-predicates.md)
 - [Variables](variables.md)
 - [Directives](directives.md)
 - [Relationship Naming](relationship-naming.md)

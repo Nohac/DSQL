@@ -98,7 +98,14 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         completions_at_marker(&host, &uri, &source, &markers, "text_operator").await;
     let clause_prefix =
         completions_at_marker(&host, &uri, &source, &markers, "clause_prefix").await;
+    let where_scope = completions_at_marker(&host, &uri, &source, &markers, "where_scope").await;
     let where_columns = completions_at_marker(&host, &uri, &source, &markers, "where_column").await;
+    let where_root_columns =
+        completions_at_marker(&host, &uri, &source, &markers, "where_root_column").await;
+    let where_parent_columns =
+        completions_at_marker(&host, &uri, &source, &markers, "where_parent_column").await;
+    let where_completed_predicate =
+        completions_at_marker(&host, &uri, &source, &markers, "where_completed_predicate").await;
     let order_columns_after_where =
         completions_at_marker(&host, &uri, &source, &markers, "order_column_after_where").await;
     let sort_direction_after_where =
@@ -180,7 +187,39 @@ async fn imdb_keyword_and_operator_completion_contexts() {
     assert_completion_labels("sort directions", &sort_directions, &["asc", "desc"]);
     assert_completion_labels("text operators", &text_operators, &["==", "!="]);
     assert_completion_labels("clause prefix", &clause_prefix, &["where"]);
+    assert_completion_labels("where scope", &where_scope, &[".", "~", ".."]);
+    assert_no_completion_labels("where scope", &where_scope, &["id", "info", "movie_id"]);
     assert_completion_labels("where columns", &where_columns, &["id", "info", "movie_id"]);
+    assert_completion_labels(
+        "where root columns",
+        &where_root_columns,
+        &["id", "info", "movie_id"],
+    );
+    assert_no_completion_labels(
+        "where root columns",
+        &where_root_columns,
+        &["title", "episode_nr", "kind_id"],
+    );
+    assert_completion_labels(
+        "where parent columns",
+        &where_parent_columns,
+        &["id", "info", "movie_id"],
+    );
+    assert_no_completion_labels(
+        "where parent columns",
+        &where_parent_columns,
+        &["title", "episode_nr", "kind_id"],
+    );
+    assert_completion_labels(
+        "where completed predicate",
+        &where_completed_predicate,
+        &["order by", "limit", "offset"],
+    );
+    assert_no_completion_labels(
+        "where completed predicate",
+        &where_completed_predicate,
+        &["==", "!=", "like"],
+    );
     assert_completion_labels(
         "order columns after where",
         &order_columns_after_where,
@@ -298,7 +337,11 @@ async fn imdb_keyword_and_operator_completion_contexts() {
             ("clause_keywords", &clause_keywords),
             ("int_operator", &int_operators),
             ("text_operator", &text_operators),
+            ("where_scope", &where_scope),
             ("where_column", &where_columns),
+            ("where_root_column", &where_root_columns),
+            ("where_parent_column", &where_parent_columns),
+            ("where_completed_predicate", &where_completed_predicate),
             (
                 "relation_clause_exact_nested",
                 &relation_clause_exact_nested,
@@ -362,7 +405,7 @@ async fn lsp_definitions_resolve_tables_relations_and_columns_to_catalog_targets
     let uri = "file:///tests/queries/lsp/imdb-definitions.dsql".to_string();
     let source = "\
 query Movies {
-  movie_info(where id == 1) {
+  movie_info(where .id == 1) {
     note
     title {
       id

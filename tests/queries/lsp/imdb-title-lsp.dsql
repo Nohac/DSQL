@@ -1,6 +1,6 @@
 query LspTitle {
   
-  title(where id > 0 order by id asc limit 2) {
+  title(where .id > 0 order by id asc limit 2) {
     id
     title
     kind_type {

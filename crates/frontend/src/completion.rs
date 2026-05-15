@@ -65,6 +65,7 @@ pub(crate) fn completions_at(
         }
         CursorContext::SelectionBody { table } => field_completions(catalog, table),
         CursorContext::ClauseList { table: _, used } => clause_keyword_completions(used),
+        CursorContext::WhereScope => predicate_scope_completions(),
         CursorContext::WhereColumn { table } | CursorContext::OrderByColumn { table } => {
             column_completions(catalog, table)
         }
@@ -179,6 +180,26 @@ fn clause_keyword_completions(used: UsedClauses) -> Vec<CompletionItem> {
     keyword_completions(&keywords)
 }
 
+fn predicate_scope_completions() -> Vec<CompletionItem> {
+    vec![
+        CompletionItem {
+            label: ".".to_string(),
+            kind: CompletionKind::Keyword,
+            detail: Some("current scope".to_string()),
+        },
+        CompletionItem {
+            label: "~".to_string(),
+            kind: CompletionKind::Keyword,
+            detail: Some("root scope".to_string()),
+        },
+        CompletionItem {
+            label: "..".to_string(),
+            kind: CompletionKind::Keyword,
+            detail: Some("parent scope".to_string()),
+        },
+    ]
+}
+
 fn operator_completions(data_type: DataType) -> Vec<CompletionItem> {
     data_type
         .operator_tokens()
@@ -196,6 +217,7 @@ fn operator_detail(token: Token) -> &'static str {
         Token::Ge => "greater than or equal",
         Token::Lt => "less than",
         Token::Le => "less than or equal",
+        Token::Like => "matches pattern",
         _ => "operator",
     }
 }

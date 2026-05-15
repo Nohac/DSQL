@@ -52,6 +52,10 @@
 
 ## Testing And Verification
 
+- For bug reports, first add or run a focused failing regression test that
+  demonstrates the reported behavior. Confirm the failure before changing
+  implementation, unless the user explicitly asks for exploratory or speculative
+  edits.
 - Add focused regression tests for language behavior, diagnostics, and editor-facing analysis when changing those areas.
 - Avoid tests that only restate library behavior without protecting project semantics.
 - Before committing code changes, run formatting, tests, and clippy with warnings denied.

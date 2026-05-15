@@ -58,6 +58,8 @@ pub enum SyntaxRule {
     QueryDef,
     QualifiedName,
     RelationRef,
+    ScopedPath,
+    ScopedPathSegment,
     Selection,
     SelectionSet,
     WhereClause,
@@ -79,6 +81,7 @@ pub enum SyntaxToken {
     True,
     False,
     Null,
+    Like,
     LBrace,
     RBrace,
     LPar,
@@ -88,7 +91,9 @@ pub enum SyntaxToken {
     At,
     Comma,
     Ellipsis,
+    DotDot,
     Dot,
+    Tilde,
     Eq,
     Ne,
     Gt,
@@ -267,6 +272,8 @@ fn map_rule(rule: Rule) -> SyntaxRule {
         Rule::QueryDef => SyntaxRule::QueryDef,
         Rule::QualifiedName => SyntaxRule::QualifiedName,
         Rule::RelationRef => SyntaxRule::RelationRef,
+        Rule::ScopedPath => SyntaxRule::ScopedPath,
+        Rule::ScopedPathSegment => SyntaxRule::ScopedPathSegment,
         Rule::Selection => SyntaxRule::Selection,
         Rule::SelectionSet => SyntaxRule::SelectionSet,
         Rule::WhereClause => SyntaxRule::WhereClause,
@@ -288,6 +295,7 @@ fn map_token(token: Token) -> SyntaxToken {
         Token::True => SyntaxToken::True,
         Token::False => SyntaxToken::False,
         Token::Null => SyntaxToken::Null,
+        Token::Like => SyntaxToken::Like,
         Token::LBrace => SyntaxToken::LBrace,
         Token::RBrace => SyntaxToken::RBrace,
         Token::LPar => SyntaxToken::LPar,
@@ -297,7 +305,9 @@ fn map_token(token: Token) -> SyntaxToken {
         Token::At => SyntaxToken::At,
         Token::Comma => SyntaxToken::Comma,
         Token::Ellipsis => SyntaxToken::Ellipsis,
+        Token::DotDot => SyntaxToken::DotDot,
         Token::Dot => SyntaxToken::Dot,
+        Token::Tilde => SyntaxToken::Tilde,
         Token::Eq => SyntaxToken::Eq,
         Token::Ne => SyntaxToken::Ne,
         Token::Gt => SyntaxToken::Gt,
@@ -561,6 +571,9 @@ impl<'a> AstBuilder<'a> {
         if let Some(literal) = self.direct_rule(node, Rule::Literal) {
             return self.literal(literal);
         }
+        if let Some(path) = self.direct_rule(node, Rule::ScopedPath) {
+            return Expr::Path(self.scoped_path(path));
+        }
         if let Some(name) = self.direct_qualified_names(node).into_iter().next() {
             return Expr::Name(name);
         }
@@ -646,9 +659,51 @@ impl<'a> AstBuilder<'a> {
                 Token::Ge => Some(BinaryOp::Ge),
                 Token::Lt => Some(BinaryOp::Lt),
                 Token::Le => Some(BinaryOp::Le),
+                Token::Like => Some(BinaryOp::Like),
                 _ => None,
             }
         })
+    }
+
+    fn scoped_path(&self, node: NodeRef) -> ScopedPath {
+        let mut scope = PathScope::Current;
+        for child in self.cst.children(node) {
+            let Some((token, _, _)) = token_text(self.cst, child) else {
+                continue;
+            };
+            scope = match token {
+                Token::Dot => PathScope::Current,
+                Token::DotDot => PathScope::Parent,
+                Token::Tilde => PathScope::Root,
+                _ => continue,
+            };
+            break;
+        }
+        ScopedPath {
+            range: range(self.cst.span(node)),
+            scope,
+            segments: self.direct_scoped_path_segments(node),
+        }
+    }
+
+    fn direct_scoped_path_segments(&self, node: NodeRef) -> Vec<NameRef> {
+        self.direct_rules(node, Rule::ScopedPathSegment)
+            .into_iter()
+            .filter_map(|segment| {
+                let names = self.direct_names(segment);
+                let name = names.first()?.clone();
+                let Some(selector) = names.get(1) else {
+                    return Some(name);
+                };
+                Some(NameRef {
+                    range: TextRange {
+                        start: name.range.start,
+                        end: selector.range.end,
+                    },
+                    text: format!("{}::{}", name.text, selector.text),
+                })
+            })
+            .collect()
     }
 
     fn direct_names(&self, node: NodeRef) -> Vec<NameRef> {
@@ -688,36 +743,38 @@ impl<'a> AstBuilder<'a> {
     fn direct_relation_refs(&self, node: NodeRef) -> Vec<NameRef> {
         self.direct_rules(node, Rule::RelationRef)
             .into_iter()
-            .filter_map(|relation| {
-                let qualified = self.direct_qualified_names(relation).into_iter().next()?;
-                let selector = self
-                    .cst
-                    .children(relation)
-                    .filter_map(|child| token_text(self.cst, child))
-                    .scan(false, |after_colon_colon, (token, text, token_range)| {
-                        if *after_colon_colon && token == Token::Name {
-                            return Some(Some(NameRef {
-                                range: token_range,
-                                text: text.to_string(),
-                            }));
-                        }
-                        *after_colon_colon = token == Token::ColonColon;
-                        Some(None)
-                    })
-                    .flatten()
-                    .next();
-                let Some(selector) = selector else {
-                    return Some(qualified);
-                };
-                Some(NameRef {
-                    range: TextRange {
-                        start: qualified.range.start,
-                        end: selector.range.end,
-                    },
-                    text: format!("{}::{}", qualified.text, selector.text),
-                })
-            })
+            .filter_map(|relation| self.relation_ref(relation))
             .collect()
+    }
+
+    fn relation_ref(&self, relation: NodeRef) -> Option<NameRef> {
+        let qualified = self.direct_qualified_names(relation).into_iter().next()?;
+        let selector = self
+            .cst
+            .children(relation)
+            .filter_map(|child| token_text(self.cst, child))
+            .scan(false, |after_colon_colon, (token, text, token_range)| {
+                if *after_colon_colon && token == Token::Name {
+                    return Some(Some(NameRef {
+                        range: token_range,
+                        text: text.to_string(),
+                    }));
+                }
+                *after_colon_colon = token == Token::ColonColon;
+                Some(None)
+            })
+            .flatten()
+            .next();
+        let Some(selector) = selector else {
+            return Some(qualified);
+        };
+        Some(NameRef {
+            range: TextRange {
+                start: qualified.range.start,
+                end: selector.range.end,
+            },
+            text: format!("{}::{}", qualified.text, selector.text),
+        })
     }
 
     fn direct_rule(&self, node: NodeRef, target: Rule) -> Option<NodeRef> {
@@ -728,7 +785,13 @@ impl<'a> AstBuilder<'a> {
         self.cst.children(node).find(|child| {
             matches!(
                 rule(self.cst, *child),
-                Some(Rule::Expr | Rule::BinaryExpr | Rule::Literal | Rule::QualifiedName)
+                Some(
+                    Rule::Expr
+                        | Rule::BinaryExpr
+                        | Rule::Literal
+                        | Rule::QualifiedName
+                        | Rule::ScopedPath
+                )
             )
         })
     }
@@ -800,12 +863,38 @@ mod tests {
 
     #[test]
     fn parses_query_from_text() {
-        let src = "query Users { users(where id > 18 order by name desc limit 10 offset 2) { id, name } }";
+        let src = "query Users { users(where .id > 18 order by name desc limit 10 offset 2) { id, name } }";
         let parsed = parse_source(SourceSnapshot::from(src));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         assert_eq!(parsed.source_file.queries().count(), 1);
         let query = parsed.source_file.queries().next().unwrap();
         assert_eq!(query.selections[0].clauses.len(), 4);
+    }
+
+    #[test]
+    fn parses_scoped_predicate_paths_into_segments() {
+        let src = "query Users { users(where .posts.title like \"%foo%\") { id } }";
+        let parsed = parse_source(SourceSnapshot::from(src));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let query = parsed.source_file.queries().next().unwrap();
+        let Clause::Where(where_clause) = &query.selections[0].clauses[0] else {
+            panic!("expected where clause");
+        };
+        let Expr::Binary { left, op, .. } = &where_clause.predicate else {
+            panic!("expected binary predicate");
+        };
+        assert_eq!(*op, BinaryOp::Like);
+        let Expr::Path(path) = left.as_ref() else {
+            panic!("expected scoped path");
+        };
+        assert_eq!(path.scope, PathScope::Current);
+        assert_eq!(
+            path.segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>(),
+            ["posts", "title"],
+        );
     }
 
     #[test]
@@ -846,6 +935,7 @@ mod tests {
         let byte = src.find("where ").unwrap() + "where ".len();
         let expected = expected_tokens_at(&SourceSnapshot::from(src), byte);
 
-        assert!(expected.contains(&SyntaxToken::Name), "{expected:?}");
+        assert!(expected.contains(&SyntaxToken::Dot), "{expected:?}");
+        assert!(expected.contains(&SyntaxToken::Tilde), "{expected:?}");
     }
 }

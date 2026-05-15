@@ -1,13 +1,14 @@
 ---
 source: tests/tests/fixtures.rs
+assertion_line: 185
 expression: contents
 ---
 query MovieInfoSmoke {
-  movie_info(where id > 0 order by id asc limit 2) {
+  movie_info(where .id > 0 order by id asc limit 2) {
     id
     info
     note
-    title(where episode_nr == 100) {
+    title(where .episode_nr == 100) {
       title
     }
     info_type {

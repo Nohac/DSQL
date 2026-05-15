@@ -6,8 +6,8 @@ mod text;
 
 pub use ast::{
     Argument, BinaryOp, Clause, Definition, Document, Expr, FragmentDef, LimitClause, Literal,
-    OffsetClause, OrderByClause, OrderByItem, QueryDef, Selection, SelectionKind, SortDirection,
-    SourceFile, WhereClause,
+    OffsetClause, OrderByClause, OrderByItem, PathScope, QueryDef, ScopedPath, Selection,
+    SelectionKind, SortDirection, SourceFile, WhereClause,
 };
 pub use diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity};
 pub use grammar::lexer::Token;

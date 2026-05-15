@@ -1,5 +1,5 @@
-token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null';
-token LBrace='{' RBrace='}' LPar='(' RPar=')' ColonColon='::' Colon=':' At='@' Comma=',' Ellipsis='...' Dot='.';
+token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like';
+token LBrace='{' RBrace='}' LPar='(' RPar=')' ColonColon='::' Colon=':' At='@' Comma=',' Ellipsis='...' DotDot='..' Dot='.' Tilde='~';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
 token Whitespace Comment;
@@ -15,8 +15,10 @@ definition^:
 ;
 query_def: 'query' Name selection_set;
 fragment_def: 'fragment' Name 'on' qualified_name selection_set;
-qualified_name: Name ['.' Name];
+qualified_name: Name [?1 '.' Name];
 relation_ref: qualified_name ['::' Name];
+scoped_path_segment: Name ['::' Name];
+scoped_path: ('.' | '..' | '~') scoped_path_segment ('.' scoped_path_segment)*;
 selection_set: '{' selection* '}';
 selection:
   field_selection [',']
@@ -44,8 +46,8 @@ offset_clause: 'offset' expr;
 directive: '@' Name;
 expr:
   literal
-| qualified_name
-| expr ('==' | '!=' | '>' | '>=' | '<' | '<=') expr @binary_expr
+| scoped_path
+| expr ('==' | '!=' | '>' | '>=' | '<' | '<=' | 'like') expr @binary_expr
 ;
 literal:
   String

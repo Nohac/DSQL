@@ -15,7 +15,7 @@ fragment PostSummary on public.posts {
 }
 
 query UsersWithPosts {
-  public.users(where id > 100 limit 20) {
+  public.users(where .id > 100 limit 20) {
     id
     display_name: name
     posts(order by created_at desc limit 5) {
@@ -338,7 +338,7 @@ selection.
 
 ```dsql
 query Posts {
-  posts(where created_at >= "2026-01-01" order by created_at desc limit 20) {
+  posts(where .created_at >= "2026-01-01" order by created_at desc limit 20) {
     id
     title
   }
@@ -358,7 +358,7 @@ Core clauses:
 
 ```dsql
 query ActiveUsers {
-  users(where active == true) {
+  users(where .active == true) {
     id
     name
   }
@@ -366,6 +366,9 @@ query ActiveUsers {
 ```
 
 Predicates resolve field names against the selected table or relation target.
+
+Scoped predicate paths for relationship filters and parent/root references are
+tracked separately in [Scoped Predicates](scoped-predicates.md).
 
 Core predicate operators:
 

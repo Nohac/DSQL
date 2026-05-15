@@ -14,6 +14,7 @@ pub(crate) enum CursorContext {
     FragmentSpread { table: TableId },
     SelectionBody { table: TableId },
     ClauseList { table: TableId, used: UsedClauses },
+    WhereScope,
     WhereColumn { table: TableId },
     WhereOperator { data_type: DataType },
     OrderByColumn { table: TableId },
@@ -306,7 +307,14 @@ fn clause_context(parse: &ParseResult, catalog: &Catalog, byte: usize) -> Option
     };
     let expected = expected_tokens_at(&parse.source, byte);
 
-    if let Some(context) = parsed_clause_context(parse, catalog, table, &cursor.suffix_tokens) {
+    if let Some(context) = parsed_clause_context(
+        parse,
+        catalog,
+        table,
+        cursor.root_table,
+        cursor.parent_table,
+        &cursor.suffix_tokens,
+    ) {
         return Some(context);
     }
 
@@ -331,6 +339,8 @@ fn clause_context(parse: &ParseResult, catalog: &Catalog, byte: usize) -> Option
 
 struct ClauseCursor<'a> {
     target: ClauseTarget,
+    root_table: Option<TableId>,
+    parent_table: Option<TableId>,
     suffix_tokens: Vec<&'a SyntaxNode>,
 }
 
@@ -377,17 +387,61 @@ fn clause_cursor<'a>(
                 .flatten()
                 .find(|target| matches!(target, ClauseTarget::Invalid))
         })?;
+    let root_table = ast_root_table_at(parse, catalog, byte)
+        .or_else(|| cst_root_table_before(parse, catalog, &tokens[..lpar_index]))
+        .or_else(|| {
+            root_target.and_then(|target| match target {
+                ClauseTarget::Table(table) => Some(table),
+                ClauseTarget::Invalid => None,
+            })
+        });
+    let parent_table = cst_body_table_before(parse, catalog, &tokens[..lpar_index]).and_then(
+        |target| match target {
+            BodyTarget::Table(table) => Some(table),
+            BodyTarget::RootSelection | BodyTarget::Invalid => None,
+        },
+    );
 
     Some(ClauseCursor {
         target,
+        root_table,
+        parent_table,
         suffix_tokens,
     })
+}
+
+fn ast_root_table_at(parse: &ParseResult, catalog: &Catalog, byte: usize) -> Option<TableId> {
+    for definition in parse.source_file.definitions() {
+        match definition {
+            Definition::Query(query) => {
+                for selection in &query.selections {
+                    if range_contains(selection.range, byte) {
+                        return catalog
+                            .table_ref(&selection.name.text)
+                            .map(|table| table.id);
+                    }
+                }
+            }
+            Definition::Fragment(fragment) => {
+                if range_contains(fragment.range, byte) {
+                    return fragment
+                        .on
+                        .as_ref()
+                        .and_then(|on| catalog.table_ref(&on.text))
+                        .map(|table| table.id);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn parsed_clause_context(
     parse: &ParseResult,
     catalog: &Catalog,
     table: TableId,
+    root_table: Option<TableId>,
+    parent_table: Option<TableId>,
     suffix_tokens: &[&SyntaxNode],
 ) -> Option<CursorContext> {
     let clause_index = suffix_tokens
@@ -401,16 +455,43 @@ fn parsed_clause_context(
                 .iter()
                 .find(|token| token_kind(token) == Some(SyntaxToken::Name))
             else {
-                return Some(CursorContext::WhereColumn { table });
+                return Some(
+                    after_where
+                        .iter()
+                        .any(|token| {
+                            matches!(
+                                token_kind(token),
+                                Some(SyntaxToken::Dot | SyntaxToken::DotDot | SyntaxToken::Tilde)
+                            )
+                        })
+                        .then_some(CursorContext::WhereColumn { table })
+                        .and_then(|_| {
+                            let scope_table = predicate_scope_table(
+                                after_where,
+                                table,
+                                root_table,
+                                parent_table,
+                            )?;
+                            Some(CursorContext::WhereColumn { table: scope_table })
+                        })
+                        .unwrap_or(CursorContext::WhereScope),
+                );
             };
-            if after_where
+            if let Some(operator_index) = after_where
                 .iter()
-                .any(|token| is_operator_token(token_kind(token)))
+                .rposition(|token| is_operator_token(token_kind(token)))
             {
-                return None;
+                return after_where[operator_index + 1..]
+                    .iter()
+                    .any(|token| is_predicate_value_token(token_kind(token)))
+                    .then_some(CursorContext::ClauseList {
+                        table,
+                        used: used_clauses_in_tokens(suffix_tokens),
+                    });
             }
             let field_name = parse.source.text(field.range);
-            match catalog.check_field(table, field_name.as_ref()) {
+            let scope_table = predicate_scope_table(after_where, table, root_table, parent_table)?;
+            match catalog.check_field(scope_table, field_name.as_ref()) {
                 FieldCheckResult::Column(column) => Some(CursorContext::WhereOperator {
                     data_type: column.data_type,
                 }),
@@ -459,7 +540,12 @@ fn name_expected_context(cursor: &ClauseCursor<'_>) -> Option<CursorContext> {
         .rposition(|token| is_clause_keyword(token_kind(token)))?;
 
     match token_kind(cursor.suffix_tokens[clause_index])? {
-        SyntaxToken::Where => Some(CursorContext::WhereColumn { table }),
+        SyntaxToken::Where => {
+            let after_where = &cursor.suffix_tokens[clause_index + 1..];
+            let table =
+                predicate_scope_table(after_where, table, cursor.root_table, cursor.parent_table)?;
+            Some(CursorContext::WhereColumn { table })
+        }
         SyntaxToken::Order
             if cursor
                 .suffix_tokens
@@ -471,6 +557,37 @@ fn name_expected_context(cursor: &ClauseCursor<'_>) -> Option<CursorContext> {
         }
         _ => None,
     }
+}
+
+fn predicate_scope_table(
+    after_where: &[&SyntaxNode],
+    current_table: TableId,
+    root_table: Option<TableId>,
+    parent_table: Option<TableId>,
+) -> Option<TableId> {
+    let scope = after_where
+        .iter()
+        .rev()
+        .find_map(|token| match token_kind(token) {
+            Some(SyntaxToken::Dot) => Some(PredicateCompletionScope::Current),
+            Some(SyntaxToken::Tilde) => Some(PredicateCompletionScope::Root),
+            Some(SyntaxToken::DotDot) => Some(PredicateCompletionScope::Parent),
+            _ => None,
+        })
+        .unwrap_or(PredicateCompletionScope::Current);
+
+    match scope {
+        PredicateCompletionScope::Current => Some(current_table),
+        PredicateCompletionScope::Root => root_table,
+        PredicateCompletionScope::Parent => parent_table,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PredicateCompletionScope {
+    Current,
+    Parent,
+    Root,
 }
 
 fn selection_clause_target(
@@ -601,6 +718,35 @@ fn cst_body_table_before(
     stack.last().copied()
 }
 
+fn cst_root_table_before(
+    parse: &ParseResult,
+    catalog: &Catalog,
+    tokens: &[&SyntaxNode],
+) -> Option<TableId> {
+    let mut stack = Vec::new();
+    let mut root_table = None;
+    for (index, token) in tokens.iter().enumerate() {
+        match token_kind(token) {
+            Some(SyntaxToken::LBrace) => {
+                let parent = stack.last().copied();
+                let table = table_for_lbrace(parse, catalog, tokens, index, parent);
+                if root_table.is_none()
+                    && matches!(parent, Some(BodyTarget::RootSelection))
+                    && let BodyTarget::Table(table) = table
+                {
+                    root_table = Some(table);
+                }
+                stack.push(table);
+            }
+            Some(SyntaxToken::RBrace) => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+    root_table
+}
+
 fn matching_lpar_before(tokens: &[&SyntaxNode], rpar_index: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (index, token) in tokens[..rpar_index].iter().enumerate().rev() {
@@ -698,6 +844,21 @@ fn is_operator_token(kind: Option<SyntaxToken>) -> bool {
                 | SyntaxToken::Ge
                 | SyntaxToken::Lt
                 | SyntaxToken::Le
+                | SyntaxToken::Like
+        )
+    )
+}
+
+fn is_predicate_value_token(kind: Option<SyntaxToken>) -> bool {
+    matches!(
+        kind,
+        Some(
+            SyntaxToken::Name
+                | SyntaxToken::String
+                | SyntaxToken::Number
+                | SyntaxToken::True
+                | SyntaxToken::False
+                | SyntaxToken::Null
         )
     )
 }

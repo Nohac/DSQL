@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn hover_and_semantic_tokens_work_for_clause_columns() {
-        let source = "query Q { posts(where id > 10 order by created_at desc limit 5) { title } }";
+        let source = "query Q { posts(where .id > 10 order by created_at desc limit 5) { title } }";
         let source_file = parsed_source(source);
         let parse = parse_source(source.into());
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);

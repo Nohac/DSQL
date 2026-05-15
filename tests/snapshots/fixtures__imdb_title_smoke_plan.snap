@@ -1,5 +1,6 @@
 ---
 source: tests/tests/fixtures.rs
+assertion_line: 185
 expression: contents
 ---
 [
@@ -11,11 +12,12 @@ expression: contents
         clauses: SelectionClauses {
             filter: Some(
                 Binary {
-                    left: Column(
-                        ColumnId(
+                    left: Column {
+                        scope: Current,
+                        column: ColumnId(
                             96,
                         ),
-                    ),
+                    },
                     op: Gt,
                     right: Literal(
                         Number(
@@ -44,11 +46,12 @@ expression: contents
             clauses: SelectionClauses {
                 filter: Some(
                     Binary {
-                        left: Column(
-                            ColumnId(
+                        left: Column {
+                            scope: Current,
+                            column: ColumnId(
                                 96,
                             ),
-                        ),
+                        },
                         op: Gt,
                         right: Literal(
                             Number(

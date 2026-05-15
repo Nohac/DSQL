@@ -25,4 +25,8 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     fn predicate_order_by_clause_1(&self) -> bool {
         matches!(self.peek(1), Token::Name)
     }
+
+    fn predicate_qualified_name_1(&self) -> bool {
+        matches!(self.peek(1), Token::Name)
+    }
 }

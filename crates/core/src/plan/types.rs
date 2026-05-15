@@ -49,13 +49,28 @@ pub enum SortDirectionPlan {
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 #[repr(C)]
 pub enum FilterExpr {
-    Column(ColumnId),
+    Column {
+        scope: FilterColumnScope,
+        column: ColumnId,
+    },
     Literal(FilterLiteral),
     Binary {
         left: Box<FilterExpr>,
         op: BinaryOp,
         right: Box<FilterExpr>,
     },
+    Exists {
+        foreign_key: ForeignKeyId,
+        table: TableId,
+        filter: Box<FilterExpr>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[repr(u8)]
+pub enum FilterColumnScope {
+    Current,
+    Root,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]

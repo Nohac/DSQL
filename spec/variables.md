@@ -11,7 +11,7 @@ Queries may eventually declare variables.
 
 ```dsql
 query UserById($id: uuid) {
-  users(where id == $id) {
+  users(where .id == $id) {
     id
     name
   }

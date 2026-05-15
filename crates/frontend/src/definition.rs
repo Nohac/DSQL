@@ -209,10 +209,45 @@ fn definition_in_expr(
             }
             None
         }
+        Expr::Path(path) => definition_in_path(catalog, table, path, byte),
         Expr::Binary { left, right, .. } => definition_in_expr(catalog, table, left, byte)
             .or_else(|| definition_in_expr(catalog, table, right, byte)),
         Expr::Literal(_) => None,
     }
+}
+
+fn definition_in_path(
+    catalog: &Catalog,
+    table: TableId,
+    path: &dsql_core::ScopedPath,
+    byte: usize,
+) -> Option<DefinitionTarget> {
+    let mut current_table = table;
+    for (index, segment) in path.segments.iter().enumerate() {
+        if index + 1 == path.segments.len() {
+            if range_contains(segment.range, byte)
+                && let FieldCheckResult::Column(column) =
+                    catalog.check_field(current_table, &segment.text)
+            {
+                return Some(DefinitionTarget::Catalog(CatalogDefinition::Column {
+                    schema: column.key.schema.clone(),
+                    table: column.key.table.clone(),
+                    column: column.name.clone(),
+                }));
+            }
+            return None;
+        }
+        let FieldCheckResult::Relation(relation) =
+            catalog.check_field(current_table, &segment.text)
+        else {
+            return None;
+        };
+        if range_contains(segment.range, byte) {
+            return Some(table_target(relation.table));
+        }
+        current_table = relation.table.id;
+    }
+    None
 }
 
 fn table_target(table: &dsql_core::Table) -> DefinitionTarget {

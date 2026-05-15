@@ -226,9 +226,8 @@ impl DataType {
                 Token::Lt,
                 Token::Le,
             ],
-            Self::Text | Self::Uuid | Self::Boolean | Self::Json | Self::Unknown => {
-                &[Token::Eq, Token::Ne]
-            }
+            Self::Text => &[Token::Eq, Token::Ne, Token::Like],
+            Self::Uuid | Self::Boolean | Self::Json | Self::Unknown => &[Token::Eq, Token::Ne],
         }
     }
 

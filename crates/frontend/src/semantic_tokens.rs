@@ -168,11 +168,45 @@ fn add_expr_tokens(
                 });
             }
         }
+        Expr::Path(path) => add_path_tokens(tokens, catalog, table, path),
         Expr::Binary { left, right, .. } => {
             add_expr_tokens(tokens, catalog, table, left);
             add_expr_tokens(tokens, catalog, table, right);
         }
         Expr::Literal(_) => {}
+    }
+}
+
+fn add_path_tokens(
+    tokens: &mut Vec<SemanticTokenInfo>,
+    catalog: &Catalog,
+    table: TableId,
+    path: &dsql_core::ScopedPath,
+) {
+    let mut current_table = table;
+    for (index, segment) in path.segments.iter().enumerate() {
+        if index + 1 == path.segments.len() {
+            if matches!(
+                catalog.check_field(current_table, &segment.text),
+                FieldCheckResult::Column(_)
+            ) {
+                tokens.push(SemanticTokenInfo {
+                    range: segment.range,
+                    kind: SemanticTokenKind::Column,
+                });
+            }
+            return;
+        }
+        let FieldCheckResult::Relation(relation) =
+            catalog.check_field(current_table, &segment.text)
+        else {
+            return;
+        };
+        tokens.push(SemanticTokenInfo {
+            range: segment.range,
+            kind: SemanticTokenKind::Relation,
+        });
+        current_table = relation.table.id;
     }
 }
 

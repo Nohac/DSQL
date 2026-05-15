@@ -107,12 +107,28 @@ pub struct OffsetClause {
 pub enum Expr {
     Literal(Literal),
     Name(NameRef),
+    Path(ScopedPath),
     Binary {
         range: TextRange,
         left: Box<Expr>,
         op: BinaryOp,
         right: Box<Expr>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Facet)]
+pub struct ScopedPath {
+    pub range: TextRange,
+    pub scope: PathScope,
+    pub segments: Vec<NameRef>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[repr(u8)]
+pub enum PathScope {
+    Current,
+    Parent,
+    Root,
 }
 
 #[derive(Clone, Debug, PartialEq, Facet)]
@@ -133,6 +149,7 @@ pub enum BinaryOp {
     Ge,
     Lt,
     Le,
+    Like,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]

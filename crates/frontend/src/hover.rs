@@ -166,11 +166,53 @@ fn hover_in_expr(catalog: &Catalog, table: TableId, expr: &Expr, byte: usize) ->
                 });
             }
         }
+        Expr::Path(path) => return hover_in_path(catalog, table, path, byte),
         Expr::Binary { left, right, .. } => {
             return hover_in_expr(catalog, table, left, byte)
                 .or_else(|| hover_in_expr(catalog, table, right, byte));
         }
         Expr::Literal(_) => {}
+    }
+    None
+}
+
+fn hover_in_path(
+    catalog: &Catalog,
+    table: TableId,
+    path: &dsql_core::ScopedPath,
+    byte: usize,
+) -> Option<HoverInfo> {
+    let mut current_table = table;
+    for (index, segment) in path.segments.iter().enumerate() {
+        if index + 1 == path.segments.len() {
+            if range_contains(segment.range, byte)
+                && let FieldCheckResult::Column(column) =
+                    catalog.check_field(current_table, &segment.text)
+            {
+                return Some(HoverInfo {
+                    label: segment.text.clone(),
+                    detail: format!("column: {}", column.data_type.as_str()),
+                    markdown: column_hover_markdown(catalog, column),
+                });
+            }
+            return None;
+        }
+        let FieldCheckResult::Relation(relation) =
+            catalog.check_field(current_table, &segment.text)
+        else {
+            return None;
+        };
+        if range_contains(segment.range, byte) {
+            return Some(HoverInfo {
+                label: segment.text.clone(),
+                detail: format!(
+                    "relation to {}.{}",
+                    relation.table.schema, relation.table.name
+                ),
+                markdown: relation_hover_markdown(catalog, &relation),
+            });
+        }
+        current_table = relation.table.id;
     }
     None
 }

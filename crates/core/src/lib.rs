@@ -25,9 +25,9 @@ pub use lint::{
     lint_query_definition,
 };
 pub use plan::{
-    FilterExpr, FilterLiteral, NestedRelation, OrderByPlan, PlannedFile, Projection, QueryPlan,
-    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, plan_file,
-    plan_file_with_catalog, plan_query_definition,
+    FilterColumnScope, FilterExpr, FilterLiteral, NestedRelation, OrderByPlan, PlannedFile,
+    Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
+    plan_file, plan_file_with_catalog, plan_query_definition,
 };
 pub use semantic::{
     CheckError, CheckErrorKind, CheckedDefinition, CheckedFile, Interner, LoweredFile, NameId,
@@ -40,7 +40,7 @@ pub use sql::{
 };
 pub use syntax::{
     BinaryOp, Clause, CstKind, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Expr,
-    Literal, ParseResult, Selection, SelectionKind, Severity, SortDirection, SourceFile,
-    SourceSnapshot, SourceText, SyntaxNode, SyntaxToken, SyntaxTree, TextRange, Token,
+    Literal, ParseResult, PathScope, ScopedPath, Selection, SelectionKind, Severity, SortDirection,
+    SourceFile, SourceSnapshot, SourceText, SyntaxNode, SyntaxToken, SyntaxTree, TextRange, Token,
     expected_tokens_at, parse_source,
 };

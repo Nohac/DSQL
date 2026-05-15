@@ -1,6 +1,6 @@
 use crate::{
-    BinaryOp, Catalog, Column, FilterExpr, FilterLiteral, ForeignKey, QueryPlan, SelectionClauses,
-    SelectionPlan, SelectionPlanItem, SortDirectionPlan, Table,
+    BinaryOp, Catalog, Column, FilterColumnScope, FilterExpr, FilterLiteral, ForeignKey, QueryPlan,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, Table,
 };
 use sea_query::{
     Alias, Asterisk, Condition, Expr, ExprTrait, Func, JoinType, Order, PgFunc,
@@ -73,6 +73,7 @@ pub fn generate_postgres_sql_with_options(
         &plan.output_name,
         &path,
         None,
+        None,
         RelationCardinality::Collection,
         options,
     )?;
@@ -98,11 +99,13 @@ fn generate_selection(
     output_name: &str,
     path: &[String],
     parent: Option<(&SelectionContext, &ForeignKey)>,
+    root: Option<&SelectionContext>,
     cardinality: RelationCardinality,
     options: PostgresSqlOptions,
 ) -> Result<SelectStatement, SqlGenerationError> {
     let current_table = table(catalog, selection.table)?;
     let context = context_for(current_table, output_name, path);
+    let root_context = root.unwrap_or(&context);
     let mut query = Query::select();
 
     let relation_condition = if let Some((parent, foreign_key)) = parent {
@@ -120,7 +123,7 @@ fn generate_selection(
         .clauses
         .filter
         .as_ref()
-        .map(|filter| filter_expr(catalog, &context, filter))
+        .map(|filter| filter_expr(catalog, &context, root_context, filter))
         .transpose()?;
     if cardinality == RelationCardinality::Collection
         && should_use_source_subquery(&selection.clauses, options)
@@ -175,6 +178,7 @@ fn generate_selection(
             &relation.output_name,
             &relation_path,
             Some((&context, foreign_key)),
+            Some(root_context),
             relation_cardinality,
             options,
         )?;
@@ -279,12 +283,20 @@ fn apply_order_limit_offset(
 fn filter_expr(
     catalog: &Catalog,
     context: &SelectionContext,
+    root: &SelectionContext,
     filter: &FilterExpr,
 ) -> Result<Expr, SqlGenerationError> {
     Ok(match filter {
-        FilterExpr::Column(column_id) => {
+        FilterExpr::Column {
+            scope,
+            column: column_id,
+        } => {
             let column = column(catalog, *column_id)?;
-            Expr::col((Alias::new(&context.table_alias), Alias::new(&column.name)))
+            let source = match scope {
+                FilterColumnScope::Current => context,
+                FilterColumnScope::Root => root,
+            };
+            Expr::col((Alias::new(&source.table_alias), Alias::new(&column.name)))
         }
         FilterExpr::Literal(literal) => match literal {
             FilterLiteral::String(value) => Expr::value(value.clone()),
@@ -297,8 +309,14 @@ fn filter_expr(
             FilterLiteral::Null => Expr::cust("null"),
         },
         FilterExpr::Binary { left, op, right } => {
-            let left = filter_expr(catalog, context, left)?;
-            let right = filter_expr(catalog, context, right)?;
+            if *op == BinaryOp::Like
+                && let FilterExpr::Literal(FilterLiteral::String(pattern)) = right.as_ref()
+            {
+                let left = filter_expr(catalog, context, root, left)?;
+                return Ok(left.like(pattern.clone()));
+            }
+            let left = filter_expr(catalog, context, root, left)?;
+            let right = filter_expr(catalog, context, root, right)?;
             match op {
                 BinaryOp::Eq => left.eq(right),
                 BinaryOp::Ne => left.ne(right),
@@ -306,7 +324,38 @@ fn filter_expr(
                 BinaryOp::Ge => left.gte(right),
                 BinaryOp::Lt => left.lt(right),
                 BinaryOp::Le => left.lte(right),
+                BinaryOp::Like => left.like("<unsupported>"),
             }
+        }
+        FilterExpr::Exists {
+            foreign_key: foreign_key_id,
+            table: table_id,
+            filter,
+        } => {
+            let related_table = table(catalog, *table_id)?;
+            let foreign_key = foreign_key(catalog, *foreign_key_id)?;
+            let exists_context = context_for(
+                related_table,
+                &related_table.name,
+                &[table_label(related_table)],
+            );
+            let mut query = Query::select();
+            query.expr(Expr::value(1)).from_as(
+                (
+                    Alias::new(&related_table.schema),
+                    Alias::new(&related_table.name),
+                ),
+                Alias::new(&exists_context.table_alias),
+            );
+            query.cond_where(relation_condition(
+                catalog,
+                context,
+                &exists_context,
+                foreign_key,
+                *table_id,
+            )?);
+            query.and_where(filter_expr(catalog, &exists_context, root, filter)?);
+            Expr::exists(query.to_owned())
         }
     })
 }
@@ -515,7 +564,7 @@ mod tests {
     fn generates_clause_sql_shape() {
         let catalog = Catalog::hardcoded();
         let parsed = parse_source(
-            "query Q { posts(where id > 100 order by created_at desc limit 10 offset 5) { id title } }"
+            "query Q { posts(where .id > 100 order by created_at desc limit 10 offset 5) { id title } }"
                 .into(),
         );
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -532,5 +581,25 @@ mod tests {
         assert!(sql.contains("\"created_at\" desc"));
         assert!(sql.contains("limit"));
         assert!(sql.contains("offset"));
+    }
+
+    #[test]
+    fn generates_scoped_relationship_predicate_sql_shape() {
+        let catalog = Catalog::hardcoded();
+        let parsed = parse_source(
+            "query Q { users(where .posts.title like \"%foo%\") { id posts(where .user_id == ~id) { id } } }"
+                .into(),
+        );
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let planned = plan_file_with_catalog(&parsed.source_file, &catalog);
+        assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
+
+        let generated = generate_postgres_sql(&planned.queries[0], &catalog).unwrap();
+        let sql = generated.sql.to_ascii_lowercase();
+
+        assert!(sql.contains("exists"));
+        assert!(sql.contains("like"));
+        assert!(sql.contains("\"title\" like '%foo%'"));
+        assert!(sql.contains("\"user_id\" = \"users_"));
     }
 }

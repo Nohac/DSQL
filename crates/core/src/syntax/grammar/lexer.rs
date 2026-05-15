@@ -50,6 +50,8 @@ pub enum Token {
     False,
     #[token("null")]
     Null,
+    #[token("like")]
+    Like,
     #[token("{")]
     LBrace,
     #[token("}")]
@@ -68,8 +70,12 @@ pub enum Token {
     Comma,
     #[token("...")]
     Ellipsis,
+    #[token("..")]
+    DotDot,
     #[token(".")]
     Dot,
+    #[token("~")]
+    Tilde,
     #[token("==")]
     Eq,
     #[token("!=")]
@@ -114,6 +120,7 @@ impl Token {
             Self::Ge => Some(">="),
             Self::Lt => Some("<"),
             Self::Le => Some("<="),
+            Self::Like => Some("like"),
             _ => None,
         }
     }

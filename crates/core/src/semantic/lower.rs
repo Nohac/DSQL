@@ -164,6 +164,11 @@ fn lower_expr(expr: &Expr, interner: &mut Interner) {
         Expr::Name(name) => {
             interner.intern(&name.text);
         }
+        Expr::Path(path) => {
+            for segment in &path.segments {
+                interner.intern(&segment.text);
+            }
+        }
         Expr::Binary { left, right, .. } => {
             lower_expr(left, interner);
             lower_expr(right, interner);

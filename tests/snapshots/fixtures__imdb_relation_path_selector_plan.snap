@@ -12,11 +12,12 @@ expression: contents
         clauses: SelectionClauses {
             filter: Some(
                 Binary {
-                    left: Column(
-                        ColumnId(
+                    left: Column {
+                        scope: Current,
+                        column: ColumnId(
                             63,
                         ),
-                    ),
+                    },
                     op: Eq,
                     right: Literal(
                         Number(
@@ -38,11 +39,12 @@ expression: contents
             clauses: SelectionClauses {
                 filter: Some(
                     Binary {
-                        left: Column(
-                            ColumnId(
+                        left: Column {
+                            scope: Current,
+                            column: ColumnId(
                                 63,
                             ),
-                        ),
+                        },
                         op: Eq,
                         right: Literal(
                             Number(

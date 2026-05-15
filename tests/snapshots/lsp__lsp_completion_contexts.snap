@@ -1,5 +1,6 @@
 ---
 source: tests/tests/lsp.rs
+assertion_line: 594
 expression: contents
 ---
 document_root
@@ -49,6 +50,12 @@ Operator <= less than or equal
 text_operator
 Operator == equals
 Operator != not equals
+Operator like matches pattern
+
+where_scope
+Keyword . current scope
+Keyword ~ root scope
+Keyword .. parent scope
 
 where_column
 Column id int
@@ -56,6 +63,25 @@ Column info text
 Column info_type_id int
 Column movie_id int
 Column note text
+
+where_root_column
+Column id int
+Column info text
+Column info_type_id int
+Column movie_id int
+Column note text
+
+where_parent_column
+Column id int
+Column info text
+Column info_type_id int
+Column movie_id int
+Column note text
+
+where_completed_predicate
+Keyword order by sort rows
+Keyword limit limit rows
+Keyword offset skip rows
 
 relation_clause_exact_nested
 Keyword where filter rows

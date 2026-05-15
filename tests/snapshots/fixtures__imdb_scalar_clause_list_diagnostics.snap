@@ -1,6 +1,7 @@
 ---
 source: tests/tests/fixtures.rs
+assertion_line: 185
 expression: contents
 ---
-Check Error PredicateTypeMismatch 50..56: field `id` expects number but predicate uses string
-Check Error ScalarClauses 71..75: field `note` is a scalar (text); only relations can have clauses
+Check Error PredicateTypeMismatch 51..57: field `.id` expects number but predicate uses string
+Check Error ScalarClauses 72..76: field `note` is a scalar (text); only relations can have clauses
