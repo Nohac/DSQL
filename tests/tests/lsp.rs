@@ -100,6 +100,20 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         completions_at_marker(&host, &uri, &source, &markers, "clause_prefix").await;
     let where_scope = completions_at_marker(&host, &uri, &source, &markers, "where_scope").await;
     let where_columns = completions_at_marker(&host, &uri, &source, &markers, "where_column").await;
+    let where_relations =
+        completions_at_marker(&host, &uri, &source, &markers, "where_relation").await;
+    let where_relation_selectors =
+        completions_at_marker(&host, &uri, &source, &markers, "where_relation_selector").await;
+    let where_relation_columns =
+        completions_at_marker(&host, &uri, &source, &markers, "where_relation_column").await;
+    let where_relation_text_operators = completions_at_marker(
+        &host,
+        &uri,
+        &source,
+        &markers,
+        "where_relation_text_operator",
+    )
+    .await;
     let where_root_columns =
         completions_at_marker(&host, &uri, &source, &markers, "where_root_column").await;
     let where_parent_columns =
@@ -110,6 +124,14 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         completions_at_marker(&host, &uri, &source, &markers, "order_column_after_where").await;
     let sort_direction_after_where =
         completions_at_marker(&host, &uri, &source, &markers, "sort_direction_after_where").await;
+    let where_nested_relation_selector = completions_at_marker(
+        &host,
+        &uri,
+        &source,
+        &markers,
+        "where_nested_relation_selector",
+    )
+    .await;
     let relation_clause_exact_nested = completions_at_marker(
         &host,
         &uri,
@@ -191,6 +213,36 @@ async fn imdb_keyword_and_operator_completion_contexts() {
     assert_no_completion_labels("where scope", &where_scope, &["id", "info", "movie_id"]);
     assert_completion_labels("where columns", &where_columns, &["id", "info", "movie_id"]);
     assert_completion_labels(
+        "where relations",
+        &where_relations,
+        &["aka_title::movie_id", "aka_title::episode_of_id"],
+    );
+    assert_completion_labels(
+        "where relation selectors",
+        &where_relation_selectors,
+        &["movie_id", "episode_of_id"],
+    );
+    assert_no_completion_labels(
+        "where relation selectors",
+        &where_relation_selectors,
+        &["aka_title::movie_id", "title", "id"],
+    );
+    assert_completion_labels(
+        "where relation columns",
+        &where_relation_columns,
+        &["id", "title", "episode_nr"],
+    );
+    assert_no_completion_labels(
+        "where relation columns",
+        &where_relation_columns,
+        &["aka_title::movie_id", "aka_title::episode_of_id"],
+    );
+    assert_completion_labels(
+        "where relation text operators",
+        &where_relation_text_operators,
+        &["==", "!=", "like"],
+    );
+    assert_completion_labels(
         "where root columns",
         &where_root_columns,
         &["id", "info", "movie_id"],
@@ -198,7 +250,7 @@ async fn imdb_keyword_and_operator_completion_contexts() {
     assert_no_completion_labels(
         "where root columns",
         &where_root_columns,
-        &["title", "episode_nr", "kind_id"],
+        &["episode_nr", "kind_id"],
     );
     assert_completion_labels(
         "where parent columns",
@@ -208,7 +260,7 @@ async fn imdb_keyword_and_operator_completion_contexts() {
     assert_no_completion_labels(
         "where parent columns",
         &where_parent_columns,
-        &["title", "episode_nr", "kind_id"],
+        &["episode_nr", "kind_id"],
     );
     assert_completion_labels(
         "where completed predicate",
@@ -229,6 +281,16 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         "sort direction after where",
         &sort_direction_after_where,
         &["asc", "desc"],
+    );
+    assert_completion_labels(
+        "where nested relation selector",
+        &where_nested_relation_selector,
+        &["movie_id", "episode_of_id"],
+    );
+    assert_no_completion_labels(
+        "where nested relation selector",
+        &where_nested_relation_selector,
+        &["aka_title::movie_id", "title", "id"],
     );
     assert_completion_labels(
         "relation clause exact nested",
@@ -339,9 +401,20 @@ async fn imdb_keyword_and_operator_completion_contexts() {
             ("text_operator", &text_operators),
             ("where_scope", &where_scope),
             ("where_column", &where_columns),
+            ("where_relation", &where_relations),
+            ("where_relation_selector", &where_relation_selectors),
+            ("where_relation_column", &where_relation_columns),
+            (
+                "where_relation_text_operator",
+                &where_relation_text_operators,
+            ),
             ("where_root_column", &where_root_columns),
             ("where_parent_column", &where_parent_columns),
             ("where_completed_predicate", &where_completed_predicate),
+            (
+                "where_nested_relation_selector",
+                &where_nested_relation_selector,
+            ),
             (
                 "relation_clause_exact_nested",
                 &relation_clause_exact_nested,

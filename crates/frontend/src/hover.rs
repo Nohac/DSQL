@@ -187,10 +187,10 @@ fn hover_in_path(
         if index + 1 == path.segments.len() {
             if range_contains(segment.range, byte)
                 && let FieldCheckResult::Column(column) =
-                    catalog.check_field(current_table, &segment.text)
+                    catalog.check_field(current_table, &segment.field_ref())
             {
                 return Some(HoverInfo {
-                    label: segment.text.clone(),
+                    label: segment.field_ref(),
                     detail: format!("column: {}", column.data_type.as_str()),
                     markdown: column_hover_markdown(catalog, column),
                 });
@@ -198,13 +198,13 @@ fn hover_in_path(
             return None;
         }
         let FieldCheckResult::Relation(relation) =
-            catalog.check_field(current_table, &segment.text)
+            catalog.check_field(current_table, &segment.field_ref())
         else {
             return None;
         };
         if range_contains(segment.range, byte) {
             return Some(HoverInfo {
-                label: segment.text.clone(),
+                label: segment.field_ref(),
                 detail: format!(
                     "relation to {}.{}",
                     relation.table.schema, relation.table.name

@@ -1,6 +1,6 @@
 ---
 source: tests/tests/lsp.rs
-assertion_line: 594
+assertion_line: 661
 expression: contents
 ---
 document_root
@@ -60,28 +60,90 @@ Keyword .. parent scope
 where_column
 Column id int
 Column info text
+Relation info_type relation to public.info_type via info_type_id
 Column info_type_id int
 Column movie_id int
 Column note text
+Relation title relation to public.title via movie_id
+
+where_relation
+Relation aka_title::episode_of_id relation to public.aka_title via episode_of_id
+Relation aka_title::movie_id relation to public.aka_title via movie_id
+Relation cast_info relation to public.cast_info via movie_id
+Relation complete_cast relation to public.complete_cast via movie_id
+Column episode_nr int
+Column episode_of_id int
+Column id int
+Column imdb_id int
+Column imdb_index text
+Column kind_id int
+Relation kind_type relation to public.kind_type via kind_id
+Column md5sum text
+Relation movie_companies relation to public.movie_companies via movie_id
+Relation movie_info relation to public.movie_info via movie_id
+Relation movie_info_idx relation to public.movie_info_idx via movie_id
+Relation movie_keyword relation to public.movie_keyword via movie_id
+Relation movie_link::linked_movie_id relation to public.movie_link via linked_movie_id
+Relation movie_link::movie_id relation to public.movie_link via movie_id
+Column phonetic_code text
+Column production_year int
+Column season_nr int
+Column series_years text
+Column title text
+Relation title::episode_of_id relation to public.title via episode_of_id
+
+where_relation_selector
+Relation episode_of_id relation to public.aka_title
+Relation movie_id relation to public.aka_title
+
+where_relation_column
+Column episode_nr int
+Column episode_of_id int
+Column id int
+Column imdb_index text
+Column kind_id int
+Relation kind_type relation to public.kind_type via kind_id
+Column md5sum text
+Column movie_id int
+Column note text
+Column phonetic_code text
+Column production_year int
+Column season_nr int
+Column title text
+Relation title::episode_of_id relation to public.title via episode_of_id
+Relation title::movie_id relation to public.title via movie_id
+
+where_relation_text_operator
+Operator == equals
+Operator != not equals
+Operator like matches pattern
 
 where_root_column
 Column id int
 Column info text
+Relation info_type relation to public.info_type via info_type_id
 Column info_type_id int
 Column movie_id int
 Column note text
+Relation title relation to public.title via movie_id
 
 where_parent_column
 Column id int
 Column info text
+Relation info_type relation to public.info_type via info_type_id
 Column info_type_id int
 Column movie_id int
 Column note text
+Relation title relation to public.title via movie_id
 
 where_completed_predicate
 Keyword order by sort rows
 Keyword limit limit rows
 Keyword offset skip rows
+
+where_nested_relation_selector
+Relation episode_of_id relation to public.aka_title
+Relation movie_id relation to public.aka_title
 
 relation_clause_exact_nested
 Keyword where filter rows

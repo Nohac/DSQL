@@ -415,13 +415,14 @@ fn resolve_predicate_path(
     let (last, relations) = segments.split_last()?;
     for relation_ref in relations {
         let FieldCheckResult::Relation(relation) =
-            catalog.check_field(current_table, &relation_ref.text)
+            catalog.check_field(current_table, &relation_ref.field_ref())
         else {
             return None;
         };
         current_table = relation.table.id;
     }
-    let FieldCheckResult::Column(column) = catalog.check_field(current_table, &last.text) else {
+    let FieldCheckResult::Column(column) = catalog.check_field(current_table, &last.field_ref())
+    else {
         return None;
     };
     Some(column.data_type)
@@ -438,7 +439,7 @@ fn predicate_path_label(path: &crate::ScopedPath) -> String {
         prefix,
         path.segments
             .iter()
-            .map(|segment| segment.text.as_str())
+            .map(|segment| segment.field_ref())
             .collect::<Vec<_>>()
             .join(".")
     )

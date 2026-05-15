@@ -166,7 +166,10 @@ fn lower_expr(expr: &Expr, interner: &mut Interner) {
         }
         Expr::Path(path) => {
             for segment in &path.segments {
-                interner.intern(&segment.text);
+                interner.intern(&segment.name.text);
+                if let Some(selector) = &segment.selector {
+                    interner.intern(&selector.text);
+                }
             }
         }
         Expr::Binary { left, right, .. } => {

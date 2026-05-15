@@ -337,7 +337,7 @@ fn plan_filter_path(
         crate::PathScope::Parent => return None,
     };
     let crate::FieldCheckResult::Column(column) =
-        catalog.check_field(source_table, &path.segments[0].text)
+        catalog.check_field(source_table, &path.segments[0].field_ref())
     else {
         return None;
     };
@@ -362,12 +362,12 @@ fn relation_predicate_column(
         return None;
     }
     let crate::FieldCheckResult::Relation(relation) =
-        catalog.check_field(table, &path.segments[0].text)
+        catalog.check_field(table, &path.segments[0].field_ref())
     else {
         return None;
     };
     let crate::FieldCheckResult::Column(column) =
-        catalog.check_field(relation.table.id, &path.segments[1].text)
+        catalog.check_field(relation.table.id, &path.segments[1].field_ref())
     else {
         return None;
     };

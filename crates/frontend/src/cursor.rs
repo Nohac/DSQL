@@ -16,6 +16,7 @@ pub(crate) enum CursorContext {
     ClauseList { table: TableId, used: UsedClauses },
     WhereScope,
     WhereColumn { table: TableId },
+    WhereRelationSelector { table: TableId, relation: String },
     WhereOperator { data_type: DataType },
     OrderByColumn { table: TableId },
     SortDirection,
@@ -319,7 +320,7 @@ fn clause_context(parse: &ParseResult, catalog: &Catalog, byte: usize) -> Option
     }
 
     if expected.contains(&SyntaxToken::Name)
-        && let Some(context) = name_expected_context(&cursor)
+        && let Some(context) = name_expected_context(parse, catalog, &cursor)
     {
         return Some(context);
     }
@@ -451,32 +452,6 @@ fn parsed_clause_context(
     match token_kind(suffix_tokens[clause_index])? {
         SyntaxToken::Where => {
             let after_where = &suffix_tokens[clause_index + 1..];
-            let Some(field) = after_where
-                .iter()
-                .find(|token| token_kind(token) == Some(SyntaxToken::Name))
-            else {
-                return Some(
-                    after_where
-                        .iter()
-                        .any(|token| {
-                            matches!(
-                                token_kind(token),
-                                Some(SyntaxToken::Dot | SyntaxToken::DotDot | SyntaxToken::Tilde)
-                            )
-                        })
-                        .then_some(CursorContext::WhereColumn { table })
-                        .and_then(|_| {
-                            let scope_table = predicate_scope_table(
-                                after_where,
-                                table,
-                                root_table,
-                                parent_table,
-                            )?;
-                            Some(CursorContext::WhereColumn { table: scope_table })
-                        })
-                        .unwrap_or(CursorContext::WhereScope),
-                );
-            };
             if let Some(operator_index) = after_where
                 .iter()
                 .rposition(|token| is_operator_token(token_kind(token)))
@@ -489,16 +464,8 @@ fn parsed_clause_context(
                         used: used_clauses_in_tokens(suffix_tokens),
                     });
             }
-            let field_name = parse.source.text(field.range);
-            let scope_table = predicate_scope_table(after_where, table, root_table, parent_table)?;
-            match catalog.check_field(scope_table, field_name.as_ref()) {
-                FieldCheckResult::Column(column) => Some(CursorContext::WhereOperator {
-                    data_type: column.data_type,
-                }),
-                FieldCheckResult::Relation(_)
-                | FieldCheckResult::NotFound
-                | FieldCheckResult::AmbiguousRelation { .. } => None,
-            }
+            predicate_path_context(parse, catalog, table, root_table, parent_table, after_where)
+                .or_else(|| after_where.is_empty().then_some(CursorContext::WhereScope))
         }
         SyntaxToken::Order => {
             if suffix_tokens
@@ -530,7 +497,11 @@ fn parsed_clause_context(
     }
 }
 
-fn name_expected_context(cursor: &ClauseCursor<'_>) -> Option<CursorContext> {
+fn name_expected_context(
+    parse: &ParseResult,
+    catalog: &Catalog,
+    cursor: &ClauseCursor<'_>,
+) -> Option<CursorContext> {
     let ClauseTarget::Table(table) = cursor.target else {
         return Some(CursorContext::Invalid);
     };
@@ -542,9 +513,14 @@ fn name_expected_context(cursor: &ClauseCursor<'_>) -> Option<CursorContext> {
     match token_kind(cursor.suffix_tokens[clause_index])? {
         SyntaxToken::Where => {
             let after_where = &cursor.suffix_tokens[clause_index + 1..];
-            let table =
-                predicate_scope_table(after_where, table, cursor.root_table, cursor.parent_table)?;
-            Some(CursorContext::WhereColumn { table })
+            predicate_path_context(
+                parse,
+                catalog,
+                table,
+                cursor.root_table,
+                cursor.parent_table,
+                after_where,
+            )
         }
         SyntaxToken::Order
             if cursor
@@ -559,27 +535,59 @@ fn name_expected_context(cursor: &ClauseCursor<'_>) -> Option<CursorContext> {
     }
 }
 
-fn predicate_scope_table(
-    after_where: &[&SyntaxNode],
+fn predicate_path_context(
+    parse: &ParseResult,
+    catalog: &Catalog,
     current_table: TableId,
     root_table: Option<TableId>,
     parent_table: Option<TableId>,
-) -> Option<TableId> {
-    let scope = after_where
-        .iter()
-        .rev()
-        .find_map(|token| match token_kind(token) {
-            Some(SyntaxToken::Dot) => Some(PredicateCompletionScope::Current),
-            Some(SyntaxToken::Tilde) => Some(PredicateCompletionScope::Root),
-            Some(SyntaxToken::DotDot) => Some(PredicateCompletionScope::Parent),
-            _ => None,
-        })
-        .unwrap_or(PredicateCompletionScope::Current);
+    after_where: &[&SyntaxNode],
+) -> Option<CursorContext> {
+    let path = predicate_path_prefix(parse, after_where)?;
+    let mut table = match path.scope {
+        PredicateCompletionScope::Current => current_table,
+        PredicateCompletionScope::Root => root_table?,
+        PredicateCompletionScope::Parent => parent_table?,
+    };
 
-    match scope {
-        PredicateCompletionScope::Current => Some(current_table),
-        PredicateCompletionScope::Root => root_table,
-        PredicateCompletionScope::Parent => parent_table,
+    if path.segments.is_empty() {
+        return Some(CursorContext::WhereColumn { table });
+    }
+
+    let relation_segments = if path.trailing_dot {
+        path.segments.as_slice()
+    } else {
+        &path.segments[..path.segments.len().saturating_sub(1)]
+    };
+    for segment in relation_segments {
+        let FieldCheckResult::Relation(relation) = catalog.check_field(table, &segment.field_ref())
+        else {
+            return None;
+        };
+        table = relation.table.id;
+    }
+
+    if let Some(segment) = path.segments.last()
+        && segment.selector_pending
+    {
+        return Some(CursorContext::WhereRelationSelector {
+            table,
+            relation: segment.name.clone(),
+        });
+    }
+
+    if path.trailing_dot {
+        return Some(CursorContext::WhereColumn { table });
+    }
+
+    let last = path.segments.last()?;
+    match catalog.check_field(table, &last.field_ref()) {
+        FieldCheckResult::Column(column) => Some(CursorContext::WhereOperator {
+            data_type: column.data_type,
+        }),
+        FieldCheckResult::Relation(_)
+        | FieldCheckResult::NotFound
+        | FieldCheckResult::AmbiguousRelation { .. } => None,
     }
 }
 
@@ -588,6 +596,106 @@ enum PredicateCompletionScope {
     Current,
     Parent,
     Root,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PredicatePathPrefix {
+    scope: PredicateCompletionScope,
+    segments: Vec<PredicatePathSegmentPrefix>,
+    trailing_dot: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PredicatePathSegmentPrefix {
+    name: String,
+    selector: Option<String>,
+    selector_pending: bool,
+}
+
+impl PredicatePathSegmentPrefix {
+    fn field_ref(&self) -> String {
+        self.selector.as_ref().map_or_else(
+            || self.name.clone(),
+            |selector| format!("{}::{}", self.name, selector),
+        )
+    }
+}
+
+fn predicate_path_prefix(
+    parse: &ParseResult,
+    after_where: &[&SyntaxNode],
+) -> Option<PredicatePathPrefix> {
+    let scope = match token_kind(after_where.first()?)? {
+        SyntaxToken::Dot => PredicateCompletionScope::Current,
+        SyntaxToken::DotDot => PredicateCompletionScope::Parent,
+        SyntaxToken::Tilde => PredicateCompletionScope::Root,
+        _ => return None,
+    };
+
+    let mut segments = Vec::new();
+    let mut index = 1;
+    let mut trailing_dot = false;
+    while index < after_where.len() {
+        match token_kind(after_where[index])? {
+            SyntaxToken::Name => {
+                let (segment, next_index) = scoped_path_segment_at(parse, after_where, index)?;
+                segments.push(segment);
+                index = next_index;
+                trailing_dot = false;
+            }
+            SyntaxToken::Dot => {
+                trailing_dot = true;
+                index += 1;
+            }
+            _ => break,
+        }
+    }
+
+    Some(PredicatePathPrefix {
+        scope,
+        segments,
+        trailing_dot,
+    })
+}
+
+fn scoped_path_segment_at(
+    parse: &ParseResult,
+    tokens: &[&SyntaxNode],
+    index: usize,
+) -> Option<(PredicatePathSegmentPrefix, usize)> {
+    if tokens.get(index).and_then(|token| token_kind(token)) != Some(SyntaxToken::Name) {
+        return None;
+    }
+    let name = parse.source.text(tokens[index].range);
+    if tokens.get(index + 1).and_then(|token| token_kind(token)) == Some(SyntaxToken::ColonColon) {
+        if tokens.get(index + 2).and_then(|token| token_kind(token)) == Some(SyntaxToken::Name) {
+            let selector = parse.source.text(tokens[index + 2].range);
+            return Some((
+                PredicatePathSegmentPrefix {
+                    name: name.to_string(),
+                    selector: Some(selector.to_string()),
+                    selector_pending: false,
+                },
+                index + 3,
+            ));
+        }
+        return Some((
+            PredicatePathSegmentPrefix {
+                name: name.to_string(),
+                selector: None,
+                selector_pending: true,
+            },
+            index + 2,
+        ));
+    }
+    Some((
+        PredicatePathSegmentPrefix {
+            name: name.to_string(),
+            selector: None,
+            selector_pending: false,
+        },
+        index + 1,
+    ))
 }
 
 fn selection_clause_target(

@@ -686,21 +686,23 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn direct_scoped_path_segments(&self, node: NodeRef) -> Vec<NameRef> {
+    fn direct_scoped_path_segments(&self, node: NodeRef) -> Vec<ScopedPathSegment> {
         self.direct_rules(node, Rule::ScopedPathSegment)
             .into_iter()
             .filter_map(|segment| {
                 let names = self.direct_names(segment);
                 let name = names.first()?.clone();
-                let Some(selector) = names.get(1) else {
-                    return Some(name);
-                };
-                Some(NameRef {
+                let selector = names.get(1).cloned();
+                let end = selector
+                    .as_ref()
+                    .map_or(name.range.end, |selector| selector.range.end);
+                Some(ScopedPathSegment {
                     range: TextRange {
                         start: name.range.start,
-                        end: selector.range.end,
+                        end,
                     },
-                    text: format!("{}::{}", name.text, selector.text),
+                    name,
+                    selector,
                 })
             })
             .collect()
@@ -891,9 +893,43 @@ mod tests {
         assert_eq!(
             path.segments
                 .iter()
-                .map(|segment| segment.text.as_str())
+                .map(|segment| segment.field_ref())
                 .collect::<Vec<_>>(),
             ["posts", "title"],
+        );
+    }
+
+    #[test]
+    fn parses_scoped_relationship_selector_paths_into_segments() {
+        let src = "query Titles { title(where .aka_title::movie_id.title like \"%foo%\") { id } }";
+        let parsed = parse_source(SourceSnapshot::from(src));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let query = parsed.source_file.queries().next().unwrap();
+        let Clause::Where(where_clause) = &query.selections[0].clauses[0] else {
+            panic!("expected where clause");
+        };
+        let Expr::Binary { left, op, .. } = &where_clause.predicate else {
+            panic!("expected binary predicate");
+        };
+        assert_eq!(*op, BinaryOp::Like);
+        let Expr::Path(path) = left.as_ref() else {
+            panic!("expected scoped path");
+        };
+        assert_eq!(path.scope, PathScope::Current);
+        assert_eq!(
+            path.segments
+                .iter()
+                .map(|segment| segment.field_ref())
+                .collect::<Vec<_>>(),
+            ["aka_title::movie_id", "title"],
+        );
+        assert_eq!(path.segments[0].name.text, "aka_title");
+        assert_eq!(
+            path.segments[0]
+                .selector
+                .as_ref()
+                .map(|selector| selector.text.as_str()),
+            Some("movie_id"),
         );
     }
 

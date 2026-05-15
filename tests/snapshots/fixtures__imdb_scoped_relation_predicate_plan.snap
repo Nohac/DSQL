@@ -1,0 +1,97 @@
+---
+source: tests/tests/fixtures.rs
+expression: contents
+---
+[
+    QueryPlan {
+        root: TableId(
+            20,
+        ),
+        output_name: "title",
+        clauses: SelectionClauses {
+            filter: Some(
+                Exists {
+                    foreign_key: ForeignKeyId(
+                        1,
+                    ),
+                    table: TableId(
+                        1,
+                    ),
+                    filter: Binary {
+                        left: Column {
+                            scope: Current,
+                            column: ColumnId(
+                                10,
+                            ),
+                        },
+                        op: Like,
+                        right: Literal(
+                            String(
+                                "%foo%",
+                            ),
+                        ),
+                    },
+                },
+            ),
+            order_by: [],
+            limit: Some(
+                1,
+            ),
+            offset: None,
+        },
+        selections: SelectionPlan {
+            table: TableId(
+                20,
+            ),
+            clauses: SelectionClauses {
+                filter: Some(
+                    Exists {
+                        foreign_key: ForeignKeyId(
+                            1,
+                        ),
+                        table: TableId(
+                            1,
+                        ),
+                        filter: Binary {
+                            left: Column {
+                                scope: Current,
+                                column: ColumnId(
+                                    10,
+                                ),
+                            },
+                            op: Like,
+                            right: Literal(
+                                String(
+                                    "%foo%",
+                                ),
+                            ),
+                        },
+                    },
+                ),
+                order_by: [],
+                limit: Some(
+                    1,
+                ),
+                offset: None,
+            },
+            items: [
+                Projection(
+                    Projection {
+                        column: ColumnId(
+                            96,
+                        ),
+                        output_name: "id",
+                    },
+                ),
+                Projection(
+                    Projection {
+                        column: ColumnId(
+                            97,
+                        ),
+                        output_name: "title",
+                    },
+                ),
+            ],
+        },
+    },
+]

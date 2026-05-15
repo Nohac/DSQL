@@ -120,7 +120,7 @@ pub enum Expr {
 pub struct ScopedPath {
     pub range: TextRange,
     pub scope: PathScope,
-    pub segments: Vec<NameRef>,
+    pub segments: Vec<ScopedPathSegment>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
@@ -129,6 +129,22 @@ pub enum PathScope {
     Current,
     Parent,
     Root,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct ScopedPathSegment {
+    pub range: TextRange,
+    pub name: NameRef,
+    pub selector: Option<NameRef>,
+}
+
+impl ScopedPathSegment {
+    pub fn field_ref(&self) -> String {
+        self.selector.as_ref().map_or_else(
+            || self.name.text.clone(),
+            |selector| format!("{}::{}", self.name.text, selector.text),
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Facet)]

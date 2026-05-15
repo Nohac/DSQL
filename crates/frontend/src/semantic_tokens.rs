@@ -187,7 +187,7 @@ fn add_path_tokens(
     for (index, segment) in path.segments.iter().enumerate() {
         if index + 1 == path.segments.len() {
             if matches!(
-                catalog.check_field(current_table, &segment.text),
+                catalog.check_field(current_table, &segment.field_ref()),
                 FieldCheckResult::Column(_)
             ) {
                 tokens.push(SemanticTokenInfo {
@@ -198,7 +198,7 @@ fn add_path_tokens(
             return;
         }
         let FieldCheckResult::Relation(relation) =
-            catalog.check_field(current_table, &segment.text)
+            catalog.check_field(current_table, &segment.field_ref())
         else {
             return;
         };

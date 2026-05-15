@@ -66,9 +66,11 @@ pub(crate) fn completions_at(
         CursorContext::SelectionBody { table } => field_completions(catalog, table),
         CursorContext::ClauseList { table: _, used } => clause_keyword_completions(used),
         CursorContext::WhereScope => predicate_scope_completions(),
-        CursorContext::WhereColumn { table } | CursorContext::OrderByColumn { table } => {
-            column_completions(catalog, table)
+        CursorContext::WhereColumn { table } => field_completions(catalog, table),
+        CursorContext::WhereRelationSelector { table, relation } => {
+            relation_selector_completions(catalog, table, &relation)
         }
+        CursorContext::OrderByColumn { table } => column_completions(catalog, table),
         CursorContext::WhereOperator { data_type } => operator_completions(data_type),
         CursorContext::SortDirection => keyword_completions(&[
             CompletionAtom::Token(Token::Asc, "sort ascending"),
@@ -160,6 +162,29 @@ fn column_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> 
         })
         .collect::<Vec<_>>();
     completions.sort_by(|left, right| left.label.cmp(&right.label));
+    completions
+}
+
+fn relation_selector_completions(
+    catalog: &Catalog,
+    table: TableId,
+    relation_name: &str,
+) -> Vec<CompletionItem> {
+    let mut completions = catalog
+        .relation_fields_for_table(table)
+        .into_iter()
+        .filter(|relation| relation.name == relation_name)
+        .map(|relation| CompletionItem {
+            label: relation.selector,
+            kind: CompletionKind::Relation,
+            detail: Some(format!(
+                "relation to {}.{}",
+                relation.table.schema, relation.table.name
+            )),
+        })
+        .collect::<Vec<_>>();
+    completions.sort_by(|left, right| left.label.cmp(&right.label));
+    completions.dedup_by(|left, right| left.label == right.label);
     completions
 }
 

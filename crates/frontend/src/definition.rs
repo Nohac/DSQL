@@ -227,7 +227,7 @@ fn definition_in_path(
         if index + 1 == path.segments.len() {
             if range_contains(segment.range, byte)
                 && let FieldCheckResult::Column(column) =
-                    catalog.check_field(current_table, &segment.text)
+                    catalog.check_field(current_table, &segment.field_ref())
             {
                 return Some(DefinitionTarget::Catalog(CatalogDefinition::Column {
                     schema: column.key.schema.clone(),
@@ -238,7 +238,7 @@ fn definition_in_path(
             return None;
         }
         let FieldCheckResult::Relation(relation) =
-            catalog.check_field(current_table, &segment.text)
+            catalog.check_field(current_table, &segment.field_ref())
         else {
             return None;
         };

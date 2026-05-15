@@ -40,7 +40,7 @@ pub use sql::{
 };
 pub use syntax::{
     BinaryOp, Clause, CstKind, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Expr,
-    Literal, ParseResult, PathScope, ScopedPath, Selection, SelectionKind, Severity, SortDirection,
-    SourceFile, SourceSnapshot, SourceText, SyntaxNode, SyntaxToken, SyntaxTree, TextRange, Token,
-    expected_tokens_at, parse_source,
+    Literal, ParseResult, PathScope, ScopedPath, ScopedPathSegment, Selection, SelectionKind,
+    Severity, SortDirection, SourceFile, SourceSnapshot, SourceText, SyntaxNode, SyntaxToken,
+    SyntaxTree, TextRange, Token, expected_tokens_at, parse_source,
 };
