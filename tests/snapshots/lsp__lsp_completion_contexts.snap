@@ -1,6 +1,6 @@
 ---
 source: tests/tests/lsp.rs
-assertion_line: 661
+assertion_line: 674
 expression: contents
 ---
 document_root
@@ -144,6 +144,15 @@ Keyword offset skip rows
 where_nested_relation_selector
 Relation episode_of_id relation to public.aka_title
 Relation movie_id relation to public.aka_title
+
+where_rhs_column
+Column id int
+Column info text
+Relation info_type relation to public.info_type via info_type_id
+Column info_type_id int
+Column movie_id int
+Column note text
+Relation title relation to public.title via movie_id
 
 relation_clause_exact_nested
 Keyword where filter rows

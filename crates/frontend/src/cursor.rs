@@ -456,7 +456,13 @@ fn parsed_clause_context(
                 .iter()
                 .rposition(|token| is_operator_token(token_kind(token)))
             {
-                return after_where[operator_index + 1..]
+                let after_operator = &after_where[operator_index + 1..];
+                if let Some(context) =
+                    incomplete_rhs_path_context(parse, catalog, table, root_table, after_operator)
+                {
+                    return Some(context);
+                }
+                return after_operator
                     .iter()
                     .any(|token| is_predicate_value_token(token_kind(token)))
                     .then_some(CursorContext::ClauseList {
@@ -589,6 +595,30 @@ fn predicate_path_context(
         | FieldCheckResult::NotFound
         | FieldCheckResult::AmbiguousRelation { .. } => None,
     }
+}
+
+fn incomplete_rhs_path_context(
+    parse: &ParseResult,
+    catalog: &Catalog,
+    table: TableId,
+    root_table: Option<TableId>,
+    after_operator: &[&SyntaxNode],
+) -> Option<CursorContext> {
+    if after_operator.is_empty()
+        || !matches!(
+            token_kind(after_operator.first()?),
+            Some(SyntaxToken::Dot | SyntaxToken::DotDot | SyntaxToken::Tilde)
+        )
+    {
+        return None;
+    }
+    if after_operator
+        .iter()
+        .any(|token| is_predicate_value_token(token_kind(token)))
+    {
+        return None;
+    }
+    predicate_path_context(parse, catalog, table, root_table, None, after_operator)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

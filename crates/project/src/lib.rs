@@ -1,7 +1,7 @@
 use dsql_core::{
-    Catalog, DatabaseMetadata, SchemaMetadata, TableMetadata, TypeMetadataFile,
-    table_metadata_from_yaml, table_metadata_to_yaml, type_metadata_file_from_yaml,
-    type_metadata_file_to_yaml,
+    Catalog, DatabaseMetadata, LintOptions, SchemaMetadata, Severity, TableMetadata,
+    TypeMetadataFile, table_metadata_from_yaml, table_metadata_to_yaml,
+    type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
 use facet::Facet;
 use miette::{IntoDiagnostic, Result, miette};
@@ -17,7 +17,25 @@ pub struct Config {
     pub database_url: String,
     #[facet(default = default_schema())]
     pub default_schema: String,
+    #[facet(default = default_lint_config())]
+    pub lint: LintConfig,
     pub documents: Vec<DocumentConfig>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct LintConfig {
+    #[facet(default = default_unindexed_scan_severity())]
+    pub unindexed_scan_severity: LintSeverity,
+}
+
+#[derive(Clone, Copy, Debug, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum LintSeverity {
+    Off,
+    Info,
+    Warning,
+    Error,
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -36,6 +54,7 @@ pub enum ResolverType {
 
 #[derive(Clone, Debug)]
 pub struct Project {
+    pub root: PathBuf,
     pub schema: PathBuf,
     pub config: Config,
 }
@@ -59,6 +78,7 @@ impl Project {
                 .map_err(|error| miette!("failed to parse {}: {error}", config_path.display()))?;
         Ok(Self {
             schema: root.join("schema"),
+            root,
             config,
         })
     }
@@ -78,10 +98,31 @@ impl Project {
             .map(|catalog| catalog.with_default_schema(self.config.default_schema.clone()))
             .map_err(|error| miette!("failed to build catalog from schema metadata: {error}"))
     }
+
+    pub fn lint_options(&self) -> LintOptions {
+        LintOptions {
+            unindexed_scan_severity: match self.config.lint.unindexed_scan_severity {
+                LintSeverity::Off => None,
+                LintSeverity::Info => Some(Severity::Info),
+                LintSeverity::Warning => Some(Severity::Warning),
+                LintSeverity::Error => Some(Severity::Error),
+            },
+        }
+    }
 }
 
 fn default_schema() -> String {
     Catalog::DEFAULT_SCHEMA.to_string()
+}
+
+fn default_lint_config() -> LintConfig {
+    LintConfig {
+        unindexed_scan_severity: default_unindexed_scan_severity(),
+    }
+}
+
+fn default_unindexed_scan_severity() -> LintSeverity {
+    LintSeverity::Info
 }
 
 pub fn find_root(start_dir: &Path) -> Option<PathBuf> {
@@ -102,12 +143,17 @@ pub fn init_project(base_path: &Path, database_url: Option<String>) -> Result<Pr
     let config = Config {
         database_url: database_url.unwrap_or_else(|| "<database url>".to_string()),
         default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
+        lint: default_lint_config(),
         documents: Vec::new(),
     };
     let config_toml = facet_toml::to_string(&config)
         .map_err(|error| miette!("failed to serialize project config: {error}"))?;
     fs::write(root.join("dsql.toml"), config_toml).into_diagnostic()?;
-    Ok(Project { schema, config })
+    Ok(Project {
+        root,
+        schema,
+        config,
+    })
 }
 
 pub fn load_metadata_dir(path: &Path) -> Result<DatabaseMetadata> {

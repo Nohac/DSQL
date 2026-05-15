@@ -56,6 +56,9 @@ query CompletionContexts {
   movie_info(where .title.aka_title::/*^where_nested_relation_selector*/.episode_nr == 10 limit 10) {
     id
   }
+  movie_info(where .title.aka_title::episode_of_id.episode_nr == ./*^where_rhs_column*/ limit 10) {
+    id
+  }
   movie_info(where .id == 1811435 order by id asc) {
     id
     movie_id

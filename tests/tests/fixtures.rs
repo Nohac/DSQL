@@ -148,6 +148,56 @@ async fn valid_query_fixtures_execute_when_database_url_is_set() {
     }
 }
 
+#[tokio::test]
+async fn integration_query_fixtures_match_expected_output_when_database_url_is_set() {
+    let Ok(database_url) = env::var("DSQL_TEST_DATABASE_URL") else {
+        return;
+    };
+
+    let catalog = imdb_catalog();
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+
+    for fixture in dsql_fixtures("queries/integration") {
+        let source = fs::read_to_string(&fixture).unwrap();
+        let parsed = parse_source(SourceSnapshot::from_string(source));
+        assert_no_diagnostics(&fixture, "parse", &parsed.diagnostics);
+
+        let checked = check_file_with_catalog(&parsed.source_file, &catalog);
+        assert!(
+            checked.errors.is_empty(),
+            "{} check errors: {:?}",
+            fixture.display(),
+            checked.errors
+        );
+
+        let planned = plan_file_with_catalog(&parsed.source_file, &catalog);
+        assert_no_error_diagnostics(&fixture, "plan", &planned.diagnostics);
+        assert_eq!(
+            planned.queries.len(),
+            1,
+            "{} should contain exactly one integration query",
+            fixture.display()
+        );
+
+        let generated = generate_postgres_sql_with_options(
+            &planned.queries[0],
+            &catalog,
+            PostgresSqlOptions {
+                collection_limit: Some(10),
+            },
+        )
+        .unwrap();
+        let row = sqlx::query(&generated.sql).fetch_one(&pool).await.unwrap();
+        let value: serde_json::Value = row.try_get(0).unwrap();
+        let output = serde_json::to_string_pretty(&value).unwrap();
+        snapshot_fixture(&fixture, "output", &output);
+    }
+}
+
 fn imdb_catalog() -> Catalog {
     dsql_project::load_metadata_dir(&fixture_root().join("schema/imdb"))
         .unwrap()

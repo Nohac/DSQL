@@ -123,7 +123,7 @@ fn generate_selection(
         .clauses
         .filter
         .as_ref()
-        .map(|filter| filter_expr(catalog, &context, root_context, filter))
+        .map(|filter| filter_expr(catalog, &context, root_context, None, filter))
         .transpose()?;
     if cardinality == RelationCardinality::Collection
         && should_use_source_subquery(&selection.clauses, options)
@@ -284,6 +284,7 @@ fn filter_expr(
     catalog: &Catalog,
     context: &SelectionContext,
     root: &SelectionContext,
+    outer_current: Option<&SelectionContext>,
     filter: &FilterExpr,
 ) -> Result<Expr, SqlGenerationError> {
     Ok(match filter {
@@ -295,6 +296,7 @@ fn filter_expr(
             let source = match scope {
                 FilterColumnScope::Current => context,
                 FilterColumnScope::Root => root,
+                FilterColumnScope::OuterCurrent => outer_current.unwrap_or(context),
             };
             Expr::col((Alias::new(&source.table_alias), Alias::new(&column.name)))
         }
@@ -312,11 +314,11 @@ fn filter_expr(
             if *op == BinaryOp::Like
                 && let FilterExpr::Literal(FilterLiteral::String(pattern)) = right.as_ref()
             {
-                let left = filter_expr(catalog, context, root, left)?;
+                let left = filter_expr(catalog, context, root, outer_current, left)?;
                 return Ok(left.like(pattern.clone()));
             }
-            let left = filter_expr(catalog, context, root, left)?;
-            let right = filter_expr(catalog, context, root, right)?;
+            let left = filter_expr(catalog, context, root, outer_current, left)?;
+            let right = filter_expr(catalog, context, root, outer_current, right)?;
             match op {
                 BinaryOp::Eq => left.eq(right),
                 BinaryOp::Ne => left.ne(right),
@@ -354,7 +356,13 @@ fn filter_expr(
                 foreign_key,
                 *table_id,
             )?);
-            query.and_where(filter_expr(catalog, &exists_context, root, filter)?);
+            query.and_where(filter_expr(
+                catalog,
+                &exists_context,
+                root,
+                outer_current.or(Some(context)),
+                filter,
+            )?);
             Expr::exists(query.to_owned())
         }
     })

@@ -2,11 +2,12 @@ use crate::analysis::collect_diagnostics_parts;
 use crate::document::{FileId, RevisionId};
 use dashmap::DashMap;
 use dsql_core::{
-    Catalog, CheckedFile, Diagnostic, FragmentMap, FragmentRecord, Interner, LintedFile,
-    LoweredFile, ParseResult, PlannedFile, QueryRecord, SourceFile, SourceSnapshot, SyntaxTree,
-    check_file_with_catalog, check_fragment_definition, check_query_definition,
-    extract_definitions, format_file, lint_file_with_catalog, lint_fragment_definition,
-    lint_query_definition, lower_file, parse_source, plan_file_with_catalog, plan_query_definition,
+    Catalog, CheckedFile, Diagnostic, FragmentMap, FragmentRecord, Interner, LintOptions,
+    LintedFile, LoweredFile, ParseResult, PlannedFile, QueryRecord, SourceFile, SourceSnapshot,
+    SyntaxTree, check_file_with_catalog, check_fragment_definition, check_query_definition,
+    extract_definitions, format_file, lint_file_with_options,
+    lint_fragment_definition_with_options, lint_query_definition_with_options, lower_file,
+    parse_source, plan_file_with_catalog, plan_query_definition,
 };
 use facet::Facet;
 use picante::PicanteResult;
@@ -41,6 +42,11 @@ pub struct SourceInput {
 #[picante::input]
 pub struct CatalogInput {
     pub catalog: Catalog,
+}
+
+#[picante::input]
+pub struct LintOptionsInput {
+    pub options: LintOptions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
@@ -116,7 +122,12 @@ pub async fn lint_file_query<DB: CompilerDatabaseTrait>(
 ) -> PicanteResult<LintedFile> {
     let parse = parse_file(db, source).await?;
     let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
-    Ok(lint_file_with_catalog(&parse.source_file, &catalog))
+    let options = LintOptionsInput::options(db)?.unwrap_or_default();
+    Ok(lint_file_with_options(
+        &parse.source_file,
+        &catalog,
+        options,
+    ))
 }
 
 #[picante::tracked]
@@ -155,7 +166,10 @@ pub async fn lint_query_definition_query<DB: CompilerDatabaseTrait>(
     };
     let fragments = resolve_fragments(db, input.fragments(db)?)?;
     let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
-    Ok(lint_query_definition(&record, &fragments, &catalog))
+    let options = LintOptionsInput::options(db)?.unwrap_or_default();
+    Ok(lint_query_definition_with_options(
+        &record, &fragments, &catalog, options,
+    ))
 }
 
 #[picante::tracked]
@@ -168,7 +182,10 @@ pub async fn lint_fragment_definition_query<DB: CompilerDatabaseTrait>(
     };
     let fragments = resolve_fragments(db, input.fragments(db)?)?;
     let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
-    Ok(lint_fragment_definition(&record, &fragments, &catalog))
+    let options = LintOptionsInput::options(db)?.unwrap_or_default();
+    Ok(lint_fragment_definition_with_options(
+        &record, &fragments, &catalog, options,
+    ))
 }
 
 #[picante::tracked]
@@ -267,6 +284,7 @@ fn empty_planned() -> PlannedFile {
     inputs(
         SourceInput,
         CatalogInput,
+        LintOptionsInput,
         QueryDefinitionInput,
         FragmentDefinitionInput
     ),
@@ -305,6 +323,8 @@ impl Default for CompilerDb {
         );
         db.set_catalog(Catalog::hardcoded())
             .expect("hardcoded catalog should be representable by Picante");
+        db.set_lint_options(LintOptions::default())
+            .expect("default lint options should be representable by Picante");
         db
     }
 }
@@ -312,6 +332,10 @@ impl Default for CompilerDb {
 impl CompilerDb {
     pub(crate) fn set_catalog(&self, catalog: Catalog) -> PicanteResult<()> {
         CatalogInput::set(self, catalog)
+    }
+
+    pub(crate) fn set_lint_options(&self, options: LintOptions) -> PicanteResult<()> {
+        LintOptionsInput::set(self, options)
     }
 
     pub(crate) fn set_source_rope(

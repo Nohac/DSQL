@@ -21,8 +21,9 @@ pub use definition::{
 };
 pub use format::{FormatConfidence, FormattedText, format_file};
 pub use lint::{
-    LintedDefinition, LintedFile, lint_file, lint_file_with_catalog, lint_fragment_definition,
-    lint_query_definition,
+    LintOptions, LintedDefinition, LintedFile, lint_file, lint_file_with_catalog,
+    lint_file_with_options, lint_fragment_definition, lint_fragment_definition_with_options,
+    lint_query_definition, lint_query_definition_with_options,
 };
 pub use plan::{
     FilterColumnScope, FilterExpr, FilterLiteral, NestedRelation, OrderByPlan, PlannedFile,

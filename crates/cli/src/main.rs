@@ -1,8 +1,12 @@
 use clap::{Parser, Subcommand};
-use dsql_core::{Catalog, SourceSnapshot};
+use dsql_core::{
+    Catalog, DefinitionRecord, Diagnostic, FragmentMap, QueryRecord, SourceSnapshot,
+    check_query_definition, extract_definitions, lint_query_definition_with_options, parse_source,
+    plan_query_definition,
+};
 use dsql_frontend::{AnalysisHost, collect_diagnostics};
 use miette::{IntoDiagnostic, Result};
-use sqlx::{Row, postgres::PgPoolOptions};
+use sqlx::{Connection, Row, postgres::PgConnection};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -38,7 +42,7 @@ enum Command {
         dry_run: bool,
         #[arg(long, default_value_t = 100)]
         limit: u64,
-        file: PathBuf,
+        query: String,
     },
     Lsp,
 }
@@ -103,11 +107,27 @@ async fn main() -> Result<()> {
         Command::Exec {
             dry_run,
             limit,
-            file,
+            query,
         } => {
-            let catalog = load_catalog_for_path(&file);
-            let analysis = analyze_file_with_catalog(file.clone(), catalog.clone()).await?;
-            let diagnostics = collect_diagnostics(&analysis);
+            let project = dsql_project::Project::load()?;
+            let catalog = project.load_catalog()?;
+            let lint_options = project.lint_options();
+            let query = load_project_query(&project, &query)?;
+
+            let checked = check_query_definition(&query.record, &query.fragments, &catalog);
+            let linted = lint_query_definition_with_options(
+                &query.record,
+                &query.fragments,
+                &catalog,
+                lint_options,
+            );
+            let planned = plan_query_definition(&query.record, &query.fragments, &catalog);
+            let mut diagnostics = Vec::new();
+            diagnostics.extend(query.parse_diagnostics);
+            diagnostics.extend(checked.diagnostics);
+            diagnostics.extend(linted.diagnostics);
+            diagnostics.extend(planned.diagnostics);
+            diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
             print_diagnostics(&diagnostics);
             if diagnostics
                 .iter()
@@ -121,7 +141,7 @@ async fn main() -> Result<()> {
             let sql_options = dsql_core::PostgresSqlOptions {
                 collection_limit: (limit > 0).then_some(limit),
             };
-            for query in &analysis.plan.queries {
+            for query in &planned.queries {
                 generated_queries.push(
                     dsql_core::generate_postgres_sql_with_options(query, &catalog, sql_options)
                         .map_err(|error| miette::miette!("failed to generate SQL: {error}"))?,
@@ -136,20 +156,30 @@ async fn main() -> Result<()> {
                     }
                 }
             } else {
-                let project_start = file.parent().unwrap_or_else(|| Path::new("."));
-                let project = dsql_project::Project::load_from(project_start)?;
-                let pool = PgPoolOptions::new()
-                    .max_connections(1)
-                    .connect(&project.config.database_url)
+                let mut connection = PgConnection::connect(&project.config.database_url)
                     .await
                     .map_err(|error| miette::miette!("failed to connect to database: {error}"))?;
+                let backend_pid = sqlx::query("select pg_backend_pid()")
+                    .fetch_one(&mut connection)
+                    .await
+                    .and_then(|row| row.try_get::<i32, _>(0))
+                    .map_err(|error| {
+                        miette::miette!("failed to read database backend pid: {error}")
+                    })?;
                 let mut output = String::from("{");
                 for generated in generated_queries {
                     let exec_sql = format!("select ({})::text", generated.sql);
-                    let row = sqlx::query(&exec_sql)
-                        .fetch_one(&pool)
-                        .await
-                        .map_err(|error| miette::miette!("failed to execute SQL: {error}"))?;
+                    let row = tokio::select! {
+                        row = sqlx::query(&exec_sql).fetch_one(&mut connection) => {
+                            row.map_err(|error| miette::miette!("failed to execute SQL: {error}"))?
+                        }
+                        signal = tokio::signal::ctrl_c() => {
+                            signal
+                                .map_err(|error| miette::miette!("failed to listen for Ctrl+C: {error}"))?;
+                            cancel_backend(&project.config.database_url, backend_pid).await?;
+                            return Err(miette::miette!("query execution cancelled"));
+                        }
+                    };
                     let value = row
                         .try_get::<String, _>(0)
                         .map_err(|error| miette::miette!("failed to read JSON result: {error}"))?;
@@ -176,29 +206,166 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn analyze_file(path: PathBuf) -> Result<dsql_frontend::AnalysisResult> {
-    let catalog = load_catalog_for_path(&path);
-    analyze_file_with_catalog(path, catalog).await
+async fn cancel_backend(database_url: &str, backend_pid: i32) -> Result<()> {
+    let mut connection = PgConnection::connect(database_url)
+        .await
+        .map_err(|error| miette::miette!("failed to connect for query cancellation: {error}"))?;
+    sqlx::query("select pg_cancel_backend($1)")
+        .bind(backend_pid)
+        .execute(&mut connection)
+        .await
+        .map_err(|error| miette::miette!("failed to cancel database query: {error}"))?;
+    Ok(())
 }
 
-async fn analyze_file_with_catalog(
+struct LoadedQuery {
+    record: QueryRecord,
+    fragments: FragmentMap,
+    parse_diagnostics: Vec<Diagnostic>,
+}
+
+fn load_project_query(project: &dsql_project::Project, query_name: &str) -> Result<LoadedQuery> {
+    let files = project_document_files(project)?;
+    if files.is_empty() {
+        return Err(miette::miette!(
+            "no dsql documents found in project {}",
+            project_root(project).display()
+        ));
+    }
+
+    let mut fragments = FragmentMap::default();
+    let mut queries = Vec::<QueryRecord>::new();
+    let mut parse_diagnostics = Vec::<Diagnostic>::new();
+
+    for file in files {
+        let text = std::fs::read_to_string(&file)
+            .map_err(|error| miette::miette!("failed to read {}: {error}", file.display()))?;
+        let parsed = parse_source(SourceSnapshot::from_string(text));
+        parse_diagnostics.extend(parsed.diagnostics.clone());
+        let extracted = extract_definitions(&parsed.source_file);
+        for definition in extracted.definitions {
+            match definition {
+                DefinitionRecord::Query(query) => queries.push(query),
+                DefinitionRecord::Fragment(fragment) => fragments.insert(fragment),
+            }
+        }
+    }
+
+    let matching = queries
+        .into_iter()
+        .filter(|query| query.key.name.as_deref() == Some(query_name))
+        .collect::<Vec<_>>();
+    match matching.as_slice() {
+        [] => Err(miette::miette!("query `{query_name}` not found")),
+        [query] => Ok(LoadedQuery {
+            record: query.clone(),
+            fragments,
+            parse_diagnostics,
+        }),
+        _ => Err(miette::miette!(
+            "query `{query_name}` is defined multiple times"
+        )),
+    }
+}
+
+fn project_document_files(project: &dsql_project::Project) -> Result<Vec<PathBuf>> {
+    let base = project_root(project);
+    let mut files = Vec::new();
+    if project.config.documents.is_empty() {
+        collect_dsql_files(&base, Some(&project.root), &mut files)?;
+    } else {
+        for document in &project.config.documents {
+            if !matches!(document.resolver, dsql_project::ResolverType::Dsql) {
+                continue;
+            }
+            for path in &document.paths {
+                let path = base.join(path);
+                collect_document_path(&path, Some(&project.root), &mut files)?;
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+fn project_root(project: &dsql_project::Project) -> PathBuf {
+    project
+        .root
+        .parent()
+        .map_or_else(|| project.root.clone(), Path::to_path_buf)
+}
+
+fn collect_document_path(
+    path: &Path,
+    excluded_dir: Option<&Path>,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    if path.is_dir() {
+        collect_dsql_files(path, excluded_dir, files)
+    } else if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
+        files.push(path.to_path_buf());
+        Ok(())
+    } else {
+        Err(miette::miette!(
+            "dsql document path not found: {}",
+            path.display()
+        ))
+    }
+}
+
+fn collect_dsql_files(
+    dir: &Path,
+    excluded_dir: Option<&Path>,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    if excluded_dir.is_some_and(|excluded| dir == excluded) {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)
+        .map_err(|error| miette::miette!("failed to read directory {}: {error}", dir.display()))?
+    {
+        let entry = entry.into_diagnostic()?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_dsql_files(&path, excluded_dir, files)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+async fn analyze_file(path: PathBuf) -> Result<dsql_frontend::AnalysisResult> {
+    let (catalog, lint_options) = load_project_settings_for_path(&path);
+    analyze_file_with_settings(path, catalog, lint_options).await
+}
+
+async fn analyze_file_with_settings(
     path: PathBuf,
     catalog: Catalog,
+    lint_options: dsql_core::LintOptions,
 ) -> Result<dsql_frontend::AnalysisResult> {
     let text = std::fs::read_to_string(&path).into_diagnostic()?;
     let host = AnalysisHost::new();
     host.set_catalog(catalog);
+    host.set_lint_options(lint_options);
     let file = host.create_file(SourceSnapshot::from_string(text));
     host.analyze(file)
         .await
         .ok_or_else(|| miette::miette!("analysis failed"))
 }
 
-fn load_catalog_for_path(path: &Path) -> Catalog {
+fn load_project_settings_for_path(path: &Path) -> (Catalog, dsql_core::LintOptions) {
     let project_start = path.parent().unwrap_or_else(|| Path::new("."));
-    dsql_project::Project::try_load_from(project_start)
-        .and_then(|project| project.load_catalog().ok())
-        .unwrap_or_else(Catalog::hardcoded)
+    let Some(project) = dsql_project::Project::try_load_from(project_start) else {
+        return (Catalog::hardcoded(), dsql_core::LintOptions::default());
+    };
+    let lint_options = project.lint_options();
+    let catalog = project
+        .load_catalog()
+        .unwrap_or_else(|_| Catalog::hardcoded());
+    (catalog, lint_options)
 }
 
 fn print_diagnostics(diagnostics: &[dsql_core::Diagnostic]) {

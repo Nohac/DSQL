@@ -1,0 +1,46 @@
+---
+source: tests/tests/fixtures.rs
+expression: contents
+---
+[
+  {
+    "id": 3,
+    "movie_id": 4288
+  },
+  {
+    "id": 6,
+    "movie_id": 8343
+  },
+  {
+    "id": 7,
+    "movie_id": 8343
+  },
+  {
+    "id": 8,
+    "movie_id": 8343
+  },
+  {
+    "id": 14,
+    "movie_id": 8805
+  },
+  {
+    "id": 15,
+    "movie_id": 8805
+  },
+  {
+    "id": 16,
+    "movie_id": 8805
+  },
+  {
+    "id": 17,
+    "movie_id": 8805
+  },
+  {
+    "id": 18,
+    "movie_id": 8805
+  },
+  {
+    "id": 19,
+    "movie_id": 8805
+  }
+]

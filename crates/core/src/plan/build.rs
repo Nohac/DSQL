@@ -3,7 +3,7 @@ use super::{
     Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
 };
 use crate::{
-    catalog::{Catalog, FieldCheckResult, ForeignKeyId, TableId, TableKey, TableResolution},
+    catalog::{Catalog, FieldCheckResult, TableId, TableKey, TableResolution},
     definition::{DefinitionResolver, FragmentMap, QueryRecord, extract_definitions},
     syntax::{
         Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Selection, SelectionKind,
@@ -234,7 +234,7 @@ fn plan_clauses(
         match clause {
             crate::Clause::Where(where_clause) => {
                 clauses.filter =
-                    plan_filter_expr(catalog, root_table, table, &where_clause.predicate);
+                    plan_filter_expr(catalog, root_table, table, None, &where_clause.predicate);
             }
             crate::Clause::OrderBy(order_by) => {
                 clauses
@@ -269,11 +269,14 @@ fn plan_filter_expr(
     catalog: &Catalog,
     root_table: TableId,
     table: TableId,
+    outer_current_table: Option<TableId>,
     expr: &crate::Expr,
 ) -> Option<FilterExpr> {
     match expr {
         crate::Expr::Name(_) => None,
-        crate::Expr::Path(path) => plan_filter_path(catalog, root_table, table, path),
+        crate::Expr::Path(path) => {
+            plan_filter_path(catalog, root_table, table, outer_current_table, path)
+        }
         crate::Expr::Literal(literal) => Some(FilterExpr::Literal(match literal {
             crate::Literal::String { value, .. } => FilterLiteral::String(value.clone()),
             crate::Literal::Number { value, .. } => FilterLiteral::Number(value.clone()),
@@ -284,34 +287,28 @@ fn plan_filter_expr(
             left, op, right, ..
         } => {
             if let crate::Expr::Path(path) = left.as_ref()
-                && let Some(RelationPredicateColumn {
-                    foreign_key,
-                    table: relation_table,
-                    column,
-                }) = relation_predicate_column(catalog, table, path)
+                && let Some(right) =
+                    plan_filter_expr(catalog, root_table, table, Some(table), right)
+                && let Some(filter) = relation_predicate_filter(catalog, table, path, *op, right)
             {
-                return Some(FilterExpr::Exists {
-                    foreign_key,
-                    table: relation_table,
-                    filter: Box::new(FilterExpr::Binary {
-                        left: Box::new(FilterExpr::Column {
-                            scope: FilterColumnScope::Current,
-                            column,
-                        }),
-                        op: *op,
-                        right: Box::new(plan_filter_expr(
-                            catalog,
-                            root_table,
-                            relation_table,
-                            right,
-                        )?),
-                    }),
-                });
+                return Some(filter);
             }
             Some(FilterExpr::Binary {
-                left: Box::new(plan_filter_expr(catalog, root_table, table, left)?),
+                left: Box::new(plan_filter_expr(
+                    catalog,
+                    root_table,
+                    table,
+                    outer_current_table,
+                    left,
+                )?),
                 op: *op,
-                right: Box::new(plan_filter_expr(catalog, root_table, table, right)?),
+                right: Box::new(plan_filter_expr(
+                    catalog,
+                    root_table,
+                    table,
+                    outer_current_table,
+                    right,
+                )?),
             })
         }
     }
@@ -321,18 +318,22 @@ fn plan_filter_path(
     catalog: &Catalog,
     root_table: TableId,
     table: TableId,
+    outer_current_table: Option<TableId>,
     path: &crate::ScopedPath,
 ) -> Option<FilterExpr> {
     if path.segments.len() != 1 {
         return None;
     }
     let scope = match path.scope {
+        crate::PathScope::Current if outer_current_table.is_some() => {
+            FilterColumnScope::OuterCurrent
+        }
         crate::PathScope::Current => FilterColumnScope::Current,
         crate::PathScope::Root => FilterColumnScope::Root,
         crate::PathScope::Parent => return None,
     };
     let source_table = match path.scope {
-        crate::PathScope::Current => table,
+        crate::PathScope::Current => outer_current_table.unwrap_or(table),
         crate::PathScope::Root => root_table,
         crate::PathScope::Parent => return None,
     };
@@ -347,34 +348,55 @@ fn plan_filter_path(
     })
 }
 
-struct RelationPredicateColumn {
-    foreign_key: ForeignKeyId,
-    table: TableId,
-    column: crate::ColumnId,
-}
-
-fn relation_predicate_column(
+fn relation_predicate_filter(
     catalog: &Catalog,
     table: TableId,
     path: &crate::ScopedPath,
-) -> Option<RelationPredicateColumn> {
-    if path.scope != crate::PathScope::Current || path.segments.len() != 2 {
+    op: crate::BinaryOp,
+    right: FilterExpr,
+) -> Option<FilterExpr> {
+    if path.scope != crate::PathScope::Current || path.segments.len() < 2 {
+        return None;
+    }
+    relation_predicate_segments(catalog, table, &path.segments, op, right)
+}
+
+fn relation_predicate_segments(
+    catalog: &Catalog,
+    table: TableId,
+    segments: &[crate::ScopedPathSegment],
+    op: crate::BinaryOp,
+    right: FilterExpr,
+) -> Option<FilterExpr> {
+    if segments.len() < 2 {
         return None;
     }
     let crate::FieldCheckResult::Relation(relation) =
-        catalog.check_field(table, &path.segments[0].field_ref())
+        catalog.check_field(table, &segments[0].field_ref())
     else {
         return None;
     };
-    let crate::FieldCheckResult::Column(column) =
-        catalog.check_field(relation.table.id, &path.segments[1].field_ref())
-    else {
-        return None;
+    let filter = if segments.len() == 2 {
+        let crate::FieldCheckResult::Column(column) =
+            catalog.check_field(relation.table.id, &segments[1].field_ref())
+        else {
+            return None;
+        };
+        FilterExpr::Binary {
+            left: Box::new(FilterExpr::Column {
+                scope: FilterColumnScope::Current,
+                column: column.id,
+            }),
+            op,
+            right: Box::new(right),
+        }
+    } else {
+        relation_predicate_segments(catalog, relation.table.id, &segments[1..], op, right)?
     };
-    Some(RelationPredicateColumn {
+    Some(FilterExpr::Exists {
         foreign_key: relation.foreign_key.id,
         table: relation.table.id,
-        column: column.id,
+        filter: Box::new(filter),
     })
 }
 

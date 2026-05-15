@@ -1,0 +1,6 @@
+query RhsSameTable {
+  movie_info(where .movie_id == .movie_id order by id asc limit 3) {
+    id
+    movie_id
+  }
+}

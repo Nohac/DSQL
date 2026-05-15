@@ -71,6 +71,7 @@ pub enum FilterExpr {
 pub enum FilterColumnScope {
     Current,
     Root,
+    OuterCurrent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]

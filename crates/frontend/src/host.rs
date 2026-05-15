@@ -14,7 +14,7 @@ use crate::hover::{HoverInfo, hover_at};
 use crate::provider::{CatalogProvider, HardcodedCatalogProvider};
 use crate::semantic_tokens::{DocumentSemanticTokens, semantic_tokens_at};
 use dashmap::DashMap;
-use dsql_core::{Catalog, Diagnostic, FormattedText, SourceSnapshot};
+use dsql_core::{Catalog, Diagnostic, FormattedText, LintOptions, SourceSnapshot};
 use ropey::Rope;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -59,6 +59,13 @@ impl AnalysisHost {
             .db
             .set_catalog(catalog)
             .expect("catalog should be representable by Picante");
+    }
+
+    pub fn set_lint_options(&self, options: LintOptions) {
+        self.inner
+            .db
+            .set_lint_options(options)
+            .expect("lint options should be representable by Picante");
     }
 
     pub fn create_file(&self, source: SourceSnapshot) -> FileId {

@@ -33,6 +33,7 @@ pub enum DiagnosticCode {
     AmbiguousRelation,
     DuplicateOutputKey,
     UnindexedJoinColumn,
+    UnindexedScanColumn,
     ScalarSelectionSet,
     ScalarClauses,
     RelationSelectionSet,

@@ -91,6 +91,7 @@ impl Backend {
             Ok(catalog) => {
                 info!(schema_dir = %project.schema.display(), "loaded catalog");
                 self.analysis.set_catalog(catalog);
+                self.analysis.set_lint_options(project.lint_options());
                 self.project_catalog_loaded.store(true, Ordering::Release);
                 self.client
                     .log_message(

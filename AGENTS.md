@@ -57,6 +57,7 @@
   implementation, unless the user explicitly asks for exploratory or speculative
   edits.
 - Add focused regression tests for language behavior, diagnostics, and editor-facing analysis when changing those areas.
+- Do not test external crate functionality. Tests should protect dsql semantics, integration behavior, or project-specific boundaries, not verify that dependencies parse defaults or expose documented behavior.
 - Avoid tests that only restate library behavior without protecting project semantics.
 - Before committing code changes, run formatting, tests, and clippy with warnings denied.
 - If a verification command cannot be run, say why in the final response.

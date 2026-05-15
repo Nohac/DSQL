@@ -1,0 +1,18 @@
+---
+source: tests/tests/fixtures.rs
+expression: contents
+---
+[
+  {
+    "id": 1,
+    "movie_id": 2525976
+  },
+  {
+    "id": 2,
+    "movie_id": 3062
+  },
+  {
+    "id": 3,
+    "movie_id": 4288
+  }
+]
