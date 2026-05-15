@@ -327,6 +327,8 @@ fn filter_expr(
                 BinaryOp::Lt => left.lt(right),
                 BinaryOp::Le => left.lte(right),
                 BinaryOp::Like => left.like("<unsupported>"),
+                BinaryOp::And => left.and(right),
+                BinaryOp::Or => left.or(right),
             }
         }
         FilterExpr::Exists {

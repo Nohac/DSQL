@@ -349,12 +349,27 @@ fn check_predicate_expr(
         Expr::Binary {
             left, op, right, ..
         } => {
-            check_binary_predicate_types(catalog, root_table, table, left, *op, right, errors);
+            if is_comparison_op(*op) {
+                check_binary_predicate_types(catalog, root_table, table, left, *op, right, errors);
+            }
             check_predicate_expr(catalog, root_table, table, left, errors);
             check_predicate_expr(catalog, root_table, table, right, errors);
         }
         Expr::Literal(_) => {}
     }
+}
+
+fn is_comparison_op(op: crate::BinaryOp) -> bool {
+    matches!(
+        op,
+        crate::BinaryOp::Eq
+            | crate::BinaryOp::Ne
+            | crate::BinaryOp::Gt
+            | crate::BinaryOp::Ge
+            | crate::BinaryOp::Lt
+            | crate::BinaryOp::Le
+            | crate::BinaryOp::Like
+    )
 }
 
 fn check_binary_predicate_types(

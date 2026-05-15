@@ -1,6 +1,6 @@
 ---
 source: tests/tests/lsp.rs
-assertion_line: 674
+assertion_line: 766
 expression: contents
 ---
 document_root
@@ -137,6 +137,8 @@ Column note text
 Relation title relation to public.title via movie_id
 
 where_completed_predicate
+Keyword and combine predicates
+Keyword or match either predicate
 Keyword order by sort rows
 Keyword limit limit rows
 Keyword offset skip rows
@@ -210,6 +212,44 @@ Keyword offset skip rows
 
 relation_path_after_fragment
 Keyword where filter rows
+Keyword order by sort rows
+Keyword limit limit rows
+Keyword offset skip rows
+
+where_boolean_operator
+Keyword and combine predicates
+Keyword or match either predicate
+Keyword order by sort rows
+Keyword limit limit rows
+Keyword offset skip rows
+
+where_after_boolean_operator
+Keyword . current scope
+Keyword ~ root scope
+Keyword .. parent scope
+
+where_group_scope
+Keyword . current scope
+Keyword ~ root scope
+Keyword .. parent scope
+
+where_after_boolean_group_scope
+Keyword . current scope
+Keyword ~ root scope
+Keyword .. parent scope
+
+where_group_column
+Column id int
+Column info text
+Relation info_type relation to public.info_type via info_type_id
+Column info_type_id int
+Column movie_id int
+Column note text
+Relation title relation to public.title via movie_id
+
+where_after_group
+Keyword and combine predicates
+Keyword or match either predicate
 Keyword order by sort rows
 Keyword limit limit rows
 Keyword offset skip rows

@@ -65,6 +65,9 @@ pub(crate) fn completions_at(
         }
         CursorContext::SelectionBody { table } => field_completions(catalog, table),
         CursorContext::ClauseList { table: _, used } => clause_keyword_completions(used),
+        CursorContext::WhereBooleanOperator { table: _, used } => {
+            where_boolean_operator_completions(used)
+        }
         CursorContext::WhereScope => predicate_scope_completions(),
         CursorContext::WhereColumn { table } => field_completions(catalog, table),
         CursorContext::WhereRelationSelector { table, relation } => {
@@ -205,6 +208,15 @@ fn clause_keyword_completions(used: UsedClauses) -> Vec<CompletionItem> {
     keyword_completions(&keywords)
 }
 
+fn where_boolean_operator_completions(used: UsedClauses) -> Vec<CompletionItem> {
+    let mut completions = keyword_completions(&[
+        CompletionAtom::Token(Token::And, "combine predicates"),
+        CompletionAtom::Token(Token::Or, "match either predicate"),
+    ]);
+    completions.extend(clause_keyword_completions(used));
+    completions
+}
+
 fn predicate_scope_completions() -> Vec<CompletionItem> {
     vec![
         CompletionItem {
@@ -243,6 +255,8 @@ fn operator_detail(token: Token) -> &'static str {
         Token::Lt => "less than",
         Token::Le => "less than or equal",
         Token::Like => "matches pattern",
+        Token::And => "combine predicates",
+        Token::Or => "match either predicate",
         _ => "operator",
     }
 }

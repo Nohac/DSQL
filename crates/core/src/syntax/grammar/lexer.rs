@@ -52,6 +52,10 @@ pub enum Token {
     Null,
     #[token("like")]
     Like,
+    #[token("and")]
+    And,
+    #[token("or")]
+    Or,
     #[token("{")]
     LBrace,
     #[token("}")]
@@ -121,6 +125,8 @@ impl Token {
             Self::Lt => Some("<"),
             Self::Le => Some("<="),
             Self::Like => Some("like"),
+            Self::And => Some("and"),
+            Self::Or => Some("or"),
             _ => None,
         }
     }

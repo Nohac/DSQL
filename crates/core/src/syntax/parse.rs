@@ -82,6 +82,8 @@ pub enum SyntaxToken {
     False,
     Null,
     Like,
+    And,
+    Or,
     LBrace,
     RBrace,
     LPar,
@@ -296,6 +298,8 @@ fn map_token(token: Token) -> SyntaxToken {
         Token::False => SyntaxToken::False,
         Token::Null => SyntaxToken::Null,
         Token::Like => SyntaxToken::Like,
+        Token::And => SyntaxToken::And,
+        Token::Or => SyntaxToken::Or,
         Token::LBrace => SyntaxToken::LBrace,
         Token::RBrace => SyntaxToken::RBrace,
         Token::LPar => SyntaxToken::LPar,
@@ -594,8 +598,8 @@ impl<'a> AstBuilder<'a> {
     }
 
     fn binary_expr(&self, node: NodeRef) -> Expr {
-        let exprs = self.direct_rules(node, Rule::Expr);
-        let left = exprs.first().map_or_else(
+        let operands = self.direct_expr_operands(node);
+        let left = operands.first().map_or_else(
             || {
                 Expr::Literal(Literal::Null {
                     range: range(self.cst.span(node)),
@@ -603,7 +607,7 @@ impl<'a> AstBuilder<'a> {
             },
             |expr| self.expr(*expr),
         );
-        let right = exprs.get(1).map_or_else(
+        let right = operands.get(1).map_or_else(
             || {
                 Expr::Literal(Literal::Null {
                     range: range(self.cst.span(node)),
@@ -617,6 +621,13 @@ impl<'a> AstBuilder<'a> {
             op: self.binary_op(node).unwrap_or(BinaryOp::Eq),
             right: Box::new(right),
         }
+    }
+
+    fn direct_expr_operands(&self, node: NodeRef) -> Vec<NodeRef> {
+        self.cst
+            .children(node)
+            .filter(|child| matches!(rule(self.cst, *child), Some(Rule::Expr | Rule::BinaryExpr)))
+            .collect()
     }
 
     fn literal(&self, node: NodeRef) -> Expr {
@@ -660,6 +671,8 @@ impl<'a> AstBuilder<'a> {
                 Token::Lt => Some(BinaryOp::Lt),
                 Token::Le => Some(BinaryOp::Le),
                 Token::Like => Some(BinaryOp::Like),
+                Token::And => Some(BinaryOp::And),
+                Token::Or => Some(BinaryOp::Or),
                 _ => None,
             }
         })

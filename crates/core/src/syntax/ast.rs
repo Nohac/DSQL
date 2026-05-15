@@ -166,6 +166,8 @@ pub enum BinaryOp {
     Lt,
     Le,
     Like,
+    And,
+    Or,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]

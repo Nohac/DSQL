@@ -1,4 +1,4 @@
-token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like';
+token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or';
 token LBrace='{' RBrace='}' LPar='(' RPar=')' ColonColon='::' Colon=':' At='@' Comma=',' Ellipsis='...' DotDot='..' Dot='.' Tilde='~';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
@@ -45,9 +45,12 @@ limit_clause: 'limit' expr;
 offset_clause: 'offset' expr;
 directive: '@' Name;
 expr:
-  literal
+  expr ('==' | '!=' | '>' | '>=' | '<' | '<=' | 'like') expr @binary_expr
+| expr 'and' expr @binary_expr
+| expr 'or' expr @binary_expr
+| literal
 | scoped_path
-| expr ('==' | '!=' | '>' | '>=' | '<' | '<=' | 'like') expr @binary_expr
+| '(' expr ')'
 ;
 literal:
   String

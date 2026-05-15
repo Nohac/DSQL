@@ -162,6 +162,41 @@ when used on the right-hand side of a predicate. Current, parent, and root scala
 field references are enough to support correlated nested filters such as
 `.is_admin == ~admin`.
 
+## Boolean Composition
+
+Scoped predicates use the core `where` boolean expression rules. Scoped field
+paths may appear anywhere a normal predicate field path may appear.
+
+```dsql
+query Users {
+  users(where .posts.title like "%foo%" and .active == true) {
+    id
+  }
+}
+```
+
+`and` binds tighter than `or`. Parentheses may group scoped predicate
+expressions explicitly.
+
+```dsql
+query Users {
+  users(where (.posts.title like "%foo%" or .posts.title like "%bar%") and .active == true) {
+    id
+  }
+}
+```
+
+Parentheses are part of the scoped predicate syntax, not only a formatter
+concern. They must be preserved through parsing, planning, SQL generation, and
+formatting so users can control boolean precedence.
+
+Relationship predicates keep their normal existential meaning when composed.
+For example, `.posts.title like "%foo%" and .posts.published == true` means both
+conditions must hold for the filtered root row. If those paths target the same
+relationship chain, the compiler should prefer SQL that applies both conditions
+inside the same relationship predicate when that preserves the user-visible
+semantics.
+
 ## Computed Predicate Values
 
 String interpolation inside literals is not part of the current direction.
@@ -213,7 +248,5 @@ Invalid path examples:
   `none`, or `every`.
 - Whether computed predicate values should support `concat`, SQL-style string
   concatenation, or another expression form.
-- How relationship predicates compose with `and`, `or`, and grouping once those
-  expression forms exist.
 - How source maps should represent predicate path segments for generated SQL,
   diagnostics, explain output, and code generation.

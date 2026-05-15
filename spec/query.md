@@ -137,6 +137,11 @@ Formatting should preserve the user’s line grouping when commas are present.
 For example, `id, name, email` should remain on one line. Selection lists without
 commas may be formatted as one selection per line.
 
+The default formatter line width is 100 characters. Clause lists should stay
+inline when they fit within that width. If a clause list does not fit, the
+formatter may break at clause boundaries while preserving short user line groups
+where possible.
+
 ## Field Selections
 
 A field selection names a column, relation, or future catalog-backed field in
@@ -380,6 +385,41 @@ Core predicate operators:
 <
 <=
 ```
+
+Predicates may be combined with boolean `and` and `or`.
+
+```dsql
+query ActiveRecentUsers {
+  users(where .active == true and .created_at >= "2026-01-01") {
+    id
+    name
+  }
+}
+```
+
+`and` and `or` are infix operators between predicates. `and` binds tighter than
+`or`, and parentheses may be used to group boolean expressions explicitly.
+
+```dsql
+query Users {
+  users(where (.active == true or .trial == true) and .deleted_at == null) {
+    id
+  }
+}
+```
+
+The predicate grammar should follow this shape:
+
+```text
+predicate_expr = or_expr
+or_expr        = and_expr ("or" and_expr)*
+and_expr       = primary_expr ("and" primary_expr)*
+primary_expr   = comparison | "(" predicate_expr ")"
+comparison     = field_path operator value_or_field_path
+```
+
+Each side of a boolean operator must be a predicate expression. Bare field paths
+are not valid boolean predicates by themselves.
 
 ### Order By
 

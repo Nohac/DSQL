@@ -4,6 +4,8 @@ use crate::syntax::{
     SyntaxRule, SyntaxToken, TextRange,
 };
 
+const DEFAULT_FORMAT_LINE_WIDTH: usize = 100;
+
 pub fn format_file(parse: &ParseResult) -> FormattedText {
     if !parse.diagnostics.is_empty() {
         return FormattedText {
@@ -205,18 +207,111 @@ impl<'a> CstFormatter<'a> {
     }
 
     fn clause_list(&mut self, node: usize) {
-        self.out.push('(');
-        for (idx, clause) in self
-            .direct_rules(node, SyntaxRule::Clause)
-            .into_iter()
-            .enumerate()
-        {
+        let clauses = self.direct_rules(node, SyntaxRule::Clause);
+        if let Some((where_clause, rest)) = self.complex_where_clause(&clauses) {
+            self.out.push('(');
+            self.where_clause_multiline(where_clause, self.indent + 1);
+            if !rest.is_empty() {
+                self.out.push('\n');
+                self.write_indent(self.indent + 1);
+                for (idx, clause) in rest.into_iter().enumerate() {
+                    if idx > 0 {
+                        self.out.push(' ');
+                    }
+                    self.clause(clause);
+                }
+            }
+            self.out.push('\n');
+            self.write_indent(self.indent);
+            self.out.push(')');
+            return;
+        }
+
+        if self.clause_list_has_linebreaks(&clauses) {
+            self.clause_list_multiline(&clauses, true);
+            return;
+        }
+
+        let inline = self.inline_clause_list_text(&clauses);
+        if self.current_line_len() + inline.len() <= DEFAULT_FORMAT_LINE_WIDTH {
+            self.out.push_str(&inline);
+        } else {
+            self.clause_list_multiline(&clauses, false);
+        }
+    }
+
+    fn inline_clause_list_text(&self, clauses: &[usize]) -> String {
+        let mut formatter = self.empty_like();
+        formatter.out.push('(');
+        for (idx, clause) in clauses.iter().copied().enumerate() {
             if idx > 0 {
-                self.out.push(' ');
+                formatter.out.push(' ');
+            }
+            formatter.clause(clause);
+        }
+        formatter.out.push(')');
+        formatter.out
+    }
+
+    fn clause_text(&self, clause: usize) -> String {
+        let mut formatter = self.empty_like();
+        formatter.clause(clause);
+        formatter.out
+    }
+
+    fn clause_list_multiline(&mut self, clauses: &[usize], preserve_user_breaks: bool) {
+        self.out.push('(');
+        for (idx, clause) in clauses.iter().copied().enumerate() {
+            if idx > 0 {
+                let previous = clauses[idx - 1];
+                let clause_text = self.clause_text(clause);
+                let user_split =
+                    preserve_user_breaks && self.text_between(previous, clause).contains('\n');
+                let split_after_where =
+                    !preserve_user_breaks && idx == 1 && self.is_where_clause(clauses[0]);
+                if user_split
+                    || split_after_where
+                    || self.current_line_len() + 1 + clause_text.len() > DEFAULT_FORMAT_LINE_WIDTH
+                {
+                    self.out.push('\n');
+                    self.write_indent(self.indent + 1);
+                } else {
+                    self.out.push(' ');
+                }
             }
             self.clause(clause);
         }
+        self.out.push('\n');
+        self.write_indent(self.indent);
         self.out.push(')');
+    }
+
+    fn complex_where_clause(&self, clauses: &[usize]) -> Option<(usize, Vec<usize>)> {
+        let first = *clauses.first()?;
+        let where_clause = self.direct_rule(first, SyntaxRule::WhereClause)?;
+        let value = self.direct_value_rule(where_clause)?;
+        self.is_complex_predicate(value)
+            .then(|| (where_clause, clauses[1..].to_vec()))
+    }
+
+    fn clause_list_has_linebreaks(&self, clauses: &[usize]) -> bool {
+        clauses.windows(2).any(|pair| {
+            let [left, right] = pair else {
+                return false;
+            };
+            self.text_between(*left, *right).contains('\n')
+        })
+    }
+
+    fn where_clause_multiline(&mut self, node: usize, continuation_indent: usize) {
+        self.out.push_str("where ");
+        if let Some(value) = self.direct_value_rule(node) {
+            self.expr_multiline(value, continuation_indent);
+        }
+    }
+
+    fn is_where_clause(&self, node: usize) -> bool {
+        self.direct_rule(node, SyntaxRule::WhereClause).is_some()
     }
 
     fn clause(&mut self, node: usize) {
@@ -275,6 +370,14 @@ impl<'a> CstFormatter<'a> {
             Some(SyntaxRule::BinaryExpr) => self.binary_expr(node),
             Some(SyntaxRule::Literal) => self.literal(node),
             Some(SyntaxRule::Expr) => {
+                let grouped = self
+                    .node(node)
+                    .children
+                    .iter()
+                    .any(|child| self.token(*child) == Some(SyntaxToken::LPar));
+                if grouped {
+                    self.out.push('(');
+                }
                 if let Some(binary) = self.direct_rule(node, SyntaxRule::BinaryExpr) {
                     self.binary_expr(binary);
                 } else if let Some(literal) = self.direct_rule(node, SyntaxRule::Literal) {
@@ -285,6 +388,9 @@ impl<'a> CstFormatter<'a> {
                     self.out.push_str(&name);
                 } else if let Some(name) = self.direct_token_text(node, SyntaxToken::Name) {
                     self.out.push_str(&name);
+                }
+                if grouped {
+                    self.out.push(')');
                 }
             }
             Some(SyntaxRule::QualifiedName) => {
@@ -301,8 +407,47 @@ impl<'a> CstFormatter<'a> {
         self.out.push_str(&self.text(self.node(node).range));
     }
 
+    fn expr_multiline(&mut self, node: usize, line_indent: usize) {
+        if self.is_grouped_expr(node) {
+            self.out.push('(');
+            self.out.push('\n');
+            self.write_indent(line_indent + 1);
+            if let Some(inner) = self.direct_value_rule(node) {
+                self.expr_multiline(inner, line_indent + 1);
+            }
+            self.out.push('\n');
+            self.write_indent(line_indent);
+            self.out.push(')');
+            return;
+        }
+
+        if self.rule(node) == Some(SyntaxRule::BinaryExpr)
+            && let Some(op) = self.direct_operator(node)
+            && matches!(self.token(op), Some(SyntaxToken::And | SyntaxToken::Or))
+        {
+            let exprs = self.direct_expr_operands(node);
+            if let Some(left) = exprs.first().copied() {
+                self.expr_multiline(left, line_indent);
+            }
+            if let Some(right) = exprs.get(1).copied() {
+                self.out.push('\n');
+                self.write_indent(line_indent);
+                self.out.push_str(&self.text(self.node(op).range));
+                self.out.push(' ');
+                if self.is_grouped_expr(right) {
+                    self.expr_multiline(right, line_indent);
+                } else {
+                    self.expr(right);
+                }
+            }
+            return;
+        }
+
+        self.expr(node);
+    }
+
     fn binary_expr(&mut self, node: usize) {
-        let exprs = self.direct_rules(node, SyntaxRule::Expr);
+        let exprs = self.direct_expr_operands(node);
         if let Some(left) = exprs.first().copied() {
             self.expr(left);
         }
@@ -314,6 +459,37 @@ impl<'a> CstFormatter<'a> {
         if let Some(right) = exprs.get(1).copied() {
             self.expr(right);
         }
+    }
+
+    fn direct_expr_operands(&self, node: usize) -> Vec<usize> {
+        self.node(node)
+            .children
+            .iter()
+            .copied()
+            .filter(|child| {
+                matches!(
+                    self.rule(*child),
+                    Some(SyntaxRule::Expr | SyntaxRule::BinaryExpr)
+                )
+            })
+            .collect()
+    }
+
+    fn is_complex_predicate(&self, node: usize) -> bool {
+        self.is_grouped_expr(node)
+            || self.node(node).children.iter().any(|child| {
+                matches!(self.token(*child), Some(SyntaxToken::And | SyntaxToken::Or))
+                    || self.is_complex_predicate(*child)
+            })
+    }
+
+    fn is_grouped_expr(&self, node: usize) -> bool {
+        self.rule(node) == Some(SyntaxRule::Expr)
+            && self
+                .node(node)
+                .children
+                .iter()
+                .any(|child| self.token(*child) == Some(SyntaxToken::LPar))
     }
 
     fn literal(&mut self, node: usize) {
@@ -346,7 +522,25 @@ impl<'a> CstFormatter<'a> {
     }
 
     fn indent(&mut self) {
-        self.out.push_str(&"  ".repeat(self.indent));
+        self.write_indent(self.indent);
+    }
+
+    fn write_indent(&mut self, indent: usize) {
+        self.out.push_str(&"  ".repeat(indent));
+    }
+
+    fn current_line_len(&self) -> usize {
+        self.out
+            .rsplit_once('\n')
+            .map_or(self.out.len(), |(_, line)| line.len())
+    }
+
+    fn empty_like(&self) -> Self {
+        Self {
+            parse: self.parse,
+            out: String::new(),
+            indent: self.indent,
+        }
     }
 
     fn text(&self, range: TextRange) -> String {
@@ -463,6 +657,8 @@ impl<'a> CstFormatter<'a> {
                         | SyntaxToken::Lt
                         | SyntaxToken::Le
                         | SyntaxToken::Like
+                        | SyntaxToken::And
+                        | SyntaxToken::Or
                 )
             )
         })
@@ -536,6 +732,74 @@ mod tests {
         assert_eq!(
             formatted.text,
             "query Users {\n  users {\n    id, name, email\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn formats_complex_where_clauses_across_lines() {
+        let parsed = parse_source(SourceSnapshot::from(
+            "query CastLookupForHauntedMovieInfo { movie_info(where (.info like \"%haunted%\" and .id > 10 and .movie_id == 10) or .id == 10 order by id asc limit 10) { id } }",
+        ));
+        let formatted = format_file(&parsed);
+        assert!(
+            formatted.diagnostics.is_empty(),
+            "{:?}",
+            formatted.diagnostics
+        );
+        assert_eq!(
+            formatted.text,
+            "query CastLookupForHauntedMovieInfo {\n  movie_info(where (\n      .info like \"%haunted%\"\n      and .id > 10\n      and .movie_id == 10\n    )\n    or .id == 10\n    order by id asc limit 10\n  ) {\n    id\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn preserves_user_linebreaks_between_short_clauses() {
+        let parsed = parse_source(SourceSnapshot::from(
+            "query Movies { movie_info(limit 10\norder by id desc) { id } }",
+        ));
+        let formatted = format_file(&parsed);
+        assert!(
+            formatted.diagnostics.is_empty(),
+            "{:?}",
+            formatted.diagnostics
+        );
+        assert_eq!(
+            formatted.text,
+            "query Movies {\n  movie_info(limit 10\n    order by id desc\n  ) {\n    id\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn preserves_clause_line_groups_pairwise() {
+        let parsed = parse_source(SourceSnapshot::from(
+            "query Movies { title(where .aka_title::episode_of_id.episode_nr > 0\norder by production_year desc limit 25) { id } }",
+        ));
+        let formatted = format_file(&parsed);
+        assert!(
+            formatted.diagnostics.is_empty(),
+            "{:?}",
+            formatted.diagnostics
+        );
+        assert_eq!(
+            formatted.text,
+            "query Movies {\n  title(where .aka_title::episode_of_id.episode_nr > 0\n    order by production_year desc limit 25\n  ) {\n    id\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn breaks_inline_clauses_that_exceed_default_line_width() {
+        let parsed = parse_source(SourceSnapshot::from(
+            "query Movies { title(where .aka_title::episode_of_id.episode_nr > 0 order by production_year desc limit 25 offset 12345) { id } }",
+        ));
+        let formatted = format_file(&parsed);
+        assert!(
+            formatted.diagnostics.is_empty(),
+            "{:?}",
+            formatted.diagnostics
+        );
+        assert_eq!(
+            formatted.text,
+            "query Movies {\n  title(where .aka_title::episode_of_id.episode_nr > 0\n    order by production_year desc limit 25 offset 12345\n  ) {\n    id\n  }\n}\n"
         );
     }
 

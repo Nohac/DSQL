@@ -171,7 +171,14 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
                 document_formatting_provider: Some(OneOf::Left(true)),
-                completion_provider: Some(CompletionOptions::default()),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![
+                        ".".to_string(),
+                        "~".to_string(),
+                        ":".to_string(),
+                    ]),
+                    ..CompletionOptions::default()
+                }),
                 definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(
                     tower_lsp_server::lsp_types::HoverProviderCapability::Simple(true),

@@ -1,0 +1,7 @@
+query BooleanPredicate {
+  movie_info(where (.id == 1811435 or .id == 1811436) and .movie_id == 2375018 order by id asc limit 10) {
+    id
+    movie_id
+    note
+  }
+}

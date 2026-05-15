@@ -59,6 +59,24 @@ query CompletionContexts {
   movie_info(where .title.aka_title::episode_of_id.episode_nr == ./*^where_rhs_column*/ limit 10) {
     id
   }
+  movie_info(where .id == 1811435 /*^where_boolean_operator*/) {
+    id
+  }
+  movie_info(where .id == 1811435 and /*^where_after_boolean_operator*/) {
+    id
+  }
+  movie_info(where (/*^where_group_scope*/) {
+    id
+  }
+  movie_info(where .id == 1811435 and (/*^where_after_boolean_group_scope*/) {
+    id
+  }
+  movie_info(where (./*^where_group_column*/) {
+    id
+  }
+  movie_info(where (.id == 1811435) /*^where_after_group*/) {
+    id
+  }
   movie_info(where .id == 1811435 order by id asc) {
     id
     movie_id

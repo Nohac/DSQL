@@ -134,6 +134,30 @@ async fn imdb_keyword_and_operator_completion_contexts() {
     .await;
     let where_rhs_columns =
         completions_at_marker(&host, &uri, &source, &markers, "where_rhs_column").await;
+    let where_boolean_operator =
+        completions_at_marker(&host, &uri, &source, &markers, "where_boolean_operator").await;
+    let where_after_boolean_operator = completions_at_marker(
+        &host,
+        &uri,
+        &source,
+        &markers,
+        "where_after_boolean_operator",
+    )
+    .await;
+    let where_group_scope =
+        completions_at_marker(&host, &uri, &source, &markers, "where_group_scope").await;
+    let where_after_boolean_group_scope = completions_at_marker(
+        &host,
+        &uri,
+        &source,
+        &markers,
+        "where_after_boolean_group_scope",
+    )
+    .await;
+    let where_group_columns =
+        completions_at_marker(&host, &uri, &source, &markers, "where_group_column").await;
+    let where_after_group =
+        completions_at_marker(&host, &uri, &source, &markers, "where_after_group").await;
     let relation_clause_exact_nested = completions_at_marker(
         &host,
         &uri,
@@ -305,6 +329,62 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         &["episode_nr", "kind_id", "==", "!="],
     );
     assert_completion_labels(
+        "where boolean operator",
+        &where_boolean_operator,
+        &["and", "or", "order by", "limit", "offset"],
+    );
+    assert_no_completion_labels(
+        "where boolean operator",
+        &where_boolean_operator,
+        &["==", "!=", "like"],
+    );
+    assert_completion_labels(
+        "where after boolean operator",
+        &where_after_boolean_operator,
+        &[".", "~", ".."],
+    );
+    assert_no_completion_labels(
+        "where after boolean operator",
+        &where_after_boolean_operator,
+        &["id", "info", "movie_id", "==", "!="],
+    );
+    assert_completion_labels("where group scope", &where_group_scope, &[".", "~", ".."]);
+    assert_no_completion_labels(
+        "where group scope",
+        &where_group_scope,
+        &["id", "info", "movie_id", "==", "!="],
+    );
+    assert_completion_labels(
+        "where after boolean group scope",
+        &where_after_boolean_group_scope,
+        &[".", "~", ".."],
+    );
+    assert_no_completion_labels(
+        "where after boolean group scope",
+        &where_after_boolean_group_scope,
+        &["id", "info", "movie_id", "==", "!="],
+    );
+    assert_completion_labels(
+        "where group columns",
+        &where_group_columns,
+        &["id", "info", "movie_id"],
+    );
+    assert_no_completion_labels(
+        "where group columns",
+        &where_group_columns,
+        &["episode_nr", "kind_id", "==", "!="],
+    );
+    assert_completion_labels(
+        "where after group",
+        &where_after_group,
+        &["and", "or", "order by", "limit", "offset"],
+    );
+    assert_no_completion_labels(
+        "where after group",
+        &where_after_group,
+        &["==", "!=", "like", ".", "~", ".."],
+    );
+    assert_completion_labels(
         "relation clause exact nested",
         &relation_clause_exact_nested,
         &["where", "order by", "limit", "offset"],
@@ -448,6 +528,18 @@ async fn imdb_keyword_and_operator_completion_contexts() {
                 "relation_path_after_fragment",
                 &relation_path_after_fragment,
             ),
+            ("where_boolean_operator", &where_boolean_operator),
+            (
+                "where_after_boolean_operator",
+                &where_after_boolean_operator,
+            ),
+            ("where_group_scope", &where_group_scope),
+            (
+                "where_after_boolean_group_scope",
+                &where_after_boolean_group_scope,
+            ),
+            ("where_group_column", &where_group_columns),
+            ("where_after_group", &where_after_group),
         ]
         .into_iter()
         .map(|(name, items)| format!("{name}\n{}", format_completions(items)))

@@ -14,6 +14,7 @@ pub(crate) enum CursorContext {
     FragmentSpread { table: TableId },
     SelectionBody { table: TableId },
     ClauseList { table: TableId, used: UsedClauses },
+    WhereBooleanOperator { table: TableId, used: UsedClauses },
     WhereScope,
     WhereColumn { table: TableId },
     WhereRelationSelector { table: TableId, relation: String },
@@ -360,15 +361,13 @@ fn clause_cursor<'a>(
         .tree
         .significant_token_nodes_before(byte)
         .collect::<Vec<_>>();
-    let lpar_index = unmatched_lpar_index(&tokens)?;
+    let lpar_index = clause_lpar_index(parse, &tokens)?;
     let suffix_tokens = tokens[lpar_index + 1..].to_vec();
 
-    if suffix_tokens.iter().any(|token| {
-        matches!(
-            token_kind(token),
-            Some(SyntaxToken::RPar | SyntaxToken::LBrace)
-        )
-    }) {
+    if suffix_tokens
+        .iter()
+        .any(|token| token_kind(token) == Some(SyntaxToken::LBrace))
+    {
         return None;
     }
 
@@ -452,11 +451,15 @@ fn parsed_clause_context(
     match token_kind(suffix_tokens[clause_index])? {
         SyntaxToken::Where => {
             let after_where = &suffix_tokens[clause_index + 1..];
-            if let Some(operator_index) = after_where
+            let predicate_tokens = active_predicate_tokens(after_where);
+            if predicate_tokens.is_empty() {
+                return Some(CursorContext::WhereScope);
+            }
+            if let Some(operator_index) = predicate_tokens
                 .iter()
                 .rposition(|token| is_operator_token(token_kind(token)))
             {
-                let after_operator = &after_where[operator_index + 1..];
+                let after_operator = &predicate_tokens[operator_index + 1..];
                 if let Some(context) =
                     incomplete_rhs_path_context(parse, catalog, table, root_table, after_operator)
                 {
@@ -465,13 +468,19 @@ fn parsed_clause_context(
                 return after_operator
                     .iter()
                     .any(|token| is_predicate_value_token(token_kind(token)))
-                    .then_some(CursorContext::ClauseList {
+                    .then_some(CursorContext::WhereBooleanOperator {
                         table,
                         used: used_clauses_in_tokens(suffix_tokens),
                     });
             }
-            predicate_path_context(parse, catalog, table, root_table, parent_table, after_where)
-                .or_else(|| after_where.is_empty().then_some(CursorContext::WhereScope))
+            predicate_path_context(
+                parse,
+                catalog,
+                table,
+                root_table,
+                parent_table,
+                predicate_tokens,
+            )
         }
         SyntaxToken::Order => {
             if suffix_tokens
@@ -519,13 +528,17 @@ fn name_expected_context(
     match token_kind(cursor.suffix_tokens[clause_index])? {
         SyntaxToken::Where => {
             let after_where = &cursor.suffix_tokens[clause_index + 1..];
+            let predicate_tokens = active_predicate_tokens(after_where);
+            if predicate_tokens.is_empty() {
+                return Some(CursorContext::WhereScope);
+            }
             predicate_path_context(
                 parse,
                 catalog,
                 table,
                 cursor.root_table,
                 cursor.parent_table,
-                after_where,
+                predicate_tokens,
             )
         }
         SyntaxToken::Order
@@ -539,6 +552,18 @@ fn name_expected_context(
         }
         _ => None,
     }
+}
+
+fn active_predicate_tokens<'a>(tokens: &'a [&'a SyntaxNode]) -> &'a [&'a SyntaxNode] {
+    tokens
+        .iter()
+        .rposition(|token| {
+            matches!(
+                token_kind(token),
+                Some(SyntaxToken::And | SyntaxToken::Or | SyntaxToken::LPar)
+            )
+        })
+        .map_or(tokens, |index| &tokens[index + 1..])
 }
 
 fn predicate_path_context(
@@ -898,17 +923,21 @@ fn matching_lpar_before(tokens: &[&SyntaxNode], rpar_index: usize) -> Option<usi
     None
 }
 
-fn unmatched_lpar_index(tokens: &[&SyntaxNode]) -> Option<usize> {
-    let mut depth = 0usize;
-    for (index, token) in tokens.iter().enumerate().rev() {
+fn clause_lpar_index(parse: &ParseResult, tokens: &[&SyntaxNode]) -> Option<usize> {
+    let mut stack = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
         match token_kind(token) {
-            Some(SyntaxToken::RPar) => depth += 1,
-            Some(SyntaxToken::LPar) if depth == 0 => return Some(index),
-            Some(SyntaxToken::LPar) => depth = depth.saturating_sub(1),
+            Some(SyntaxToken::LPar) => stack.push(index),
+            Some(SyntaxToken::RPar) => {
+                stack.pop();
+            }
             _ => {}
         }
     }
-    None
+    stack
+        .into_iter()
+        .rev()
+        .find(|index| table_ref_before_lpar(parse, tokens, *index).is_some())
 }
 
 fn table_ref_before_lpar(

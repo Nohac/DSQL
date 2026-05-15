@@ -287,6 +287,7 @@ fn plan_filter_expr(
             left, op, right, ..
         } => {
             if let crate::Expr::Path(path) = left.as_ref()
+                && is_comparison_op(*op)
                 && let Some(right) =
                     plan_filter_expr(catalog, root_table, table, Some(table), right)
                 && let Some(filter) = relation_predicate_filter(catalog, table, path, *op, right)
@@ -312,6 +313,19 @@ fn plan_filter_expr(
             })
         }
     }
+}
+
+fn is_comparison_op(op: crate::BinaryOp) -> bool {
+    matches!(
+        op,
+        crate::BinaryOp::Eq
+            | crate::BinaryOp::Ne
+            | crate::BinaryOp::Gt
+            | crate::BinaryOp::Ge
+            | crate::BinaryOp::Lt
+            | crate::BinaryOp::Le
+            | crate::BinaryOp::Like
+    )
 }
 
 fn plan_filter_path(
