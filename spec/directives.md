@@ -23,6 +23,33 @@ Possible directive categories:
 - frontend metadata
 - provider-specific extensions
 
+## Conditional Shape
+
+Conditional includes are a possible future directive-like feature for API
+exploration and generated endpoint variants.
+
+```dsql
+query MovieInfo {
+  movie_info(limit 10) {
+    id
+    info
+
+    title(if $$include_titles) {
+      id
+      title
+    }
+  }
+}
+```
+
+Open questions:
+
+- Whether conditional includes belong in directives, relation clauses, or code
+  generation metadata.
+- Whether disabled selections are omitted from the result shape or returned as
+  `null`/empty collections.
+- How conditional selections interact with generated TypeScript result types.
+
 ## Open Questions
 
 - Exact directive name syntax.

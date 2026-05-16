@@ -105,6 +105,27 @@ query Titles {
 
 Defined relationship aliases, if added, should also be valid in predicate paths.
 
+Scoped predicates may filter by related data while returning a different
+relation shape.
+
+```dsql
+query MovieInfo {
+  movie_info(where .title.aka_title::movie_id.title like $$search limit 10) {
+    id
+    info
+
+    title(order by production_year desc limit 3) {
+      id
+      title
+      production_year
+    }
+  }
+}
+```
+
+The predicate selects `movie_info` rows based on the related `aka_title` title,
+but the selected body still controls the returned shape independently.
+
 ## Operators
 
 Scoped predicates use the same comparison operators as local predicates and add

@@ -551,3 +551,76 @@ Conceptual JSON shape:
   ]
 }
 ```
+
+## Common Fetch Patterns
+
+The core query language should stay optimized for nested API read shapes. These
+patterns should remain easy to express and should guide syntax and codegen
+decisions.
+
+### Latest Or First Related Row
+
+Relation clauses can fetch a small ordered slice of related data.
+
+```dsql
+query Movies {
+  movie_info(where .info like $$ limit 10) {
+    id
+    info
+
+    latest_title: title(order by production_year desc limit 1) {
+      id
+      title
+      production_year
+    }
+  }
+}
+```
+
+This produces the normal relation output shape unless another feature explicitly
+unwraps single-row relation selections.
+
+Open question:
+
+- Whether a relation with `limit 1` should have an opt-in singular output shape.
+
+### Top-N Related Rows
+
+Nested top-N collections are first-class relation selections, not a separate
+feature.
+
+```dsql
+query Movies {
+  movie_info(limit 10) {
+    id
+    info
+
+    title(order by production_year desc limit 3) {
+      id
+      title
+      production_year
+    }
+  }
+}
+```
+
+Generated SQL should avoid accidental full aggregation of large related tables
+when relation limits are present.
+
+### Output Renaming
+
+Aliases are the normal way to shape API-friendly output names.
+
+```dsql
+query Movies {
+  movie_info(limit 10) {
+    id
+    description: info
+
+    latest_title: title(order by production_year desc limit 1) {
+      name: title
+      year: production_year
+    }
+  }
+}
+```

@@ -16,6 +16,18 @@ query Users {
 }
 ```
 
+Derived fields could also use an explicit marker if plain function-like syntax
+becomes ambiguous with catalog-backed computed fields.
+
+```dsql
+query Titles {
+  title {
+    id
+    decade: derive (.production_year / 10) * 10
+  }
+}
+```
+
 Computed expressions are intentionally deferred because they can quickly become
 a full SQL expression language.
 
@@ -26,4 +38,5 @@ Open questions:
 - How expression types are inferred.
 - How to avoid raw SQL string interpolation.
 - Whether computed fields should come from catalog/provider metadata instead.
-
+- Whether selected computed expressions use plain expression syntax or require
+  an explicit marker such as `derive`.

@@ -14,6 +14,7 @@ match the current design direction.
 - [Query Language](query.md)
 - [Scoped Predicates](scoped-predicates.md)
 - [Variables](variables.md)
+- [Functions](functions.md)
 - [Directives](directives.md)
 - [Relationship Naming](relationship-naming.md)
 - [Metadata Sources](metadata-sources.md)
