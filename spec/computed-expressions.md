@@ -20,10 +20,10 @@ Derived fields could also use an explicit marker if plain function-like syntax
 becomes ambiguous with catalog-backed computed fields.
 
 ```dsql
-query Titles {
-  title {
+query Posts {
+  posts {
     id
-    decade: derive (.production_year / 10) * 10
+    age_days: derive date_diff("day", .created_at, now())
   }
 }
 ```

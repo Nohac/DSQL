@@ -29,12 +29,12 @@ Conditional includes are a possible future directive-like feature for API
 exploration and generated endpoint variants.
 
 ```dsql
-query MovieInfo {
-  movie_info(limit 10) {
+query Users {
+  users(limit 10) {
     id
-    info
+    name
 
-    title(if $$include_titles) {
+    posts(if $$include_posts) {
       id
       title
     }

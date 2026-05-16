@@ -11,11 +11,11 @@ Common predicates need safe SQL functions without forcing users to drop down to
 SQL strings.
 
 ```dsql
-query RecentTitles {
-  title(where .release_date >= now()) {
+query RecentPosts {
+  posts(where .published_at >= now()) {
     id
     title
-    release_date
+    published_at
   }
 }
 ```

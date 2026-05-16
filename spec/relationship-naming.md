@@ -50,23 +50,23 @@ foreign-key path.
 Example idea:
 
 ```text
-aka_title_movies -> aka_title::movie_id
-aka_title_episodes -> aka_title::episode_of_id
+assignee -> users::assignee_id
+reviewer -> users::reviewer_id
 ```
 
 Those names could then be selected directly:
 
 ```dsql
-query Titles {
-  title {
-    aka_title_movies {
+query Tasks {
+  tasks {
+    assignee {
       id
-      title
+      name
     }
 
-    aka_title_episodes {
+    reviewer {
       id
-      title
+      name
     }
   }
 }

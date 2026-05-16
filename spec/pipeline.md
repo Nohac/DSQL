@@ -9,9 +9,9 @@ This is distinct from selection pipe blocks used for output shaping, such as
 relation aggregates. Selection pipe blocks are intentionally narrower:
 
 ```dsql
-title_stats: title | aggregate {
+post_stats: posts | aggregate {
   count
-  latest_year: max .production_year
+  latest_post: max .created_at
 } |
 ```
 

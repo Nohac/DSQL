@@ -11,14 +11,14 @@ queries.
 Aggregate syntax should use a pipe block on a relation selection.
 
 ```dsql
-query MovieInfo {
-  movie_info(where .info like $$ limit 10) {
+query Users {
+  users(where .name like $$ limit 10) {
     id
-    info
+    name
 
-    title_stats: title | aggregate {
+    post_stats: posts | aggregate {
       count
-      latest_year: max .production_year
+      latest_post: max .created_at
     } |
   }
 }
@@ -26,8 +26,8 @@ query MovieInfo {
 
 Meaning:
 
-- `title` resolves as a relation from `movie_info`.
-- The pipe block transforms the related `title` collection.
+- `posts` resolves as a relation from `users`.
+- The pipe block transforms the related `posts` collection.
 - `aggregate { ... }` produces one embedded object for that relation scope.
 - The output key is the alias when provided, otherwise the relation output key.
 
@@ -36,10 +36,10 @@ Conceptual output:
 ```json
 {
   "id": 1,
-  "info": "...",
-  "title_stats": {
+  "name": "Ada",
+  "post_stats": {
     "count": 3,
-    "latest_year": 2004
+    "latest_post": "2026-01-01T12:00:00Z"
   }
 }
 ```
@@ -52,14 +52,14 @@ Pipe blocks are selection transforms only. They are not valid in `where`,
 A spread-like marker can flatten a pipe output into the parent object.
 
 ```dsql
-query MovieInfo {
-  movie_info(where .info like $$ limit 10) {
+query Users {
+  users(where .name like $$ limit 10) {
     id
-    info
+    name
 
-    ...title | aggregate {
-      title_count: count
-      latest_year: max .production_year
+    ...posts | aggregate {
+      post_count: count
+      latest_post: max .created_at
     } |
   }
 }
@@ -70,9 +70,9 @@ Conceptual output:
 ```json
 {
   "id": 1,
-  "info": "...",
-  "title_count": 3,
-  "latest_year": 2004
+  "name": "Ada",
+  "post_count": 3,
+  "latest_post": "2026-01-01T12:00:00Z"
 }
 ```
 
@@ -88,14 +88,14 @@ that the produced fields are merged into the current object.
 Pipe aggregates should compose inside normal relation selections.
 
 ```dsql
-query MovieInfo {
-  movie_info(limit 10) {
+query Users {
+  users(limit 10) {
     id
-    title {
+    posts {
       id
       title
 
-      cast_stats: cast_info | aggregate {
+      comment_stats: comments | aggregate {
         count
       } |
     }
@@ -103,24 +103,24 @@ query MovieInfo {
 }
 ```
 
-The aggregate scope is the selected relation. In the example above, `cast_info`
-is aggregated per `title` row.
+The aggregate scope is the selected relation. In the example above, `comments`
+is aggregated per `posts` row.
 
 Aggregates should also compose beside the full relation when an API needs both
 summary information and a limited detail list.
 
 ```dsql
-query MovieInfo {
-  movie_info(limit 10) {
+query Users {
+  users(limit 10) {
     id
 
-    ...cast_info | aggregate {
-      cast_count: count
+    ...posts | aggregate {
+      post_count: count
     } |
 
-    cast_info(limit 5) {
+    posts(limit 5) {
       id
-      note
+      title
     }
   }
 }
@@ -131,9 +131,9 @@ Conceptual output:
 ```json
 {
   "id": 1,
-  "cast_count": 42,
-  "cast_info": [
-    { "id": 10, "note": "..." }
+  "post_count": 42,
+  "posts": [
+    { "id": 10, "title": "..." }
   ]
 }
 ```
@@ -145,8 +145,8 @@ Initial aggregate fields should be small and explicit.
 ```dsql
 aggregate {
   count
-  latest_year: max .production_year
-  earliest_year: min .production_year
+  latest_post: max .created_at
+  earliest_post: min .created_at
 }
 ```
 
@@ -185,13 +185,13 @@ query Users {
 The relation before the pipe may use normal relation clauses.
 
 ```dsql
-query MovieInfo {
-  movie_info {
+query Users {
+  users {
     id
 
-    recent_title_stats: title(where .production_year > 2000) | aggregate {
+    recent_post_stats: posts(where .created_at >= "2026-01-01") | aggregate {
       count
-      latest_year: max .production_year
+      latest_post: max .created_at
     } |
   }
 }
@@ -209,17 +209,17 @@ Possible shape:
 ```json
 {
   "result": {
-    "movie_info": {
+    "users": {
       "fields": {
-        "cast_count": { "type": "int", "nullable": false },
-        "latest_year": { "type": "int", "nullable": true }
+        "post_count": { "type": "int", "nullable": false },
+        "latest_post": { "type": "timestamptz", "nullable": true }
       }
     }
   },
   "aggregates": [
     {
-      "path": "movie_info.cast_info",
-      "output": "cast_count",
+      "path": "users.posts",
+      "output": "post_count",
       "function": "count"
     }
   ]
@@ -236,8 +236,8 @@ Pipe blocks should not become a general query language inside DSQL.
 Avoid clause-level pipe blocks for now:
 
 ```dsql
-query Movies {
-  movie_info(where title | aggregate { count } | > 3) {
+query Users {
+  users(where posts | aggregate { count } | > 3) {
     id
   }
 }

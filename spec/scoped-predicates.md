@@ -96,8 +96,8 @@ Relationship paths may use the same relationship references as selection sets,
 including schema-qualified names and foreign-key selectors.
 
 ```dsql
-query Titles {
-  title(where .aka_title::movie_id.title like "%director%") {
+query Users {
+  users(where .posts.comments.body like "%question%") {
     id
   }
 }
@@ -109,22 +109,22 @@ Scoped predicates may filter by related data while returning a different
 relation shape.
 
 ```dsql
-query MovieInfo {
-  movie_info(where .title.aka_title::movie_id.title like $$search limit 10) {
+query Users {
+  users(where .posts.comments.body like $$search limit 10) {
     id
-    info
+    name
 
-    title(order by production_year desc limit 3) {
+    posts(order by created_at desc limit 3) {
       id
       title
-      production_year
+      created_at
     }
   }
 }
 ```
 
-The predicate selects `movie_info` rows based on the related `aka_title` title,
-but the selected body still controls the returned shape independently.
+The predicate selects `users` rows based on related comment text, but the
+selected body still controls the returned shape independently.
 
 ## Operators
 
@@ -273,12 +273,12 @@ Possible shape:
 {
   "predicates": [
     {
-      "path": ".title.aka_title::movie_id.title",
+      "path": ".posts.comments.body",
       "resolved": [
-        "public.movie_info",
-        "public.title",
-        "public.aka_title",
-        "public.aka_title.title"
+        "public.users",
+        "public.posts",
+        "public.comments",
+        "public.comments.body"
       ],
       "operator": "like",
       "source": "query"

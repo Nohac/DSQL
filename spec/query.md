@@ -69,8 +69,8 @@ other_schema.users
 Relationship paths may add a foreign-key selector after the table reference:
 
 ```dsql
-public.aka_title::movie_id
-aka_title::episode_of_id
+public.users::assignee_id
+users::reviewer_id
 ```
 
 The part before `::` is still the table reference. The part after `::`
@@ -87,8 +87,8 @@ The output key for a schema-qualified table or relation is still the table name
 unless an alias is provided. For example, `public.users` produces `users`.
 
 The output key for a relation with a foreign-key selector is also the table
-name unless an alias is provided. For example, `aka_title::movie_id` produces
-`aka_title`.
+name unless an alias is provided. For example, `users::assignee_id` produces
+`users`.
 
 ## Queries
 
@@ -250,9 +250,9 @@ If multiple foreign-key paths connect the current table to the same relation
 target, the relation must include a foreign-key selector.
 
 ```dsql
-query Titles {
-  title {
-    aka_title::movie_id {
+query Tasks {
+  tasks {
+    users::assignee_id {
       id
     }
   }
@@ -260,17 +260,17 @@ query Titles {
 ```
 
 The selector identifies the foreign-key path. The default selector is derived
-from the local foreign-key column names on the related table. For a single
-column foreign key, the selector is the local column name, such as `movie_id`.
-For a composite foreign key, the selector joins the local column names in
-constraint order with underscores, such as `tenant_id_order_id`.
+from the foreign-key column names for that path. For a single column foreign
+key, the selector is the local column name, such as `assignee_id`. For a
+composite foreign key, the selector joins the local column names in constraint
+order with underscores, such as `tenant_id_order_id`.
 
 Schema qualification and foreign-key selectors may be combined:
 
 ```dsql
-query Titles {
-  title {
-    public.aka_title::episode_of_id {
+query Tasks {
+  tasks {
+    public.users::reviewer_id {
       id
     }
   }
@@ -285,20 +285,20 @@ target, the selector may be omitted.
 A relation selection is ambiguous when it names a relation target but multiple
 foreign-key paths connect the current table to that target.
 
-For example, ambiguity exists if `public.aka_title` has both of these foreign
-keys to `public.title`:
+For example, ambiguity exists if `public.tasks` has both of these foreign keys
+to `public.users`:
 
 ```text
-public.aka_title.movie_id -> public.title.id
-public.aka_title.episode_of_id -> public.title.id
+public.tasks.assignee_id -> public.users.id
+public.tasks.reviewer_id -> public.users.id
 ```
 
 Then this selection has no way to choose which foreign key to use:
 
 ```dsql
-query Titles {
-  title {
-    aka_title {
+query Tasks {
+  tasks {
+    users {
       id
     }
   }
@@ -308,9 +308,9 @@ query Titles {
 The selection must disambiguate the foreign-key path:
 
 ```dsql
-query Titles {
-  title {
-    aka_title::movie_id {
+query Tasks {
+  tasks {
+    users::assignee_id {
       id
     }
   }
@@ -321,20 +321,20 @@ If multiple selected relations would produce the same output key, aliases are
 required.
 
 ```dsql
-query Titles {
-  title {
-    aliases: aka_title::movie_id {
+query Tasks {
+  tasks {
+    assignee: users::assignee_id {
       id
     }
 
-    episodes: aka_title::episode_of_id {
+    reviewer: users::reviewer_id {
       id
     }
   }
 }
 ```
 
-Without aliases, both selections would output `aka_title`.
+Without aliases, both selections would output `users`.
 
 ## Clauses
 
@@ -563,15 +563,15 @@ decisions.
 Relation clauses can fetch a small ordered slice of related data.
 
 ```dsql
-query Movies {
-  movie_info(where .info like $$ limit 10) {
+query Users {
+  users(where .name like $$ limit 10) {
     id
-    info
+    name
 
-    latest_title: title(order by production_year desc limit 1) {
+    latest_post: posts(order by created_at desc limit 1) {
       id
       title
-      production_year
+      created_at
     }
   }
 }
@@ -590,15 +590,15 @@ Nested top-N collections are first-class relation selections, not a separate
 feature.
 
 ```dsql
-query Movies {
-  movie_info(limit 10) {
+query Users {
+  users(limit 10) {
     id
-    info
+    name
 
-    title(order by production_year desc limit 3) {
+    posts(order by created_at desc limit 3) {
       id
       title
-      production_year
+      created_at
     }
   }
 }
@@ -612,14 +612,14 @@ when relation limits are present.
 Aliases are the normal way to shape API-friendly output names.
 
 ```dsql
-query Movies {
-  movie_info(limit 10) {
+query Users {
+  users(limit 10) {
     id
-    description: info
+    display_name: name
 
-    latest_title: title(order by production_year desc limit 1) {
+    latest_post: posts(order by created_at desc limit 1) {
       name: title
-      year: production_year
+      published_at: created_at
     }
   }
 }

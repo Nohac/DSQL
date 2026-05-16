@@ -11,21 +11,18 @@ Queries should not need explicit variable declarations. Variable names and types
 are inferred from where variables appear.
 
 ```dsql
-query KeywordDiscovery {
-  keyword(where .movie_keyword.title.production_year > $ order by keyword asc limit $) {
+query UserSearch {
+  users(where .posts.comments.created_at > $ order by name asc limit $) {
     id
-    keyword
-    movie_keyword(limit $movie_limit) {
-      title {
+    name
+    posts(limit $post_limit) {
+      comments {
         id
-        title
-        production_year
-        movie_info(limit $) {
-          info
-          note
-          info_type {
-            info
-          }
+        body
+        created_at
+        attachments(limit $) {
+          id
+          url
         }
       }
     }
@@ -36,7 +33,7 @@ query KeywordDiscovery {
 `$` is an anonymous variable. Its input key is inferred from the field, clause,
 or semantic role where it is used.
 
-`$movie_limit` is a named variable. Its type is still inferred from the usage
+`$post_limit` is a named variable. Its type is still inferred from the usage
 site, but its input key is the explicit variable name.
 
 ## Inferred Input Shape
@@ -48,26 +45,26 @@ Conceptual shape for the example above:
 
 ```json
 {
-  "keyword": {
+  "users": {
     "clause": {
       "where": {
-        "movie_keyword": {
-          "title": {
-            "production_year": "int"
+        "posts": {
+          "comments": {
+            "created_at": "timestamptz"
           }
         }
       },
       "limit": "int"
     },
     "body": {
-      "movie_keyword": {
+      "posts": {
         "clause": {
-          "movie_limit": "int"
+          "post_limit": "int"
         },
         "body": {
-          "title": {
+          "comments": {
             "body": {
-              "movie_info": {
+              "attachments": {
                 "clause": {
                   "limit": "int"
                 }
@@ -90,21 +87,20 @@ should be stable.
 Anonymous variables infer their key and type from their usage:
 
 - `where .id == $` becomes a `where.id` input with the catalog type of `.id`.
-- `where .movie_keyword.title.production_year > $` becomes a nested
-  `where.movie_keyword.title.production_year` input with the catalog type of
-  `production_year`.
+- `where .posts.comments.created_at > $` becomes a nested
+  `where.posts.comments.created_at` input with the catalog type of `created_at`.
 - `limit $` becomes a `limit` input with integer type.
 - `offset $` becomes an `offset` input with integer type.
 
 Named variables use the explicit variable name as the input key:
 
 ```dsql
-movie_keyword(limit $movie_limit) {
+posts(limit $post_limit) {
   id
 }
 ```
 
-This produces a `movie_limit` input at that selection’s clause scope, typed as
+This produces a `post_limit` input at that selection’s clause scope, typed as
 an integer because it is used in `limit`.
 
 The compiler must still preserve binding metadata that maps every generated
@@ -118,8 +114,8 @@ should also support explicit top-level params for generated routes, UI forms, an
 manually shaped APIs.
 
 ```dsql
-query MovieLookup {
-  movie_info(where .id > $$id limit $$) {
+query UserLookup {
+  users(where .id > $$id limit $$) {
     id
   }
 }
@@ -139,7 +135,7 @@ Conceptual generated input shape:
     "limit": "int"
   },
   "input": {
-    "movie_info": {
+    "users": {
       "clause": {}
     }
   }
@@ -170,16 +166,16 @@ Top-level params still infer type from usage:
 - `where .id > $$` creates `params.id`.
 - `limit $$` creates `params.limit` with integer type.
 - `offset $$` creates `params.offset` with integer type.
-- `where .movie_keyword.title.production_year > $$` creates
-  `params.production_year` by default.
+- `where .posts.comments.created_at > $$` creates `params.created_at` by
+  default.
 
 Reusing a top-level param is allowed when every usage infers a compatible type
 and semantic role.
 
 ```dsql
-query MovieLookup {
-  movie_info(where .id > $$id) {
-    title(where .id == $$id) {
+query UserLookup {
+  users(where .id > $$id) {
+    posts(where .author.id == $$id) {
       id
     }
   }
@@ -191,7 +187,7 @@ paths, the compiler should report a diagnostic rather than silently merge them.
 
 ```dsql
 query AmbiguousIds {
-  movie_info(where .id > $$ and .title.id > $$) {
+  users(where .id > $$ and .posts.author.id > $$) {
     id
   }
 }
@@ -202,7 +198,7 @@ should name them:
 
 ```dsql
 query AmbiguousIds {
-  movie_info(where .id > $$movie_info_id and .title.id > $$title_id) {
+  users(where .id > $$user_id and .posts.author.id > $$author_id) {
     id
   }
 }
@@ -218,8 +214,8 @@ variables.
 Example:
 
 ```dsql
-query Movies {
-  movie_info(where .id > $ and .id < $) {
+query Users {
+  users(where .id > $ and .id < $) {
     id
   }
 }
@@ -229,8 +225,8 @@ This may be ambiguous if both variables infer `where.id`. The user can
 disambiguate:
 
 ```dsql
-query Movies {
-  movie_info(where .id > $min_id and .id < $max_id) {
+query Users {
+  users(where .id > $min_id and .id < $max_id) {
     id
   }
 }
@@ -486,7 +482,7 @@ Possible shape:
     "limit": { "type": "int", "required": true }
   },
   "input": {
-    "movie_info": {
+    "users": {
       "clause": {
         "where": {
           "id": { "type": "int" }
@@ -527,8 +523,8 @@ They allow a closed set of operators to be selected by user input while keeping
 the query structurally typed and safe.
 
 ```dsql
-query MovieInfoSearch {
-  movie_info(where .id $min_op[>, >=] $min_id) {
+query UserSearch {
+  users(where .id $min_op[>, >=] $min_id) {
     id
   }
 }
@@ -551,7 +547,7 @@ operator set.
 Anonymous operator variables are possible:
 
 ```dsql
-movie_info(where .id $[==, >, !=] $) {
+users(where .id $[==, >, !=] $) {
   id
 }
 ```
@@ -564,7 +560,7 @@ Conceptual public input shape:
 
 ```json
 {
-  "movie_info": {
+  "users": {
     "clause": {
       "where": {
         "id": {
@@ -599,14 +595,14 @@ Conceptual generated metadata:
 {
   "operators": [
     {
-      "path": "input.movie_info.clause.where.id.op",
+      "path": "input.users.clause.where.id.op",
       "values": [">", ">="],
-      "controls": "predicate:movie_info.id"
+      "controls": "predicate:users.id"
     }
   ],
   "variants": {
-    ">": "where movie_info.id > $1",
-    ">=": "where movie_info.id >= $1"
+    ">": "where users.id > $1",
+    ">=": "where users.id >= $1"
   }
 }
 ```
@@ -689,8 +685,8 @@ Boolean operator variables are the same idea applied between complete predicate
 expressions.
 
 ```dsql
-query MovieInfoRange {
-  movie_info(where .id $min_op[>, >=] $min_id $range_mode[and, or] .id $max_op[<, <=] $max_id) {
+query UserRange {
+  users(where .id $min_op[>, >=] $min_id $range_mode[and, or] .id $max_op[<, <=] $max_id) {
     id
   }
 }
@@ -710,7 +706,7 @@ Conceptual internal shape:
 
 ```json
 {
-  "movie_info": {
+  "users": {
     "clause": {
       "where": {
         "left": {
@@ -734,7 +730,7 @@ Generated public input may flatten this when it is ergonomic:
 
 ```json
 {
-  "movie_info": {
+  "users": {
     "clause": {
       "where": {
         "id": {
@@ -764,14 +760,14 @@ can understand the API/codegen contract from the editor.
 Structured variable example:
 
 ```dsql
-where .movie_keyword.title.production_year > $year
+where .posts.comments.created_at > $created_after
 ```
 
-Hover on `$year`:
+Hover on `$created_after`:
 
 ```text
-input.keyword.clause.where.movie_keyword.title.production_year.year
-type: int
+input.users.clause.where.posts.comments.created_at.created_after
+type: timestamptz
 role: where value
 ```
 
@@ -784,7 +780,7 @@ limit $
 Hover on `$`:
 
 ```text
-input.keyword.clause.limit
+input.users.clause.limit
 type: int
 role: limit
 ```
@@ -826,10 +822,10 @@ where .id $id_op[>, >=] $id
 Hover on `$id_op[>, >=]` or `$id_op`:
 
 ```text
-input.movie_info.clause.where.id.id_op
+input.users.clause.where.id.id_op
 type: enum(">", ">=")
 role: comparison operator
-field: movie_info.id
+field: users.id
 ```
 
 Anonymous operator variable example:
@@ -841,10 +837,10 @@ where .id $[==, !=] $
 Hover on `$[==, !=]`:
 
 ```text
-input.movie_info.clause.where.id.op
+input.users.clause.where.id.op
 type: enum("==", "!=")
 role: comparison operator
-field: movie_info.id
+field: users.id
 ```
 
 Boolean operator variable example:
@@ -856,7 +852,7 @@ where .id $min_op[>, >=] $min_id $range_mode[and, or] .id $max_op[<, <=] $max_id
 Hover on `$range_mode[and, or]`:
 
 ```text
-input.movie_info.clause.where.id.range_mode
+input.users.clause.where.id.range_mode
 type: enum("and", "or")
 role: boolean operator
 ```

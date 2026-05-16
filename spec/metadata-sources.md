@@ -42,7 +42,7 @@ Potential imported metadata:
 
 This could let projects migrate existing Hasura relationship names into dsql
 defined relationship aliases instead of exposing only raw foreign-key selectors
-such as `aka_title::movie_id`.
+such as `users::assignee_id`.
 
 ## Provider Swap Goal
 
