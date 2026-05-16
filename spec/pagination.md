@@ -68,6 +68,29 @@ The exact syntax is unresolved. The important model is that page metadata is
 derived from the same collection scope as the paginated selection without
 requiring the user to duplicate filter predicates manually.
 
+## Codegen Notes
+
+Pagination should expose enough metadata for generated clients to build page
+controls without hardcoding DSQL details.
+
+Possible shape:
+
+```json
+{
+  "pagination": {
+    "users": {
+      "style": "offset",
+      "params": ["limit", "offset"],
+      "order": ["created_at"],
+      "metadata": ["total_count", "has_next_page"]
+    }
+  }
+}
+```
+
+If cursor pagination is added, metadata should describe the cursor fields,
+required ordering, and whether nested follow-up fetches are supported.
+
 Open questions:
 
 - Exact names: `first`/`after`, `limit`/`cursor`, or another model.

@@ -473,6 +473,53 @@ Open questions:
 - Whether preset names should be case-sensitive and how they avoid collisions
   with field names.
 
+## Codegen Notes
+
+Variables should produce a metadata contract that generated clients and endpoint
+adapters can use without reinterpreting the query.
+
+Possible shape:
+
+```json
+{
+  "params": {
+    "limit": { "type": "int", "required": true }
+  },
+  "input": {
+    "movie_info": {
+      "clause": {
+        "where": {
+          "id": { "type": "int" }
+        }
+      }
+    }
+  },
+  "context": {
+    "tenant_id": { "type": "uuid", "required": true }
+  },
+  "dynamic_inputs": {
+    "search": {
+      "kind": "filter",
+      "preset": "selected",
+      "fields": ["id", "name", "display"]
+    },
+    "order": {
+      "kind": "order",
+      "preset": "selected_indexed",
+      "fields": ["id", "created_at"]
+    }
+  }
+}
+```
+
+`$:<name>` context values should appear as required host context, not public
+query variables. A provider or generated client may bind those once per request
+or require them per call.
+
+Dynamic filters and order inputs should expose their expanded field/operator
+surface so application code can generate type-safe UI controls without knowing
+DSQL internals.
+
 ## Operator Variables
 
 Operator variables are a possible later layer for generated search/filter APIs.

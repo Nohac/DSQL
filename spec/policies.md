@@ -202,6 +202,48 @@ LSP and code generation should surface this:
 - Source maps should preserve the policy source span for diagnostics and debug
   output.
 
+## Codegen Notes
+
+Policies should be visible in generated metadata so the host can provide context
+and developers can understand implicit behavior.
+
+Possible shape:
+
+```json
+{
+  "context": {
+    "tenant_id": { "type": "uuid", "required": true },
+    "user_id": { "type": "uuid", "required": true },
+    "role": { "type": "text", "required": true }
+  },
+  "policies": [
+    {
+      "name": "TenantScope",
+      "kind": "default_filter",
+      "targets": ["*.tenant_id"],
+      "context": ["tenant_id"]
+    },
+    {
+      "name": "RecordingRead",
+      "kind": "row_check",
+      "targets": ["recording"],
+      "context": ["user_id"]
+    }
+  ],
+  "visibility": {
+    "users.email": {
+      "policy": "UserPrivacy",
+      "result": "nullable",
+      "context": ["role", "user_id"]
+    }
+  }
+}
+```
+
+This shape is illustrative. The important contract is that generated clients and
+adapters know which context values are required, which policies affect a query,
+and which selected fields become nullable because visibility is conditional.
+
 ## Capabilities
 
 Permissions should be modeled as capabilities rather than only roles.

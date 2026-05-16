@@ -7,6 +7,12 @@ unit. This is mainly useful for nested pagination, deferred loading, and
 frontend interaction where a child collection changes without the parent query
 needing to be refetched.
 
+This is not only an N+1 mitigation feature. It also addresses coarse refetch
+granularity and overfetching for nested result shapes: when one nested relation
+branch needs another page or a refresh, the client should not have to refetch
+every parent row and every already-hydrated nested branch just to update that one
+child collection.
+
 ## Relation Split Fetch
 
 ```dsql
@@ -50,6 +56,101 @@ query Users {
 }
 ```
 
+## Incremental Query Handoff
+
+A master query can hydrate an initial nested branch and provide the identity and
+context required for that branch to become independently fetchable later.
+
+This is useful for framework flows such as server-side rendering a page with
+users and the first page of posts, then letting each user's posts collection
+paginate or refetch independently on the client.
+
+The important behavior is that after the master query has provided parent
+identity, each child relation can live as its own cache entry and endpoint. A
+single user's posts can fetch the next page without rerunning the full
+`UsersPage` query and without refreshing posts for every other user.
+
+```dsql
+fragment UserPosts on users @fetchable(key: "userPosts") {
+  posts(first $$first after $$after) {
+    id
+    title
+    created_at
+  }
+}
+
+query UsersPage {
+  users(limit $$limit) {
+    id
+    name
+    ...UserPosts
+  }
+}
+```
+
+The master query can include the first `posts` page. Codegen can also expose
+`UserPosts` as a child fetch target that accepts the parent user identity and
+its own pagination params.
+
+Possible generated TypeScript use:
+
+```ts
+const users = useQuery(UsersPage.queryOptions({ limit: 20 }));
+
+const posts = useQuery(
+  UserPosts.queryOptions({
+    parent: users.data.users[index],
+    first: 10,
+    after: cursor
+  })
+);
+```
+
+The child query key should include the fetchable unit, parent identity, local
+params, and any required context.
+
+```ts
+["dsql", "UserPosts", { user_id: user.id, first: 10, after: cursor }]
+```
+
+The generated child fetch should target the relation scope directly instead of
+refetching the full parent query.
+
+Conceptual child predicate:
+
+```sql
+where posts.user_id = $parent_user_id
+```
+
+## Handoff Metadata
+
+Codegen should expose enough metadata for a framework adapter to hydrate child
+queries from a master query and later refetch them independently.
+
+Possible shape:
+
+```json
+{
+  "handoffs": [
+    {
+      "name": "UserPosts",
+      "fragment": "UserPosts",
+      "parent_path": "users[]",
+      "parent_identity": ["id"],
+      "relation": "posts",
+      "child_params": ["first", "after"],
+      "provided_context": {
+        "user_id": "users[].id"
+      }
+    }
+  ]
+}
+```
+
+This shape is illustrative. The important contract is that generated clients can
+derive a stable child query key and fetch target from data already returned by
+the master query.
+
 ## Identity And Stitching
 
 A split fetch needs stable identity metadata:
@@ -72,4 +173,6 @@ Open questions:
 - Whether a split fetch can be executed independently of the original query.
 - How policy/context requirements are carried into split fetches.
 - How cache keys are generated.
-
+- How SSR hydration should seed child query caches from master query results.
+- Whether fetchable fragments should be explicit declarations, directives, or
+  inferred from relation selections.

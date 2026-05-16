@@ -262,6 +262,34 @@ Invalid path examples:
 - `~field` when there is no root table context
 - `.posts.title like 10` when `title` is text
 
+## Codegen Notes
+
+Scoped predicates should preserve resolved path metadata for generated clients,
+debug tools, and future explain/source-map features.
+
+Possible shape:
+
+```json
+{
+  "predicates": [
+    {
+      "path": ".title.aka_title::movie_id.title",
+      "resolved": [
+        "public.movie_info",
+        "public.title",
+        "public.aka_title",
+        "public.aka_title.title"
+      ],
+      "operator": "like",
+      "source": "query"
+    }
+  ]
+}
+```
+
+The metadata should be stable enough for hover, diagnostics, generated filter
+types, and performance tooling to point back to the original DSQL path.
+
 ## Open Questions
 
 - Whether multi-level parent references beyond `..field` are needed.

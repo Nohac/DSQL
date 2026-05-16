@@ -63,6 +63,33 @@ coalesce(T, T) -> T
 Provider metadata must describe argument types, return type, volatility if it
 matters for code generation, and the SQL lowering name.
 
+## Codegen Notes
+
+Function metadata should let generated clients and tooling understand expression
+types without parsing provider SQL.
+
+Possible shape:
+
+```json
+{
+  "functions": {
+    "now": {
+      "args": [],
+      "returns": "timestamptz",
+      "provider": "postgres"
+    },
+    "lower": {
+      "args": ["text"],
+      "returns": "text",
+      "provider": "postgres"
+    }
+  }
+}
+```
+
+For query-specific metadata, only functions that affect generated input or
+result contracts need to be surfaced.
+
 ## Non-Goals
 
 Do not support arbitrary raw SQL snippets as functions.

@@ -199,6 +199,36 @@ query MovieInfo {
 
 The relation clauses apply before aggregation and are scoped to that relation.
 
+## Codegen Notes
+
+Aggregates should contribute normal result-shape metadata. Generated clients
+should not need to infer aggregate output types from SQL text.
+
+Possible shape:
+
+```json
+{
+  "result": {
+    "movie_info": {
+      "fields": {
+        "cast_count": { "type": "int", "nullable": false },
+        "latest_year": { "type": "int", "nullable": true }
+      }
+    }
+  },
+  "aggregates": [
+    {
+      "path": "movie_info.cast_info",
+      "output": "cast_count",
+      "function": "count"
+    }
+  ]
+}
+```
+
+Flattened aggregate outputs should appear at the parent result path, with any
+collision diagnostics resolved before metadata is emitted.
+
 ## Non-Goals
 
 Pipe blocks should not become a general query language inside DSQL.
