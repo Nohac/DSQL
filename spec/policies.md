@@ -27,21 +27,21 @@ context tenant_id: uuid
 context role: text
 ```
 
-Context values are referenced through the reserved `$ctx` namespace.
+Context values are referenced with the `$:<name>` form.
 
 ```dsql
-$ctx.user_id
-$ctx.tenant_id
-$ctx.role
+$:user_id
+$:tenant_id
+$:role
 ```
 
 Rules:
 
-- `$ctx` values are provided by the host/runtime, not by public query input.
-- `$ctx` values must be declared or provided by project/provider metadata before
+- `$:<name>` values are provided by the host/runtime, not by public query input.
+- `$:<name>` values must be declared or provided by project/provider metadata before
   use.
 - Generated metadata should list every context value required by a query.
-- `$ctx` should be valid in policy/default-filter expressions and may also be
+- `$:<name>` should be valid in policy/default-filter expressions and may also be
   valid in explicit query predicates when the project allows it.
 
 The symbol roles should stay separate:
@@ -49,7 +49,9 @@ The symbol roles should stay separate:
 - `#` is comments.
 - `@` is directives.
 - `$` and `$$` are user-provided query inputs.
-- `$ctx.<name>` is host-provided context.
+- `$:<name>` is host-provided context.
+
+This avoids reserving a normal variable name such as `$ctx`.
 
 ## Soft Delete
 
@@ -94,7 +96,7 @@ Tenant scoping can be modeled as a default filter with host context:
 ```dsql
 default filter TenantScope on {
   .tenant_id: uuid
-} where .tenant_id == $ctx.tenant_id
+} where .tenant_id == $:tenant_id
 ```
 
 Default filters compose with local query predicates using `and`.
@@ -122,7 +124,7 @@ object or a structural shape.
 
 ```dsql
 policy RecordingRead on recording {
-  check where .project.project_users.user_id == $ctx.user_id
+  check where .project.project_users.user_id == $:user_id
 }
 ```
 
@@ -144,7 +146,7 @@ Policies may compose with default filters:
 ```dsql
 policy RecordingRead on recording {
   include SoftDelete
-  check where .project.project_users.user_id == $ctx.user_id
+  check where .project.project_users.user_id == $:user_id
 }
 ```
 
@@ -159,8 +161,8 @@ empty relation value.
 
 ```dsql
 policy UserPrivacy on users {
-  field email visible when $ctx.role == "admin" or .id == $ctx.user_id
-  field phone visible when $ctx.role == "admin"
+  field email visible when $:role == "admin" or .id == $:user_id
+  field phone visible when $:role == "admin"
 }
 ```
 
@@ -176,7 +178,7 @@ Conceptual SQL lowering for a scalar field:
 
 ```sql
 case
-  when ($ctx_role = 'admin' or users.id = $ctx_user_id) then users.email
+  when ($role = 'admin' or users.id = $user_id) then users.email
   else null
 end as email
 ```
@@ -185,7 +187,7 @@ Relation visibility follows the same stable-shape rule:
 
 ```dsql
 policy UserPrivacy on users {
-  relation sessions visible when $ctx.role == "admin" or .id == $ctx.user_id
+  relation sessions visible when $:role == "admin" or .id == $:user_id
 }
 ```
 

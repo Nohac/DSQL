@@ -155,6 +155,15 @@ $$       # top-level anonymous inferred param
 $$name   # top-level named param
 ```
 
+Host-provided global context uses a separate form:
+
+```dsql
+$:name   # host-provided context value
+```
+
+Context values are not public query inputs. They are declared in policy/provider
+metadata and provided by the host/runtime.
+
 Top-level params still infer type from usage:
 
 - `where .id > $$id` creates `params.id` with the catalog type of `.id`.
