@@ -26,6 +26,13 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
         matches!(self.peek(1), Token::Name)
     }
 
+    fn predicate_operator_variable_1(&self) -> bool {
+        matches!(
+            self.peek(1),
+            Token::Eq | Token::Ne | Token::Gt | Token::Ge | Token::Lt | Token::Le | Token::Like
+        )
+    }
+
     fn predicate_qualified_name_1(&self) -> bool {
         matches!(self.peek(1), Token::Name)
     }

@@ -1,5 +1,5 @@
 use super::{ColumnId, ColumnKey, ForeignKeyId, SchemaId, SchemaKey, TableId, TableKey};
-use crate::syntax::Token;
+use crate::syntax::BinaryOp;
 use facet::Facet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -216,18 +216,20 @@ impl DataType {
         }
     }
 
-    pub fn operator_tokens(self) -> &'static [Token] {
+    pub fn operator_ops(self) -> &'static [BinaryOp] {
         match self {
             Self::Int | Self::Timestamptz => &[
-                Token::Eq,
-                Token::Ne,
-                Token::Gt,
-                Token::Ge,
-                Token::Lt,
-                Token::Le,
+                BinaryOp::Eq,
+                BinaryOp::Ne,
+                BinaryOp::Gt,
+                BinaryOp::Ge,
+                BinaryOp::Lt,
+                BinaryOp::Le,
             ],
-            Self::Text => &[Token::Eq, Token::Ne, Token::Like],
-            Self::Uuid | Self::Boolean | Self::Json | Self::Unknown => &[Token::Eq, Token::Ne],
+            Self::Text => &[BinaryOp::Eq, BinaryOp::Ne, BinaryOp::Like],
+            Self::Uuid | Self::Boolean | Self::Json | Self::Unknown => {
+                &[BinaryOp::Eq, BinaryOp::Ne]
+            }
         }
     }
 

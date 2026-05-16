@@ -250,8 +250,14 @@ query MovieInfoSearch {
 - It is only valid in operator position.
 - Its allowed operators are explicitly enumerated.
 - Every allowed operator must be valid for the left-hand field type.
-- The generated SQL must switch over the closed operator enum. User input must
-  never be interpolated as raw SQL operator text.
+- The compiler should lower it as a closed conditional SQL plan. User input must
+  never become arbitrary SQL syntax.
+
+`$[*]` should not be supported. It is too close to an "any operator" escape
+hatch, makes generated APIs less explicit, and weakens type-aware validation.
+If shorthand is needed later, it should be named and type-aware, such as
+`$[comparison]` or `$[text_match]`, and it should expand to a compiler-defined
+operator set.
 
 Anonymous operator variables are possible:
 
@@ -281,6 +287,112 @@ Conceptual public input shape:
   }
 }
 ```
+
+## Dynamic Operator Lowering
+
+Postgres does not allow a normal SQL parameter to stand in for an operator.
+This is invalid:
+
+```sql
+where id $1 $2
+```
+
+Operator variables therefore cannot lower to ordinary SQL placeholders. The
+current implementation target should be **SQL variants**:
+
+```dsql
+where .id $op[>, >=] $id
+```
+
+Conceptual generated metadata:
+
+```json
+{
+  "operators": [
+    {
+      "path": "input.movie_info.clause.where.id.op",
+      "values": [">", ">="],
+      "controls": "predicate:movie_info.id"
+    }
+  ],
+  "variants": {
+    ">": "where movie_info.id > $1",
+    ">=": "where movie_info.id >= $1"
+  }
+}
+```
+
+The next layer, such as a JS framework, Rust runtime, stored route generator, or
+API adapter, chooses one compiler-produced SQL variant from the closed enum and
+then binds values as normal SQL parameters. This keeps DSQL responsible for
+parsing, validation, SQL generation, and metadata, while host integrations can
+enrich the result without constructing SQL syntax from user strings.
+
+The safe host-side rule is:
+
+- Selecting from compiler-produced SQL variants is allowed.
+- Passing user values as SQL parameters is required.
+- Interpolating arbitrary user strings as raw SQL operators is forbidden.
+
+Tagged-template SQL libraries may support trusted raw SQL fragments, but DSQL
+metadata should not require consumers to call `raw(user_input)`. If a framework
+uses raw fragments internally, they must be selected from compiler-generated
+allowlist branches.
+
+## Requires More Consideration
+
+### Value-Operator SQL
+
+A stored procedure or very generic runtime may prefer a single SQL statement
+where the operator remains a value:
+
+```sql
+where
+  ($1 = '>' and id > $2)
+  or ($1 = '>=' and id >= $2)
+```
+
+This is injection-safe because the operator input is data, not SQL syntax. It is
+also friendlier to stored procedures because no template interpolation is
+required.
+
+Tradeoffs:
+
+- The generated SQL is less readable than concrete variants.
+- The planner may have less opportunity to optimize each concrete predicate.
+- Multiple dynamic operators can expand the SQL significantly.
+- It may be the best fit for single-statement or stored-procedure targets.
+
+This should remain a backend strategy to consider later, not the first lowering
+target.
+
+### Dynamic SQL In Stored Procedures
+
+Stored procedures could also use dynamic SQL with `EXECUTE`, but that moves SQL
+syntax construction into the database and requires strict allowlist handling.
+This does not fit the default DSQL goal of producing readable, normal SQL.
+
+### Backend Strategy
+
+The semantic IR should preserve operator variables as conditional predicates so
+backends can choose a lowering strategy:
+
+```text
+DynamicComparison {
+  field,
+  op_input,
+  allowed_ops,
+  value_input,
+}
+```
+
+Initial target:
+
+- `variants`: emit one SQL branch per allowed operator.
+
+Future possible target:
+
+- `value_operator`: emit one SQL statement with value-driven boolean expansion.
 
 ## Boolean Operator Variables
 

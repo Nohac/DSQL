@@ -248,8 +248,13 @@ fn plan_clauses(
                         Some(OrderByPlan {
                             column: column.id,
                             direction: match item.direction {
-                                crate::SortDirection::Asc => SortDirectionPlan::Asc,
-                                crate::SortDirection::Desc => SortDirectionPlan::Desc,
+                                crate::SortDirectionExpr::Static(crate::SortDirection::Asc) => {
+                                    SortDirectionPlan::Asc
+                                }
+                                crate::SortDirectionExpr::Static(crate::SortDirection::Desc) => {
+                                    SortDirectionPlan::Desc
+                                }
+                                crate::SortDirectionExpr::Variable(_) => return None,
                             },
                         })
                     }));
@@ -288,6 +293,7 @@ fn plan_filter_expr(
             left, op, right, ..
         } => {
             if let crate::Expr::Path(path) = left.as_ref()
+                && let crate::BinaryOperator::Static(op) = op
                 && is_comparison_op(*op)
                 && let Some(right) =
                     plan_filter_expr(catalog, root_table, table, Some(table), right)
@@ -295,6 +301,9 @@ fn plan_filter_expr(
             {
                 return Some(filter);
             }
+            let crate::BinaryOperator::Static(op) = op else {
+                return None;
+            };
             Some(FilterExpr::Binary {
                 left: Box::new(plan_filter_expr(
                     catalog,

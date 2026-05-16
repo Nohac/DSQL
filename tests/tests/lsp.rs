@@ -648,7 +648,7 @@ async fn lsp_hovers_show_inferred_variable_bindings() {
     let uri = "file:///tests/queries/lsp/imdb-variable-hover.dsql".to_string();
     let source = "\
 query KeywordDiscovery {
-  keyword(where .movie_keyword.title.production_year > $ order by keyword asc limit $) {
+  keyword(where .movie_keyword.title.production_year $year_op[>, >=] $ order by keyword $sort_dir limit $) {
     id
   }
 }";
@@ -662,6 +662,14 @@ query KeywordDiscovery {
         .hover(&uri, position_at(source, "$) {"))
         .await
         .expect("limit variable should have hover info");
+    let operator_variable = host
+        .hover(&uri, position_at(source, "$year_op"))
+        .await
+        .expect("operator variable should have hover info");
+    let sort_variable = host
+        .hover(&uri, position_at(source, "$sort_dir"))
+        .await
+        .expect("sort variable should have hover info");
     let query = host
         .hover(&uri, position_at(source, "KeywordDiscovery"))
         .await
@@ -670,8 +678,12 @@ query KeywordDiscovery {
     snapshot(
         "lsp_variable_hover",
         &format!(
-            "{}\n\n{}\n\n{}",
-            where_variable.markdown, limit_variable.markdown, query.markdown
+            "{}\n\n{}\n\n{}\n\n{}\n\n{}",
+            where_variable.markdown,
+            limit_variable.markdown,
+            operator_variable.markdown,
+            sort_variable.markdown,
+            query.markdown
         ),
     );
 }

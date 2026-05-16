@@ -148,6 +148,17 @@ fn lower_selections(selections: &[Selection], interner: &mut Interner, names: &m
                 .directives
                 .push((interner.intern(&directive.text), directive.range));
         }
+        for clause in &selection.clauses {
+            if let crate::Clause::OrderBy(order_by) = clause {
+                for item in &order_by.items {
+                    if let crate::SortDirectionExpr::Variable(variable) = &item.direction
+                        && let Some(name) = &variable.name
+                    {
+                        interner.intern(&name.text);
+                    }
+                }
+            }
+        }
         lower_selections(&selection.selections, interner, names);
     }
 }
@@ -172,8 +183,15 @@ fn lower_expr(expr: &Expr, interner: &mut Interner) {
                 }
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary {
+            left, op, right, ..
+        } => {
             lower_expr(left, interner);
+            if let crate::BinaryOperator::Variable(variable) = op
+                && let Some(name) = &variable.name
+            {
+                interner.intern(&name.text);
+            }
             lower_expr(right, interner);
         }
         Expr::Variable(variable) => {

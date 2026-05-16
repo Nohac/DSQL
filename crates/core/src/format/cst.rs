@@ -349,12 +349,9 @@ impl<'a> CstFormatter<'a> {
         if let Some(name) = self.direct_qualified_name_text(node) {
             self.out.push_str(&name);
         }
-        if let Some(direction) = self.direct_token_text(node, SyntaxToken::Asc) {
+        if let Some(direction) = self.direct_rule(node, SyntaxRule::SortDirection) {
             self.out.push(' ');
-            self.out.push_str(&direction);
-        } else if let Some(direction) = self.direct_token_text(node, SyntaxToken::Desc) {
-            self.out.push(' ');
-            self.out.push_str(&direction);
+            self.out.push_str(&self.text(self.node(direction).range));
         }
     }
 
@@ -655,6 +652,12 @@ impl<'a> CstFormatter<'a> {
 
     fn direct_operator(&self, node: usize) -> Option<usize> {
         self.node(node).children.iter().copied().find(|child| {
+            if matches!(
+                self.rule(*child),
+                Some(SyntaxRule::BinaryOperator | SyntaxRule::OperatorVariable)
+            ) {
+                return true;
+            }
             matches!(
                 self.token(*child),
                 Some(
@@ -797,7 +800,7 @@ mod tests {
     #[test]
     fn preserves_variables_in_clauses() {
         let parsed = parse_source(SourceSnapshot::from(
-            "query KeywordDiscovery { keyword(where .movie_keyword.title.production_year > $ order by keyword asc limit $movie_limit offset $$) { id } }",
+            "query KeywordDiscovery { keyword(where .movie_keyword.title.production_year $[>, >=] $ order by keyword $sort_dir limit $movie_limit offset $$) { id } }",
         ));
         let formatted = format_file(&parsed);
         assert!(
@@ -807,7 +810,7 @@ mod tests {
         );
         assert_eq!(
             formatted.text,
-            "query KeywordDiscovery {\n  keyword(where .movie_keyword.title.production_year > $\n    order by keyword asc limit $movie_limit offset $$\n  ) {\n    id\n  }\n}\n"
+            "query KeywordDiscovery {\n  keyword(where .movie_keyword.title.production_year $[>, >=] $\n    order by keyword $sort_dir limit $movie_limit offset $$\n  ) {\n    id\n  }\n}\n"
         );
     }
 

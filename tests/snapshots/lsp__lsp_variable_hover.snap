@@ -1,6 +1,6 @@
 ---
 source: tests/tests/lsp.rs
-assertion_line: 801
+assertion_line: 813
 expression: contents
 ---
 ### Variable `$`
@@ -15,6 +15,18 @@ expression: contents
 - Type: `int`
 - Role: `limit`
 
+### Variable `$year_op`
+
+- Path: `input.keyword.clause.where.movie_keyword.title.production_year.year_op`
+- Type: `enum(">", ">=")`
+- Role: `comparison operator`
+
+### Variable `$sort_dir`
+
+- Path: `input.keyword.clause.order_by.keyword.direction.sort_dir`
+- Type: `enum("asc", "desc")`
+- Role: `sort direction`
+
 ### Query `KeywordDiscovery`
 
 #### Variables
@@ -24,8 +36,14 @@ input:
   keyword:
     clause:
       limit: int
+      order_by:
+        keyword:
+          direction:
+            sort_dir: enum("asc", "desc")
       where:
         movie_keyword:
           title:
-            production_year: int
+            production_year:
+              value: int
+              year_op: enum(">", ">=")
 ```

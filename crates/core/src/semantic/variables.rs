@@ -1,8 +1,9 @@
 use crate::{
-    Catalog, DataType, FieldCheckResult, TableId, TableResolution,
+    BinaryOp, Catalog, DataType, FieldCheckResult, TableId, TableResolution,
     syntax::{
-        Clause, Definition, Expr, PathScope, ScopedPath, Selection, SelectionKind, SourceFile,
-        TextRange, ValueVariable, VariableScope,
+        BinaryOperator, Clause, Definition, Expr, OperatorVariable, OrderByItem, PathScope,
+        ScopedPath, Selection, SelectionKind, SortDirectionExpr, SourceFile, TextRange,
+        ValueVariable, VariableScope,
     },
 };
 use facet::Facet;
@@ -20,6 +21,8 @@ pub struct VariableBinding {
     pub name: Option<String>,
     pub data_type: DataType,
     pub role: VariableRole,
+    pub operators: Vec<BinaryOp>,
+    pub enum_values: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
@@ -33,6 +36,8 @@ pub enum VariableSource {
 #[repr(u8)]
 pub enum VariableRole {
     WhereValue,
+    ComparisonOperator,
+    SortDirection,
     Limit,
     Offset,
 }
@@ -102,7 +107,11 @@ fn collect_selection_bindings(
                 &offset.value,
                 bindings,
             ),
-            Clause::OrderBy(_) => {}
+            Clause::OrderBy(order_by) => {
+                for item in &order_by.items {
+                    collect_order_by_binding(catalog, table, path, item, bindings);
+                }
+            }
         }
     }
 
@@ -128,6 +137,36 @@ fn collect_selection_bindings(
     }
 }
 
+fn collect_order_by_binding(
+    catalog: &Catalog,
+    table: TableId,
+    selection_path: &[String],
+    item: &OrderByItem,
+    bindings: &mut Vec<VariableBinding>,
+) {
+    let variable = match &item.direction {
+        SortDirectionExpr::Variable(variable) => variable,
+        SortDirectionExpr::Static(_) => return,
+    };
+    let FieldCheckResult::Column(column) = catalog.check_field(table, &item.field.text) else {
+        return;
+    };
+    let inferred_path = [column.name.clone(), "direction".to_string()];
+    push_variable_binding(
+        selection_path,
+        VariableRole::SortDirection,
+        DataType::Unknown,
+        &inferred_path,
+        variable,
+        Vec::new(),
+        crate::SortDirection::ALL
+            .iter()
+            .map(|direction| direction.label().to_string())
+            .collect(),
+        bindings,
+    );
+}
+
 fn collect_where_bindings(
     catalog: &Catalog,
     root_table: TableId,
@@ -137,7 +176,7 @@ fn collect_where_bindings(
     bindings: &mut Vec<VariableBinding>,
 ) {
     let Expr::Binary {
-        left, op: _, right, ..
+        left, op, right, ..
     } = expr
     else {
         return;
@@ -155,6 +194,8 @@ fn collect_where_bindings(
                     data_type,
                     &field_path,
                     variable,
+                    Vec::new(),
+                    Vec::new(),
                     bindings,
                 );
             }
@@ -162,8 +203,29 @@ fn collect_where_bindings(
         _ => {}
     }
 
+    if let BinaryOperator::Variable(operator) = op
+        && let Some((data_type, field_path)) =
+            binary_field_path(catalog, root_table, table, left, right)
+    {
+        push_operator_binding(selection_path, data_type, &field_path, operator, bindings);
+    }
+
     collect_where_bindings(catalog, root_table, table, selection_path, left, bindings);
     collect_where_bindings(catalog, root_table, table, selection_path, right, bindings);
+}
+
+fn binary_field_path(
+    catalog: &Catalog,
+    root_table: TableId,
+    table: TableId,
+    left: &Expr,
+    right: &Expr,
+) -> Option<(DataType, Vec<String>)> {
+    let path = match (left, right) {
+        (Expr::Path(path), _) | (_, Expr::Path(path)) => path,
+        _ => return None,
+    };
+    resolve_predicate_path(catalog, root_table, table, path)
 }
 
 fn push_clause_variable(
@@ -183,8 +245,54 @@ fn push_clause_variable(
         data_type,
         &[inferred_key.to_string()],
         variable,
+        Vec::new(),
+        Vec::new(),
         bindings,
     );
+}
+
+fn push_operator_binding(
+    selection_path: &[String],
+    data_type: DataType,
+    inferred_path: &[String],
+    variable: &OperatorVariable,
+    bindings: &mut Vec<VariableBinding>,
+) {
+    let name = variable.name.as_ref().map(|name| name.text.clone());
+    let key = name
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| format!("{}_op", inferred_path.last().cloned().unwrap_or_default()));
+    let source = match variable.scope {
+        VariableScope::Structured => VariableSource::Structured,
+        VariableScope::TopLevel => VariableSource::TopLevel,
+    };
+    let path = match variable.scope {
+        VariableScope::Structured => {
+            let mut parts = vec!["input".to_string()];
+            parts.extend(selection_path.iter().cloned());
+            parts.push("clause".to_string());
+            parts.push("where".to_string());
+            parts.extend(inferred_path.iter().cloned());
+            parts.push(key);
+            parts.join(".")
+        }
+        VariableScope::TopLevel => format!("params.{key}"),
+    };
+    bindings.push(VariableBinding {
+        range: variable.range,
+        path,
+        source,
+        name,
+        data_type,
+        role: VariableRole::ComparisonOperator,
+        operators: variable.allowed.clone(),
+        enum_values: variable
+            .allowed
+            .iter()
+            .filter_map(|operator| operator.label().map(str::to_string))
+            .collect(),
+    });
 }
 
 fn push_variable_binding(
@@ -193,6 +301,8 @@ fn push_variable_binding(
     data_type: DataType,
     inferred_path: &[String],
     variable: &ValueVariable,
+    operators: Vec<BinaryOp>,
+    enum_values: Vec<String>,
     bindings: &mut Vec<VariableBinding>,
 ) {
     let name = variable.name.as_ref().map(|name| name.text.clone());
@@ -212,12 +322,19 @@ fn push_variable_binding(
             parts.push(
                 match role {
                     VariableRole::WhereValue => "where",
+                    VariableRole::ComparisonOperator => "where",
+                    VariableRole::SortDirection => "order_by",
                     VariableRole::Limit => "limit",
                     VariableRole::Offset => "offset",
                 }
                 .to_string(),
             );
-            if role == VariableRole::WhereValue {
+            if matches!(
+                role,
+                VariableRole::WhereValue
+                    | VariableRole::ComparisonOperator
+                    | VariableRole::SortDirection
+            ) {
                 parts.extend(inferred_path.iter().cloned());
             }
             if name.is_some() {
@@ -234,6 +351,8 @@ fn push_variable_binding(
         name,
         data_type,
         role,
+        operators,
+        enum_values,
     });
 }
 

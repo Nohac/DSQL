@@ -1,5 +1,5 @@
 token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or';
-token LBrace='{' RBrace='}' LPar='(' RPar=')' ColonColon='::' Colon=':' At='@' Comma=',' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$';
+token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' Colon=':' At='@' Comma=',' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
 token Whitespace Comment;
@@ -20,6 +20,9 @@ relation_ref: qualified_name ['::' Name];
 scoped_path_segment: Name ['::' Name];
 scoped_path: ('.' | '..' | '~') scoped_path_segment ('.' scoped_path_segment)*;
 value_variable: ('$' | '$$') [Name];
+comparison_operator: '==' | '!=' | '>' | '>=' | '<' | '<=' | 'like';
+operator_variable: ('$' | '$$') [Name] '[' comparison_operator (?1 ',' comparison_operator)* [','] ']';
+binary_operator: comparison_operator | operator_variable;
 selection_set: '{' selection* '}';
 selection:
   field_selection [',']
@@ -41,12 +44,13 @@ clause:
 ;
 where_clause: 'where' expr;
 order_by_clause: 'order' 'by' order_item (?1 ',' order_item)* [','];
-order_item: qualified_name ['asc' | 'desc'];
+sort_direction: 'asc' | 'desc' | value_variable;
+order_item: qualified_name [sort_direction];
 limit_clause: 'limit' expr;
 offset_clause: 'offset' expr;
 directive: '@' Name;
 expr:
-  expr ('==' | '!=' | '>' | '>=' | '<' | '<=' | 'like') expr @binary_expr
+  expr binary_operator expr @binary_expr
 | expr 'and' expr @binary_expr
 | expr 'or' expr @binary_expr
 | literal

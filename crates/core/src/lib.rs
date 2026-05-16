@@ -41,8 +41,9 @@ pub use sql::{
     generate_postgres_sql_with_options,
 };
 pub use syntax::{
-    BinaryOp, Clause, CstKind, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Expr,
-    Literal, ParseResult, PathScope, ScopedPath, ScopedPathSegment, Selection, SelectionKind,
-    Severity, SortDirection, SourceFile, SourceSnapshot, SourceText, SyntaxNode, SyntaxToken,
-    SyntaxTree, TextRange, Token, ValueVariable, VariableScope, expected_tokens_at, parse_source,
+    BinaryOp, BinaryOperator, Clause, CstKind, Definition, Diagnostic, DiagnosticCode,
+    DiagnosticSource, Expr, Literal, OperatorVariable, ParseResult, PathScope, ScopedPath,
+    ScopedPathSegment, Selection, SelectionKind, Severity, SortDirection, SortDirectionExpr,
+    SourceFile, SourceSnapshot, SourceText, SyntaxNode, SyntaxToken, SyntaxTree, TextRange, Token,
+    ValueVariable, VariableScope, expected_tokens_at, parse_source,
 };

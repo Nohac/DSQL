@@ -1,5 +1,5 @@
 use crate::cursor::{CursorContext, UsedClauses, cursor_context};
-use dsql_core::{Catalog, DataType, Definition, SourceFile, TableId, Token};
+use dsql_core::{BinaryOp, Catalog, DataType, Definition, SourceFile, TableId, Token};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
@@ -21,8 +21,15 @@ impl CompletionItem {
         }
     }
 
-    fn operator_token(token: Token) -> Self {
-        Self::token(token, CompletionKind::Operator, operator_detail(token))
+    fn operator(op: BinaryOp) -> Self {
+        Self {
+            label: op
+                .label()
+                .expect("completion operator must have a label")
+                .to_string(),
+            kind: CompletionKind::Operator,
+            detail: Some(op.detail().to_string()),
+        }
     }
 
     fn token(token: Token, kind: CompletionKind, detail: &'static str) -> Self {
@@ -239,26 +246,11 @@ fn predicate_scope_completions() -> Vec<CompletionItem> {
 
 fn operator_completions(data_type: DataType) -> Vec<CompletionItem> {
     data_type
-        .operator_tokens()
+        .operator_ops()
         .iter()
         .copied()
-        .map(CompletionItem::operator_token)
+        .map(CompletionItem::operator)
         .collect()
-}
-
-fn operator_detail(token: Token) -> &'static str {
-    match token {
-        Token::Eq => "equals",
-        Token::Ne => "not equals",
-        Token::Gt => "greater than",
-        Token::Ge => "greater than or equal",
-        Token::Lt => "less than",
-        Token::Le => "less than or equal",
-        Token::Like => "matches pattern",
-        Token::And => "combine predicates",
-        Token::Or => "match either predicate",
-        _ => "operator",
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

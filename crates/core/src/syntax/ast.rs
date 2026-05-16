@@ -80,7 +80,14 @@ pub struct OrderByClause {
 pub struct OrderByItem {
     pub range: TextRange,
     pub field: NameRef,
-    pub direction: SortDirection,
+    pub direction: SortDirectionExpr,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+#[repr(C)]
+pub enum SortDirectionExpr {
+    Static(SortDirection),
+    Variable(ValueVariable),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
@@ -88,6 +95,17 @@ pub struct OrderByItem {
 pub enum SortDirection {
     Asc,
     Desc,
+}
+
+impl SortDirection {
+    pub const ALL: &'static [Self] = &[Self::Asc, Self::Desc];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Facet)]
@@ -112,7 +130,7 @@ pub enum Expr {
     Binary {
         range: TextRange,
         left: Box<Expr>,
-        op: BinaryOp,
+        op: BinaryOperator,
         right: Box<Expr>,
     },
 }
@@ -129,6 +147,21 @@ pub struct ValueVariable {
 pub enum VariableScope {
     Structured,
     TopLevel,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+#[repr(C)]
+pub enum BinaryOperator {
+    Static(BinaryOp),
+    Variable(OperatorVariable),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct OperatorVariable {
+    pub range: TextRange,
+    pub scope: VariableScope,
+    pub name: Option<NameRef>,
+    pub allowed: Vec<BinaryOp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Facet)]
@@ -183,6 +216,42 @@ pub enum BinaryOp {
     Like,
     And,
     Or,
+}
+
+impl BinaryOp {
+    pub const fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Eq => Some("=="),
+            Self::Ne => Some("!="),
+            Self::Gt => Some(">"),
+            Self::Ge => Some(">="),
+            Self::Lt => Some("<"),
+            Self::Le => Some("<="),
+            Self::Like => Some("like"),
+            Self::And | Self::Or => None,
+        }
+    }
+
+    pub const fn detail(self) -> &'static str {
+        match self {
+            Self::Eq => "equals",
+            Self::Ne => "not equals",
+            Self::Gt => "greater than",
+            Self::Ge => "greater than or equal",
+            Self::Lt => "less than",
+            Self::Le => "less than or equal",
+            Self::Like => "matches pattern",
+            Self::And => "combine predicates",
+            Self::Or => "match either predicate",
+        }
+    }
+
+    pub const fn is_comparison(self) -> bool {
+        matches!(
+            self,
+            Self::Eq | Self::Ne | Self::Gt | Self::Ge | Self::Lt | Self::Le | Self::Like
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]

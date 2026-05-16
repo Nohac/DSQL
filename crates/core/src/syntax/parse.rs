@@ -38,8 +38,10 @@ pub enum CstKind {
 #[repr(u8)]
 pub enum SyntaxRule {
     BinaryExpr,
+    BinaryOperator,
     Clause,
     ClauseList,
+    ComparisonOperator,
     Definition,
     Directive,
     Document,
@@ -53,6 +55,7 @@ pub enum SyntaxRule {
     Literal,
     LimitClause,
     OffsetClause,
+    OperatorVariable,
     OrderByClause,
     OrderItem,
     QueryDef,
@@ -62,6 +65,7 @@ pub enum SyntaxRule {
     ScopedPathSegment,
     Selection,
     SelectionSet,
+    SortDirection,
     ValueVariable,
     WhereClause,
 }
@@ -89,6 +93,8 @@ pub enum SyntaxToken {
     RBrace,
     LPar,
     RPar,
+    LBracket,
+    RBracket,
     ColonColon,
     Colon,
     At,
@@ -257,8 +263,10 @@ fn push_node(cst: &Cst<'_>, node_ref: NodeRef, tree: &mut SyntaxTree) -> usize {
 fn map_rule(rule: Rule) -> SyntaxRule {
     match rule {
         Rule::BinaryExpr => SyntaxRule::BinaryExpr,
+        Rule::BinaryOperator => SyntaxRule::BinaryOperator,
         Rule::Clause => SyntaxRule::Clause,
         Rule::ClauseList => SyntaxRule::ClauseList,
+        Rule::ComparisonOperator => SyntaxRule::ComparisonOperator,
         Rule::Definition => SyntaxRule::Definition,
         Rule::Directive => SyntaxRule::Directive,
         Rule::Document => SyntaxRule::Document,
@@ -272,6 +280,7 @@ fn map_rule(rule: Rule) -> SyntaxRule {
         Rule::Literal => SyntaxRule::Literal,
         Rule::LimitClause => SyntaxRule::LimitClause,
         Rule::OffsetClause => SyntaxRule::OffsetClause,
+        Rule::OperatorVariable => SyntaxRule::OperatorVariable,
         Rule::OrderByClause => SyntaxRule::OrderByClause,
         Rule::OrderItem => SyntaxRule::OrderItem,
         Rule::QueryDef => SyntaxRule::QueryDef,
@@ -281,6 +290,7 @@ fn map_rule(rule: Rule) -> SyntaxRule {
         Rule::ScopedPathSegment => SyntaxRule::ScopedPathSegment,
         Rule::Selection => SyntaxRule::Selection,
         Rule::SelectionSet => SyntaxRule::SelectionSet,
+        Rule::SortDirection => SyntaxRule::SortDirection,
         Rule::ValueVariable => SyntaxRule::ValueVariable,
         Rule::WhereClause => SyntaxRule::WhereClause,
     }
@@ -308,6 +318,8 @@ fn map_token(token: Token) -> SyntaxToken {
         Token::RBrace => SyntaxToken::RBrace,
         Token::LPar => SyntaxToken::LPar,
         Token::RPar => SyntaxToken::RPar,
+        Token::LBracket => SyntaxToken::LBracket,
+        Token::RBracket => SyntaxToken::RBracket,
         Token::ColonColon => SyntaxToken::ColonColon,
         Token::Colon => SyntaxToken::Colon,
         Token::At => SyntaxToken::At,
@@ -521,6 +533,25 @@ impl<'a> AstBuilder<'a> {
     }
 
     fn order_by_item(&self, node: NodeRef) -> OrderByItem {
+        let direction = self
+            .direct_rule(node, Rule::SortDirection)
+            .map(|direction| self.sort_direction(direction))
+            .unwrap_or(SortDirectionExpr::Static(SortDirection::Asc));
+        OrderByItem {
+            range: range(self.cst.span(node)),
+            field: self
+                .direct_qualified_names(node)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| self.missing_name(node)),
+            direction,
+        }
+    }
+
+    fn sort_direction(&self, node: NodeRef) -> SortDirectionExpr {
+        if let Some(variable) = self.direct_rule(node, Rule::ValueVariable) {
+            return SortDirectionExpr::Variable(self.value_variable(variable));
+        }
         let direction = self.cst.children(node).find_map(|child| {
             let (token, _, _) = token_text(self.cst, child)?;
             match token {
@@ -529,15 +560,7 @@ impl<'a> AstBuilder<'a> {
                 _ => None,
             }
         });
-        OrderByItem {
-            range: range(self.cst.span(node)),
-            field: self
-                .direct_qualified_names(node)
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| self.missing_name(node)),
-            direction: direction.unwrap_or(SortDirection::Asc),
-        }
+        SortDirectionExpr::Static(direction.unwrap_or(SortDirection::Asc))
     }
 
     fn limit_clause(&self, node: NodeRef) -> LimitClause {
@@ -627,7 +650,9 @@ impl<'a> AstBuilder<'a> {
         Expr::Binary {
             range: range(self.cst.span(node)),
             left: Box::new(left),
-            op: self.binary_op(node).unwrap_or(BinaryOp::Eq),
+            op: self
+                .binary_operator(node)
+                .unwrap_or(BinaryOperator::Static(BinaryOp::Eq)),
             right: Box::new(right),
         }
     }
@@ -669,22 +694,45 @@ impl<'a> AstBuilder<'a> {
         })
     }
 
-    fn binary_op(&self, node: NodeRef) -> Option<BinaryOp> {
-        self.cst.children(node).find_map(|child| {
-            let (token, _, _) = token_text(self.cst, child)?;
-            match token {
-                Token::Eq => Some(BinaryOp::Eq),
-                Token::Ne => Some(BinaryOp::Ne),
-                Token::Gt => Some(BinaryOp::Gt),
-                Token::Ge => Some(BinaryOp::Ge),
-                Token::Lt => Some(BinaryOp::Lt),
-                Token::Le => Some(BinaryOp::Le),
-                Token::Like => Some(BinaryOp::Like),
-                Token::And => Some(BinaryOp::And),
-                Token::Or => Some(BinaryOp::Or),
-                _ => None,
-            }
-        })
+    fn binary_operator(&self, node: NodeRef) -> Option<BinaryOperator> {
+        if let Some(operator) = self.direct_rule(node, Rule::BinaryOperator) {
+            return self.binary_operator_rule(operator);
+        }
+        self.static_binary_op(node).map(BinaryOperator::Static)
+    }
+
+    fn binary_operator_rule(&self, node: NodeRef) -> Option<BinaryOperator> {
+        if let Some(variable) = self.direct_rule(node, Rule::OperatorVariable) {
+            return Some(BinaryOperator::Variable(self.operator_variable(variable)));
+        }
+        if let Some(comparison) = self.direct_rule(node, Rule::ComparisonOperator) {
+            return self
+                .static_binary_op(comparison)
+                .map(BinaryOperator::Static);
+        }
+        self.static_binary_op(node).map(BinaryOperator::Static)
+    }
+
+    fn static_binary_op(&self, node: NodeRef) -> Option<BinaryOp> {
+        self.cst
+            .children(node)
+            .find_map(|child| self.static_binary_op_token(child))
+    }
+
+    fn static_binary_op_token(&self, node: NodeRef) -> Option<BinaryOp> {
+        let (token, _, _) = token_text(self.cst, node)?;
+        match token {
+            Token::Eq => Some(BinaryOp::Eq),
+            Token::Ne => Some(BinaryOp::Ne),
+            Token::Gt => Some(BinaryOp::Gt),
+            Token::Ge => Some(BinaryOp::Ge),
+            Token::Lt => Some(BinaryOp::Lt),
+            Token::Le => Some(BinaryOp::Le),
+            Token::Like => Some(BinaryOp::Like),
+            Token::And => Some(BinaryOp::And),
+            Token::Or => Some(BinaryOp::Or),
+            _ => None,
+        }
     }
 
     fn scoped_path(&self, node: NodeRef) -> ScopedPath {
@@ -841,6 +889,31 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
+    fn operator_variable(&self, node: NodeRef) -> OperatorVariable {
+        let mut scope = VariableScope::Structured;
+        for child in self.cst.children(node) {
+            let Some((token, _, _)) = token_text(self.cst, child) else {
+                continue;
+            };
+            scope = match token {
+                Token::Dollar => VariableScope::Structured,
+                Token::DollarDollar => VariableScope::TopLevel,
+                _ => continue,
+            };
+            break;
+        }
+        OperatorVariable {
+            range: range(self.cst.span(node)),
+            scope,
+            name: self.direct_names(node).into_iter().next(),
+            allowed: self
+                .direct_rules(node, Rule::ComparisonOperator)
+                .into_iter()
+                .filter_map(|operator| self.static_binary_op(operator))
+                .collect(),
+        }
+    }
+
     fn direct_rules(&self, node: NodeRef, target: Rule) -> Vec<NodeRef> {
         self.cst
             .children(node)
@@ -928,7 +1001,7 @@ mod tests {
         let Expr::Binary { left, op, .. } = &where_clause.predicate else {
             panic!("expected binary predicate");
         };
-        assert_eq!(*op, BinaryOp::Like);
+        assert_eq!(*op, BinaryOperator::Static(BinaryOp::Like));
         let Expr::Path(path) = left.as_ref() else {
             panic!("expected scoped path");
         };
@@ -954,7 +1027,7 @@ mod tests {
         let Expr::Binary { left, op, .. } = &where_clause.predicate else {
             panic!("expected binary predicate");
         };
-        assert_eq!(*op, BinaryOp::Like);
+        assert_eq!(*op, BinaryOperator::Static(BinaryOp::Like));
         let Expr::Path(path) = left.as_ref() else {
             panic!("expected scoped path");
         };

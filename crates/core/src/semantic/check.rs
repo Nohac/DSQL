@@ -349,8 +349,18 @@ fn check_predicate_expr(
         Expr::Binary {
             left, op, right, ..
         } => {
-            if is_comparison_op(*op) {
-                check_binary_predicate_types(catalog, root_table, table, left, *op, right, errors);
+            match op {
+                crate::BinaryOperator::Static(op) if is_comparison_op(*op) => {
+                    check_binary_predicate_types(
+                        catalog, root_table, table, left, *op, right, errors,
+                    );
+                }
+                crate::BinaryOperator::Variable(operator) => {
+                    check_operator_variable(
+                        catalog, root_table, table, left, right, operator, errors,
+                    );
+                }
+                crate::BinaryOperator::Static(_) => {}
             }
             check_predicate_expr(catalog, root_table, table, left, errors);
             check_predicate_expr(catalog, root_table, table, right, errors);
@@ -360,17 +370,41 @@ fn check_predicate_expr(
     }
 }
 
+fn check_operator_variable(
+    catalog: &Catalog,
+    root_table: TableId,
+    table: TableId,
+    left: &Expr,
+    right: &Expr,
+    operator: &crate::OperatorVariable,
+    errors: &mut Vec<CheckError>,
+) {
+    let path = match (left, right) {
+        (Expr::Path(path), _) | (_, Expr::Path(path)) => path,
+        _ => return,
+    };
+    let Some(data_type) = resolve_predicate_path(catalog, root_table, table, path) else {
+        return;
+    };
+    for allowed in &operator.allowed {
+        if !operator_allowed_for_type(data_type, *allowed) {
+            errors.push(CheckError {
+                range: operator.range,
+                kind: CheckErrorKind::ClauseValueTypeMismatch {
+                    clause: "operator".to_string(),
+                    expected: format!("an operator valid for {}", data_type.as_str()),
+                },
+            });
+        }
+    }
+}
+
+fn operator_allowed_for_type(data_type: crate::DataType, op: crate::BinaryOp) -> bool {
+    data_type.operator_ops().contains(&op)
+}
+
 fn is_comparison_op(op: crate::BinaryOp) -> bool {
-    matches!(
-        op,
-        crate::BinaryOp::Eq
-            | crate::BinaryOp::Ne
-            | crate::BinaryOp::Gt
-            | crate::BinaryOp::Ge
-            | crate::BinaryOp::Lt
-            | crate::BinaryOp::Le
-            | crate::BinaryOp::Like
-    )
+    op.is_comparison()
 }
 
 fn check_binary_predicate_types(

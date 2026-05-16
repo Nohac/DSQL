@@ -279,9 +279,27 @@ fn variable_hover_markdown(binding: &VariableBinding) -> String {
         "### Variable `{}`\n\n- Path: `{}`\n- Type: `{}`\n- Role: `{}`",
         variable_label(binding),
         binding.path,
-        binding.data_type.as_str(),
+        variable_type_label(binding),
         variable_role_label(binding.role)
     )
+}
+
+fn variable_type_label(binding: &VariableBinding) -> String {
+    if matches!(
+        binding.role,
+        VariableRole::ComparisonOperator | VariableRole::SortDirection
+    ) {
+        return format!(
+            "enum({})",
+            binding
+                .enum_values
+                .iter()
+                .map(|operator| format!("\"{operator}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    binding.data_type.as_str().to_string()
 }
 
 #[derive(Default)]
@@ -293,10 +311,11 @@ struct VariableShapeNode {
 fn variable_shape_markdown<'a>(bindings: impl Iterator<Item = &'a VariableBinding>) -> String {
     let mut root = VariableShapeNode::default();
     for binding in bindings {
+        let value = variable_type_label(binding);
         insert_variable_shape(
             &mut root,
             &binding.path.split('.').collect::<Vec<_>>(),
-            binding.data_type.as_str(),
+            &value,
         );
     }
     let mut out = String::new();
@@ -326,6 +345,12 @@ fn render_variable_shape(node: &VariableShapeNode, indent: usize, out: &mut Stri
             out.push('\n');
         } else {
             out.push_str(":\n");
+            if let Some(value) = &child.value {
+                out.push_str(&"  ".repeat(indent + 1));
+                out.push_str("value: ");
+                out.push_str(value);
+                out.push('\n');
+            }
             render_variable_shape(child, indent + 1, out);
         }
     }
@@ -334,6 +359,8 @@ fn render_variable_shape(node: &VariableShapeNode, indent: usize, out: &mut Stri
 fn variable_role_label(role: VariableRole) -> &'static str {
     match role {
         VariableRole::WhereValue => "where value",
+        VariableRole::ComparisonOperator => "comparison operator",
+        VariableRole::SortDirection => "sort direction",
         VariableRole::Limit => "limit",
         VariableRole::Offset => "offset",
     }
