@@ -1,0 +1,26 @@
+{
+  "name": "@dsql/typescript",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "generate": "cargo run -q --manifest-path ../../Cargo.toml -p dsql-cli -- generate --target typescript-metadata --out-dir src/generated",
+    "generate:project": "bun src/generator.ts",
+    "typecheck": "bunx tsc --noEmit",
+    "build": "bunx tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "ts-morph": "^26.0.0",
+    "typescript": "^5.8.0"
+  }
+}

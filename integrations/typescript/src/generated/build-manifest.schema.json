@@ -1,0 +1,370 @@
+{
+  "$id": "https://dsql.dev/schemas/build-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "operations": {
+      "items": {
+        "properties": {
+          "context": {
+            "items": {
+              "properties": {
+                "data_type": {
+                  "type": "string"
+                },
+                "nullable": {
+                  "type": "boolean"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "required": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "path",
+                "data_type",
+                "required",
+                "nullable"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "dynamic_inputs": {
+            "items": {
+              "properties": {
+                "fields": {
+                  "items": {
+                    "properties": {
+                      "data_type": {
+                        "type": "string"
+                      },
+                      "operators": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "data_type",
+                      "operators"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "preset": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "kind",
+                "preset",
+                "fields"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "handoffs": {
+            "items": {
+              "properties": {
+                "child_params": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parent_identity": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "parent_path": {
+                  "type": "string"
+                },
+                "provided_context": {
+                  "items": {
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "source_path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "source_path"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "relation": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "parent_path",
+                "parent_identity",
+                "relation",
+                "child_params",
+                "provided_context"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "input": {
+            "items": {
+              "properties": {
+                "data_type": {
+                  "type": "string"
+                },
+                "nullable": {
+                  "type": "boolean"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "required": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "path",
+                "data_type",
+                "required",
+                "nullable"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "params": {
+            "items": {
+              "properties": {
+                "data_type": {
+                  "type": "string"
+                },
+                "nullable": {
+                  "type": "boolean"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "required": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "path",
+                "data_type",
+                "required",
+                "nullable"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "policies": {
+            "items": {
+              "properties": {
+                "context": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "targets": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "name",
+                "kind",
+                "targets",
+                "context"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "result": {
+            "properties": {
+              "fields": {
+                "items": {
+                  "properties": {
+                    "data_type": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "nullable": {
+                      "type": "boolean"
+                    },
+                    "parent_path": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "name",
+                    "parent_path",
+                    "kind",
+                    "data_type",
+                    "nullable"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "fields"
+            ],
+            "type": "object"
+          },
+          "source_map": {
+            "items": {
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "range": {
+                  "properties": {
+                    "end": {
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "start": {
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "start",
+                    "end"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "id",
+                "file",
+                "range"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "sql": {
+            "properties": {
+              "dialect": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "variants": {
+                "items": {
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "dialect",
+              "text",
+              "variants"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "sql",
+          "result",
+          "params",
+          "input",
+          "context",
+          "dynamic_inputs",
+          "policies",
+          "handoffs",
+          "source_map"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "operations"
+  ],
+  "type": "object"
+}

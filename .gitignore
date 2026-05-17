@@ -1,3 +1,6 @@
 /target
 /local-*
 /lsp.log
+**/dsql/build/
+**/node_modules/
+integrations/typescript/dist/

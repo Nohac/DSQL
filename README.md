@@ -34,6 +34,18 @@ DSQL itself is intended to be framework and language agnostic. Some integrations
 will likely become more mature than others, but the core handoff is generated
 SQL plus JSON metadata. Any toolchain or language can build on that.
 
+`dsql generate` compiles a project, writes an inspectable build manifest under
+`dsql/build/manifest.json`, and runs configured generator commands. DSQL owns
+the checked SQL and metadata; host integrations own rendering framework-specific
+files.
+
+```toml
+[generate.typescript]
+enabled = true
+out_dir = "src/generated/dsql"
+cmd = ["bun", "scripts/dsql-generate.ts"]
+```
+
 ## Simple Example
 
 ```dsql
@@ -65,7 +77,7 @@ query UsersPage {
   users(
     where .tenant_id == $:tenant_id
       and filter $$search on selected
-    order by order $$order on selected_indexed
+    order by $$order on selected_indexed
     limit $$limit
   ) {
     id

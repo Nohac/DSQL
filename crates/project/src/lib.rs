@@ -19,6 +19,8 @@ pub struct Config {
     pub default_schema: String,
     #[facet(default = default_lint_config())]
     pub lint: LintConfig,
+    #[facet(default = default_generate_config())]
+    pub generate: GenerateConfig,
     pub documents: Vec<DocumentConfig>,
 }
 
@@ -26,6 +28,22 @@ pub struct Config {
 pub struct LintConfig {
     #[facet(default = default_unindexed_scan_severity())]
     pub unindexed_scan_severity: LintSeverity,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct GenerateConfig {
+    #[facet(default = default_typescript_generate_config())]
+    pub typescript: TypescriptGenerateConfig,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct TypescriptGenerateConfig {
+    #[facet(default = default_false())]
+    pub enabled: bool,
+    #[facet(default = default_typescript_out_dir())]
+    pub out_dir: String,
+    #[facet(default)]
+    pub cmd: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Facet)]
@@ -121,6 +139,28 @@ fn default_lint_config() -> LintConfig {
     }
 }
 
+fn default_generate_config() -> GenerateConfig {
+    GenerateConfig {
+        typescript: default_typescript_generate_config(),
+    }
+}
+
+fn default_typescript_generate_config() -> TypescriptGenerateConfig {
+    TypescriptGenerateConfig {
+        enabled: false,
+        out_dir: default_typescript_out_dir(),
+        cmd: Vec::new(),
+    }
+}
+
+fn default_false() -> bool {
+    false
+}
+
+fn default_typescript_out_dir() -> String {
+    "src/generated/dsql".to_string()
+}
+
 fn default_unindexed_scan_severity() -> LintSeverity {
     LintSeverity::Info
 }
@@ -144,6 +184,7 @@ pub fn init_project(base_path: &Path, database_url: Option<String>) -> Result<Pr
         database_url: database_url.unwrap_or_else(|| "<database url>".to_string()),
         default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
         lint: default_lint_config(),
+        generate: default_generate_config(),
         documents: Vec::new(),
     };
     let config_toml = facet_toml::to_string(&config)

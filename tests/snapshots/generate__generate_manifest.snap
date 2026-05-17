@@ -1,0 +1,102 @@
+---
+source: tests/tests/generate.rs
+expression: contents
+---
+{
+  "version": 1,
+  "operations": [
+    {
+      "name": "MovieInfoSmoke",
+      "kind": "query",
+      "sql": {
+        "dialect": "postgres",
+        "text": "select\n  COALESCE(\n    JSON_AGG(\n      JSON_BUILD_OBJECT(\n        'id',\n        \"movie_info_d37aaa02\".\"id\",\n        'info',\n        \"movie_info_d37aaa02\".\"info\",\n        'note',\n        \"movie_info_d37aaa02\".\"note\",\n        'title',\n        \"title_json_85df456e\".\"title\",\n        'info_type',\n        \"info_type_json_3587486e\".\"info_type\"\n      )\n    ),\n    '[]'\n  ) as \"movie_info\"\nfrom\n  (\n    select\n      *\n    from\n      \"public\".\"movie_info\" as \"movie_info_d37aaa02\"\n    where\n      \"movie_info_d37aaa02\".\"id\" > 0\n    order by\n      \"movie_info_d37aaa02\".\"id\" asc\n    limit\n      2\n  ) as \"movie_info_d37aaa02\"\n  left join LATERAL (\n    select\n      JSON_BUILD_OBJECT('title', \"title_85df456e\".\"title\") as \"title\"\n    from\n      \"public\".\"title\" as \"title_85df456e\"\n    where\n      \"title_85df456e\".\"id\" = \"movie_info_d37aaa02\".\"movie_id\"\n      and \"title_85df456e\".\"episode_nr\" = 100\n  ) as \"title_json_85df456e\" on true\n  left join LATERAL (\n    select\n      JSON_BUILD_OBJECT('info', \"info_type_3587486e\".\"info\") as \"info_type\"\n    from\n      \"public\".\"info_type\" as \"info_type_3587486e\"\n    where\n      \"info_type_3587486e\".\"id\" = \"movie_info_d37aaa02\".\"info_type_id\"\n  ) as \"info_type_json_3587486e\" on true",
+        "variants": []
+      },
+      "result": {
+        "fields": [
+          {
+            "path": "movie_info",
+            "name": "movie_info",
+            "parent_path": "",
+            "kind": "array",
+            "data_type": "object",
+            "nullable": false
+          },
+          {
+            "path": "movie_info.id",
+            "name": "id",
+            "parent_path": "movie_info",
+            "kind": "scalar",
+            "data_type": "int",
+            "nullable": false
+          },
+          {
+            "path": "movie_info.info",
+            "name": "info",
+            "parent_path": "movie_info",
+            "kind": "scalar",
+            "data_type": "text",
+            "nullable": false
+          },
+          {
+            "path": "movie_info.note",
+            "name": "note",
+            "parent_path": "movie_info",
+            "kind": "scalar",
+            "data_type": "text",
+            "nullable": true
+          },
+          {
+            "path": "movie_info.title",
+            "name": "title",
+            "parent_path": "movie_info",
+            "kind": "object",
+            "data_type": "object",
+            "nullable": false
+          },
+          {
+            "path": "movie_info.title.title",
+            "name": "title",
+            "parent_path": "movie_info.title",
+            "kind": "scalar",
+            "data_type": "text",
+            "nullable": false
+          },
+          {
+            "path": "movie_info.info_type",
+            "name": "info_type",
+            "parent_path": "movie_info",
+            "kind": "object",
+            "data_type": "object",
+            "nullable": false
+          },
+          {
+            "path": "movie_info.info_type.info",
+            "name": "info",
+            "parent_path": "movie_info.info_type",
+            "kind": "scalar",
+            "data_type": "text",
+            "nullable": false
+          }
+        ]
+      },
+      "params": [],
+      "input": [],
+      "context": [],
+      "dynamic_inputs": [],
+      "policies": [],
+      "handoffs": [],
+      "source_map": [
+        {
+          "id": "MovieInfoSmoke",
+          "file": "queries/movie-info.dsql",
+          "range": {
+            "start": 0,
+            "end": 196
+          }
+        }
+      ]
+    }
+  ]
+}

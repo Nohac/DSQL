@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use dsql_core::{
     Catalog, DefinitionRecord, Diagnostic, FragmentMap, QueryRecord, SourceSnapshot,
     check_query_definition, extract_definitions, lint_query_definition_with_options, parse_source,
@@ -44,7 +44,21 @@ enum Command {
         limit: u64,
         query: String,
     },
+    Generate {
+        #[arg(long, value_enum, default_value_t = GenerateTarget::Project)]
+        target: GenerateTarget,
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
+    MetadataSchema,
+    MetadataTypescript,
     Lsp,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum GenerateTarget {
+    Project,
+    TypescriptMetadata,
 }
 
 #[tokio::main]
@@ -200,6 +214,33 @@ async fn main() -> Result<()> {
                 output.push('}');
                 println!("{output}");
             }
+        }
+        Command::Generate { target, out_dir } => match target {
+            GenerateTarget::Project => {
+                let output =
+                    dsql_cli::generate_project_from(&std::env::current_dir().into_diagnostic()?)
+                        .await?;
+                println!("wrote {}", output.manifest_path.display());
+                for file in output.generated_files {
+                    if file != output.manifest_path {
+                        println!("wrote {}", file.display());
+                    }
+                }
+            }
+            GenerateTarget::TypescriptMetadata => {
+                let out_dir = out_dir.unwrap_or_else(|| PathBuf::from("."));
+                dsql_cli::generate_typescript_metadata(&out_dir).await?;
+            }
+        },
+        Command::MetadataSchema => {
+            let schema = dsql_metadata::build_manifest_json_schema();
+            let schema = serde_json::from_str::<serde_json::Value>(&schema)
+                .and_then(|schema| serde_json::to_string_pretty(&schema))
+                .into_diagnostic()?;
+            println!("{schema}");
+        }
+        Command::MetadataTypescript => {
+            print!("{}", dsql_metadata::build_manifest_typescript());
         }
         Command::Lsp => unreachable!("handled before tracing subscriber initialization"),
     }
