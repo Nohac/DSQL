@@ -111,6 +111,36 @@ The generated helper can use DSQL metadata for:
 Provider context such as `$:tenant_id` should usually be bound by the framework
 adapter once per request or app boundary, rather than passed as public params.
 
+## Generation Configuration
+
+Project configuration should describe enabled generation targets. DSQL itself
+should compile/check/plan queries and write metadata, while host integrations
+render framework-specific files.
+
+Projects can also delegate rendering to an external command:
+
+```toml
+[generate.typescript]
+enabled = true
+out_dir = "src/generated/dsql"
+cmd = ["bun", "scripts/dsql-generate.ts"]
+```
+
+`dsql generate` should still own parsing, checking, planning, SQL generation,
+and manifest writing. External commands should consume the build manifest and
+write host/framework-specific owned code.
+
+The command should run once per generation target, not once per query. It should
+receive paths through environment variables:
+
+- `DSQL_PROJECT_DIR`
+- `DSQL_MANIFEST`
+- `DSQL_OUT_DIR`
+
+The manifest should be written to project-local build state such as
+`dsql/build/manifest.json` so users and tools can inspect, debug, and rerun
+generators without recompiling the project every time.
+
 ## Embedded Language Tooling
 
 Inline DSQL in tagged template literals should be treated as virtual DSQL

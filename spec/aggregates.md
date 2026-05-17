@@ -180,6 +180,73 @@ query Users {
 }
 ```
 
+## Grouped Aggregates
+
+Grouped aggregates return a collection of aggregate rows instead of one
+aggregate object.
+
+```dsql
+query Users {
+  users {
+    id
+
+    post_statuses: posts | aggregate by status {
+      status
+      count
+      latest_post: max .created_at
+    } |
+  }
+}
+```
+
+Meaning:
+
+- `posts` resolves as a relation from `users`.
+- `status` is the grouping key.
+- Each output row represents one `status` group for that user's posts.
+- `status` is selectable because it is a grouping key.
+- `count` and `max .created_at` are aggregate outputs.
+
+Conceptual output:
+
+```json
+{
+  "id": 1,
+  "post_statuses": [
+    {
+      "status": "published",
+      "count": 8,
+      "latest_post": "2026-01-01T12:00:00Z"
+    },
+    {
+      "status": "draft",
+      "count": 2,
+      "latest_post": "2025-12-20T09:00:00Z"
+    }
+  ]
+}
+```
+
+Ungrouped aggregate:
+
+```dsql
+posts | aggregate {
+  count
+} |
+```
+
+Grouped aggregate:
+
+```dsql
+posts | aggregate by status {
+  status
+  count
+} |
+```
+
+Flattening grouped aggregates should be invalid because grouped aggregates
+produce a collection, not a single object that can be merged into the parent.
+
 ## Relation Arguments
 
 The relation before the pipe may use normal relation clauses.
@@ -222,6 +289,14 @@ Possible shape:
       "output": "post_count",
       "function": "count"
     }
+  ],
+  "grouped_aggregates": [
+    {
+      "path": "users.posts",
+      "output": "post_statuses",
+      "group_by": ["status"],
+      "fields": ["status", "count", "latest_post"]
+    }
   ]
 }
 ```
@@ -257,5 +332,8 @@ common API design, not a replacement for SQL.
 - Whether aggregate relation clauses should allow `order by`, `limit`, and
   `offset`, or only `where`.
 - How generated SQL variants interact with aggregate pipe outputs.
-- Whether grouping belongs in aggregate pipe blocks or remains a separate future
-  feature.
+- Whether grouped aggregate keys must always appear in the output body.
+- How `order by` works on grouped aggregate output.
+- Whether grouped aggregates need a `having`-style predicate later.
+- How nested grouped aggregates are planned efficiently.
+- Whether grouped aggregates can be paginated.

@@ -251,7 +251,7 @@ query Fields {
   fields(
     where .context_id == $$context_id
       and filter $$search on selected
-    order by order $$order on selected
+    order by $$order on selected
     limit $$limit
     offset $$offset
   ) {
@@ -284,7 +284,7 @@ type FieldsSearch = {
 };
 ```
 
-`order by order $$order on selected` means:
+`order by $$order on selected` means:
 
 - `$$order` is a top-level generated parameter.
 - The allowed order fields are scalar fields selected directly in the current
@@ -324,7 +324,7 @@ Using a preset:
 
 ```dsql
 filter $$search on selected_indexed
-order by order $$order on selected_indexed
+order by $$order on selected_indexed
 ```
 
 Preset expansion should be visible in generated metadata and LSP hover so the
@@ -342,7 +342,7 @@ query ProjectTaskCounts {
       selected
       .task.legacy_template_id ilike
     }
-    order by order $$order {
+    order by $$order {
       selected
       .task.legacy_template_id
     }
@@ -420,7 +420,7 @@ Possible future shorthand:
 
 ```dsql
 filter $$search on selected deep
-order by order $$order on selected deep
+order by $$order on selected deep
 ```
 
 This remains unresolved. Deep selected traversal can expose a much wider API
@@ -442,7 +442,7 @@ query Fields {
         .display ilike
         .id ==
       }
-    order by order $$order on selected
+    order by $$order on selected
   ) {
     id
     name
@@ -457,7 +457,7 @@ and, only when the text is a valid UUID, `id`.
 Open questions:
 
 - Exact grammar for `filter $$search on selected` inside a `where` clause.
-- Exact grammar for `order by order $$order on selected`.
+- Exact grammar for `order by $$order on selected`.
 - Whether dynamic order inputs are arrays, objects, or both in generated
   TypeScript.
 - Whether dynamic filters support only `and`/`or` composition or also `not`.

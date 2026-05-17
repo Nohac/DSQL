@@ -20,7 +20,6 @@ match the current design direction.
 - [Metadata Sources](metadata-sources.md)
 - [JSON Schema Overrides](json-schema-overrides.md)
 - [Aggregates](aggregates.md)
-- [Grouping](grouping.md)
 - [Pagination](pagination.md)
 - [Split Fetch](split-fetch.md)
 - [Policies And Permissions](policies.md)
