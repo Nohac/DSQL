@@ -4,6 +4,9 @@ expression: contents
 ---
 import type { DsqlOperation } from "./operations";
 import { MovieInfoLookupOperation } from "./operations";
+export type DsqlOperationBySource = {
+    readonly "query MovieInfoLookup {\n  movie_info(where .id > 0 order by id asc limit 2) {\n    id\n    info\n    note\n    title(where .episode_nr == 100) {\n      title\n    }\n    info_type {\n      info\n    }\n  }\n}": typeof MovieInfoLookupOperation;
+};
 
 export type DsqlOperationForSource<Source extends string> =
     Source extends keyof DsqlOperationBySource
@@ -13,9 +16,6 @@ export type DsqlOperationForSource<Source extends string> =
 export function dsql<const Source extends string>(
     source: Source,
 ): DsqlOperationForSource<Source>;
-export type DsqlOperationBySource = {
-    readonly "query MovieInfoLookup {\n  movie_info(where .id > 0 order by id asc limit 2) {\n    id\n    info\n    note\n    title(where .episode_nr == 100) {\n      title\n    }\n    info_type {\n      info\n    }\n  }\n}": typeof MovieInfoLookupOperation;
-};
 export function dsql(strings: TemplateStringsArray, ...values: never[]): DsqlOperation;
 export function dsql(
     input: string | TemplateStringsArray,

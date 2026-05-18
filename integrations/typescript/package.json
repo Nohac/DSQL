@@ -9,6 +9,9 @@
       "node": [
         "./dist/node.d.ts"
       ],
+      "renderer": [
+        "./dist/renderer.d.ts"
+      ],
       "vite": [
         "./dist/vite.d.ts"
       ],
@@ -33,6 +36,14 @@
       },
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
+    },
+    "./renderer": {
+      "bun": {
+        "types": "./src/renderer.ts",
+        "default": "./src/renderer.ts"
+      },
+      "types": "./dist/renderer.d.ts",
+      "default": "./dist/renderer.js"
     },
     "./vite": {
       "bun": {

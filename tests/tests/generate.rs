@@ -125,26 +125,38 @@ out_dir = "src/generated/dsql"
 cmd = ["bun", "dsql/generate.ts"]
 "#,
     );
+    write_tanstack_stubs(project.path());
+    fs::create_dir_all(project.path().join("dsql/generators")).unwrap();
     fs::create_dir_all(project.path().join("dsql/templates")).unwrap();
     fs::copy(
-        repo_root().join("integrations/typescript/renderers/templates/tanstack.ts"),
-        project.path().join("dsql/templates/tanstack.ts"),
+        repo_root().join("integrations/typescript/renderers/generators/tanstack-query.ts"),
+        project.path().join("dsql/generators/tanstack-query.ts"),
+    )
+    .unwrap();
+    fs::copy(
+        repo_root().join("integrations/typescript/renderers/generators/tanstack-start.ts"),
+        project.path().join("dsql/generators/tanstack-start.ts"),
+    )
+    .unwrap();
+    fs::copy(
+        repo_root().join("integrations/typescript/renderers/templates/tanstack-query.ts"),
+        project.path().join("dsql/templates/tanstack-query.ts"),
+    )
+    .unwrap();
+    fs::copy(
+        repo_root().join("integrations/typescript/renderers/templates/tanstack-start.ts"),
+        project.path().join("dsql/templates/tanstack-start.ts"),
     )
     .unwrap();
     fs::write(
         project.path().join("dsql/generate.ts"),
-        r#"import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import {
+        r#"import {
   loadBuildArtifacts,
   renderDsqlHelper,
   renderTypes,
 } from "@dsql/typescript/node";
-import type { BuildArtifacts } from "@dsql/typescript/node";
-import {
-  tanstackQueryTemplate,
-  tanstackStartTemplate,
-} from "./templates/tanstack";
+import { renderTanStackQuery } from "./generators/tanstack-query";
+import { renderTanStackStart } from "./generators/tanstack-start";
 
 const manifestPath = process.env.DSQL_MANIFEST;
 const outDir = process.env.DSQL_OUT_DIR;
@@ -157,32 +169,8 @@ const artifacts = loadBuildArtifacts(manifestPath);
 
 await renderTypes(artifacts, { outDir });
 await renderDsqlHelper(artifacts, { outDir });
-renderTanStackQuery({ outDir });
-renderTanStackStart(artifacts, { outDir });
-
-type RenderOptions = {
-  readonly outDir: string;
-};
-
-function renderTanStackQuery(options: RenderOptions): void {
-  writeFile(options.outDir, "tanstack-query.ts", tanstackQueryTemplate);
-}
-
-function renderTanStackStart(
-  artifacts: BuildArtifacts,
-  options: RenderOptions,
-): void {
-  writeFile(
-    options.outDir,
-    "tanstack-start.ts",
-    tanstackStartTemplate(artifacts.operations.map((operation) => operation.name)),
-  );
-}
-
-function writeFile(outDir: string, name: string, contents: string): void {
-  mkdirSync(outDir, { recursive: true });
-  writeFileSync(join(outDir, name), contents);
-}
+await renderTanStackStart(artifacts, { outDir });
+await renderTanStackQuery(artifacts, { outDir });
 "#,
     )
     .unwrap();
@@ -210,11 +198,62 @@ function writeFile(outDir: string, name: string, contents: string): void {
             .join("src/generated/dsql/tanstack-start.ts")
             .exists()
     );
+    let tanstack_query =
+        fs::read_to_string(project.path().join("src/generated/dsql/tanstack-query.ts")).unwrap();
+    assert!(
+        !tanstack_query.contains("tanstackQueryTemplate"),
+        "generated tanstack-query.ts should be app code, not a template module:\n{tanstack_query}"
+    );
+    assert!(
+        tanstack_query.contains("useTanStackQuery"),
+        "generated tanstack-query.ts should wrap TanStack Query:\n{tanstack_query}"
+    );
+    assert!(
+        tanstack_query.contains("MovieInfoLookupServerFn"),
+        "generated tanstack-query.ts should call generated server functions:\n{tanstack_query}"
+    );
+    let tanstack_start =
+        fs::read_to_string(project.path().join("src/generated/dsql/tanstack-start.ts")).unwrap();
+    assert!(
+        !tanstack_start.contains("tanstackStartTemplate"),
+        "generated tanstack-start.ts should be app code, not a template module:\n{tanstack_start}"
+    );
+    assert!(
+        tanstack_start.contains("createServerFn"),
+        "generated tanstack-start.ts should define TanStack Start server functions:\n{tanstack_start}"
+    );
+    assert!(
+        tanstack_start.contains("MovieInfoLookupServerFn"),
+        "generated tanstack-start.ts should define an operation-specific server function:\n{tanstack_start}"
+    );
+    let queries = fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
+    assert!(
+        queries.contains(r#"export * from "./tanstack-query";"#),
+        "queries.ts should re-export TanStack query helpers for compatibility:\n{queries}"
+    );
 
     fs::write(
         project.path().join("src/entrypoint-usage.ts"),
-        r#"import { dsql, MovieInfoLookupOperation } from "./generated/dsql/queries";
-import { serverOperationNames } from "./generated/dsql/tanstack-start";
+        r#"import {
+  dsql,
+  DsqlOperationResult,
+  MovieInfoLookupOperation,
+  useQuery,
+} from "./generated/dsql/queries";
+import type { MovieInfoLookupResult } from "./generated/dsql/queries";
+import {
+  configureDsqlServer,
+  serverOperationNames,
+} from "./generated/dsql/tanstack-start";
+
+configureDsqlServer({
+  executeQuery: async (operation, variables) => {
+    operation satisfies typeof MovieInfoLookupOperation;
+    variables.params satisfies Record<string, never>;
+    variables.input satisfies Record<string, never>;
+    return {} as never;
+  },
+});
 
 const MovieInfoLookup = dsql(`query MovieInfoLookup {
   movie_info(where .id > 0 order by id asc limit 2) {
@@ -233,6 +272,16 @@ const MovieInfoLookup = dsql(`query MovieInfoLookup {
 
 MovieInfoLookupOperation satisfies typeof MovieInfoLookupOperation;
 serverOperationNames satisfies readonly string[];
+type IsNever<T> = [T] extends [never] ? true : false;
+type AssertFalse<T extends false> = T;
+type OperationResultIsNotNever = AssertFalse<IsNever<DsqlOperationResult<typeof MovieInfoLookup>>>;
+const query = useQuery(MovieInfoLookup, {
+  params: {},
+  input: {},
+  enabled: true,
+});
+type QueryDataIsNotNever = AssertFalse<IsNever<typeof query.data>>;
+query.data satisfies MovieInfoLookupResult | undefined;
 "#,
     )
     .unwrap();
@@ -506,6 +555,104 @@ fn link_typescript_package(root: &Path) {
         &repo_root().join("integrations/typescript"),
         &scope.join("typescript"),
     );
+}
+
+fn write_tanstack_stubs(root: &Path) {
+    let react_start = root.join("node_modules/@tanstack/react-start");
+    fs::create_dir_all(&react_start).unwrap();
+    fs::write(
+        react_start.join("package.json"),
+        r#"{"name":"@tanstack/react-start","type":"module","exports":"./index.ts"}"#,
+    )
+    .unwrap();
+    fs::write(
+        react_start.join("index.ts"),
+        r#"type ServerFnOptions = {
+  readonly method?: string;
+};
+
+export function createServerFn(_options?: ServerFnOptions) {
+  return {
+    inputValidator<Input>(_validator: (input: Input) => Input) {
+      return {
+        handler<Result>(
+          handler: (options: { readonly data: Input }) => Promise<Result> | Result,
+        ) {
+          return (options: { readonly data: Input }) =>
+            Promise.resolve(handler({ data: options.data }));
+        },
+      };
+    },
+  };
+}
+"#,
+    )
+    .unwrap();
+
+    let react_query = root.join("node_modules/@tanstack/react-query");
+    fs::create_dir_all(&react_query).unwrap();
+    fs::write(
+        react_query.join("package.json"),
+        r#"{"name":"@tanstack/react-query","type":"module","exports":"./index.ts"}"#,
+    )
+    .unwrap();
+    fs::write(
+        react_query.join("index.ts"),
+        r#"export type UseQueryOptions<
+  TQueryFnData = unknown,
+  TError = Error,
+  TData = TQueryFnData,
+  TQueryKey extends readonly unknown[] = readonly unknown[],
+> = {
+  readonly queryKey: TQueryKey;
+  readonly queryFn: () => Promise<TQueryFnData>;
+  readonly enabled?: boolean;
+  readonly staleTime?: number;
+  readonly gcTime?: number;
+  readonly retry?: boolean | number;
+  readonly select?: (data: TQueryFnData) => TData;
+};
+
+export type UseQueryResult<TData = unknown, TError = Error> = {
+  readonly data: TData | undefined;
+  readonly error: TError | null;
+  readonly isError: boolean;
+  readonly isLoading: boolean;
+  readonly isPending: boolean;
+  readonly isSuccess: boolean;
+};
+
+export function queryOptions<
+  TQueryFnData = unknown,
+  TError = Error,
+  TData = TQueryFnData,
+  TQueryKey extends readonly unknown[] = readonly unknown[],
+>(
+  options: UseQueryOptions<TQueryFnData, TError, TData, TQueryKey>,
+): UseQueryOptions<TQueryFnData, TError, TData, TQueryKey> {
+  return options;
+}
+
+export function useQuery<
+  TQueryFnData = unknown,
+  TError = Error,
+  TData = TQueryFnData,
+  TQueryKey extends readonly unknown[] = readonly unknown[],
+>(
+  _options: UseQueryOptions<TQueryFnData, TError, TData, TQueryKey>,
+): UseQueryResult<TData, TError> {
+  return {
+    data: undefined,
+    error: null,
+    isError: false,
+    isLoading: false,
+    isPending: false,
+    isSuccess: true,
+  };
+}
+"#,
+    )
+    .unwrap();
 }
 
 #[cfg(unix)]

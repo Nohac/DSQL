@@ -40,7 +40,7 @@ const outDir = process.env.DSQL_OUT_DIR!;
 await renderTypes(artifacts, { outDir });
 await renderDsqlHelper(artifacts, { outDir });
 
-// Add vendored project/framework generators here.
+// Add vendored project/framework renderers here.
 // They can read artifacts.operations and write app-specific owned files.
 ```
 
@@ -48,23 +48,32 @@ The minimal built-in entrypoint is `renderers/types.ts`. It only writes the
 operation types/constants, the typed `dsql` helper, and barrel exports. The
 `renderers/generate.ts` entrypoint is an example of a vendored-style script
 that additionally writes starter TanStack Query and TanStack Start wrapper
-files without exposing those helpers from `@dsql/typescript`.
+files without making those TanStack renderers part of the package API.
 
-Template files are split by ownership. Package-owned templates are internal to
+Renderer files are split by ownership. Package-owned templates are internal to
 `@dsql/typescript`:
 
 ```text
 templates/bundled/
 ```
 
-Project/framework templates should be local to your app. The example
-`renderers/generate.ts` imports a single copyable template module:
+Project/framework generators and templates should be local to your app. The
+example `renderers/generate.ts` is meant to be copied to `dsql/generate.ts`;
+after copying, it imports TanStack generator modules from `./generators/*`, and
+those generators read templates from `dsql/templates/*`:
 
 ```text
 dsql/
+  dsql.toml
   generate.ts
+  generators/
+    tanstack-start.ts
+    tanstack-query.ts
   templates/
-    tanstack.ts
+    tanstack-start.ts
+    tanstack-query.ts
+src/
+tsconfig.json
 ```
 
 A vendored entrypoint should use the shared artifact loader rather than parsing
@@ -75,6 +84,11 @@ import { loadBuildArtifacts } from "@dsql/typescript/node";
 
 const artifacts = loadBuildArtifacts(process.env.DSQL_MANIFEST!);
 ```
+
+Vendored generators can import `ts-morph` through
+`@dsql/typescript/renderer`, which keeps generation tooling resolvable through
+the DSQL package without requiring the generated browser/runtime modules to
+depend on it.
 
 The exact runtime API is still open. This package is intentionally small until
 the DSQL build metadata format stabilizes.

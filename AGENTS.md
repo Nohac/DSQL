@@ -57,6 +57,8 @@
   implementation, unless the user explicitly asks for exploratory or speculative
   edits.
 - Add focused regression tests for language behavior, diagnostics, and editor-facing analysis when changing those areas.
+- For TypeScript inference bugs, inspect the actual checker type rather than relying only on emitted errors. A small script using the `typescript` package can load `tsconfig.json`, create a `Program`, call `checker.getTypeAtLocation(...)`, and print `checker.typeToString(...)` for the node that would be hovered in an editor. This is often simpler than manually driving the LSP protocol and gives the same actionable type information.
+- When debugging generated TypeScript, regenerate the consuming fixture/app and inspect the generated files before changing the generator. If a value unexpectedly becomes `never`, add a type-level regression assertion such as `type IsNever<T> = [T] extends [never] ? true : false` and `type AssertFalse<T extends false> = T`; a plain `satisfies` assertion can miss this because `never` satisfies every type.
 - Do not test external crate functionality. Tests should protect dsql semantics, integration behavior, or project-specific boundaries, not verify that dependencies parse defaults or expose documented behavior.
 - Avoid tests that only restate library behavior without protecting project semantics.
 - Before committing code changes, run formatting, tests, and clippy with warnings denied.

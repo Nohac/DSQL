@@ -97,16 +97,8 @@ export async function renderDsqlHelper(
     });
   }
 
-  const dsqlFunctionIndex = dsqlSource
-    .getStatements()
-    .findIndex((statement) =>
-      statement.getText().startsWith("export function dsql("),
-    );
-  if (dsqlFunctionIndex === -1) {
-    throw new Error("dsql template must define a dsql function");
-  }
   dsqlSource.insertStatements(
-    dsqlFunctionIndex,
+    dsqlSource.getImportDeclarations().length,
     operationSourceMapType(artifacts),
   );
 
