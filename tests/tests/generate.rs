@@ -50,9 +50,16 @@ cmd = ["bun", "{}"]
     serde_json::from_str::<serde_json::Value>(&operation).unwrap();
     snapshot("generate_operation_movie_info_basic", &operation);
 
-    let generated =
-        fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
-    snapshot("generate_typescript_command_output", &generated);
+    let operations =
+        fs::read_to_string(project.path().join("src/generated/dsql/operations.ts")).unwrap();
+    snapshot("generate_typescript_operations_output", &operations);
+    let dsql = fs::read_to_string(project.path().join("src/generated/dsql/dsql.ts")).unwrap();
+    snapshot("generate_typescript_dsql_output", &dsql);
+    let tanstack_query =
+        fs::read_to_string(project.path().join("src/generated/dsql/tanstack-query.ts")).unwrap();
+    snapshot("generate_typescript_tanstack_query_output", &tanstack_query);
+    let queries = fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
+    snapshot("generate_typescript_queries_output", &queries);
 
     fs::write(
         project.path().join("src/generated/dsql/usage.ts"),
@@ -230,7 +237,7 @@ useQuery(MovieInfoLookup, {{
     .unwrap();
 
     let generated =
-        fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
+        fs::read_to_string(project.path().join("src/generated/dsql/operations.ts")).unwrap();
     assert!(
         generated.contains("export type MovieInfoLookupParams = {\n    limit: number;\n};"),
         "expected top-level $$ variables to generate params shape:\n{generated}"

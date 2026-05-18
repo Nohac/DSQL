@@ -154,15 +154,17 @@ fn collect_order_by_binding(
     let inferred_path = [column.name.clone(), "direction".to_string()];
     push_variable_binding(
         selection_path,
-        VariableRole::SortDirection,
-        DataType::Unknown,
-        &inferred_path,
+        VariableBindingContext {
+            role: VariableRole::SortDirection,
+            data_type: DataType::Unknown,
+            inferred_path: &inferred_path,
+            operators: Vec::new(),
+            enum_values: crate::SortDirection::ALL
+                .iter()
+                .map(|direction| direction.label().to_string())
+                .collect(),
+        },
         variable,
-        Vec::new(),
-        crate::SortDirection::ALL
-            .iter()
-            .map(|direction| direction.label().to_string())
-            .collect(),
         bindings,
     );
 }
@@ -190,12 +192,14 @@ fn collect_where_bindings(
             {
                 push_variable_binding(
                     selection_path,
-                    VariableRole::WhereValue,
-                    data_type,
-                    &field_path,
+                    VariableBindingContext {
+                        role: VariableRole::WhereValue,
+                        data_type,
+                        inferred_path: &field_path,
+                        operators: Vec::new(),
+                        enum_values: Vec::new(),
+                    },
                     variable,
-                    Vec::new(),
-                    Vec::new(),
                     bindings,
                 );
             }
@@ -241,12 +245,14 @@ fn push_clause_variable(
     };
     push_variable_binding(
         selection_path,
-        role,
-        data_type,
-        &[inferred_key.to_string()],
+        VariableBindingContext {
+            role,
+            data_type,
+            inferred_path: &[inferred_key.to_string()],
+            operators: Vec::new(),
+            enum_values: Vec::new(),
+        },
         variable,
-        Vec::new(),
-        Vec::new(),
         bindings,
     );
 }
@@ -295,19 +301,23 @@ fn push_operator_binding(
     });
 }
 
-fn push_variable_binding(
-    selection_path: &[String],
+struct VariableBindingContext<'a> {
     role: VariableRole,
     data_type: DataType,
-    inferred_path: &[String],
-    variable: &ValueVariable,
     operators: Vec<BinaryOp>,
     enum_values: Vec<String>,
+    inferred_path: &'a [String],
+}
+
+fn push_variable_binding(
+    selection_path: &[String],
+    context: VariableBindingContext<'_>,
+    variable: &ValueVariable,
     bindings: &mut Vec<VariableBinding>,
 ) {
     let name = variable.name.as_ref().map(|name| name.text.clone());
     let key = name.as_ref().map_or_else(
-        || inferred_path.last().cloned().unwrap_or_default(),
+        || context.inferred_path.last().cloned().unwrap_or_default(),
         Clone::clone,
     );
     let source = match variable.scope {
@@ -320,7 +330,7 @@ fn push_variable_binding(
             parts.extend(selection_path.iter().cloned());
             parts.push("clause".to_string());
             parts.push(
-                match role {
+                match context.role {
                     VariableRole::WhereValue => "where",
                     VariableRole::ComparisonOperator => "where",
                     VariableRole::SortDirection => "order_by",
@@ -330,12 +340,12 @@ fn push_variable_binding(
                 .to_string(),
             );
             if matches!(
-                role,
+                context.role,
                 VariableRole::WhereValue
                     | VariableRole::ComparisonOperator
                     | VariableRole::SortDirection
             ) {
-                parts.extend(inferred_path.iter().cloned());
+                parts.extend(context.inferred_path.iter().cloned());
             }
             if name.is_some() {
                 parts.push(key);
@@ -349,10 +359,10 @@ fn push_variable_binding(
         path,
         source,
         name,
-        data_type,
-        role,
-        operators,
-        enum_values,
+        data_type: context.data_type,
+        role: context.role,
+        operators: context.operators,
+        enum_values: context.enum_values,
     });
 }
 

@@ -18,6 +18,9 @@ code can import the root package without pulling in `node:fs`.
 Renderers are intentionally normal Bun/TypeScript programs so projects can
 vendor or replace them. The first renderer reads the manifest path from
 `DSQL_MANIFEST`, loads templates, and writes owned files into `DSQL_OUT_DIR`.
+It emits separate files for operation types/constants, the `dsql` helper,
+TanStack Query-style helpers, and barrel exports so projects can replace one
+piece without adopting the others.
 
 ```toml
 [generate.typescript]
@@ -74,6 +77,10 @@ becomes:
 ```ts
 import { MovieInfoLookupOperation as MovieInfo } from "/src/generated/dsql/queries";
 ```
+
+The generated `queries` module is a compatibility barrel. New templates should
+prefer importing from the specific generated module they need, such as
+`operations`, `dsql`, or `tanstack-query`.
 
 ## Metadata Types
 

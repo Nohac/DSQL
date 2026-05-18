@@ -50,6 +50,13 @@ struct SelectionContext {
     json_alias: String,
 }
 
+struct SelectionGenerationContext<'a> {
+    parent: Option<(&'a SelectionContext, &'a ForeignKey)>,
+    root: Option<&'a SelectionContext>,
+    cardinality: RelationCardinality,
+    options: PostgresSqlOptions,
+}
+
 pub fn generate_postgres_sql(
     plan: &QueryPlan,
     catalog: &Catalog,
@@ -72,10 +79,12 @@ pub fn generate_postgres_sql_with_options(
         catalog,
         &plan.output_name,
         &path,
-        None,
-        None,
-        RelationCardinality::Collection,
-        options,
+        SelectionGenerationContext {
+            parent: None,
+            root: None,
+            cardinality: RelationCardinality::Collection,
+            options,
+        },
     )?;
     let format_options = sqlformat::FormatOptions {
         uppercase: Some(false),
@@ -98,17 +107,14 @@ fn generate_selection(
     catalog: &Catalog,
     output_name: &str,
     path: &[String],
-    parent: Option<(&SelectionContext, &ForeignKey)>,
-    root: Option<&SelectionContext>,
-    cardinality: RelationCardinality,
-    options: PostgresSqlOptions,
+    generation: SelectionGenerationContext<'_>,
 ) -> Result<SelectStatement, SqlGenerationError> {
     let current_table = table(catalog, selection.table)?;
     let context = context_for(current_table, output_name, path);
-    let root_context = root.unwrap_or(&context);
+    let root_context = generation.root.unwrap_or(&context);
     let mut query = Query::select();
 
-    let relation_condition = if let Some((parent, foreign_key)) = parent {
+    let relation_condition = if let Some((parent, foreign_key)) = generation.parent {
         Some(relation_condition(
             catalog,
             parent,
@@ -125,8 +131,8 @@ fn generate_selection(
         .as_ref()
         .map(|filter| filter_expr(catalog, &context, root_context, None, filter))
         .transpose()?;
-    if cardinality == RelationCardinality::Collection
-        && should_use_source_subquery(&selection.clauses, options)
+    if generation.cardinality == RelationCardinality::Collection
+        && should_use_source_subquery(&selection.clauses, generation.options)
     {
         let source = limited_source_query(
             catalog,
@@ -135,7 +141,7 @@ fn generate_selection(
             relation_condition,
             filter,
             &selection.clauses,
-            effective_limit(&selection.clauses, options),
+            effective_limit(&selection.clauses, generation.options),
         )?;
         query.from_subquery(source, Alias::new(&context.table_alias));
     } else {
@@ -177,10 +183,12 @@ fn generate_selection(
             catalog,
             &relation.output_name,
             &relation_path,
-            Some((&context, foreign_key)),
-            Some(root_context),
-            relation_cardinality,
-            options,
+            SelectionGenerationContext {
+                parent: Some((&context, foreign_key)),
+                root: Some(root_context),
+                cardinality: relation_cardinality,
+                options: generation.options,
+            },
         )?;
         query.join_lateral(
             JoinType::LeftJoin,
@@ -191,7 +199,7 @@ fn generate_selection(
     }
 
     let object = json_build_object(selection, catalog, &context, path)?;
-    let expression = match cardinality {
+    let expression = match generation.cardinality {
         RelationCardinality::Object => object,
         RelationCardinality::Collection => {
             Func::coalesce([PgFunc::json_agg(object).into(), Expr::value("[]")]).into()

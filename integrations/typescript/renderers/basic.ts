@@ -17,13 +17,14 @@ if (!manifestPath || !outDir) {
   throw new Error("DSQL_MANIFEST and DSQL_OUT_DIR are required");
 }
 
+const manifestFile = manifestPath;
+const outputDirectory = outDir;
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const templatePath = join(packageRoot, "templates", "queries.ts");
-const artifacts = loadBuildArtifacts(manifestPath);
+const artifacts = loadBuildArtifacts(manifestFile);
 const { operations } = artifacts;
-const projectRoot = dirname(dirname(dirname(manifestPath)));
+const projectRoot = dirname(dirname(dirname(manifestFile)));
 
-mkdirSync(outDir, { recursive: true });
+mkdirSync(outputDirectory, { recursive: true });
 
 const project = new Project({
   manipulationSettings: {
@@ -31,9 +32,13 @@ const project = new Project({
   },
 });
 
-const source = project.createSourceFile(
-  join(outDir, "queries.ts"),
-  readFileSync(templatePath, "utf8"),
+const operationsSource = createSourceFromTemplate("operations.ts");
+const dsqlSource = createSourceFromTemplate("dsql.ts");
+const tanstackQuerySource = createSourceFromTemplate("tanstack-query.ts");
+const indexSource = createSourceFromTemplate("index.ts");
+const queriesSource = project.createSourceFile(
+  join(outputDirectory, "queries.ts"),
+  'export * from "./index";\n',
   { overwrite: true },
 );
 
@@ -42,22 +47,22 @@ for (const operation of operations) {
   const resultType = `${toPascalCase(operation.name)}Result`;
   const paramsType = `${toPascalCase(operation.name)}Params`;
   const inputType = `${toPascalCase(operation.name)}Input`;
-  source.addTypeAlias({
+  operationsSource.addTypeAlias({
     isExported: true,
     name: resultType,
     type: resultTypeLiteral(operation),
   });
-  source.addTypeAlias({
+  operationsSource.addTypeAlias({
     isExported: true,
     name: paramsType,
     type: paramsTypeLiteral(operation.params),
   });
-  source.addTypeAlias({
+  operationsSource.addTypeAlias({
     isExported: true,
     name: inputType,
     type: inputTypeLiteral(operation.input),
   });
-  source.addVariableStatement({
+  operationsSource.addVariableStatement({
     isExported: true,
     declarationKind: VariableDeclarationKind.Const,
     declarations: [
@@ -75,15 +80,24 @@ for (const operation of operations) {
   });
 }
 
-const dsqlFunctionIndex = source
+if (operations.length > 0) {
+  dsqlSource.addImportDeclaration({
+    moduleSpecifier: "./operations",
+    namedImports: operations.map(
+      (operation) => `${toPascalCase(operation.name)}Operation`,
+    ),
+  });
+}
+
+const dsqlFunctionIndex = dsqlSource
   .getStatements()
   .findIndex((statement) => statement.getText().startsWith("export function dsql("));
 if (dsqlFunctionIndex === -1) {
-  throw new Error("queries template must define a dsql function");
+  throw new Error("dsql template must define a dsql function");
 }
-source.insertStatements(dsqlFunctionIndex, operationSourceMapType());
+dsqlSource.insertStatements(dsqlFunctionIndex, operationSourceMapType());
 
-source.addVariableStatement({
+operationsSource.addVariableStatement({
   isExported: true,
   declarationKind: VariableDeclarationKind.Const,
   declarations: [
@@ -98,8 +112,24 @@ ${operations
   ],
 });
 
-source.formatText();
-source.saveSync();
+for (const sourceFile of [
+  operationsSource,
+  dsqlSource,
+  tanstackQuerySource,
+  indexSource,
+  queriesSource,
+]) {
+  sourceFile.formatText();
+  sourceFile.saveSync();
+}
+
+function createSourceFromTemplate(name: string) {
+  return project.createSourceFile(
+    join(outputDirectory, name),
+    readFileSync(join(packageRoot, "templates", name), "utf8"),
+    { overwrite: true },
+  );
+}
 
 function manifestEntryFor(operation: OperationMetadata): OperationManifestEntry {
   const entry = artifacts.manifest.operations.find(

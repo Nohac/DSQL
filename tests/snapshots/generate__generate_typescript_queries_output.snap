@@ -1,0 +1,5 @@
+---
+source: tests/tests/generate.rs
+expression: contents
+---
+export * from "./index";

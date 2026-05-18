@@ -44,7 +44,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "renderers",
+    "templates"
   ],
   "scripts": {
     "generate": "cargo run -q --manifest-path ../../Cargo.toml -p dsql-cli -- generate --target typescript-metadata --out-dir src/generated",
