@@ -31,8 +31,6 @@ cmd = ["bun", "dsql/generate.ts"]
 import {
   loadBuildArtifacts,
   renderDsqlHelper,
-  renderTanStackQuery,
-  renderTanStackStart,
   renderTypes,
 } from "@dsql/typescript/node";
 
@@ -41,14 +39,16 @@ const outDir = process.env.DSQL_OUT_DIR!;
 
 await renderTypes(artifacts, { outDir });
 await renderDsqlHelper(artifacts, { outDir });
-await renderTanStackQuery(artifacts, { outDir });
-await renderTanStackStart(artifacts, { outDir });
+
+// Add vendored project/framework generators here.
+// They can read artifacts.operations and write app-specific owned files.
 ```
 
 The minimal built-in entrypoint is `renderers/types.ts`. It only writes the
 operation types/constants, the typed `dsql` helper, and barrel exports. The
-`renderers/generate.ts` entrypoint additionally writes starter TanStack Query
-and TanStack Start wrapper files.
+`renderers/generate.ts` entrypoint is an example of a vendored-style script
+that additionally writes starter TanStack Query and TanStack Start wrapper
+files without exposing those helpers from `@dsql/typescript`.
 
 A vendored entrypoint should use the shared artifact loader rather than parsing
 the manifest shape itself:

@@ -8,14 +8,6 @@ import type {
 
 export { renderDsqlHelper, renderTypes } from "./render/types";
 export type { RenderOptions } from "./render/types";
-export {
-  renderTanStackQuery,
-  renderTanStackStart,
-} from "./render/tanstack";
-export type {
-  OperationPredicate,
-  TanStackRenderOptions,
-} from "./render/tanstack";
 
 export type BuildArtifacts = {
   readonly manifestPath: string;
