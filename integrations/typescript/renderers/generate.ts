@@ -9,7 +9,7 @@ import type { BuildArtifacts } from "@dsql/typescript/node";
 import {
   tanstackQueryTemplate,
   tanstackStartTemplate,
-} from "./templates/my-templates";
+} from "./templates/tanstack";
 
 const manifestPath = process.env.DSQL_MANIFEST;
 const outDir = process.env.DSQL_OUT_DIR;

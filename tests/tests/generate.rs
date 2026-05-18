@@ -127,8 +127,8 @@ cmd = ["bun", "dsql/generate.ts"]
     );
     fs::create_dir_all(project.path().join("dsql/templates")).unwrap();
     fs::copy(
-        repo_root().join("integrations/typescript/renderers/templates/my-templates.ts"),
-        project.path().join("dsql/templates/my-templates.ts"),
+        repo_root().join("integrations/typescript/renderers/templates/tanstack.ts"),
+        project.path().join("dsql/templates/tanstack.ts"),
     )
     .unwrap();
     fs::write(
@@ -144,7 +144,7 @@ import type { BuildArtifacts } from "@dsql/typescript/node";
 import {
   tanstackQueryTemplate,
   tanstackStartTemplate,
-} from "./templates/my-templates";
+} from "./templates/tanstack";
 
 const manifestPath = process.env.DSQL_MANIFEST;
 const outDir = process.env.DSQL_OUT_DIR;

@@ -64,7 +64,7 @@ Project/framework templates should be local to your app. The example
 dsql/
   generate.ts
   templates/
-    my-templates.ts
+    tanstack.ts
 ```
 
 A vendored entrypoint should use the shared artifact loader rather than parsing
