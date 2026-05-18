@@ -5,10 +5,18 @@
   "type": "module",
   "exports": {
     ".": {
+      "bun": {
+        "types": "./src/index.ts",
+        "default": "./src/index.ts"
+      },
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./node": {
+      "bun": {
+        "types": "./src/node.ts",
+        "default": "./src/node.ts"
+      },
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
     }

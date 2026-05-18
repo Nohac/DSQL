@@ -14,9 +14,9 @@ export type {
   SourceRange,
   SqlMetadata,
   SqlVariantMetadata,
-} from "./generated/metadata.js";
+} from "./generated/metadata";
 
-import type { OperationMetadata } from "./generated/metadata.js";
+import type { OperationMetadata } from "./generated/metadata";
 
 export type DsqlQueryDefinition<
   TParams = unknown,

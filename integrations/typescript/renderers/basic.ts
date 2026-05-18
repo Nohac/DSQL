@@ -2,8 +2,8 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Project, QuoteKind, VariableDeclarationKind } from "ts-morph";
-import { loadBuildArtifacts } from "../src/node.js";
-import type { OperationMetadata, ResultField } from "../src/index.js";
+import type { OperationMetadata, ResultField } from "@dsql/typescript";
+import { loadBuildArtifacts } from "@dsql/typescript/node";
 
 const manifestPath = process.env.DSQL_MANIFEST;
 const outDir = process.env.DSQL_OUT_DIR;

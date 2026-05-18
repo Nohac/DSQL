@@ -4,7 +4,7 @@ import type {
   BuildManifest,
   OperationManifestEntry,
   OperationMetadata,
-} from "./generated/metadata.js";
+} from "./generated/metadata";
 
 export type BuildArtifacts = {
   readonly manifestPath: string;
