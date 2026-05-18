@@ -3,7 +3,7 @@ source: tests/tests/fixtures.rs
 assertion_line: 185
 expression: contents
 ---
-query MovieInfoSmoke {
+query MovieInfoLookup {
   movie_info(where .id > 0 order by id asc limit 2) {
     id
     info

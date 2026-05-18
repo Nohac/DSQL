@@ -22,18 +22,33 @@ cmd = ["bun", "{}"]
         ),
     );
 
-    let output = dsql_cli::generate_project_from(project.path())
+    let output = dsql_generate::generate_project_from(project.path())
         .await
         .unwrap();
-    assert_eq!(output.generated_files.len(), 1);
     assert_eq!(
         output.manifest_path,
-        project.path().join("dsql/build/manifest.json")
+        project
+            .path()
+            .join("dsql/build/manifest.json")
+            .to_string_lossy()
+    );
+    assert_eq!(
+        output.operation_paths,
+        vec!["operations/MovieInfoLookup.json".to_string()]
     );
 
     let manifest = fs::read_to_string(project.path().join("dsql/build/manifest.json")).unwrap();
     serde_json::from_str::<serde_json::Value>(&manifest).unwrap();
     snapshot("generate_manifest", &manifest);
+
+    let operation = fs::read_to_string(
+        project
+            .path()
+            .join("dsql/build/operations/MovieInfoLookup.json"),
+    )
+    .unwrap();
+    serde_json::from_str::<serde_json::Value>(&operation).unwrap();
+    snapshot("generate_operation_movie_info_basic", &operation);
 
     let generated =
         fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
@@ -77,7 +92,7 @@ documents = [{{ resolver = "dsql", paths = ["queries"] }}]
 
     fs::write(
         root.join("queries/movie-info.dsql"),
-        r#"query MovieInfoSmoke {
+        r#"query MovieInfoLookup {
   movie_info(where .id > 0 order by id asc limit 2) {
     id
     info

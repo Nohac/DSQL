@@ -5,7 +5,16 @@ use serde::{Deserialize, Serialize};
 #[facet(facet_jsonschema::id = "https://dsql.dev/schemas/build-manifest.schema.json")]
 pub struct BuildManifest {
     pub version: u32,
-    pub operations: Vec<OperationMetadata>,
+    pub operations: Vec<OperationManifestEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+pub struct OperationManifestEntry {
+    pub name: String,
+    pub kind: String,
+    pub path: String,
+    pub hash: String,
+    pub source: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Facet, Serialize)]
@@ -116,5 +125,8 @@ pub fn build_manifest_json_schema() -> String {
 }
 
 pub fn build_manifest_typescript() -> String {
-    facet_typescript::to_typescript::<BuildManifest>()
+    let mut typescript = facet_typescript::to_typescript::<BuildManifest>();
+    typescript.push('\n');
+    typescript.push_str(&facet_typescript::to_typescript::<OperationMetadata>());
+    typescript
 }

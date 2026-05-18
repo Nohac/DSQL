@@ -1,7 +1,16 @@
 export interface BuildManifest {
   version: number;
-  operations: OperationMetadata[];
+  operations: OperationManifestEntry[];
 }
+
+export interface OperationManifestEntry {
+  name: string;
+  kind: string;
+  path: string;
+  hash: string;
+  source: string;
+}
+
 
 export interface OperationMetadata {
   name: string;

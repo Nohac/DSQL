@@ -423,6 +423,7 @@ dependencies = [
  "clap",
  "dsql-core",
  "dsql-frontend",
+ "dsql-generate",
  "dsql-introspection",
  "dsql-lsp",
  "dsql-metadata",
@@ -478,6 +479,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsql-generate"
+version = "0.1.0"
+dependencies = [
+ "dsql-core",
+ "dsql-metadata",
+ "dsql-project",
+ "miette",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "dsql-introspection"
 version = "0.1.0"
 dependencies = [
@@ -524,9 +538,9 @@ dependencies = [
 name = "dsql-tests"
 version = "0.1.0"
 dependencies = [
- "dsql-cli",
  "dsql-core",
  "dsql-frontend",
+ "dsql-generate",
  "dsql-project",
  "insta",
  "ropey",

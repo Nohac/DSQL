@@ -1,3 +1,3 @@
 [alias]
-smoke-wasm-core = "check -p dsql-core --target wasm32-unknown-unknown"
-smoke-wasm-frontend = "check -p dsql-frontend --target wasm32-unknown-unknown"
+check-wasm-core = "check -p dsql-core --target wasm32-unknown-unknown"
+check-wasm-frontend = "check -p dsql-frontend --target wasm32-unknown-unknown"

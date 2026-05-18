@@ -217,19 +217,18 @@ async fn main() -> Result<()> {
         }
         Command::Generate { target, out_dir } => match target {
             GenerateTarget::Project => {
-                let output =
-                    dsql_cli::generate_project_from(&std::env::current_dir().into_diagnostic()?)
-                        .await?;
-                println!("wrote {}", output.manifest_path.display());
-                for file in output.generated_files {
-                    if file != output.manifest_path {
-                        println!("wrote {}", file.display());
-                    }
+                let output = dsql_generate::generate_project_from(
+                    &std::env::current_dir().into_diagnostic()?,
+                )
+                .await?;
+                println!("wrote {}", output.manifest_path);
+                for file in output.operation_paths {
+                    println!("wrote {file}");
                 }
             }
             GenerateTarget::TypescriptMetadata => {
                 let out_dir = out_dir.unwrap_or_else(|| PathBuf::from("."));
-                dsql_cli::generate_typescript_metadata(&out_dir).await?;
+                generate_typescript_metadata(&out_dir).await?;
             }
         },
         Command::MetadataSchema => {
@@ -244,6 +243,31 @@ async fn main() -> Result<()> {
         }
         Command::Lsp => unreachable!("handled before tracing subscriber initialization"),
     }
+    Ok(())
+}
+
+async fn generate_typescript_metadata(out_dir: &Path) -> Result<()> {
+    tokio::fs::create_dir_all(out_dir).await.map_err(|error| {
+        miette::miette!(
+            "failed to create generated output directory {}: {error}",
+            out_dir.display()
+        )
+    })?;
+
+    let schema = dsql_metadata::build_manifest_json_schema();
+    let schema = serde_json::from_str::<serde_json::Value>(&schema)
+        .and_then(|schema| serde_json::to_string_pretty(&schema))
+        .into_diagnostic()?;
+    tokio::fs::write(out_dir.join("build-manifest.schema.json"), schema)
+        .await
+        .map_err(|error| miette::miette!("failed to write build manifest schema: {error}"))?;
+
+    tokio::fs::write(
+        out_dir.join("metadata.ts"),
+        dsql_metadata::build_manifest_typescript(),
+    )
+    .await
+    .map_err(|error| miette::miette!("failed to write TypeScript metadata types: {error}"))?;
     Ok(())
 }
 

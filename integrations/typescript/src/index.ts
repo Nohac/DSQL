@@ -5,6 +5,7 @@ export type {
   HandoffMetadata,
   InputField,
   OperationMetadata,
+  OperationManifestEntry,
   PolicyMetadata,
   ProvidedContextMetadata,
   ResultField,

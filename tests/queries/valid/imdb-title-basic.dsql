@@ -1,9 +1,4 @@
----
-source: tests/tests/fixtures.rs
-assertion_line: 185
-expression: contents
----
-query TitleSmoke {
+query TitleLookup {
   title(where .id > 0 order by id asc limit 2) {
     id
     title

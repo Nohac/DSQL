@@ -1,10 +1,11 @@
 import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Project, QuoteKind, VariableDeclarationKind } from "ts-morph";
 import type {
   BuildManifest,
   OperationMetadata,
+  OperationManifestEntry,
   ResultField,
 } from "./generated/metadata.js";
 
@@ -17,7 +18,11 @@ if (!manifestPath || !outDir) {
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const templatePath = join(packageRoot, "templates", "queries.ts");
-const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as BuildManifest;
+const manifest = JSON.parse(
+  readFileSync(manifestPath, "utf8"),
+) as BuildManifest;
+const manifestDir = dirname(manifestPath);
+const operations = manifest.operations.map(readOperation);
 
 mkdirSync(outDir, { recursive: true });
 
@@ -33,7 +38,7 @@ const source = project.createSourceFile(
   { overwrite: true },
 );
 
-for (const operation of manifest.operations) {
+for (const operation of operations) {
   const resultType = `${toPascalCase(operation.name)}Result`;
   source.addTypeAlias({
     isExported: true,
@@ -63,7 +68,7 @@ source.addVariableStatement({
     {
       name: "operations",
       initializer: `[
-${manifest.operations
+${operations
   .map((operation) => `  ${toPascalCase(operation.name)}Operation`)
   .join(",\n")}
 ] as const`,
@@ -74,8 +79,17 @@ ${manifest.operations
 source.formatText();
 source.saveSync();
 
+function readOperation(entry: OperationManifestEntry): OperationMetadata {
+  const path = isAbsolute(entry.path)
+    ? entry.path
+    : join(manifestDir, entry.path);
+  return JSON.parse(readFileSync(path, "utf8")) as OperationMetadata;
+}
+
 function resultTypeLiteral(operation: OperationMetadata): string {
-  const roots = operation.result.fields.filter((field) => field.parent_path === "");
+  const roots = operation.result.fields.filter(
+    (field) => field.parent_path === "",
+  );
   return objectType(
     roots.map((field) => propertyType(field, operation.result.fields)),
   );
@@ -86,10 +100,15 @@ function propertyType(
   fields: readonly ResultField[],
 ): [string, string] {
   if (field.kind === "scalar") {
-    return [field.name, withNullability(dataType(field.data_type), field.nullable)];
+    return [
+      field.name,
+      withNullability(dataType(field.data_type), field.nullable),
+    ];
   }
 
-  const children = fields.filter((candidate) => candidate.parent_path === field.path);
+  const children = fields.filter(
+    (candidate) => candidate.parent_path === field.path,
+  );
   const type = objectType(children.map((child) => propertyType(child, fields)));
   return [field.name, field.kind === "array" ? `Array<${type}>` : type];
 }
