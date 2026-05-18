@@ -50,7 +50,7 @@
   ],
   "scripts": {
     "generate": "cargo run -q --manifest-path ../../Cargo.toml -p dsql-cli -- generate --target typescript-metadata --out-dir src/generated",
-    "generate:project": "bun renderers/basic.ts",
+    "generate:project": "bun renderers/types.ts",
     "test": "bun test tests",
     "typecheck": "bunx tsc --noEmit && bunx tsc -p tsconfig.renderers.json",
     "build": "bunx tsc"

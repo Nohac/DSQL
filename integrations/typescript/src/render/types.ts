@@ -7,131 +7,161 @@ import type {
   OperationManifestEntry,
   OperationMetadata,
   ResultField,
-} from "@dsql/typescript";
-import { loadBuildArtifacts } from "@dsql/typescript/node";
+} from "../generated/metadata";
+import type { BuildArtifacts } from "../node";
 
-const manifestPath = process.env.DSQL_MANIFEST;
-const outDir = process.env.DSQL_OUT_DIR;
+export type RenderOptions = {
+  readonly outDir: string;
+};
 
-if (!manifestPath || !outDir) {
-  throw new Error("DSQL_MANIFEST and DSQL_OUT_DIR are required");
-}
+export async function renderTypes(
+  artifacts: BuildArtifacts,
+  options: RenderOptions,
+): Promise<void> {
+  const project = createProject();
+  const operationsSource = createSourceFromTemplate(
+    project,
+    options.outDir,
+    "operations.ts",
+  );
 
-const manifestFile = manifestPath;
-const outputDirectory = outDir;
-const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const artifacts = loadBuildArtifacts(manifestFile);
-const { operations } = artifacts;
-const projectRoot = dirname(dirname(dirname(manifestFile)));
-
-mkdirSync(outputDirectory, { recursive: true });
-
-const project = new Project({
-  manipulationSettings: {
-    quoteKind: QuoteKind.Double,
-  },
-});
-
-const operationsSource = createSourceFromTemplate("operations.ts");
-const dsqlSource = createSourceFromTemplate("dsql.ts");
-const tanstackQuerySource = createSourceFromTemplate("tanstack-query.ts");
-const indexSource = createSourceFromTemplate("index.ts");
-const queriesSource = project.createSourceFile(
-  join(outputDirectory, "queries.ts"),
-  'export * from "./index";\n',
-  { overwrite: true },
-);
-
-for (const operation of operations) {
-  const manifestEntry = manifestEntryFor(operation);
-  const resultType = `${toPascalCase(operation.name)}Result`;
-  const paramsType = `${toPascalCase(operation.name)}Params`;
-  const inputType = `${toPascalCase(operation.name)}Input`;
-  operationsSource.addTypeAlias({
-    isExported: true,
-    name: resultType,
-    type: resultTypeLiteral(operation),
-  });
-  operationsSource.addTypeAlias({
-    isExported: true,
-    name: paramsType,
-    type: paramsTypeLiteral(operation.params),
-  });
-  operationsSource.addTypeAlias({
-    isExported: true,
-    name: inputType,
-    type: inputTypeLiteral(operation.input),
-  });
-  operationsSource.addVariableStatement({
-    isExported: true,
-    declarationKind: VariableDeclarationKind.Const,
-    declarations: [
-      {
-        name: `${toPascalCase(operation.name)}Operation`,
-        type: `DsqlOperation<${resultType}, ${paramsType}, ${inputType}>`,
-        initializer: `{
+  for (const operation of artifacts.operations) {
+    const manifestEntry = manifestEntryFor(artifacts, operation);
+    const resultType = `${toPascalCase(operation.name)}Result`;
+    const paramsType = `${toPascalCase(operation.name)}Params`;
+    const inputType = `${toPascalCase(operation.name)}Input`;
+    operationsSource.addTypeAlias({
+      isExported: true,
+      name: resultType,
+      type: resultTypeLiteral(operation),
+    });
+    operationsSource.addTypeAlias({
+      isExported: true,
+      name: paramsType,
+      type: paramsTypeLiteral(operation.params),
+    });
+    operationsSource.addTypeAlias({
+      isExported: true,
+      name: inputType,
+      type: inputTypeLiteral(operation.input),
+    });
+    operationsSource.addVariableStatement({
+      isExported: true,
+      declarationKind: VariableDeclarationKind.Const,
+      declarations: [
+        {
+          name: `${toPascalCase(operation.name)}Operation`,
+          type: `DsqlOperation<${resultType}, ${paramsType}, ${inputType}>`,
+          initializer: `{
   id: ${JSON.stringify(manifestEntry.hash)},
   name: ${JSON.stringify(operation.name)},
   kind: "query",
   sql: ${JSON.stringify(operation.sql.text)}
 }`,
-      },
-    ],
-  });
-}
+        },
+      ],
+    });
+  }
 
-if (operations.length > 0) {
-  dsqlSource.addImportDeclaration({
-    moduleSpecifier: "./operations",
-    namedImports: operations.map(
-      (operation) => `${toPascalCase(operation.name)}Operation`,
-    ),
-  });
-}
-
-const dsqlFunctionIndex = dsqlSource
-  .getStatements()
-  .findIndex((statement) => statement.getText().startsWith("export function dsql("));
-if (dsqlFunctionIndex === -1) {
-  throw new Error("dsql template must define a dsql function");
-}
-dsqlSource.insertStatements(dsqlFunctionIndex, operationSourceMapType());
-
-operationsSource.addVariableStatement({
-  isExported: true,
-  declarationKind: VariableDeclarationKind.Const,
-  declarations: [
-    {
-      name: "operations",
-      initializer: `[
-${operations
+  operationsSource.addVariableStatement({
+    isExported: true,
+    declarationKind: VariableDeclarationKind.Const,
+    declarations: [
+      {
+        name: "operations",
+        initializer: `[
+${artifacts.operations
   .map((operation) => `  ${toPascalCase(operation.name)}Operation`)
   .join(",\n")}
 ] as const`,
-    },
-  ],
-});
+      },
+    ],
+  });
 
-for (const sourceFile of [
-  operationsSource,
-  dsqlSource,
-  tanstackQuerySource,
-  indexSource,
-  queriesSource,
-]) {
-  sourceFile.formatText();
-  sourceFile.saveSync();
+  await saveSourceFiles([operationsSource]);
 }
 
-function createSourceFromTemplate(name: string) {
+export async function renderDsqlHelper(
+  artifacts: BuildArtifacts,
+  options: RenderOptions,
+): Promise<void> {
+  const project = createProject();
+  const dsqlSource = createSourceFromTemplate(project, options.outDir, "dsql.ts");
+
+  if (artifacts.operations.length > 0) {
+    dsqlSource.addImportDeclaration({
+      moduleSpecifier: "./operations",
+      namedImports: artifacts.operations.map(
+        (operation) => `${toPascalCase(operation.name)}Operation`,
+      ),
+    });
+  }
+
+  const dsqlFunctionIndex = dsqlSource
+    .getStatements()
+    .findIndex((statement) =>
+      statement.getText().startsWith("export function dsql("),
+    );
+  if (dsqlFunctionIndex === -1) {
+    throw new Error("dsql template must define a dsql function");
+  }
+  dsqlSource.insertStatements(
+    dsqlFunctionIndex,
+    operationSourceMapType(artifacts),
+  );
+
+  const indexSource = createSourceFromTemplate(
+    project,
+    options.outDir,
+    "index.ts",
+  );
+  const queriesSource = project.createSourceFile(
+    join(options.outDir, "queries.ts"),
+    'export * from "./index";\n',
+    { overwrite: true },
+  );
+
+  await saveSourceFiles([dsqlSource, indexSource, queriesSource]);
+}
+
+function createProject(): Project {
+  return new Project({
+    manipulationSettings: {
+      quoteKind: QuoteKind.Double,
+    },
+  });
+}
+
+function createSourceFromTemplate(
+  project: Project,
+  outDir: string,
+  name: string,
+) {
+  mkdirSync(outDir, { recursive: true });
   return project.createSourceFile(
-    join(outputDirectory, name),
-    readFileSync(join(packageRoot, "templates", name), "utf8"),
+    join(outDir, name),
+    readFileSync(join(packageRoot(), "templates", name), "utf8"),
     { overwrite: true },
   );
 }
 
-function manifestEntryFor(operation: OperationMetadata): OperationManifestEntry {
+async function saveSourceFiles(
+  sourceFiles: ReturnType<Project["getSourceFiles"]>,
+): Promise<void> {
+  for (const sourceFile of sourceFiles) {
+    sourceFile.formatText();
+    await sourceFile.save();
+  }
+}
+
+function packageRoot(): string {
+  return dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+}
+
+function manifestEntryFor(
+  artifacts: BuildArtifacts,
+  operation: OperationMetadata,
+): OperationManifestEntry {
   const entry = artifacts.manifest.operations.find(
     (candidate) => candidate.name === operation.name,
   );
@@ -141,7 +171,10 @@ function manifestEntryFor(operation: OperationMetadata): OperationManifestEntry 
   return entry;
 }
 
-function operationSourceText(operation: OperationMetadata): string | undefined {
+function operationSourceText(
+  artifacts: BuildArtifacts,
+  operation: OperationMetadata,
+): string | undefined {
   const sourceMap = operation.source_map.find(
     (entry) => entry.id === operation.name,
   );
@@ -149,6 +182,7 @@ function operationSourceText(operation: OperationMetadata): string | undefined {
     return undefined;
   }
 
+  const projectRoot = dirname(dirname(dirname(artifacts.manifestPath)));
   const source = readFileSync(join(projectRoot, sourceMap.file), "utf8");
   return (
     embeddedDsqlTextContainingRange(
@@ -159,10 +193,10 @@ function operationSourceText(operation: OperationMetadata): string | undefined {
   );
 }
 
-function operationSourceMapType(): string {
-  const entries = operations
+function operationSourceMapType(artifacts: BuildArtifacts): string {
+  const entries = artifacts.operations
     .map((operation) => {
-      const sourceText = operationSourceText(operation);
+      const sourceText = operationSourceText(artifacts, operation);
       if (!sourceText) {
         return undefined;
       }
@@ -341,7 +375,7 @@ function toPascalCase(value: string): string {
   const result = value
     .split(/[^A-Za-z0-9]+/)
     .filter(Boolean)
-    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join("");
 
   if (!result) {

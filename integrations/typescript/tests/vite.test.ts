@@ -3,7 +3,7 @@ import { transformDsqlTags } from "../src/vite";
 
 test("transforms named dsql query tags into generated operation imports", () => {
   const result = transformDsqlTags(
-    `import { dsql, useQuery } from "./generated/dsql/queries";
+    `import { dsql } from "./generated/dsql/queries";
 
 const MovieInfo = dsql\`
   query MovieInfoLookup {
@@ -12,19 +12,15 @@ const MovieInfo = dsql\`
     }
   }
 \`;
-
-useQuery(MovieInfo, { params: {} });
 `,
     "./generated/dsql/queries",
   );
 
   expect(result).toEqual({
     code: `import { MovieInfoLookupOperation as MovieInfo } from "./generated/dsql/queries";
-import { dsql, useQuery } from "./generated/dsql/queries";
+import { dsql } from "./generated/dsql/queries";
 
 
-
-useQuery(MovieInfo, { params: {} });
 `,
     map: null,
   });
@@ -32,7 +28,7 @@ useQuery(MovieInfo, { params: {} });
 
 test("transforms named dsql function calls into generated operation imports", () => {
   const result = transformDsqlTags(
-    `import { dsql, useQuery } from "./generated/dsql/queries";
+    `import { dsql } from "./generated/dsql/queries";
 
 const MovieInfo = dsql(\`
   query MovieInfoLookup {
@@ -41,19 +37,15 @@ const MovieInfo = dsql(\`
     }
   }
 \`);
-
-useQuery(MovieInfo, {});
 `,
     "./generated/dsql/queries",
   );
 
   expect(result).toEqual({
     code: `import { MovieInfoLookupOperation as MovieInfo } from "./generated/dsql/queries";
-import { dsql, useQuery } from "./generated/dsql/queries";
+import { dsql } from "./generated/dsql/queries";
 
 
-
-useQuery(MovieInfo, {});
 `,
     map: null,
   });

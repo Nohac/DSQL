@@ -17,7 +17,7 @@ out_dir = "src/generated/dsql"
 cmd = ["bun", "{}"]
 "#,
             repo_root()
-                .join("integrations/typescript/renderers/basic.ts")
+                .join("integrations/typescript/renderers/types.ts")
                 .display()
         ),
     );
@@ -48,27 +48,25 @@ cmd = ["bun", "{}"]
     )
     .unwrap();
     serde_json::from_str::<serde_json::Value>(&operation).unwrap();
-    snapshot("generate_operation_movie_info_basic", &operation);
+    snapshot("generate_operation_movie_info_types", &operation);
 
     let operations =
         fs::read_to_string(project.path().join("src/generated/dsql/operations.ts")).unwrap();
     snapshot("generate_typescript_operations_output", &operations);
     let dsql = fs::read_to_string(project.path().join("src/generated/dsql/dsql.ts")).unwrap();
     snapshot("generate_typescript_dsql_output", &dsql);
-    let tanstack_query =
-        fs::read_to_string(project.path().join("src/generated/dsql/tanstack-query.ts")).unwrap();
-    snapshot("generate_typescript_tanstack_query_output", &tanstack_query);
+    let index = fs::read_to_string(project.path().join("src/generated/dsql/index.ts")).unwrap();
+    snapshot("generate_typescript_index_output", &index);
     let queries = fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
     snapshot("generate_typescript_queries_output", &queries);
 
     fs::write(
         project.path().join("src/generated/dsql/usage.ts"),
         format!(
-            r#"import {{ dsql, MovieInfoLookupOperation, useQuery }} from "./queries";
+            r#"import {{ dsql, MovieInfoLookupOperation }} from "./queries";
 
 const MovieInfoLookup = dsql(`{}`);
 MovieInfoLookup satisfies typeof MovieInfoLookupOperation;
-useQuery(MovieInfoLookup, {{}});
 "#,
             fs::read_to_string(project.path().join("queries/movie-info.dsql")).unwrap()
         ),
@@ -116,6 +114,111 @@ async fn generate_project_extracts_queries_from_regex_embedding_resolver() {
 }
 
 #[tokio::test]
+async fn generate_project_supports_user_owned_typescript_entrypoint() {
+    let project = tempfile::tempdir().unwrap();
+    link_typescript_package(project.path());
+    create_project_fixture(
+        project.path(),
+        r#"[generate.typescript]
+enabled = true
+out_dir = "src/generated/dsql"
+cmd = ["bun", "dsql/generate.ts"]
+"#,
+    );
+    fs::write(
+        project.path().join("dsql/generate.ts"),
+        r#"import {
+  loadBuildArtifacts,
+  renderDsqlHelper,
+  renderTanStackQuery,
+  renderTanStackStart,
+  renderTypes,
+} from "@dsql/typescript/node";
+
+const manifestPath = process.env.DSQL_MANIFEST;
+const outDir = process.env.DSQL_OUT_DIR;
+
+if (!manifestPath || !outDir) {
+  throw new Error("DSQL_MANIFEST and DSQL_OUT_DIR are required");
+}
+
+const artifacts = loadBuildArtifacts(manifestPath);
+
+await renderTypes(artifacts, { outDir });
+await renderDsqlHelper(artifacts, { outDir });
+await renderTanStackQuery(artifacts, { outDir });
+await renderTanStackStart(artifacts, { outDir });
+"#,
+    )
+    .unwrap();
+
+    dsql_generate::generate_project_from(project.path())
+        .await
+        .unwrap();
+
+    assert!(
+        project
+            .path()
+            .join("src/generated/dsql/operations.ts")
+            .exists()
+    );
+    assert!(project.path().join("src/generated/dsql/dsql.ts").exists());
+    assert!(
+        project
+            .path()
+            .join("src/generated/dsql/tanstack-query.ts")
+            .exists()
+    );
+    assert!(
+        project
+            .path()
+            .join("src/generated/dsql/tanstack-start.ts")
+            .exists()
+    );
+
+    fs::write(
+        project.path().join("src/entrypoint-usage.ts"),
+        r#"import { dsql, MovieInfoLookupOperation } from "./generated/dsql/queries";
+import { serverOperationNames } from "./generated/dsql/tanstack-start";
+
+const MovieInfoLookup = dsql(`query MovieInfoLookup {
+  movie_info(where .id > 0 order by id asc limit 2) {
+    id
+    info
+    note
+    title(where .episode_nr == 100) {
+      title
+    }
+    info_type {
+      info
+    }
+  }
+}
+`);
+
+MovieInfoLookupOperation satisfies typeof MovieInfoLookupOperation;
+serverOperationNames satisfies readonly string[];
+"#,
+    )
+    .unwrap();
+
+    let status = Command::new("bun")
+        .args([
+            "build",
+            "src/entrypoint-usage.ts",
+            "--outdir",
+            "build/entrypoint",
+        ])
+        .current_dir(project.path())
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "user-owned TypeScript generation entrypoints should compile generated output"
+    );
+}
+
+#[tokio::test]
 async fn generate_project_types_embedded_dsql_function_calls() {
     let project = tempfile::tempdir().unwrap();
     create_embedded_project_fixture_with_generate(
@@ -127,7 +230,7 @@ out_dir = "src/generated/dsql"
 cmd = ["bun", "{}"]
 "#,
             repo_root()
-                .join("integrations/typescript/renderers/basic.ts")
+                .join("integrations/typescript/renderers/types.ts")
                 .display()
         ),
     );
@@ -138,7 +241,7 @@ cmd = ["bun", "{}"]
 
     fs::write(
         project.path().join("src/usage.ts"),
-        r#"import { dsql, EmbeddedMovieInfoLookupOperation, useQuery } from "./generated/dsql/queries";
+        r#"import { dsql, EmbeddedMovieInfoLookupOperation } from "./generated/dsql/queries";
 
 const MovieInfo = dsql(`
   query EmbeddedMovieInfoLookup {
@@ -150,8 +253,6 @@ const MovieInfo = dsql(`
 `);
 
 MovieInfo satisfies typeof EmbeddedMovieInfoLookupOperation;
-const query = useQuery(MovieInfo, {});
-query.data?.movie_info[0]?.id satisfies number | undefined;
 "#,
     )
     .unwrap();
@@ -179,7 +280,7 @@ out_dir = "src/generated/dsql"
 cmd = ["bun", "{}"]
 "#,
             repo_root()
-                .join("integrations/typescript/renderers/basic.ts")
+                .join("integrations/typescript/renderers/types.ts")
                 .display()
         ),
     );
@@ -205,31 +306,28 @@ cmd = ["bun", "{}"]
     fs::write(
         project.path().join("src/generated/dsql/usage.ts"),
         format!(
-            r#"import {{ dsql, MovieInfoLookupOperation, useQuery }} from "./queries";
+            r#"import {{ dsql, MovieInfoLookupInput, MovieInfoLookupOperation, MovieInfoLookupParams }} from "./queries";
 
 const MovieInfoLookup = dsql(`{}`);
 MovieInfoLookup satisfies typeof MovieInfoLookupOperation;
-useQuery(MovieInfoLookup, {{
-  params: {{
-    limit: 10,
-  }},
-  input: {{}},
-}});
-useQuery(MovieInfoLookup, {{
-  input: {{
-    movie_info: {{
-      body: {{
-        title: {{
-          clause: {{
-            limit: {{
-              title_limit: 5,
-            }},
+const params: MovieInfoLookupParams = {{
+  limit: 10,
+}};
+const input: MovieInfoLookupInput = {{
+  movie_info: {{
+    body: {{
+      title: {{
+        clause: {{
+          limit: {{
+            title_limit: 5,
           }},
         }},
       }},
     }},
   }},
-}});
+}};
+params satisfies MovieInfoLookupParams;
+input satisfies MovieInfoLookupInput;
 "#,
             fs::read_to_string(project.path().join("queries/movie-info.dsql")).unwrap()
         ),
@@ -364,6 +462,25 @@ fn fixture_root() -> PathBuf {
 
 fn repo_root() -> PathBuf {
     fixture_root().parent().unwrap().to_path_buf()
+}
+
+fn link_typescript_package(root: &Path) {
+    let scope = root.join("node_modules/@dsql");
+    fs::create_dir_all(&scope).unwrap();
+    symlink_dir(
+        &repo_root().join("integrations/typescript"),
+        &scope.join("typescript"),
+    );
+}
+
+#[cfg(unix)]
+fn symlink_dir(from: &Path, to: &Path) {
+    std::os::unix::fs::symlink(from, to).unwrap();
+}
+
+#[cfg(windows)]
+fn symlink_dir(from: &Path, to: &Path) {
+    std::os::windows::fs::symlink_dir(from, to).unwrap();
 }
 
 fn snapshot(name: &str, contents: &str) {
