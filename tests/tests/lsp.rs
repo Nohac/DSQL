@@ -549,6 +549,70 @@ async fn imdb_keyword_and_operator_completion_contexts() {
 }
 
 #[tokio::test]
+async fn lsp_completion_fixture_runs_in_native_and_embedded_documents() {
+    for case in marked_source_cases("queries/lsp/imdb-completion-contexts.dsql") {
+        let host = AnalysisHost::new();
+        host.set_catalog(imdb_catalog());
+        host.open_document(case.uri.clone(), 1, case.source.clone())
+            .await;
+
+        let document_root = completions_at_marker(
+            &host,
+            &case.uri,
+            &case.source,
+            &case.markers,
+            "document_root",
+        )
+        .await;
+        let clause_keywords = completions_at_marker(
+            &host,
+            &case.uri,
+            &case.source,
+            &case.markers,
+            "clause_keywords",
+        )
+        .await;
+        let int_operators = completions_at_marker(
+            &host,
+            &case.uri,
+            &case.source,
+            &case.markers,
+            "int_operator",
+        )
+        .await;
+        let fragment_spread = completions_at_marker(
+            &host,
+            &case.uri,
+            &case.source,
+            &case.markers,
+            "fragment_spread",
+        )
+        .await;
+
+        assert_completion_labels(
+            &format!("{} document root", case.name),
+            &document_root,
+            &["query", "fragment"],
+        );
+        assert_completion_labels(
+            &format!("{} clause keywords", case.name),
+            &clause_keywords,
+            &["where", "order by", "limit", "offset"],
+        );
+        assert_completion_labels(
+            &format!("{} int operators", case.name),
+            &int_operators,
+            &["==", "!=", ">", ">=", "<", "<="],
+        );
+        assert_completion_labels(
+            &format!("{} fragment spread", case.name),
+            &fragment_spread,
+            &["MoviesInfo"],
+        );
+    }
+}
+
+#[tokio::test]
 async fn lsp_definitions_resolve_fragment_spreads_across_open_documents() {
     let host = AnalysisHost::new();
     host.set_catalog(imdb_catalog());
@@ -688,6 +752,109 @@ query KeywordDiscovery {
     );
 }
 
+#[tokio::test]
+async fn lsp_diagnostics_map_regex_embedded_dsql_ranges_to_host_document() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let uri = "file:///tests/src/movie-info.ts".to_string();
+    let source = r#"import { dsql } from "@dsql/typescript";
+
+export const MovieInfo = dsql`
+  query EmbeddedMovieInfoLookup {
+    movie_info {
+      missing_field
+    }
+  }
+`;
+"#;
+
+    let diagnostics = host.open_document(uri.clone(), 1, source.to_string()).await;
+    let field = diagnostics
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == dsql_core::DiagnosticCode::FieldNotFound)
+        .expect("embedded invalid field should produce a mapped field diagnostic");
+
+    let expected_start = source.find("missing_field").unwrap();
+    let expected_end = expected_start + "missing_field".len();
+    assert_eq!(
+        field.range,
+        dsql_core::TextRange::new(expected_start, expected_end)
+    );
+    assert_eq!(
+        byte_to_position(source, field.range.start as usize),
+        TextPosition {
+            line: 5,
+            character: 6
+        }
+    );
+}
+
+#[tokio::test]
+async fn lsp_completions_only_activate_inside_regex_embedded_dsql() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let uri = "file:///tests/src/movie-info.ts".to_string();
+    let source = r#"import { dsql } from "@dsql/typescript";
+
+const outside =
+
+export const MovieInfo = dsql`
+  query EmbeddedMovieInfoLookup {
+
+  }
+`;
+"#;
+
+    host.open_document(uri.clone(), 1, source.to_string()).await;
+
+    let outside = host
+        .completions(&uri, position_after(source, "const outside ="))
+        .await
+        .unwrap();
+    assert!(
+        outside.is_empty(),
+        "host TypeScript outside an embedded DSQL region should not complete DSQL items; got {:?}",
+        outside
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let inside = host
+        .completions(
+            &uri,
+            position_after(source, "  query EmbeddedMovieInfoLookup {\n"),
+        )
+        .await
+        .unwrap();
+    assert_completion_labels("embedded body", &inside, &["movie_info", "title"]);
+}
+
+#[tokio::test]
+async fn lsp_formatting_rewrites_regex_embedded_dsql_region() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let uri = "file:///tests/src/movie-info.ts".to_string();
+    let source = r#"import { dsql } from "@dsql/typescript";
+
+export const MovieInfo = dsql`
+query EmbeddedMovieInfoLookup { movie_info(limit 10) { id info title { id } } }
+`;
+"#;
+
+    host.open_document(uri.clone(), 1, source.to_string()).await;
+
+    let formatted = host
+        .document_format(&uri)
+        .await
+        .expect("embedded document should format");
+
+    assert_eq!(formatted.snapshot.uri, uri);
+    assert_eq!(formatted.formatted.diagnostics, Vec::new());
+    snapshot("lsp_embedded_formatting", &formatted.formatted.text);
+}
+
 fn format_completions(items: &[dsql_frontend::CompletionItem]) -> String {
     items
         .iter()
@@ -767,6 +934,46 @@ fn assert_no_completion_labels(
 fn marked_source(relative_path: &str) -> (String, BTreeMap<String, usize>) {
     let source = fs::read_to_string(fixture_root().join(relative_path)).unwrap();
     strip_markers(&source)
+}
+
+fn marked_source_cases(relative_path: &str) -> Vec<MarkedSourceCase> {
+    let (native_source, native_markers) = marked_source(relative_path);
+    let (embedded_source, embedded_markers) = embed_marked_source(&native_source, &native_markers);
+    vec![
+        MarkedSourceCase {
+            name: "native",
+            uri: format!("file:///tests/{relative_path}"),
+            source: native_source,
+            markers: native_markers,
+        },
+        MarkedSourceCase {
+            name: "embedded",
+            uri: format!("file:///tests/{relative_path}.ts"),
+            source: embedded_source,
+            markers: embedded_markers,
+        },
+    ]
+}
+
+struct MarkedSourceCase {
+    name: &'static str,
+    uri: String,
+    source: String,
+    markers: BTreeMap<String, usize>,
+}
+
+fn embed_marked_source(
+    source: &str,
+    markers: &BTreeMap<String, usize>,
+) -> (String, BTreeMap<String, usize>) {
+    let prefix = "import { dsql } from \"@dsql/typescript\";\n\nexport const Fixture = dsql`\n";
+    let suffix = "`;\n";
+    let embedded = format!("{prefix}{source}{suffix}");
+    let embedded_markers = markers
+        .iter()
+        .map(|(name, byte)| (name.clone(), prefix.len() + byte))
+        .collect();
+    (embedded, embedded_markers)
 }
 
 fn strip_markers(source: &str) -> (String, BTreeMap<String, usize>) {

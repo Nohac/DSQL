@@ -1,0 +1,9 @@
+[package]
+name = "dsql-embedding"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dsql-core = { path = "../core" }
+miette = { version = "7", features = ["fancy"] }
+regex = "1"

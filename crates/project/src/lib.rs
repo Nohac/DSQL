@@ -6,7 +6,7 @@ use dsql_core::{
 use facet::Facet;
 use miette::{IntoDiagnostic, Result, miette};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env::current_dir,
     fs,
     path::{Path, PathBuf},
@@ -21,6 +21,8 @@ pub struct Config {
     pub lint: LintConfig,
     #[facet(default = default_generate_config())]
     pub generate: GenerateConfig,
+    #[facet(default)]
+    pub embedding: BTreeMap<String, EmbeddingConfig>,
     pub documents: Vec<DocumentConfig>,
 }
 
@@ -58,16 +60,26 @@ pub enum LintSeverity {
 
 #[derive(Clone, Debug, Facet)]
 pub struct DocumentConfig {
-    pub resolver: ResolverType,
+    pub resolver: String,
     pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct EmbeddingConfig {
+    pub strategy: EmbeddingStrategy,
+    #[facet(default)]
+    pub pattern: Option<String>,
+    #[facet(default)]
+    pub language: Option<String>,
+    #[facet(default)]
+    pub query: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Facet)]
 #[facet(rename_all = "snake_case")]
 #[repr(u8)]
-pub enum ResolverType {
-    Dsql,
-    Typescript,
+pub enum EmbeddingStrategy {
+    Regex,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +197,7 @@ pub fn init_project(base_path: &Path, database_url: Option<String>) -> Result<Pr
         default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
         lint: default_lint_config(),
         generate: default_generate_config(),
+        embedding: BTreeMap::new(),
         documents: Vec::new(),
     };
     let config_toml = facet_toml::to_string(&config)

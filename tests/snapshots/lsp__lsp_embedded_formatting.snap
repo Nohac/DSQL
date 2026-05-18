@@ -1,0 +1,18 @@
+---
+source: tests/tests/lsp.rs
+assertion_line: 1020
+expression: contents
+---
+import { dsql } from "@dsql/typescript";
+
+export const MovieInfo = dsql`
+query EmbeddedMovieInfoLookup {
+  movie_info(limit 10) {
+    id
+    info
+    title {
+      id
+    }
+  }
+}
+`;

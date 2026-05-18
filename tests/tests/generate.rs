@@ -70,6 +70,30 @@ cmd = ["bun", "{}"]
     );
 }
 
+#[tokio::test]
+async fn generate_project_extracts_queries_from_regex_embedding_resolver() {
+    let project = tempfile::tempdir().unwrap();
+    create_embedded_project_fixture(project.path());
+
+    let output = dsql_generate::generate_project_from(project.path())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        output.operation_paths,
+        vec!["operations/EmbeddedMovieInfoLookup.json".to_string()]
+    );
+    let manifest = fs::read_to_string(project.path().join("dsql/build/manifest.json")).unwrap();
+    snapshot("generate_embedded_regex_manifest", &manifest);
+    let operation = fs::read_to_string(
+        project
+            .path()
+            .join("dsql/build/operations/EmbeddedMovieInfoLookup.json"),
+    )
+    .unwrap();
+    snapshot("generate_embedded_regex_operation", &operation);
+}
+
 fn create_project_fixture(root: &Path, generate_config: &str) {
     fs::create_dir_all(root.join("dsql/schema")).unwrap();
     fs::create_dir_all(root.join("queries")).unwrap();
@@ -105,6 +129,44 @@ documents = [{{ resolver = "dsql", paths = ["queries"] }}]
     }
   }
 }
+"#,
+    )
+    .unwrap();
+}
+
+fn create_embedded_project_fixture(root: &Path) {
+    fs::create_dir_all(root.join("dsql/schema")).unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+
+    copy_dir(
+        &fixture_root().join("schema/imdb"),
+        &root.join("dsql/schema"),
+    );
+    fs::write(
+        root.join("dsql/dsql.toml"),
+        r#"database_url = "<database url>"
+default_schema = "public"
+documents = [{ resolver = "app-ts", paths = ["src/**/*.ts"] }]
+
+[embedding.app-ts]
+strategy = "regex"
+pattern = 'dsql`(?P<content>[\s\S]*?)`'
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        root.join("src/movie-info.ts"),
+        r#"import { dsql } from "@dsql/typescript";
+
+export const MovieInfo = dsql`
+  query EmbeddedMovieInfoLookup {
+    movie_info(where .id > 0 order by id asc limit 2) {
+      id
+      info
+    }
+  }
+`;
 "#,
     )
     .unwrap();

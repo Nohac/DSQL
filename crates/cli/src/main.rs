@@ -340,7 +340,7 @@ fn project_document_files(project: &dsql_project::Project) -> Result<Vec<PathBuf
         collect_dsql_files(&base, Some(&project.root), &mut files)?;
     } else {
         for document in &project.config.documents {
-            if !matches!(document.resolver, dsql_project::ResolverType::Dsql) {
+            if document.resolver != "dsql" {
                 continue;
             }
             for path in &document.paths {

@@ -1,4 +1,5 @@
 use dsql_core::{Diagnostic, FormattedText};
+use dsql_embedding::EmbeddedRegion;
 use facet::Facet;
 use ropey::{LineType, Rope};
 
@@ -54,6 +55,7 @@ pub(crate) struct DocumentState {
     pub(crate) version: i32,
     pub(crate) revision: RevisionId,
     pub(crate) rope: Rope,
+    pub(crate) kind: DocumentKind,
 }
 
 impl DocumentState {
@@ -65,6 +67,37 @@ impl DocumentState {
             revision: self.revision,
             rope: self.rope.clone(),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum DocumentKind {
+    Dsql,
+    Host {
+        regions: Vec<EmbeddedDocumentRegion>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EmbeddedDocumentRegion {
+    pub(crate) file: FileId,
+    pub(crate) content_range: dsql_core::TextRange,
+}
+
+impl EmbeddedDocumentRegion {
+    pub(crate) fn from_region(file: FileId, region: &EmbeddedRegion) -> Self {
+        Self {
+            file,
+            content_range: region.content_range,
+        }
+    }
+
+    pub(crate) fn contains(&self, byte: usize) -> bool {
+        byte >= self.content_range.start as usize && byte <= self.content_range.end as usize
+    }
+
+    pub(crate) fn local_byte(&self, byte: usize) -> usize {
+        byte.saturating_sub(self.content_range.start as usize)
     }
 }
 

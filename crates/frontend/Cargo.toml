@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 dashmap = "6.1"
 dsql-core = { path = "../core" }
+dsql-embedding = { path = "../embedding" }
 facet = "0.44.1"
 facet-dessert = "=0.44.1"
 facet-format = "=0.44.1"

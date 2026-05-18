@@ -27,6 +27,7 @@ match the current design direction.
 - [Query Primitives](query-primitives.md)
 - [Inline Fragments](inline-fragments.md)
 - [Computed Expressions](computed-expressions.md)
+- [Programmatic Resolvers](programmatic-resolvers.md)
 - [Mutations](mutations.md)
 - [Pipeline Queries](pipeline.md)
 

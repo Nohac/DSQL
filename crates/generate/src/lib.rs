@@ -12,4 +12,4 @@ pub mod process;
 pub use pipeline::{GenerateOptions, GenerateOutput};
 
 #[cfg(all(feature = "fs", feature = "process"))]
-pub use pipeline::{generate_project_from, generate_project_from_with_options};
+pub use fs::{generate_project_from, generate_project_from_with_options};

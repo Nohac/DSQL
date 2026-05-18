@@ -111,6 +111,73 @@ The generated helper can use DSQL metadata for:
 Provider context such as `$:tenant_id` should usually be bound by the framework
 adapter once per request or app boundary, rather than passed as public params.
 
+### Compiler-Erased Inline Templates
+
+Inline DSQL should ideally be an authoring form that is erased by a host
+compiler/plugin. The `dsql` tag is primarily an embedding marker and should not
+imply that DSQL is parsed at runtime.
+
+Authoring shape:
+
+```ts
+const MyQuery = dsql`
+  query MyQuery {
+    users(limit $$limit) {
+      id
+      name
+    }
+  }
+`;
+
+useQuery(MyQuery, {
+  params: { limit: 20 }
+});
+```
+
+A TypeScript host integration can replace the tagged template with a generated
+operation object or import from generated code. The runtime wrapper should work
+with generated operation metadata, not raw DSQL source.
+
+Possible wrapper shape:
+
+```ts
+useQuery(MyQuery, {
+  params: { limit: 20 }
+});
+```
+
+The exact wrapper names are integration choices, but the generated operation
+object should carry enough metadata for stable cache keys, SQL execution, input
+types, context requirements, and result types.
+
+Fragment runtime APIs are less settled. A fragment may need query-specific
+parent context depending on where it is spread, so a globally exported
+`MyFragment` handle may be insufficient. A safer generated shape may be
+query-scoped:
+
+```ts
+useFragment(MyQuery.fragments.UserPosts, user, {
+  params: { limit: 10 }
+});
+```
+
+In this shape the fragment handle is tied to `MyQuery` and can carry the
+handoff metadata for the exact result path where it is used. This distinction is
+important:
+
+- fragments as source syntax are reusable compile-time composition units
+- generated fragment handles may be query/path scoped runtime artifacts
+
+Open questions:
+
+- Whether standalone fragment handles should exist for fragments that do not
+  need parent identity or query-specific context.
+- How query-scoped fragment handles should be named.
+- Whether generated query objects should expose fragments as nested properties,
+  a `fragments` map, or framework-specific helpers.
+- How much of the fragment context contract should be visible in TypeScript
+  types.
+
 ## Generation Configuration
 
 Project configuration should describe enabled generation targets. DSQL itself

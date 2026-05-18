@@ -259,13 +259,27 @@ impl LanguageServer for Backend {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = params.text_document.uri;
-        let Some(format) = self.analysis.document_format(&uri.to_string()).await else {
+        let uri_string = uri.to_string();
+        info!(uri = %uri_string, "formatting request");
+        let Some(format) = self.analysis.document_format(&uri_string).await else {
+            info!(uri = %uri_string, "formatting skipped; no format result");
             return Ok(None);
         };
         if !format.formatted.diagnostics.is_empty() {
+            info!(
+                uri = %uri_string,
+                diagnostic_count = format.formatted.diagnostics.len(),
+                "formatting skipped; formatter returned diagnostics"
+            );
             return Ok(None);
         }
         let end = byte_to_position(&format.snapshot.rope, format.snapshot.rope.len());
+        info!(
+            uri = %uri_string,
+            original_bytes = format.snapshot.rope.len(),
+            formatted_bytes = format.formatted.text.len(),
+            "formatting returning full document edit"
+        );
         Ok(Some(vec![TextEdit {
             range: Range {
                 start: Position::new(0, 0),

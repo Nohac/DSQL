@@ -1,0 +1,16 @@
+---
+source: tests/tests/generate.rs
+expression: contents
+---
+{
+  "version": 1,
+  "operations": [
+    {
+      "name": "EmbeddedMovieInfoLookup",
+      "kind": "query",
+      "path": "operations/EmbeddedMovieInfoLookup.json",
+      "hash": "76e051ccda5880b5",
+      "source": "src/movie-info.ts"
+    }
+  ]
+}

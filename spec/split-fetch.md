@@ -122,6 +122,39 @@ Conceptual child predicate:
 where posts.user_id = $parent_user_id
 ```
 
+## Query-Scoped Fragment Handles
+
+Fetchable fragments may need to be context aware. The same fragment source can
+be spread from different query paths, and each use can imply different parent
+identity, result path, policy context, selected hidden fields, or handoff
+metadata. Because of that, generated runtime handles may need to be scoped to
+the query/path where the fragment is used.
+
+Possible generated TypeScript shape:
+
+```ts
+const users = useQuery(UsersPage, {
+  params: { limit: 20 }
+});
+
+const posts = useFragment(UsersPage.fragments.UserPosts, users.data.users[0], {
+  params: { first: 10 }
+});
+```
+
+Here `UsersPage.fragments.UserPosts` is not merely the source fragment. It is a
+query-scoped handle that knows:
+
+- the owning query
+- the result path where the fragment was spread
+- the parent identity required to fetch the child branch
+- local params for the child branch
+- required provider context and policy inputs
+
+This keeps split fetches tied to a concrete handoff contract. A plain
+`UserPosts` handle may still be useful for truly standalone fragments, but it
+should not be the default assumption for fragments that depend on parent data.
+
 ## Handoff Metadata
 
 Codegen should expose enough metadata for a framework adapter to hydrate child
