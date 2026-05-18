@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
     }
   },
   "files": [
@@ -14,8 +18,8 @@
   ],
   "scripts": {
     "generate": "cargo run -q --manifest-path ../../Cargo.toml -p dsql-cli -- generate --target typescript-metadata --out-dir src/generated",
-    "generate:project": "bun src/generator.ts",
-    "typecheck": "bunx tsc --noEmit",
+    "generate:project": "bun renderers/basic.ts",
+    "typecheck": "bunx tsc --noEmit && bunx tsc -p tsconfig.renderers.json",
     "build": "bunx tsc"
   },
   "devDependencies": {

@@ -17,7 +17,7 @@ out_dir = "src/generated/dsql"
 cmd = ["bun", "{}"]
 "#,
             repo_root()
-                .join("integrations/typescript/src/generator.ts")
+                .join("integrations/typescript/renderers/basic.ts")
                 .display()
         ),
     );

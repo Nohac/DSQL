@@ -11,16 +11,28 @@ This package should stay metadata-first:
 3. This package provides convenience types and helpers for tools that interact
    with those build artifacts.
 
-The first target is a generator command that reads the manifest path from
+The root package exports metadata types and small runtime-neutral helpers. Node
+and Bun filesystem helpers live under `@dsql/typescript/node` so browser-facing
+code can import the root package without pulling in `node:fs`.
+
+Renderers are intentionally normal Bun/TypeScript programs so projects can
+vendor or replace them. The first renderer reads the manifest path from
 `DSQL_MANIFEST`, loads templates, and writes owned files into `DSQL_OUT_DIR`.
-It is intentionally a normal Bun/TypeScript program so projects can vendor or
-replace it.
 
 ```toml
 [generate.typescript]
 enabled = true
 out_dir = "src/generated/dsql"
-cmd = ["bun", "node_modules/@dsql/typescript/src/generator.ts"]
+cmd = ["bun", "dsql/renderers/basic.ts"]
+```
+
+A vendored renderer should use the shared artifact loader rather than parsing
+the manifest shape itself:
+
+```ts
+import { loadBuildArtifacts } from "@dsql/typescript/node";
+
+const artifacts = loadBuildArtifacts(process.env.DSQL_MANIFEST!);
 ```
 
 The exact runtime API is still open. This package is intentionally small until

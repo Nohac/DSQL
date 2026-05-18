@@ -1,13 +1,9 @@
 import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Project, QuoteKind, VariableDeclarationKind } from "ts-morph";
-import type {
-  BuildManifest,
-  OperationMetadata,
-  OperationManifestEntry,
-  ResultField,
-} from "./generated/metadata.js";
+import { loadBuildArtifacts } from "../src/node.js";
+import type { OperationMetadata, ResultField } from "../src/index.js";
 
 const manifestPath = process.env.DSQL_MANIFEST;
 const outDir = process.env.DSQL_OUT_DIR;
@@ -18,11 +14,7 @@ if (!manifestPath || !outDir) {
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const templatePath = join(packageRoot, "templates", "queries.ts");
-const manifest = JSON.parse(
-  readFileSync(manifestPath, "utf8"),
-) as BuildManifest;
-const manifestDir = dirname(manifestPath);
-const operations = manifest.operations.map(readOperation);
+const { operations } = loadBuildArtifacts(manifestPath);
 
 mkdirSync(outDir, { recursive: true });
 
@@ -78,13 +70,6 @@ ${operations
 
 source.formatText();
 source.saveSync();
-
-function readOperation(entry: OperationManifestEntry): OperationMetadata {
-  const path = isAbsolute(entry.path)
-    ? entry.path
-    : join(manifestDir, entry.path);
-  return JSON.parse(readFileSync(path, "utf8")) as OperationMetadata;
-}
 
 function resultTypeLiteral(operation: OperationMetadata): string {
   const roots = operation.result.fields.filter(
