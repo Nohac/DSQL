@@ -1,5 +1,6 @@
 ---
 source: tests/tests/generate.rs
+assertion_line: 211
 expression: contents
 ---
 {
@@ -49,8 +50,8 @@ expression: contents
       "id": "EmbeddedMovieInfoLookup",
       "file": "src/movie-info.ts",
       "range": {
-        "start": 75,
-        "end": 192
+        "start": 76,
+        "end": 193
       }
     }
   ]

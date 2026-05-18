@@ -759,13 +759,13 @@ async fn lsp_diagnostics_map_regex_embedded_dsql_ranges_to_host_document() {
     let uri = "file:///tests/src/movie-info.ts".to_string();
     let source = r#"import { dsql } from "@dsql/typescript";
 
-export const MovieInfo = dsql`
+export const MovieInfo = dsql(`
   query EmbeddedMovieInfoLookup {
     movie_info {
       missing_field
     }
   }
-`;
+`);
 "#;
 
     let diagnostics = host.open_document(uri.clone(), 1, source.to_string()).await;
@@ -799,11 +799,11 @@ async fn lsp_completions_only_activate_inside_regex_embedded_dsql() {
 
 const outside =
 
-export const MovieInfo = dsql`
+export const MovieInfo = dsql(`
   query EmbeddedMovieInfoLookup {
 
   }
-`;
+`);
 "#;
 
     host.open_document(uri.clone(), 1, source.to_string()).await;
@@ -838,9 +838,9 @@ async fn lsp_formatting_rewrites_regex_embedded_dsql_region() {
     let uri = "file:///tests/src/movie-info.ts".to_string();
     let source = r#"import { dsql } from "@dsql/typescript";
 
-export const MovieInfo = dsql`
+export const MovieInfo = dsql(`
 query EmbeddedMovieInfoLookup { movie_info(limit 10) { id info title { id } } }
-`;
+`);
 "#;
 
     host.open_document(uri.clone(), 1, source.to_string()).await;
@@ -966,8 +966,8 @@ fn embed_marked_source(
     source: &str,
     markers: &BTreeMap<String, usize>,
 ) -> (String, BTreeMap<String, usize>) {
-    let prefix = "import { dsql } from \"@dsql/typescript\";\n\nexport const Fixture = dsql`\n";
-    let suffix = "`;\n";
+    let prefix = "import { dsql } from \"@dsql/typescript\";\n\nexport const Fixture = dsql(`\n";
+    let suffix = "`);\n";
     let embedded = format!("{prefix}{source}{suffix}");
     let embedded_markers = markers
         .iter()

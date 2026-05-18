@@ -38,6 +38,43 @@ const artifacts = loadBuildArtifacts(process.env.DSQL_MANIFEST!);
 The exact runtime API is still open. This package is intentionally small until
 the DSQL build metadata format stabilizes.
 
+## Vite Transform
+
+The Vite plugin is currently a pure transform. It does not run `dsql generate`;
+run generation before starting Vite or as part of the project `dev`/`build`
+script.
+
+```ts
+import { dsql } from "@dsql/typescript/vite";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [
+    dsql({
+      generatedModule: "/src/generated/dsql/queries",
+    }),
+  ],
+});
+```
+
+The transform rewrites named DSQL tags to generated operation imports:
+
+```ts
+const MovieInfo = dsql`
+  query MovieInfoLookup {
+    movie_info {
+      id
+    }
+  }
+`;
+```
+
+becomes:
+
+```ts
+import { MovieInfoLookupOperation as MovieInfo } from "/src/generated/dsql/queries";
+```
+
 ## Metadata Types
 
 The metadata contract is owned by Rust in the `dsql-metadata` crate. The CLI can

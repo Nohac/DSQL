@@ -5,7 +5,7 @@ expression: contents
 ---
 import { dsql } from "@dsql/typescript";
 
-export const MovieInfo = dsql`
+export const MovieInfo = dsql(`
 query EmbeddedMovieInfoLookup {
   movie_info(limit 10) {
     id
@@ -15,4 +15,4 @@ query EmbeddedMovieInfoLookup {
     }
   }
 }
-`;
+`);

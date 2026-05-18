@@ -3,6 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "node": [
+        "./dist/node.d.ts"
+      ],
+      "vite": [
+        "./dist/vite.d.ts"
+      ],
+      "*": [
+        "./dist/index.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "bun": {
@@ -19,6 +33,14 @@
       },
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
+    },
+    "./vite": {
+      "bun": {
+        "types": "./src/vite.ts",
+        "default": "./src/vite.ts"
+      },
+      "types": "./dist/vite.d.ts",
+      "default": "./dist/vite.js"
     }
   },
   "files": [
@@ -27,6 +49,7 @@
   "scripts": {
     "generate": "cargo run -q --manifest-path ../../Cargo.toml -p dsql-cli -- generate --target typescript-metadata --out-dir src/generated",
     "generate:project": "bun renderers/basic.ts",
+    "test": "bun test tests",
     "typecheck": "bunx tsc --noEmit && bunx tsc -p tsconfig.renderers.json",
     "build": "bunx tsc"
   },

@@ -49,5 +49,5 @@ pub fn extract_regex(pattern: &str, source: &str) -> Result<Vec<EmbeddedRegion>>
 }
 
 pub fn default_typescript_regex_pattern() -> String {
-    r#"dsql`(?P<content>[\s\S]*?)`"#.to_string()
+    r#"dsql(?:\s*\(\s*)?`(?P<content>[\s\S]*?)`(?:\s*\))?"#.to_string()
 }

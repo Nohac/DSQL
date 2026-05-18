@@ -2,7 +2,12 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Project, QuoteKind, VariableDeclarationKind } from "ts-morph";
-import type { OperationMetadata, ResultField } from "@dsql/typescript";
+import type {
+  InputField,
+  OperationManifestEntry,
+  OperationMetadata,
+  ResultField,
+} from "@dsql/typescript";
 import { loadBuildArtifacts } from "@dsql/typescript/node";
 
 const manifestPath = process.env.DSQL_MANIFEST;
@@ -14,7 +19,9 @@ if (!manifestPath || !outDir) {
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const templatePath = join(packageRoot, "templates", "queries.ts");
-const { operations } = loadBuildArtifacts(manifestPath);
+const artifacts = loadBuildArtifacts(manifestPath);
+const { operations } = artifacts;
+const projectRoot = dirname(dirname(dirname(manifestPath)));
 
 mkdirSync(outDir, { recursive: true });
 
@@ -31,11 +38,24 @@ const source = project.createSourceFile(
 );
 
 for (const operation of operations) {
+  const manifestEntry = manifestEntryFor(operation);
   const resultType = `${toPascalCase(operation.name)}Result`;
+  const paramsType = `${toPascalCase(operation.name)}Params`;
+  const inputType = `${toPascalCase(operation.name)}Input`;
   source.addTypeAlias({
     isExported: true,
     name: resultType,
     type: resultTypeLiteral(operation),
+  });
+  source.addTypeAlias({
+    isExported: true,
+    name: paramsType,
+    type: paramsTypeLiteral(operation.params),
+  });
+  source.addTypeAlias({
+    isExported: true,
+    name: inputType,
+    type: inputTypeLiteral(operation.input),
   });
   source.addVariableStatement({
     isExported: true,
@@ -43,15 +63,25 @@ for (const operation of operations) {
     declarations: [
       {
         name: `${toPascalCase(operation.name)}Operation`,
+        type: `DsqlOperation<${resultType}, ${paramsType}, ${inputType}>`,
         initializer: `{
+  id: ${JSON.stringify(manifestEntry.hash)},
   name: ${JSON.stringify(operation.name)},
   kind: "query",
   sql: ${JSON.stringify(operation.sql.text)}
-} as const satisfies DsqlOperation<${resultType}>`,
+}`,
       },
     ],
   });
 }
+
+const dsqlFunctionIndex = source
+  .getStatements()
+  .findIndex((statement) => statement.getText().startsWith("export function dsql("));
+if (dsqlFunctionIndex === -1) {
+  throw new Error("queries template must define a dsql function");
+}
+source.insertStatements(dsqlFunctionIndex, operationSourceMapType());
 
 source.addVariableStatement({
   isExported: true,
@@ -71,6 +101,76 @@ ${operations
 source.formatText();
 source.saveSync();
 
+function manifestEntryFor(operation: OperationMetadata): OperationManifestEntry {
+  const entry = artifacts.manifest.operations.find(
+    (candidate) => candidate.name === operation.name,
+  );
+  if (!entry) {
+    throw new Error(`missing manifest entry for operation ${operation.name}`);
+  }
+  return entry;
+}
+
+function operationSourceText(operation: OperationMetadata): string | undefined {
+  const sourceMap = operation.source_map.find(
+    (entry) => entry.id === operation.name,
+  );
+  if (!sourceMap) {
+    return undefined;
+  }
+
+  const source = readFileSync(join(projectRoot, sourceMap.file), "utf8");
+  return (
+    embeddedDsqlTextContainingRange(
+      source,
+      sourceMap.range.start,
+      sourceMap.range.end,
+    ) ?? source.slice(sourceMap.range.start, sourceMap.range.end)
+  );
+}
+
+function operationSourceMapType(): string {
+  const entries = operations
+    .map((operation) => {
+      const sourceText = operationSourceText(operation);
+      if (!sourceText) {
+        return undefined;
+      }
+      return `  readonly ${JSON.stringify(sourceText)}: typeof ${toPascalCase(
+        operation.name,
+      )}Operation;`;
+    })
+    .filter((entry): entry is string => entry !== undefined);
+
+  return `export type DsqlOperationBySource = {\n${entries.join("\n")}\n};`;
+}
+
+function embeddedDsqlTextContainingRange(
+  source: string,
+  start: number,
+  end: number,
+): string | undefined {
+  const pattern = /dsql(?:\s*\(\s*)?`(?<content>[\s\S]*?)`(?:\s*\))?/g;
+  for (const match of source.matchAll(pattern)) {
+    const content = match.groups?.content;
+    if (content === undefined || match.index === undefined) {
+      continue;
+    }
+
+    const contentOffset = match[0].indexOf(content);
+    if (contentOffset < 0) {
+      continue;
+    }
+
+    const contentStart = match.index + contentOffset;
+    const contentEnd = contentStart + content.length;
+    if (start >= contentStart && end <= contentEnd) {
+      return content;
+    }
+  }
+  return undefined;
+}
+
 function resultTypeLiteral(operation: OperationMetadata): string {
   const roots = operation.result.fields.filter(
     (field) => field.parent_path === "",
@@ -78,6 +178,41 @@ function resultTypeLiteral(operation: OperationMetadata): string {
   return objectType(
     roots.map((field) => propertyType(field, operation.result.fields)),
   );
+}
+
+function paramsTypeLiteral(fields: readonly InputField[]): string {
+  return inputFieldsTypeLiteral(fields, "params");
+}
+
+function inputTypeLiteral(fields: readonly InputField[]): string {
+  return inputFieldsTypeLiteral(fields, "input");
+}
+
+function inputFieldsTypeLiteral(
+  fields: readonly InputField[],
+  prefix: "params" | "input",
+): string {
+  if (fields.length === 0) {
+    return "Record<string, never>";
+  }
+
+  const root = new TypeNode();
+  for (const field of fields) {
+    const path = publicInputPath(field.path, prefix);
+    if (path.length === 0) {
+      continue;
+    }
+    root.insert(path, withNullability(dataType(field.data_type), field.nullable));
+  }
+  return root.toTypeLiteral();
+}
+
+function publicInputPath(path: string, prefix: "params" | "input"): string[] {
+  const parts = path.split(".").filter(Boolean);
+  if (parts[0] !== prefix) {
+    return parts;
+  }
+  return parts.slice(1);
 }
 
 function propertyType(
@@ -108,6 +243,43 @@ ${properties
   .map(([name, type]) => `  ${propertyName(name)}: ${type};`)
   .join("\n")}
 }`;
+}
+
+class TypeNode {
+  private readonly children = new Map<string, TypeNode>();
+  private value: string | undefined;
+
+  insert(path: readonly string[], type: string): void {
+    if (path.length === 0) {
+      this.value = type;
+      return;
+    }
+
+    const [head, ...tail] = path;
+    if (head === undefined) {
+      this.value = type;
+      return;
+    }
+    let child = this.children.get(head);
+    if (!child) {
+      child = new TypeNode();
+      this.children.set(head, child);
+    }
+    child.insert(tail, type);
+  }
+
+  toTypeLiteral(): string {
+    if (this.children.size === 0) {
+      return this.value ?? "unknown";
+    }
+
+    return objectType(
+      [...this.children.entries()].map(([name, child]) => [
+        name,
+        child.toTypeLiteral(),
+      ]),
+    );
+  }
 }
 
 function propertyName(name: string): string {
