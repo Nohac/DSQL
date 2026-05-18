@@ -140,7 +140,7 @@ function createSourceFromTemplate(
   mkdirSync(outDir, { recursive: true });
   return project.createSourceFile(
     join(outDir, name),
-    readFileSync(join(packageRoot(), "templates", name), "utf8"),
+    readFileSync(join(packageRoot(), "templates", "bundled", name), "utf8"),
     { overwrite: true },
   );
 }

@@ -125,74 +125,67 @@ out_dir = "src/generated/dsql"
 cmd = ["bun", "dsql/generate.ts"]
 "#,
     );
-    let generate = format!(
-        r#"import {{ mkdirSync, readFileSync, writeFileSync }} from "node:fs";
-import {{ join }} from "node:path";
-import {{
+    fs::create_dir_all(project.path().join("dsql/templates")).unwrap();
+    fs::copy(
+        repo_root().join("integrations/typescript/renderers/templates/my-templates.ts"),
+        project.path().join("dsql/templates/my-templates.ts"),
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("dsql/generate.ts"),
+        r#"import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
   loadBuildArtifacts,
   renderDsqlHelper,
   renderTypes,
-}} from "@dsql/typescript/node";
-import type {{ BuildArtifacts }} from "@dsql/typescript/node";
+} from "@dsql/typescript/node";
+import type { BuildArtifacts } from "@dsql/typescript/node";
+import {
+  tanstackQueryTemplate,
+  tanstackStartTemplate,
+} from "./templates/my-templates";
 
 const manifestPath = process.env.DSQL_MANIFEST;
 const outDir = process.env.DSQL_OUT_DIR;
-const packageRoot = {package_root};
 
-if (!manifestPath || !outDir) {{
+if (!manifestPath || !outDir) {
   throw new Error("DSQL_MANIFEST and DSQL_OUT_DIR are required");
-}}
+}
 
 const artifacts = loadBuildArtifacts(manifestPath);
 
-await renderTypes(artifacts, {{ outDir }});
-await renderDsqlHelper(artifacts, {{ outDir }});
-renderTanStackQuery({{ outDir }});
-renderTanStackStart(artifacts, {{ outDir }});
+await renderTypes(artifacts, { outDir });
+await renderDsqlHelper(artifacts, { outDir });
+renderTanStackQuery({ outDir });
+renderTanStackStart(artifacts, { outDir });
 
-type RenderOptions = {{
+type RenderOptions = {
   readonly outDir: string;
-}};
+};
 
-function renderTanStackQuery(options: RenderOptions): void {{
-  copyTemplate("tanstack-query.ts", options.outDir);
-}}
+function renderTanStackQuery(options: RenderOptions): void {
+  writeFile(options.outDir, "tanstack-query.ts", tanstackQueryTemplate);
+}
 
 function renderTanStackStart(
   artifacts: BuildArtifacts,
   options: RenderOptions,
-): void {{
-  const template = readTemplate("tanstack-start.ts");
-  const names = JSON.stringify(artifacts.operations.map((operation) => operation.name));
+): void {
   writeFile(
     options.outDir,
     "tanstack-start.ts",
-    `export const serverOperationNames = ${{names}} as const;\n${{template}}`,
+    tanstackStartTemplate(artifacts.operations.map((operation) => operation.name)),
   );
-}}
+}
 
-function copyTemplate(name: string, outDir: string): void {{
-  writeFile(outDir, name, readTemplate(name));
-}}
-
-function readTemplate(name: string): string {{
-  return readFileSync(join(packageRoot, "templates", name), "utf8");
-}}
-
-function writeFile(outDir: string, name: string, contents: string): void {{
-  mkdirSync(outDir, {{ recursive: true }});
+function writeFile(outDir: string, name: string, contents: string): void {
+  mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, name), contents);
-}}
+}
 "#,
-        package_root = serde_json::to_string(
-            &repo_root()
-                .join("integrations/typescript")
-                .to_string_lossy()
-                .to_string()
-        )
-        .unwrap()
-    );
-    fs::write(project.path().join("dsql/generate.ts"), generate).unwrap();
+    )
+    .unwrap();
 
     dsql_generate::generate_project_from(project.path())
         .await

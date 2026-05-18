@@ -50,6 +50,23 @@ operation types/constants, the typed `dsql` helper, and barrel exports. The
 that additionally writes starter TanStack Query and TanStack Start wrapper
 files without exposing those helpers from `@dsql/typescript`.
 
+Template files are split by ownership. Package-owned templates are internal to
+`@dsql/typescript`:
+
+```text
+templates/bundled/
+```
+
+Project/framework templates should be local to your app. The example
+`renderers/generate.ts` imports a single copyable template module:
+
+```text
+dsql/
+  generate.ts
+  templates/
+    my-templates.ts
+```
+
 A vendored entrypoint should use the shared artifact loader rather than parsing
 the manifest shape itself:
 
@@ -99,8 +116,8 @@ becomes:
 import { MovieInfoLookupOperation as MovieInfo } from "/src/generated/dsql/queries";
 ```
 
-The generated `queries` module is a compatibility barrel. New templates should
-prefer importing from the specific generated module they need, such as
+The generated `queries` module is a compatibility barrel. Vendored templates
+should prefer importing from the specific generated module they need, such as
 `operations`, `dsql`, `tanstack-query`, or `tanstack-start`.
 
 ## Metadata Types
