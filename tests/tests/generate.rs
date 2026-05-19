@@ -226,6 +226,18 @@ await renderTanStackQuery(artifacts, { outDir });
         tanstack_start.contains("MovieInfoLookupServerFn"),
         "generated tanstack-start.ts should define an operation-specific server function:\n{tanstack_start}"
     );
+    assert!(
+        tanstack_start.contains("getGlobalStartContext"),
+        "generated tanstack-start.ts should read the executor from TanStack Start request context:\n{tanstack_start}"
+    );
+    assert!(
+        tanstack_start.contains("TanStack Start request context"),
+        "generated tanstack-start.ts should explain that the executor comes from request context:\n{tanstack_start}"
+    );
+    assert!(
+        !tanstack_start.contains("configureDsqlServer"),
+        "generated tanstack-start.ts should not require a module-level runtime singleton:\n{tanstack_start}"
+    );
     let queries = fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
     assert!(
         queries.contains(r#"export * from "./tanstack-query";"#),
@@ -241,19 +253,19 @@ await renderTanStackQuery(artifacts, { outDir });
   useQuery,
 } from "./generated/dsql/queries";
 import type { MovieInfoLookupResult } from "./generated/dsql/queries";
-import {
-  configureDsqlServer,
-  serverOperationNames,
-} from "./generated/dsql/tanstack-start";
+import type { DsqlServerContext } from "./generated/dsql/tanstack-start";
+import { serverOperationNames } from "./generated/dsql/tanstack-start";
 
-configureDsqlServer({
-  executeQuery: async (operation, variables) => {
-    operation satisfies typeof MovieInfoLookupOperation;
-    variables.params satisfies Record<string, never>;
-    variables.input satisfies Record<string, never>;
-    return {} as never;
+const context: DsqlServerContext = {
+  dsql: {
+    executeQuery: async (operation, variables) => {
+      operation satisfies typeof MovieInfoLookupOperation;
+      variables.params satisfies Record<string, never>;
+      variables.input satisfies Record<string, never>;
+      return {} as never;
+    },
   },
-});
+};
 
 const MovieInfoLookup = dsql(`query MovieInfoLookup {
   movie_info(where .id > 0 order by id asc limit 2) {
@@ -272,6 +284,7 @@ const MovieInfoLookup = dsql(`query MovieInfoLookup {
 
 MovieInfoLookupOperation satisfies typeof MovieInfoLookupOperation;
 serverOperationNames satisfies readonly string[];
+context.dsql.executeQuery satisfies unknown;
 type IsNever<T> = [T] extends [never] ? true : false;
 type AssertFalse<T extends false> = T;
 type OperationResultIsNotNever = AssertFalse<IsNever<DsqlOperationResult<typeof MovieInfoLookup>>>;
@@ -282,6 +295,41 @@ const query = useQuery(MovieInfoLookup, {
 });
 type QueryDataIsNotNever = AssertFalse<IsNever<typeof query.data>>;
 query.data satisfies MovieInfoLookupResult | undefined;
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("src/server.ts"),
+        r#"import handler, { createServerEntry } from "@tanstack/react-start/server-entry";
+import type { DsqlServerContext } from "./generated/dsql/tanstack-start";
+import { MovieInfoLookupOperation } from "./generated/dsql/queries";
+
+type RequestContext = DsqlServerContext;
+
+declare module "@tanstack/react-start" {
+  interface Register {
+    server: {
+      requestContext: RequestContext;
+    };
+  }
+}
+
+const context: RequestContext = {
+  dsql: {
+    executeQuery: async (operation, variables) => {
+      operation satisfies typeof MovieInfoLookupOperation;
+      variables.params satisfies Record<string, never>;
+      variables.input satisfies Record<string, never>;
+      return {} as never;
+    },
+  },
+};
+
+export default createServerEntry({
+  async fetch(request) {
+    return handler.fetch(request, { context });
+  },
+});
 "#,
     )
     .unwrap();
@@ -299,6 +347,15 @@ query.data satisfies MovieInfoLookupResult | undefined;
     assert!(
         status.success(),
         "user-owned TypeScript generation entrypoints should compile generated output"
+    );
+    let status = Command::new("bun")
+        .args(["build", "src/server.ts", "--outdir", "build/server-entry"])
+        .current_dir(project.path())
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "TanStack Start server entry should compile with DSQL request context"
     );
 }
 
@@ -562,12 +619,14 @@ fn write_tanstack_stubs(root: &Path) {
     fs::create_dir_all(&react_start).unwrap();
     fs::write(
         react_start.join("package.json"),
-        r#"{"name":"@tanstack/react-start","type":"module","exports":"./index.ts"}"#,
+        r#"{"name":"@tanstack/react-start","type":"module","exports":{".":"./index.ts","./server-entry":"./server-entry.ts"}}"#,
     )
     .unwrap();
     fs::write(
         react_start.join("index.ts"),
-        r#"type ServerFnOptions = {
+        r#"export interface Register {}
+
+type ServerFnOptions = {
   readonly method?: string;
 };
 
@@ -585,6 +644,43 @@ export function createServerFn(_options?: ServerFnOptions) {
     },
   };
 }
+
+export function getGlobalStartContext(): unknown {
+  return undefined;
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        react_start.join("server-entry.ts"),
+        r#"import type { Register } from "./index";
+
+type RequestContext = Register extends {
+  server: { requestContext: infer TRequestContext };
+}
+  ? TRequestContext
+  : undefined;
+
+type RequestOptions = RequestContext extends undefined
+  ? { readonly context?: RequestContext }
+  : { readonly context: RequestContext };
+
+type ServerEntry = {
+  readonly fetch: (request: Request) => Response | Promise<Response>;
+};
+
+declare const handler: {
+  readonly fetch: (
+    request: Request,
+    options: RequestOptions,
+  ) => Response | Promise<Response>;
+};
+
+export function createServerEntry<Entry extends ServerEntry>(entry: Entry): Entry {
+  return entry;
+}
+
+export default handler;
 "#,
     )
     .unwrap();

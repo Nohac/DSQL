@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { createServerFn } from "@tanstack/react-start";
+import { createServerFn, getGlobalStartContext } from "@tanstack/react-start";
 import type {
   DsqlOperation,
   DsqlOperationInput,
@@ -21,23 +21,21 @@ export type DsqlServerExecutor = <
   variables: DsqlServerVariables<Operation>,
 ) => Promise<DsqlOperationResult<Operation>>;
 
-export type DsqlServerRuntime = {
-  readonly executeQuery: DsqlServerExecutor;
+export type DsqlServerContext = {
+  readonly dsql: {
+    readonly executeQuery: DsqlServerExecutor;
+  };
 };
-
-let runtime: DsqlServerRuntime | undefined;
-
-export function configureDsqlServer(runtimeConfig: DsqlServerRuntime): void {
-  runtime = runtimeConfig;
-}
 
 function executeDsqlOperation<Operation extends DsqlOperation<any, any, any>>(
   operation: Operation,
   variables: DsqlServerVariables<Operation>,
 ): Promise<DsqlOperationResult<Operation>> {
-  if (!runtime) {
-    throw new Error("dsql server runtime is not configured");
+  const context = getGlobalStartContext() as Partial<DsqlServerContext> | undefined;
+  const executeQuery = context?.dsql?.executeQuery;
+  if (!executeQuery) {
+    throw new Error("dsql executor is not configured in TanStack Start request context");
   }
 
-  return runtime.executeQuery(operation, variables);
+  return executeQuery(operation, variables);
 }
