@@ -55,8 +55,7 @@ export async function renderTypes(
           initializer: `{
   id: ${JSON.stringify(manifestEntry.hash)},
   name: ${JSON.stringify(operation.name)},
-  kind: "query",
-  sql: ${JSON.stringify(operation.sql.text)}
+  kind: "query"
 }`,
         },
       ],

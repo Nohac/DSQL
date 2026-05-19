@@ -22,6 +22,11 @@ export async function renderTanStackStart(
     options.outDir,
     "tanstack-start.ts",
   );
+  const serverSource = project.createSourceFile(
+    join(options.outDir, "tanstack-start.server.ts"),
+    'import "@tanstack/react-start/server-only";\n',
+    { overwrite: true },
+  );
 
   if (artifacts.operations.length > 0) {
     source.addImportDeclaration({
@@ -30,7 +35,32 @@ export async function renderTanStackStart(
         (operation) => `${toPascalCase(operation.name)}Operation`,
       ),
     });
+    serverSource.addImportDeclaration({
+      moduleSpecifier: "./operations",
+      namedImports: artifacts.operations.map(
+        (operation) => `${toPascalCase(operation.name)}Operation`,
+      ),
+    });
   }
+
+  serverSource.addImportDeclaration({
+    moduleSpecifier: "./operations",
+    isTypeOnly: true,
+    namedImports: ["DsqlOperation"],
+  });
+  serverSource.addTypeAlias({
+    isExported: true,
+    name: "DsqlServerOperation",
+    typeParameters: [
+      {
+        name: "Operation",
+        constraint: "DsqlOperation<any, any, any>",
+      },
+    ],
+    type: `Operation & {
+  readonly sql: string;
+}`,
+  });
 
   source.addVariableStatement({
     isExported: true,
@@ -47,6 +77,21 @@ export async function renderTanStackStart(
 
   for (const operation of artifacts.operations) {
     const operationName = `${toPascalCase(operation.name)}Operation`;
+    const serverOperationName = `${toPascalCase(operation.name)}ServerOperation`;
+    serverSource.addVariableStatement({
+      isExported: true,
+      declarationKind: VariableDeclarationKind.Const,
+      declarations: [
+        {
+          name: serverOperationName,
+          type: `DsqlServerOperation<typeof ${operationName}>`,
+          initializer: `{
+  ...${operationName},
+  sql: ${JSON.stringify(operation.sql.text)}
+}`,
+        },
+      ],
+    });
     source.addVariableStatement({
       isExported: true,
       declarationKind: VariableDeclarationKind.Const,
@@ -60,9 +105,29 @@ export async function renderTanStackStart(
       ],
     });
   }
+  serverSource.addVariableStatement({
+    isExported: true,
+    declarationKind: VariableDeclarationKind.Const,
+    declarations: [
+      {
+        name: "serverOperations",
+        type: "Record<string, DsqlServerOperation<any>>",
+        initializer: `{
+${artifacts.operations
+  .map((operation) => {
+    const name = toPascalCase(operation.name);
+    return `  ${JSON.stringify(operation.name)}: ${name}ServerOperation`;
+  })
+  .join(",\n")}
+}`,
+      },
+    ],
+  });
 
-  source.formatText();
-  await source.save();
+  for (const file of [source, serverSource]) {
+    file.formatText();
+    await file.save();
+  }
 }
 
 function createProject(): Project {

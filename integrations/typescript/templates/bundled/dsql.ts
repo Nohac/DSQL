@@ -23,7 +23,5 @@ export function dsql(
     id: "<untransformed>",
     name: name ?? "<untransformed>",
     kind: "query",
-    sql: "",
   };
 }
-

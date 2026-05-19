@@ -6,7 +6,6 @@ export type DsqlOperation<
   readonly id: string;
   readonly name: string;
   readonly kind: "query";
-  readonly sql: string;
   readonly result?: Result;
   readonly params?: Params;
   readonly input?: Input;
@@ -24,4 +23,3 @@ export type DsqlOperationInput<Operation> =
   Operation extends DsqlOperation<unknown, unknown, infer Input>
     ? Input
     : Record<string, never>;
-

@@ -1,5 +1,9 @@
 // @ts-nocheck
-import { createServerFn, getGlobalStartContext } from "@tanstack/react-start";
+import {
+  createServerFn,
+  createServerOnlyFn,
+  getGlobalStartContext,
+} from "@tanstack/react-start";
 import type {
   DsqlOperation,
   DsqlOperationInput,
@@ -14,10 +18,16 @@ export type DsqlServerVariables<
   readonly input: DsqlOperationInput<Operation>;
 };
 
+export type DsqlServerOperation<
+  Operation extends DsqlOperation<any, any, any>,
+> = Operation & {
+  readonly sql: string;
+};
+
 export type DsqlServerExecutor = <
   Operation extends DsqlOperation<any, any, any>,
 >(
-  operation: Operation,
+  operation: DsqlServerOperation<Operation>,
   variables: DsqlServerVariables<Operation>,
 ) => Promise<DsqlOperationResult<Operation>>;
 
@@ -27,7 +37,7 @@ export type DsqlServerContext = {
   };
 };
 
-function executeDsqlOperation<Operation extends DsqlOperation<any, any, any>>(
+async function executeDsqlOperation<Operation extends DsqlOperation<any, any, any>>(
   operation: Operation,
   variables: DsqlServerVariables<Operation>,
 ): Promise<DsqlOperationResult<Operation>> {
@@ -37,5 +47,19 @@ function executeDsqlOperation<Operation extends DsqlOperation<any, any, any>>(
     throw new Error("dsql executor is not configured in TanStack Start request context");
   }
 
-  return executeQuery(operation, variables);
+  return executeQuery(await serverOperationFor(operation), variables);
 }
+
+const serverOperationFor = createServerOnlyFn(
+  async <Operation extends DsqlOperation<any, any, any>>(
+    operation: Operation,
+  ): Promise<DsqlServerOperation<Operation>> => {
+    const { serverOperations } = await import("./tanstack-start.server");
+    const serverOperation = serverOperations[operation.name];
+    if (!serverOperation) {
+      throw new Error(`missing dsql server operation for ${operation.name}`);
+    }
+
+    return serverOperation as DsqlServerOperation<Operation>;
+  },
+);

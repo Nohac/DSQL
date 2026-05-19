@@ -198,6 +198,18 @@ await renderTanStackQuery(artifacts, { outDir });
             .join("src/generated/dsql/tanstack-start.ts")
             .exists()
     );
+    assert!(
+        project
+            .path()
+            .join("src/generated/dsql/tanstack-start.server.ts")
+            .exists()
+    );
+    let operations =
+        fs::read_to_string(project.path().join("src/generated/dsql/operations.ts")).unwrap();
+    assert!(
+        !operations.contains("sql:"),
+        "public generated operations should not contain SQL:\n{operations}"
+    );
     let tanstack_query =
         fs::read_to_string(project.path().join("src/generated/dsql/tanstack-query.ts")).unwrap();
     assert!(
@@ -235,8 +247,34 @@ await renderTanStackQuery(artifacts, { outDir });
         "generated tanstack-start.ts should explain that the executor comes from request context:\n{tanstack_start}"
     );
     assert!(
+        tanstack_start.contains("createServerOnlyFn"),
+        "generated tanstack-start.ts should load SQL descriptors through a server-only function:\n{tanstack_start}"
+    );
+    assert!(
+        tanstack_start.contains(r#"import("./tanstack-start.server")"#),
+        "generated tanstack-start.ts should load SQL descriptors from the server-only module:\n{tanstack_start}"
+    );
+    assert!(
         !tanstack_start.contains("configureDsqlServer"),
         "generated tanstack-start.ts should not require a module-level runtime singleton:\n{tanstack_start}"
+    );
+    assert!(
+        !tanstack_start.contains("select\n"),
+        "generated tanstack-start.ts should not contain SQL text:\n{tanstack_start}"
+    );
+    let tanstack_start_server = fs::read_to_string(
+        project
+            .path()
+            .join("src/generated/dsql/tanstack-start.server.ts"),
+    )
+    .unwrap();
+    assert!(
+        tanstack_start_server.contains(r#"@tanstack/react-start/server-only"#),
+        "SQL descriptor module should be marked server-only:\n{tanstack_start_server}"
+    );
+    assert!(
+        tanstack_start_server.contains("sql:"),
+        "server-only SQL descriptor module should contain SQL text:\n{tanstack_start_server}"
     );
     let queries = fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
     assert!(
@@ -260,6 +298,7 @@ const context: DsqlServerContext = {
   dsql: {
     executeQuery: async (operation, variables) => {
       operation satisfies typeof MovieInfoLookupOperation;
+      operation.sql satisfies string;
       variables.params satisfies Record<string, never>;
       variables.input satisfies Record<string, never>;
       return {} as never;
@@ -318,6 +357,7 @@ const context: RequestContext = {
   dsql: {
     executeQuery: async (operation, variables) => {
       operation satisfies typeof MovieInfoLookupOperation;
+      operation.sql satisfies string;
       variables.params satisfies Record<string, never>;
       variables.input satisfies Record<string, never>;
       return {} as never;
@@ -619,7 +659,7 @@ fn write_tanstack_stubs(root: &Path) {
     fs::create_dir_all(&react_start).unwrap();
     fs::write(
         react_start.join("package.json"),
-        r#"{"name":"@tanstack/react-start","type":"module","exports":{".":"./index.ts","./server-entry":"./server-entry.ts"}}"#,
+        r#"{"name":"@tanstack/react-start","type":"module","exports":{".":"./index.ts","./server-entry":"./server-entry.ts","./server-only":"./server-only.ts"}}"#,
     )
     .unwrap();
     fs::write(
@@ -648,9 +688,16 @@ export function createServerFn(_options?: ServerFnOptions) {
 export function getGlobalStartContext(): unknown {
   return undefined;
 }
+
+export function createServerOnlyFn<Args extends readonly unknown[], Result>(
+  fn: (...args: Args) => Result,
+): (...args: Args) => Result {
+  return fn;
+}
 "#,
     )
     .unwrap();
+    fs::write(react_start.join("server-only.ts"), "export {};\n").unwrap();
     fs::write(
         react_start.join("server-entry.ts"),
         r#"import type { Register } from "./index";
