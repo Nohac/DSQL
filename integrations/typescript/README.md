@@ -2,6 +2,36 @@
 
 Experimental TypeScript integration for DSQL build metadata.
 
+## Example
+
+After generation, app code can use a DSQL query as a typed operation:
+
+```ts
+import { dsql, useQuery } from "./generated/dsql/queries";
+
+const MovieInfo = dsql(`
+  query MovieInfoLookup {
+    movie_info {
+      id
+      info
+    }
+  }
+`);
+
+export function MovieInfoView() {
+  const query = useQuery(MovieInfo, {
+    params: {},
+    input: {},
+  });
+
+  return <pre>{JSON.stringify(query.data, null, 2)}</pre>;
+}
+```
+
+With the Vite plugin enabled, the inline query is compiled to a generated
+operation import. The client-facing operation handle is typed and SQL-free;
+generated TanStack Start server functions keep SQL execution on the server.
+
 This package should stay metadata-first:
 
 1. The Rust CLI/compiler emits checked SQL and JSON metadata under
@@ -93,6 +123,25 @@ depend on it.
 The exact runtime API is still open. This package is intentionally small until
 the DSQL build metadata format stabilizes.
 
+## Generated Output
+
+The base generator writes public TypeScript modules under `src/generated/dsql`:
+
+```text
+operations.ts
+dsql.ts
+index.ts
+queries.ts
+```
+
+`operations.ts` contains typed operation handles and result/input types.
+Browser-facing operation handles do not contain SQL. The typed `dsql` helper
+maps inline query strings to those generated operation types:
+
+```ts
+const MovieInfo = dsql(`query MovieInfoLookup { movie_info { id } }`);
+```
+
 ## Vite Transform
 
 The Vite plugin is currently a pure transform. It does not run `dsql generate`;
@@ -115,13 +164,7 @@ export default defineConfig({
 The transform rewrites named DSQL tags to generated operation imports:
 
 ```ts
-const MovieInfo = dsql`
-  query MovieInfoLookup {
-    movie_info {
-      id
-    }
-  }
-`;
+const MovieInfo = dsql(`query MovieInfoLookup { movie_info { id } }`);
 ```
 
 becomes:
@@ -130,9 +173,80 @@ becomes:
 import { MovieInfoLookupOperation as MovieInfo } from "/src/generated/dsql/queries";
 ```
 
+Fragment-only DSQL documents are preserved instead of rewritten, because they
+do not represent executable operations:
+
+```ts
+const MovieCompany = dsql(`
+fragment MovieCompany on movie_companies {
+  note
+}
+`);
+```
+
 The generated `queries` module is a compatibility barrel. Vendored templates
 should prefer importing from the specific generated module they need, such as
 `operations`, `dsql`, `tanstack-query`, or `tanstack-start`.
+
+## TanStack Start And Query
+
+The vendored TanStack example adds React Query and TanStack Start helpers:
+
+```text
+tanstack-query.ts
+tanstack-start.ts
+tanstack-start.server.ts
+```
+
+The intended app flow is:
+
+- use `dsql(...)` or a generated operation handle in app code
+- call `useQuery(operation, { params, input })`
+- let the generated Start server function execute the query on the server
+- configure database execution in the app's TanStack Start request context
+
+Generated SQL is kept in `tanstack-start.server.ts`, which is marked
+server-only:
+
+```ts
+import "@tanstack/react-start/server-only";
+```
+
+Database execution is configured by the app through TanStack Start request
+context, not by a generated module-level singleton:
+
+```ts
+// src/server.ts
+import handler, { createServerEntry } from "@tanstack/react-start/server-entry";
+import type { DsqlServerContext } from "./generated/dsql/tanstack-start";
+
+type RequestContext = DsqlServerContext;
+
+declare module "@tanstack/react-start" {
+  interface Register {
+    server: {
+      requestContext: RequestContext;
+    };
+  }
+}
+
+export default createServerEntry({
+  async fetch(request) {
+    return handler.fetch(request, {
+      context: {
+        dsql: {
+          async executeQuery(operation, variables) {
+            // Use postgres.js, pg, a pool, or another provider here.
+            throw new Error("configure DSQL execution");
+          },
+        },
+      },
+    });
+  },
+});
+```
+
+The executor interface is intentionally provider agnostic.
 
 ## Metadata Types
 

@@ -3,50 +3,52 @@
 **DSQL** is an early-stage **Domain Specific Query Language** for generating SQL-native,
 typed application data access from relational schemas.
 
-This is early work in progress. The language, generated metadata, and integration
-APIs are still being shaped.
+DSQL gives you GraphQL-like data shapes without a GraphQL server: queries are
+checked at build time, compiled to SQL, and exposed as typed app code.
 
-The goal is not to hide SQL or abstract every possible backend. The goal is to
-make relational databases, especially Postgres-style schemas, easier to expose as
-typed, policy-aware, frontend-friendly APIs.
+## Example
+
+Write a DSQL query:
+
+```ts
+const UsersPage = dsql(`
+  query UsersPage {
+    users(where .active == true order by created_at desc limit $$limit) {
+      id
+      name
+      email
+    }
+  }
+`);
+```
+
+Use it like a typed frontend query:
+
+```ts
+const users = useQuery(UsersPage, {
+  params: { limit: 20 },
+  input: {},
+});
+```
+
+DSQL checks the query against your database schema, turns it into real SQL, and
+generates the TypeScript types and query wiring your app uses.
 
 ## Why
 
-Modern app stacks often have to choose between:
+Most application data fetching repeats the same work in several places: write a
+query, shape an endpoint, maintain TypeScript types, and wire it into frontend
+fetching.
 
-- writing SQL by hand and manually maintaining TypeScript types, endpoints, and
-  cache behavior
-- adopting GraphQL and a separate schema/runtime layer
-- using an ORM that is type-safe but still leaves API shape, permissions, and
-  frontend data fetching mostly hand-written
-- generating broad CRUD APIs that become hard to refine as product behavior gets
-  more specific
+GraphQL solves part of this with client-shaped data, but it also adds a schema,
+server runtime, resolver layer, and protocol. Raw SQL keeps the database close,
+but the app-facing types and query wiring are still mostly manual.
 
-DSQL explores a narrower path:
+DSQL takes a narrower path. The database schema stays the source of truth. You
+write the data shape your app needs, and DSQL checks it, compiles it to SQL, and
+generates the metadata and typed code integrations can use.
 
-> SQL-native, compile-time API/query generation from a small shape language.
-
-The database remains the source of truth. DSQL reads schema metadata, checks
-queries, generates SQL, and can emit metadata for clients, endpoints, validation,
-editor tooling, and framework integrations.
-
-DSQL itself is intended to be framework and language agnostic. Some integrations
-will likely become more mature than others, but the core handoff is generated
-SQL plus JSON metadata. Any toolchain or language can build on that.
-
-`dsql generate` compiles a project, writes an inspectable build manifest under
-`dsql/build/manifest.json`, and runs configured generator commands. DSQL owns
-the checked SQL and metadata; host integrations own rendering framework-specific
-files.
-
-```toml
-[generate.typescript]
-enabled = true
-out_dir = "src/generated/dsql"
-cmd = ["bun", "scripts/dsql-generate.ts"]
-```
-
-## Simple Example
+## Query Shape
 
 ```dsql
 query Users {
@@ -101,31 +103,6 @@ The intended generated contract includes:
 - required host context such as `tenant_id`
 - policy-driven nullability
 - metadata for cache keys, hovers, diagnostics, and code generation
-
-## Frontend Shape
-
-One target integration is modern TypeScript frameworks.
-
-```ts
-const UsersPage = dsql`
-  query UsersPage {
-    users(limit $$limit) {
-      id
-      name
-    }
-  }
-`;
-```
-
-A Vite, Babel, SWC, or similar plugin could compile inline DSQL into a typed
-query helper.
-
-```ts
-const users = useQuery(UsersPage.queryOptions({ limit: 20 }));
-```
-
-This is meant to work with libraries such as TanStack Query without forcing a
-GraphQL runtime or normalized client cache.
 
 ## Language Integrations
 

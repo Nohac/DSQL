@@ -71,6 +71,23 @@ export { Users };`,
   });
 });
 
+test("leaves fragment-only dsql bindings untransformed", () => {
+  const code = `import { dsql } from "./generated/dsql";
+
+const MovieCompany = dsql(\`
+fragment MovieCompany on movie_companies {
+  note
+  title {
+    id
+    title
+  }
+}
+\`);
+`;
+
+  expect(transformDsqlTags(code, "./generated/dsql/queries")).toBe(null);
+});
+
 test("rejects JavaScript interpolation in dsql tags", () => {
   expect(() =>
     transformDsqlTags("const Users = dsql`query Users { users(where .id == ${id}) { id } }`;"),

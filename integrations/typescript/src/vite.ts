@@ -46,20 +46,20 @@ export function transformDsqlTags(
   let changed = false;
 
   const replaceDsqlBinding = (
-    _match: string,
+    match: string,
     exportKeyword: string | undefined,
     localName: string,
     body: string,
   ): string => {
-    changed = true;
     if (body.includes("${")) {
       throw new Error("dsql templates do not support JavaScript interpolation");
     }
 
     const operationName = operationNameFromDsql(body);
     if (!operationName) {
-      throw new Error("dsql template must contain a named query");
+      return match;
     }
+    changed = true;
 
     imports.push(
       `import { ${operationName}Operation as ${localName} } from ${JSON.stringify(
