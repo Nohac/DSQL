@@ -185,17 +185,21 @@ function operationSourceText(
 }
 
 function operationSourceMapType(artifacts: BuildArtifacts): string {
-  const entries = artifacts.operations
-    .map((operation) => {
-      const sourceText = operationSourceText(artifacts, operation);
-      if (!sourceText) {
-        return undefined;
-      }
-      return `  readonly ${JSON.stringify(sourceText)}: typeof ${toPascalCase(
-        operation.name,
-      )}Operation;`;
-    })
-    .filter((entry): entry is string => entry !== undefined);
+  const operationsBySource = new Map<string, Array<string>>();
+  for (const operation of artifacts.operations) {
+    const sourceText = operationSourceText(artifacts, operation);
+    if (!sourceText) {
+      continue;
+    }
+
+    const operations = operationsBySource.get(sourceText) ?? [];
+    operations.push(`typeof ${toPascalCase(operation.name)}Operation`);
+    operationsBySource.set(sourceText, operations);
+  }
+
+  const entries = Array.from(operationsBySource, ([sourceText, operations]) => {
+    return `  readonly ${JSON.stringify(sourceText)}: ${operations.join(" | ")};`;
+  });
 
   return `export type DsqlOperationBySource = {\n${entries.join("\n")}\n};`;
 }
@@ -257,9 +261,17 @@ function inputFieldsTypeLiteral(
     if (path.length === 0) {
       continue;
     }
-    root.insert(path, withNullability(dataType(field.data_type), field.nullable));
+    root.insert(path, inputFieldType(field));
   }
   return root.toTypeLiteral();
+}
+
+function inputFieldType(field: InputField): string {
+  const type =
+    field.enum_values.length > 0
+      ? field.enum_values.map((value) => JSON.stringify(value)).join(" | ")
+      : dataType(field.data_type);
+  return withNullability(type, field.nullable);
 }
 
 function publicInputPath(path: string, prefix: "params" | "input"): string[] {

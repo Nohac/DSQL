@@ -29,8 +29,8 @@ pub struct SelectionPlan {
 pub struct SelectionClauses {
     pub filter: Option<FilterExpr>,
     pub order_by: Vec<OrderByPlan>,
-    pub limit: Option<u64>,
-    pub offset: Option<u64>,
+    pub limit: Option<SqlValue>,
+    pub offset: Option<SqlValue>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -39,11 +39,15 @@ pub struct OrderByPlan {
     pub direction: SortDirectionPlan,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
-#[repr(u8)]
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+#[repr(C)]
 pub enum SortDirectionPlan {
     Asc,
     Desc,
+    Variant {
+        path: String,
+        variants: Vec<SqlVariantCase>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -54,9 +58,16 @@ pub enum FilterExpr {
         column: ColumnId,
     },
     Literal(FilterLiteral),
+    Parameter(SqlParameter),
     Binary {
         left: Box<FilterExpr>,
         op: BinaryOp,
+        right: Box<FilterExpr>,
+    },
+    VariantBinary {
+        left: Box<FilterExpr>,
+        path: String,
+        variants: Vec<SqlVariantCase>,
         right: Box<FilterExpr>,
     },
     Exists {
@@ -81,6 +92,24 @@ pub enum FilterLiteral {
     Number(String),
     Bool(bool),
     Null,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+#[repr(C)]
+pub enum SqlValue {
+    Literal(u64),
+    Parameter(SqlParameter),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct SqlParameter {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct SqlVariantCase {
+    pub value: String,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]

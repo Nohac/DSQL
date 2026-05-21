@@ -1,6 +1,6 @@
 ---
 source: tests/tests/generate.rs
-assertion_line: 211
+assertion_line: 819
 expression: contents
 ---
 {
@@ -10,7 +10,7 @@ expression: contents
       "name": "EmbeddedMovieInfoLookup",
       "kind": "query",
       "path": "operations/EmbeddedMovieInfoLookup.json",
-      "hash": "2d3e14d95882be2b",
+      "hash": "f1899b30c2110c9d",
       "source": "src/movie-info.ts"
     }
   ]

@@ -36,12 +36,24 @@ pub struct OperationMetadata {
 pub struct SqlMetadata {
     pub dialect: String,
     pub text: String,
+    pub parameters: Vec<SqlParameterMetadata>,
     pub variants: Vec<SqlVariantMetadata>,
 }
 
 #[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+pub struct SqlParameterMetadata {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
 pub struct SqlVariantMetadata {
-    pub key: String,
+    pub path: String,
+    pub cases: Vec<SqlVariantCaseMetadata>,
+}
+
+#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+pub struct SqlVariantCaseMetadata {
+    pub value: String,
     pub text: String,
 }
 
@@ -64,6 +76,7 @@ pub struct ResultField {
 pub struct InputField {
     pub path: String,
     pub data_type: String,
+    pub enum_values: Vec<String>,
     pub required: bool,
     pub nullable: bool,
 }

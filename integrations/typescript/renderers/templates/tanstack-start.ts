@@ -22,13 +22,29 @@ export type DsqlServerOperation<
   Operation extends DsqlOperation<any, any, any>,
 > = Operation & {
   readonly sql: string;
+  readonly parameters: readonly DsqlSqlParameter[];
+  readonly variants: DsqlSqlVariants;
+};
+
+export type DsqlSqlParameter = {
+  readonly path: string;
+};
+
+export type DsqlSqlVariants = Record<string, Record<string, string>>;
+
+export type DsqlExecutionRequest<
+  Operation extends DsqlOperation<any, any, any>,
+> = {
+  readonly operation: DsqlServerOperation<Operation>;
+  readonly variables: DsqlServerVariables<Operation>;
+  readonly sql: string;
+  readonly values: any[];
 };
 
 export type DsqlServerExecutor = <
   Operation extends DsqlOperation<any, any, any>,
 >(
-  operation: DsqlServerOperation<Operation>,
-  variables: DsqlServerVariables<Operation>,
+  request: DsqlExecutionRequest<Operation>,
 ) => Promise<DsqlOperationResult<Operation>>;
 
 export type DsqlServerContext = {
@@ -47,7 +63,51 @@ async function executeDsqlOperation<Operation extends DsqlOperation<any, any, an
     throw new Error("dsql executor is not configured in TanStack Start request context");
   }
 
-  return executeQuery(await serverOperationFor(operation), variables);
+  const serverOperation = await serverOperationFor(operation);
+  const materialized = materializeDsqlOperation(serverOperation, variables);
+  return executeQuery({
+    operation: serverOperation,
+    variables,
+    ...materialized,
+  });
+}
+
+function materializeDsqlOperation<
+  Operation extends DsqlOperation<any, any, any>,
+>(
+  operation: DsqlServerOperation<Operation>,
+  variables: DsqlServerVariables<Operation>,
+): { readonly sql: string; readonly values: any[] } {
+  let sql = operation.sql;
+  for (const [path, cases] of Object.entries(operation.variants)) {
+    const selected = getPath(variables, path);
+    if (typeof selected !== "string") {
+      throw new Error(`missing dsql variant value at ${path}`);
+    }
+    const replacement = cases[selected];
+    if (replacement === undefined) {
+      throw new Error(`invalid dsql variant value at ${path}: ${selected}`);
+    }
+    sql = sql.replaceAll(`{{${path}}}`, replacement);
+  }
+
+  return {
+    sql,
+    values: operation.parameters.map((parameter) =>
+      getPath(variables, parameter.path),
+    ),
+  };
+}
+
+function getPath(value: unknown, path: string): unknown {
+  let current = value;
+  for (const part of path.split(".")) {
+    if (current === null || typeof current !== "object") {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
 }
 
 const serverOperationFor = createServerOnlyFn(

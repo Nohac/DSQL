@@ -158,6 +158,7 @@ fn collect_order_by_binding(
             role: VariableRole::SortDirection,
             data_type: DataType::Unknown,
             inferred_path: &inferred_path,
+            anonymous_key: None,
             operators: Vec::new(),
             enum_values: crate::SortDirection::ALL
                 .iter()
@@ -190,12 +191,19 @@ fn collect_where_bindings(
             if let Some((data_type, field_path)) =
                 resolve_predicate_path(catalog, root_table, table, path)
             {
+                let anonymous_key =
+                    if variable.name.is_none() && matches!(op, BinaryOperator::Variable(_)) {
+                        Some("value")
+                    } else {
+                        None
+                    };
                 push_variable_binding(
                     selection_path,
                     VariableBindingContext {
                         role: VariableRole::WhereValue,
                         data_type,
                         inferred_path: &field_path,
+                        anonymous_key,
                         operators: Vec::new(),
                         enum_values: Vec::new(),
                     },
@@ -249,6 +257,7 @@ fn push_clause_variable(
             role,
             data_type,
             inferred_path: &[inferred_key.to_string()],
+            anonymous_key: None,
             operators: Vec::new(),
             enum_values: Vec::new(),
         },
@@ -265,10 +274,7 @@ fn push_operator_binding(
     bindings: &mut Vec<VariableBinding>,
 ) {
     let name = variable.name.as_ref().map(|name| name.text.clone());
-    let key = name
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| format!("{}_op", inferred_path.last().cloned().unwrap_or_default()));
+    let key = name.as_ref().cloned().unwrap_or_else(|| "op".to_string());
     let source = match variable.scope {
         VariableScope::Structured => VariableSource::Structured,
         VariableScope::TopLevel => VariableSource::TopLevel,
@@ -307,6 +313,7 @@ struct VariableBindingContext<'a> {
     operators: Vec<BinaryOp>,
     enum_values: Vec<String>,
     inferred_path: &'a [String],
+    anonymous_key: Option<&'a str>,
 }
 
 fn push_variable_binding(
@@ -317,7 +324,12 @@ fn push_variable_binding(
 ) {
     let name = variable.name.as_ref().map(|name| name.text.clone());
     let key = name.as_ref().map_or_else(
-        || context.inferred_path.last().cloned().unwrap_or_default(),
+        || {
+            context
+                .anonymous_key
+                .map(str::to_string)
+                .unwrap_or_else(|| context.inferred_path.last().cloned().unwrap_or_default())
+        },
         Clone::clone,
     );
     let source = match variable.scope {
@@ -347,7 +359,7 @@ fn push_variable_binding(
             ) {
                 parts.extend(context.inferred_path.iter().cloned());
             }
-            if name.is_some() {
+            if name.is_some() || context.anonymous_key.is_some() {
                 parts.push(key);
             }
             parts.join(".")

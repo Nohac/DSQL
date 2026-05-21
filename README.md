@@ -112,7 +112,7 @@ typed module.
 
 ```rust
 dsql::query! {
-    pub mod users_page {
+    query users_page {
         users(limit $$limit) {
             id
             name

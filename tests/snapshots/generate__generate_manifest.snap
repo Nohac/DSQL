@@ -1,5 +1,6 @@
 ---
 source: tests/tests/generate.rs
+assertion_line: 819
 expression: contents
 ---
 {
@@ -9,7 +10,7 @@ expression: contents
       "name": "MovieInfoLookup",
       "kind": "query",
       "path": "operations/MovieInfoLookup.json",
-      "hash": "71487b8745bd3911",
+      "hash": "bd6ae329864299fb",
       "source": "queries/movie-info.dsql"
     }
   ]

@@ -1,6 +1,7 @@
 use crate::{
     BinaryOp, Catalog, Column, FilterColumnScope, FilterExpr, FilterLiteral, ForeignKey, QueryPlan,
-    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, Table,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue,
+    SqlVariantCase, Table,
 };
 use sea_query::{
     Alias, Asterisk, Condition, Expr, ExprTrait, Func, JoinType, Order, PgFunc,
@@ -13,6 +14,19 @@ use thiserror::Error;
 pub struct GeneratedSql {
     pub output_name: String,
     pub sql: String,
+    pub parameters: Vec<GeneratedSqlParameter>,
+    pub variants: Vec<GeneratedSqlVariant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedSqlParameter {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedSqlVariant {
+    pub path: String,
+    pub cases: Vec<SqlVariantCase>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,6 +71,74 @@ struct SelectionGenerationContext<'a> {
     options: PostgresSqlOptions,
 }
 
+struct SqlTemplateContext {
+    parameters: Vec<GeneratedSqlParameter>,
+    variants: Vec<GeneratedSqlVariant>,
+    replacements: Vec<(String, String)>,
+    next_sentinel: u64,
+}
+
+impl Default for SqlTemplateContext {
+    fn default() -> Self {
+        Self {
+            parameters: Vec::new(),
+            variants: Vec::new(),
+            replacements: Vec::new(),
+            next_sentinel: 9_000_000_000_000_000_000,
+        }
+    }
+}
+
+impl SqlTemplateContext {
+    fn parameter(&mut self, parameter: &SqlParameter) -> String {
+        if let Some(index) = self
+            .parameters
+            .iter()
+            .position(|candidate| candidate.path == parameter.path)
+        {
+            return format!("${}", index + 1);
+        }
+        self.parameters.push(GeneratedSqlParameter {
+            path: parameter.path.clone(),
+        });
+        format!("${}", self.parameters.len())
+    }
+
+    fn variant(&mut self, path: &str, cases: &[SqlVariantCase]) -> String {
+        if !self.variants.iter().any(|variant| variant.path == path) {
+            self.variants.push(GeneratedSqlVariant {
+                path: path.to_string(),
+                cases: cases.to_vec(),
+            });
+        }
+        self.replacements
+            .push((format!("{{ {{ {path} }} }}"), format!("{{{{{path}}}}}")));
+        format!("{{{{{path}}}}}")
+    }
+
+    fn replace_order_direction(
+        &mut self,
+        table_alias: &str,
+        column: &str,
+        path: &str,
+        cases: &[SqlVariantCase],
+    ) {
+        let placeholder = self.variant(path, cases);
+        self.replacements.push((
+            format!("\"{table_alias}\".\"{column}\" asc"),
+            format!("\"{table_alias}\".\"{column}\" {placeholder}"),
+        ));
+    }
+
+    fn numeric_parameter_sentinel(&mut self, parameter: &SqlParameter) -> u64 {
+        let placeholder = self.parameter(parameter);
+        let sentinel = self.next_sentinel;
+        self.next_sentinel += 1;
+        self.replacements.push((sentinel.to_string(), placeholder));
+        sentinel
+    }
+}
+
 pub fn generate_postgres_sql(
     plan: &QueryPlan,
     catalog: &Catalog,
@@ -70,6 +152,7 @@ pub fn generate_postgres_sql_with_options(
     options: PostgresSqlOptions,
 ) -> Result<GeneratedSql, SqlGenerationError> {
     let mut path = Vec::new();
+    let mut template = SqlTemplateContext::default();
     let root = catalog
         .table_by_id(plan.root)
         .ok_or(SqlGenerationError::MissingTable(plan.root.0))?;
@@ -85,20 +168,26 @@ pub fn generate_postgres_sql_with_options(
             cardinality: RelationCardinality::Collection,
             options,
         },
+        &mut template,
     )?;
     let format_options = sqlformat::FormatOptions {
         uppercase: Some(false),
         indent: sqlformat::Indent::Spaces(2),
         ..Default::default()
     };
-    let sql = sqlformat::format(
+    let mut sql = sqlformat::format(
         &root_query.to_string(PostgresQueryBuilder),
         &sqlformat::QueryParams::default(),
         &format_options,
     );
+    for (needle, replacement) in &template.replacements {
+        sql = sql.replace(needle, replacement);
+    }
     Ok(GeneratedSql {
         output_name: plan.output_name.clone(),
         sql,
+        parameters: template.parameters,
+        variants: template.variants,
     })
 }
 
@@ -108,6 +197,7 @@ fn generate_selection(
     output_name: &str,
     path: &[String],
     generation: SelectionGenerationContext<'_>,
+    template: &mut SqlTemplateContext,
 ) -> Result<SelectStatement, SqlGenerationError> {
     let current_table = table(catalog, selection.table)?;
     let context = context_for(current_table, output_name, path);
@@ -129,7 +219,7 @@ fn generate_selection(
         .clauses
         .filter
         .as_ref()
-        .map(|filter| filter_expr(catalog, &context, root_context, None, filter))
+        .map(|filter| filter_expr(catalog, &context, root_context, None, filter, template))
         .transpose()?;
     if generation.cardinality == RelationCardinality::Collection
         && should_use_source_subquery(&selection.clauses, generation.options)
@@ -142,6 +232,7 @@ fn generate_selection(
             filter,
             &selection.clauses,
             effective_limit(&selection.clauses, generation.options),
+            template,
         )?;
         query.from_subquery(source, Alias::new(&context.table_alias));
     } else {
@@ -158,7 +249,7 @@ fn generate_selection(
         if let Some(filter) = filter {
             query.and_where(filter);
         }
-        apply_order_limit_offset(catalog, &context, &selection.clauses, &mut query)?;
+        apply_order_limit_offset(catalog, &context, &selection.clauses, &mut query, template)?;
     };
 
     for item in &selection.items {
@@ -189,6 +280,7 @@ fn generate_selection(
                 cardinality: relation_cardinality,
                 options: generation.options,
             },
+            template,
         )?;
         query.join_lateral(
             JoinType::LeftJoin,
@@ -217,6 +309,7 @@ fn limited_source_query(
     filter: Option<Expr>,
     clauses: &SelectionClauses,
     limit: Option<u64>,
+    template: &mut SqlTemplateContext,
 ) -> Result<SelectStatement, SqlGenerationError> {
     let mut query = Query::select();
     query.column(Asterisk).from_as(
@@ -225,6 +318,8 @@ fn limited_source_query(
     );
     if let Some(limit) = limit {
         query.limit(limit);
+    } else if let Some(SqlValue::Parameter(parameter)) = &clauses.limit {
+        query.limit(template.numeric_parameter_sentinel(parameter));
     }
     if let Some(relation_condition) = relation_condition {
         query.cond_where(relation_condition);
@@ -236,20 +331,31 @@ fn limited_source_query(
         let column = column(catalog, order.column)?;
         query.order_by(
             (Alias::new(&context.table_alias), Alias::new(&column.name)),
-            match order.direction {
+            match &order.direction {
                 SortDirectionPlan::Asc => Order::Asc,
                 SortDirectionPlan::Desc => Order::Desc,
+                SortDirectionPlan::Variant { path, variants } => {
+                    template.replace_order_direction(
+                        &context.table_alias,
+                        &column.name,
+                        path,
+                        variants,
+                    );
+                    Order::Asc
+                }
             },
         );
     }
-    if let Some(offset) = clauses.offset {
+    if let Some(offset) = sql_value_u64(&clauses.offset) {
         query.offset(offset);
+    } else if let Some(SqlValue::Parameter(parameter)) = &clauses.offset {
+        query.offset(template.numeric_parameter_sentinel(parameter));
     }
     Ok(query.to_owned())
 }
 
 fn effective_limit(clauses: &SelectionClauses, options: PostgresSqlOptions) -> Option<u64> {
-    match (clauses.limit, options.collection_limit) {
+    match (sql_value_u64(&clauses.limit), options.collection_limit) {
         (Some(source), Some(guard)) => Some(std::cmp::Ord::min(source, guard)),
         (Some(source), None) => Some(source),
         (None, Some(guard)) => Some(guard),
@@ -268,24 +374,45 @@ fn apply_order_limit_offset(
     context: &SelectionContext,
     clauses: &SelectionClauses,
     query: &mut SelectStatement,
+    template: &mut SqlTemplateContext,
 ) -> Result<(), SqlGenerationError> {
     for order in &clauses.order_by {
         let column = column(catalog, order.column)?;
         query.order_by(
             (Alias::new(&context.table_alias), Alias::new(&column.name)),
-            match order.direction {
+            match &order.direction {
                 SortDirectionPlan::Asc => Order::Asc,
                 SortDirectionPlan::Desc => Order::Desc,
+                SortDirectionPlan::Variant { path, variants } => {
+                    template.replace_order_direction(
+                        &context.table_alias,
+                        &column.name,
+                        path,
+                        variants,
+                    );
+                    Order::Asc
+                }
             },
         );
     }
-    if let Some(limit) = clauses.limit {
+    if let Some(limit) = sql_value_u64(&clauses.limit) {
         query.limit(limit);
+    } else if let Some(SqlValue::Parameter(parameter)) = &clauses.limit {
+        query.limit(template.numeric_parameter_sentinel(parameter));
     }
-    if let Some(offset) = clauses.offset {
+    if let Some(offset) = sql_value_u64(&clauses.offset) {
         query.offset(offset);
+    } else if let Some(SqlValue::Parameter(parameter)) = &clauses.offset {
+        query.offset(template.numeric_parameter_sentinel(parameter));
     }
     Ok(())
+}
+
+fn sql_value_u64(value: &Option<SqlValue>) -> Option<u64> {
+    match value {
+        Some(SqlValue::Literal(value)) => Some(*value),
+        _ => None,
+    }
 }
 
 fn filter_expr(
@@ -294,6 +421,7 @@ fn filter_expr(
     root: &SelectionContext,
     outer_current: Option<&SelectionContext>,
     filter: &FilterExpr,
+    template: &mut SqlTemplateContext,
 ) -> Result<Expr, SqlGenerationError> {
     Ok(match filter {
         FilterExpr::Column {
@@ -308,6 +436,7 @@ fn filter_expr(
             };
             Expr::col((Alias::new(&source.table_alias), Alias::new(&column.name)))
         }
+        FilterExpr::Parameter(parameter) => Expr::cust(template.parameter(parameter)),
         FilterExpr::Literal(literal) => match literal {
             FilterLiteral::String(value) => Expr::value(value.clone()),
             FilterLiteral::Number(value) => value
@@ -322,11 +451,11 @@ fn filter_expr(
             if *op == BinaryOp::Like
                 && let FilterExpr::Literal(FilterLiteral::String(pattern)) = right.as_ref()
             {
-                let left = filter_expr(catalog, context, root, outer_current, left)?;
+                let left = filter_expr(catalog, context, root, outer_current, left, template)?;
                 return Ok(left.like(pattern.clone()));
             }
-            let left = filter_expr(catalog, context, root, outer_current, left)?;
-            let right = filter_expr(catalog, context, root, outer_current, right)?;
+            let left = filter_expr(catalog, context, root, outer_current, left, template)?;
+            let right = filter_expr(catalog, context, root, outer_current, right, template)?;
             match op {
                 BinaryOp::Eq => left.eq(right),
                 BinaryOp::Ne => left.ne(right),
@@ -339,6 +468,17 @@ fn filter_expr(
                 BinaryOp::Or => left.or(right),
             }
         }
+        FilterExpr::VariantBinary {
+            left,
+            path,
+            variants,
+            right,
+        } => Expr::cust(format!(
+            "{} {} {}",
+            filter_expr_fragment(catalog, context, root, outer_current, left, template)?,
+            template.variant(path, variants),
+            filter_expr_fragment(catalog, context, root, outer_current, right, template)?
+        )),
         FilterExpr::Exists {
             foreign_key: foreign_key_id,
             table: table_id,
@@ -372,10 +512,48 @@ fn filter_expr(
                 root,
                 outer_current.or(Some(context)),
                 filter,
+                template,
             )?);
             Expr::exists(query.to_owned())
         }
     })
+}
+
+fn filter_expr_fragment(
+    catalog: &Catalog,
+    context: &SelectionContext,
+    root: &SelectionContext,
+    outer_current: Option<&SelectionContext>,
+    filter: &FilterExpr,
+    template: &mut SqlTemplateContext,
+) -> Result<String, SqlGenerationError> {
+    Ok(match filter {
+        FilterExpr::Column {
+            scope,
+            column: column_id,
+        } => {
+            let column = column(catalog, *column_id)?;
+            let source = match scope {
+                FilterColumnScope::Current => context,
+                FilterColumnScope::Root => root,
+                FilterColumnScope::OuterCurrent => outer_current.unwrap_or(context),
+            };
+            format!("\"{}\".\"{}\"", source.table_alias, column.name)
+        }
+        FilterExpr::Parameter(parameter) => template.parameter(parameter),
+        FilterExpr::Literal(FilterLiteral::String(value)) => sql_string(value),
+        FilterExpr::Literal(FilterLiteral::Number(value)) => value.clone(),
+        FilterExpr::Literal(FilterLiteral::Bool(value)) => value.to_string(),
+        FilterExpr::Literal(FilterLiteral::Null) => "null".to_string(),
+        other => {
+            let _ = filter_expr(catalog, context, root, outer_current, other, template)?;
+            "<unsupported>".to_string()
+        }
+    })
+}
+
+fn sql_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn json_build_object(
@@ -599,6 +777,65 @@ mod tests {
         assert!(sql.contains("\"created_at\" desc"));
         assert!(sql.contains("limit"));
         assert!(sql.contains("offset"));
+    }
+
+    #[test]
+    fn generates_parameterized_sql_and_operator_variants() {
+        let catalog = Catalog::hardcoded();
+        let parsed =
+            parse_source("query Q { posts(where .id $[>, >=] $ limit $$) { id title } }".into());
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let planned = plan_file_with_catalog(&parsed.source_file, &catalog);
+        assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
+
+        let generated = generate_postgres_sql(&planned.queries[0], &catalog).unwrap();
+
+        assert!(
+            generated.sql.contains("{{input.posts.clause.where.id.op}}"),
+            "{}",
+            generated.sql
+        );
+        assert!(generated.sql.contains("$1"), "{}", generated.sql);
+        assert!(generated.sql.contains("$2"), "{}", generated.sql);
+        assert_eq!(
+            generated
+                .parameters
+                .iter()
+                .map(|parameter| parameter.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["input.posts.clause.where.id.value", "params.limit"]
+        );
+        assert_eq!(generated.variants.len(), 1);
+        assert_eq!(generated.variants[0].path, "input.posts.clause.where.id.op");
+        assert_eq!(
+            generated.variants[0]
+                .cases
+                .iter()
+                .map(|case| (case.value.as_str(), case.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(">", ">"), (">=", ">=")]
+        );
+    }
+
+    #[test]
+    fn generates_parameter_paths_for_relation_predicates() {
+        let catalog = Catalog::hardcoded();
+        let parsed = parse_source("query Q { users(where .posts.title == $) { id name } }".into());
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let planned = plan_file_with_catalog(&parsed.source_file, &catalog);
+        assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
+
+        let generated = generate_postgres_sql(&planned.queries[0], &catalog).unwrap();
+
+        assert!(generated.sql.contains("$1"), "{}", generated.sql);
+        assert_eq!(
+            generated
+                .parameters
+                .iter()
+                .map(|parameter| parameter.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["input.users.clause.where.posts.title"]
+        );
     }
 
     #[test]

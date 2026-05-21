@@ -59,6 +59,8 @@ export async function renderTanStackStart(
     ],
     type: `Operation & {
   readonly sql: string;
+  readonly parameters: readonly { readonly path: string }[];
+  readonly variants: Record<string, Record<string, string>>;
 }`,
   });
 
@@ -87,7 +89,9 @@ export async function renderTanStackStart(
           type: `DsqlServerOperation<typeof ${operationName}>`,
           initializer: `{
   ...${operationName},
-  sql: ${JSON.stringify(operation.sql.text)}
+  sql: ${JSON.stringify(operation.sql.text)},
+  parameters: ${JSON.stringify(operation.sql.parameters)},
+  variants: ${JSON.stringify(sqlVariants(operation))}
 }`,
         },
       ],
@@ -183,4 +187,15 @@ function toPascalCase(value: string): string {
   }
 
   return /^[0-9]/.test(result) ? `_${result}` : result;
+}
+
+function sqlVariants(operation: BuildArtifacts["operations"][number]) {
+  return Object.fromEntries(
+    operation.sql.variants.map((variant) => [
+      variant.path,
+      Object.fromEntries(
+        variant.cases.map((case_) => [case_.value, case_.text]),
+      ),
+    ]),
+  );
 }

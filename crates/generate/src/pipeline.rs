@@ -7,10 +7,13 @@ use dsql_core::{
 use dsql_metadata::{
     BuildManifest, DynamicInputMetadata, HandoffMetadata, InputField, OperationManifestEntry,
     OperationMetadata, PolicyMetadata, ResultField, ResultShape, SourceMapEntry, SourceRange,
-    SqlMetadata,
+    SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
 };
 use miette::Result;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     artifacts::{ArtifactWriter, OperationArtifact, WrittenArtifacts, WrittenOperationArtifact},
@@ -182,6 +185,7 @@ fn build_query_operations(
         .name
         .as_deref()
         .ok_or_else(|| miette::miette!("anonymous queries cannot be generated"))?;
+    validate_variable_bindings(query_name, &query.variables)?;
     let mut operations = Vec::new();
     for (index, plan) in planned.queries.iter().enumerate() {
         let generated = generate_postgres_sql_with_options(
@@ -204,7 +208,28 @@ fn build_query_operations(
             sql: SqlMetadata {
                 dialect: "postgres".to_string(),
                 text: generated.sql,
-                variants: Vec::new(),
+                parameters: generated
+                    .parameters
+                    .iter()
+                    .map(|parameter| SqlParameterMetadata {
+                        path: parameter.path.clone(),
+                    })
+                    .collect(),
+                variants: generated
+                    .variants
+                    .iter()
+                    .map(|variant| SqlVariantMetadata {
+                        path: variant.path.clone(),
+                        cases: variant
+                            .cases
+                            .iter()
+                            .map(|case| SqlVariantCaseMetadata {
+                                value: case.value.clone(),
+                                text: case.text.clone(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
             },
             result: result_shape(catalog, plan)?,
             params: input_fields(&query.variables, true),
@@ -225,6 +250,19 @@ fn build_query_operations(
         });
     }
     Ok(operations)
+}
+
+fn validate_variable_bindings(query_name: &str, variables: &[VariableBinding]) -> Result<()> {
+    let mut anonymous_paths = HashMap::<&str, &VariableBinding>::new();
+    for binding in variables.iter().filter(|binding| binding.name.is_none()) {
+        if let Some(previous) = anonymous_paths.insert(&binding.path, binding) {
+            return Err(miette::miette!(
+                "query `{query_name}` has multiple anonymous variables for `{}`; name one of them to disambiguate",
+                previous.path
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn manifest_from_written_operations(operations: &[WrittenOperationArtifact]) -> BuildManifest {
@@ -341,6 +379,7 @@ fn input_fields(variables: &[VariableBinding], top_level: bool) -> Vec<InputFiel
         .map(|binding| InputField {
             path: binding.path.clone(),
             data_type: binding.data_type.as_str().to_string(),
+            enum_values: binding.enum_values.clone(),
             required: true,
             nullable: false,
         })

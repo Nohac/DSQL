@@ -3,7 +3,7 @@ source: tests/tests/variables.rs
 assertion_line: 89
 expression: contents
 ---
-input.posts.clause.where.created_at.created_at_op Structured ComparisonOperator Timestamptz None [Gt|Ge]
+input.posts.clause.where.created_at.op Structured ComparisonOperator Timestamptz None [Gt|Ge]
 input.posts.clause.where.created_at.min_created_at Structured WhereValue Timestamptz Some("min_created_at") []
 params.title_op TopLevel ComparisonOperator Text Some("title_op") [Eq|Ne|Like]
 input.posts.clause.where.title.title Structured WhereValue Text Some("title") []

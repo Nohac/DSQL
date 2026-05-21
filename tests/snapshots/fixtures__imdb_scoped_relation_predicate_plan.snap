@@ -1,5 +1,6 @@
 ---
 source: tests/tests/fixtures.rs
+assertion_line: 235
 expression: contents
 ---
 [
@@ -35,7 +36,9 @@ expression: contents
             ),
             order_by: [],
             limit: Some(
-                1,
+                Literal(
+                    1,
+                ),
             ),
             offset: None,
         },
@@ -70,7 +73,9 @@ expression: contents
                 ),
                 order_by: [],
                 limit: Some(
-                    1,
+                    Literal(
+                        1,
+                    ),
                 ),
                 offset: None,
             },

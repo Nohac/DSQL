@@ -296,9 +296,11 @@ import { serverOperationNames } from "./generated/dsql/tanstack-start";
 
 const context: DsqlServerContext = {
   dsql: {
-    executeQuery: async (operation, variables) => {
+    executeQuery: async ({ operation, variables, sql, values }) => {
       operation satisfies typeof MovieInfoLookupOperation;
       operation.sql satisfies string;
+      sql satisfies string;
+      values satisfies any[];
       variables.params satisfies Record<string, never>;
       variables.input satisfies Record<string, never>;
       return {} as never;
@@ -355,9 +357,11 @@ declare module "@tanstack/react-start" {
 
 const context: RequestContext = {
   dsql: {
-    executeQuery: async (operation, variables) => {
+    executeQuery: async ({ operation, variables, sql, values }) => {
       operation satisfies typeof MovieInfoLookupOperation;
       operation.sql satisfies string;
+      sql satisfies string;
+      values satisfies any[];
       variables.params satisfies Record<string, never>;
       variables.input satisfies Record<string, never>;
       return {} as never;
@@ -450,6 +454,91 @@ MovieInfo satisfies typeof EmbeddedMovieInfoLookupOperation;
 }
 
 #[tokio::test]
+async fn generate_project_groups_embedded_source_text_for_multiple_queries() {
+    let project = tempfile::tempdir().unwrap();
+    create_embedded_project_fixture_with_generate(
+        project.path(),
+        &format!(
+            r#"[generate.typescript]
+enabled = true
+out_dir = "src/generated/dsql"
+cmd = ["bun", "{}"]
+"#,
+            repo_root()
+                .join("integrations/typescript/renderers/types.ts")
+                .display()
+        ),
+    );
+    fs::write(
+        project.path().join("src/movie-info.ts"),
+        r#"import { dsql } from "@dsql/typescript";
+
+export const MovieInfo = dsql(`
+  query FirstEmbeddedMovieInfoLookup {
+    movie_info(where .id > 0 order by id asc limit 2) {
+      id
+      info
+    }
+  }
+
+  query SecondEmbeddedMovieInfoLookup {
+    movie_info(where .id > 0 order by id asc limit 2) {
+      id
+      note
+    }
+  }
+`);
+"#,
+    )
+    .unwrap();
+
+    dsql_generate::generate_project_from(project.path())
+        .await
+        .unwrap();
+
+    fs::write(
+        project.path().join("src/usage.ts"),
+        r#"import {
+  dsql,
+  FirstEmbeddedMovieInfoLookupOperation,
+  SecondEmbeddedMovieInfoLookupOperation,
+} from "./generated/dsql/queries";
+
+const MovieInfo = dsql(`
+  query FirstEmbeddedMovieInfoLookup {
+    movie_info(where .id > 0 order by id asc limit 2) {
+      id
+      info
+    }
+  }
+
+  query SecondEmbeddedMovieInfoLookup {
+    movie_info(where .id > 0 order by id asc limit 2) {
+      id
+      note
+    }
+  }
+`);
+
+MovieInfo satisfies
+  | typeof FirstEmbeddedMovieInfoLookupOperation
+  | typeof SecondEmbeddedMovieInfoLookupOperation;
+"#,
+    )
+    .unwrap();
+
+    let status = Command::new("bun")
+        .args(["build", "src/usage.ts", "--outdir", "build/embedded"])
+        .current_dir(project.path())
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "embedded dsql documents with multiple queries should compile"
+    );
+}
+
+#[tokio::test]
 async fn generate_project_splits_top_level_params_and_contextual_input() {
     let project = tempfile::tempdir().unwrap();
     create_project_fixture(
@@ -468,7 +557,7 @@ cmd = ["bun", "{}"]
     fs::write(
         project.path().join("queries/movie-info.dsql"),
         r#"query MovieInfoLookup {
-  movie_info(limit $$) {
+  movie_info(where .id $[==, >] $ limit $$) {
     id
     info
     title(limit $title_limit) {
@@ -483,6 +572,37 @@ cmd = ["bun", "{}"]
     dsql_generate::generate_project_from(project.path())
         .await
         .unwrap();
+
+    let operation = fs::read_to_string(
+        project
+            .path()
+            .join("dsql/build/operations/MovieInfoLookup.json"),
+    )
+    .unwrap();
+    assert!(
+        operation.contains(r#""parameters": ["#),
+        "variable operation should emit SQL parameter metadata:\n{operation}"
+    );
+    assert!(
+        operation.contains(r#""path": "params.limit""#),
+        "top-level limit variable should become a SQL parameter:\n{operation}"
+    );
+    assert!(
+        operation.contains(r#""path": "input.movie_info.clause.where.id.value""#),
+        "anonymous value variable with operator should use the field value path:\n{operation}"
+    );
+    assert!(
+        operation.contains(r#""path": "input.movie_info.clause.where.id.op""#),
+        "anonymous operator variable should use the field op path:\n{operation}"
+    );
+    assert!(
+        operation.contains(r#""path": "input.movie_info.body.title.clause.limit.title_limit""#),
+        "structured nested limit variable should become a SQL parameter:\n{operation}"
+    );
+    assert!(
+        operation.contains("$1") && operation.contains("$2"),
+        "variable SQL should use bind placeholders:\n{operation}"
+    );
 
     fs::write(
         project.path().join("src/generated/dsql/usage.ts"),
@@ -505,6 +625,14 @@ const input: MovieInfoLookupInput = {{
         }},
       }},
     }},
+    clause: {{
+      where: {{
+        id: {{
+          op: ">",
+          value: 10,
+        }},
+      }},
+    }},
   }},
 }};
 params satisfies MovieInfoLookupParams;
@@ -521,9 +649,12 @@ input satisfies MovieInfoLookupInput;
         generated.contains("export type MovieInfoLookupParams = {\n    limit: number;\n};"),
         "expected top-level $$ variables to generate params shape:\n{generated}"
     );
+    assert!(generated.contains("id: {\n                    op: \"==\" | \">\";\n                    value: number;\n                };"),
+        "expected anonymous value/operator variables to generate a field control object:\n{generated}"
+    );
     assert!(
-        generated.contains("export type MovieInfoLookupInput = {\n    movie_info: {\n        body: {\n            title: {\n                clause: {\n                    limit: {\n                        title_limit: number;\n                    };\n                };\n            };\n        };\n    };\n};"),
-        "expected contextual $ variables to generate input shape:\n{generated}"
+        generated.contains("title_limit: number;"),
+        "expected contextual named nested variables to generate input shape:\n{generated}"
     );
 
     let status = Command::new("bun")
@@ -539,6 +670,32 @@ input satisfies MovieInfoLookupInput;
     assert!(
         status.success(),
         "generated params/input TypeScript should compile with bun"
+    );
+}
+
+#[tokio::test]
+async fn generate_project_rejects_ambiguous_anonymous_variables() {
+    let project = tempfile::tempdir().unwrap();
+    create_project_fixture(project.path(), "");
+    fs::write(
+        project.path().join("queries/movie-info.dsql"),
+        r#"query MovieInfoLookup {
+  movie_info(where .id > $ and .id < $) {
+    id
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let error = dsql_generate::generate_project_from(project.path())
+        .await
+        .expect_err("ambiguous anonymous variables should fail generation");
+    let message = error.to_string();
+    assert!(
+        message.contains("multiple anonymous variables")
+            && message.contains("input.movie_info.clause.where.id"),
+        "expected disambiguation error, got: {message}"
     );
 }
 

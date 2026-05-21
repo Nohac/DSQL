@@ -1,6 +1,6 @@
 ---
 source: tests/tests/generate.rs
-assertion_line: 211
+assertion_line: 819
 expression: contents
 ---
 {
@@ -9,6 +9,7 @@ expression: contents
   "sql": {
     "dialect": "postgres",
     "text": "select\n  COALESCE(\n    JSON_AGG(\n      JSON_BUILD_OBJECT(\n        'id',\n        \"movie_info_d37aaa02\".\"id\",\n        'info',\n        \"movie_info_d37aaa02\".\"info\"\n      )\n    ),\n    '[]'\n  ) as \"movie_info\"\nfrom\n  (\n    select\n      *\n    from\n      \"public\".\"movie_info\" as \"movie_info_d37aaa02\"\n    where\n      \"movie_info_d37aaa02\".\"id\" > 0\n    order by\n      \"movie_info_d37aaa02\".\"id\" asc\n    limit\n      2\n  ) as \"movie_info_d37aaa02\"",
+    "parameters": [],
     "variants": []
   },
   "result": {

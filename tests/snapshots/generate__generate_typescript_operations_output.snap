@@ -1,5 +1,6 @@
 ---
 source: tests/tests/generate.rs
+assertion_line: 842
 expression: contents
 ---
 export type DsqlOperation<
@@ -44,7 +45,7 @@ export type MovieInfoLookupParams = Record<string, never>;
 export type MovieInfoLookupInput = Record<string, never>;
 
 export const MovieInfoLookupOperation: DsqlOperation<MovieInfoLookupResult, MovieInfoLookupParams, MovieInfoLookupInput> = {
-    id: "71487b8745bd3911",
+    id: "bd6ae329864299fb",
     name: "MovieInfoLookup",
     kind: "query"
 };

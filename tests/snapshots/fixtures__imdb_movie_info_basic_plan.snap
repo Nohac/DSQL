@@ -1,6 +1,6 @@
 ---
 source: tests/tests/fixtures.rs
-assertion_line: 185
+assertion_line: 235
 expression: contents
 ---
 [
@@ -35,7 +35,9 @@ expression: contents
                 },
             ],
             limit: Some(
-                2,
+                Literal(
+                    2,
+                ),
             ),
             offset: None,
         },
@@ -69,7 +71,9 @@ expression: contents
                     },
                 ],
                 limit: Some(
-                    2,
+                    Literal(
+                        2,
+                    ),
                 ),
                 offset: None,
             },

@@ -28,7 +28,8 @@ pub use lint::{
 pub use plan::{
     FilterColumnScope, FilterExpr, FilterLiteral, NestedRelation, OrderByPlan, PlannedFile,
     Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
-    plan_file, plan_file_with_catalog, plan_query_definition,
+    SqlParameter, SqlValue, SqlVariantCase, plan_file, plan_file_with_catalog,
+    plan_query_definition,
 };
 pub use semantic::{
     CheckError, CheckErrorKind, CheckedDefinition, CheckedFile, Interner, LoweredFile, NameId,

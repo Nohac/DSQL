@@ -74,6 +74,7 @@ export interface DynamicInputField {
 export interface InputField {
   path: string;
   data_type: string;
+  enum_values: string[];
   required: boolean;
   nullable: boolean;
 }
@@ -94,10 +95,20 @@ export interface ResultField {
 export interface SqlMetadata {
   dialect: string;
   text: string;
+  parameters: SqlParameterMetadata[];
   variants: SqlVariantMetadata[];
 }
 
 export interface SqlVariantMetadata {
-  key: string;
+  path: string;
+  cases: SqlVariantCaseMetadata[];
+}
+
+export interface SqlVariantCaseMetadata {
+  value: string;
   text: string;
+}
+
+export interface SqlParameterMetadata {
+  path: string;
 }

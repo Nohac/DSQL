@@ -5,7 +5,7 @@ expression: contents
 ---
 ### Variable `$`
 
-- Path: `input.keyword.clause.where.movie_keyword.title.production_year`
+- Path: `input.keyword.clause.where.movie_keyword.title.production_year.value`
 - Type: `int`
 - Role: `where value`
 
