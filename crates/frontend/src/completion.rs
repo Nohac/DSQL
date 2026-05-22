@@ -1,11 +1,12 @@
 use crate::cursor::{CursorContext, UsedClauses, cursor_context};
-use dsql_core::{BinaryOp, Catalog, DataType, Definition, SourceFile, TableId, Token};
+use dsql_core::{BinaryOp, Catalog, DataType, Definition, TableId, Token};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
     pub label: String,
     pub kind: CompletionKind,
     pub detail: Option<String>,
+    pub insert_text: Option<String>,
 }
 
 impl CompletionItem {
@@ -18,6 +19,7 @@ impl CompletionItem {
             label: label.to_string(),
             kind: CompletionKind::Keyword,
             detail: Some(detail.to_string()),
+            insert_text: None,
         }
     }
 
@@ -29,6 +31,7 @@ impl CompletionItem {
                 .to_string(),
             kind: CompletionKind::Operator,
             detail: Some(op.detail().to_string()),
+            insert_text: None,
         }
     }
 
@@ -40,6 +43,7 @@ impl CompletionItem {
                 .to_string(),
             kind,
             detail: Some(detail.to_string()),
+            insert_text: None,
         }
     }
 }
@@ -68,7 +72,7 @@ pub(crate) fn completions_at(
         CursorContext::FragmentType => root_selection_completions(catalog),
         CursorContext::RootSelection => root_selection_completions(catalog),
         CursorContext::FragmentSpread { table } => {
-            fragment_completions(catalog, &parse.source_file, table)
+            fragment_completions(parse, catalog, table, byte)
         }
         CursorContext::SelectionBody { table } => field_completions(catalog, table),
         CursorContext::ClauseList { table: _, used } => clause_keyword_completions(used),
@@ -90,11 +94,13 @@ pub(crate) fn completions_at(
 }
 
 fn fragment_completions(
+    parse: &dsql_core::ParseResult,
     catalog: &Catalog,
-    source_file: &SourceFile,
     table: TableId,
+    byte: usize,
 ) -> Vec<CompletionItem> {
-    let mut completions = source_file
+    let mut completions = parse
+        .source_file
         .definitions()
         .filter_map(|definition| {
             let Definition::Fragment(fragment) = definition else {
@@ -107,11 +113,37 @@ fn fragment_completions(
                 label: name.text.clone(),
                 kind: CompletionKind::Fragment,
                 detail: Some(format!("fragment on {}", on.text)),
+                insert_text: Some(fragment_insert_text(parse, byte, &name.text)),
             })
         })
         .collect::<Vec<_>>();
     completions.sort_by(|left, right| left.label.cmp(&right.label));
     completions
+}
+
+fn fragment_insert_text(parse: &dsql_core::ParseResult, byte: usize, name: &str) -> String {
+    let source = parse.source.to_arc_str();
+    let source = source.as_bytes();
+    let mut name_start = byte;
+    while name_start > 0 && is_identifier_byte(source[name_start - 1]) {
+        name_start -= 1;
+    }
+    if name_start < byte && source.get(name_start.saturating_sub(3)..name_start) == Some(b"...") {
+        let typed = std::str::from_utf8(&source[name_start..byte]).unwrap_or_default();
+        return name.strip_prefix(typed).unwrap_or(name).to_string();
+    }
+
+    let mut dot_count = 0usize;
+    let mut index = byte;
+    while index > 0 && source[index - 1] == b'.' && dot_count < 3 {
+        dot_count += 1;
+        index -= 1;
+    }
+    format!("{}{}", ".".repeat(3usize.saturating_sub(dot_count)), name)
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
 }
 
 fn document_root_completions() -> Vec<CompletionItem> {
@@ -129,6 +161,7 @@ fn root_selection_completions(catalog: &Catalog) -> Vec<CompletionItem> {
             label: completion_table_ref(catalog, &table.schema, &table.name),
             kind: CompletionKind::Table,
             detail: Some(format!("table {}.{}", table.schema, table.name)),
+            insert_text: None,
         })
         .collect()
 }
@@ -155,6 +188,7 @@ fn field_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
                 "relation to {}.{} via {}",
                 relation.table.schema, relation.table.name, relation.selector
             )),
+            insert_text: None,
         }
     }));
     completions.sort_by(|left, right| left.label.cmp(&right.label));
@@ -169,6 +203,7 @@ fn column_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> 
             label: column.name.clone(),
             kind: CompletionKind::Column,
             detail: Some(column.data_type.as_str().to_string()),
+            insert_text: None,
         })
         .collect::<Vec<_>>();
     completions.sort_by(|left, right| left.label.cmp(&right.label));
@@ -191,6 +226,7 @@ fn relation_selector_completions(
                 "relation to {}.{}",
                 relation.table.schema, relation.table.name
             )),
+            insert_text: None,
         })
         .collect::<Vec<_>>();
     completions.sort_by(|left, right| left.label.cmp(&right.label));
@@ -230,16 +266,19 @@ fn predicate_scope_completions() -> Vec<CompletionItem> {
             label: ".".to_string(),
             kind: CompletionKind::Keyword,
             detail: Some("current scope".to_string()),
+            insert_text: None,
         },
         CompletionItem {
             label: "~".to_string(),
             kind: CompletionKind::Keyword,
             detail: Some("root scope".to_string()),
+            insert_text: None,
         },
         CompletionItem {
             label: "..".to_string(),
             kind: CompletionKind::Keyword,
             detail: Some("parent scope".to_string()),
+            insert_text: None,
         },
     ]
 }

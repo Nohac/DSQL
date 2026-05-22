@@ -4,7 +4,7 @@ use dsql_core::{
     SelectionKind, SyntaxNode, SyntaxToken, TableId, expected_tokens_at,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, strum::AsRefStr)]
 pub(crate) enum CursorContext {
     DocumentRoot,
     FragmentOnKeyword,
@@ -54,11 +54,15 @@ fn fragment_spread_context(
     catalog: &Catalog,
     byte: usize,
 ) -> Option<CursorContext> {
+    if !is_fragment_spread_position(parse, byte) {
+        return None;
+    }
+
     let tokens = parse
         .tree
         .significant_token_nodes_before(byte)
         .collect::<Vec<_>>();
-    if tokens.last().and_then(|token| token_kind(token)) != Some(SyntaxToken::Ellipsis) {
+    if has_unclosed_paren_after_last_lbrace(&tokens) {
         return None;
     }
 
@@ -67,6 +71,58 @@ fn fragment_spread_context(
         Some(BodyTarget::RootSelection | BodyTarget::Invalid) => Some(CursorContext::Invalid),
         None => None,
     }
+}
+
+fn is_fragment_spread_position(parse: &ParseResult, byte: usize) -> bool {
+    let source = parse.source.to_arc_str();
+    let source = source.as_bytes();
+    if byte > source.len() {
+        return false;
+    }
+
+    for start in byte.saturating_sub(3)..=byte {
+        if byte > start && source.get(start..start + 3) == Some(b"...") {
+            return true;
+        }
+    }
+
+    if byte == source.len() {
+        let mut dot_count = 0usize;
+        let mut index = byte;
+        while index > 0 && source[index - 1] == b'.' && dot_count < 3 {
+            dot_count += 1;
+            index -= 1;
+        }
+        if dot_count > 0 {
+            return true;
+        }
+    }
+
+    let mut name_start = byte;
+    while name_start > 0 && is_identifier_byte(source[name_start - 1]) {
+        name_start -= 1;
+    }
+    name_start >= 3 && source.get(name_start - 3..name_start) == Some(b"...")
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+fn has_unclosed_paren_after_last_lbrace(tokens: &[&SyntaxNode]) -> bool {
+    let mut paren_depth = 0usize;
+    let start = tokens
+        .iter()
+        .rposition(|token| token_kind(token) == Some(SyntaxToken::LBrace))
+        .map_or(0, |index| index + 1);
+    for token in &tokens[start..] {
+        match token_kind(token) {
+            Some(SyntaxToken::LPar) => paren_depth = paren_depth.saturating_add(1),
+            Some(SyntaxToken::RPar) => paren_depth = paren_depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    paren_depth > 0
 }
 
 fn definition_header_context(parse: &ParseResult, byte: usize) -> Option<CursorContext> {

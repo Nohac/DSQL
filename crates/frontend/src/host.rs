@@ -1,6 +1,6 @@
 use crate::AnalysisResult;
 use crate::completion::{CompletionItem, completions_at};
-use crate::cursor::cursor_context;
+use crate::cursor::{CursorContext, cursor_context};
 use crate::db::CompilerDb;
 use crate::definition::{
     DefinitionResult, DefinitionTarget, SourceDefinition, SourceDefinitionKind,
@@ -254,9 +254,9 @@ impl AnalysisHost {
         let local_byte = self.local_byte_at_host_byte(uri, byte)?;
         let analysis = self.analyze(file).await?;
         let catalog = self.inner.db.catalog();
-        Some(format!(
-            "{:?}",
-            cursor_context(&analysis.parse, &catalog, local_byte)
+        Some(format_completion_context(
+            &cursor_context(&analysis.parse, &catalog, local_byte),
+            &catalog,
         ))
     }
 
@@ -467,6 +467,46 @@ impl AnalysisHost {
         }
         None
     }
+}
+
+fn format_completion_context(context: &CursorContext, catalog: &dsql_core::Catalog) -> String {
+    match context {
+        CursorContext::DocumentRoot
+        | CursorContext::FragmentOnKeyword
+        | CursorContext::FragmentType
+        | CursorContext::RootSelection
+        | CursorContext::Invalid
+        | CursorContext::WhereScope
+        | CursorContext::SortDirection => context.as_ref().to_string(),
+        CursorContext::FragmentSpread { table }
+        | CursorContext::SelectionBody { table }
+        | CursorContext::ClauseList { table, used: _ }
+        | CursorContext::WhereBooleanOperator { table, used: _ }
+        | CursorContext::WhereColumn { table }
+        | CursorContext::OrderByColumn { table } => {
+            format!("{}({})", context.as_ref(), table_name(catalog, *table))
+        }
+        CursorContext::WhereRelationSelector { table, relation } => {
+            format!(
+                "{}({}, {})",
+                context.as_ref(),
+                table_name(catalog, *table),
+                relation
+            )
+        }
+        CursorContext::WhereOperator { data_type } => {
+            format!("{}({})", context.as_ref(), data_type.as_str())
+        }
+    }
+}
+
+fn table_name(catalog: &dsql_core::Catalog, table: dsql_core::TableId) -> String {
+    catalog
+        .tables
+        .iter()
+        .find(|candidate| candidate.id == table)
+        .map(|candidate| candidate.name.clone())
+        .unwrap_or_else(|| format!("table#{}", table.0))
 }
 
 fn format_embedded_replacement(original: &str, mut formatted: String) -> String {

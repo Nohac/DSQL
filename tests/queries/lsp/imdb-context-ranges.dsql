@@ -1,0 +1,15 @@
+fragment TitleFields on title {
+  id
+}
+
+query ContextRanges {
+  {% RootSelection %}movie_info(
+    {% ClauseList(movie_info) %}where {% WhereScope %}.{% WhereColumn(movie_info) %}id {% WhereOperator(int) %}== {% ClauseList(movie_info) %}1811435 {% WhereBooleanOperator(movie_info) %}and {% WhereScope %}.{% WhereColumn(movie_info) %}info {% WhereOperator(text) %}like {% ClauseList(movie_info) %}"release%" {% WhereBooleanOperator(movie_info) %}order {% ClauseList(movie_info) %}by {% OrderByColumn(movie_info) %}id {% SortDirection %}asc limit {% ClauseList(movie_info) %}10
+  ) {% RootSelection %}{
+    {% SelectionBody(movie_info) %}id
+    title({% ClauseList(title) %}where {% WhereScope %}~{% WhereColumn(movie_info) %}info {% WhereOperator(text) %}== {% ClauseList(title) %}"release dates"{% WhereBooleanOperator(title) %}) {% SelectionBody(movie_info) %}{
+      {% SelectionBody(title) %}id
+      .{% TitleFieldsFragment:FragmentSpread(title) %}..TitleFields{% SelectionBody(title) %}
+    }{% SelectionBody(movie_info) %}
+  }{% RootSelection %}
+{%? query %}}{%?}

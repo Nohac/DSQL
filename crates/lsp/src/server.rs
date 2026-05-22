@@ -350,6 +350,7 @@ impl LanguageServer for Backend {
                         CompletionKind::Operator => CompletionItemKind::OPERATOR,
                     }),
                     detail: item.detail,
+                    insert_text: item.insert_text,
                     ..CompletionItem::default()
                 })
                 .collect(),
