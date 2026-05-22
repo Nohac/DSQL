@@ -61,11 +61,13 @@
 - When debugging generated TypeScript, regenerate the consuming fixture/app and inspect the generated files before changing the generator. If a value unexpectedly becomes `never`, add a type-level regression assertion such as `type IsNever<T> = [T] extends [never] ? true : false` and `type AssertFalse<T extends false> = T`; a plain `satisfies` assertion can miss this because `never` satisfies every type.
 - Do not test external crate functionality. Tests should protect dsql semantics, integration behavior, or project-specific boundaries, not verify that dependencies parse defaults or expose documented behavior.
 - Avoid tests that only restate library behavior without protecting project semantics.
-- Before committing code changes, run formatting, tests, and clippy with warnings denied.
+- Before handing off code changes, run formatting, tests, and clippy with warnings denied when practical.
 - If a verification command cannot be run, say why in the final response.
 
 ## Git And Commits
 
+- Never commit, amend, create a checkpoint commit, or otherwise modify git history unless the user explicitly asks for a commit in the current conversation. Approval to implement, continue, checkpoint, or verify is not approval to commit.
+- If the user asks for a commit, first check the working tree, stage only the intended files, and then commit.
 - Use conventional commit messages, such as `feat: ...`, `fix: ...`, `test: ...`, `docs: ...`, `refactor: ...`, or `chore: ...`.
 - Keep commits focused around one coherent behavior or infrastructure change.
 - Do not mix unrelated cleanup with feature or bug-fix commits.

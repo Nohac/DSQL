@@ -1,6 +1,0 @@
----
-source: tests/tests/generate.rs
-expression: contents
----
-export * from "./operations";
-export * from "./dsql";

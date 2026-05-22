@@ -4,9 +4,13 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use tokio::sync::{Mutex, MutexGuard};
+
+static GENERATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[tokio::test]
 async fn generate_project_writes_manifest_and_invokes_typescript_command() {
+    let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
     create_project_fixture(
         project.path(),
@@ -56,9 +60,12 @@ cmd = ["bun", "{}"]
     let dsql = fs::read_to_string(project.path().join("src/generated/dsql/dsql.ts")).unwrap();
     snapshot("generate_typescript_dsql_output", &dsql);
     let index = fs::read_to_string(project.path().join("src/generated/dsql/index.ts")).unwrap();
-    snapshot("generate_typescript_index_output", &index);
+    assert_eq!(
+        index,
+        "export * from \"./operations\";\nexport * from \"./dsql\";\n"
+    );
     let queries = fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
-    snapshot("generate_typescript_queries_output", &queries);
+    assert_eq!(queries, "export * from \"./index\";\n");
 
     fs::write(
         project.path().join("src/generated/dsql/usage.ts"),
@@ -91,6 +98,7 @@ MovieInfoLookup satisfies typeof MovieInfoLookupOperation;
 
 #[tokio::test]
 async fn generate_project_extracts_queries_from_regex_embedding_resolver() {
+    let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
     create_embedded_project_fixture(project.path());
 
@@ -115,6 +123,7 @@ async fn generate_project_extracts_queries_from_regex_embedding_resolver() {
 
 #[tokio::test]
 async fn generate_project_supports_user_owned_typescript_entrypoint() {
+    let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
     link_typescript_package(project.path());
     create_project_fixture(
@@ -405,6 +414,7 @@ export default createServerEntry({
 
 #[tokio::test]
 async fn generate_project_types_embedded_dsql_function_calls() {
+    let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
     create_embedded_project_fixture_with_generate(
         project.path(),
@@ -455,6 +465,7 @@ MovieInfo satisfies typeof EmbeddedMovieInfoLookupOperation;
 
 #[tokio::test]
 async fn generate_project_groups_embedded_source_text_for_multiple_queries() {
+    let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
     create_embedded_project_fixture_with_generate(
         project.path(),
@@ -540,6 +551,7 @@ MovieInfo satisfies
 
 #[tokio::test]
 async fn generate_project_splits_top_level_params_and_contextual_input() {
+    let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
     create_project_fixture(
         project.path(),
@@ -675,6 +687,7 @@ input satisfies MovieInfoLookupInput;
 
 #[tokio::test]
 async fn generate_project_rejects_ambiguous_anonymous_variables() {
+    let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
     create_project_fixture(project.path(), "");
     fs::write(
@@ -737,6 +750,10 @@ documents = [{{ resolver = "dsql", paths = ["queries"] }}]
 "#,
     )
     .unwrap();
+}
+
+async fn generate_test_lock() -> MutexGuard<'static, ()> {
+    GENERATE_TEST_LOCK.lock().await
 }
 
 fn create_embedded_project_fixture(root: &Path) {
@@ -968,7 +985,8 @@ fn symlink_dir(from: &Path, to: &Path) {
 fn snapshot(name: &str, contents: &str) {
     let mut settings = Settings::clone_current();
     settings.set_snapshot_path(fixture_root().join("snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
     settings.bind(|| {
-        insta::assert_snapshot!(name, contents);
+        insta::assert_snapshot!(format!("generate__{name}"), contents);
     });
 }

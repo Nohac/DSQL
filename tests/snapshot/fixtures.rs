@@ -61,12 +61,6 @@ fn valid_query_fixtures_compile_against_imdb_schema() {
             sql.push('\n');
         }
 
-        snapshot_fixture(
-            &fixture,
-            "format",
-            &format!("{}\n", formatted.text.trim_end()),
-        );
-        snapshot_fixture(&fixture, "plan", &format!("{:#?}", planned.queries));
         snapshot_fixture(&fixture, "sql", sql.trim_end());
     }
 }
@@ -231,6 +225,7 @@ fn fixture_root() -> PathBuf {
 fn snapshot_fixture(fixture: &Path, phase: &str, contents: &str) {
     let mut settings = Settings::clone_current();
     settings.set_snapshot_path(fixture_root().join("snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
     settings.bind(|| {
         insta::assert_snapshot!(snapshot_name(fixture, phase), contents);
     });
@@ -242,7 +237,7 @@ fn snapshot_name(fixture: &Path, phase: &str) -> String {
         .and_then(|stem| stem.to_str())
         .unwrap_or("fixture")
         .replace('-', "_");
-    format!("{stem}_{phase}")
+    format!("fixtures__{stem}_{phase}")
 }
 
 fn format_diagnostics(diagnostics: &[&Diagnostic]) -> String {

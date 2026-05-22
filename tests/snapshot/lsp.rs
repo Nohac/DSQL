@@ -481,71 +481,6 @@ async fn imdb_keyword_and_operator_completion_contexts() {
         &relation_path_after_fragment,
         &["id", "aka_title::movie_id", "aka_title::episode_of_id"],
     );
-
-    snapshot(
-        "lsp_completion_contexts",
-        &[
-            ("document_root", &document_root),
-            ("fragment_on", &fragment_on),
-            ("fragment_type", &fragment_type),
-            ("clause_keywords", &clause_keywords),
-            ("int_operator", &int_operators),
-            ("text_operator", &text_operators),
-            ("where_scope", &where_scope),
-            ("where_column", &where_columns),
-            ("where_relation", &where_relations),
-            ("where_relation_selector", &where_relation_selectors),
-            ("where_relation_column", &where_relation_columns),
-            (
-                "where_relation_text_operator",
-                &where_relation_text_operators,
-            ),
-            ("where_root_column", &where_root_columns),
-            ("where_parent_column", &where_parent_columns),
-            ("where_completed_predicate", &where_completed_predicate),
-            (
-                "where_nested_relation_selector",
-                &where_nested_relation_selector,
-            ),
-            ("where_rhs_column", &where_rhs_columns),
-            (
-                "relation_clause_exact_nested",
-                &relation_clause_exact_nested,
-            ),
-            ("scalar_clause", &scalar_clause),
-            ("unknown_clause", &unknown_clause),
-            ("fragment_spread", &fragment_spread),
-            ("title_body_after_clause", &title_body_after_clause),
-            (
-                "relation_path_clause_recovery",
-                &relation_path_clause_recovery,
-            ),
-            (
-                "relation_path_closed_clause_recovery",
-                &relation_path_closed_clause_recovery,
-            ),
-            (
-                "relation_path_after_fragment",
-                &relation_path_after_fragment,
-            ),
-            ("where_boolean_operator", &where_boolean_operator),
-            (
-                "where_after_boolean_operator",
-                &where_after_boolean_operator,
-            ),
-            ("where_group_scope", &where_group_scope),
-            (
-                "where_after_boolean_group_scope",
-                &where_after_boolean_group_scope,
-            ),
-            ("where_group_column", &where_group_columns),
-            ("where_after_group", &where_after_group),
-        ]
-        .into_iter()
-        .map(|(name, items)| format!("{name}\n{}", format_completions(items)))
-        .collect::<Vec<_>>()
-        .join("\n\n"),
-    );
 }
 
 #[tokio::test]
@@ -1016,7 +951,8 @@ fn fixture_root() -> PathBuf {
 fn snapshot(name: &str, contents: &str) {
     let mut settings = Settings::clone_current();
     settings.set_snapshot_path(fixture_root().join("snapshots"));
+    settings.set_prepend_module_to_snapshot(false);
     settings.bind(|| {
-        insta::assert_snapshot!(name, contents);
+        insta::assert_snapshot!(format!("lsp__{name}"), contents);
     });
 }

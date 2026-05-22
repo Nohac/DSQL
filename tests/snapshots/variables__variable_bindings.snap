@@ -1,0 +1,26 @@
+---
+source: tests/snapshot/variables.rs
+assertion_line: 104
+expression: contents
+---
+scalar
+input.users.clause.where.id.min_id Structured WhereValue Uuid Some("min_id") operators=[] enum=[]
+params.title TopLevel WhereValue Text Some("title") operators=[] enum=[]
+input.users.clause.limit Structured Limit Int None operators=[] enum=[]
+params.offset TopLevel Offset Int None operators=[] enum=[]
+input.users.body.posts.clause.limit.post_limit Structured Limit Int Some("post_limit") operators=[] enum=[]
+
+---
+
+operator
+input.posts.clause.where.created_at.op Structured ComparisonOperator Timestamptz None operators=[Gt|Ge] enum=[>|>=]
+input.posts.clause.where.created_at.min_created_at Structured WhereValue Timestamptz Some("min_created_at") operators=[] enum=[]
+params.title_op TopLevel ComparisonOperator Text Some("title_op") operators=[Eq|Ne|Like] enum=[==|!=|like]
+input.posts.clause.where.title.title Structured WhereValue Text Some("title") operators=[] enum=[]
+input.posts.clause.limit Structured Limit Int None operators=[] enum=[]
+
+---
+
+order_by_direction
+input.posts.clause.order_by.created_at.direction.created_dir Structured SortDirection Unknown Some("created_dir") operators=[] enum=[asc|desc]
+params.direction TopLevel SortDirection Unknown None operators=[] enum=[asc|desc]

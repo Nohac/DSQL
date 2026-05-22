@@ -1,7 +1,0 @@
----
-source: tests/tests/variables.rs
-assertion_line: 138
-expression: contents
----
-input.posts.clause.order_by.created_at.direction.created_dir Structured SortDirection Unknown Some("created_dir") [asc|desc]
-params.direction TopLevel SortDirection Unknown None [asc|desc]
