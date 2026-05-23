@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-dsql-core = { path = "../core" }
-miette = { version = "7", features = ["fancy"] }
-regex = "1"
+dsql-core = { workspace = true }
+miette = { workspace = true, features = ["fancy"] }
+regex = { workspace = true }

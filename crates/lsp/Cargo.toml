@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-dsql-core = { path = "../core" }
-dsql-embedding = { path = "../embedding" }
-dsql-frontend = { path = "../frontend" }
-dsql-project = { path = "../project" }
-glob = "0.3"
-ropey = { version = "2.0.0-beta.1", features = ["metric_utf16"] }
-tokio = { version = "1", features = ["full"] }
-tower-lsp-server = "0.22"
-tracing = "0.1"
-tracing-subscriber = "0.3"
+dsql-core = { workspace = true }
+dsql-embedding = { workspace = true }
+dsql-frontend = { workspace = true }
+dsql-project = { workspace = true }
+glob = { workspace = true }
+ropey = { workspace = true, features = ["metric_utf16"] }
+tokio = { workspace = true, features = ["full"] }
+tower-lsp-server = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

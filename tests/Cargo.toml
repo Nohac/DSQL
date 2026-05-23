@@ -5,18 +5,18 @@ edition = "2024"
 publish = false
 
 [dependencies]
-dsql-core = { path = "../crates/core" }
-dsql-frontend = { path = "../crates/frontend" }
-dsql-generate = { path = "../crates/generate" }
-dsql-project = { path = "../crates/project" }
-ropey = { version = "2.0.0-beta.1", features = ["metric_utf16"] }
-serde_json = "1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json"] }
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+dsql-core = { workspace = true }
+dsql-frontend = { workspace = true }
+dsql-generate = { workspace = true }
+dsql-project = { workspace = true }
+ropey = { workspace = true, features = ["metric_utf16"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "json"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 
 [dev-dependencies]
-insta = "1"
+insta = { workspace = true }
 
 [[test]]
 name = "snapshot"

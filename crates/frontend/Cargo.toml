@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-dashmap = "6.1"
-dsql-core = { path = "../core" }
-dsql-embedding = { path = "../embedding" }
-facet = "0.46.2"
-picante = { version = "2.0.0", default-features = false, features = ["macros"] }
-ropey = { version = "2.0.0-beta.1", features = ["metric_utf16"] }
-strum = { version = "0.27", features = ["derive"] }
-tracing = "0.1"
+dashmap = { workspace = true }
+dsql-core = { workspace = true }
+dsql-embedding = { workspace = true }
+facet = { workspace = true }
+picante = { workspace = true, features = ["macros"] }
+ropey = { workspace = true, features = ["metric_utf16"] }
+strum = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }

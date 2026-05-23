@@ -8,20 +8,20 @@ name = "dsql"
 path = "src/main.rs"
 
 [dependencies]
-dsql-core = { path = "../core" }
-dsql-frontend = { path = "../frontend" }
-dsql-generate = { path = "../generate" }
-dsql-introspection = { path = "../introspection" }
-dsql-lsp = { path = "../lsp" }
-dsql-metadata = { path = "../metadata" }
-dsql-project = { path = "../project" }
-clap = { version = "4", features = ["derive"] }
-facet = "0.46.2"
-facet-toml = { version = "0.46.0", features = ["serialize"] }
-miette = { version = "7", features = ["fancy"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json"] }
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
+dsql-core = { workspace = true }
+dsql-frontend = { workspace = true }
+dsql-generate = { workspace = true }
+dsql-introspection = { workspace = true }
+dsql-lsp = { workspace = true }
+dsql-metadata = { workspace = true }
+dsql-project = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+facet = { workspace = true }
+facet-toml = { workspace = true, features = ["serialize"] }
+miette = { workspace = true, features = ["fancy"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "json"] }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

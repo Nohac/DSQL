@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-dsql-core = { path = "../core" }
-facet = "0.46.2"
-facet-toml = { version = "0.46.0", features = ["serialize"] }
-miette = { version = "7", features = ["fancy"] }
+dsql-core = { workspace = true }
+facet = { workspace = true }
+facet-toml = { workspace = true, features = ["serialize"] }
+miette = { workspace = true, features = ["fancy"] }
