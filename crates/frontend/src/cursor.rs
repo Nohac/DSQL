@@ -86,16 +86,14 @@ fn is_fragment_spread_position(parse: &ParseResult, byte: usize) -> bool {
         }
     }
 
-    if byte == source.len() {
-        let mut dot_count = 0usize;
-        let mut index = byte;
-        while index > 0 && source[index - 1] == b'.' && dot_count < 3 {
-            dot_count += 1;
-            index -= 1;
-        }
-        if dot_count > 0 {
-            return true;
-        }
+    let mut dot_count = 0usize;
+    let mut index = byte;
+    while index > 0 && source[index - 1] == b'.' && dot_count < 3 {
+        dot_count += 1;
+        index -= 1;
+    }
+    if dot_count > 0 {
+        return true;
     }
 
     let mut name_start = byte;

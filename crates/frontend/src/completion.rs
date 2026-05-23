@@ -1,5 +1,5 @@
 use crate::cursor::{CursorContext, UsedClauses, cursor_context};
-use dsql_core::{BinaryOp, Catalog, DataType, Definition, TableId, Token};
+use dsql_core::{BinaryOp, Catalog, DataType, FragmentRecord, TableId, Token};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
@@ -58,10 +58,11 @@ pub enum CompletionKind {
     Operator,
 }
 
-pub(crate) fn completions_at(
+pub(crate) fn completions_at_with_fragments(
     parse: &dsql_core::ParseResult,
     catalog: &Catalog,
     byte: usize,
+    external_fragments: &[FragmentRecord],
 ) -> Vec<CompletionItem> {
     match cursor_context(parse, catalog, byte) {
         CursorContext::Invalid => Vec::new(),
@@ -72,7 +73,7 @@ pub(crate) fn completions_at(
         CursorContext::FragmentType => root_selection_completions(catalog),
         CursorContext::RootSelection => root_selection_completions(catalog),
         CursorContext::FragmentSpread { table } => {
-            fragment_completions(parse, catalog, table, byte)
+            fragment_completions(parse, catalog, table, byte, external_fragments)
         }
         CursorContext::SelectionBody { table } => field_completions(catalog, table),
         CursorContext::ClauseList { table: _, used } => clause_keyword_completions(used),
@@ -93,32 +94,55 @@ pub(crate) fn completions_at(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn completions_at(
+    parse: &dsql_core::ParseResult,
+    catalog: &Catalog,
+    byte: usize,
+) -> Vec<CompletionItem> {
+    completions_at_with_fragments(parse, catalog, byte, &[])
+}
+
 fn fragment_completions(
     parse: &dsql_core::ParseResult,
     catalog: &Catalog,
     table: TableId,
     byte: usize,
+    external_fragments: &[FragmentRecord],
 ) -> Vec<CompletionItem> {
     let mut completions = parse
         .source_file
-        .definitions()
-        .filter_map(|definition| {
-            let Definition::Fragment(fragment) = definition else {
-                return None;
-            };
+        .fragments()
+        .filter_map(|fragment| {
             let name = fragment.name.as_ref()?;
             let on = fragment.on.as_ref()?;
-            let target = catalog.table_ref(&on.text)?;
-            (target.id == table).then(|| CompletionItem {
-                label: name.text.clone(),
-                kind: CompletionKind::Fragment,
-                detail: Some(format!("fragment on {}", on.text)),
-                insert_text: Some(fragment_insert_text(parse, byte, &name.text)),
-            })
+            fragment_completion(parse, catalog, table, byte, &name.text, &on.text)
         })
         .collect::<Vec<_>>();
+    completions.extend(external_fragments.iter().filter_map(|fragment| {
+        let on = fragment.on.as_ref()?;
+        fragment_completion(parse, catalog, table, byte, &fragment.key.name, on)
+    }));
     completions.sort_by(|left, right| left.label.cmp(&right.label));
+    completions.dedup_by(|left, right| left.label == right.label);
     completions
+}
+
+fn fragment_completion(
+    parse: &dsql_core::ParseResult,
+    catalog: &Catalog,
+    table: TableId,
+    byte: usize,
+    name: &str,
+    on: &str,
+) -> Option<CompletionItem> {
+    let target = catalog.table_ref(on)?;
+    (target.id == table).then(|| CompletionItem {
+        label: name.to_string(),
+        kind: CompletionKind::Fragment,
+        detail: Some(format!("fragment on {on}")),
+        insert_text: Some(fragment_insert_text(parse, byte, name)),
+    })
 }
 
 fn fragment_insert_text(parse: &dsql_core::ParseResult, byte: usize, name: &str) -> String {

@@ -123,6 +123,68 @@ async fn lsp_definitions_resolve_fragment_spreads_across_open_documents() {
 }
 
 #[tokio::test]
+async fn lsp_completions_resolve_fragment_spreads_across_open_documents() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let fragment_uri = "file:///tests/queries/lsp/imdb-fragments.dsql".to_string();
+    let query_uri = "file:///tests/queries/lsp/imdb-query.dsql".to_string();
+    let fragment = "fragment TitleFields on title {\n  id\n}";
+    let query = "query Movies {\n  title {\n    .";
+    host.open_document(fragment_uri, 1, fragment.to_string())
+        .await;
+    host.open_document(query_uri.clone(), 1, query.to_string())
+        .await;
+
+    let completions = host
+        .completions(&query_uri, position_after(query, "."))
+        .await
+        .unwrap();
+    let fragment = completions
+        .iter()
+        .find(|item| item.label == "TitleFields")
+        .expect("fragment completion from another open document should be present");
+
+    assert_eq!(fragment.kind, CompletionKind::Fragment);
+    assert_eq!(fragment.insert_text.as_deref(), Some("..TitleFields"));
+}
+
+#[tokio::test]
+async fn lsp_completions_resolve_fragment_spreads_across_embedded_regions() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let uri = "file:///tests/src/movie-info.ts".to_string();
+    let source = r#"import { dsql } from "@dsql/typescript";
+
+export const TitleFields = dsql(`
+fragment TitleFields on title {
+  id
+}
+`);
+
+export const Movies = dsql(`
+query Movies {
+  title {
+    .
+  }
+}
+`);
+"#;
+    host.open_document(uri.clone(), 1, source.to_string()).await;
+
+    let completions = host
+        .completions(&uri, position_after(source, "    ."))
+        .await
+        .unwrap();
+    let fragment = completions
+        .iter()
+        .find(|item| item.label == "TitleFields")
+        .expect("fragment completion from another embedded region should be present");
+
+    assert_eq!(fragment.kind, CompletionKind::Fragment);
+    assert_eq!(fragment.insert_text.as_deref(), Some("..TitleFields"));
+}
+
+#[tokio::test]
 async fn lsp_definitions_resolve_tables_relations_and_columns_to_catalog_targets() {
     let host = AnalysisHost::new();
     host.set_catalog(imdb_catalog());
@@ -583,6 +645,7 @@ fn parse_context_fixture_parts_until_close(
 
 async fn assert_context_ranges(variant: &ContextVariant, mode: ContextMode) {
     let ranges = context_ranges(variant);
+    let trace = std::env::var_os("DSQL_TRACE_LSP_CONTEXTS").is_some();
     for (range_index, range) in ranges.iter().enumerate() {
         for byte in range.start..range.end {
             if !should_assert_context_at(&variant.source, byte) {
@@ -622,6 +685,9 @@ async fn assert_context_ranges(variant: &ContextVariant, mode: ContextMode) {
                 .completion_context_debug(&uri, position)
                 .await
                 .expect("context fixture document should be open");
+            if trace {
+                trace_context_step(variant, mode, range, byte, &actual);
+            }
             assert_eq!(
                 actual,
                 range.expected,
@@ -639,10 +705,44 @@ async fn assert_context_ranges(variant: &ContextVariant, mode: ContextMode) {
                     .completions(&uri, position)
                     .await
                     .expect("context fixture document should be open");
+                if trace {
+                    trace_context_completions(id, &items);
+                }
                 assert_named_context_completions(id, range, &variant.source, byte, &items);
             }
         }
     }
+}
+
+fn trace_context_step(
+    variant: &ContextVariant,
+    mode: ContextMode,
+    range: &ContextRange,
+    byte: usize,
+    actual: &str,
+) {
+    let next = variant.source[byte..].chars().next().unwrap_or('\0');
+    eprintln!(
+        "{mode:?} {} byte={byte} expected={} actual={} next={next:?} id={}",
+        variant.name,
+        range.expected,
+        actual,
+        range.id.as_deref().unwrap_or("-")
+    );
+}
+
+fn trace_context_completions(id: &str, items: &[dsql_frontend::CompletionItem]) {
+    let completions = items
+        .iter()
+        .map(|item| {
+            format!(
+                "{} -> {}",
+                item.label,
+                item.insert_text.as_deref().unwrap_or("<default>")
+            )
+        })
+        .collect::<Vec<_>>();
+    eprintln!("  {id} completions: {completions:?}");
 }
 
 struct ContextRange {
