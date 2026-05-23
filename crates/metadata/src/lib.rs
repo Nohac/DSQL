@@ -1,14 +1,13 @@
 use facet::Facet;
-use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 #[facet(facet_jsonschema::id = "https://dsql.dev/schemas/build-manifest.schema.json")]
 pub struct BuildManifest {
     pub version: u32,
     pub operations: Vec<OperationManifestEntry>,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct OperationManifestEntry {
     pub name: String,
     pub kind: String,
@@ -17,7 +16,7 @@ pub struct OperationManifestEntry {
     pub source: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct OperationMetadata {
     pub name: String,
     pub kind: String,
@@ -32,7 +31,7 @@ pub struct OperationMetadata {
     pub source_map: Vec<SourceMapEntry>,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct SqlMetadata {
     pub dialect: String,
     pub text: String,
@@ -40,29 +39,29 @@ pub struct SqlMetadata {
     pub variants: Vec<SqlVariantMetadata>,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct SqlParameterMetadata {
     pub path: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct SqlVariantMetadata {
     pub path: String,
     pub cases: Vec<SqlVariantCaseMetadata>,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct SqlVariantCaseMetadata {
     pub value: String,
     pub text: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct ResultShape {
     pub fields: Vec<ResultField>,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct ResultField {
     pub path: String,
     pub name: String,
@@ -72,7 +71,7 @@ pub struct ResultField {
     pub nullable: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct InputField {
     pub path: String,
     pub data_type: String,
@@ -81,7 +80,7 @@ pub struct InputField {
     pub nullable: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct DynamicInputMetadata {
     pub name: String,
     pub kind: String,
@@ -89,14 +88,14 @@ pub struct DynamicInputMetadata {
     pub fields: Vec<DynamicInputField>,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct DynamicInputField {
     pub path: String,
     pub data_type: String,
     pub operators: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct PolicyMetadata {
     pub name: String,
     pub kind: String,
@@ -104,7 +103,7 @@ pub struct PolicyMetadata {
     pub context: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct HandoffMetadata {
     pub name: String,
     pub parent_path: String,
@@ -114,20 +113,20 @@ pub struct HandoffMetadata {
     pub provided_context: Vec<ProvidedContextMetadata>,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct ProvidedContextMetadata {
     pub name: String,
     pub source_path: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Debug, Facet)]
 pub struct SourceMapEntry {
     pub id: String,
     pub file: String,
     pub range: SourceRange,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Facet, Serialize)]
+#[derive(Clone, Copy, Debug, Facet)]
 pub struct SourceRange {
     pub start: u32,
     pub end: u32,

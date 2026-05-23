@@ -203,7 +203,7 @@ async fn main() -> Result<()> {
                     output.push('\n');
                     output.push_str("  ");
                     output.push_str(
-                        &serde_json::to_string(&generated.output_name).into_diagnostic()?,
+                        &facet_json::to_string(&generated.output_name).into_diagnostic()?,
                     );
                     output.push_str(": ");
                     output.push_str(&value);
@@ -233,9 +233,6 @@ async fn main() -> Result<()> {
         },
         Command::MetadataSchema => {
             let schema = dsql_metadata::build_manifest_json_schema();
-            let schema = serde_json::from_str::<serde_json::Value>(&schema)
-                .and_then(|schema| serde_json::to_string_pretty(&schema))
-                .into_diagnostic()?;
             println!("{schema}");
         }
         Command::MetadataTypescript => {
@@ -254,13 +251,12 @@ async fn generate_typescript_metadata(out_dir: &Path) -> Result<()> {
         )
     })?;
 
-    let schema = dsql_metadata::build_manifest_json_schema();
-    let schema = serde_json::from_str::<serde_json::Value>(&schema)
-        .and_then(|schema| serde_json::to_string_pretty(&schema))
-        .into_diagnostic()?;
-    tokio::fs::write(out_dir.join("build-manifest.schema.json"), schema)
-        .await
-        .map_err(|error| miette::miette!("failed to write build manifest schema: {error}"))?;
+    tokio::fs::write(
+        out_dir.join("build-manifest.schema.json"),
+        dsql_metadata::build_manifest_json_schema(),
+    )
+    .await
+    .map_err(|error| miette::miette!("failed to write build manifest schema: {error}"))?;
 
     tokio::fs::write(
         out_dir.join("metadata.ts"),

@@ -17,11 +17,10 @@ dsql-metadata = { workspace = true }
 dsql-project = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 facet = { workspace = true }
+facet-json = { workspace = true }
 facet-toml = { workspace = true, features = ["serialize"] }
 miette = { workspace = true, features = ["fancy"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "json"] }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

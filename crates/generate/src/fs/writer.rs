@@ -56,8 +56,11 @@ impl ArtifactWriter for FsArtifactWriter {
     }
 }
 
-async fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
-    let json = serde_json::to_string_pretty(value).into_diagnostic()?;
+async fn write_json<T>(path: &Path, value: &T) -> Result<()>
+where
+    T: facet::Facet<'static>,
+{
+    let json = facet_json::to_string_pretty(value).into_diagnostic()?;
     tokio::fs::write(path, format!("{json}\n"))
         .await
         .map_err(|error| miette::miette!("failed to write {}: {error}", path.display()))?;

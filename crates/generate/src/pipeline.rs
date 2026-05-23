@@ -240,7 +240,7 @@ fn build_query_operations(
             handoffs: Vec::<HandoffMetadata>::new(),
             source_map: source_map(project, query),
         };
-        let hash = stable_hash(&serde_json::to_string(&metadata).map_err(|error| {
+        let hash = stable_hash(&facet_json::to_string(&metadata).map_err(|error| {
             miette::miette!("failed to hash operation `{}`: {error}", metadata.name)
         })?);
         operations.push(OperationArtifact {

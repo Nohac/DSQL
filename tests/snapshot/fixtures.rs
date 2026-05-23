@@ -131,8 +131,12 @@ async fn valid_query_fixtures_execute_when_database_url_is_set() {
                 },
             )
             .unwrap();
-            let row = sqlx::query(&generated.sql).fetch_one(&pool).await.unwrap();
-            let value: serde_json::Value = row.try_get(0).unwrap();
+            let row = sqlx::query(&json_text_query(&generated.sql))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            let json: String = row.try_get(0).unwrap();
+            let value: facet_value::Value = facet_json::from_str(&json).unwrap();
             assert!(
                 value.is_array() || value.is_object(),
                 "{} generated JSON should be an array or object",
@@ -185,11 +189,19 @@ async fn integration_query_fixtures_match_expected_output_when_database_url_is_s
             },
         )
         .unwrap();
-        let row = sqlx::query(&generated.sql).fetch_one(&pool).await.unwrap();
-        let value: serde_json::Value = row.try_get(0).unwrap();
-        let output = serde_json::to_string_pretty(&value).unwrap();
+        let row = sqlx::query(&json_text_query(&generated.sql))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let json: String = row.try_get(0).unwrap();
+        let value: facet_value::Value = facet_json::from_str(&json).unwrap();
+        let output = facet_json::to_string_pretty(&value).unwrap();
         snapshot_fixture(&fixture, "output", &output);
     }
+}
+
+fn json_text_query(sql: &str) -> String {
+    format!("select ({})::text", sql.trim().trim_end_matches(';'))
 }
 
 fn imdb_catalog() -> Catalog {

@@ -1,15 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/core",
-    "crates/embedding",
-    "crates/metadata",
-    "crates/generate",
-    "crates/introspection",
-    "crates/project",
-    "crates/frontend",
-    "crates/cli",
-    "crates/lsp",
+    "crates/*",
     "tests",
 ]
 
@@ -29,9 +21,11 @@ clap = "4"
 codespan-reporting = "0.13"
 dashmap = "6.1"
 facet = "0.46.2"
+facet-json = "0.46.0"
 facet-jsonschema = "0.46.0"
 facet-toml = "0.46.0"
 facet-typescript = "0.46.0"
+facet-value = "0.46.0"
 facet-yaml = "0.46.0"
 glob = "0.3"
 indexmap = "2"
@@ -44,8 +38,6 @@ picante = { version = "2.0.0", default-features = false }
 regex = "1"
 ropey = "2.0.0-beta.1"
 sea-query = { version = "1.0.0-rc.34", default-features = false }
-serde = "1"
-serde_json = "1"
 smallvec = "1"
 sqlformat = "0.5"
 sqlx = { version = "0.8", default-features = false }

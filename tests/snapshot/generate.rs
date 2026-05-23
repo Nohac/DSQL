@@ -42,7 +42,7 @@ cmd = ["bun", "{}"]
     );
 
     let manifest = fs::read_to_string(project.path().join("dsql/build/manifest.json")).unwrap();
-    serde_json::from_str::<serde_json::Value>(&manifest).unwrap();
+    facet_json::from_str::<facet_value::Value>(&manifest).unwrap();
     snapshot("generate_manifest", &manifest);
 
     let operation = fs::read_to_string(
@@ -51,7 +51,7 @@ cmd = ["bun", "{}"]
             .join("dsql/build/operations/MovieInfoLookup.json"),
     )
     .unwrap();
-    serde_json::from_str::<serde_json::Value>(&operation).unwrap();
+    facet_json::from_str::<facet_value::Value>(&operation).unwrap();
     snapshot("generate_operation_movie_info_types", &operation);
 
     let operations =
