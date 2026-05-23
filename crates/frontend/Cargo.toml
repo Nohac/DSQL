@@ -7,14 +7,8 @@ edition = "2024"
 dashmap = "6.1"
 dsql-core = { path = "../core" }
 dsql-embedding = { path = "../embedding" }
-facet = "0.44.1"
-facet-dessert = "=0.44.1"
-facet-format = "=0.44.1"
-facet-path = "=0.44.1"
-facet-postcard = "=0.44.1"
-facet-reflect = "=0.44.1"
-facet-value = "=0.44.1"
-picante = { path = "../../../picante/crates/picante", default-features = false, features = ["macros"] }
+facet = "0.46.2"
+picante = { version = "2.0.0", default-features = false, features = ["macros"] }
 ropey = { version = "2.0.0-beta.1", features = ["metric_utf16"] }
 strum = { version = "0.27", features = ["derive"] }
 tracing = "0.1"
