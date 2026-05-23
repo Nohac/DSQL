@@ -311,6 +311,27 @@ mod tests {
     }
 
     #[test]
+    fn fragment_definition_location_comes_from_indexed_source() {
+        let db = CompilerDb::default();
+        db.set_source_rope(
+            FileId(7),
+            RevisionId(1),
+            Rope::from_str("fragment IndexedFields on users { id }"),
+        )
+        .unwrap();
+
+        let location = db
+            .fragment_definition("IndexedFields")
+            .expect("indexed fragment should resolve");
+
+        assert_eq!(location.file, FileId(7));
+        assert_eq!(
+            location.range,
+            dsql_core::TextRange::new("fragment ".len(), "fragment IndexedFields".len())
+        );
+    }
+
+    #[test]
     fn hover_and_semantic_tokens_work_for_clause_columns() {
         let source = "query Q { posts(where .id > 10 order by created_at desc limit 5) { title } }";
         let source_file = parsed_source(source);

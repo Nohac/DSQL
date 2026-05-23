@@ -4,7 +4,7 @@ use crate::cursor::{CursorContext, cursor_context};
 use crate::db::CompilerDb;
 use crate::definition::{
     DefinitionResult, DefinitionTarget, SourceDefinition, SourceDefinitionKind,
-    definition_target_at, find_fragment_definition,
+    definition_target_at,
 };
 use crate::document::{
     DocumentDiagnostics, DocumentFormat, DocumentKind, DocumentSnapshot, DocumentState,
@@ -460,15 +460,35 @@ impl AnalysisHost {
     }
 
     async fn find_fragment_definition(&self, name: &str) -> Option<DefinitionResult> {
-        for snapshot in self.open_document_snapshots() {
-            if let Some(analysis) = self.analyze(snapshot.file).await
-                && let Some(range) = find_fragment_definition(&analysis.parse.source_file, name)
-            {
-                return Some(DefinitionResult::Source(SourceDefinition {
-                    uri: snapshot.uri,
-                    range,
-                    kind: SourceDefinitionKind::Fragment,
-                }));
+        let location = self.inner.db.fragment_definition(name)?;
+        self.source_definition_for_file(location.file, location.range)
+            .map(DefinitionResult::Source)
+    }
+
+    fn source_definition_for_file(
+        &self,
+        file: FileId,
+        range: dsql_core::TextRange,
+    ) -> Option<SourceDefinition> {
+        for document in self.inner.documents.iter() {
+            match &document.kind {
+                DocumentKind::Dsql if document.file == file => {
+                    return Some(SourceDefinition {
+                        uri: document.uri.clone(),
+                        range,
+                        kind: SourceDefinitionKind::Fragment,
+                    });
+                }
+                DocumentKind::Host { regions } => {
+                    if let Some(region) = regions.iter().find(|region| region.file == file) {
+                        return Some(SourceDefinition {
+                            uri: document.uri.clone(),
+                            range: region.host_range(range),
+                            kind: SourceDefinitionKind::Fragment,
+                        });
+                    }
+                }
+                DocumentKind::Dsql => {}
             }
         }
         None

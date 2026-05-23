@@ -123,6 +123,46 @@ async fn lsp_definitions_resolve_fragment_spreads_across_open_documents() {
 }
 
 #[tokio::test]
+async fn lsp_definitions_resolve_fragment_spreads_across_embedded_regions() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let uri = "file:///tests/src/movie-info.ts".to_string();
+    let source = r#"import { dsql } from "@dsql/typescript";
+
+export const TitleFields = dsql(`
+fragment TitleFields on title {
+  id
+}
+`);
+
+export const Movies = dsql(`
+query Movies {
+  title {
+    ...TitleFields
+  }
+}
+`);
+"#;
+    host.open_document(uri.clone(), 1, source.to_string()).await;
+
+    let definition = host
+        .definition(&uri, position_after(source, "..."))
+        .await
+        .unwrap();
+
+    let expected_start = source.find("fragment TitleFields").unwrap() + "fragment ".len();
+    let expected_end = expected_start + "TitleFields".len();
+    assert_eq!(
+        definition,
+        DefinitionResult::Source(SourceDefinition {
+            uri,
+            range: dsql_core::TextRange::new(expected_start, expected_end),
+            kind: SourceDefinitionKind::Fragment,
+        })
+    );
+}
+
+#[tokio::test]
 async fn lsp_completions_resolve_fragment_spreads_across_open_documents() {
     let host = AnalysisHost::new();
     host.set_catalog(imdb_catalog());

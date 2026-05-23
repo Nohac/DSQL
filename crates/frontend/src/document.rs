@@ -99,6 +99,13 @@ impl EmbeddedDocumentRegion {
     pub(crate) fn local_byte(&self, byte: usize) -> usize {
         byte.saturating_sub(self.content_range.start as usize)
     }
+
+    pub(crate) fn host_range(&self, range: dsql_core::TextRange) -> dsql_core::TextRange {
+        dsql_core::TextRange::new(
+            self.content_range.start as usize + range.start as usize,
+            self.content_range.start as usize + range.end as usize,
+        )
+    }
 }
 
 pub(crate) fn apply_text_edits(rope: &mut Rope, edits: Vec<TextEdit>) {

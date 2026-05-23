@@ -92,14 +92,6 @@ pub(crate) fn definition_target_at(
     None
 }
 
-pub(crate) fn find_fragment_definition(source_file: &SourceFile, name: &str) -> Option<TextRange> {
-    source_file
-        .fragments()
-        .filter_map(|fragment| fragment.name.as_ref())
-        .find(|fragment_name| fragment_name.text == name)
-        .map(|fragment_name| fragment_name.range)
-}
-
 fn definition_in_selections(
     catalog: &Catalog,
     table: TableId,

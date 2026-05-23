@@ -25,6 +25,12 @@ pub struct AnalysisResult {
     pub plan: PlannedFile,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FragmentDefinitionLocation {
+    pub file: FileId,
+    pub range: dsql_core::TextRange,
+}
+
 #[derive(Clone, Debug, Facet)]
 pub struct ParsedFile {
     pub tree: SyntaxTree,
@@ -512,6 +518,16 @@ impl CompilerDb {
         completion_scope_query(self, input).await
     }
 
+    pub(crate) fn fragment_definition(&self, name: &str) -> Option<FragmentDefinitionLocation> {
+        let input = self.fragment_inputs.get(name).map(|input| *input)?;
+        let record = input.record(self).ok()??;
+        let file = self.indexed_files_for_fragment(name).into_iter().next()?;
+        Some(FragmentDefinitionLocation {
+            file,
+            range: record.name_range,
+        })
+    }
+
     pub(crate) fn catalog(&self) -> Catalog {
         CatalogInput::catalog(self)
             .ok()
@@ -601,6 +617,22 @@ impl CompilerDb {
         }
         inputs.sort_by_key(|input| input.name(self).ok().map(|name| name.as_ref().clone()));
         inputs
+    }
+
+    fn indexed_files_for_fragment(&self, name: &str) -> Vec<FileId> {
+        let mut files = self
+            .file_fragments
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .any(|fragment| fragment == name)
+                    .then_some(*entry.key())
+            })
+            .collect::<Vec<_>>();
+        files.sort_by_key(|file| file.0);
+        files
     }
 
     fn set_query_record(
