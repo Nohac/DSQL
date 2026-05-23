@@ -84,6 +84,28 @@ pub(crate) struct EmbeddedDocumentRegion {
     pub(crate) content_range: dsql_core::TextRange,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct IndexedDocumentState {
+    pub(crate) uri: String,
+    pub(crate) revision: RevisionId,
+    pub(crate) regions: Vec<IndexedDocumentRegion>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct IndexedDocumentRegion {
+    pub(crate) file: FileId,
+    pub(crate) content_start: usize,
+}
+
+impl IndexedDocumentRegion {
+    pub(crate) fn host_range(&self, range: dsql_core::TextRange) -> dsql_core::TextRange {
+        dsql_core::TextRange::new(
+            self.content_start + range.start as usize,
+            self.content_start + range.end as usize,
+        )
+    }
+}
+
 impl EmbeddedDocumentRegion {
     pub(crate) fn from_region(file: FileId, region: &EmbeddedRegion) -> Self {
         Self {

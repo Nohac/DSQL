@@ -518,8 +518,10 @@ name = "dsql-lsp"
 version = "0.1.0"
 dependencies = [
  "dsql-core",
+ "dsql-embedding",
  "dsql-frontend",
  "dsql-project",
+ "glob",
  "ropey",
  "tokio",
  "tower-lsp-server",

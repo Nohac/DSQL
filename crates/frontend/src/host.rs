@@ -8,8 +8,8 @@ use crate::definition::{
 };
 use crate::document::{
     DocumentDiagnostics, DocumentFormat, DocumentKind, DocumentSnapshot, DocumentState,
-    EmbeddedDocumentRegion, FileId, RevisionId, TextEdit, TextPosition, apply_text_edits,
-    position_to_byte,
+    EmbeddedDocumentRegion, FileId, IndexedDocumentRegion, IndexedDocumentState, RevisionId,
+    TextEdit, TextPosition, apply_text_edits, position_to_byte,
 };
 use crate::hover::{HoverInfo, hover_at};
 use crate::provider::{CatalogProvider, HardcodedCatalogProvider};
@@ -32,6 +32,7 @@ struct AnalysisHostInner {
     db: CompilerDb,
     next_file: AtomicU32,
     documents: DashMap<String, DocumentState>,
+    indexed_documents: DashMap<String, IndexedDocumentState>,
 }
 
 impl Default for AnalysisHost {
@@ -54,6 +55,7 @@ impl AnalysisHost {
                 db,
                 next_file: AtomicU32::new(0),
                 documents: DashMap::new(),
+                indexed_documents: DashMap::new(),
             }),
         }
     }
@@ -111,6 +113,7 @@ impl AnalysisHost {
         version: i32,
         text: String,
     ) -> DocumentDiagnostics {
+        self.clear_indexed_document(&uri);
         let file = match self.inner.documents.get(&uri) {
             Some(document) => {
                 self.clear_embedded_sources(&document.kind);
@@ -192,6 +195,59 @@ impl AnalysisHost {
         self.inner.db.remove_source(state.file);
         self.clear_embedded_sources(&state.kind);
         Some(state.snapshot())
+    }
+
+    pub fn index_document_source(
+        &self,
+        uri: String,
+        revision: RevisionId,
+        text: String,
+        source_offset: usize,
+    ) {
+        if self.inner.documents.contains_key(&uri) {
+            return;
+        }
+        let region_file = self.alloc_file();
+        self.inner
+            .db
+            .set_indexed_source_rope(region_file, Rope::from_str(&text))
+            .ok();
+        let region = IndexedDocumentRegion {
+            file: region_file,
+            content_start: source_offset,
+        };
+        self.inner
+            .indexed_documents
+            .entry(uri.clone())
+            .and_modify(|state| {
+                state.revision = revision;
+                state.regions.push(region.clone());
+            })
+            .or_insert_with(|| IndexedDocumentState {
+                uri,
+                revision,
+                regions: vec![region],
+            });
+    }
+
+    pub fn clear_indexed_document(&self, uri: &str) {
+        if let Some((_, state)) = self.inner.indexed_documents.remove(uri) {
+            for region in state.regions {
+                self.inner.db.remove_source(region.file);
+            }
+        }
+    }
+
+    pub fn clear_indexed_documents(&self) {
+        let uris = self
+            .inner
+            .indexed_documents
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        for uri in uris {
+            self.clear_indexed_document(&uri);
+        }
     }
 
     pub fn document_snapshot(&self, uri: &str) -> Option<DocumentSnapshot> {
@@ -489,6 +545,15 @@ impl AnalysisHost {
                     }
                 }
                 DocumentKind::Dsql => {}
+            }
+        }
+        for indexed in self.inner.indexed_documents.iter() {
+            if let Some(region) = indexed.regions.iter().find(|region| region.file == file) {
+                return Some(SourceDefinition {
+                    uri: indexed.uri.clone(),
+                    range: region.host_range(range),
+                    kind: SourceDefinitionKind::Fragment,
+                });
             }
         }
         None

@@ -387,6 +387,14 @@ impl CompilerDb {
         Ok(())
     }
 
+    pub(crate) fn set_indexed_source_rope(&self, file: FileId, rope: Rope) -> PicanteResult<()> {
+        self.source_inputs.remove(&file);
+        let text = Arc::<str>::from(rope.to_string());
+        let parsed = parse_source(SourceSnapshot::from_arc(text));
+        let extracted = extract_definitions(&parsed.source_file);
+        self.update_definition_records(file, extracted.definitions)
+    }
+
     pub(crate) fn remove_source(&self, file: FileId) {
         self.source_inputs.remove(&file);
         self.clear_definition_inputs(file);
@@ -539,6 +547,14 @@ impl CompilerDb {
         let text = source.text(self)?;
         let parsed = parse_source(SourceSnapshot::from_arc(text));
         let extracted = extract_definitions(&parsed.source_file);
+        self.update_definition_records(file, extracted.definitions)
+    }
+
+    fn update_definition_records(
+        &self,
+        file: FileId,
+        definitions: Vec<dsql_core::DefinitionRecord>,
+    ) -> PicanteResult<()> {
         let old_queries = self
             .file_queries
             .get(&file)
@@ -553,7 +569,7 @@ impl CompilerDb {
         let mut next_fragments = Vec::new();
         let mut seen_queries = HashSet::new();
         let mut seen_fragments = HashSet::new();
-        for definition in extracted.definitions {
+        for definition in definitions {
             match definition {
                 dsql_core::DefinitionRecord::Query(record) => {
                     let key = QueryDefinitionKey {

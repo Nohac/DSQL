@@ -332,6 +332,89 @@ mod tests {
     }
 
     #[test]
+    fn definition_resolves_fragment_from_closed_indexed_document() {
+        block_on(async {
+            let host = AnalysisHost::new();
+            let fragment_uri = "file:///closed-fragments.dsql".to_string();
+            let query_uri = "file:///query.dsql".to_string();
+            host.index_document_source(
+                fragment_uri.clone(),
+                RevisionId(1),
+                "fragment ClosedFields on users { id }".to_string(),
+                0,
+            );
+            let query = "query Q { users { ...ClosedFields } }";
+            host.open_document(query_uri.clone(), 1, query.to_string())
+                .await;
+
+            let definition = host
+                .definition(
+                    &query_uri,
+                    TextPosition {
+                        line: 0,
+                        character: 22,
+                    },
+                )
+                .await
+                .expect("closed indexed fragment should resolve");
+
+            assert_eq!(
+                definition,
+                DefinitionResult::Source(SourceDefinition {
+                    uri: fragment_uri,
+                    range: dsql_core::TextRange::new(
+                        "fragment ".len(),
+                        "fragment ClosedFields".len()
+                    ),
+                    kind: SourceDefinitionKind::Fragment,
+                })
+            );
+        });
+    }
+
+    #[test]
+    fn definition_resolves_fragment_from_closed_indexed_embedded_region() {
+        block_on(async {
+            let host = AnalysisHost::new();
+            let fragment_uri = "file:///closed-fragments.ts".to_string();
+            let query_uri = "file:///query.dsql".to_string();
+            let host_prefix = "const fragment = dsql(`\n";
+            host.index_document_source(
+                fragment_uri.clone(),
+                RevisionId(1),
+                "fragment ClosedEmbeddedFields on users { id }".to_string(),
+                host_prefix.len(),
+            );
+            let query = "query Q { users { ...ClosedEmbeddedFields } }";
+            host.open_document(query_uri.clone(), 1, query.to_string())
+                .await;
+
+            let definition = host
+                .definition(
+                    &query_uri,
+                    TextPosition {
+                        line: 0,
+                        character: 22,
+                    },
+                )
+                .await
+                .expect("closed indexed embedded fragment should resolve");
+
+            assert_eq!(
+                definition,
+                DefinitionResult::Source(SourceDefinition {
+                    uri: fragment_uri,
+                    range: dsql_core::TextRange::new(
+                        host_prefix.len() + "fragment ".len(),
+                        host_prefix.len() + "fragment ClosedEmbeddedFields".len()
+                    ),
+                    kind: SourceDefinitionKind::Fragment,
+                })
+            );
+        });
+    }
+
+    #[test]
     fn hover_and_semantic_tokens_work_for_clause_columns() {
         let source = "query Q { posts(where .id > 10 order by created_at desc limit 5) { title } }";
         let source_file = parsed_source(source);

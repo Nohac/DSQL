@@ -1,8 +1,9 @@
 use crate::convert::{semantic_tokens_legend, to_lsp_diagnostic};
 use crate::position::{byte_to_position, encode_semantic_tokens};
+use dsql_embedding::{RegexEmbedding, default_typescript_regex_pattern};
 use dsql_frontend::{
     AnalysisHost, CatalogDefinition, CompletionKind, DefinitionResult, DocumentDiagnostics,
-    TextEdit as FrontendTextEdit, TextEditRange, TextPosition,
+    RevisionId, TextEdit as FrontendTextEdit, TextEditRange, TextPosition,
 };
 use std::str::FromStr;
 use std::{
@@ -92,11 +93,15 @@ impl Backend {
                 info!(schema_dir = %project.schema.display(), "loaded catalog");
                 self.analysis.set_catalog(catalog);
                 self.analysis.set_lint_options(project.lint_options());
+                let indexed_count = self.index_project_documents(&project).await;
                 self.project_catalog_loaded.store(true, Ordering::Release);
                 self.client
                     .log_message(
                         MessageType::INFO,
-                        format!("dsql loaded catalog from {}", project.schema.display()),
+                        format!(
+                            "dsql loaded catalog from {} and indexed {indexed_count} documents",
+                            project.schema.display()
+                        ),
                     )
                     .await;
                 true
@@ -158,6 +163,35 @@ impl Backend {
     async fn publish_document_diagnostics(&self, results: Vec<DocumentDiagnostics>) {
         for result in results {
             self.publish_diagnostics(result).await;
+        }
+    }
+
+    async fn index_project_documents(&self, project: &dsql_project::Project) -> usize {
+        match load_project_index_documents(project) {
+            Ok(documents) => {
+                let count = documents.len();
+                self.analysis.clear_indexed_documents();
+                for document in documents {
+                    self.analysis.index_document_source(
+                        document.uri,
+                        RevisionId(document.revision),
+                        document.text,
+                        document.source_offset,
+                    );
+                }
+                info!(count, "indexed project documents");
+                count
+            }
+            Err(error) => {
+                warn!(error = ?error, "failed to index project documents");
+                self.client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("dsql failed to index project documents: {error}"),
+                    )
+                    .await;
+                0
+            }
         }
     }
 }
@@ -253,7 +287,13 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
-        self.analysis.close_document(&uri.to_string());
+        let uri_string = uri.to_string();
+        self.analysis.close_document(&uri_string);
+        if let Some(path) = file_uri_to_path(&uri_string).and_then(|path| parent_or_self(&path))
+            && let Some(project) = dsql_project::Project::try_load_from(&path)
+        {
+            self.index_project_documents(&project).await;
+        }
         self.client.publish_diagnostics(uri, Vec::new(), None).await;
     }
 
@@ -405,17 +445,22 @@ impl LanguageServer for Backend {
 
         let location = match definition {
             DefinitionResult::Source(source) => {
-                let Some(snapshot) = self.analysis.document_snapshot(&source.uri) else {
+                let Ok(uri) = Uri::from_str(&source.uri) else {
                     return Ok(None);
                 };
-                let Ok(uri) = Uri::from_str(&source.uri) else {
+                let Some(rope) = self
+                    .analysis
+                    .document_snapshot(&source.uri)
+                    .map(|snapshot| snapshot.rope)
+                    .or_else(|| source_rope_for_uri(&source.uri))
+                else {
                     return Ok(None);
                 };
                 Location::new(
                     uri,
                     Range {
-                        start: byte_to_position(&snapshot.rope, source.range.start as usize),
-                        end: byte_to_position(&snapshot.rope, source.range.end as usize),
+                        start: byte_to_position(&rope, source.range.start as usize),
+                        end: byte_to_position(&rope, source.range.end as usize),
                     },
                 )
             }
@@ -458,6 +503,230 @@ fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
         .ok()?
         .to_file_path()
         .map(|path| path.into_owned())
+}
+
+struct ProjectIndexDocument {
+    uri: String,
+    text: String,
+    source_offset: usize,
+    revision: u64,
+}
+
+fn load_project_index_documents(
+    project: &dsql_project::Project,
+) -> std::result::Result<Vec<ProjectIndexDocument>, String> {
+    let base = project_base(project);
+    let mut documents = Vec::new();
+    if project.config.documents.is_empty() {
+        let mut files = Vec::new();
+        collect_dsql_files(&base, Some(&project.root), &mut files)?;
+        files.sort();
+        files.dedup();
+        for path in files {
+            documents.push(read_index_dsql_document(path)?);
+        }
+    } else {
+        for document_config in &project.config.documents {
+            let mut files = Vec::new();
+            for path in &document_config.paths {
+                collect_resolver_path(&base.join(path), Some(&project.root), &mut files)?;
+            }
+            files.sort();
+            files.dedup();
+
+            if document_config.resolver == "dsql" {
+                for path in files {
+                    if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
+                        documents.push(read_index_dsql_document(path)?);
+                    }
+                }
+            } else {
+                let embedding = embedding_for_resolver(project, &document_config.resolver)?;
+                for path in files {
+                    documents.extend(read_index_embedded_documents(path, &embedding)?);
+                }
+            }
+        }
+    }
+    documents.sort_by(|left, right| {
+        left.uri
+            .cmp(&right.uri)
+            .then(left.source_offset.cmp(&right.source_offset))
+    });
+    Ok(documents)
+}
+
+fn read_index_dsql_document(path: PathBuf) -> std::result::Result<ProjectIndexDocument, String> {
+    let text = fs::read_to_string(&path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let revision = file_revision(&path);
+    Ok(ProjectIndexDocument {
+        uri: path_to_uri(&path)
+            .map(|uri| uri.to_string())
+            .ok_or_else(|| format!("failed to convert {} to URI", path.display()))?,
+        text,
+        source_offset: 0,
+        revision,
+    })
+}
+
+fn read_index_embedded_documents(
+    path: PathBuf,
+    embedding: &RegexEmbedding,
+) -> std::result::Result<Vec<ProjectIndexDocument>, String> {
+    let source = fs::read_to_string(&path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let revision = file_revision(&path);
+    let uri = path_to_uri(&path)
+        .map(|uri| uri.to_string())
+        .ok_or_else(|| format!("failed to convert {} to URI", path.display()))?;
+    embedding
+        .extract(&source)
+        .map_err(|error| {
+            format!(
+                "failed to extract embedded DSQL from {}: {error}",
+                path.display()
+            )
+        })?
+        .into_iter()
+        .map(|region| {
+            Ok(ProjectIndexDocument {
+                uri: uri.clone(),
+                text: region.text,
+                source_offset: region.content_range.start as usize,
+                revision,
+            })
+        })
+        .collect()
+}
+
+fn embedding_for_resolver(
+    project: &dsql_project::Project,
+    resolver: &str,
+) -> std::result::Result<RegexEmbedding, String> {
+    let pattern = if let Some(config) = project.config.embedding.get(resolver) {
+        match config.strategy {
+            dsql_project::EmbeddingStrategy::Regex => config.pattern.clone().ok_or_else(|| {
+                format!("embedding `{resolver}` with strategy `regex` requires `pattern`")
+            })?,
+        }
+    } else if resolver == "typescript" {
+        default_typescript_regex_pattern()
+    } else {
+        return Err(format!(
+            "document resolver `{resolver}` requires an [embedding.{resolver}] config"
+        ));
+    };
+    Ok(RegexEmbedding::new(pattern))
+}
+
+fn collect_resolver_path(
+    path: &Path,
+    excluded_dir: Option<&Path>,
+    files: &mut Vec<PathBuf>,
+) -> std::result::Result<(), String> {
+    if path_has_glob(path) {
+        return collect_glob_path(path, excluded_dir, files);
+    }
+    if path.is_dir() {
+        collect_all_files(path, excluded_dir, files)
+    } else if path.is_file() {
+        files.push(path.to_path_buf());
+        Ok(())
+    } else {
+        Err(format!("document path not found: {}", path.display()))
+    }
+}
+
+fn collect_glob_path(
+    path: &Path,
+    excluded_dir: Option<&Path>,
+    files: &mut Vec<PathBuf>,
+) -> std::result::Result<(), String> {
+    let pattern = path.to_string_lossy();
+    for entry in glob::glob(&pattern)
+        .map_err(|error| format!("invalid document glob `{pattern}`: {error}"))?
+    {
+        let path = entry.map_err(|error| format!("failed to read document glob entry: {error}"))?;
+        if excluded_dir.is_some_and(|excluded| path.starts_with(excluded)) {
+            continue;
+        }
+        if path.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn path_has_glob(path: &Path) -> bool {
+    path.to_string_lossy()
+        .chars()
+        .any(|char| matches!(char, '*' | '?' | '[' | ']'))
+}
+
+fn collect_all_files(
+    dir: &Path,
+    excluded_dir: Option<&Path>,
+    files: &mut Vec<PathBuf>,
+) -> std::result::Result<(), String> {
+    if excluded_dir.is_some_and(|excluded| dir == excluded) {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)
+        .map_err(|error| format!("failed to read directory {}: {error}", dir.display()))?
+    {
+        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_all_files(&path, excluded_dir, files)?;
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn collect_dsql_files(
+    dir: &Path,
+    excluded_dir: Option<&Path>,
+    files: &mut Vec<PathBuf>,
+) -> std::result::Result<(), String> {
+    if excluded_dir.is_some_and(|excluded| dir == excluded) {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)
+        .map_err(|error| format!("failed to read directory {}: {error}", dir.display()))?
+    {
+        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_dsql_files(&path, excluded_dir, files)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn source_rope_for_uri(uri: &str) -> Option<ropey::Rope> {
+    let path = file_uri_to_path(uri)?;
+    let text = fs::read_to_string(path).ok()?;
+    Some(ropey::Rope::from_str(&text))
+}
+
+fn file_revision(path: &Path) -> u64 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn project_base(project: &dsql_project::Project) -> PathBuf {
+    project
+        .root
+        .parent()
+        .map_or_else(|| project.root.clone(), Path::to_path_buf)
 }
 
 fn completion_source_context(analysis: &AnalysisHost, uri: &str, byte: usize) -> Option<String> {
@@ -549,6 +818,7 @@ fn parent_or_self(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn catalog_yaml_range_targets_column_lines() {
@@ -569,5 +839,78 @@ columns:
 
         assert_eq!(table.start, Position::new(2, 0));
         assert_eq!(column.start, Position::new(7, 0));
+    }
+
+    #[test]
+    fn project_index_documents_load_default_dsql_files() {
+        let root = temp_project_root("default-dsql");
+        fs::create_dir_all(root.join("dsql")).unwrap();
+        fs::create_dir_all(root.join("queries")).unwrap();
+        fs::write(
+            root.join("dsql/dsql.toml"),
+            r#"database_url = "<database url>"
+documents = []
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("queries/fragments.dsql"),
+            "fragment ClosedFields on users { id }",
+        )
+        .unwrap();
+
+        let project = dsql_project::Project::load_from(&root).unwrap();
+        let documents = load_project_index_documents(&project).unwrap();
+
+        assert_eq!(documents.len(), 1);
+        assert!(documents[0].uri.ends_with("/queries/fragments.dsql"));
+        assert_eq!(documents[0].source_offset, 0);
+        assert_eq!(documents[0].text, "fragment ClosedFields on users { id }");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_documents_load_embedded_typescript_regions() {
+        let root = temp_project_root("embedded-typescript");
+        fs::create_dir_all(root.join("dsql")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("dsql/dsql.toml"),
+            r#"database_url = "<database url>"
+documents = [{ resolver = "typescript", paths = ["src/**/*.ts"] }]
+"#,
+        )
+        .unwrap();
+        let source = r#"import { dsql } from "@dsql/typescript";
+
+export const Fields = dsql(`
+fragment ClosedFields on users {
+  id
+}
+`);
+"#;
+        fs::write(root.join("src/fragments.ts"), source).unwrap();
+
+        let project = dsql_project::Project::load_from(&root).unwrap();
+        let documents = load_project_index_documents(&project).unwrap();
+
+        assert_eq!(documents.len(), 1);
+        assert!(documents[0].uri.ends_with("/src/fragments.ts"));
+        assert_eq!(
+            documents[0].source_offset,
+            source.find(&documents[0].text).unwrap()
+        );
+        assert!(documents[0].text.contains("fragment ClosedFields"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn temp_project_root(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("dsql-lsp-{name}-{}-{unique}", std::process::id()))
     }
 }
