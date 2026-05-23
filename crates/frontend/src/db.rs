@@ -1,4 +1,5 @@
 use crate::analysis::collect_diagnostics_parts;
+use crate::completion::CompletionScope;
 use crate::document::{FileId, RevisionId};
 use dashmap::DashMap;
 use dsql_core::{
@@ -64,11 +65,38 @@ pub struct FragmentDefinitionInput {
 }
 
 #[picante::input]
+pub struct CompletionScopeInput {
+    #[key]
+    pub file: FileId,
+    pub fragments: Vec<FragmentDefinitionInput>,
+}
+
+#[picante::input]
 pub struct QueryDefinitionInput {
     #[key]
     pub key: QueryDefinitionKey,
     pub record: Option<QueryRecord>,
     pub fragments: Vec<FragmentDefinitionInput>,
+}
+
+#[picante::tracked]
+pub async fn completion_scope_query<DB: CompilerDatabaseTrait>(
+    db: &DB,
+    input: CompletionScopeInput,
+) -> PicanteResult<CompletionScope> {
+    let mut fragments = Vec::new();
+    let mut seen = HashSet::<String>::new();
+    for fragment_input in input.fragments(db)? {
+        let name = fragment_input.name(db)?.as_ref().clone();
+        if !seen.insert(name) {
+            continue;
+        }
+        if let Some(record) = fragment_input.record(db)? {
+            fragments.push(record);
+        }
+    }
+    fragments.sort_by(|left, right| left.key.name.cmp(&right.key.name));
+    Ok(CompletionScope { fragments })
 }
 
 #[picante::tracked]
@@ -286,9 +314,11 @@ fn empty_planned() -> PlannedFile {
         CatalogInput,
         LintOptionsInput,
         QueryDefinitionInput,
-        FragmentDefinitionInput
+        FragmentDefinitionInput,
+        CompletionScopeInput
     ),
     tracked(
+        completion_scope_query,
         parse_file,
         lower_file_query,
         check_file_query,
@@ -476,6 +506,12 @@ impl CompilerDb {
         formatted_text_for_file(self, source).await
     }
 
+    pub(crate) async fn completion_scope(&self, file: FileId) -> PicanteResult<CompletionScope> {
+        let fragments = self.fragment_inputs_for_completion(file);
+        let input = CompletionScopeInput::new(self, file, fragments)?;
+        completion_scope_query(self, input).await
+    }
+
     pub(crate) fn catalog(&self) -> Catalog {
         CatalogInput::catalog(self)
             .ok()
@@ -546,6 +582,25 @@ impl CompilerDb {
                 let _ = self.set_fragment_record(key, None);
             }
         }
+    }
+
+    fn fragment_inputs_for_completion(&self, excluding: FileId) -> Vec<FragmentDefinitionInput> {
+        let mut names = HashSet::new();
+        let mut inputs = Vec::new();
+        for entry in self.file_fragments.iter() {
+            if *entry.key() == excluding {
+                continue;
+            }
+            for name in entry.value() {
+                if names.insert(name.clone())
+                    && let Some(input) = self.fragment_inputs.get(name).map(|input| *input)
+                {
+                    inputs.push(input);
+                }
+            }
+        }
+        inputs.sort_by_key(|input| input.name(self).ok().map(|name| name.as_ref().clone()));
+        inputs
     }
 
     fn set_query_record(

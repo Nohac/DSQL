@@ -29,7 +29,9 @@ fn range_contains(range: dsql_core::TextRange, byte: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::CompilerDb;
     use dsql_core::{Catalog, ParseResult, SourceFile, parse_source};
+    use ropey::Rope;
     use std::{
         future::Future,
         pin::Pin,
@@ -93,7 +95,7 @@ mod tests {
         let catalog = Catalog::hardcoded();
         let byte = source.find("  }").unwrap() + 1;
 
-        let completions = completion::completions_at(&parsed, &catalog, byte);
+        let completions = completion::completions_at_empty_scope(&parsed, &catalog, byte);
 
         assert!(completions.iter().any(|completion| {
             completion.label == "users" && completion.kind == completion::CompletionKind::Relation
@@ -112,7 +114,7 @@ mod tests {
         let catalog = Catalog::hardcoded();
         let byte = source.find("  }").unwrap() + 1;
 
-        let completions = completion::completions_at(&parsed, &catalog, byte);
+        let completions = completion::completions_at_empty_scope(&parsed, &catalog, byte);
 
         assert!(completions.iter().any(|completion| {
             completion.label == "users" && completion.kind == completion::CompletionKind::Table
@@ -132,7 +134,8 @@ mod tests {
         let completion_byte = source.find("  posts").unwrap() + 1;
         let hover_byte = source.find("title").unwrap();
 
-        let completions = completion::completions_at(&parsed, &catalog, completion_byte);
+        let completions =
+            completion::completions_at_empty_scope(&parsed, &catalog, completion_byte);
         let hover = hover::hover_at(&source_file, &catalog, hover_byte).unwrap();
 
         assert!(completions.iter().any(|completion| {
@@ -153,7 +156,8 @@ mod tests {
         let completion_byte = source.find("public.posts").unwrap() - 1;
         let hover_byte = source.find("public.posts").unwrap();
 
-        let completions = completion::completions_at(&parsed, &catalog, completion_byte);
+        let completions =
+            completion::completions_at_empty_scope(&parsed, &catalog, completion_byte);
         let hover = hover::hover_at(&source_file, &catalog, hover_byte).unwrap();
 
         assert!(completions.iter().any(|completion| {
@@ -191,6 +195,119 @@ mod tests {
             token.kind == semantic_tokens::SemanticTokenKind::Column
                 && parse.source.text(token.range).as_ref() == "title"
         }));
+    }
+
+    #[test]
+    fn completion_scope_collects_fragments_from_indexed_files() {
+        block_on(async {
+            let db = CompilerDb::default();
+            db.set_source_rope(
+                FileId(0),
+                RevisionId(1),
+                Rope::from_str("query Q { users { id } }"),
+            )
+            .unwrap();
+            db.set_source_rope(
+                FileId(1),
+                RevisionId(1),
+                Rope::from_str("fragment UserFields on users { id }"),
+            )
+            .unwrap();
+
+            let scope = db.completion_scope(FileId(0)).await.unwrap();
+
+            assert_eq!(fragment_scope_names(&scope), vec!["UserFields"]);
+        });
+    }
+
+    #[test]
+    fn completion_scope_includes_synthetic_embedded_region_files() {
+        block_on(async {
+            let db = CompilerDb::default();
+            let query_region = FileId(10);
+            let fragment_region = FileId(11);
+            db.set_source_rope(
+                query_region,
+                RevisionId(1),
+                Rope::from_str("query Q { users { id } }"),
+            )
+            .unwrap();
+            db.set_source_rope(
+                fragment_region,
+                RevisionId(1),
+                Rope::from_str("fragment EmbeddedFields on users { name }"),
+            )
+            .unwrap();
+
+            let scope = db.completion_scope(query_region).await.unwrap();
+
+            assert_eq!(fragment_scope_names(&scope), vec!["EmbeddedFields"]);
+        });
+    }
+
+    #[test]
+    fn completion_scope_drops_fragments_when_source_is_removed() {
+        block_on(async {
+            let db = CompilerDb::default();
+            db.set_source_rope(
+                FileId(0),
+                RevisionId(1),
+                Rope::from_str("query Q { users { id } }"),
+            )
+            .unwrap();
+            db.set_source_rope(
+                FileId(1),
+                RevisionId(1),
+                Rope::from_str("fragment RemovedFields on users { id }"),
+            )
+            .unwrap();
+
+            db.remove_source(FileId(1));
+            let scope = db.completion_scope(FileId(0)).await.unwrap();
+
+            assert!(scope.fragments.is_empty(), "{:?}", scope.fragments);
+        });
+    }
+
+    #[test]
+    fn completion_uses_updated_db_scope_without_reopening_query_file() {
+        block_on(async {
+            let db = CompilerDb::default();
+            let query_source = "query Q { users { . } }";
+            let query_file = FileId(0);
+            let fragment_file = FileId(1);
+            db.set_source_rope(query_file, RevisionId(1), Rope::from_str(query_source))
+                .unwrap();
+            db.set_source_rope(
+                fragment_file,
+                RevisionId(1),
+                Rope::from_str("fragment OldFields on users { id }"),
+            )
+            .unwrap();
+            db.set_source_rope(
+                fragment_file,
+                RevisionId(2),
+                Rope::from_str("fragment NewFields on users { name }"),
+            )
+            .unwrap();
+
+            let parse = parse_source(query_source.into());
+            let catalog = db.catalog();
+            let scope = db.completion_scope(query_file).await.unwrap();
+            let completions = completion::completions_at(
+                &parse,
+                &catalog,
+                query_source.find(".").unwrap() + 1,
+                &scope,
+            );
+            let labels = completions
+                .iter()
+                .map(|completion| completion.label.as_str())
+                .collect::<Vec<_>>();
+
+            assert!(labels.contains(&"NewFields"), "{labels:?}");
+            assert!(!labels.contains(&"OldFields"), "{labels:?}");
+        });
     }
 
     #[test]
@@ -371,5 +488,13 @@ mod tests {
             assert_eq!(analysis.plan.queries.len(), 1);
             assert_eq!(analysis.plan.queries[0].selections.items.len(), 2);
         });
+    }
+
+    fn fragment_scope_names(scope: &completion::CompletionScope) -> Vec<&str> {
+        scope
+            .fragments
+            .iter()
+            .map(|fragment| fragment.key.name.as_str())
+            .collect()
     }
 }

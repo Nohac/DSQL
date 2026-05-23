@@ -1,5 +1,5 @@
 use crate::AnalysisResult;
-use crate::completion::{CompletionItem, completions_at_with_fragments};
+use crate::completion::{CompletionItem, completions_at};
 use crate::cursor::{CursorContext, cursor_context};
 use crate::db::CompilerDb;
 use crate::definition::{
@@ -16,8 +16,7 @@ use crate::provider::{CatalogProvider, HardcodedCatalogProvider};
 use crate::semantic_tokens::{DocumentSemanticTokens, semantic_tokens_at};
 use dashmap::DashMap;
 use dsql_core::{
-    Catalog, DefinitionRecord, Diagnostic, FormatConfidence, FormattedText, FragmentRecord,
-    LintOptions, SourceSnapshot, extract_definitions,
+    Catalog, Diagnostic, FormatConfidence, FormattedText, LintOptions, SourceSnapshot,
 };
 use dsql_embedding::{RegexEmbedding, default_typescript_regex_pattern};
 use ropey::Rope;
@@ -241,12 +240,12 @@ impl AnalysisHost {
         };
         let analysis = self.analyze(file).await?;
         let catalog = self.inner.db.catalog();
-        let external_fragments = self.external_fragments_for(file).await;
-        Some(completions_at_with_fragments(
+        let scope = self.inner.db.completion_scope(file).await.ok()?;
+        Some(completions_at(
             &analysis.parse,
             &catalog,
             local_byte,
-            &external_fragments,
+            &scope,
         ))
     }
 
@@ -473,40 +472,6 @@ impl AnalysisHost {
             }
         }
         None
-    }
-
-    async fn external_fragments_for(&self, file: FileId) -> Vec<FragmentRecord> {
-        let mut fragments = Vec::new();
-        for analysis_file in self.open_analysis_files() {
-            if analysis_file == file {
-                continue;
-            }
-            if let Some(analysis) = self.analyze(analysis_file).await {
-                fragments.extend(
-                    extract_definitions(&analysis.parse.source_file)
-                        .definitions
-                        .into_iter()
-                        .filter_map(|definition| match definition {
-                            DefinitionRecord::Query(_) => None,
-                            DefinitionRecord::Fragment(fragment) => Some(fragment),
-                        }),
-                );
-            }
-        }
-        fragments
-    }
-
-    fn open_analysis_files(&self) -> Vec<FileId> {
-        let mut files = Vec::new();
-        for document in self.inner.documents.iter() {
-            match &document.kind {
-                DocumentKind::Dsql => files.push(document.file),
-                DocumentKind::Host { regions } => {
-                    files.extend(regions.iter().map(|region| region.file));
-                }
-            }
-        }
-        files
     }
 }
 

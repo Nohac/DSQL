@@ -1,5 +1,6 @@
 use crate::cursor::{CursorContext, UsedClauses, cursor_context};
 use dsql_core::{BinaryOp, Catalog, DataType, FragmentRecord, TableId, Token};
+use facet::Facet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
@@ -58,11 +59,16 @@ pub enum CompletionKind {
     Operator,
 }
 
-pub(crate) fn completions_at_with_fragments(
+#[derive(Clone, Debug, Default, PartialEq, Facet)]
+pub(crate) struct CompletionScope {
+    pub fragments: Vec<FragmentRecord>,
+}
+
+pub(crate) fn completions_at(
     parse: &dsql_core::ParseResult,
     catalog: &Catalog,
     byte: usize,
-    external_fragments: &[FragmentRecord],
+    scope: &CompletionScope,
 ) -> Vec<CompletionItem> {
     match cursor_context(parse, catalog, byte) {
         CursorContext::Invalid => Vec::new(),
@@ -73,7 +79,7 @@ pub(crate) fn completions_at_with_fragments(
         CursorContext::FragmentType => root_selection_completions(catalog),
         CursorContext::RootSelection => root_selection_completions(catalog),
         CursorContext::FragmentSpread { table } => {
-            fragment_completions(parse, catalog, table, byte, external_fragments)
+            fragment_completions(parse, catalog, table, byte, scope)
         }
         CursorContext::SelectionBody { table } => field_completions(catalog, table),
         CursorContext::ClauseList { table: _, used } => clause_keyword_completions(used),
@@ -95,12 +101,12 @@ pub(crate) fn completions_at_with_fragments(
 }
 
 #[cfg(test)]
-pub(crate) fn completions_at(
+pub(crate) fn completions_at_empty_scope(
     parse: &dsql_core::ParseResult,
     catalog: &Catalog,
     byte: usize,
 ) -> Vec<CompletionItem> {
-    completions_at_with_fragments(parse, catalog, byte, &[])
+    completions_at(parse, catalog, byte, &CompletionScope::default())
 }
 
 fn fragment_completions(
@@ -108,7 +114,7 @@ fn fragment_completions(
     catalog: &Catalog,
     table: TableId,
     byte: usize,
-    external_fragments: &[FragmentRecord],
+    scope: &CompletionScope,
 ) -> Vec<CompletionItem> {
     let mut completions = parse
         .source_file
@@ -119,7 +125,7 @@ fn fragment_completions(
             fragment_completion(parse, catalog, table, byte, &name.text, &on.text)
         })
         .collect::<Vec<_>>();
-    completions.extend(external_fragments.iter().filter_map(|fragment| {
+    completions.extend(scope.fragments.iter().filter_map(|fragment| {
         let on = fragment.on.as_ref()?;
         fragment_completion(parse, catalog, table, byte, &fragment.key.name, on)
     }));
