@@ -32,12 +32,22 @@ export function startDsqlDaemon(options: DsqlDaemonOptions = {}): DsqlDaemon {
   const pending = new Map<number, PendingRequest>();
   let nextId = 1;
   let stderr = "";
+  let closed = false;
 
   child.stderr.on("data", (chunk: Buffer) => {
     stderr += chunk.toString("utf8");
   });
 
+  child.on("error", (error) => {
+    closed = true;
+    rejectAll(
+      pending,
+      new Error(`failed to start dsql daemon: ${error.message}`),
+    );
+  });
+
   child.on("exit", (code, signal) => {
+    closed = true;
     const detail = stderr.trim();
     const reason = signal ?? `exit code ${code}`;
     const message = detail
@@ -74,16 +84,25 @@ export function startDsqlDaemon(options: DsqlDaemonOptions = {}): DsqlDaemon {
   });
 
   const request = (method: string, params: unknown): Promise<unknown> => {
+    if (closed || child.stdin.writableEnded || child.stdin.destroyed) {
+      return Promise.reject(new Error("dsql daemon is closed"));
+    }
+
     const id = nextId++;
     const payload = `${JSON.stringify({ id, method, params })}\n`;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      child.stdin.write(payload, (error) => {
-        if (error) {
-          pending.delete(id);
-          reject(error);
-        }
-      });
+      try {
+        child.stdin.write(payload, (error) => {
+          if (error) {
+            pending.delete(id);
+            reject(error);
+          }
+        });
+      } catch (error) {
+        pending.delete(id);
+        reject(error);
+      }
     });
   };
 
@@ -92,6 +111,10 @@ export function startDsqlDaemon(options: DsqlDaemonOptions = {}): DsqlDaemon {
       return (await request("compileProject", { root })) as GeneratedArtifacts;
     },
     async close(): Promise<void> {
+      if (closed) {
+        return;
+      }
+      closed = true;
       child.stdin.end();
       if (child.exitCode !== null) {
         return;

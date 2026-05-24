@@ -77,6 +77,12 @@ export function dsql(
   let config: ViteResolvedConfig | undefined;
   let compilePromise: Promise<void> | undefined;
 
+  const closeDaemon = async (): Promise<void> => {
+    const current = daemon;
+    daemon = undefined;
+    await current?.close();
+  };
+
   const compileAndGenerate = async (): Promise<void> => {
     if (!generator) {
       return;
@@ -109,7 +115,7 @@ export function dsql(
     },
     configureServer(server) {
       server.httpServer?.once("close", () => {
-        void daemon?.close();
+        void closeDaemon();
       });
     },
     async buildStart() {
@@ -140,7 +146,7 @@ export function dsql(
       }
     },
     async closeBundle() {
-      await daemon?.close();
+      await closeDaemon();
     },
   };
 
