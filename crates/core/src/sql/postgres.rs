@@ -54,7 +54,6 @@ pub enum SqlGenerationError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelationCardinality {
-    Object,
     Collection,
 }
 
@@ -291,12 +290,8 @@ fn generate_selection(
     }
 
     let object = json_build_object(selection, catalog, &context, path)?;
-    let expression = match generation.cardinality {
-        RelationCardinality::Object => object,
-        RelationCardinality::Collection => {
-            Func::coalesce([PgFunc::json_agg(object).into(), Expr::value("[]")]).into()
-        }
-    };
+    let expression: Expr =
+        Func::coalesce([PgFunc::json_agg(object).into(), Expr::value("[]")]).into();
     query.expr_as(expression, Alias::new(output_name));
     Ok(query.to_owned())
 }
@@ -642,10 +637,10 @@ fn relation_cardinality(
     child: crate::TableId,
     foreign_key: &ForeignKey,
 ) -> Option<RelationCardinality> {
-    if parent == foreign_key.to_table && child == foreign_key.from_table {
+    if (parent == foreign_key.to_table && child == foreign_key.from_table)
+        || (parent == foreign_key.from_table && child == foreign_key.to_table)
+    {
         Some(RelationCardinality::Collection)
-    } else if parent == foreign_key.from_table && child == foreign_key.to_table {
-        Some(RelationCardinality::Object)
     } else {
         None
     }

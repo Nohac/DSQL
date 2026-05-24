@@ -721,11 +721,11 @@ query CompanyLookupFragmentOnly {
         "generated operations should export fragment value:\n{operations}"
     );
     assert!(
-        operations.contains("movie_companies: MovieCompanyFragmentResult & {"),
+        operations.contains("movie_companies: Array<MovieCompanyFragmentResult & {"),
         "operation result should compose spread fragment result:\n{operations}"
     );
     assert!(
-        operations.contains("movie_companies: MovieCompanyFragmentResult;"),
+        operations.contains("movie_companies: Array<MovieCompanyFragmentResult>;"),
         "fragment-only object result should not add an empty object intersection:\n{operations}"
     );
 

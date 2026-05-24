@@ -1,5 +1,5 @@
 ---
-source: tests/tests/fixtures.rs
+source: tests/snapshot/fixtures.rs
 expression: contents
 ---
 -- title
@@ -29,7 +29,7 @@ from
           "public"."aka_title" as "aka_title_3d091d70"
         where
           "aka_title_3d091d70"."movie_id" = "title_d4d9f554"."id"
-          and "aka_title_3d091d70"."title" like '%foo%'
+          and ("aka_title_3d091d70"."title" like '%foo%')
       )
     limit
       1

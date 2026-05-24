@@ -1,5 +1,5 @@
 ---
-source: tests/tests/fixtures.rs
+source: tests/snapshot/fixtures.rs
 expression: contents
 ---
 -- movie_info
@@ -36,18 +36,42 @@ from
   ) as "movie_info_d37aaa02"
   left join LATERAL (
     select
-      JSON_BUILD_OBJECT('title', "title_85df456e"."title") as "title"
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT('title', "title_85df456e"."title")
+        ),
+        '[]'
+      ) as "title"
     from
-      "public"."title" as "title_85df456e"
-    where
-      "title_85df456e"."id" = "movie_info_d37aaa02"."movie_id"
-      and "title_85df456e"."episode_nr" = 100
+      (
+        select
+          *
+        from
+          "public"."title" as "title_85df456e"
+        where
+          "title_85df456e"."id" = "movie_info_d37aaa02"."movie_id"
+          and "title_85df456e"."episode_nr" = 100
+        limit
+          10
+      ) as "title_85df456e"
   ) as "title_json_85df456e" on true
   left join LATERAL (
     select
-      JSON_BUILD_OBJECT('info', "info_type_3587486e"."info") as "info_type"
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT('info', "info_type_3587486e"."info")
+        ),
+        '[]'
+      ) as "info_type"
     from
-      "public"."info_type" as "info_type_3587486e"
-    where
-      "info_type_3587486e"."id" = "movie_info_d37aaa02"."info_type_id"
+      (
+        select
+          *
+        from
+          "public"."info_type" as "info_type_3587486e"
+        where
+          "info_type_3587486e"."id" = "movie_info_d37aaa02"."info_type_id"
+        limit
+          10
+      ) as "info_type_3587486e"
   ) as "info_type_json_3587486e" on true

@@ -42,19 +42,19 @@ export type MovieInfoLookupResult = {
         id: number;
         info: string;
         note: string | null;
-        title: {
+        title: Array<{
             title: string;
-        };
-        info_type: {
+        }>;
+        info_type: Array<{
             info: string;
-        };
+        }>;
     }>;
 };
 export type MovieInfoLookupParams = Record<string, never>;
 export type MovieInfoLookupInput = Record<string, never>;
 
 export const MovieInfoLookupOperation: DsqlOperation<MovieInfoLookupResult, MovieInfoLookupParams, MovieInfoLookupInput> = {
-    id: "38cb6fb6b011d8b6",
+    id: "01f208d88357d60c",
     name: "MovieInfoLookup",
     kind: "query"
 };

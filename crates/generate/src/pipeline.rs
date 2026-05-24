@@ -808,7 +808,7 @@ fn collect_result_item_fields(
                 parent_path,
                 &relation.output_name,
                 &relation.selections,
-                "object",
+                "array",
                 fields,
             )?;
         }

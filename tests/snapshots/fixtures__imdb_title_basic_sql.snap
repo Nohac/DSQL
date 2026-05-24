@@ -1,5 +1,5 @@
 ---
-source: tests/tests/fixtures.rs
+source: tests/snapshot/fixtures.rs
 expression: contents
 ---
 -- title
@@ -34,9 +34,21 @@ from
   ) as "title_d4d9f554"
   left join LATERAL (
     select
-      JSON_BUILD_OBJECT('kind', "kind_type_d78b0eec"."kind") as "kind_type"
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT('kind', "kind_type_d78b0eec"."kind")
+        ),
+        '[]'
+      ) as "kind_type"
     from
-      "public"."kind_type" as "kind_type_d78b0eec"
-    where
-      "kind_type_d78b0eec"."id" = "title_d4d9f554"."kind_id"
+      (
+        select
+          *
+        from
+          "public"."kind_type" as "kind_type_d78b0eec"
+        where
+          "kind_type_d78b0eec"."id" = "title_d4d9f554"."kind_id"
+        limit
+          10
+      ) as "kind_type_d78b0eec"
   ) as "kind_type_json_d78b0eec" on true
