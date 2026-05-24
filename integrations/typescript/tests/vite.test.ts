@@ -72,16 +72,56 @@ export { Users };`,
   });
 });
 
-test("leaves fragment-only dsql bindings untransformed", () => {
-  const code = `import { dsql } from "./generated/dsql";
+test("transforms named dsql fragment calls into generated fragment imports", () => {
+  const result = transformDsqlTags(
+    `import { dsql } from "./generated/dsql";
 
 const MovieCompany = dsql(\`
 fragment MovieCompany on movie_companies {
   note
-  title {
-    id
-    title
+  company_type {
+    kind
   }
+}
+\`);
+`,
+    "./generated/dsql/queries",
+  );
+
+  expect(result).toEqual({
+    code: `import { MovieCompanyFragment as MovieCompany } from "./generated/dsql/queries";
+import { dsql } from "./generated/dsql";
+
+
+`,
+    map: null,
+  });
+});
+
+test("preserves exported dsql fragment bindings", () => {
+  const result = transformDsqlTags(
+    `export const MovieCompany = dsql\`
+fragment MovieCompany on movie_companies {
+  note
+}
+\`;
+`,
+    "/src/generated/dsql/queries",
+  );
+
+  expect(result).toEqual({
+    code: `import { MovieCompanyFragment as MovieCompany } from "/src/generated/dsql/queries";
+export { MovieCompany };`,
+    map: null,
+  });
+});
+
+test("leaves unnamed fragment-only dsql bindings untransformed", () => {
+  const code = `import { dsql } from "./generated/dsql";
+
+const MovieCompany = dsql(\`
+fragment on movie_companies {
+  note
 }
 \`);
 `;
@@ -111,6 +151,7 @@ test("builds generator artifacts from daemon output", async () => {
           source: "queries/movie-info.dsql",
         },
       ],
+      fragments: [],
     },
     operations: [
       {
@@ -132,10 +173,12 @@ test("builds generator artifacts from daemon output", async () => {
           dynamic_inputs: [],
           policies: [],
           handoffs: [],
+          fragment_spreads: [],
           source_map: [],
         },
       },
     ],
+    fragments: [],
   });
 
   const generator = defineDsqlGenerator(({ artifacts }) => {

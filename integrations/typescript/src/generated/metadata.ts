@@ -1,6 +1,15 @@
 export interface BuildManifest {
   version: number;
   operations: OperationManifestEntry[];
+  fragments: FragmentManifestEntry[];
+}
+
+export interface FragmentManifestEntry {
+  name: string;
+  kind: string;
+  path: string;
+  hash: string;
+  source: string;
 }
 
 export interface OperationManifestEntry {
@@ -23,6 +32,7 @@ export interface OperationMetadata {
   dynamic_inputs: DynamicInputMetadata[];
   policies: PolicyMetadata[];
   handoffs: HandoffMetadata[];
+  fragment_spreads: FragmentSpreadMetadata[];
   source_map: SourceMapEntry[];
 }
 
@@ -35,6 +45,11 @@ export interface SourceMapEntry {
 export interface SourceRange {
   start: number;
   end: number;
+}
+
+export interface FragmentSpreadMetadata {
+  path: string;
+  fragment: string;
 }
 
 export interface HandoffMetadata {
@@ -111,4 +126,37 @@ export interface SqlVariantCaseMetadata {
 
 export interface SqlParameterMetadata {
   path: string;
+}
+
+
+export interface FragmentMetadata {
+  name: string;
+  kind: string;
+  table: string;
+  result: ResultShape;
+  source_map: SourceMapEntry[];
+}
+
+export interface SourceMapEntry {
+  id: string;
+  file: string;
+  range: SourceRange;
+}
+
+export interface SourceRange {
+  start: number;
+  end: number;
+}
+
+export interface ResultShape {
+  fields: ResultField[];
+}
+
+export interface ResultField {
+  path: string;
+  name: string;
+  parent_path: string;
+  kind: string;
+  data_type: string;
+  nullable: boolean;
 }

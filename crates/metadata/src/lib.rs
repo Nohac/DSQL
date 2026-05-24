@@ -5,10 +5,20 @@ use facet::Facet;
 pub struct BuildManifest {
     pub version: u32,
     pub operations: Vec<OperationManifestEntry>,
+    pub fragments: Vec<FragmentManifestEntry>,
 }
 
 #[derive(Clone, Debug, Facet)]
 pub struct OperationManifestEntry {
+    pub name: String,
+    pub kind: String,
+    pub path: String,
+    pub hash: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct FragmentManifestEntry {
     pub name: String,
     pub kind: String,
     pub path: String,
@@ -28,7 +38,23 @@ pub struct OperationMetadata {
     pub dynamic_inputs: Vec<DynamicInputMetadata>,
     pub policies: Vec<PolicyMetadata>,
     pub handoffs: Vec<HandoffMetadata>,
+    pub fragment_spreads: Vec<FragmentSpreadMetadata>,
     pub source_map: Vec<SourceMapEntry>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct FragmentMetadata {
+    pub name: String,
+    pub kind: String,
+    pub table: String,
+    pub result: ResultShape,
+    pub source_map: Vec<SourceMapEntry>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct FragmentSpreadMetadata {
+    pub path: String,
+    pub fragment: String,
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -137,8 +163,13 @@ pub fn build_manifest_json_schema() -> String {
 }
 
 pub fn build_manifest_typescript() -> String {
-    let mut typescript = facet_typescript::to_typescript::<BuildManifest>();
+    let mut typescript = [
+        facet_typescript::to_typescript::<BuildManifest>(),
+        facet_typescript::to_typescript::<OperationMetadata>(),
+        facet_typescript::to_typescript::<FragmentMetadata>(),
+    ]
+    .join("\n");
+    typescript.truncate(typescript.trim_end().len());
     typescript.push('\n');
-    typescript.push_str(&facet_typescript::to_typescript::<OperationMetadata>());
     typescript
 }

@@ -3,6 +3,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Project, QuoteKind, VariableDeclarationKind } from "ts-morph";
 import type {
+  FragmentManifestEntry,
+  FragmentMetadata,
+  FragmentSpreadMetadata,
   InputField,
   OperationManifestEntry,
   OperationMetadata,
@@ -25,6 +28,30 @@ export async function renderTypes(
     "operations.ts",
   );
 
+  for (const fragment of artifacts.fragments) {
+    const resultType = fragmentResultTypeName(fragment.name);
+    operationsSource.addTypeAlias({
+      isExported: true,
+      name: resultType,
+      type: resultTypeLiteral(fragment.result.fields, [], []),
+    });
+    operationsSource.addVariableStatement({
+      isExported: true,
+      declarationKind: VariableDeclarationKind.Const,
+      declarations: [
+        {
+          name: fragmentValueName(fragment.name),
+          type: `DsqlFragmentDefinition<${resultType}>`,
+          initializer: `{
+  name: ${JSON.stringify(fragment.name)},
+  kind: "fragment",
+  table: ${JSON.stringify(fragment.table)}
+}`,
+        },
+      ],
+    });
+  }
+
   for (const operation of artifacts.operations) {
     const manifestEntry = manifestEntryFor(artifacts, operation);
     const resultType = `${toPascalCase(operation.name)}Result`;
@@ -33,7 +60,11 @@ export async function renderTypes(
     operationsSource.addTypeAlias({
       isExported: true,
       name: resultType,
-      type: resultTypeLiteral(operation),
+      type: resultTypeLiteral(
+        operation.result.fields,
+        operation.fragment_spreads,
+        artifacts.fragments,
+      ),
     });
     operationsSource.addTypeAlias({
       isExported: true,
@@ -92,6 +123,14 @@ export async function renderDsqlHelper(
       moduleSpecifier: "./operations",
       namedImports: artifacts.operations.map(
         (operation) => `${toPascalCase(operation.name)}Operation`,
+      ),
+    });
+  }
+  if (artifacts.fragments.length > 0) {
+    dsqlSource.addImportDeclaration({
+      moduleSpecifier: "./operations",
+      namedImports: artifacts.fragments.map((fragment) =>
+        fragmentValueName(fragment.name),
       ),
     });
   }
@@ -162,12 +201,25 @@ function manifestEntryFor(
   return entry;
 }
 
-function operationSourceText(
+function fragmentManifestEntryFor(
   artifacts: BuildArtifacts,
-  operation: OperationMetadata,
+  fragment: FragmentMetadata,
+): FragmentManifestEntry {
+  const entry = artifacts.manifest.fragments.find(
+    (candidate) => candidate.name === fragment.name,
+  );
+  if (!entry) {
+    throw new Error(`missing manifest entry for fragment ${fragment.name}`);
+  }
+  return entry;
+}
+
+function sourceTextForMap(
+  artifacts: BuildArtifacts,
+  definition: OperationMetadata | FragmentMetadata,
 ): string | undefined {
-  const sourceMap = operation.source_map.find(
-    (entry) => entry.id === operation.name,
+  const sourceMap = definition.source_map.find(
+    (entry) => entry.id === definition.name,
   );
   if (!sourceMap) {
     return undefined;
@@ -185,23 +237,34 @@ function operationSourceText(
 }
 
 function operationSourceMapType(artifacts: BuildArtifacts): string {
-  const operationsBySource = new Map<string, Array<string>>();
+  const definitionsBySource = new Map<string, Array<string>>();
   for (const operation of artifacts.operations) {
-    const sourceText = operationSourceText(artifacts, operation);
+    const sourceText = sourceTextForMap(artifacts, operation);
     if (!sourceText) {
       continue;
     }
 
-    const operations = operationsBySource.get(sourceText) ?? [];
-    operations.push(`typeof ${toPascalCase(operation.name)}Operation`);
-    operationsBySource.set(sourceText, operations);
+    const definitions = definitionsBySource.get(sourceText) ?? [];
+    definitions.push(`typeof ${toPascalCase(operation.name)}Operation`);
+    definitionsBySource.set(sourceText, definitions);
+  }
+  for (const fragment of artifacts.fragments) {
+    fragmentManifestEntryFor(artifacts, fragment);
+    const sourceText = sourceTextForMap(artifacts, fragment);
+    if (!sourceText) {
+      continue;
+    }
+
+    const definitions = definitionsBySource.get(sourceText) ?? [];
+    definitions.push(`typeof ${fragmentValueName(fragment.name)}`);
+    definitionsBySource.set(sourceText, definitions);
   }
 
-  const entries = Array.from(operationsBySource, ([sourceText, operations]) => {
-    return `  readonly ${JSON.stringify(sourceText)}: ${operations.join(" | ")};`;
+  const entries = Array.from(definitionsBySource, ([sourceText, definitions]) => {
+    return `  readonly ${JSON.stringify(sourceText)}: ${definitions.join(" | ")};`;
   });
 
-  return `export type DsqlOperationBySource = {\n${entries.join("\n")}\n};`;
+  return `export type DsqlDefinitionBySource = {\n${entries.join("\n")}\n};`;
 }
 
 function embeddedDsqlTextContainingRange(
@@ -230,12 +293,16 @@ function embeddedDsqlTextContainingRange(
   return undefined;
 }
 
-function resultTypeLiteral(operation: OperationMetadata): string {
-  const roots = operation.result.fields.filter(
+function resultTypeLiteral(
+  fields: readonly ResultField[],
+  fragmentSpreads: readonly FragmentSpreadMetadata[],
+  fragments: readonly FragmentMetadata[],
+): string {
+  const roots = fields.filter(
     (field) => field.parent_path === "",
   );
   return objectType(
-    roots.map((field) => propertyType(field, operation.result.fields)),
+    roots.map((field) => propertyType(field, fields, fragmentSpreads, fragments)),
   );
 }
 
@@ -285,6 +352,8 @@ function publicInputPath(path: string, prefix: "params" | "input"): string[] {
 function propertyType(
   field: ResultField,
   fields: readonly ResultField[],
+  fragmentSpreads: readonly FragmentSpreadMetadata[],
+  fragments: readonly FragmentMetadata[],
 ): [string, string] {
   if (field.kind === "scalar") {
     return [
@@ -296,8 +365,76 @@ function propertyType(
   const children = fields.filter(
     (candidate) => candidate.parent_path === field.path,
   );
-  const type = objectType(children.map((child) => propertyType(child, fields)));
+  const ownType = objectType(
+    children.map((child) =>
+      propertyType(child, fields, fragmentSpreads, fragments),
+    ),
+  );
+  const spreadTypes = fragmentSpreads
+    .filter((spread) => spread.path === field.path)
+    .map((spread) => fragmentResultTypeName(spread.fragment));
+  const type = composeObjectType(
+    spreadTypes,
+    ownType,
+    objectHasOwnFields(field, fields, fragmentSpreads, fragments),
+  );
   return [field.name, field.kind === "array" ? `Array<${type}>` : type];
+}
+
+function objectHasOwnFields(
+  field: ResultField,
+  fields: readonly ResultField[],
+  fragmentSpreads: readonly FragmentSpreadMetadata[],
+  fragments: readonly FragmentMetadata[],
+): boolean {
+  const providedPaths = fragmentProvidedPaths(field.path, fragmentSpreads, fragments);
+  if (providedPaths.size === 0) {
+    return fields.some((candidate) => candidate.parent_path === field.path);
+  }
+  return fields.some((candidate) => {
+    const relativePath = relativeResultPath(field.path, candidate.path);
+    return relativePath !== undefined && !providedPaths.has(relativePath);
+  });
+}
+
+function fragmentProvidedPaths(
+  path: string,
+  fragmentSpreads: readonly FragmentSpreadMetadata[],
+  fragments: readonly FragmentMetadata[],
+): ReadonlySet<string> {
+  const provided = new Set<string>();
+  for (const spread of fragmentSpreads) {
+    if (spread.path !== path) {
+      continue;
+    }
+    const fragment = fragments.find((candidate) => candidate.name === spread.fragment);
+    for (const field of fragment?.result.fields ?? []) {
+      provided.add(field.path);
+    }
+  }
+  return provided;
+}
+
+function relativeResultPath(
+  parentPath: string,
+  path: string,
+): string | undefined {
+  const prefix = `${parentPath}.`;
+  return path.startsWith(prefix) ? path.slice(prefix.length) : undefined;
+}
+
+function composeObjectType(
+  spreadTypes: readonly string[],
+  ownType: string,
+  hasOwnFields: boolean,
+): string {
+  if (spreadTypes.length === 0) {
+    return ownType;
+  }
+  if (!hasOwnFields) {
+    return spreadTypes.join(" & ");
+  }
+  return [...spreadTypes, ownType].join(" & ");
 }
 
 function objectType(properties: Array<[string, string]>): string {
@@ -386,4 +523,12 @@ function toPascalCase(value: string): string {
   }
 
   return /^[0-9]/.test(result) ? `_${result}` : result;
+}
+
+function fragmentValueName(name: string): string {
+  return `${toPascalCase(name)}Fragment`;
+}
+
+function fragmentResultTypeName(name: string): string {
+  return `${toPascalCase(name)}FragmentResult`;
 }

@@ -1,6 +1,5 @@
 ---
-source: tests/tests/generate.rs
-assertion_line: 842
+source: tests/snapshot/generate.rs
 expression: contents
 ---
 export type DsqlOperation<
@@ -17,17 +16,27 @@ export type DsqlOperation<
 };
 
 export type DsqlOperationResult<Operation> =
-    Operation extends DsqlOperation<infer Result> ? Result : never;
+    Operation extends DsqlOperation<infer Result, any, any> ? Result : never;
 
 export type DsqlOperationParams<Operation> =
-    Operation extends DsqlOperation<unknown, infer Params, unknown>
+    Operation extends DsqlOperation<any, infer Params, any>
     ? Params
     : Record<string, never>;
 
 export type DsqlOperationInput<Operation> =
-    Operation extends DsqlOperation<unknown, unknown, infer Input>
+    Operation extends DsqlOperation<any, any, infer Input>
     ? Input
     : Record<string, never>;
+
+export type DsqlFragmentDefinition<Result = unknown> = {
+    readonly name: string;
+    readonly kind: "fragment";
+    readonly table: string;
+    readonly result?: Result;
+};
+
+export type DsqlFragment<Fragment> =
+    Fragment extends DsqlFragmentDefinition<infer Result> ? Result : never;
 export type MovieInfoLookupResult = {
     movie_info: Array<{
         id: number;
@@ -45,7 +54,7 @@ export type MovieInfoLookupParams = Record<string, never>;
 export type MovieInfoLookupInput = Record<string, never>;
 
 export const MovieInfoLookupOperation: DsqlOperation<MovieInfoLookupResult, MovieInfoLookupParams, MovieInfoLookupInput> = {
-    id: "bd6ae329864299fb",
+    id: "38cb6fb6b011d8b6",
     name: "MovieInfoLookup",
     kind: "query"
 };

@@ -1,11 +1,13 @@
 use super::{
-    FilterColumnScope, FilterExpr, FilterLiteral, NestedRelation, OrderByPlan, PlannedFile,
-    Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
-    SqlParameter, SqlValue, SqlVariantCase,
+    FilterColumnScope, FilterExpr, FilterLiteral, FragmentPlan, NestedRelation, OrderByPlan,
+    PlannedFile, Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
+    SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
 };
 use crate::{
     catalog::{Catalog, FieldCheckResult, TableId, TableKey, TableResolution},
-    definition::{DefinitionResolver, FragmentMap, QueryRecord, extract_definitions},
+    definition::{
+        DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
+    },
     syntax::{
         Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Selection, SelectionKind,
         Severity, SourceFile,
@@ -144,6 +146,54 @@ pub fn plan_query_definition(
         queries,
         diagnostics,
     }
+}
+
+pub fn plan_fragment_definition(
+    fragment: &FragmentRecord,
+    resolver: &impl DefinitionResolver,
+    catalog: &Catalog,
+) -> Option<FragmentPlan> {
+    let mut diagnostics = Vec::new();
+    let table = match fragment.on.as_deref() {
+        Some(on) => match catalog.resolve_table_ref(on) {
+            TableResolution::Found(table) => table.id,
+            TableResolution::NotFound { reference } => {
+                diagnostics.push(planner_diagnostic(
+                    fragment.on_range.unwrap_or(fragment.range),
+                    DiagnosticCode::TableNotFound,
+                    format!("table `{reference}` not found"),
+                ));
+                return None;
+            }
+            TableResolution::Ambiguous {
+                reference,
+                candidates,
+            } => {
+                diagnostics.push(planner_diagnostic(
+                    fragment.on_range.unwrap_or(fragment.range),
+                    DiagnosticCode::AmbiguousTable,
+                    format!(
+                        "table `{}` is ambiguous; use an alias with a schema-qualified name ({})",
+                        reference,
+                        format_table_candidates(&candidates)
+                    ),
+                ));
+                return None;
+            }
+        },
+        None => return None,
+    };
+    plan_selection_set(
+        catalog,
+        resolver,
+        table,
+        table,
+        &SelectionClauses::default(),
+        &[],
+        &fragment.selections,
+        &mut diagnostics,
+    )
+    .map(|selections| FragmentPlan { table, selections })
 }
 
 fn plan_selection_set(

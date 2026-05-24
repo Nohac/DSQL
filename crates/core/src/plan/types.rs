@@ -19,6 +19,12 @@ pub struct QueryPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct FragmentPlan {
+    pub table: TableId,
+    pub selections: SelectionPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct SelectionPlan {
     pub table: TableId,
     pub clauses: SelectionClauses,

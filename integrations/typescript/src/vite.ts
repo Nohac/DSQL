@@ -165,14 +165,14 @@ export function transformDsqlTags(
       throw new Error("dsql templates do not support JavaScript interpolation");
     }
 
-    const operationName = operationNameFromDsql(body);
-    if (!operationName) {
+    const definition = definitionFromDsql(body);
+    if (!definition) {
       return match;
     }
     changed = true;
 
     imports.push(
-      `import { ${operationName}Operation as ${localName} } from ${JSON.stringify(
+      `import { ${definition.exportName} as ${localName} } from ${JSON.stringify(
         generatedModule,
       )};`,
     );
@@ -218,6 +218,18 @@ function isDsqlRelevantFile(file: string, outDir: string): boolean {
   return DSQL_RELEVANT_EXTENSIONS.some((extension) => file.endsWith(extension));
 }
 
-function operationNameFromDsql(source: string): string | undefined {
-  return /\bquery\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(source)?.[1];
+function definitionFromDsql(
+  source: string,
+): { readonly exportName: string } | undefined {
+  const operationName = /\bquery\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(source)?.[1];
+  if (operationName) {
+    return { exportName: `${operationName}Operation` };
+  }
+  const fragmentName = /\bfragment\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\b/.exec(
+    source,
+  )?.[1];
+  if (fragmentName) {
+    return { exportName: `${fragmentName}Fragment` };
+  }
+  return undefined;
 }

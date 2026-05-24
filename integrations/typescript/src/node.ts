@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import type {
   BuildManifest,
+  FragmentManifestEntry,
+  FragmentMetadata,
   OperationManifestEntry,
   OperationMetadata,
 } from "./generated/metadata";
@@ -15,10 +17,18 @@ export type BuildArtifacts = {
   readonly manifest: BuildManifest;
   readonly operations: OperationMetadata[];
   readonly operationsByName: ReadonlyMap<string, OperationMetadata>;
+  readonly fragments: FragmentMetadata[];
+  readonly fragmentsByName: ReadonlyMap<string, FragmentMetadata>;
 };
 
 export type GeneratedOperationArtifact = {
   readonly metadata: OperationMetadata;
+  readonly hash: string;
+  readonly source: string;
+};
+
+export type GeneratedFragmentArtifact = {
+  readonly metadata: FragmentMetadata;
   readonly hash: string;
   readonly source: string;
 };
@@ -29,6 +39,7 @@ export type GeneratedArtifacts = {
   readonly manifest_path: string;
   readonly manifest: BuildManifest;
   readonly operations: GeneratedOperationArtifact[];
+  readonly fragments: GeneratedFragmentArtifact[];
 };
 
 export type DsqlGeneratorContext = {
@@ -80,12 +91,17 @@ export function buildArtifactsFromGenerated(
   generated: GeneratedArtifacts,
 ): BuildArtifacts {
   const operations = generated.operations.map((operation) => operation.metadata);
+  const fragments = generated.fragments.map((fragment) => fragment.metadata);
   return {
     manifestPath: generated.manifest_path,
     manifest: generated.manifest,
     operations,
     operationsByName: new Map(
       operations.map((operation) => [operation.name, operation]),
+    ),
+    fragments,
+    fragmentsByName: new Map(
+      fragments.map((fragment) => [fragment.name, fragment]),
     ),
   };
 }
@@ -95,12 +111,19 @@ export function loadBuildArtifacts(manifestPath: string): BuildArtifacts {
   const operations = manifest.operations.map((entry) =>
     readOperationMetadata(manifestPath, entry),
   );
+  const fragments = manifest.fragments.map((entry) =>
+    readFragmentMetadata(manifestPath, entry),
+  );
   return {
     manifestPath,
     manifest,
     operations,
     operationsByName: new Map(
       operations.map((operation) => [operation.name, operation]),
+    ),
+    fragments,
+    fragmentsByName: new Map(
+      fragments.map((fragment) => [fragment.name, fragment]),
     ),
   };
 }
@@ -116,6 +139,15 @@ export function readOperationMetadata(
   return readJson(
     resolveArtifactPath(dirname(manifestPath), entry.path),
   ) as OperationMetadata;
+}
+
+export function readFragmentMetadata(
+  manifestPath: string,
+  entry: FragmentManifestEntry,
+): FragmentMetadata {
+  return readJson(
+    resolveArtifactPath(dirname(manifestPath), entry.path),
+  ) as FragmentMetadata;
 }
 
 export function resolveArtifactPath(baseDir: string, path: string): string {

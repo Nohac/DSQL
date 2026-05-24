@@ -1,6 +1,5 @@
 ---
-source: tests/tests/generate.rs
-assertion_line: 819
+source: tests/snapshot/generate.rs
 expression: contents
 ---
 {
@@ -46,6 +45,7 @@ expression: contents
   "dynamic_inputs": [],
   "policies": [],
   "handoffs": [],
+  "fragment_spreads": [],
   "source_map": [
     {
       "id": "EmbeddedMovieInfoLookup",

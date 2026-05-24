@@ -26,10 +26,10 @@ pub use lint::{
     lint_query_definition, lint_query_definition_with_options,
 };
 pub use plan::{
-    FilterColumnScope, FilterExpr, FilterLiteral, NestedRelation, OrderByPlan, PlannedFile,
-    Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
-    SqlParameter, SqlValue, SqlVariantCase, plan_file, plan_file_with_catalog,
-    plan_query_definition,
+    FilterColumnScope, FilterExpr, FilterLiteral, FragmentPlan, NestedRelation, OrderByPlan,
+    PlannedFile, Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
+    SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase, plan_file, plan_file_with_catalog,
+    plan_fragment_definition, plan_query_definition,
 };
 pub use semantic::{
     CheckError, CheckErrorKind, CheckedDefinition, CheckedFile, Interner, LoweredFile, NameId,

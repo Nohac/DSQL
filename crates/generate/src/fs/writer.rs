@@ -2,7 +2,7 @@ use dsql_metadata::BuildManifest;
 use miette::{IntoDiagnostic, Result};
 use std::path::{Path, PathBuf};
 
-use crate::artifacts::{ArtifactRef, ArtifactWriter, OperationArtifact};
+use crate::artifacts::{ArtifactRef, ArtifactWriter, FragmentArtifact, OperationArtifact};
 
 #[derive(Clone, Debug)]
 pub struct FsArtifactWriter {
@@ -26,6 +26,13 @@ impl FsArtifactWriter {
             artifact_file_stem(&operation.metadata.name)
         ))
     }
+
+    fn fragment_path(&self, fragment: &FragmentArtifact) -> PathBuf {
+        self.build_dir.join("fragments").join(format!(
+            "{}.json",
+            artifact_file_stem(&fragment.metadata.name)
+        ))
+    }
 }
 
 impl ArtifactWriter for FsArtifactWriter {
@@ -35,6 +42,21 @@ impl ArtifactWriter for FsArtifactWriter {
             tokio::fs::create_dir_all(parent).await.into_diagnostic()?;
         }
         write_json(&path, &operation.metadata).await?;
+        Ok(ArtifactRef {
+            path: path
+                .strip_prefix(&self.build_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string(),
+        })
+    }
+
+    async fn write_fragment(&self, fragment: &FragmentArtifact) -> Result<ArtifactRef> {
+        let path = self.fragment_path(fragment);
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.into_diagnostic()?;
+        }
+        write_json(&path, &fragment.metadata).await?;
         Ok(ArtifactRef {
             path: path
                 .strip_prefix(&self.build_dir)

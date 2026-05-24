@@ -10,8 +10,8 @@ pub mod fs;
 pub mod process;
 
 pub use pipeline::{
-    GenerateOptions, GenerateOutput, GeneratedArtifacts, GeneratedOperationArtifact,
-    ValidationDiagnostic, ValidationOutput,
+    GenerateOptions, GenerateOutput, GeneratedArtifacts, GeneratedFragmentArtifact,
+    GeneratedOperationArtifact, ValidationDiagnostic, ValidationOutput,
 };
 
 #[cfg(all(feature = "fs", feature = "process"))]

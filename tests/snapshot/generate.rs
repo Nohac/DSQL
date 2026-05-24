@@ -117,11 +117,118 @@ async fn generate_project_artifacts_returns_in_memory_metadata() {
             .to_string_lossy()
     );
     assert_eq!(artifacts.manifest.operations.len(), 1);
+    assert_eq!(artifacts.manifest.fragments.len(), 0);
     assert_eq!(artifacts.operations.len(), 1);
+    assert_eq!(artifacts.fragments.len(), 0);
     assert_eq!(artifacts.operations[0].metadata.name, "MovieInfoLookup");
     assert_eq!(
         artifacts.manifest.operations[0].hash,
         artifacts.operations[0].hash
+    );
+}
+
+#[tokio::test]
+async fn generate_project_writes_fragment_artifacts() {
+    let _guard = generate_test_lock().await;
+    let project = tempfile::tempdir().unwrap();
+    create_project_fixture(project.path(), "");
+    fs::write(
+        project.path().join("queries/movie-info.dsql"),
+        r#"fragment MovieCompany on movie_companies {
+  note
+  company_type {
+    kind
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = dsql_generate::generate_project_from(project.path())
+        .await
+        .unwrap();
+
+    assert_eq!(output.operation_paths, Vec::<String>::new());
+    let manifest = fs::read_to_string(project.path().join("dsql/build/manifest.json")).unwrap();
+    assert!(manifest.contains(r#""fragments": ["#), "{manifest}");
+    assert!(manifest.contains(r#""name": "MovieCompany""#), "{manifest}");
+    let fragment = fs::read_to_string(
+        project
+            .path()
+            .join("dsql/build/fragments/MovieCompany.json"),
+    )
+    .unwrap();
+    assert!(fragment.contains(r#""kind": "fragment""#), "{fragment}");
+    assert!(
+        fragment.contains(r#""table": "movie_companies""#),
+        "{fragment}"
+    );
+    assert!(fragment.contains(r#""path": "note""#), "{fragment}");
+    assert!(
+        fragment.contains(r#""path": "company_type.kind""#),
+        "{fragment}"
+    );
+    assert!(fragment.contains(r#""id": "MovieCompany""#), "{fragment}");
+}
+
+#[tokio::test]
+async fn generate_project_records_fragment_spread_paths() {
+    let _guard = generate_test_lock().await;
+    let project = tempfile::tempdir().unwrap();
+    create_project_fixture(project.path(), "");
+    fs::write(
+        project.path().join("queries/fragments.dsql"),
+        r#"fragment CompanyTypeInfo on movie_companies {
+  company_type {
+    kind
+  }
+}
+
+fragment MovieCompany on movie_companies {
+  note
+  ...CompanyTypeInfo
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("queries/movie-info.dsql"),
+        r#"
+query CompanyLookup {
+  company_name {
+    movie_companies {
+      company_id
+      ...MovieCompany
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    dsql_generate::generate_project_from(project.path())
+        .await
+        .unwrap();
+
+    let operation = fs::read_to_string(
+        project
+            .path()
+            .join("dsql/build/operations/CompanyLookup.json"),
+    )
+    .unwrap();
+    assert!(
+        operation.contains(
+            r#""path": "company_name.movie_companies",
+      "fragment": "MovieCompany""#
+        ),
+        "expected direct fragment spread metadata:\n{operation}"
+    );
+    assert!(
+        operation.contains(
+            r#""path": "company_name.movie_companies",
+      "fragment": "CompanyTypeInfo""#
+        ),
+        "expected transitive fragment spread metadata:\n{operation}"
     );
 }
 
@@ -527,6 +634,122 @@ MovieInfo satisfies typeof EmbeddedMovieInfoLookupOperation;
 }
 
 #[tokio::test]
+async fn generate_project_types_fragment_definitions() {
+    let _guard = generate_test_lock().await;
+    let project = tempfile::tempdir().unwrap();
+    create_project_fixture(
+        project.path(),
+        &format!(
+            r#"[generate.typescript]
+enabled = true
+out_dir = "src/generated/dsql"
+cmd = ["bun", "{}"]
+"#,
+            repo_root()
+                .join("integrations/typescript/renderers/types.ts")
+                .display()
+        ),
+    );
+    let fragment_source = r#"fragment MovieCompany on movie_companies {
+  note
+  company_type {
+    kind
+  }
+}"#;
+    let query_source = r#"query CompanyLookup {
+  company_name {
+    movie_companies {
+      company_id
+      ...MovieCompany
+    }
+  }
+}
+
+query CompanyLookupFragmentOnly {
+  company_name {
+    movie_companies {
+      ...MovieCompany
+    }
+  }
+}"#;
+    fs::write(
+        project.path().join("queries/fragments.dsql"),
+        format!("{fragment_source}\n"),
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("queries/movie-info.dsql"),
+        format!("{query_source}\n"),
+    )
+    .unwrap();
+
+    dsql_generate::generate_project_from(project.path())
+        .await
+        .unwrap();
+
+    let operations =
+        fs::read_to_string(project.path().join("src/generated/dsql/operations.ts")).unwrap();
+    assert!(
+        operations.contains("export type DsqlFragmentDefinition"),
+        "generated operations should export fragment helpers:\n{operations}"
+    );
+    assert!(
+        operations.contains("export type MovieCompanyFragmentResult"),
+        "generated operations should export fragment result type:\n{operations}"
+    );
+    assert!(
+        operations.contains("export const MovieCompanyFragment"),
+        "generated operations should export fragment value:\n{operations}"
+    );
+    assert!(
+        operations.contains("movie_companies: MovieCompanyFragmentResult & {"),
+        "operation result should compose spread fragment result:\n{operations}"
+    );
+    assert!(
+        operations.contains("movie_companies: MovieCompanyFragmentResult;"),
+        "fragment-only object result should not add an empty object intersection:\n{operations}"
+    );
+
+    fs::write(
+        project.path().join("src/generated/dsql/fragment-usage.ts"),
+        format!(
+            r#"import {{ dsql, DsqlFragment, MovieCompanyFragment }} from "./queries";
+
+const MovieCompany = dsql(`{fragment_source}`);
+MovieCompany satisfies typeof MovieCompanyFragment;
+
+type Props = {{
+  item: DsqlFragment<typeof MovieCompany>;
+}};
+
+const _props: Props = {{
+  item: {{
+    note: null,
+    company_type: {{ kind: "production companies" }},
+  }},
+}};
+"#
+        ),
+    )
+    .unwrap();
+
+    let status = Command::new("bun")
+        .args([
+            "build",
+            "src/generated/dsql/fragment-usage.ts",
+            "--outdir",
+            "build/fragments",
+        ])
+        .current_dir(project.path())
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "generated fragment TypeScript should compile with bun"
+    );
+}
+
+#[tokio::test]
 async fn generate_project_groups_embedded_source_text_for_multiple_queries() {
     let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
@@ -682,10 +905,16 @@ cmd = ["bun", "{}"]
     fs::write(
         project.path().join("src/generated/dsql/usage.ts"),
         format!(
-            r#"import {{ dsql, MovieInfoLookupInput, MovieInfoLookupOperation, MovieInfoLookupParams }} from "./queries";
+            r#"import {{ dsql, DsqlOperationResult, MovieInfoLookupInput, MovieInfoLookupOperation, MovieInfoLookupParams }} from "./queries";
+import type {{ MovieInfoLookupResult }} from "./queries";
 
 const MovieInfoLookup = dsql(`{}`);
 MovieInfoLookup satisfies typeof MovieInfoLookupOperation;
+type IsNever<T> = [T] extends [never] ? true : false;
+type AssertFalse<T extends false> = T;
+type AssertTrue<T extends true> = T;
+type OperationResultIsNotNever = AssertFalse<IsNever<DsqlOperationResult<typeof MovieInfoLookup>>>;
+type OperationResultMatchesGenerated = AssertTrue<DsqlOperationResult<typeof MovieInfoLookup> extends MovieInfoLookupResult ? true : false>;
 const params: MovieInfoLookupParams = {{
   limit: 10,
 }};

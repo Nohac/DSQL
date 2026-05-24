@@ -14,6 +14,7 @@ impl GeneratorRunner for CommandGeneratorRunner {
         let Some(program) = target.cmd.first() else {
             return Ok(());
         };
+        let _ = artifacts.fragments.len();
         let status = Command::new(program)
             .args(&target.cmd[1..])
             .current_dir(&target.project_dir)

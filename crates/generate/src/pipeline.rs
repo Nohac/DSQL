@@ -1,13 +1,17 @@
 use dsql_core::{
-    Catalog, DefinitionRecord, Diagnostic, FragmentMap, QueryPlan, QueryRecord, SelectionPlan,
-    SelectionPlanItem, Severity, SourceSnapshot, VariableBinding, check_query_definition,
-    extract_definitions, generate_postgres_sql_with_options, infer_variable_bindings,
-    lint_query_definition_with_options, parse_source, plan_query_definition,
+    Catalog, DefinitionRecord, DefinitionResolver, Diagnostic, FieldCheckResult, FragmentMap,
+    FragmentRecord, QueryPlan, QueryRecord, Selection, SelectionKind, SelectionPlan,
+    SelectionPlanItem, Severity, SourceSnapshot, TableId, VariableBinding,
+    check_fragment_definition, check_query_definition, extract_definitions,
+    generate_postgres_sql_with_options, infer_variable_bindings,
+    lint_query_definition_with_options, parse_source, plan_fragment_definition,
+    plan_query_definition,
 };
 use dsql_metadata::{
-    BuildManifest, DynamicInputMetadata, HandoffMetadata, InputField, OperationManifestEntry,
-    OperationMetadata, PolicyMetadata, ResultField, ResultShape, SourceMapEntry, SourceRange,
-    SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
+    BuildManifest, DynamicInputMetadata, FragmentManifestEntry, FragmentMetadata,
+    FragmentSpreadMetadata, HandoffMetadata, InputField, OperationManifestEntry, OperationMetadata,
+    PolicyMetadata, ResultField, ResultShape, SourceMapEntry, SourceRange, SqlMetadata,
+    SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
 };
 use facet::Facet;
 use miette::Result;
@@ -17,7 +21,10 @@ use std::{
 };
 
 use crate::{
-    artifacts::{ArtifactWriter, OperationArtifact, WrittenArtifacts, WrittenOperationArtifact},
+    artifacts::{
+        ArtifactWriter, FragmentArtifact, OperationArtifact, WrittenArtifacts,
+        WrittenFragmentArtifact, WrittenOperationArtifact,
+    },
     runner::{GenerateTarget, GeneratorRunner},
 };
 
@@ -72,12 +79,20 @@ pub struct GeneratedOperationArtifact {
 }
 
 #[derive(Clone, Debug, Facet)]
+pub struct GeneratedFragmentArtifact {
+    pub metadata: FragmentMetadata,
+    pub hash: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Facet)]
 pub struct GeneratedArtifacts {
     pub project_dir: String,
     pub out_dir: String,
     pub manifest_path: String,
     pub manifest: BuildManifest,
     pub operations: Vec<GeneratedOperationArtifact>,
+    pub fragments: Vec<GeneratedFragmentArtifact>,
 }
 
 pub(crate) async fn generate_project<W, R>(
@@ -96,7 +111,9 @@ where
         ));
     }
 
-    let operations = build_operations(&input)?;
+    let built = build_artifacts(&input)?;
+    let operations = built.operations;
+    let fragments = built.fragments;
     let mut written_operations = Vec::with_capacity(operations.len());
     for operation in operations {
         let reference = writer.write_operation(&operation).await?;
@@ -107,12 +124,23 @@ where
             source: operation.source,
         });
     }
+    let mut written_fragments = Vec::with_capacity(fragments.len());
+    for fragment in fragments {
+        let reference = writer.write_fragment(&fragment).await?;
+        written_fragments.push(WrittenFragmentArtifact {
+            metadata: fragment.metadata,
+            reference,
+            hash: fragment.hash,
+            source: fragment.source,
+        });
+    }
 
-    let manifest = manifest_from_written_operations(&written_operations);
+    let manifest = manifest_from_written_artifacts(&written_operations, &written_fragments);
     let manifest_ref = writer.write_manifest(&manifest).await?;
     let artifacts = WrittenArtifacts {
         manifest: manifest_ref,
         operations: written_operations,
+        fragments: written_fragments,
     };
 
     let typescript = &input.project.config.generate.typescript;
@@ -151,17 +179,17 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
         ));
     }
 
-    let operations = build_operations(&input)?;
+    let built = build_artifacts(&input)?;
     let base = project_root(&input.project);
     let out_dir = resolve_project_path(&base, &input.project.config.generate.typescript.out_dir);
-    let mut generated_operations = Vec::with_capacity(operations.len());
-    let mut manifest_entries = Vec::with_capacity(operations.len());
-    for operation in operations {
+    let mut generated_operations = Vec::with_capacity(built.operations.len());
+    let mut operation_manifest_entries = Vec::with_capacity(built.operations.len());
+    for operation in built.operations {
         let operation_path = format!(
             "operations/{}.json",
             artifact_file_stem(&operation.metadata.name)
         );
-        manifest_entries.push(OperationManifestEntry {
+        operation_manifest_entries.push(OperationManifestEntry {
             name: operation.metadata.name.clone(),
             kind: operation.metadata.kind.clone(),
             path: operation_path,
@@ -172,6 +200,26 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
             metadata: operation.metadata,
             hash: operation.hash,
             source: operation.source,
+        });
+    }
+    let mut generated_fragments = Vec::with_capacity(built.fragments.len());
+    let mut fragment_manifest_entries = Vec::with_capacity(built.fragments.len());
+    for fragment in built.fragments {
+        let fragment_path = format!(
+            "fragments/{}.json",
+            artifact_file_stem(&fragment.metadata.name)
+        );
+        fragment_manifest_entries.push(FragmentManifestEntry {
+            name: fragment.metadata.name.clone(),
+            kind: fragment.metadata.kind.clone(),
+            path: fragment_path,
+            hash: fragment.hash.clone(),
+            source: fragment.source.clone(),
+        });
+        generated_fragments.push(GeneratedFragmentArtifact {
+            metadata: fragment.metadata,
+            hash: fragment.hash,
+            source: fragment.source,
         });
     }
 
@@ -187,15 +235,18 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
             .to_string(),
         manifest: BuildManifest {
             version: BUILD_MANIFEST_VERSION,
-            operations: manifest_entries,
+            operations: operation_manifest_entries,
+            fragments: fragment_manifest_entries,
         },
         operations: generated_operations,
+        fragments: generated_fragments,
     })
 }
 
 pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
     let mut fragments = FragmentMap::default();
     let mut queries = Vec::<LoadedQuery>::new();
+    let mut loaded_fragments = Vec::<LoadedFragment>::new();
     let mut diagnostics = Vec::<ValidationDiagnostic>::new();
     let mut errors = Vec::<String>::new();
 
@@ -226,9 +277,26 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
                         .collect(),
                     query,
                 }),
-                DefinitionRecord::Fragment(fragment) => fragments.insert(fragment),
+                DefinitionRecord::Fragment(fragment) => {
+                    fragments.insert(fragment.clone());
+                    loaded_fragments.push(LoadedFragment {
+                        file: document.path.clone(),
+                        source_offset: document.source_offset,
+                        fragment,
+                    });
+                }
             }
         }
+    }
+
+    for fragment in &loaded_fragments {
+        let checked = check_fragment_definition(&fragment.fragment, &fragments, &input.catalog);
+        diagnostics.extend(
+            checked
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| fragment_validation_diagnostic(fragment, diagnostic)),
+        );
     }
 
     for query in &queries {
@@ -294,9 +362,27 @@ fn query_validation_diagnostic(
     }
 }
 
-fn build_operations(input: &GenerateInput) -> Result<Vec<OperationArtifact>> {
+fn fragment_validation_diagnostic(
+    fragment: &LoadedFragment,
+    diagnostic: Diagnostic,
+) -> ValidationDiagnostic {
+    ValidationDiagnostic {
+        file: fragment.file.clone(),
+        source_offset: fragment.source_offset,
+        diagnostic,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BuiltArtifacts {
+    operations: Vec<OperationArtifact>,
+    fragments: Vec<FragmentArtifact>,
+}
+
+fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
     let mut fragments = FragmentMap::default();
     let mut queries = Vec::<LoadedQuery>::new();
+    let mut loaded_fragments = Vec::<LoadedFragment>::new();
     let mut parse_diagnostics = Vec::<Diagnostic>::new();
 
     for document in &input.documents {
@@ -320,12 +406,29 @@ fn build_operations(input: &GenerateInput) -> Result<Vec<OperationArtifact>> {
                         .collect(),
                     query,
                 }),
-                DefinitionRecord::Fragment(fragment) => fragments.insert(fragment),
+                DefinitionRecord::Fragment(fragment) => {
+                    fragments.insert(fragment.clone());
+                    loaded_fragments.push(LoadedFragment {
+                        file: document.path.clone(),
+                        source_offset: document.source_offset,
+                        fragment,
+                    });
+                }
             }
         }
     }
 
     fail_on_error_diagnostics(parse_diagnostics)?;
+
+    let mut fragment_artifacts = Vec::new();
+    for fragment in &loaded_fragments {
+        fragment_artifacts.push(build_fragment_artifact(
+            &input.project,
+            &input.catalog,
+            &fragments,
+            fragment,
+        )?);
+    }
 
     let mut operations = Vec::new();
     for query in queries {
@@ -337,7 +440,10 @@ fn build_operations(input: &GenerateInput) -> Result<Vec<OperationArtifact>> {
             input.options,
         )?);
     }
-    Ok(operations)
+    Ok(BuiltArtifacts {
+        operations,
+        fragments: fragment_artifacts,
+    })
 }
 
 fn build_query_operations(
@@ -421,6 +527,14 @@ fn build_query_operations(
             dynamic_inputs: dynamic_inputs(&query.variables),
             policies: Vec::<PolicyMetadata>::new(),
             handoffs: Vec::<HandoffMetadata>::new(),
+            fragment_spreads: query
+                .query
+                .selections
+                .iter()
+                .filter(|selection| selection.kind != SelectionKind::FragmentSpread)
+                .nth(index)
+                .map(|selection| operation_fragment_spreads(catalog, fragments, plan, selection))
+                .unwrap_or_default(),
             source_map: source_map(project, query),
         };
         let hash = stable_hash(&facet_json::to_string(&metadata).map_err(|error| {
@@ -433,6 +547,112 @@ fn build_query_operations(
         });
     }
     Ok(operations)
+}
+
+fn build_fragment_artifact(
+    project: &dsql_project::Project,
+    catalog: &Catalog,
+    fragments: &FragmentMap,
+    fragment: &LoadedFragment,
+) -> Result<FragmentArtifact> {
+    let checked = check_fragment_definition(&fragment.fragment, fragments, catalog);
+    fail_on_error_diagnostics(checked.diagnostics)?;
+    let fragment_name = &fragment.fragment.key.name;
+    let plan = plan_fragment_definition(&fragment.fragment, fragments, catalog)
+        .ok_or_else(|| miette::miette!("fragment `{fragment_name}` cannot be planned"))?;
+    let table = catalog
+        .tables
+        .get(plan.table.0)
+        .ok_or_else(|| miette::miette!("missing fragment table for `{fragment_name}`"))?;
+    let metadata = FragmentMetadata {
+        name: fragment_name.clone(),
+        kind: "fragment".to_string(),
+        table: table.name.clone(),
+        result: fragment_result_shape(catalog, &plan.selections)?,
+        source_map: fragment_source_map(project, fragment),
+    };
+    let hash = stable_hash(&facet_json::to_string(&metadata).map_err(|error| {
+        miette::miette!("failed to hash fragment `{}`: {error}", metadata.name)
+    })?);
+    Ok(FragmentArtifact {
+        metadata,
+        hash,
+        source: source_path(project, &fragment.file),
+    })
+}
+
+fn operation_fragment_spreads(
+    catalog: &Catalog,
+    fragments: &FragmentMap,
+    plan: &QueryPlan,
+    root_selection: &Selection,
+) -> Vec<FragmentSpreadMetadata> {
+    let mut spreads = Vec::new();
+    collect_fragment_spread_metadata(
+        catalog,
+        fragments,
+        plan.root,
+        &plan.output_name,
+        &root_selection.selections,
+        &mut Vec::new(),
+        &mut spreads,
+    );
+    spreads
+}
+
+fn collect_fragment_spread_metadata(
+    catalog: &Catalog,
+    fragments: &FragmentMap,
+    table: TableId,
+    result_path: &str,
+    selections: &[Selection],
+    visiting: &mut Vec<String>,
+    spreads: &mut Vec<FragmentSpreadMetadata>,
+) {
+    for selection in selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            spreads.push(FragmentSpreadMetadata {
+                path: result_path.to_string(),
+                fragment: selection.name.text.clone(),
+            });
+            let Some(fragment) = fragments.fragment(&selection.name.text) else {
+                continue;
+            };
+            if visiting.iter().any(|name| name == &fragment.key.name) {
+                continue;
+            }
+            visiting.push(fragment.key.name.clone());
+            collect_fragment_spread_metadata(
+                catalog,
+                fragments,
+                table,
+                result_path,
+                &fragment.selections,
+                visiting,
+                spreads,
+            );
+            visiting.pop();
+            continue;
+        }
+
+        if let FieldCheckResult::Relation(relation) =
+            catalog.check_field(table, &selection.name.text)
+        {
+            let child_name = selection
+                .alias
+                .as_ref()
+                .map_or_else(|| relation.name.to_string(), |alias| alias.text.clone());
+            collect_fragment_spread_metadata(
+                catalog,
+                fragments,
+                relation.table.id,
+                &join_path(result_path, &child_name),
+                &selection.selections,
+                visiting,
+                spreads,
+            );
+        }
+    }
 }
 
 fn validate_variable_bindings(query_name: &str, variables: &[VariableBinding]) -> Result<()> {
@@ -448,7 +668,10 @@ fn validate_variable_bindings(query_name: &str, variables: &[VariableBinding]) -
     Ok(())
 }
 
-fn manifest_from_written_operations(operations: &[WrittenOperationArtifact]) -> BuildManifest {
+fn manifest_from_written_artifacts(
+    operations: &[WrittenOperationArtifact],
+    fragments: &[WrittenFragmentArtifact],
+) -> BuildManifest {
     BuildManifest {
         version: BUILD_MANIFEST_VERSION,
         operations: operations
@@ -459,6 +682,16 @@ fn manifest_from_written_operations(operations: &[WrittenOperationArtifact]) -> 
                 path: operation.reference.path.clone(),
                 hash: operation.hash.clone(),
                 source: operation.source.clone(),
+            })
+            .collect(),
+        fragments: fragments
+            .iter()
+            .map(|fragment| FragmentManifestEntry {
+                name: fragment.metadata.name.clone(),
+                kind: fragment.metadata.kind.clone(),
+                path: fragment.reference.path.clone(),
+                hash: fragment.hash.clone(),
+                source: fragment.source.clone(),
             })
             .collect(),
     }
@@ -517,6 +750,14 @@ fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
     Ok(ResultShape { fields })
 }
 
+fn fragment_result_shape(catalog: &Catalog, selection: &SelectionPlan) -> Result<ResultShape> {
+    let mut fields = Vec::new();
+    for item in &selection.items {
+        collect_result_item_fields(catalog, "", item, &mut fields)?;
+    }
+    Ok(ResultShape { fields })
+}
+
 fn collect_result_fields(
     catalog: &Catalog,
     parent_path: &str,
@@ -536,30 +777,40 @@ fn collect_result_fields(
     });
 
     for item in &selection.items {
-        match item {
-            SelectionPlanItem::Projection(projection) => {
-                let column = catalog
-                    .column_by_id(projection.column)
-                    .ok_or_else(|| miette::miette!("missing projected column"))?;
-                fields.push(ResultField {
-                    path: join_path(&path, &projection.output_name),
-                    name: projection.output_name.clone(),
-                    parent_path: path.clone(),
-                    kind: "scalar".to_string(),
-                    data_type: column.data_type.as_str().to_string(),
-                    nullable: !column.not_null,
-                });
-            }
-            SelectionPlanItem::Relation(relation) => {
-                collect_result_fields(
-                    catalog,
-                    &path,
-                    &relation.output_name,
-                    &relation.selections,
-                    "object",
-                    fields,
-                )?;
-            }
+        collect_result_item_fields(catalog, &path, item, fields)?;
+    }
+    Ok(())
+}
+
+fn collect_result_item_fields(
+    catalog: &Catalog,
+    parent_path: &str,
+    item: &SelectionPlanItem,
+    fields: &mut Vec<ResultField>,
+) -> Result<()> {
+    match item {
+        SelectionPlanItem::Projection(projection) => {
+            let column = catalog
+                .column_by_id(projection.column)
+                .ok_or_else(|| miette::miette!("missing projected column"))?;
+            fields.push(ResultField {
+                path: join_path(parent_path, &projection.output_name),
+                name: projection.output_name.clone(),
+                parent_path: parent_path.to_string(),
+                kind: "scalar".to_string(),
+                data_type: column.data_type.as_str().to_string(),
+                nullable: !column.not_null,
+            });
+        }
+        SelectionPlanItem::Relation(relation) => {
+            collect_result_fields(
+                catalog,
+                parent_path,
+                &relation.output_name,
+                &relation.selections,
+                "object",
+                fields,
+            )?;
         }
     }
     Ok(())
@@ -612,6 +863,20 @@ fn source_map(project: &dsql_project::Project, query: &LoadedQuery) -> Vec<Sourc
         range: SourceRange {
             start: query.source_offset + query.query.range.start,
             end: query.source_offset + query.query.range.end,
+        },
+    }]
+}
+
+fn fragment_source_map(
+    project: &dsql_project::Project,
+    fragment: &LoadedFragment,
+) -> Vec<SourceMapEntry> {
+    vec![SourceMapEntry {
+        id: fragment.fragment.key.name.clone(),
+        file: source_path(project, &fragment.file),
+        range: SourceRange {
+            start: fragment.source_offset + fragment.fragment.range.start,
+            end: fragment.source_offset + fragment.fragment.range.end,
         },
     }]
 }
@@ -669,4 +934,10 @@ pub(crate) struct LoadedQuery {
     source_offset: u32,
     query: QueryRecord,
     variables: Vec<VariableBinding>,
+}
+
+pub(crate) struct LoadedFragment {
+    file: PathBuf,
+    source_offset: u32,
+    fragment: FragmentRecord,
 }
