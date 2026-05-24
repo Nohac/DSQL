@@ -400,6 +400,10 @@ await renderTanStackQuery(artifacts, { outDir });
         "generated tanstack-query.ts should wrap TanStack Query:\n{tanstack_query}"
     );
     assert!(
+        tanstack_query.contains("executeQuery"),
+        "generated tanstack-query.ts should expose direct server execution:\n{tanstack_query}"
+    );
+    assert!(
         tanstack_query.contains("MovieInfoLookupServerFn"),
         "generated tanstack-query.ts should call generated server functions:\n{tanstack_query}"
     );
@@ -466,7 +470,9 @@ await renderTanStackQuery(artifacts, { outDir });
         r#"import {
   dsql,
   DsqlOperationResult,
+  executeQuery,
   MovieInfoLookupOperation,
+  queryOptions,
   useQuery,
 } from "./generated/dsql/queries";
 import type { MovieInfoLookupResult } from "./generated/dsql/queries";
@@ -513,8 +519,21 @@ const query = useQuery(MovieInfoLookup, {
   input: {},
   enabled: true,
 });
+const options = queryOptions(MovieInfoLookup, {
+  params: {},
+  input: {},
+});
+const executed = executeQuery(MovieInfoLookup, {
+  params: {},
+  input: {},
+});
 type QueryDataIsNotNever = AssertFalse<IsNever<typeof query.data>>;
+type QueryFnData = Awaited<ReturnType<NonNullable<typeof options.queryFn>>>;
+type ExecuteData = Awaited<typeof executed>;
+type QueryFnDataIsNotNever = AssertFalse<IsNever<QueryFnData>>;
+type ExecuteDataIsNotNever = AssertFalse<IsNever<ExecuteData>>;
 query.data satisfies MovieInfoLookupResult | undefined;
+executed satisfies Promise<MovieInfoLookupResult>;
 "#,
     )
     .unwrap();

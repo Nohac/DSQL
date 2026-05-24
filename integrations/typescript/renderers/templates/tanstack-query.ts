@@ -37,6 +37,14 @@ export type DsqlQueryOptions<
   readonly input?: Input;
 };
 
+export type DsqlExecuteOptions<
+  Params,
+  Input,
+> = {
+  readonly params?: Params;
+  readonly input?: Input;
+};
+
 type DsqlServerFunction<Operation extends DsqlOperation<any, any, any>> = (
   options: {
     readonly data: DsqlServerVariables<Operation>;
@@ -60,12 +68,23 @@ export function queryOptions<Result, Params, Input>(
     ...tanStackOptions
   } = options;
   const variables = { params, input };
-  const serverFn = serverFunctionFor(operation);
   return tanStackQueryOptions({
     ...tanStackOptions,
     queryKey: queryKey(operation, variables),
-    queryFn: () => serverFn({ data: variables }),
+    queryFn: () => executeQuery(operation, { params, input }),
   });
+}
+
+export function executeQuery<Result, Params, Input>(
+  operation: DsqlOperation<Result, Params, Input>,
+  options: DsqlExecuteOptions<NoInfer<Params>, NoInfer<Input>>,
+): Promise<Result> {
+  const {
+    params = {} as Params,
+    input = {} as Input,
+  } = options;
+  const serverFn = serverFunctionFor(operation);
+  return serverFn({ data: { params, input } });
 }
 
 export function useQuery<Result, Params, Input>(
