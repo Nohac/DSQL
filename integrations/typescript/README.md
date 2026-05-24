@@ -142,11 +142,10 @@ maps inline query strings to those generated operation types:
 const MovieInfo = dsql(`query MovieInfoLookup { movie_info { id } }`);
 ```
 
-## Vite Transform
+## Vite Plugin
 
-The Vite plugin is currently a pure transform. It does not run `dsql generate`;
-run generation before starting Vite or as part of the project `dev`/`build`
-script.
+Without a generator, the Vite plugin is a pure transform. This keeps the older
+setup working when generation runs separately:
 
 ```ts
 import { dsql } from "@dsql/typescript/vite";
@@ -158,6 +157,35 @@ export default defineConfig({
       generatedModule: "/src/generated/dsql/queries",
     }),
   ],
+});
+```
+
+To let Vite run generation, export a user-owned generator and pass it to the
+plugin. Vite keeps a `dsql daemon` process alive, asks it to compile project
+metadata, then calls the generator in-process.
+
+```ts
+// dsql/generate.ts
+import {
+  defineDsqlGenerator,
+  renderDsqlHelper,
+  renderTypes,
+} from "@dsql/typescript/node";
+
+export default defineDsqlGenerator(async ({ artifacts, outDir }) => {
+  await renderTypes(artifacts, { outDir });
+  await renderDsqlHelper(artifacts, { outDir });
+});
+```
+
+```ts
+// vite.config.ts
+import generateDsql from "./dsql/generate";
+import { dsql } from "@dsql/typescript/vite";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [dsql(generateDsql)],
 });
 ```
 

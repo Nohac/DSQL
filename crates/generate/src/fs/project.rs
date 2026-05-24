@@ -4,8 +4,8 @@ use dsql_embedding::{EmbeddedRegion, RegexEmbedding, default_typescript_regex_pa
 use miette::Result;
 
 use crate::pipeline::{
-    GenerateDocument, GenerateInput, GenerateOptions, GenerateOutput, generate_project,
-    project_root,
+    GenerateDocument, GenerateInput, GenerateOptions, GenerateOutput, GeneratedArtifacts,
+    generate_project, generate_project_artifacts, project_root,
 };
 
 pub async fn generate_project_from(start_dir: &Path) -> Result<GenerateOutput> {
@@ -32,6 +32,25 @@ pub async fn generate_project_from_with_options(
         &runner,
     )
     .await
+}
+
+pub fn generate_project_artifacts_from(start_dir: &Path) -> Result<GeneratedArtifacts> {
+    generate_project_artifacts_from_with_options(start_dir, GenerateOptions::default())
+}
+
+pub fn generate_project_artifacts_from_with_options(
+    start_dir: &Path,
+    options: GenerateOptions,
+) -> Result<GeneratedArtifacts> {
+    let project = dsql_project::Project::load_from(start_dir)?;
+    let catalog = project.load_catalog()?;
+    let documents = load_project_documents(&project)?;
+    generate_project_artifacts(GenerateInput {
+        project,
+        catalog,
+        documents,
+        options,
+    })
 }
 
 fn load_project_documents(project: &dsql_project::Project) -> Result<Vec<GenerateDocument>> {

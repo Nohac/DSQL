@@ -5,9 +5,10 @@ import type {
   OperationManifestEntry,
   OperationMetadata,
 } from "./generated/metadata";
+import { renderDsqlHelper, renderTypes } from "./render/types.js";
 
-export { renderDsqlHelper, renderTypes } from "./render/types";
-export type { RenderOptions } from "./render/types";
+export { renderDsqlHelper, renderTypes } from "./render/types.js";
+export type { RenderOptions } from "./render/types.js";
 
 export type BuildArtifacts = {
   readonly manifestPath: string;
@@ -15,6 +16,79 @@ export type BuildArtifacts = {
   readonly operations: OperationMetadata[];
   readonly operationsByName: ReadonlyMap<string, OperationMetadata>;
 };
+
+export type GeneratedOperationArtifact = {
+  readonly metadata: OperationMetadata;
+  readonly hash: string;
+  readonly source: string;
+};
+
+export type GeneratedArtifacts = {
+  readonly project_dir: string;
+  readonly out_dir: string;
+  readonly manifest_path: string;
+  readonly manifest: BuildManifest;
+  readonly operations: GeneratedOperationArtifact[];
+};
+
+export type DsqlGeneratorContext = {
+  readonly artifacts: BuildArtifacts;
+  readonly root: string;
+  readonly outDir: string;
+  readonly mode: string;
+  readonly command: "serve" | "build";
+};
+
+export type DsqlGenerator = (
+  context: DsqlGeneratorContext,
+) => void | Promise<void>;
+
+export function defineDsqlGenerator(generator: DsqlGenerator): DsqlGenerator {
+  return generator;
+}
+
+export async function runDsqlGeneratorFromEnv(
+  generator: DsqlGenerator,
+): Promise<boolean> {
+  const manifestPath = process.env.DSQL_MANIFEST;
+  const outDir = process.env.DSQL_OUT_DIR;
+  if (!manifestPath && !outDir) {
+    return false;
+  }
+  if (!manifestPath || !outDir) {
+    throw new Error("DSQL_MANIFEST and DSQL_OUT_DIR are required");
+  }
+
+  await generator({
+    artifacts: loadBuildArtifacts(manifestPath),
+    root: dirname(dirname(dirname(manifestPath))),
+    outDir,
+    mode: process.env.NODE_ENV ?? "production",
+    command: "build",
+  });
+  return true;
+}
+
+export const defaultDsqlGenerator = defineDsqlGenerator(
+  async ({ artifacts, outDir }) => {
+    await renderTypes(artifacts, { outDir });
+    await renderDsqlHelper(artifacts, { outDir });
+  },
+);
+
+export function buildArtifactsFromGenerated(
+  generated: GeneratedArtifacts,
+): BuildArtifacts {
+  const operations = generated.operations.map((operation) => operation.metadata);
+  return {
+    manifestPath: generated.manifest_path,
+    manifest: generated.manifest,
+    operations,
+    operationsByName: new Map(
+      operations.map((operation) => [operation.name, operation]),
+    ),
+  };
+}
 
 export function loadBuildArtifacts(manifestPath: string): BuildArtifacts {
   const manifest = readBuildManifest(manifestPath);

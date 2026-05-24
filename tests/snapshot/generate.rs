@@ -97,6 +97,35 @@ MovieInfoLookup satisfies typeof MovieInfoLookupOperation;
 }
 
 #[tokio::test]
+async fn generate_project_artifacts_returns_in_memory_metadata() {
+    let _guard = generate_test_lock().await;
+    let project = tempfile::tempdir().unwrap();
+    create_project_fixture(project.path(), "");
+
+    let artifacts = dsql_generate::generate_project_artifacts_from(project.path()).unwrap();
+
+    assert_eq!(artifacts.project_dir, project.path().to_string_lossy());
+    assert_eq!(
+        artifacts.out_dir,
+        project.path().join("src/generated/dsql").to_string_lossy()
+    );
+    assert_eq!(
+        artifacts.manifest_path,
+        project
+            .path()
+            .join("dsql/build/manifest.json")
+            .to_string_lossy()
+    );
+    assert_eq!(artifacts.manifest.operations.len(), 1);
+    assert_eq!(artifacts.operations.len(), 1);
+    assert_eq!(artifacts.operations[0].metadata.name, "MovieInfoLookup");
+    assert_eq!(
+        artifacts.manifest.operations[0].hash,
+        artifacts.operations[0].hash
+    );
+}
+
+#[tokio::test]
 async fn generate_project_extracts_queries_from_regex_embedding_resolver() {
     let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();

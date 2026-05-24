@@ -9,6 +9,8 @@ use miette::{IntoDiagnostic, Result};
 use sqlx::{Connection, Row, postgres::PgConnection};
 use std::path::{Path, PathBuf};
 
+mod daemon;
+
 #[derive(Parser)]
 #[command(name = "dsql")]
 #[command(about = "dsql language tools")]
@@ -52,6 +54,7 @@ enum Command {
     },
     MetadataSchema,
     MetadataTypescript,
+    Daemon,
     Lsp,
 }
 
@@ -68,6 +71,9 @@ async fn main() -> Result<()> {
         return dsql_lsp::run_stdio()
             .await
             .map_err(|err| miette::miette!("LSP server failed: {err}"));
+    }
+    if matches!(args.command, Command::Daemon) {
+        return daemon::run_stdio().await;
     }
 
     tracing_subscriber::fmt::init();
@@ -238,6 +244,7 @@ async fn main() -> Result<()> {
         Command::MetadataTypescript => {
             print!("{}", dsql_metadata::build_manifest_typescript());
         }
+        Command::Daemon => unreachable!("handled before tracing subscriber initialization"),
         Command::Lsp => unreachable!("handled before tracing subscriber initialization"),
     }
     Ok(())

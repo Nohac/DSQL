@@ -9,6 +9,7 @@ use dsql_metadata::{
     OperationMetadata, PolicyMetadata, ResultField, ResultShape, SourceMapEntry, SourceRange,
     SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
 };
+use facet::Facet;
 use miette::Result;
 use std::{
     collections::HashMap,
@@ -46,6 +47,22 @@ pub(crate) struct GenerateInput {
 pub struct GenerateOutput {
     pub manifest_path: String,
     pub operation_paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct GeneratedOperationArtifact {
+    pub metadata: OperationMetadata,
+    pub hash: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct GeneratedArtifacts {
+    pub project_dir: String,
+    pub out_dir: String,
+    pub manifest_path: String,
+    pub manifest: BuildManifest,
+    pub operations: Vec<GeneratedOperationArtifact>,
 }
 
 pub(crate) async fn generate_project<W, R>(
@@ -108,6 +125,56 @@ where
             .iter()
             .map(|operation| operation.reference.path.clone())
             .collect(),
+    })
+}
+
+pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<GeneratedArtifacts> {
+    if input.documents.is_empty() {
+        return Err(miette::miette!(
+            "no dsql documents found in project {}",
+            project_root(&input.project).display()
+        ));
+    }
+
+    let operations = build_operations(&input)?;
+    let base = project_root(&input.project);
+    let out_dir = resolve_project_path(&base, &input.project.config.generate.typescript.out_dir);
+    let mut generated_operations = Vec::with_capacity(operations.len());
+    let mut manifest_entries = Vec::with_capacity(operations.len());
+    for operation in operations {
+        let operation_path = format!(
+            "operations/{}.json",
+            artifact_file_stem(&operation.metadata.name)
+        );
+        manifest_entries.push(OperationManifestEntry {
+            name: operation.metadata.name.clone(),
+            kind: operation.metadata.kind.clone(),
+            path: operation_path,
+            hash: operation.hash.clone(),
+            source: operation.source.clone(),
+        });
+        generated_operations.push(GeneratedOperationArtifact {
+            metadata: operation.metadata,
+            hash: operation.hash,
+            source: operation.source,
+        });
+    }
+
+    Ok(GeneratedArtifacts {
+        project_dir: base.to_string_lossy().to_string(),
+        out_dir: out_dir.to_string_lossy().to_string(),
+        manifest_path: input
+            .project
+            .root
+            .join("build")
+            .join("manifest.json")
+            .to_string_lossy()
+            .to_string(),
+        manifest: BuildManifest {
+            version: BUILD_MANIFEST_VERSION,
+            operations: manifest_entries,
+        },
+        operations: generated_operations,
     })
 }
 
@@ -278,6 +345,22 @@ fn manifest_from_written_operations(operations: &[WrittenOperationArtifact]) -> 
                 source: operation.source.clone(),
             })
             .collect(),
+    }
+}
+
+fn artifact_file_stem(name: &str) -> String {
+    let mut output = String::new();
+    for char in name.chars() {
+        if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
+            output.push(char);
+        } else {
+            output.push('_');
+        }
+    }
+    if output.is_empty() {
+        "operation".to_string()
+    } else {
+        output
     }
 }
 
