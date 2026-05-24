@@ -49,6 +49,21 @@ pub struct GenerateOutput {
     pub operation_paths: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ValidationOutput {
+    pub document_count: usize,
+    pub query_count: usize,
+    pub diagnostics: Vec<ValidationDiagnostic>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidationDiagnostic {
+    pub file: PathBuf,
+    pub source_offset: u32,
+    pub diagnostic: Diagnostic,
+}
+
 #[derive(Clone, Debug, Facet)]
 pub struct GeneratedOperationArtifact {
     pub metadata: OperationMetadata,
@@ -176,6 +191,107 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
         },
         operations: generated_operations,
     })
+}
+
+pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
+    let mut fragments = FragmentMap::default();
+    let mut queries = Vec::<LoadedQuery>::new();
+    let mut diagnostics = Vec::<ValidationDiagnostic>::new();
+    let mut errors = Vec::<String>::new();
+
+    for document in &input.documents {
+        let parsed = parse_source(SourceSnapshot::from_string(document.text.clone()));
+        diagnostics.extend(
+            parsed
+                .diagnostics
+                .iter()
+                .cloned()
+                .map(|diagnostic| validation_diagnostic(document, diagnostic)),
+        );
+        let variables = infer_variable_bindings(&parsed.source_file, &input.catalog);
+        let extracted = extract_definitions(&parsed.source_file);
+        for definition in extracted.definitions {
+            match definition {
+                DefinitionRecord::Query(query) => queries.push(LoadedQuery {
+                    file: document.path.clone(),
+                    source_offset: document.source_offset,
+                    variables: variables
+                        .bindings
+                        .iter()
+                        .filter(|binding| {
+                            binding.range.start >= query.range.start
+                                && binding.range.end <= query.range.end
+                        })
+                        .cloned()
+                        .collect(),
+                    query,
+                }),
+                DefinitionRecord::Fragment(fragment) => fragments.insert(fragment),
+            }
+        }
+    }
+
+    for query in &queries {
+        let checked = check_query_definition(&query.query, &fragments, &input.catalog);
+        let linted = lint_query_definition_with_options(
+            &query.query,
+            &fragments,
+            &input.catalog,
+            input.project.lint_options(),
+        );
+        let planned = plan_query_definition(&query.query, &fragments, &input.catalog);
+        diagnostics.extend(
+            checked
+                .diagnostics
+                .into_iter()
+                .chain(linted.diagnostics)
+                .chain(planned.diagnostics)
+                .map(|diagnostic| query_validation_diagnostic(query, diagnostic)),
+        );
+        if let Some(query_name) = query.query.key.name.as_deref() {
+            if let Err(error) = validate_variable_bindings(query_name, &query.variables) {
+                errors.push(error.to_string());
+            }
+        } else {
+            errors.push("anonymous queries cannot be generated".to_string());
+        }
+    }
+
+    diagnostics.sort_by(|left, right| {
+        left.file.cmp(&right.file).then(
+            (left.source_offset + left.diagnostic.range.start)
+                .cmp(&(right.source_offset + right.diagnostic.range.start)),
+        )
+    });
+    errors.sort();
+    ValidationOutput {
+        document_count: input.documents.len(),
+        query_count: queries.len(),
+        diagnostics,
+        errors,
+    }
+}
+
+fn validation_diagnostic(
+    document: &GenerateDocument,
+    diagnostic: Diagnostic,
+) -> ValidationDiagnostic {
+    ValidationDiagnostic {
+        file: document.path.clone(),
+        source_offset: document.source_offset,
+        diagnostic,
+    }
+}
+
+fn query_validation_diagnostic(
+    query: &LoadedQuery,
+    diagnostic: Diagnostic,
+) -> ValidationDiagnostic {
+    ValidationDiagnostic {
+        file: query.file.clone(),
+        source_offset: query.source_offset,
+        diagnostic,
+    }
 }
 
 fn build_operations(input: &GenerateInput) -> Result<Vec<OperationArtifact>> {

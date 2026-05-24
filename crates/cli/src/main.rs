@@ -52,6 +52,7 @@ enum Command {
         #[arg(long)]
         out_dir: Option<PathBuf>,
     },
+    Validate,
     MetadataSchema,
     MetadataTypescript,
     Daemon,
@@ -237,6 +238,19 @@ async fn main() -> Result<()> {
                 generate_typescript_metadata(&out_dir).await?;
             }
         },
+        Command::Validate => {
+            let validation =
+                dsql_generate::validate_project_from(&std::env::current_dir().into_diagnostic()?)?;
+            print_validation_output(&validation);
+            if validation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.diagnostic.severity == dsql_core::Severity::Error)
+                || !validation.errors.is_empty()
+            {
+                return Err(miette::miette!("dsql validation failed"));
+            }
+        }
         Command::MetadataSchema => {
             let schema = dsql_metadata::build_manifest_json_schema();
             println!("{schema}");
@@ -441,6 +455,36 @@ fn print_diagnostics(diagnostics: &[dsql_core::Diagnostic]) {
         eprintln!(
             "{:?} {:?} {:?}: {}",
             diagnostic.source, diagnostic.severity, diagnostic.range, diagnostic.message
+        );
+    }
+}
+
+fn print_validation_output(validation: &dsql_generate::ValidationOutput) {
+    for diagnostic in &validation.diagnostics {
+        let start = diagnostic.source_offset + diagnostic.diagnostic.range.start;
+        let end = diagnostic.source_offset + diagnostic.diagnostic.range.end;
+        eprintln!(
+            "{}:{start}..{end}: {:?} {:?} {:?}: {}",
+            diagnostic.file.display(),
+            diagnostic.diagnostic.severity,
+            diagnostic.diagnostic.source,
+            diagnostic.diagnostic.code,
+            diagnostic.diagnostic.message
+        );
+    }
+    for error in &validation.errors {
+        eprintln!("error: {error}");
+    }
+    if validation.diagnostics.is_empty() && validation.errors.is_empty() {
+        println!(
+            "validated {} document(s), {} quer{}",
+            validation.document_count,
+            validation.query_count,
+            if validation.query_count == 1 {
+                "y"
+            } else {
+                "ies"
+            }
         );
     }
 }

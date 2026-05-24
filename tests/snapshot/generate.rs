@@ -126,6 +126,40 @@ async fn generate_project_artifacts_returns_in_memory_metadata() {
 }
 
 #[tokio::test]
+async fn validate_project_reports_project_diagnostics_without_writing_artifacts() {
+    let _guard = generate_test_lock().await;
+    let project = tempfile::tempdir().unwrap();
+    create_project_fixture(project.path(), "");
+    fs::write(
+        project.path().join("queries/movie-info.dsql"),
+        r#"query BrokenMovieInfo {
+  movie_info {
+    definitely_not_a_column
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let validation = dsql_generate::validate_project_from(project.path()).unwrap();
+
+    assert_eq!(validation.document_count, 1);
+    assert_eq!(validation.query_count, 1);
+    assert!(
+        validation.diagnostics.iter().any(|diagnostic| diagnostic
+            .diagnostic
+            .message
+            .contains("definitely_not_a_column")),
+        "expected unknown field diagnostic, got: {:?}",
+        validation.diagnostics
+    );
+    assert!(
+        !project.path().join("dsql/build/manifest.json").exists(),
+        "validate should not write generated artifacts"
+    );
+}
+
+#[tokio::test]
 async fn generate_project_extracts_queries_from_regex_embedding_resolver() {
     let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
