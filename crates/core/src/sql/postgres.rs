@@ -448,11 +448,12 @@ fn filter_expr(
             FilterLiteral::Null => Expr::cust("null"),
         },
         FilterExpr::Binary { left, op, right } => {
-            if *op == BinaryOp::Like
-                && let FilterExpr::Literal(FilterLiteral::String(pattern)) = right.as_ref()
-            {
-                let left = filter_expr(catalog, context, root, outer_current, left, template)?;
-                return Ok(left.like(pattern.clone()));
+            if *op == BinaryOp::Like {
+                return Ok(Expr::cust(format!(
+                    "{} like {}",
+                    filter_expr_fragment(catalog, context, root, outer_current, left, template)?,
+                    filter_expr_fragment(catalog, context, root, outer_current, right, template)?
+                )));
             }
             let left = filter_expr(catalog, context, root, outer_current, left, template)?;
             let right = filter_expr(catalog, context, root, outer_current, right, template)?;
@@ -463,7 +464,7 @@ fn filter_expr(
                 BinaryOp::Ge => left.gte(right),
                 BinaryOp::Lt => left.lt(right),
                 BinaryOp::Le => left.lte(right),
-                BinaryOp::Like => left.like("<unsupported>"),
+                BinaryOp::Like => unreachable!("handled before generic binary expression lowering"),
                 BinaryOp::And => left.and(right),
                 BinaryOp::Or => left.or(right),
             }
@@ -814,6 +815,37 @@ mod tests {
                 .map(|case| (case.value.as_str(), case.text.as_str()))
                 .collect::<Vec<_>>(),
             vec![(">", ">"), (">=", ">=")]
+        );
+    }
+
+    #[test]
+    fn generates_parameterized_like_sql() {
+        let catalog = Catalog::hardcoded();
+        let parsed =
+            parse_source("query Q { posts(where .title like $$search) { id title } }".into());
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let planned = plan_file_with_catalog(&parsed.source_file, &catalog);
+        assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
+
+        let generated = generate_postgres_sql(&planned.queries[0], &catalog).unwrap();
+
+        assert!(
+            generated.sql.contains("\"title\" like $1"),
+            "{}",
+            generated.sql
+        );
+        assert!(
+            !generated.sql.contains("<unsupported>"),
+            "{}",
+            generated.sql
+        );
+        assert_eq!(
+            generated
+                .parameters
+                .iter()
+                .map(|parameter| parameter.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["params.search"]
         );
     }
 
