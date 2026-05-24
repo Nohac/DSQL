@@ -189,6 +189,7 @@ fn plan_selection_set(
             }
             FieldCheckResult::Relation(relation) => {
                 let mut child_path = selection_path.to_vec();
+                child_path.push("body".to_string());
                 child_path.push(
                     selection
                         .alias

@@ -839,6 +839,27 @@ mod tests {
     }
 
     #[test]
+    fn generates_parameter_paths_for_nested_selection_clauses() {
+        let catalog = Catalog::hardcoded();
+        let parsed = parse_source("query Q { users { id posts(limit $) { id title } } }".into());
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let planned = plan_file_with_catalog(&parsed.source_file, &catalog);
+        assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
+
+        let generated = generate_postgres_sql(&planned.queries[0], &catalog).unwrap();
+
+        assert!(generated.sql.contains("$1"), "{}", generated.sql);
+        assert_eq!(
+            generated
+                .parameters
+                .iter()
+                .map(|parameter| parameter.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["input.users.body.posts.clause.limit"]
+        );
+    }
+
+    #[test]
     fn generates_scoped_relationship_predicate_sql_shape() {
         let catalog = Catalog::hardcoded();
         let parsed = parse_source(
