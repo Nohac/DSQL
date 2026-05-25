@@ -233,6 +233,76 @@ query CompanyLookup {
 }
 
 #[tokio::test]
+async fn generate_project_records_fragment_variable_inputs_at_spread_sites() {
+    let _guard = generate_test_lock().await;
+    let project = tempfile::tempdir().unwrap();
+    create_project_fixture(project.path(), "");
+    fs::write(
+        project.path().join("queries/fragments.dsql"),
+        r#"fragment MovieCompany on movie_companies {
+  note
+  company_type(where .kind like $$kind limit $company_limit) {
+    kind
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("queries/movie-info.dsql"),
+        r#"
+query CompanyLookup {
+  company_name {
+    movie_companies {
+      company_id
+      ...MovieCompany
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    dsql_generate::generate_project_from(project.path())
+        .await
+        .unwrap();
+
+    let fragment = fs::read_to_string(
+        project
+            .path()
+            .join("dsql/build/fragments/MovieCompany.json"),
+    )
+    .unwrap();
+    assert!(
+        fragment.contains(r#""path": "params.kind""#),
+        "fragment $$ variables should be fragment-local params:\n{fragment}"
+    );
+    assert!(
+        fragment.contains(r#""path": "input.company_type.clause.limit.company_limit""#),
+        "fragment $ variables should be fragment-local input:\n{fragment}"
+    );
+
+    let operation = fs::read_to_string(
+        project
+            .path()
+            .join("dsql/build/operations/CompanyLookup.json"),
+    )
+    .unwrap();
+    assert!(
+        operation.contains(
+            r#""path": "input.company_name.body.movie_companies.body.MovieCompany.params.kind""#
+        ),
+        "operation should embed fragment params at the spread site:\n{operation}"
+    );
+    assert!(
+        operation.contains(
+            r#""path": "input.company_name.body.movie_companies.body.MovieCompany.input.company_type.clause.limit.company_limit""#
+        ),
+        "operation should embed fragment input at the spread site:\n{operation}"
+    );
+}
+
+#[tokio::test]
 async fn validate_project_reports_project_diagnostics_without_writing_artifacts() {
     let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
@@ -671,7 +741,7 @@ cmd = ["bun", "{}"]
     );
     let fragment_source = r#"fragment MovieCompany on movie_companies {
   note
-  company_type {
+  company_type(where .kind like $$kind limit $company_limit) {
     kind
   }
 }"#;
@@ -688,6 +758,20 @@ query CompanyLookupFragmentOnly {
   company_name {
     movie_companies {
       ...MovieCompany
+    }
+  }
+}
+
+fragment MovieCompanyLimit on movie_companies {
+  company_type(limit $company_limit) {
+    kind
+  }
+}
+
+query CompanyLimitLookup {
+  company_name {
+    movie_companies {
+      ...MovieCompanyLimit
     }
   }
 }"#;
@@ -717,6 +801,16 @@ query CompanyLookupFragmentOnly {
         "generated operations should export fragment result type:\n{operations}"
     );
     assert!(
+        operations.contains("export type MovieCompanyFragmentParams = {")
+            && operations.contains("kind: string;"),
+        "generated operations should export fragment params type:\n{operations}"
+    );
+    assert!(
+        operations.contains("export type MovieCompanyFragmentInput = {")
+            && operations.contains("company_limit: number;"),
+        "generated operations should export fragment input type:\n{operations}"
+    );
+    assert!(
         operations.contains("export const MovieCompanyFragment"),
         "generated operations should export fragment value:\n{operations}"
     );
@@ -728,11 +822,20 @@ query CompanyLookupFragmentOnly {
         operations.contains("movie_companies: Array<MovieCompanyFragmentResult>;"),
         "fragment-only object result should not add an empty object intersection:\n{operations}"
     );
+    assert!(
+        operations.contains("MovieCompanyLimit: MovieCompanyLimitFragmentInput;"),
+        "operation input should reuse input-only fragment input aliases:\n{operations}"
+    );
+    assert!(
+        operations.contains("params: MovieCompanyFragmentParams;")
+            && operations.contains("input: MovieCompanyFragmentInput;"),
+        "operation input should reuse fragment params/input aliases when both are present:\n{operations}"
+    );
 
     fs::write(
         project.path().join("src/generated/dsql/fragment-usage.ts"),
         format!(
-            r#"import {{ dsql, DsqlFragment, MovieCompanyFragment }} from "./queries";
+            r#"import {{ dsql, DsqlFragment, DsqlFragmentVariables, MovieCompanyFragment }} from "./queries";
 
 const MovieCompany = dsql(`{fragment_source}`);
 MovieCompany satisfies typeof MovieCompanyFragment;
@@ -745,6 +848,15 @@ const _props: Props = {{
   item: {{
     note: null,
     company_type: {{ kind: "production companies" }},
+  }},
+}};
+
+const _vars: DsqlFragmentVariables<typeof MovieCompany> = {{
+  params: {{ kind: "%production%" }},
+  input: {{
+    company_type: {{
+      clause: {{ limit: {{ company_limit: 1 }} }},
+    }},
   }},
 }};
 "#

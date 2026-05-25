@@ -30,10 +30,22 @@ export async function renderTypes(
 
   for (const fragment of artifacts.fragments) {
     const resultType = fragmentResultTypeName(fragment.name);
+    const paramsType = fragmentParamsTypeName(fragment.name);
+    const inputType = fragmentInputTypeName(fragment.name);
     operationsSource.addTypeAlias({
       isExported: true,
       name: resultType,
       type: resultTypeLiteral(fragment.result.fields, [], []),
+    });
+    operationsSource.addTypeAlias({
+      isExported: true,
+      name: paramsType,
+      type: paramsTypeLiteral(fragment.params),
+    });
+    operationsSource.addTypeAlias({
+      isExported: true,
+      name: inputType,
+      type: inputTypeLiteral(fragment.input),
     });
     operationsSource.addVariableStatement({
       isExported: true,
@@ -41,7 +53,7 @@ export async function renderTypes(
       declarations: [
         {
           name: fragmentValueName(fragment.name),
-          type: `DsqlFragmentDefinition<${resultType}>`,
+          type: `DsqlFragmentDefinition<${resultType}, ${paramsType}, ${inputType}>`,
           initializer: `{
   name: ${JSON.stringify(fragment.name)},
   kind: "fragment",
@@ -74,7 +86,11 @@ export async function renderTypes(
     operationsSource.addTypeAlias({
       isExported: true,
       name: inputType,
-      type: inputTypeLiteral(operation.input),
+      type: inputTypeLiteral(
+        operation.input,
+        operation.fragment_spreads,
+        artifacts.fragments,
+      ),
     });
     operationsSource.addVariableStatement({
       isExported: true,
@@ -310,27 +326,119 @@ function paramsTypeLiteral(fields: readonly InputField[]): string {
   return inputFieldsTypeLiteral(fields, "params");
 }
 
-function inputTypeLiteral(fields: readonly InputField[]): string {
-  return inputFieldsTypeLiteral(fields, "input");
+function inputTypeLiteral(
+  fields: readonly InputField[],
+  fragmentSpreads: readonly FragmentSpreadMetadata[] = [],
+  fragments: readonly FragmentMetadata[] = [],
+): string {
+  return inputFieldsTypeLiteral(fields, "input", fragmentSpreads, fragments);
 }
 
 function inputFieldsTypeLiteral(
   fields: readonly InputField[],
   prefix: "params" | "input",
+  fragmentSpreads: readonly FragmentSpreadMetadata[] = [],
+  fragments: readonly FragmentMetadata[] = [],
 ): string {
   if (fields.length === 0) {
     return "Record<string, never>";
   }
 
   const root = new TypeNode();
+  const fragmentBranches =
+    prefix === "input"
+      ? operationFragmentInputBranches(fields, fragmentSpreads, fragments)
+      : [];
+  for (const branch of fragmentBranches) {
+    root.insert(branch.path, branch.type);
+  }
+
   for (const field of fields) {
     const path = publicInputPath(field.path, prefix);
     if (path.length === 0) {
       continue;
     }
+    if (fragmentBranches.some((branch) => pathStartsWith(path, branch.path))) {
+      continue;
+    }
     root.insert(path, inputFieldType(field));
   }
   return root.toTypeLiteral();
+}
+
+function operationFragmentInputBranches(
+  fields: readonly InputField[],
+  fragmentSpreads: readonly FragmentSpreadMetadata[],
+  fragments: readonly FragmentMetadata[],
+): Array<{ readonly path: readonly string[]; readonly type: string }> {
+  if (fragmentSpreads.length === 0) {
+    return [];
+  }
+
+  const fragmentNames = new Set(fragmentSpreads.map((spread) => spread.fragment));
+  const branches = new Map<
+    string,
+    {
+      path: string[];
+      fragment: string;
+      hasParams: boolean;
+      hasInput: boolean;
+    }
+  >();
+
+  for (const field of fields) {
+    const path = publicInputPath(field.path, "input");
+    for (let index = 0; index < path.length - 1; index += 1) {
+      const fragment = path[index];
+      const envelope = path[index + 1];
+      if (
+        fragment === undefined ||
+        !fragmentNames.has(fragment) ||
+        (envelope !== "params" && envelope !== "input")
+      ) {
+        continue;
+      }
+
+      const branchPath = path.slice(0, index + 1);
+      const key = branchPath.join(".");
+      const branch = branches.get(key) ?? {
+        path: branchPath,
+        fragment,
+        hasParams: false,
+        hasInput: false,
+      };
+      branch.hasParams ||= envelope === "params";
+      branch.hasInput ||= envelope === "input";
+      branches.set(key, branch);
+      break;
+    }
+  }
+
+  return [...branches.values()]
+    .filter((branch) =>
+      fragments.some((fragment) => fragment.name === branch.fragment),
+    )
+    .map((branch) => ({
+      path: branch.path,
+      type: fragmentVariableBranchType(branch.fragment, branch.hasParams, branch.hasInput),
+    }));
+}
+
+function fragmentVariableBranchType(
+  fragment: string,
+  hasParams: boolean,
+  hasInput: boolean,
+): string {
+  if (hasInput && !hasParams) {
+    return fragmentInputTypeName(fragment);
+  }
+  if (hasParams && !hasInput) {
+    return objectType([["params", fragmentParamsTypeName(fragment)]]);
+  }
+  return objectType([
+    ["params", fragmentParamsTypeName(fragment)],
+    ["input", fragmentInputTypeName(fragment)],
+  ]);
 }
 
 function inputFieldType(field: InputField): string {
@@ -421,6 +529,10 @@ function relativeResultPath(
 ): string | undefined {
   const prefix = `${parentPath}.`;
   return path.startsWith(prefix) ? path.slice(prefix.length) : undefined;
+}
+
+function pathStartsWith(path: readonly string[], prefix: readonly string[]): boolean {
+  return prefix.every((part, index) => path[index] === part);
 }
 
 function composeObjectType(
@@ -531,4 +643,12 @@ function fragmentValueName(name: string): string {
 
 function fragmentResultTypeName(name: string): string {
   return `${toPascalCase(name)}FragmentResult`;
+}
+
+function fragmentParamsTypeName(name: string): string {
+  return `${toPascalCase(name)}FragmentParams`;
+}
+
+function fragmentInputTypeName(name: string): string {
+  return `${toPascalCase(name)}FragmentInput`;
 }

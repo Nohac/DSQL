@@ -40,6 +40,16 @@ query PostOrdering {
 }
 "#,
         ),
+        (
+            "fragment",
+            r#"
+fragment UserPosts on users {
+  posts(where .title like $$search limit $post_limit) {
+    title
+  }
+}
+"#,
+        ),
     ];
 
     let catalog = Catalog::hardcoded();

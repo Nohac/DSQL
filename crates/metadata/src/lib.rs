@@ -48,6 +48,9 @@ pub struct FragmentMetadata {
     pub kind: String,
     pub table: String,
     pub result: ResultShape,
+    pub params: Vec<InputField>,
+    pub input: Vec<InputField>,
+    pub dynamic_inputs: Vec<DynamicInputMetadata>,
     pub source_map: Vec<SourceMapEntry>,
 }
 

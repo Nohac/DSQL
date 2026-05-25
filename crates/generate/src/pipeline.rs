@@ -3,9 +3,9 @@ use dsql_core::{
     FragmentRecord, QueryPlan, QueryRecord, Selection, SelectionKind, SelectionPlan,
     SelectionPlanItem, Severity, SourceSnapshot, TableId, VariableBinding,
     check_fragment_definition, check_query_definition, extract_definitions,
-    generate_postgres_sql_with_options, infer_variable_bindings,
-    lint_query_definition_with_options, parse_source, plan_fragment_definition,
-    plan_query_definition,
+    generate_postgres_sql_with_options, infer_fragment_variable_bindings,
+    infer_query_variable_bindings, lint_query_definition_with_options, parse_source,
+    plan_fragment_definition, plan_query_definition,
 };
 use dsql_metadata::{
     BuildManifest, DynamicInputMetadata, FragmentManifestEntry, FragmentMetadata,
@@ -259,22 +259,12 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
                 .cloned()
                 .map(|diagnostic| validation_diagnostic(document, diagnostic)),
         );
-        let variables = infer_variable_bindings(&parsed.source_file, &input.catalog);
         let extracted = extract_definitions(&parsed.source_file);
         for definition in extracted.definitions {
             match definition {
                 DefinitionRecord::Query(query) => queries.push(LoadedQuery {
                     file: document.path.clone(),
                     source_offset: document.source_offset,
-                    variables: variables
-                        .bindings
-                        .iter()
-                        .filter(|binding| {
-                            binding.range.start >= query.range.start
-                                && binding.range.end <= query.range.end
-                        })
-                        .cloned()
-                        .collect(),
                     query,
                 }),
                 DefinitionRecord::Fragment(fragment) => {
@@ -317,7 +307,9 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
                 .map(|diagnostic| query_validation_diagnostic(query, diagnostic)),
         );
         if let Some(query_name) = query.query.key.name.as_deref() {
-            if let Err(error) = validate_variable_bindings(query_name, &query.variables) {
+            let variables =
+                infer_query_variable_bindings(&query.query, &fragments, &input.catalog).bindings;
+            if let Err(error) = validate_variable_bindings(query_name, &variables) {
                 errors.push(error.to_string());
             }
         } else {
@@ -388,22 +380,12 @@ fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
     for document in &input.documents {
         let parsed = parse_source(SourceSnapshot::from_string(document.text.clone()));
         parse_diagnostics.extend(parsed.diagnostics.clone());
-        let variables = infer_variable_bindings(&parsed.source_file, &input.catalog);
         let extracted = extract_definitions(&parsed.source_file);
         for definition in extracted.definitions {
             match definition {
                 DefinitionRecord::Query(query) => queries.push(LoadedQuery {
                     file: document.path.clone(),
                     source_offset: document.source_offset,
-                    variables: variables
-                        .bindings
-                        .iter()
-                        .filter(|binding| {
-                            binding.range.start >= query.range.start
-                                && binding.range.end <= query.range.end
-                        })
-                        .cloned()
-                        .collect(),
                     query,
                 }),
                 DefinitionRecord::Fragment(fragment) => {
@@ -474,7 +456,8 @@ fn build_query_operations(
         .name
         .as_deref()
         .ok_or_else(|| miette::miette!("anonymous queries cannot be generated"))?;
-    validate_variable_bindings(query_name, &query.variables)?;
+    let variables = infer_query_variable_bindings(&query.query, fragments, catalog).bindings;
+    validate_variable_bindings(query_name, &variables)?;
     let mut operations = Vec::new();
     for (index, plan) in planned.queries.iter().enumerate() {
         let generated = generate_postgres_sql_with_options(
@@ -521,10 +504,10 @@ fn build_query_operations(
                     .collect(),
             },
             result: result_shape(catalog, plan)?,
-            params: input_fields(&query.variables, true),
-            input: input_fields(&query.variables, false),
+            params: input_fields(&variables, true),
+            input: input_fields(&variables, false),
             context: Vec::new(),
-            dynamic_inputs: dynamic_inputs(&query.variables),
+            dynamic_inputs: dynamic_inputs(&variables),
             policies: Vec::<PolicyMetadata>::new(),
             handoffs: Vec::<HandoffMetadata>::new(),
             fragment_spreads: query
@@ -564,11 +547,17 @@ fn build_fragment_artifact(
         .tables
         .get(plan.table.0)
         .ok_or_else(|| miette::miette!("missing fragment table for `{fragment_name}`"))?;
+    let variables =
+        infer_fragment_variable_bindings(&fragment.fragment, fragments, catalog).bindings;
+    validate_variable_bindings(fragment_name, &variables)?;
     let metadata = FragmentMetadata {
         name: fragment_name.clone(),
         kind: "fragment".to_string(),
         table: table.name.clone(),
         result: fragment_result_shape(catalog, &plan.selections)?,
+        params: input_fields(&variables, true),
+        input: input_fields(&variables, false),
+        dynamic_inputs: dynamic_inputs(&variables),
         source_map: fragment_source_map(project, fragment),
     };
     let hash = stable_hash(&facet_json::to_string(&metadata).map_err(|error| {
@@ -820,11 +809,8 @@ fn input_fields(variables: &[VariableBinding], top_level: bool) -> Vec<InputFiel
     variables
         .iter()
         .filter(|binding| {
-            matches!(
-                (top_level, binding.source),
-                (true, dsql_core::VariableSource::TopLevel)
-                    | (false, dsql_core::VariableSource::Structured)
-            )
+            (top_level && binding.path.starts_with("params."))
+                || (!top_level && binding.path.starts_with("input."))
         })
         .map(|binding| InputField {
             path: binding.path.clone(),
@@ -933,7 +919,6 @@ pub(crate) struct LoadedQuery {
     file: PathBuf,
     source_offset: u32,
     query: QueryRecord,
-    variables: Vec<VariableBinding>,
 }
 
 pub(crate) struct LoadedFragment {

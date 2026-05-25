@@ -31,15 +31,26 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
             match catalog.resolve_table_ref(&selection.name.text) {
                 TableResolution::Found(table) => {
                     let selection_path = vec![response_key(selection)];
-                    let clauses =
-                        plan_clauses(catalog, table.id, table.id, &selection_path, selection);
+                    let variable_scope = VariablePathScope::operation();
+                    let clauses = plan_clauses(
+                        catalog,
+                        table.id,
+                        table.id,
+                        &selection_path,
+                        &variable_scope,
+                        selection,
+                    );
                     if let Some(selections) = plan_selection_set(
                         catalog,
                         &resolver,
                         table.id,
                         table.id,
                         &clauses,
-                        &selection_path,
+                        SelectionPath {
+                            parts: selection_path,
+                            mode: SelectionPathMode::Body,
+                        },
+                        &variable_scope,
                         &selection.selections,
                         &mut diagnostics,
                     ) {
@@ -100,14 +111,26 @@ pub fn plan_query_definition(
         match catalog.resolve_table_ref(&selection.name.text) {
             TableResolution::Found(table) => {
                 let selection_path = vec![response_key(selection)];
-                let clauses = plan_clauses(catalog, table.id, table.id, &selection_path, selection);
+                let variable_scope = VariablePathScope::operation();
+                let clauses = plan_clauses(
+                    catalog,
+                    table.id,
+                    table.id,
+                    &selection_path,
+                    &variable_scope,
+                    selection,
+                );
                 if let Some(selections) = plan_selection_set(
                     catalog,
                     resolver,
                     table.id,
                     table.id,
                     &clauses,
-                    &selection_path,
+                    SelectionPath {
+                        parts: selection_path,
+                        mode: SelectionPathMode::Body,
+                    },
+                    &variable_scope,
                     &selection.selections,
                     &mut diagnostics,
                 ) {
@@ -189,7 +212,11 @@ pub fn plan_fragment_definition(
         table,
         table,
         &SelectionClauses::default(),
-        &[],
+        SelectionPath {
+            parts: Vec::new(),
+            mode: SelectionPathMode::FragmentRoot,
+        },
+        &VariablePathScope::fragment(),
         &fragment.selections,
         &mut diagnostics,
     )
@@ -202,7 +229,8 @@ fn plan_selection_set(
     root_table: TableId,
     table: TableId,
     clauses: &SelectionClauses,
-    selection_path: &[String],
+    selection_path: SelectionPath,
+    variable_scope: &VariablePathScope,
     selections: &[Selection],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<SelectionPlan> {
@@ -216,7 +244,11 @@ fn plan_selection_set(
                     root_table,
                     table,
                     &SelectionClauses::default(),
-                    selection_path,
+                    SelectionPath {
+                        parts: Vec::new(),
+                        mode: SelectionPathMode::FragmentRoot,
+                    },
+                    &variable_scope.for_fragment_spread(&selection_path, &fragment.key.name),
                     &fragment.selections,
                     diagnostics,
                 )
@@ -238,14 +270,7 @@ fn plan_selection_set(
                 }
             }
             FieldCheckResult::Relation(relation) => {
-                let mut child_path = selection_path.to_vec();
-                child_path.push("body".to_string());
-                child_path.push(
-                    selection
-                        .alias
-                        .as_ref()
-                        .map_or_else(|| relation.name.to_string(), |alias| alias.text.clone()),
-                );
+                let child_path = relation_child_path(&selection_path, selection, relation.name);
                 if let Some(nested) = plan_selection_set(
                     catalog,
                     resolver,
@@ -256,9 +281,14 @@ fn plan_selection_set(
                         root_table,
                         relation.table.id,
                         &child_path,
+                        variable_scope,
                         selection,
                     ),
-                    &child_path,
+                    SelectionPath {
+                        parts: child_path,
+                        mode: SelectionPathMode::Body,
+                    },
+                    variable_scope,
                     &selection.selections,
                     diagnostics,
                 ) {
@@ -296,11 +326,86 @@ fn plan_selection_set(
     })
 }
 
+#[derive(Clone)]
+struct SelectionPath {
+    parts: Vec<String>,
+    mode: SelectionPathMode,
+}
+
+#[derive(Clone, Copy)]
+enum SelectionPathMode {
+    Body,
+    FragmentRoot,
+}
+
+#[derive(Clone)]
+struct VariablePathScope {
+    structured_prefix: Vec<String>,
+    top_level_prefix: Vec<String>,
+}
+
+impl VariablePathScope {
+    fn operation() -> Self {
+        Self {
+            structured_prefix: vec!["input".to_string()],
+            top_level_prefix: vec!["params".to_string()],
+        }
+    }
+
+    fn fragment() -> Self {
+        Self::operation()
+    }
+
+    fn for_fragment_spread(&self, current_path: &SelectionPath, fragment_name: &str) -> Self {
+        let mut envelope = self.structured_prefix.clone();
+        envelope.extend(fragment_envelope_path(current_path, fragment_name));
+        Self {
+            structured_prefix: {
+                let mut prefix = envelope.clone();
+                prefix.push("input".to_string());
+                prefix
+            },
+            top_level_prefix: {
+                envelope.push("params".to_string());
+                envelope
+            },
+        }
+    }
+}
+
+fn fragment_envelope_path(current_path: &SelectionPath, fragment_name: &str) -> Vec<String> {
+    let mut parts = current_path.parts.clone();
+    if matches!(current_path.mode, SelectionPathMode::Body) {
+        parts.push("body".to_string());
+    }
+    parts.push(fragment_name.to_string());
+    parts
+}
+
+fn relation_child_path(
+    path: &SelectionPath,
+    selection: &Selection,
+    relation_name: &str,
+) -> Vec<String> {
+    let mut child_path = path.parts.clone();
+    if matches!(path.mode, SelectionPathMode::Body) {
+        child_path.push("body".to_string());
+    }
+    child_path.push(
+        selection
+            .alias
+            .as_ref()
+            .map_or_else(|| relation_name.to_string(), |alias| alias.text.clone()),
+    );
+    child_path
+}
+
 fn plan_clauses(
     catalog: &Catalog,
     root_table: TableId,
     table: TableId,
     selection_path: &[String],
+    variable_scope: &VariablePathScope,
     selection: &Selection,
 ) -> SelectionClauses {
     let mut clauses = SelectionClauses::default();
@@ -313,6 +418,7 @@ fn plan_clauses(
                     table,
                     None,
                     selection_path,
+                    variable_scope,
                     &where_clause.predicate,
                 );
             }
@@ -346,6 +452,7 @@ fn plan_clauses(
                                                 ],
                                                 anonymous_key: None,
                                             },
+                                            variable_scope,
                                             variable.scope,
                                             variable.name.as_ref().map(|name| name.text.as_str()),
                                         ),
@@ -365,6 +472,7 @@ fn plan_clauses(
             crate::Clause::Limit(limit) => {
                 clauses.limit = plan_u64_value(
                     selection_path,
+                    variable_scope,
                     VariablePathRole::Limit,
                     "limit",
                     &limit.value,
@@ -373,6 +481,7 @@ fn plan_clauses(
             crate::Clause::Offset(offset) => {
                 clauses.offset = plan_u64_value(
                     selection_path,
+                    variable_scope,
                     VariablePathRole::Offset,
                     "offset",
                     &offset.value,
@@ -389,6 +498,7 @@ fn plan_filter_expr(
     table: TableId,
     outer_current_table: Option<TableId>,
     selection_path: &[String],
+    variable_scope: &VariablePathScope,
     expr: &crate::Expr,
 ) -> Option<FilterExpr> {
     match expr {
@@ -401,6 +511,7 @@ fn plan_filter_expr(
                     inferred_path: &["value".to_string()],
                     anonymous_key: None,
                 },
+                variable_scope,
                 variable.scope,
                 variable.name.as_ref().map(|name| name.text.as_str()),
             ),
@@ -436,6 +547,7 @@ fn plan_filter_expr(
                                     None
                                 },
                             },
+                            variable_scope,
                             variable.scope,
                             variable.name.as_ref().map(|name| name.text.as_str()),
                         ),
@@ -446,6 +558,7 @@ fn plan_filter_expr(
                         table,
                         Some(table),
                         selection_path,
+                        variable_scope,
                         right,
                     )?,
                 };
@@ -457,6 +570,7 @@ fn plan_filter_expr(
                     op,
                     Some(field_path.join(".")),
                     right,
+                    variable_scope,
                 ) {
                     return Some(filter);
                 }
@@ -480,6 +594,7 @@ fn plan_filter_expr(
                                 None
                             },
                         },
+                        variable_scope,
                         variable.scope,
                         variable.name.as_ref().map(|name| name.text.as_str()),
                     ),
@@ -499,6 +614,7 @@ fn plan_filter_expr(
                                 inferred_path: &field_path,
                                 anonymous_key: None,
                             },
+                            variable_scope,
                             variable.scope,
                             variable.name.as_ref().map(|name| name.text.as_str()),
                         ),
@@ -522,6 +638,7 @@ fn plan_filter_expr(
                 table,
                 outer_current_table,
                 selection_path,
+                variable_scope,
                 left,
             )?;
             let (right, right_path) = plan_filter_expr_with_path(
@@ -530,6 +647,7 @@ fn plan_filter_expr(
                 table,
                 outer_current_table,
                 selection_path,
+                variable_scope,
                 right,
             )?;
             match op {
@@ -554,6 +672,7 @@ fn plan_filter_expr(
                                 inferred_path: &inferred,
                                 anonymous_key: None,
                             },
+                            variable_scope,
                             variable.scope,
                             variable.name.as_ref().map(|name| name.text.as_str()),
                         ),
@@ -601,6 +720,7 @@ fn plan_filter_expr_with_path(
     table: TableId,
     outer_current_table: Option<TableId>,
     selection_path: &[String],
+    variable_scope: &VariablePathScope,
     expr: &crate::Expr,
 ) -> Option<(FilterExpr, Option<String>)> {
     match expr {
@@ -612,6 +732,7 @@ fn plan_filter_expr_with_path(
                 table,
                 outer_current_table,
                 selection_path,
+                variable_scope,
                 expr,
             )
             .map(|expr| (expr, field_path.map(|parts| parts.join("."))))
@@ -627,6 +748,7 @@ fn plan_filter_expr_with_path(
                             inferred_path: &inferred,
                             anonymous_key: None,
                         },
+                        variable_scope,
                         variable.scope,
                         variable.name.as_ref().map(|name| name.text.as_str()),
                     ),
@@ -640,6 +762,7 @@ fn plan_filter_expr_with_path(
             table,
             outer_current_table,
             selection_path,
+            variable_scope,
             expr,
         )
         .map(|expr| (expr, None)),
@@ -688,6 +811,7 @@ fn relation_predicate_filter(
     op: &crate::BinaryOperator,
     operator_path: Option<String>,
     right: FilterExpr,
+    variable_scope: &VariablePathScope,
 ) -> Option<FilterExpr> {
     if path.scope != crate::PathScope::Current || path.segments.len() < 2 {
         return None;
@@ -700,6 +824,7 @@ fn relation_predicate_filter(
         op,
         operator_path,
         right,
+        variable_scope,
     )
 }
 
@@ -711,6 +836,7 @@ fn relation_predicate_segments(
     op: &crate::BinaryOperator,
     operator_path: Option<String>,
     right: FilterExpr,
+    variable_scope: &VariablePathScope,
 ) -> Option<FilterExpr> {
     if segments.len() < 2 {
         return None;
@@ -748,6 +874,7 @@ fn relation_predicate_segments(
                             inferred_path: &inferred,
                             anonymous_key: None,
                         },
+                        variable_scope,
                         variable.scope,
                         variable.name.as_ref().map(|name| name.text.as_str()),
                     ),
@@ -774,6 +901,7 @@ fn relation_predicate_segments(
             op,
             operator_path,
             right,
+            variable_scope,
         )?
     };
     Some(FilterExpr::Exists {
@@ -785,6 +913,7 @@ fn relation_predicate_segments(
 
 fn plan_u64_value(
     selection_path: &[String],
+    variable_scope: &VariablePathScope,
     role: VariablePathRole,
     inferred_key: &str,
     expr: &crate::Expr,
@@ -801,6 +930,7 @@ fn plan_u64_value(
                     inferred_path: &[inferred_key.to_string()],
                     anonymous_key: None,
                 },
+                variable_scope,
                 variable.scope,
                 variable.name.as_ref().map(|name| name.text.as_str()),
             ),
@@ -827,6 +957,7 @@ struct VariablePathContext<'a> {
 fn variable_path(
     selection_path: &[String],
     context: VariablePathContext<'_>,
+    variable_scope: &VariablePathScope,
     scope: crate::VariableScope,
     name: Option<&str>,
 ) -> String {
@@ -844,7 +975,7 @@ fn variable_path(
     );
     match scope {
         crate::VariableScope::Structured => {
-            let mut parts = vec!["input".to_string()];
+            let mut parts = variable_scope.structured_prefix.clone();
             parts.extend(selection_path.iter().cloned());
             parts.push("clause".to_string());
             parts.push(
@@ -872,7 +1003,11 @@ fn variable_path(
             }
             parts.join(".")
         }
-        crate::VariableScope::TopLevel => format!("params.{key}"),
+        crate::VariableScope::TopLevel => {
+            let mut parts = variable_scope.top_level_prefix.clone();
+            parts.push(key);
+            parts.join(".")
+        }
     }
 }
 

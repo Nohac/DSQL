@@ -134,6 +134,9 @@ export interface FragmentMetadata {
   kind: string;
   table: string;
   result: ResultShape;
+  params: InputField[];
+  input: InputField[];
+  dynamic_inputs: DynamicInputMetadata[];
   source_map: SourceMapEntry[];
 }
 
@@ -146,6 +149,27 @@ export interface SourceMapEntry {
 export interface SourceRange {
   start: number;
   end: number;
+}
+
+export interface DynamicInputMetadata {
+  name: string;
+  kind: string;
+  preset: string;
+  fields: DynamicInputField[];
+}
+
+export interface DynamicInputField {
+  path: string;
+  data_type: string;
+  operators: string[];
+}
+
+export interface InputField {
+  path: string;
+  data_type: string;
+  enum_values: string[];
+  required: boolean;
+  nullable: boolean;
 }
 
 export interface ResultShape {

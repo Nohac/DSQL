@@ -9,5 +9,6 @@ pub use check::{
 pub use error::{CheckError, CheckErrorKind, CheckedDefinition, CheckedFile};
 pub use lower::{Interner, LoweredFile, NameId, NameIndex, lower_file};
 pub use variables::{
-    VariableBinding, VariableBindings, VariableRole, VariableSource, infer_variable_bindings,
+    VariableBinding, VariableBindings, VariableRole, VariableSource,
+    infer_fragment_variable_bindings, infer_query_variable_bindings, infer_variable_bindings,
 };
