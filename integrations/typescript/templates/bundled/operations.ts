@@ -52,7 +52,10 @@ export type DsqlFragmentInput<Fragment> =
     ? Input
     : Record<string, never>;
 
-export type DsqlFragmentVariables<Fragment> = {
-  readonly params: DsqlFragmentParams<Fragment>;
-  readonly input: DsqlFragmentInput<Fragment>;
-};
+export type DsqlFragmentVariables<Fragment> =
+  (DsqlFragmentParams<Fragment> extends Record<string, never>
+    ? { readonly params?: DsqlFragmentParams<Fragment> }
+    : { readonly params: DsqlFragmentParams<Fragment> }) &
+  (DsqlFragmentInput<Fragment> extends Record<string, never>
+    ? { readonly input?: DsqlFragmentInput<Fragment> }
+    : { readonly input: DsqlFragmentInput<Fragment> });

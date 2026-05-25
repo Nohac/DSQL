@@ -42,6 +42,7 @@ export async function renderTypes(
     const resultType = fragmentResultTypeName(fragment.name);
     const paramsType = fragmentParamsTypeName(fragment.name);
     const inputType = fragmentInputTypeName(fragment.name);
+    const variablesType = fragmentVariablesTypeName(fragment.name);
     operationsSource.addTypeAlias({
       isExported: true,
       name: resultType,
@@ -56,6 +57,16 @@ export async function renderTypes(
       isExported: true,
       name: inputType,
       type: inputTypeLiteral(fragment.input),
+    });
+    operationsSource.addTypeAlias({
+      isExported: true,
+      name: variablesType,
+      type: fragmentVariablesTypeLiteral(
+        paramsType,
+        inputType,
+        fragment.params.length > 0,
+        fragment.input.length > 0,
+      ),
     });
     operationsSource.addVariableStatement({
       isExported: true,
@@ -430,25 +441,8 @@ function operationFragmentInputBranches(
     )
     .map((branch) => ({
       path: branch.path,
-      type: fragmentVariableBranchType(branch.fragment, branch.hasParams, branch.hasInput),
+      type: fragmentVariablesTypeName(branch.fragment),
     }));
-}
-
-function fragmentVariableBranchType(
-  fragment: string,
-  hasParams: boolean,
-  hasInput: boolean,
-): string {
-  if (hasInput && !hasParams) {
-    return fragmentInputTypeName(fragment);
-  }
-  if (hasParams && !hasInput) {
-    return objectType([[PARAMS_PREFIX, fragmentParamsTypeName(fragment)]]);
-  }
-  return objectType([
-    [PARAMS_PREFIX, fragmentParamsTypeName(fragment)],
-    [INPUT_PREFIX, fragmentInputTypeName(fragment)],
-  ]);
 }
 
 function inputFieldType(field: InputField): string {
@@ -571,6 +565,39 @@ ${properties
 }`;
 }
 
+function objectTypeWithOptional(
+  properties: Array<{
+    readonly name: string;
+    readonly type: string;
+    readonly optional: boolean;
+  }>,
+): string {
+  if (properties.length === 0) {
+    return "Record<string, never>";
+  }
+
+  return `{
+${properties
+  .map(
+    (property) =>
+      `  ${propertyName(property.name)}${property.optional ? "?" : ""}: ${property.type};`,
+  )
+  .join("\n")}
+}`;
+}
+
+function fragmentVariablesTypeLiteral(
+  paramsType: string,
+  inputType: string,
+  hasParams: boolean,
+  hasInput: boolean,
+): string {
+  return objectTypeWithOptional([
+    { name: PARAMS_PREFIX, type: paramsType, optional: !hasParams },
+    { name: INPUT_PREFIX, type: inputType, optional: !hasInput },
+  ]);
+}
+
 class TypeNode {
   private readonly children = new Map<string, TypeNode>();
   private value: string | undefined;
@@ -661,4 +688,8 @@ function fragmentParamsTypeName(name: string): string {
 
 function fragmentInputTypeName(name: string): string {
   return `${toPascalCase(name)}FragmentInput`;
+}
+
+function fragmentVariablesTypeName(name: string): string {
+  return `${toPascalCase(name)}FragmentVariables`;
 }

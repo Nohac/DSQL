@@ -584,23 +584,18 @@ context.dsql.executeQuery satisfies unknown;
 type IsNever<T> = [T] extends [never] ? true : false;
 type AssertFalse<T extends false> = T;
 type OperationResultIsNotNever = AssertFalse<IsNever<DsqlOperationResult<typeof MovieInfoLookup>>>;
-const query = useQuery(MovieInfoLookup, {
-  params: {},
-  input: {},
+const query = useQuery(MovieInfoLookup);
+const options = queryOptions(MovieInfoLookup);
+const optionsWithEnabled = queryOptions(MovieInfoLookup, {
   enabled: true,
 });
-const options = queryOptions(MovieInfoLookup, {
-  params: {},
-  input: {},
-});
-const executed = executeQuery(MovieInfoLookup, {
-  params: {},
-  input: {},
-});
+const executed = executeQuery(MovieInfoLookup);
 type QueryDataIsNotNever = AssertFalse<IsNever<typeof query.data>>;
 type QueryFnData = Awaited<ReturnType<NonNullable<typeof options.queryFn>>>;
+type QueryFnDataWithEnabled = Awaited<ReturnType<NonNullable<typeof optionsWithEnabled.queryFn>>>;
 type ExecuteData = Awaited<typeof executed>;
 type QueryFnDataIsNotNever = AssertFalse<IsNever<QueryFnData>>;
+type QueryFnDataWithEnabledIsNotNever = AssertFalse<IsNever<QueryFnDataWithEnabled>>;
 type ExecuteDataIsNotNever = AssertFalse<IsNever<ExecuteData>>;
 query.data satisfies MovieInfoLookupResult | undefined;
 executed satisfies Promise<MovieInfoLookupResult>;
@@ -823,19 +818,27 @@ query CompanyLimitLookup {
         "fragment-only object result should not add an empty object intersection:\n{operations}"
     );
     assert!(
-        operations.contains("MovieCompanyLimit: MovieCompanyLimitFragmentInput;"),
-        "operation input should reuse input-only fragment input aliases:\n{operations}"
+        operations.contains("export type MovieCompanyLimitFragmentVariables = {")
+            && operations.contains("params?: MovieCompanyLimitFragmentParams;")
+            && operations.contains("input: MovieCompanyLimitFragmentInput;"),
+        "generated operations should export fragment variables type:\n{operations}"
     );
     assert!(
-        operations.contains("params: MovieCompanyFragmentParams;")
-            && operations.contains("input: MovieCompanyFragmentInput;"),
-        "operation input should reuse fragment params/input aliases when both are present:\n{operations}"
+        operations.contains("MovieCompanyLimit: MovieCompanyLimitFragmentVariables;"),
+        "operation input should reuse fragment variables aliases:\n{operations}"
+    );
+    assert!(
+        operations.contains("export type MovieCompanyFragmentVariables = {")
+            && operations.contains("params: MovieCompanyFragmentParams;")
+            && operations.contains("input: MovieCompanyFragmentInput;")
+            && operations.contains("MovieCompany: MovieCompanyFragmentVariables;"),
+        "operation input should reuse required fragment variables aliases when params and input are present:\n{operations}"
     );
 
     fs::write(
         project.path().join("src/generated/dsql/fragment-usage.ts"),
         format!(
-            r#"import {{ dsql, DsqlFragment, DsqlFragmentVariables, MovieCompanyFragment }} from "./queries";
+            r#"import {{ dsql, DsqlFragment, DsqlFragmentVariables, MovieCompanyFragment, MovieCompanyLimitFragmentVariables }} from "./queries";
 
 const MovieCompany = dsql(`{fragment_source}`);
 MovieCompany satisfies typeof MovieCompanyFragment;
@@ -853,6 +856,14 @@ const _props: Props = {{
 
 const _vars: DsqlFragmentVariables<typeof MovieCompany> = {{
   params: {{ kind: "%production%" }},
+  input: {{
+    company_type: {{
+      clause: {{ limit: {{ company_limit: 1 }} }},
+    }},
+  }},
+}};
+
+const _limitVars: MovieCompanyLimitFragmentVariables = {{
   input: {{
     company_type: {{
       clause: {{ limit: {{ company_limit: 1 }} }},

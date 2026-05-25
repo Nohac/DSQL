@@ -18,6 +18,26 @@ export type DsqlQueryVariables<
   readonly input: Input;
 };
 
+type DsqlOptionalParams<Params> =
+  [Params] extends [Record<string, never>]
+    ? { readonly params?: Params }
+    : { readonly params: Params };
+
+type DsqlOptionalInput<Input> =
+  [Input] extends [Record<string, never>]
+    ? { readonly input?: Input }
+    : { readonly input: Input };
+
+type DsqlVariableOptions<Params, Input> =
+  DsqlOptionalParams<Params> & DsqlOptionalInput<Input>;
+
+type DsqlOptionsArgument<Params, Input, Options> =
+  [Params] extends [Record<string, never>]
+    ? [Input] extends [Record<string, never>]
+      ? readonly [options?: Options]
+      : readonly [options: Options]
+    : readonly [options: Options];
+
 export type DsqlQueryKey<Variables> = readonly ["dsql", string, Variables];
 
 export type DsqlQueryOptions<
@@ -33,17 +53,12 @@ export type DsqlQueryOptions<
   >,
   "queryKey" | "queryFn"
 > & {
-  readonly params?: Params;
-  readonly input?: Input;
-};
+} & DsqlVariableOptions<Params, Input>;
 
 export type DsqlExecuteOptions<
   Params,
   Input,
-> = {
-  readonly params?: Params;
-  readonly input?: Input;
-};
+> = DsqlVariableOptions<Params, Input>;
 
 type DsqlServerFunction<Operation extends DsqlOperation<any, any, any>> = (
   options: {
@@ -60,8 +75,13 @@ export function queryKey<Variables>(
 
 export function queryOptions<Result, Params, Input>(
   operation: DsqlOperation<Result, Params, Input>,
-  options: DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>,
+  ...args: DsqlOptionsArgument<
+    NoInfer<Params>,
+    NoInfer<Input>,
+    DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>
+  >
 ) {
+  const [options = {} as DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>] = args;
   const {
     params = {} as Params,
     input = {} as Input,
@@ -77,8 +97,13 @@ export function queryOptions<Result, Params, Input>(
 
 export function executeQuery<Result, Params, Input>(
   operation: DsqlOperation<Result, Params, Input>,
-  options: DsqlExecuteOptions<NoInfer<Params>, NoInfer<Input>>,
+  ...args: DsqlOptionsArgument<
+    NoInfer<Params>,
+    NoInfer<Input>,
+    DsqlExecuteOptions<NoInfer<Params>, NoInfer<Input>>
+  >
 ): Promise<Result> {
+  const [options = {} as DsqlExecuteOptions<NoInfer<Params>, NoInfer<Input>>] = args;
   const {
     params = {} as Params,
     input = {} as Input,
@@ -89,8 +114,13 @@ export function executeQuery<Result, Params, Input>(
 
 export function useQuery<Result, Params, Input>(
   operation: DsqlOperation<Result, Params, Input>,
-  options: DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>,
+  ...args: DsqlOptionsArgument<
+    NoInfer<Params>,
+    NoInfer<Input>,
+    DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>
+  >
 ): UseQueryResult<Result, Error> {
+  const [options = {} as DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>] = args;
   return useTanStackQuery(queryOptions(operation, options)) as UseQueryResult<
     Result,
     Error
