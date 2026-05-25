@@ -428,6 +428,7 @@ dependencies = [
  "sea-query",
  "smallvec 1.15.1",
  "sqlformat",
+ "strum",
  "thiserror",
  "tracing",
 ]
@@ -502,6 +503,7 @@ dependencies = [
  "facet",
  "facet-jsonschema",
  "facet-typescript",
+ "strum",
 ]
 
 [[package]]

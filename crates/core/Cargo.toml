@@ -16,6 +16,7 @@ ropey = { workspace = true, features = ["metric_utf16"] }
 sea-query = { workspace = true, features = ["backend-postgres"] }
 smallvec = { workspace = true }
 sqlformat = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

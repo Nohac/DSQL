@@ -1,0 +1,272 @@
+use crate::{semantic::VariableRole, syntax::VariableScope};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum InputPathSegment {
+    Input,
+    Params,
+    Body,
+    Clause,
+    Where,
+    OrderBy,
+    Limit,
+    Offset,
+    Value,
+    Op,
+    Direction,
+}
+
+#[derive(Clone)]
+pub(crate) struct SelectionPath {
+    pub(crate) parts: Vec<String>,
+    pub(crate) mode: SelectionPathMode,
+}
+
+impl SelectionPath {
+    pub(crate) fn body(parts: Vec<String>) -> Self {
+        Self {
+            parts,
+            mode: SelectionPathMode::Body,
+        }
+    }
+
+    pub(crate) fn fragment_root() -> Self {
+        Self {
+            parts: Vec::new(),
+            mode: SelectionPathMode::FragmentRoot,
+        }
+    }
+
+    pub(crate) fn relation_child_path(&self, output_name: impl Into<String>) -> Vec<String> {
+        let mut child_path = self.parts.clone();
+        if matches!(self.mode, SelectionPathMode::Body) {
+            child_path.push(InputPathSegment::Body.as_ref().to_string());
+        }
+        child_path.push(output_name.into());
+        child_path
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum SelectionPathMode {
+    Body,
+    FragmentRoot,
+}
+
+#[derive(Clone)]
+pub(crate) struct VariablePathScope {
+    pub(crate) structured_prefix: Vec<String>,
+    pub(crate) top_level_prefix: Vec<String>,
+}
+
+impl VariablePathScope {
+    pub(crate) fn operation() -> Self {
+        Self {
+            structured_prefix: vec![InputPathSegment::Input.as_ref().to_string()],
+            top_level_prefix: vec![InputPathSegment::Params.as_ref().to_string()],
+        }
+    }
+
+    pub(crate) fn fragment() -> Self {
+        Self::operation()
+    }
+
+    pub(crate) fn for_fragment_spread(
+        &self,
+        current_path: &SelectionPath,
+        fragment_name: &str,
+    ) -> Self {
+        let mut envelope = self.structured_prefix.clone();
+        envelope.extend(fragment_envelope_path(current_path, fragment_name));
+        Self {
+            structured_prefix: {
+                let mut prefix = envelope.clone();
+                prefix.push(InputPathSegment::Input.as_ref().to_string());
+                prefix
+            },
+            top_level_prefix: {
+                envelope.push(InputPathSegment::Params.as_ref().to_string());
+                envelope
+            },
+        }
+    }
+}
+
+pub(crate) fn fragment_envelope_path(
+    current_path: &SelectionPath,
+    fragment_name: &str,
+) -> Vec<String> {
+    let mut parts = current_path.parts.clone();
+    if matches!(current_path.mode, SelectionPathMode::Body) {
+        parts.push(InputPathSegment::Body.as_ref().to_string());
+    }
+    parts.push(fragment_name.to_string());
+    parts
+}
+
+impl VariableRole {
+    fn path_clause_segment(self) -> InputPathSegment {
+        match self {
+            Self::WhereValue | Self::ComparisonOperator => InputPathSegment::Where,
+            Self::SortDirection => InputPathSegment::OrderBy,
+            Self::Limit => InputPathSegment::Limit,
+            Self::Offset => InputPathSegment::Offset,
+        }
+    }
+
+    fn path_includes_inferred_path(self) -> bool {
+        matches!(
+            self,
+            Self::WhereValue | Self::ComparisonOperator | Self::SortDirection
+        )
+    }
+}
+
+pub(crate) struct VariablePathContext<'a> {
+    pub(crate) role: VariableRole,
+    pub(crate) inferred_path: &'a [String],
+    pub(crate) anonymous_key: Option<&'a str>,
+}
+
+pub(crate) fn variable_path(
+    selection_path: &[String],
+    context: VariablePathContext<'_>,
+    variable_scope: &VariablePathScope,
+    scope: VariableScope,
+    name: Option<&str>,
+) -> String {
+    let key = name.map_or_else(
+        || {
+            if let Some(key) = context.anonymous_key {
+                key.to_string()
+            } else if matches!(context.role, VariableRole::ComparisonOperator) {
+                InputPathSegment::Op.as_ref().to_string()
+            } else {
+                context.inferred_path.last().cloned().unwrap_or_default()
+            }
+        },
+        ToString::to_string,
+    );
+    match scope {
+        VariableScope::Structured => structured_variable_path(
+            selection_path,
+            &context,
+            variable_scope,
+            name.is_some()
+                || context.anonymous_key.is_some()
+                || matches!(context.role, VariableRole::ComparisonOperator),
+            key,
+        ),
+        VariableScope::TopLevel => join_prefixed_key(&variable_scope.top_level_prefix, &key),
+    }
+}
+
+pub(crate) fn join_prefixed_key(prefix: &[String], key: &str) -> String {
+    let mut parts = prefix.to_vec();
+    parts.push(key.to_string());
+    parts.join(".")
+}
+
+pub fn is_params_path(path: &str) -> bool {
+    matches!(
+        path.split_once('.'),
+        Some((prefix, _)) if prefix == InputPathSegment::Params.as_ref()
+    )
+}
+
+pub fn is_input_path(path: &str) -> bool {
+    matches!(
+        path.split_once('.'),
+        Some((prefix, _)) if prefix == InputPathSegment::Input.as_ref()
+    )
+}
+
+fn structured_variable_path(
+    selection_path: &[String],
+    context: &VariablePathContext<'_>,
+    variable_scope: &VariablePathScope,
+    include_key: bool,
+    key: String,
+) -> String {
+    let mut parts = variable_scope.structured_prefix.clone();
+    parts.extend(selection_path.iter().cloned());
+    parts.push(InputPathSegment::Clause.as_ref().to_string());
+    parts.push(context.role.path_clause_segment().as_ref().to_string());
+    if context.role.path_includes_inferred_path() {
+        parts.extend(context.inferred_path.iter().cloned());
+    }
+    if include_key {
+        parts.push(key);
+    }
+    parts.join(".")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_limit_path_matches_existing_shape() {
+        let scope = VariablePathScope::operation();
+        let selection = vec!["title".to_string()];
+
+        assert_eq!(
+            variable_path(
+                &selection,
+                VariablePathContext {
+                    role: VariableRole::Limit,
+                    inferred_path: &[InputPathSegment::Limit.as_ref().to_string()],
+                    anonymous_key: None,
+                },
+                &scope,
+                VariableScope::Structured,
+                None,
+            ),
+            "input.title.clause.limit",
+        );
+    }
+
+    #[test]
+    fn fragment_spread_params_path_matches_existing_shape() {
+        let scope = VariablePathScope::operation();
+        let selection = SelectionPath::body(vec!["title".to_string()]);
+        let spread_scope = scope.for_fragment_spread(&selection, "MovieFields");
+
+        assert_eq!(
+            variable_path(
+                &[],
+                VariablePathContext {
+                    role: VariableRole::WhereValue,
+                    inferred_path: &["kind".to_string()],
+                    anonymous_key: None,
+                },
+                &spread_scope,
+                VariableScope::TopLevel,
+                Some("kind"),
+            ),
+            "input.title.body.MovieFields.params.kind",
+        );
+    }
+
+    #[test]
+    fn fragment_spread_input_path_matches_existing_shape() {
+        let scope = VariablePathScope::operation();
+        let selection = SelectionPath::body(vec!["title".to_string()]);
+        let spread_scope = scope.for_fragment_spread(&selection, "MovieFields");
+
+        assert_eq!(
+            variable_path(
+                &["cast_info".to_string()],
+                VariablePathContext {
+                    role: VariableRole::Limit,
+                    inferred_path: &[InputPathSegment::Limit.as_ref().to_string()],
+                    anonymous_key: Some("count"),
+                },
+                &spread_scope,
+                VariableScope::Structured,
+                None,
+            ),
+            "input.title.body.MovieFields.input.cast_info.clause.limit.count",
+        );
+    }
+}

@@ -7,3 +7,4 @@ edition = "2024"
 facet = { workspace = true }
 facet-jsonschema = { workspace = true }
 facet-typescript = { workspace = true }
+strum = { workspace = true, features = ["derive"] }

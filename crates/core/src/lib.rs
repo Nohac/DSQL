@@ -6,6 +6,7 @@ pub mod plan;
 pub mod semantic;
 pub mod sql;
 pub mod syntax;
+mod variable_path;
 
 pub use catalog::{
     Catalog, CatalogBuildError, Column, ColumnId, ColumnKey, ColumnMetadata, DataType,
@@ -49,3 +50,4 @@ pub use syntax::{
     SourceFile, SourceSnapshot, SourceText, SyntaxNode, SyntaxToken, SyntaxTree, TextRange, Token,
     ValueVariable, VariableScope, expected_tokens_at, parse_source,
 };
+pub use variable_path::{InputPathSegment, is_input_path, is_params_path};

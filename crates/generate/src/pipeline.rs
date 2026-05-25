@@ -1,17 +1,19 @@
 use dsql_core::{
     Catalog, DefinitionRecord, DefinitionResolver, Diagnostic, FieldCheckResult, FragmentMap,
-    FragmentRecord, QueryPlan, QueryRecord, Selection, SelectionKind, SelectionPlan,
-    SelectionPlanItem, Severity, SourceSnapshot, TableId, VariableBinding,
+    FragmentRecord, InputPathSegment, QueryPlan, QueryRecord, Selection, SelectionKind,
+    SelectionPlan, SelectionPlanItem, Severity, SourceSnapshot, TableId, VariableBinding,
     check_fragment_definition, check_query_definition, extract_definitions,
     generate_postgres_sql_with_options, infer_fragment_variable_bindings,
-    infer_query_variable_bindings, lint_query_definition_with_options, parse_source,
-    plan_fragment_definition, plan_query_definition,
+    infer_query_variable_bindings, is_input_path, is_params_path,
+    lint_query_definition_with_options, parse_source, plan_fragment_definition,
+    plan_query_definition,
 };
 use dsql_metadata::{
-    BuildManifest, DynamicInputMetadata, FragmentManifestEntry, FragmentMetadata,
+    BuildManifest, DefinitionKind, DynamicInputMetadata, FragmentManifestEntry, FragmentMetadata,
     FragmentSpreadMetadata, HandoffMetadata, InputField, OperationManifestEntry, OperationMetadata,
-    PolicyMetadata, ResultField, ResultShape, SourceMapEntry, SourceRange, SqlMetadata,
-    SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
+    PolicyMetadata, ResultDataType, ResultField, ResultFieldKind, ResultShape, SourceMapEntry,
+    SourceRange, SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata,
+    SqlVariantMetadata,
 };
 use facet::Facet;
 use miette::Result;
@@ -25,6 +27,7 @@ use crate::{
         ArtifactWriter, FragmentArtifact, OperationArtifact, WrittenArtifacts,
         WrittenFragmentArtifact, WrittenOperationArtifact,
     },
+    layout::{BUILD_DIR, MANIFEST_FILE, fragment_manifest_path, operation_manifest_path},
     runner::{GenerateTarget, GeneratorRunner},
 };
 
@@ -185,10 +188,7 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
     let mut generated_operations = Vec::with_capacity(built.operations.len());
     let mut operation_manifest_entries = Vec::with_capacity(built.operations.len());
     for operation in built.operations {
-        let operation_path = format!(
-            "operations/{}.json",
-            artifact_file_stem(&operation.metadata.name)
-        );
+        let operation_path = operation_manifest_path(&operation.metadata.name);
         operation_manifest_entries.push(OperationManifestEntry {
             name: operation.metadata.name.clone(),
             kind: operation.metadata.kind.clone(),
@@ -205,10 +205,7 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
     let mut generated_fragments = Vec::with_capacity(built.fragments.len());
     let mut fragment_manifest_entries = Vec::with_capacity(built.fragments.len());
     for fragment in built.fragments {
-        let fragment_path = format!(
-            "fragments/{}.json",
-            artifact_file_stem(&fragment.metadata.name)
-        );
+        let fragment_path = fragment_manifest_path(&fragment.metadata.name);
         fragment_manifest_entries.push(FragmentManifestEntry {
             name: fragment.metadata.name.clone(),
             kind: fragment.metadata.kind.clone(),
@@ -229,8 +226,8 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
         manifest_path: input
             .project
             .root
-            .join("build")
-            .join("manifest.json")
+            .join(BUILD_DIR)
+            .join(MANIFEST_FILE)
             .to_string_lossy()
             .to_string(),
         manifest: BuildManifest {
@@ -476,9 +473,9 @@ fn build_query_operations(
                 planned.queries.len(),
                 index,
             ),
-            kind: "query".to_string(),
+            kind: DefinitionKind::Query.as_ref().to_string(),
             sql: SqlMetadata {
-                dialect: "postgres".to_string(),
+                dialect: SqlDialect::Postgres.as_ref().to_string(),
                 text: generated.sql,
                 parameters: generated
                     .parameters
@@ -552,7 +549,7 @@ fn build_fragment_artifact(
     validate_variable_bindings(fragment_name, &variables)?;
     let metadata = FragmentMetadata {
         name: fragment_name.clone(),
-        kind: "fragment".to_string(),
+        kind: DefinitionKind::Fragment.as_ref().to_string(),
         table: table.name.clone(),
         result: fragment_result_shape(catalog, &plan.selections)?,
         params: input_fields(&variables, true),
@@ -686,22 +683,6 @@ fn manifest_from_written_artifacts(
     }
 }
 
-fn artifact_file_stem(name: &str) -> String {
-    let mut output = String::new();
-    for char in name.chars() {
-        if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
-            output.push(char);
-        } else {
-            output.push('_');
-        }
-    }
-    if output.is_empty() {
-        "operation".to_string()
-    } else {
-        output
-    }
-}
-
 fn fail_on_error_diagnostics(mut diagnostics: Vec<Diagnostic>) -> Result<()> {
     diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
     let errors = diagnostics
@@ -733,7 +714,7 @@ fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
         "",
         &plan.output_name,
         &plan.selections,
-        "array",
+        ResultFieldKind::Array,
         &mut fields,
     )?;
     Ok(ResultShape { fields })
@@ -752,7 +733,7 @@ fn collect_result_fields(
     parent_path: &str,
     name: &str,
     selection: &SelectionPlan,
-    kind: &str,
+    kind: ResultFieldKind,
     fields: &mut Vec<ResultField>,
 ) -> Result<()> {
     let path = join_path(parent_path, name);
@@ -760,8 +741,8 @@ fn collect_result_fields(
         path: path.clone(),
         name: name.to_string(),
         parent_path: parent_path.to_string(),
-        kind: kind.to_string(),
-        data_type: "object".to_string(),
+        kind: kind.as_ref().to_string(),
+        data_type: ResultDataType::Object.as_ref().to_string(),
         nullable: false,
     });
 
@@ -786,7 +767,7 @@ fn collect_result_item_fields(
                 path: join_path(parent_path, &projection.output_name),
                 name: projection.output_name.clone(),
                 parent_path: parent_path.to_string(),
-                kind: "scalar".to_string(),
+                kind: ResultFieldKind::Scalar.as_ref().to_string(),
                 data_type: column.data_type.as_str().to_string(),
                 nullable: !column.not_null,
             });
@@ -797,7 +778,7 @@ fn collect_result_item_fields(
                 parent_path,
                 &relation.output_name,
                 &relation.selections,
-                "array",
+                ResultFieldKind::Array,
                 fields,
             )?;
         }
@@ -809,8 +790,8 @@ fn input_fields(variables: &[VariableBinding], top_level: bool) -> Vec<InputFiel
     variables
         .iter()
         .filter(|binding| {
-            (top_level && binding.path.starts_with("params."))
-                || (!top_level && binding.path.starts_with("input."))
+            (top_level && is_params_path(&binding.path))
+                || (!top_level && is_input_path(&binding.path))
         })
         .map(|binding| InputField {
             path: binding.path.clone(),
@@ -832,10 +813,10 @@ fn dynamic_inputs(variables: &[VariableBinding]) -> Vec<DynamicInputMetadata> {
                     .path
                     .rsplit('.')
                     .next()
-                    .unwrap_or("value")
+                    .unwrap_or(InputPathSegment::Value.as_ref())
                     .to_string()
             }),
-            kind: format!("{:?}", binding.role).to_ascii_lowercase(),
+            kind: binding.role.as_ref().to_string(),
             preset: String::new(),
             fields: Vec::new(),
         })

@@ -90,8 +90,9 @@ pub enum SortDirectionExpr {
     Variable(ValueVariable),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet, strum::AsRefStr)]
 #[repr(u8)]
+#[strum(serialize_all = "snake_case")]
 pub enum SortDirection {
     Asc,
     Desc,
@@ -100,11 +101,8 @@ pub enum SortDirection {
 impl SortDirection {
     pub const ALL: &'static [Self] = &[Self::Asc, Self::Desc];
 
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Asc => "asc",
-            Self::Desc => "desc",
-        }
+    pub fn label(&self) -> &str {
+        self.as_ref()
     }
 }
 
@@ -204,32 +202,41 @@ pub enum Literal {
     Null { range: TextRange },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet, strum::AsRefStr)]
 #[repr(u8)]
 pub enum BinaryOp {
+    #[strum(serialize = "==")]
     Eq,
+    #[strum(serialize = "!=")]
     Ne,
+    #[strum(serialize = ">")]
     Gt,
+    #[strum(serialize = ">=")]
     Ge,
+    #[strum(serialize = "<")]
     Lt,
+    #[strum(serialize = "<=")]
     Le,
+    #[strum(serialize = "like")]
     Like,
+    #[strum(serialize = "and")]
     And,
+    #[strum(serialize = "or")]
     Or,
 }
 
 impl BinaryOp {
-    pub const fn label(self) -> Option<&'static str> {
+    pub fn dsql_label(&self) -> Option<&str> {
         match self {
-            Self::Eq => Some("=="),
-            Self::Ne => Some("!="),
-            Self::Gt => Some(">"),
-            Self::Ge => Some(">="),
-            Self::Lt => Some("<"),
-            Self::Le => Some("<="),
-            Self::Like => Some("like"),
+            Self::Eq | Self::Ne | Self::Gt | Self::Ge | Self::Lt | Self::Le | Self::Like => {
+                Some(self.as_ref())
+            }
             Self::And | Self::Or => None,
         }
+    }
+
+    pub fn label(&self) -> Option<&str> {
+        self.dsql_label()
     }
 
     pub const fn detail(self) -> &'static str {

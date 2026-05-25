@@ -17,6 +17,16 @@ export type RenderOptions = {
   readonly outDir: string;
 };
 
+const DEFINITION_KIND_FRAGMENT = "fragment";
+const DEFINITION_KIND_QUERY = "query";
+const RESULT_KIND_SCALAR = "scalar";
+const RESULT_KIND_ARRAY = "array";
+const PARAMS_PREFIX = "params";
+const INPUT_PREFIX = "input";
+const UNKNOWN_TS_TYPE = "unknown";
+
+type InputRoot = typeof PARAMS_PREFIX | typeof INPUT_PREFIX;
+
 export async function renderTypes(
   artifacts: BuildArtifacts,
   options: RenderOptions,
@@ -56,7 +66,7 @@ export async function renderTypes(
           type: `DsqlFragmentDefinition<${resultType}, ${paramsType}, ${inputType}>`,
           initializer: `{
   name: ${JSON.stringify(fragment.name)},
-  kind: "fragment",
+  kind: ${JSON.stringify(DEFINITION_KIND_FRAGMENT)},
   table: ${JSON.stringify(fragment.table)}
 }`,
         },
@@ -102,7 +112,7 @@ export async function renderTypes(
           initializer: `{
   id: ${JSON.stringify(manifestEntry.hash)},
   name: ${JSON.stringify(operation.name)},
-  kind: "query"
+  kind: ${JSON.stringify(DEFINITION_KIND_QUERY)}
 }`,
         },
       ],
@@ -323,7 +333,7 @@ function resultTypeLiteral(
 }
 
 function paramsTypeLiteral(fields: readonly InputField[]): string {
-  return inputFieldsTypeLiteral(fields, "params");
+  return inputFieldsTypeLiteral(fields, PARAMS_PREFIX);
 }
 
 function inputTypeLiteral(
@@ -331,12 +341,12 @@ function inputTypeLiteral(
   fragmentSpreads: readonly FragmentSpreadMetadata[] = [],
   fragments: readonly FragmentMetadata[] = [],
 ): string {
-  return inputFieldsTypeLiteral(fields, "input", fragmentSpreads, fragments);
+  return inputFieldsTypeLiteral(fields, INPUT_PREFIX, fragmentSpreads, fragments);
 }
 
 function inputFieldsTypeLiteral(
   fields: readonly InputField[],
-  prefix: "params" | "input",
+  prefix: InputRoot,
   fragmentSpreads: readonly FragmentSpreadMetadata[] = [],
   fragments: readonly FragmentMetadata[] = [],
 ): string {
@@ -346,7 +356,7 @@ function inputFieldsTypeLiteral(
 
   const root = new TypeNode();
   const fragmentBranches =
-    prefix === "input"
+    prefix === INPUT_PREFIX
       ? operationFragmentInputBranches(fields, fragmentSpreads, fragments)
       : [];
   for (const branch of fragmentBranches) {
@@ -387,14 +397,14 @@ function operationFragmentInputBranches(
   >();
 
   for (const field of fields) {
-    const path = publicInputPath(field.path, "input");
+    const path = publicInputPath(field.path, INPUT_PREFIX);
     for (let index = 0; index < path.length - 1; index += 1) {
       const fragment = path[index];
       const envelope = path[index + 1];
       if (
         fragment === undefined ||
         !fragmentNames.has(fragment) ||
-        (envelope !== "params" && envelope !== "input")
+        (envelope !== PARAMS_PREFIX && envelope !== INPUT_PREFIX)
       ) {
         continue;
       }
@@ -407,8 +417,8 @@ function operationFragmentInputBranches(
         hasParams: false,
         hasInput: false,
       };
-      branch.hasParams ||= envelope === "params";
-      branch.hasInput ||= envelope === "input";
+      branch.hasParams ||= envelope === PARAMS_PREFIX;
+      branch.hasInput ||= envelope === INPUT_PREFIX;
       branches.set(key, branch);
       break;
     }
@@ -433,11 +443,11 @@ function fragmentVariableBranchType(
     return fragmentInputTypeName(fragment);
   }
   if (hasParams && !hasInput) {
-    return objectType([["params", fragmentParamsTypeName(fragment)]]);
+    return objectType([[PARAMS_PREFIX, fragmentParamsTypeName(fragment)]]);
   }
   return objectType([
-    ["params", fragmentParamsTypeName(fragment)],
-    ["input", fragmentInputTypeName(fragment)],
+    [PARAMS_PREFIX, fragmentParamsTypeName(fragment)],
+    [INPUT_PREFIX, fragmentInputTypeName(fragment)],
   ]);
 }
 
@@ -449,7 +459,7 @@ function inputFieldType(field: InputField): string {
   return withNullability(type, field.nullable);
 }
 
-function publicInputPath(path: string, prefix: "params" | "input"): string[] {
+function publicInputPath(path: string, prefix: InputRoot): string[] {
   const parts = path.split(".").filter(Boolean);
   if (parts[0] !== prefix) {
     return parts;
@@ -463,7 +473,7 @@ function propertyType(
   fragmentSpreads: readonly FragmentSpreadMetadata[],
   fragments: readonly FragmentMetadata[],
 ): [string, string] {
-  if (field.kind === "scalar") {
+  if (field.kind === RESULT_KIND_SCALAR) {
     return [
       field.name,
       withNullability(dataType(field.data_type), field.nullable),
@@ -486,7 +496,7 @@ function propertyType(
     ownType,
     objectHasOwnFields(field, fields, fragmentSpreads, fragments),
   );
-  return [field.name, field.kind === "array" ? `Array<${type}>` : type];
+  return [field.name, field.kind === RESULT_KIND_ARRAY ? `Array<${type}>` : type];
 }
 
 function objectHasOwnFields(
@@ -586,7 +596,7 @@ class TypeNode {
 
   toTypeLiteral(): string {
     if (this.children.size === 0) {
-      return this.value ?? "unknown";
+      return this.value ?? UNKNOWN_TS_TYPE;
     }
 
     return objectType(
@@ -613,13 +623,13 @@ function dataType(type: string): string {
     case "int":
       return "number";
     case "json":
-      return "unknown";
+      return UNKNOWN_TS_TYPE;
     case "text":
     case "timestamptz":
     case "uuid":
       return "string";
     default:
-      return "unknown";
+      return UNKNOWN_TS_TYPE;
   }
 }
 

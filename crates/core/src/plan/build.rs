@@ -4,6 +4,7 @@ use super::{
     SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
 };
 use crate::{
+    VariableRole,
     catalog::{Catalog, FieldCheckResult, TableId, TableKey, TableResolution},
     definition::{
         DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
@@ -11,6 +12,9 @@ use crate::{
     syntax::{
         Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Selection, SelectionKind,
         Severity, SourceFile,
+    },
+    variable_path::{
+        InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
     },
 };
 
@@ -46,10 +50,7 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
                         table.id,
                         table.id,
                         &clauses,
-                        SelectionPath {
-                            parts: selection_path,
-                            mode: SelectionPathMode::Body,
-                        },
+                        SelectionPath::body(selection_path),
                         &variable_scope,
                         &selection.selections,
                         &mut diagnostics,
@@ -126,10 +127,7 @@ pub fn plan_query_definition(
                     table.id,
                     table.id,
                     &clauses,
-                    SelectionPath {
-                        parts: selection_path,
-                        mode: SelectionPathMode::Body,
-                    },
+                    SelectionPath::body(selection_path),
                     &variable_scope,
                     &selection.selections,
                     &mut diagnostics,
@@ -212,10 +210,7 @@ pub fn plan_fragment_definition(
         table,
         table,
         &SelectionClauses::default(),
-        SelectionPath {
-            parts: Vec::new(),
-            mode: SelectionPathMode::FragmentRoot,
-        },
+        SelectionPath::fragment_root(),
         &VariablePathScope::fragment(),
         &fragment.selections,
         &mut diagnostics,
@@ -244,10 +239,7 @@ fn plan_selection_set(
                     root_table,
                     table,
                     &SelectionClauses::default(),
-                    SelectionPath {
-                        parts: Vec::new(),
-                        mode: SelectionPathMode::FragmentRoot,
-                    },
+                    SelectionPath::fragment_root(),
                     &variable_scope.for_fragment_spread(&selection_path, &fragment.key.name),
                     &fragment.selections,
                     diagnostics,
@@ -284,10 +276,7 @@ fn plan_selection_set(
                         variable_scope,
                         selection,
                     ),
-                    SelectionPath {
-                        parts: child_path,
-                        mode: SelectionPathMode::Body,
-                    },
+                    SelectionPath::body(child_path),
                     variable_scope,
                     &selection.selections,
                     diagnostics,
@@ -326,78 +315,17 @@ fn plan_selection_set(
     })
 }
 
-#[derive(Clone)]
-struct SelectionPath {
-    parts: Vec<String>,
-    mode: SelectionPathMode,
-}
-
-#[derive(Clone, Copy)]
-enum SelectionPathMode {
-    Body,
-    FragmentRoot,
-}
-
-#[derive(Clone)]
-struct VariablePathScope {
-    structured_prefix: Vec<String>,
-    top_level_prefix: Vec<String>,
-}
-
-impl VariablePathScope {
-    fn operation() -> Self {
-        Self {
-            structured_prefix: vec!["input".to_string()],
-            top_level_prefix: vec!["params".to_string()],
-        }
-    }
-
-    fn fragment() -> Self {
-        Self::operation()
-    }
-
-    fn for_fragment_spread(&self, current_path: &SelectionPath, fragment_name: &str) -> Self {
-        let mut envelope = self.structured_prefix.clone();
-        envelope.extend(fragment_envelope_path(current_path, fragment_name));
-        Self {
-            structured_prefix: {
-                let mut prefix = envelope.clone();
-                prefix.push("input".to_string());
-                prefix
-            },
-            top_level_prefix: {
-                envelope.push("params".to_string());
-                envelope
-            },
-        }
-    }
-}
-
-fn fragment_envelope_path(current_path: &SelectionPath, fragment_name: &str) -> Vec<String> {
-    let mut parts = current_path.parts.clone();
-    if matches!(current_path.mode, SelectionPathMode::Body) {
-        parts.push("body".to_string());
-    }
-    parts.push(fragment_name.to_string());
-    parts
-}
-
 fn relation_child_path(
     path: &SelectionPath,
     selection: &Selection,
     relation_name: &str,
 ) -> Vec<String> {
-    let mut child_path = path.parts.clone();
-    if matches!(path.mode, SelectionPathMode::Body) {
-        child_path.push("body".to_string());
-    }
-    child_path.push(
+    path.relation_child_path(
         selection
             .alias
             .as_ref()
             .map_or_else(|| relation_name.to_string(), |alias| alias.text.clone()),
-    );
-    child_path
+    )
 }
 
 fn plan_clauses(
@@ -445,10 +373,12 @@ fn plan_clauses(
                                         path: variable_path(
                                             selection_path,
                                             VariablePathContext {
-                                                role: VariablePathRole::SortDirection,
+                                                role: VariableRole::SortDirection,
                                                 inferred_path: &[
                                                     column.name.clone(),
-                                                    "direction".to_string(),
+                                                    InputPathSegment::Direction
+                                                        .as_ref()
+                                                        .to_string(),
                                                 ],
                                                 anonymous_key: None,
                                             },
@@ -458,9 +388,12 @@ fn plan_clauses(
                                         ),
                                         variants: crate::SortDirection::ALL
                                             .iter()
-                                            .map(|direction| SqlVariantCase {
-                                                value: direction.label().to_string(),
-                                                text: direction.label().to_string(),
+                                            .map(|direction| {
+                                                let label = direction.label().to_string();
+                                                SqlVariantCase {
+                                                    value: label.clone(),
+                                                    text: label,
+                                                }
                                             })
                                             .collect(),
                                     }
@@ -473,8 +406,8 @@ fn plan_clauses(
                 clauses.limit = plan_u64_value(
                     selection_path,
                     variable_scope,
-                    VariablePathRole::Limit,
-                    "limit",
+                    VariableRole::Limit,
+                    InputPathSegment::Limit,
                     &limit.value,
                 );
             }
@@ -482,8 +415,8 @@ fn plan_clauses(
                 clauses.offset = plan_u64_value(
                     selection_path,
                     variable_scope,
-                    VariablePathRole::Offset,
-                    "offset",
+                    VariableRole::Offset,
+                    InputPathSegment::Offset,
                     &offset.value,
                 );
             }
@@ -507,8 +440,8 @@ fn plan_filter_expr(
             path: variable_path(
                 selection_path,
                 VariablePathContext {
-                    role: VariablePathRole::WhereValue,
-                    inferred_path: &["value".to_string()],
+                    role: VariableRole::WhereValue,
+                    inferred_path: &[InputPathSegment::Value.as_ref().to_string()],
                     anonymous_key: None,
                 },
                 variable_scope,
@@ -537,12 +470,12 @@ fn plan_filter_expr(
                         path: variable_path(
                             selection_path,
                             VariablePathContext {
-                                role: VariablePathRole::WhereValue,
+                                role: VariableRole::WhereValue,
                                 inferred_path: &field_path,
                                 anonymous_key: if variable.name.is_none()
                                     && matches!(op, crate::BinaryOperator::Variable(_))
                                 {
-                                    Some("value")
+                                    Some(InputPathSegment::Value.as_ref())
                                 } else {
                                     None
                                 },
@@ -584,12 +517,12 @@ fn plan_filter_expr(
                     path: variable_path(
                         selection_path,
                         VariablePathContext {
-                            role: VariablePathRole::WhereValue,
+                            role: VariableRole::WhereValue,
                             inferred_path: &field_path,
                             anonymous_key: if variable.name.is_none()
                                 && matches!(op, crate::BinaryOperator::Variable(_))
                             {
-                                Some("value")
+                                Some(InputPathSegment::Value.as_ref())
                             } else {
                                 None
                             },
@@ -610,7 +543,7 @@ fn plan_filter_expr(
                         path: variable_path(
                             selection_path,
                             VariablePathContext {
-                                role: VariablePathRole::ComparisonOperator,
+                                role: VariableRole::ComparisonOperator,
                                 inferred_path: &field_path,
                                 anonymous_key: None,
                             },
@@ -623,8 +556,8 @@ fn plan_filter_expr(
                             .iter()
                             .filter_map(|op| {
                                 Some(SqlVariantCase {
-                                    value: op.label()?.to_string(),
-                                    text: postgres_operator(*op).to_string(),
+                                    value: op.dsql_label()?.to_string(),
+                                    text: postgres_operator(*op)?.to_string(),
                                 })
                             })
                             .collect(),
@@ -668,7 +601,7 @@ fn plan_filter_expr(
                         path: variable_path(
                             selection_path,
                             VariablePathContext {
-                                role: VariablePathRole::ComparisonOperator,
+                                role: VariableRole::ComparisonOperator,
                                 inferred_path: &inferred,
                                 anonymous_key: None,
                             },
@@ -681,8 +614,8 @@ fn plan_filter_expr(
                             .iter()
                             .filter_map(|op| {
                                 Some(SqlVariantCase {
-                                    value: op.label()?.to_string(),
-                                    text: postgres_operator(*op).to_string(),
+                                    value: op.dsql_label()?.to_string(),
+                                    text: postgres_operator(*op)?.to_string(),
                                 })
                             })
                             .collect(),
@@ -738,13 +671,13 @@ fn plan_filter_expr_with_path(
             .map(|expr| (expr, field_path.map(|parts| parts.join("."))))
         }
         crate::Expr::Variable(variable) => {
-            let inferred = ["value".to_string()];
+            let inferred = [InputPathSegment::Value.as_ref().to_string()];
             Some((
                 FilterExpr::Parameter(SqlParameter {
                     path: variable_path(
                         selection_path,
                         VariablePathContext {
-                            role: VariablePathRole::WhereValue,
+                            role: VariableRole::WhereValue,
                             inferred_path: &inferred,
                             anonymous_key: None,
                         },
@@ -870,7 +803,7 @@ fn relation_predicate_segments(
                     path: variable_path(
                         selection_path,
                         VariablePathContext {
-                            role: VariablePathRole::ComparisonOperator,
+                            role: VariableRole::ComparisonOperator,
                             inferred_path: &inferred,
                             anonymous_key: None,
                         },
@@ -883,8 +816,8 @@ fn relation_predicate_segments(
                         .iter()
                         .filter_map(|op| {
                             Some(SqlVariantCase {
-                                value: op.label()?.to_string(),
-                                text: postgres_operator(*op).to_string(),
+                                value: op.dsql_label()?.to_string(),
+                                text: postgres_operator(*op)?.to_string(),
                             })
                         })
                         .collect(),
@@ -914,8 +847,8 @@ fn relation_predicate_segments(
 fn plan_u64_value(
     selection_path: &[String],
     variable_scope: &VariablePathScope,
-    role: VariablePathRole,
-    inferred_key: &str,
+    role: VariableRole,
+    inferred_key: InputPathSegment,
     expr: &crate::Expr,
 ) -> Option<SqlValue> {
     match expr {
@@ -927,7 +860,7 @@ fn plan_u64_value(
                 selection_path,
                 VariablePathContext {
                     role,
-                    inferred_path: &[inferred_key.to_string()],
+                    inferred_path: &[inferred_key.as_ref().to_string()],
                     anonymous_key: None,
                 },
                 variable_scope,
@@ -936,78 +869,6 @@ fn plan_u64_value(
             ),
         })),
         _ => None,
-    }
-}
-
-#[derive(Clone, Copy)]
-enum VariablePathRole {
-    WhereValue,
-    ComparisonOperator,
-    SortDirection,
-    Limit,
-    Offset,
-}
-
-struct VariablePathContext<'a> {
-    role: VariablePathRole,
-    inferred_path: &'a [String],
-    anonymous_key: Option<&'a str>,
-}
-
-fn variable_path(
-    selection_path: &[String],
-    context: VariablePathContext<'_>,
-    variable_scope: &VariablePathScope,
-    scope: crate::VariableScope,
-    name: Option<&str>,
-) -> String {
-    let key = name.map_or_else(
-        || {
-            if let Some(key) = context.anonymous_key {
-                key.to_string()
-            } else if matches!(context.role, VariablePathRole::ComparisonOperator) {
-                "op".to_string()
-            } else {
-                context.inferred_path.last().cloned().unwrap_or_default()
-            }
-        },
-        ToString::to_string,
-    );
-    match scope {
-        crate::VariableScope::Structured => {
-            let mut parts = variable_scope.structured_prefix.clone();
-            parts.extend(selection_path.iter().cloned());
-            parts.push("clause".to_string());
-            parts.push(
-                match context.role {
-                    VariablePathRole::WhereValue | VariablePathRole::ComparisonOperator => "where",
-                    VariablePathRole::SortDirection => "order_by",
-                    VariablePathRole::Limit => "limit",
-                    VariablePathRole::Offset => "offset",
-                }
-                .to_string(),
-            );
-            if matches!(
-                context.role,
-                VariablePathRole::WhereValue
-                    | VariablePathRole::ComparisonOperator
-                    | VariablePathRole::SortDirection
-            ) {
-                parts.extend(context.inferred_path.iter().cloned());
-            }
-            if name.is_some()
-                || context.anonymous_key.is_some()
-                || matches!(context.role, VariablePathRole::ComparisonOperator)
-            {
-                parts.push(key);
-            }
-            parts.join(".")
-        }
-        crate::VariableScope::TopLevel => {
-            let mut parts = variable_scope.top_level_prefix.clone();
-            parts.push(key);
-            parts.join(".")
-        }
     }
 }
 
@@ -1046,16 +907,16 @@ fn path_parts(path: &str) -> Vec<String> {
     path.split('.').map(ToString::to_string).collect()
 }
 
-fn postgres_operator(op: crate::BinaryOp) -> &'static str {
+fn postgres_operator(op: crate::BinaryOp) -> Option<&'static str> {
     match op {
-        crate::BinaryOp::Eq => "=",
-        crate::BinaryOp::Ne => "!=",
-        crate::BinaryOp::Gt => ">",
-        crate::BinaryOp::Ge => ">=",
-        crate::BinaryOp::Lt => "<",
-        crate::BinaryOp::Le => "<=",
-        crate::BinaryOp::Like => "like",
-        crate::BinaryOp::And | crate::BinaryOp::Or => "",
+        crate::BinaryOp::Eq => Some("="),
+        crate::BinaryOp::Ne => Some("!="),
+        crate::BinaryOp::Gt => Some(">"),
+        crate::BinaryOp::Ge => Some(">="),
+        crate::BinaryOp::Lt => Some("<"),
+        crate::BinaryOp::Le => Some("<="),
+        crate::BinaryOp::Like => Some("like"),
+        crate::BinaryOp::And | crate::BinaryOp::Or => None,
     }
 }
 

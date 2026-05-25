@@ -46,6 +46,7 @@
 
 - Prefer existing project patterns and local helper APIs over new abstractions.
 - Add abstractions only when they remove real duplication or make a provider/runtime boundary clearer.
+- Bind repeated or semantically important strings to a single source of truth, or colocate them with the enum/type/API they describe. Avoid randomly hardcoding keywords, metadata labels, path segments, protocol fields, or artifact names at call sites.
 - Keep Picante details behind the frontend analysis API. Do not expose query ingredients or runtime internals to adapters.
 - Derive or implement reflection/serialization traits on shared data types where the existing code expects them.
 - Before version 1.0, do not preserve backward compatibility by default. Prefer clean formats, APIs, and data models over migration code unless the user explicitly asks for compatibility.

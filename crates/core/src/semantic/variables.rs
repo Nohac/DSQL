@@ -8,6 +8,9 @@ use crate::{
         Selection, SelectionKind, SortDirectionExpr, SourceFile, TextRange, ValueVariable,
         VariableScope,
     },
+    variable_path::{
+        InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
+    },
 };
 use facet::Facet;
 
@@ -35,13 +38,27 @@ pub enum VariableSource {
     TopLevel,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+impl From<VariableScope> for VariableSource {
+    fn from(scope: VariableScope) -> Self {
+        match scope {
+            VariableScope::Structured => Self::Structured,
+            VariableScope::TopLevel => Self::TopLevel,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet, strum::AsRefStr)]
 #[repr(u8)]
 pub enum VariableRole {
+    #[strum(serialize = "wherevalue")]
     WhereValue,
+    #[strum(serialize = "comparisonoperator")]
     ComparisonOperator,
+    #[strum(serialize = "sortdirection")]
     SortDirection,
+    #[strum(serialize = "limit")]
     Limit,
+    #[strum(serialize = "offset")]
     Offset,
 }
 
@@ -88,10 +105,7 @@ pub fn infer_query_variable_bindings(
             table.id,
             table.id,
             selection,
-            SelectionPath {
-                parts: path,
-                mode: SelectionPathMode::Body,
-            },
+            SelectionPath::body(path),
             &scope,
             &mut Vec::new(),
             &mut bindings,
@@ -120,10 +134,7 @@ pub fn infer_fragment_variable_bindings(
         table.id,
         table.id,
         &fragment.selections,
-        SelectionPath {
-            parts: Vec::new(),
-            mode: SelectionPathMode::FragmentRoot,
-        },
+        SelectionPath::fragment_root(),
         &scope,
         &mut Vec::new(),
         &mut bindings,
@@ -149,71 +160,12 @@ fn infer_direct_query_variable_bindings(
             table.id,
             table.id,
             selection,
-            SelectionPath {
-                parts: vec![response_key(selection)],
-                mode: SelectionPathMode::Body,
-            },
+            SelectionPath::body(vec![response_key(selection)]),
             &VariablePathScope::operation(),
             &mut bindings,
         );
     }
     VariableBindings { bindings }
-}
-
-#[derive(Clone)]
-struct SelectionPath {
-    parts: Vec<String>,
-    mode: SelectionPathMode,
-}
-
-#[derive(Clone, Copy)]
-enum SelectionPathMode {
-    Body,
-    FragmentRoot,
-}
-
-#[derive(Clone)]
-struct VariablePathScope {
-    structured_prefix: Vec<String>,
-    top_level_prefix: Vec<String>,
-}
-
-impl VariablePathScope {
-    fn operation() -> Self {
-        Self {
-            structured_prefix: vec!["input".to_string()],
-            top_level_prefix: vec!["params".to_string()],
-        }
-    }
-
-    fn fragment() -> Self {
-        Self::operation()
-    }
-
-    fn for_fragment_spread(&self, current_path: &SelectionPath, fragment_name: &str) -> Self {
-        let mut envelope = self.structured_prefix.clone();
-        envelope.extend(fragment_envelope_path(current_path, fragment_name));
-        Self {
-            structured_prefix: {
-                let mut prefix = envelope.clone();
-                prefix.push("input".to_string());
-                prefix
-            },
-            top_level_prefix: {
-                envelope.push("params".to_string());
-                envelope
-            },
-        }
-    }
-}
-
-fn fragment_envelope_path(current_path: &SelectionPath, fragment_name: &str) -> Vec<String> {
-    let mut parts = current_path.parts.clone();
-    if matches!(current_path.mode, SelectionPathMode::Body) {
-        parts.push("body".to_string());
-    }
-    parts.push(fragment_name.to_string());
-    parts
 }
 
 fn collect_selection_bindings(
@@ -245,7 +197,7 @@ fn collect_selection_bindings(
                 scope,
                 VariableRole::Limit,
                 DataType::Int,
-                "limit",
+                InputPathSegment::Limit,
                 &limit.value,
                 bindings,
             ),
@@ -254,7 +206,7 @@ fn collect_selection_bindings(
                 scope,
                 VariableRole::Offset,
                 DataType::Int,
-                "offset",
+                InputPathSegment::Offset,
                 &offset.value,
                 bindings,
             ),
@@ -306,10 +258,7 @@ fn collect_selection_set_bindings(
                 root_table,
                 table,
                 &fragment.selections,
-                SelectionPath {
-                    parts: Vec::new(),
-                    mode: SelectionPathMode::FragmentRoot,
-                },
+                SelectionPath::fragment_root(),
                 &spread_scope,
                 visiting,
                 bindings,
@@ -321,17 +270,19 @@ fn collect_selection_set_bindings(
         else {
             continue;
         };
-        let child_path = relation_child_path(&path, child, relation.name);
+        let child_path = path.relation_child_path(
+            child
+                .alias
+                .as_ref()
+                .map_or_else(|| relation.name.to_string(), |alias| alias.text.clone()),
+        );
         collect_selection_bindings(
             catalog,
             resolver,
             root_table,
             relation.table.id,
             child,
-            SelectionPath {
-                parts: child_path,
-                mode: SelectionPathMode::Body,
-            },
+            SelectionPath::body(child_path),
             scope,
             visiting,
             bindings,
@@ -366,7 +317,7 @@ fn collect_selection_bindings_without_fragments(
                 scope,
                 VariableRole::Limit,
                 DataType::Int,
-                "limit",
+                InputPathSegment::Limit,
                 &limit.value,
                 bindings,
             ),
@@ -375,7 +326,7 @@ fn collect_selection_bindings_without_fragments(
                 scope,
                 VariableRole::Offset,
                 DataType::Int,
-                "offset",
+                InputPathSegment::Offset,
                 &offset.value,
                 bindings,
             ),
@@ -395,38 +346,22 @@ fn collect_selection_bindings_without_fragments(
         else {
             continue;
         };
-        let child_path = relation_child_path(&path, child, relation.name);
+        let child_path = path.relation_child_path(
+            child
+                .alias
+                .as_ref()
+                .map_or_else(|| relation.name.to_string(), |alias| alias.text.clone()),
+        );
         collect_selection_bindings_without_fragments(
             catalog,
             root_table,
             relation.table.id,
             child,
-            SelectionPath {
-                parts: child_path,
-                mode: SelectionPathMode::Body,
-            },
+            SelectionPath::body(child_path),
             scope,
             bindings,
         );
     }
-}
-
-fn relation_child_path(
-    path: &SelectionPath,
-    child: &Selection,
-    relation_name: &str,
-) -> Vec<String> {
-    let mut child_path = path.parts.clone();
-    if matches!(path.mode, SelectionPathMode::Body) {
-        child_path.push("body".to_string());
-    }
-    child_path.push(
-        child
-            .alias
-            .as_ref()
-            .map_or_else(|| relation_name.to_string(), |alias| alias.text.clone()),
-    );
-    child_path
 }
 
 fn collect_order_by_binding(
@@ -444,7 +379,10 @@ fn collect_order_by_binding(
     let FieldCheckResult::Column(column) = catalog.check_field(table, &item.field.text) else {
         return;
     };
-    let inferred_path = [column.name.clone(), "direction".to_string()];
+    let inferred_path = [
+        column.name.clone(),
+        InputPathSegment::Direction.as_ref().to_string(),
+    ];
     push_variable_binding(
         selection_path,
         VariableBindingContext {
@@ -488,7 +426,7 @@ fn collect_where_bindings(
             {
                 let anonymous_key =
                     if variable.name.is_none() && matches!(op, BinaryOperator::Variable(_)) {
-                        Some("value")
+                        Some(InputPathSegment::Value.as_ref())
                     } else {
                         None
                     };
@@ -564,7 +502,7 @@ fn push_clause_variable(
     scope: &VariablePathScope,
     role: VariableRole,
     data_type: DataType,
-    inferred_key: &str,
+    inferred_key: InputPathSegment,
     expr: &Expr,
     bindings: &mut Vec<VariableBinding>,
 ) {
@@ -577,7 +515,7 @@ fn push_clause_variable(
             role,
             data_type,
             scope,
-            inferred_path: &[inferred_key.to_string()],
+            inferred_path: &[inferred_key.as_ref().to_string()],
             anonymous_key: None,
             operators: Vec::new(),
             enum_values: Vec::new(),
@@ -596,23 +534,22 @@ fn push_operator_binding(
     bindings: &mut Vec<VariableBinding>,
 ) {
     let name = variable.name.as_ref().map(|name| name.text.clone());
-    let key = name.as_ref().cloned().unwrap_or_else(|| "op".to_string());
-    let source = match variable.scope {
-        VariableScope::Structured => VariableSource::Structured,
-        VariableScope::TopLevel => VariableSource::TopLevel,
-    };
-    let path = match variable.scope {
-        VariableScope::Structured => {
-            let mut parts = scope.structured_prefix.clone();
-            parts.extend(selection_path.iter().cloned());
-            parts.push("clause".to_string());
-            parts.push("where".to_string());
-            parts.extend(inferred_path.iter().cloned());
-            parts.push(key);
-            parts.join(".")
-        }
-        VariableScope::TopLevel => join_prefixed_key(&scope.top_level_prefix, &key),
-    };
+    let key = name
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| InputPathSegment::Op.as_ref().to_string());
+    let source = variable.scope.into();
+    let path = variable_path(
+        selection_path,
+        VariablePathContext {
+            role: VariableRole::ComparisonOperator,
+            inferred_path,
+            anonymous_key: None,
+        },
+        scope,
+        variable.scope,
+        Some(&key),
+    );
     bindings.push(VariableBinding {
         range: variable.range,
         path,
@@ -624,7 +561,7 @@ fn push_operator_binding(
         enum_values: variable
             .allowed
             .iter()
-            .filter_map(|operator| operator.label().map(str::to_string))
+            .filter_map(|operator| operator.dsql_label().map(str::to_string))
             .collect(),
     });
 }
@@ -646,49 +583,18 @@ fn push_variable_binding(
     bindings: &mut Vec<VariableBinding>,
 ) {
     let name = variable.name.as_ref().map(|name| name.text.clone());
-    let key = name.as_ref().map_or_else(
-        || {
-            context
-                .anonymous_key
-                .map(str::to_string)
-                .unwrap_or_else(|| context.inferred_path.last().cloned().unwrap_or_default())
+    let source = variable.scope.into();
+    let path = variable_path(
+        selection_path,
+        VariablePathContext {
+            role: context.role,
+            inferred_path: context.inferred_path,
+            anonymous_key: context.anonymous_key,
         },
-        Clone::clone,
+        context.scope,
+        variable.scope,
+        name.as_deref(),
     );
-    let source = match variable.scope {
-        VariableScope::Structured => VariableSource::Structured,
-        VariableScope::TopLevel => VariableSource::TopLevel,
-    };
-    let path = match variable.scope {
-        VariableScope::Structured => {
-            let mut parts = context.scope.structured_prefix.clone();
-            parts.extend(selection_path.iter().cloned());
-            parts.push("clause".to_string());
-            parts.push(
-                match context.role {
-                    VariableRole::WhereValue => "where",
-                    VariableRole::ComparisonOperator => "where",
-                    VariableRole::SortDirection => "order_by",
-                    VariableRole::Limit => "limit",
-                    VariableRole::Offset => "offset",
-                }
-                .to_string(),
-            );
-            if matches!(
-                context.role,
-                VariableRole::WhereValue
-                    | VariableRole::ComparisonOperator
-                    | VariableRole::SortDirection
-            ) {
-                parts.extend(context.inferred_path.iter().cloned());
-            }
-            if name.is_some() || context.anonymous_key.is_some() {
-                parts.push(key);
-            }
-            parts.join(".")
-        }
-        VariableScope::TopLevel => join_prefixed_key(&context.scope.top_level_prefix, &key),
-    };
     bindings.push(VariableBinding {
         range: variable.range,
         path,
@@ -699,12 +605,6 @@ fn push_variable_binding(
         operators: context.operators,
         enum_values: context.enum_values,
     });
-}
-
-fn join_prefixed_key(prefix: &[String], key: &str) -> String {
-    let mut parts = prefix.to_vec();
-    parts.push(key.to_string());
-    parts.join(".")
 }
 
 fn resolve_predicate_path(

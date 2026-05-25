@@ -3,6 +3,7 @@ use miette::{IntoDiagnostic, Result};
 use std::path::{Path, PathBuf};
 
 use crate::artifacts::{ArtifactRef, ArtifactWriter, FragmentArtifact, OperationArtifact};
+use crate::layout::{fragment_artifact_path, manifest_path, operation_artifact_path};
 
 #[derive(Clone, Debug)]
 pub struct FsArtifactWriter {
@@ -21,17 +22,11 @@ impl FsArtifactWriter {
     }
 
     fn operation_path(&self, operation: &OperationArtifact) -> PathBuf {
-        self.build_dir.join("operations").join(format!(
-            "{}.json",
-            artifact_file_stem(&operation.metadata.name)
-        ))
+        operation_artifact_path(&self.build_dir, &operation.metadata.name)
     }
 
     fn fragment_path(&self, fragment: &FragmentArtifact) -> PathBuf {
-        self.build_dir.join("fragments").join(format!(
-            "{}.json",
-            artifact_file_stem(&fragment.metadata.name)
-        ))
+        fragment_artifact_path(&self.build_dir, &fragment.metadata.name)
     }
 }
 
@@ -70,7 +65,7 @@ impl ArtifactWriter for FsArtifactWriter {
         tokio::fs::create_dir_all(&self.build_dir)
             .await
             .into_diagnostic()?;
-        let path = self.build_dir.join("manifest.json");
+        let path = manifest_path(&self.build_dir);
         write_json(&path, manifest).await?;
         Ok(ArtifactRef {
             path: path.to_string_lossy().to_string(),
@@ -87,20 +82,4 @@ where
         .await
         .map_err(|error| miette::miette!("failed to write {}: {error}", path.display()))?;
     Ok(())
-}
-
-fn artifact_file_stem(name: &str) -> String {
-    let mut output = String::new();
-    for char in name.chars() {
-        if char.is_ascii_alphanumeric() || char == '-' || char == '_' {
-            output.push(char);
-        } else {
-            output.push('_');
-        }
-    }
-    if output.is_empty() {
-        "operation".to_string()
-    } else {
-        output
-    }
 }

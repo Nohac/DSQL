@@ -1,5 +1,37 @@
 use facet::Facet;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum DefinitionKind {
+    Query,
+    Fragment,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ArtifactKind {
+    Operation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum SqlDialect {
+    Postgres,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ResultFieldKind {
+    Scalar,
+    Array,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ResultDataType {
+    Object,
+}
+
 #[derive(Clone, Debug, Facet)]
 #[facet(facet_jsonschema::id = "https://dsql.dev/schemas/build-manifest.schema.json")]
 pub struct BuildManifest {
