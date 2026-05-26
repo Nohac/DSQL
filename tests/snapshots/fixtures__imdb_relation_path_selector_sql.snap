@@ -28,28 +28,14 @@ from
   ) as "movie_info_d37aaa02"
   left join LATERAL (
     select
-      COALESCE(
-        JSON_AGG(
-          JSON_BUILD_OBJECT(
-            'aliases',
-            "aliases_json_cbbc8bb8"."aliases",
-            'episodes',
-            "episodes_json_33e11afe"."episodes"
-          )
-        ),
-        '[]'
+      JSON_BUILD_OBJECT(
+        'aliases',
+        "aliases_json_cbbc8bb8"."aliases",
+        'episodes',
+        "episodes_json_33e11afe"."episodes"
       ) as "title"
     from
-      (
-        select
-          *
-        from
-          "public"."title" as "title_85df456e"
-        where
-          "title_85df456e"."id" = "movie_info_d37aaa02"."movie_id"
-        limit
-          10
-      ) as "title_85df456e"
+      "public"."title" as "title_85df456e"
       left join LATERAL (
         select
           COALESCE(
@@ -88,4 +74,6 @@ from
               10
           ) as "episodes_33e11afe"
       ) as "episodes_json_33e11afe" on true
+    where
+      "title_85df456e"."id" = "movie_info_d37aaa02"."movie_id"
   ) as "title_json_85df456e" on true

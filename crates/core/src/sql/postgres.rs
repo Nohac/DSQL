@@ -1,7 +1,7 @@
 use crate::{
     BinaryOp, Catalog, Column, FilterColumnScope, FilterExpr, FilterLiteral, ForeignKey, QueryPlan,
-    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue,
-    SqlVariantCase, Table,
+    RelationCardinality, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
+    SqlParameter, SqlValue, SqlVariantCase, Table,
 };
 use sea_query::{
     Alias, Asterisk, Condition, Expr, ExprTrait, Func, JoinType, Order, PgFunc,
@@ -50,11 +50,6 @@ pub enum SqlGenerationError {
         parent: String,
         child: String,
     },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RelationCardinality {
-    Collection,
 }
 
 #[derive(Clone, Debug)]
@@ -259,14 +254,13 @@ fn generate_selection(
         let mut relation_path = path.to_vec();
         relation_path.push(path_segment(related_table, &relation.output_name));
         let foreign_key = foreign_key(catalog, relation.foreign_key)?;
-        let relation_cardinality =
-            relation_cardinality(selection.table, relation.table, foreign_key).ok_or_else(
-                || SqlGenerationError::InvalidRelation {
-                    foreign_key: relation.foreign_key.0,
-                    parent: table_label(current_table),
-                    child: table_label(related_table),
-                },
-            )?;
+        let relation_cardinality = catalog
+            .relation_cardinality(selection.table, relation.table, foreign_key)
+            .ok_or_else(|| SqlGenerationError::InvalidRelation {
+                foreign_key: relation.foreign_key.0,
+                parent: table_label(current_table),
+                child: table_label(related_table),
+            })?;
         let child_context = context_for(related_table, &relation.output_name, &relation_path);
         let child_query = generate_selection(
             &relation.selections,
@@ -290,8 +284,12 @@ fn generate_selection(
     }
 
     let object = json_build_object(selection, catalog, &context, path)?;
-    let expression: Expr =
-        Func::coalesce([PgFunc::json_agg(object).into(), Expr::value("[]")]).into();
+    let expression: Expr = match generation.cardinality {
+        RelationCardinality::Collection => {
+            Func::coalesce([PgFunc::json_agg(object).into(), Expr::value("[]")]).into()
+        }
+        RelationCardinality::Singular => object,
+    };
     query.expr_as(expression, Alias::new(output_name));
     Ok(query.to_owned())
 }
@@ -630,20 +628,6 @@ fn relation_condition(
         }
     }
     Ok(condition)
-}
-
-fn relation_cardinality(
-    parent: crate::TableId,
-    child: crate::TableId,
-    foreign_key: &ForeignKey,
-) -> Option<RelationCardinality> {
-    if (parent == foreign_key.to_table && child == foreign_key.from_table)
-        || (parent == foreign_key.from_table && child == foreign_key.to_table)
-    {
-        Some(RelationCardinality::Collection)
-    } else {
-        None
-    }
 }
 
 fn context_for(table: &Table, output_name: &str, path: &[String]) -> SelectionContext {

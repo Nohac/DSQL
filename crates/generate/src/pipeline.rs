@@ -1,8 +1,8 @@
 use dsql_core::{
     Catalog, DefinitionRecord, DefinitionResolver, Diagnostic, FieldCheckResult, FragmentMap,
-    FragmentRecord, InputPathSegment, QueryPlan, QueryRecord, Selection, SelectionKind,
-    SelectionPlan, SelectionPlanItem, Severity, SourceSnapshot, TableId, VariableBinding,
-    check_fragment_definition, check_query_definition, extract_definitions,
+    FragmentRecord, InputPathSegment, QueryPlan, QueryRecord, Selection, SelectionClauses,
+    SelectionKind, SelectionPlan, SelectionPlanItem, Severity, SourceSnapshot, SqlValue, TableId,
+    VariableBinding, check_fragment_definition, check_query_definition, extract_definitions,
     generate_postgres_sql_with_options, infer_fragment_variable_bindings,
     infer_query_variable_bindings, is_input_path, is_params_path,
     lint_query_definition_with_options, parse_source, plan_fragment_definition,
@@ -715,6 +715,7 @@ fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
         &plan.output_name,
         &plan.selections,
         ResultFieldKind::Array,
+        false,
         &mut fields,
     )?;
     Ok(ResultShape { fields })
@@ -723,7 +724,7 @@ fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
 fn fragment_result_shape(catalog: &Catalog, selection: &SelectionPlan) -> Result<ResultShape> {
     let mut fields = Vec::new();
     for item in &selection.items {
-        collect_result_item_fields(catalog, "", item, &mut fields)?;
+        collect_result_item_fields(catalog, selection.table, "", item, &mut fields)?;
     }
     Ok(ResultShape { fields })
 }
@@ -734,6 +735,7 @@ fn collect_result_fields(
     name: &str,
     selection: &SelectionPlan,
     kind: ResultFieldKind,
+    nullable: bool,
     fields: &mut Vec<ResultField>,
 ) -> Result<()> {
     let path = join_path(parent_path, name);
@@ -743,17 +745,18 @@ fn collect_result_fields(
         parent_path: parent_path.to_string(),
         kind: kind.as_ref().to_string(),
         data_type: ResultDataType::Object.as_ref().to_string(),
-        nullable: false,
+        nullable,
     });
 
     for item in &selection.items {
-        collect_result_item_fields(catalog, &path, item, fields)?;
+        collect_result_item_fields(catalog, selection.table, &path, item, fields)?;
     }
     Ok(())
 }
 
 fn collect_result_item_fields(
     catalog: &Catalog,
+    current_table: TableId,
     parent_path: &str,
     item: &SelectionPlanItem,
     fields: &mut Vec<ResultField>,
@@ -773,17 +776,44 @@ fn collect_result_item_fields(
             });
         }
         SelectionPlanItem::Relation(relation) => {
+            let foreign_key = catalog
+                .foreign_key_by_id(relation.foreign_key)
+                .ok_or_else(|| miette::miette!("missing relation foreign key"))?;
+            let cardinality = catalog
+                .relation_cardinality(current_table, relation.table, foreign_key)
+                .ok_or_else(|| miette::miette!("invalid relation foreign key"))?;
+            let kind = match cardinality {
+                dsql_core::RelationCardinality::Collection => ResultFieldKind::Array,
+                dsql_core::RelationCardinality::Singular => ResultFieldKind::Object,
+            };
+            let nullable = match cardinality {
+                dsql_core::RelationCardinality::Collection => false,
+                dsql_core::RelationCardinality::Singular => {
+                    catalog.relation_is_nullable(current_table, relation.table, foreign_key)
+                        || singular_relation_can_be_absent(&relation.selections.clauses)
+                }
+            };
             collect_result_fields(
                 catalog,
                 parent_path,
                 &relation.output_name,
                 &relation.selections,
-                ResultFieldKind::Array,
+                kind,
+                nullable,
                 fields,
             )?;
         }
     }
     Ok(())
+}
+
+fn singular_relation_can_be_absent(clauses: &SelectionClauses) -> bool {
+    clauses.filter.is_some()
+        || clauses.offset.is_some()
+        || matches!(
+            clauses.limit,
+            Some(SqlValue::Literal(0) | SqlValue::Parameter(_))
+        )
 }
 
 fn input_fields(variables: &[VariableBinding], top_level: bool) -> Vec<InputField> {

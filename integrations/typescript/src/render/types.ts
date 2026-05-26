@@ -490,7 +490,8 @@ function propertyType(
     ownType,
     objectHasOwnFields(field, fields, fragmentSpreads, fragments),
   );
-  return [field.name, field.kind === RESULT_KIND_ARRAY ? `Array<${type}>` : type];
+  const resultType = field.kind === RESULT_KIND_ARRAY ? `Array<${type}>` : type;
+  return [field.name, withNullability(resultType, field.nullable)];
 }
 
 function objectHasOwnFields(

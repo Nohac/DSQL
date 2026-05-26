@@ -1,6 +1,6 @@
 use super::{
-    Catalog, Column, ColumnId, FieldCheckResult, ForeignKey, ForeignKeyId, RelationField, Table,
-    TableId, TableResolution,
+    Catalog, Column, ColumnId, FieldCheckResult, ForeignKey, ForeignKeyId, RelationCardinality,
+    RelationField, Table, TableId, TableResolution,
 };
 
 impl Catalog {
@@ -109,6 +109,68 @@ impl Catalog {
             .join("_")
     }
 
+    pub fn relation_cardinality(
+        &self,
+        current: TableId,
+        related: TableId,
+        foreign_key: &ForeignKey,
+    ) -> Option<RelationCardinality> {
+        // Child -> parent: every local FK tuple points at at most one referenced row.
+        //
+        // movie_info.movie_id -> title.id
+        // movie_info { title { ... } } => singular title
+        if current == foreign_key.from_table && related == foreign_key.to_table {
+            return Some(RelationCardinality::Singular);
+        }
+
+        // Parent -> child: many child rows may point at the same parent unless the
+        // referencing FK tuple is unique on the child table.
+        //
+        // title.id <- movie_info.movie_id
+        // title { movie_info { ... } } => collection by default
+        //
+        // users.id <- profiles.user_id, with unique(profiles.user_id)
+        // users { profiles { ... } } => singular profile
+        if current == foreign_key.to_table && related == foreign_key.from_table {
+            return Some(
+                if self.column_set_is_unique(foreign_key.from_table, &foreign_key.from_columns) {
+                    RelationCardinality::Singular
+                } else {
+                    RelationCardinality::Collection
+                },
+            );
+        }
+        None
+    }
+
+    pub fn relation_is_nullable(
+        &self,
+        current: TableId,
+        related: TableId,
+        foreign_key: &ForeignKey,
+    ) -> bool {
+        if current == foreign_key.from_table && related == foreign_key.to_table {
+            return foreign_key.from_columns.iter().any(|column_id| {
+                self.column_by_id(*column_id)
+                    .is_none_or(|column| !column.not_null)
+            });
+        }
+        current == foreign_key.to_table && related == foreign_key.from_table
+    }
+
+    pub fn column_set_is_unique(&self, table: TableId, columns: &[ColumnId]) -> bool {
+        self.table_by_id(table).is_some_and(|table| {
+            table
+                .unique_constraints
+                .iter()
+                .any(|constraint| column_set_covers(columns, constraint))
+                || table
+                    .indexes
+                    .iter()
+                    .any(|index| index.is_unique && column_set_covers(columns, &index.columns))
+        })
+    }
+
     pub fn check_field(&self, table: TableId, field: &str) -> FieldCheckResult<'_> {
         let Some(table) = self.tables.get(table.0) else {
             return FieldCheckResult::NotFound;
@@ -152,6 +214,13 @@ impl Catalog {
             },
         }
     }
+}
+
+fn column_set_covers(columns: &[ColumnId], unique_columns: &[ColumnId]) -> bool {
+    !unique_columns.is_empty()
+        && unique_columns
+            .iter()
+            .all(|unique_column| columns.contains(unique_column))
 }
 
 fn split_relation_selector(reference: &str) -> (&str, Option<&str>) {

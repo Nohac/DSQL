@@ -23,6 +23,7 @@ pub enum SqlDialect {
 #[strum(serialize_all = "snake_case")]
 pub enum ResultFieldKind {
     Scalar,
+    Object,
     Array,
 }
 

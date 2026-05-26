@@ -34,21 +34,9 @@ from
   ) as "title_d4d9f554"
   left join LATERAL (
     select
-      COALESCE(
-        JSON_AGG(
-          JSON_BUILD_OBJECT('kind', "kind_type_d78b0eec"."kind")
-        ),
-        '[]'
-      ) as "kind_type"
+      JSON_BUILD_OBJECT('kind', "kind_type_d78b0eec"."kind") as "kind_type"
     from
-      (
-        select
-          *
-        from
-          "public"."kind_type" as "kind_type_d78b0eec"
-        where
-          "kind_type_d78b0eec"."id" = "title_d4d9f554"."kind_id"
-        limit
-          10
-      ) as "kind_type_d78b0eec"
+      "public"."kind_type" as "kind_type_d78b0eec"
+    where
+      "kind_type_d78b0eec"."id" = "title_d4d9f554"."kind_id"
   ) as "kind_type_json_d78b0eec" on true

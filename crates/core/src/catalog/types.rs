@@ -108,6 +108,12 @@ pub enum FieldCheckResult<'a> {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelationCardinality {
+    Collection,
+    Singular,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelationField<'a> {
     pub name: &'a str,

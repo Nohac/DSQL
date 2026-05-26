@@ -13,6 +13,6 @@ pub use metadata::{
     type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
 pub use types::{
-    Catalog, Column, DataType, FieldCheckResult, ForeignKey, Index, LiteralKind, RelationField,
-    Schema, Table, TableResolution,
+    Catalog, Column, DataType, FieldCheckResult, ForeignKey, Index, LiteralKind,
+    RelationCardinality, RelationField, Schema, Table, TableResolution,
 };
