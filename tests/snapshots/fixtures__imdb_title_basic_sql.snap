@@ -14,11 +14,11 @@ select
         'production_year',
         "title_d4d9f554"."production_year",
         'kind_type',
-        "kind_type_json_d78b0eec"."kind_type"
+        "kind_type_json_d78b0eec"."kind_type_result_d78b0eec"
       )
     ),
     '[]'
-  ) as "title"
+  ) as "title_result_d4d9f554"
 from
   (
     select
@@ -34,7 +34,7 @@ from
   ) as "title_d4d9f554"
   left join LATERAL (
     select
-      JSON_BUILD_OBJECT('kind', "kind_type_d78b0eec"."kind") as "kind_type"
+      JSON_BUILD_OBJECT('kind', "kind_type_d78b0eec"."kind") as "kind_type_result_d78b0eec"
     from
       "public"."kind_type" as "kind_type_d78b0eec"
     where

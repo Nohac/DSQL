@@ -10,11 +10,11 @@ select
         'id',
         "movie_info_d37aaa02"."id",
         'title',
-        "title_json_85df456e"."title"
+        "title_json_85df456e"."title_result_85df456e"
       )
     ),
     '[]'
-  ) as "movie_info"
+  ) as "movie_info_result_d37aaa02"
 from
   (
     select
@@ -30,10 +30,10 @@ from
     select
       JSON_BUILD_OBJECT(
         'aliases',
-        "aliases_json_cbbc8bb8"."aliases",
+        "aliases_json_cbbc8bb8"."aliases_result_cbbc8bb8",
         'episodes',
-        "episodes_json_33e11afe"."episodes"
-      ) as "title"
+        "episodes_json_33e11afe"."episodes_result_33e11afe"
+      ) as "title_result_85df456e"
     from
       "public"."title" as "title_85df456e"
       left join LATERAL (
@@ -41,7 +41,7 @@ from
           COALESCE(
             JSON_AGG(JSON_BUILD_OBJECT('id', "aliases_cbbc8bb8"."id")),
             '[]'
-          ) as "aliases"
+          ) as "aliases_result_cbbc8bb8"
         from
           (
             select
@@ -61,7 +61,7 @@ from
               JSON_BUILD_OBJECT('id', "episodes_33e11afe"."id")
             ),
             '[]'
-          ) as "episodes"
+          ) as "episodes_result_33e11afe"
         from
           (
             select

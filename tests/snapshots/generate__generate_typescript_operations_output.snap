@@ -80,7 +80,7 @@ export type MovieInfoLookupParams = Record<string, never>;
 export type MovieInfoLookupInput = Record<string, never>;
 
 export const MovieInfoLookupOperation: DsqlOperation<MovieInfoLookupResult, MovieInfoLookupParams, MovieInfoLookupInput> = {
-    id: "4704b00f3afcd417",
+    id: "2158335da2055485",
     name: "MovieInfoLookup",
     kind: "query"
 };

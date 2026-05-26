@@ -9,7 +9,7 @@ expression: contents
       "name": "MovieInfoLookup",
       "kind": "query",
       "path": "operations/MovieInfoLookup.json",
-      "hash": "4704b00f3afcd417",
+      "hash": "2158335da2055485",
       "source": "queries/movie-info.dsql"
     }
   ],

@@ -14,13 +14,13 @@ select
         'note',
         "movie_info_d37aaa02"."note",
         'title',
-        "title_json_85df456e"."title",
+        "title_json_85df456e"."title_result_85df456e",
         'info_type',
-        "info_type_json_3587486e"."info_type"
+        "info_type_json_3587486e"."info_type_result_3587486e"
       )
     ),
     '[]'
-  ) as "movie_info"
+  ) as "movie_info_result_d37aaa02"
 from
   (
     select
@@ -36,7 +36,7 @@ from
   ) as "movie_info_d37aaa02"
   left join LATERAL (
     select
-      JSON_BUILD_OBJECT('title', "title_85df456e"."title") as "title"
+      JSON_BUILD_OBJECT('title', "title_85df456e"."title") as "title_result_85df456e"
     from
       "public"."title" as "title_85df456e"
     where
@@ -45,7 +45,7 @@ from
   ) as "title_json_85df456e" on true
   left join LATERAL (
     select
-      JSON_BUILD_OBJECT('info', "info_type_3587486e"."info") as "info_type"
+      JSON_BUILD_OBJECT('info', "info_type_3587486e"."info") as "info_type_result_3587486e"
     from
       "public"."info_type" as "info_type_3587486e"
     where

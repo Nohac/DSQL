@@ -9,7 +9,7 @@ expression: contents
       "name": "EmbeddedMovieInfoLookup",
       "kind": "query",
       "path": "operations/EmbeddedMovieInfoLookup.json",
-      "hash": "29b16ae70a6956be",
+      "hash": "cc6bc6fa2b88d64e",
       "source": "src/movie-info.ts"
     }
   ],

@@ -56,6 +56,7 @@ pub enum SqlGenerationError {
 struct SelectionContext {
     table_alias: String,
     json_alias: String,
+    result_alias: String,
 }
 
 struct SelectionGenerationContext<'a> {
@@ -290,7 +291,7 @@ fn generate_selection(
         }
         RelationCardinality::Singular => object,
     };
-    query.expr_as(expression, Alias::new(output_name));
+    query.expr_as(expression, Alias::new(&context.result_alias));
     Ok(query.to_owned())
 }
 
@@ -575,7 +576,7 @@ fn json_build_object(
                     Expr::value(relation.output_name.clone()),
                     Expr::col((
                         Alias::new(&related_context.json_alias),
-                        Alias::new(&relation.output_name),
+                        Alias::new(&related_context.result_alias),
                     )),
                 ));
             }
@@ -636,8 +637,9 @@ fn context_for(table: &Table, output_name: &str, path: &[String]) -> SelectionCo
         .or_else(|| sanitize_alias(&table.name))
         .unwrap_or_else(|| "selection".to_string());
     SelectionContext {
-        table_alias: format!("{base}_{suffix}"),
-        json_alias: format!("{base}_json_{suffix}"),
+        table_alias: generated_identifier(&base, "_", &suffix),
+        json_alias: generated_identifier(&base, "_json_", &suffix),
+        result_alias: generated_identifier(&base, "_result_", &suffix),
     }
 }
 
@@ -666,12 +668,34 @@ fn sanitize_alias(value: &str) -> Option<String> {
             alias.push('_');
             last_was_underscore = true;
         }
-        if alias.len() >= 24 {
-            break;
-        }
     }
     let alias = alias.trim_matches('_').to_string();
     (!alias.is_empty()).then_some(alias)
+}
+
+const POSTGRES_IDENTIFIER_MAX_BYTES: usize = 63;
+
+fn generated_identifier(base: &str, infix: &str, suffix: &str) -> String {
+    let max_base_bytes = POSTGRES_IDENTIFIER_MAX_BYTES
+        .saturating_sub(infix.len())
+        .saturating_sub(suffix.len());
+    let mut truncated_base = truncate_identifier_base(base, max_base_bytes);
+    if truncated_base.is_empty() {
+        truncated_base = truncate_identifier_base("selection", max_base_bytes);
+    }
+    format!("{truncated_base}{infix}{suffix}")
+}
+
+fn truncate_identifier_base(value: &str, max_bytes: usize) -> String {
+    let mut end = 0;
+    for (index, character) in value.char_indices() {
+        let next = index + character.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    value[..end].trim_matches('_').to_string()
 }
 
 fn short_hash(value: &str) -> String {
@@ -826,6 +850,60 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["params.search"]
         );
+    }
+
+    #[test]
+    fn generated_sql_identifiers_stay_within_postgres_limit() {
+        let catalog = Catalog::hardcoded();
+        let long_alias = "this_alias_name_is_far_longer_than_postgresql_allows_for_identifiers_and_should_shrink";
+        let parsed = parse_source(
+            format!("query Q {{ {long_alias}: users {{ id {long_alias}: posts {{ title }} }} }}")
+                .into(),
+        );
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let planned = plan_file_with_catalog(&parsed.source_file, &catalog);
+        assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
+
+        let generated = generate_postgres_sql(&planned.queries[0], &catalog).unwrap();
+
+        assert_eq!(generated.output_name, long_alias);
+        assert!(
+            generated.sql.contains(&format!("'{long_alias}'")),
+            "{}",
+            generated.sql
+        );
+        for identifier in quoted_identifiers(&generated.sql) {
+            assert!(
+                identifier.len() <= POSTGRES_IDENTIFIER_MAX_BYTES,
+                "identifier `{identifier}` is {} bytes in:\n{}",
+                identifier.len(),
+                generated.sql
+            );
+        }
+    }
+
+    #[test]
+    fn generated_context_aliases_are_bounded_and_hash_suffixed() {
+        let catalog = Catalog::hardcoded();
+        let table = catalog.table("public", "users").unwrap();
+        let context = context_for(
+            table,
+            "this_alias_name_is_far_longer_than_postgresql_allows_for_identifiers_and_should_shrink",
+            &["public.users:this_alias_name_is_far_longer_than_postgresql_allows_for_identifiers_and_should_shrink".to_string()],
+        );
+
+        for alias in [
+            context.table_alias,
+            context.json_alias,
+            context.result_alias,
+        ] {
+            assert!(alias.len() <= POSTGRES_IDENTIFIER_MAX_BYTES, "{alias}");
+            assert_eq!(alias.rsplit('_').next().unwrap().len(), 8, "{alias}");
+        }
+    }
+
+    fn quoted_identifiers(sql: &str) -> Vec<&str> {
+        sql.split('"').skip(1).step_by(2).collect()
     }
 
     #[test]
