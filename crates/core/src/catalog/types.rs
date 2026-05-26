@@ -28,6 +28,8 @@ pub struct Table {
     pub name: String,
     pub columns: Vec<ColumnId>,
     pub primary_key: Vec<ColumnId>,
+    pub unique_constraints: Vec<Vec<ColumnId>>,
+    pub indexes: Vec<Index>,
     pub foreign_keys_from: Vec<ForeignKeyId>,
     pub foreign_keys_to: Vec<ForeignKeyId>,
 }
@@ -47,10 +49,18 @@ pub struct Column {
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct ForeignKey {
     pub id: ForeignKeyId,
+    pub name: Option<String>,
     pub from_columns: Vec<ColumnId>,
     pub to_columns: Vec<ColumnId>,
     pub from_table: TableId,
     pub to_table: TableId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct Index {
+    pub name: Option<String>,
+    pub columns: Vec<ColumnId>,
+    pub is_unique: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
@@ -141,6 +151,8 @@ impl Table {
         name: &str,
         columns: Vec<ColumnId>,
         primary_key: Vec<ColumnId>,
+        unique_constraints: Vec<Vec<ColumnId>>,
+        indexes: Vec<Index>,
         foreign_keys_from: Vec<ForeignKeyId>,
         foreign_keys_to: Vec<ForeignKeyId>,
     ) -> Self {
@@ -155,6 +167,8 @@ impl Table {
             name: name.to_string(),
             columns,
             primary_key,
+            unique_constraints,
+            indexes,
             foreign_keys_from,
             foreign_keys_to,
         }

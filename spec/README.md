@@ -17,6 +17,7 @@ match the current design direction.
 - [Functions](functions.md)
 - [Directives](directives.md)
 - [Relationship Naming](relationship-naming.md)
+- [Catalog Metadata](catalog-metadata.md)
 - [Metadata Sources](metadata-sources.md)
 - [JSON Schema Overrides](json-schema-overrides.md)
 - [Aggregates](aggregates.md)

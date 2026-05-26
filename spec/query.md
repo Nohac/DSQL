@@ -232,6 +232,11 @@ query Users {
 Relationship names are catalog-driven. The language does not singularize,
 pluralize, or otherwise rewrite them by itself.
 
+Relation result cardinality also comes from catalog metadata. Relation
+selections are collection-valued unless catalog constraints prove at-most-one
+cardinality, for example through a unique or primary-key foreign-key column. See
+[Catalog Metadata](catalog-metadata.md#relation-cardinality).
+
 Qualified relation references are allowed:
 
 ```dsql

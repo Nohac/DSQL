@@ -1,6 +1,7 @@
 use dsql_core::{
-    ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyMetadata, ObjectType, SchemaMetadata,
-    TableMetadata, TypeMetadata,
+    ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata, ForeignKeyMetadata,
+    ForeignKeyReferenceMetadata, IndexMetadata, ObjectType, SchemaMetadata, TableConstraintKind,
+    TableConstraintMetadata, TableMetadata, TypeMetadata,
 };
 use sqlx::{FromRow, Pool, Postgres, postgres::PgPoolOptions};
 use std::collections::{BTreeSet, HashMap};
@@ -18,14 +19,36 @@ struct FlatColumn {
     column_name: String,
     data_type: String,
     not_null: bool,
-    is_primary_key: bool,
-    is_unique: bool,
-    is_foreign_key: bool,
-    fk_schema: Option<String>,
-    fk_table: Option<String>,
-    fk_column: Option<String>,
     object_type: String,
-    is_indexed: bool,
+}
+
+#[derive(Debug, FromRow)]
+struct PostgresConstraint {
+    schema_name: String,
+    table_name: String,
+    constraint_name: String,
+    constraint_kind: String,
+    columns: Vec<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct PostgresForeignKey {
+    schema_name: String,
+    table_name: String,
+    foreign_key_name: String,
+    columns: Vec<String>,
+    referenced_schema_name: String,
+    referenced_table_name: String,
+    referenced_columns: Vec<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct PostgresIndex {
+    schema_name: String,
+    table_name: String,
+    index_name: String,
+    columns: Vec<String>,
+    is_unique: bool,
 }
 
 #[derive(Debug, FromRow)]
@@ -43,31 +66,12 @@ SELECT
     col.attname AS column_name,
     typ.typname AS data_type,
     col.attnotnull AS not_null,
-    CASE WHEN pk.conname IS NOT NULL THEN true ELSE false END AS is_primary_key,
-    CASE WHEN uq.conname IS NOT NULL THEN true ELSE false END AS is_unique,
-    CASE WHEN fk.conname IS NOT NULL THEN true ELSE false END AS is_foreign_key,
-    fk_ns.nspname AS fk_schema,
-    fk_tbl.relname AS fk_table,
-    fk_col.attname AS fk_column,
-    tbl.relkind::text AS object_type,
-    EXISTS (
-        SELECT 1
-        FROM pg_index idx
-        JOIN pg_class idx_tbl ON idx.indexrelid = idx_tbl.oid
-        WHERE idx.indrelid = tbl.oid
-          AND col.attnum = ANY(idx.indkey)
-    ) AS is_indexed
+    tbl.relkind::text AS object_type
 FROM
     pg_attribute col
     JOIN pg_class tbl ON col.attrelid = tbl.oid
     JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
     JOIN pg_type typ ON col.atttypid = typ.oid
-    LEFT JOIN pg_constraint pk ON col.attnum = ANY(pk.conkey) AND col.attrelid = pk.conrelid AND pk.contype = 'p'
-    LEFT JOIN pg_constraint uq ON col.attnum = ANY(uq.conkey) AND col.attrelid = uq.conrelid AND uq.contype = 'u'
-    LEFT JOIN pg_constraint fk ON col.attnum = ANY(fk.conkey) AND col.attrelid = fk.conrelid AND fk.contype = 'f'
-    LEFT JOIN pg_class fk_tbl ON fk_tbl.oid = fk.confrelid
-    LEFT JOIN pg_namespace fk_ns ON fk_ns.oid = fk_tbl.relnamespace
-    LEFT JOIN pg_attribute fk_col ON fk_col.attnum = fk.confkey[1] AND fk_col.attrelid = fk_tbl.oid
 WHERE
     tbl.relkind IN ('r', 'v', 'm')
     AND ns.nspname NOT LIKE 'pg_%'
@@ -75,6 +79,91 @@ WHERE
     AND col.attnum > 0
 ORDER BY
     ns.nspname, tbl.relname, col.attnum;
+"#;
+
+const PG_CONSTRAINT_QUERY: &str = r#"
+SELECT
+    ns.nspname AS schema_name,
+    tbl.relname AS table_name,
+    con.conname AS constraint_name,
+    CASE con.contype
+        WHEN 'p' THEN 'primary_key'
+        WHEN 'u' THEN 'unique'
+    END AS constraint_kind,
+    array_agg(col.attname ORDER BY conkey.ordinality) AS columns
+FROM
+    pg_constraint con
+    JOIN pg_class tbl ON con.conrelid = tbl.oid
+    JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+    JOIN unnest(con.conkey) WITH ORDINALITY AS conkey(attnum, ordinality) ON true
+    JOIN pg_attribute col ON col.attrelid = tbl.oid AND col.attnum = conkey.attnum
+WHERE
+    con.contype IN ('p', 'u')
+    AND ns.nspname NOT LIKE 'pg_%'
+    AND ns.nspname <> 'information_schema'
+GROUP BY
+    ns.nspname, tbl.relname, con.conname, con.contype
+ORDER BY
+    ns.nspname, tbl.relname, con.conname;
+"#;
+
+const PG_FOREIGN_KEY_QUERY: &str = r#"
+SELECT
+    ns.nspname AS schema_name,
+    tbl.relname AS table_name,
+    con.conname AS foreign_key_name,
+    array_agg(local_col.attname ORDER BY local_key.ordinality) AS columns,
+    ref_ns.nspname AS referenced_schema_name,
+    ref_tbl.relname AS referenced_table_name,
+    array_agg(ref_col.attname ORDER BY local_key.ordinality) AS referenced_columns
+FROM
+    pg_constraint con
+    JOIN pg_class tbl ON con.conrelid = tbl.oid
+    JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+    JOIN pg_class ref_tbl ON con.confrelid = ref_tbl.oid
+    JOIN pg_namespace ref_ns ON ref_ns.oid = ref_tbl.relnamespace
+    JOIN unnest(con.conkey) WITH ORDINALITY AS local_key(attnum, ordinality) ON true
+    JOIN unnest(con.confkey) WITH ORDINALITY AS ref_key(attnum, ordinality)
+      ON ref_key.ordinality = local_key.ordinality
+    JOIN pg_attribute local_col
+      ON local_col.attrelid = tbl.oid AND local_col.attnum = local_key.attnum
+    JOIN pg_attribute ref_col
+      ON ref_col.attrelid = ref_tbl.oid AND ref_col.attnum = ref_key.attnum
+WHERE
+    con.contype = 'f'
+    AND ns.nspname NOT LIKE 'pg_%'
+    AND ns.nspname <> 'information_schema'
+GROUP BY
+    ns.nspname, tbl.relname, con.conname, ref_ns.nspname, ref_tbl.relname
+ORDER BY
+    ns.nspname, tbl.relname, con.conname;
+"#;
+
+const PG_INDEX_QUERY: &str = r#"
+SELECT
+    ns.nspname AS schema_name,
+    tbl.relname AS table_name,
+    idx_tbl.relname AS index_name,
+    array_agg(col.attname ORDER BY idx_key.ordinality) AS columns,
+    idx.indisunique AS is_unique
+FROM
+    pg_index idx
+    JOIN pg_class tbl ON idx.indrelid = tbl.oid
+    JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+    JOIN pg_class idx_tbl ON idx.indexrelid = idx_tbl.oid
+    JOIN unnest(idx.indkey::int2[]) WITH ORDINALITY AS idx_key(attnum, ordinality)
+      ON idx_key.attnum > 0
+    JOIN pg_attribute col ON col.attrelid = tbl.oid AND col.attnum = idx_key.attnum
+WHERE
+    tbl.relkind IN ('r', 'v', 'm')
+    AND ns.nspname NOT LIKE 'pg_%'
+    AND ns.nspname <> 'information_schema'
+    AND idx.indexprs IS NULL
+    AND idx.indpred IS NULL
+GROUP BY
+    ns.nspname, tbl.relname, idx_tbl.relname, idx.indisunique
+ORDER BY
+    ns.nspname, tbl.relname, idx_tbl.relname;
 "#;
 
 const PG_TYPE_INTROSPECTION_QUERY: &str = r#"
@@ -111,15 +200,33 @@ pub async fn introspect_postgres_pool(
     let schema_rows = sqlx::query_as::<_, FlatColumn>(PG_INTROSPECTION_QUERY)
         .fetch_all(pool)
         .await?;
+    let constraint_rows = sqlx::query_as::<_, PostgresConstraint>(PG_CONSTRAINT_QUERY)
+        .fetch_all(pool)
+        .await?;
+    let foreign_key_rows = sqlx::query_as::<_, PostgresForeignKey>(PG_FOREIGN_KEY_QUERY)
+        .fetch_all(pool)
+        .await?;
+    let index_rows = sqlx::query_as::<_, PostgresIndex>(PG_INDEX_QUERY)
+        .fetch_all(pool)
+        .await?;
     let type_rows = sqlx::query_as::<_, PostgresType>(PG_TYPE_INTROSPECTION_QUERY)
         .fetch_all(pool)
         .await?;
 
-    Ok(metadata_from_rows(schema_rows, type_rows))
+    Ok(metadata_from_rows(
+        schema_rows,
+        constraint_rows,
+        foreign_key_rows,
+        index_rows,
+        type_rows,
+    ))
 }
 
 fn metadata_from_rows(
     schema_rows: Vec<FlatColumn>,
+    constraint_rows: Vec<PostgresConstraint>,
+    foreign_key_rows: Vec<PostgresForeignKey>,
+    index_rows: Vec<PostgresIndex>,
     type_rows: Vec<PostgresType>,
 ) -> DatabaseMetadata {
     let mut type_map = HashMap::<String, TypeMetadata>::new();
@@ -151,30 +258,87 @@ fn metadata_from_rows(
                 name: row.table_name.clone(),
                 object_type: ObjectType::from_postgres_relkind(&row.object_type),
                 columns: Vec::new(),
+                constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
             });
-        let foreign_key = if row.is_foreign_key {
-            match (row.fk_schema, row.fk_table, row.fk_column) {
-                (Some(schema), Some(table), Some(column)) => Some(ForeignKeyMetadata {
-                    schema,
-                    table,
-                    column,
-                }),
-                _ => None,
-            }
-        } else {
-            None
-        };
         table.columns.push(ColumnMetadata {
             name: row.column_name,
             database_type: row.data_type.clone(),
             data_type: DataType::from_database_type(&row.data_type),
             not_null: row.not_null,
-            primary_key: row.is_primary_key,
-            unique: row.is_unique,
-            indexed: row.is_indexed,
-            foreign_key,
+            primary_key: false,
+            unique: false,
+            indexed: false,
+            foreign_key: None,
         });
     }
+
+    for row in constraint_rows {
+        let Some(table) = schema_map
+            .get_mut(&row.schema_name)
+            .and_then(|schema| schema.get_mut(&row.table_name))
+        else {
+            continue;
+        };
+        let kind = match row.constraint_kind.as_str() {
+            "primary_key" => TableConstraintKind::PrimaryKey,
+            "unique" => TableConstraintKind::Unique,
+            _ => continue,
+        };
+        table.constraints.push(TableConstraintMetadata {
+            name: Some(row.constraint_name),
+            kind,
+            columns: row.columns,
+        });
+    }
+
+    for row in foreign_key_rows {
+        let Some(table) = schema_map
+            .get_mut(&row.schema_name)
+            .and_then(|schema| schema.get_mut(&row.table_name))
+        else {
+            continue;
+        };
+        if row.columns.len() == 1 && row.referenced_columns.len() == 1 {
+            if let Some(column) = table
+                .columns
+                .iter_mut()
+                .find(|column| column.name == row.columns[0])
+            {
+                column.foreign_key = Some(ForeignKeyMetadata {
+                    schema: row.referenced_schema_name.clone(),
+                    table: row.referenced_table_name.clone(),
+                    column: row.referenced_columns[0].clone(),
+                });
+            }
+        }
+        table.foreign_keys.push(ForeignKeyConstraintMetadata {
+            name: Some(row.foreign_key_name),
+            columns: row.columns,
+            references: ForeignKeyReferenceMetadata {
+                schema: row.referenced_schema_name,
+                table: row.referenced_table_name,
+                columns: row.referenced_columns,
+            },
+        });
+    }
+
+    for row in index_rows {
+        let Some(table) = schema_map
+            .get_mut(&row.schema_name)
+            .and_then(|schema| schema.get_mut(&row.table_name))
+        else {
+            continue;
+        };
+        table.indexes.push(IndexMetadata {
+            name: Some(row.index_name),
+            columns: row.columns,
+            unique: row.is_unique,
+        });
+    }
+
+    apply_legacy_column_flags(&mut schema_map);
 
     let mut schemas = schema_map
         .into_iter()
@@ -192,4 +356,56 @@ fn metadata_from_rows(
     let mut metadata = DatabaseMetadata { schemas, types };
     metadata.canonicalize();
     metadata
+}
+
+fn apply_legacy_column_flags(schema_map: &mut HashMap<String, HashMap<String, TableMetadata>>) {
+    for table in schema_map.values_mut().flat_map(HashMap::values_mut) {
+        for constraint in &table.constraints {
+            match constraint.kind {
+                TableConstraintKind::PrimaryKey => {
+                    for column_name in &constraint.columns {
+                        if let Some(column) = table
+                            .columns
+                            .iter_mut()
+                            .find(|column| column.name == *column_name)
+                        {
+                            column.primary_key = true;
+                            column.indexed = true;
+                            if constraint.columns.len() == 1 {
+                                column.unique = true;
+                            }
+                        }
+                    }
+                }
+                TableConstraintKind::Unique => {
+                    for column_name in &constraint.columns {
+                        if let Some(column) = table
+                            .columns
+                            .iter_mut()
+                            .find(|column| column.name == *column_name)
+                        {
+                            column.indexed = true;
+                            if constraint.columns.len() == 1 {
+                                column.unique = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for index in &table.indexes {
+            for column_name in &index.columns {
+                if let Some(column) = table
+                    .columns
+                    .iter_mut()
+                    .find(|column| column.name == *column_name)
+                {
+                    column.indexed = true;
+                    if index.unique && index.columns.len() == 1 {
+                        column.unique = true;
+                    }
+                }
+            }
+        }
+    }
 }
