@@ -8,5 +8,5 @@ expression: contents
 - Type: `int`
 - Nullable: no
 - Primary key: yes
-- Unique: no
+- Unique: yes
 - Indexed: yes

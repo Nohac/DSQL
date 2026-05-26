@@ -234,8 +234,8 @@ pluralize, or otherwise rewrite them by itself.
 
 Relation result cardinality also comes from catalog metadata. Relation
 selections are collection-valued unless catalog constraints prove at-most-one
-cardinality, for example through a unique or primary-key foreign-key column. See
-[Catalog Metadata](catalog-metadata.md#relation-cardinality).
+cardinality, for example through a unique or primary-key constraint over the
+foreign-key column set. See [Catalog Metadata](catalog-metadata.md#relation-cardinality).
 
 Qualified relation references are allowed:
 

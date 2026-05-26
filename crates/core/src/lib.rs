@@ -11,8 +11,8 @@ mod variable_path;
 pub use catalog::{
     Catalog, CatalogBuildError, Column, ColumnId, ColumnKey, ColumnMetadata, DataType,
     DatabaseMetadata, FieldCheckResult, ForeignKey, ForeignKeyConstraintMetadata, ForeignKeyId,
-    ForeignKeyMetadata, ForeignKeyReferenceMetadata, Index, IndexMetadata, LiteralKind, ObjectType,
-    RelationField, Schema, SchemaId, SchemaKey, SchemaMetadata, Table, TableConstraintKind,
+    ForeignKeyReferenceMetadata, Index, IndexMetadata, LiteralKind, ObjectType, RelationField,
+    Schema, SchemaId, SchemaKey, SchemaMetadata, Table, TableConstraintKind,
     TableConstraintMetadata, TableId, TableKey, TableMetadata, TableResolution, TypeMetadata,
     TypeMetadataFile, metadata_from_yaml, metadata_to_yaml, table_metadata_from_yaml,
     table_metadata_to_yaml, type_metadata_file_from_yaml, type_metadata_file_to_yaml,

@@ -1,5 +1,5 @@
 use dsql_core::{
-    ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata, ForeignKeyMetadata,
+    ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata,
     ForeignKeyReferenceMetadata, IndexMetadata, ObjectType, SchemaMetadata, TableConstraintKind,
     TableConstraintMetadata, TableMetadata, TypeMetadata,
 };
@@ -267,10 +267,6 @@ fn metadata_from_rows(
             database_type: row.data_type.clone(),
             data_type: DataType::from_database_type(&row.data_type),
             not_null: row.not_null,
-            primary_key: false,
-            unique: false,
-            indexed: false,
-            foreign_key: None,
         });
     }
 
@@ -300,19 +296,6 @@ fn metadata_from_rows(
         else {
             continue;
         };
-        if row.columns.len() == 1 && row.referenced_columns.len() == 1 {
-            if let Some(column) = table
-                .columns
-                .iter_mut()
-                .find(|column| column.name == row.columns[0])
-            {
-                column.foreign_key = Some(ForeignKeyMetadata {
-                    schema: row.referenced_schema_name.clone(),
-                    table: row.referenced_table_name.clone(),
-                    column: row.referenced_columns[0].clone(),
-                });
-            }
-        }
         table.foreign_keys.push(ForeignKeyConstraintMetadata {
             name: Some(row.foreign_key_name),
             columns: row.columns,
@@ -338,8 +321,6 @@ fn metadata_from_rows(
         });
     }
 
-    apply_legacy_column_flags(&mut schema_map);
-
     let mut schemas = schema_map
         .into_iter()
         .map(|(name, tables)| {
@@ -356,56 +337,4 @@ fn metadata_from_rows(
     let mut metadata = DatabaseMetadata { schemas, types };
     metadata.canonicalize();
     metadata
-}
-
-fn apply_legacy_column_flags(schema_map: &mut HashMap<String, HashMap<String, TableMetadata>>) {
-    for table in schema_map.values_mut().flat_map(HashMap::values_mut) {
-        for constraint in &table.constraints {
-            match constraint.kind {
-                TableConstraintKind::PrimaryKey => {
-                    for column_name in &constraint.columns {
-                        if let Some(column) = table
-                            .columns
-                            .iter_mut()
-                            .find(|column| column.name == *column_name)
-                        {
-                            column.primary_key = true;
-                            column.indexed = true;
-                            if constraint.columns.len() == 1 {
-                                column.unique = true;
-                            }
-                        }
-                    }
-                }
-                TableConstraintKind::Unique => {
-                    for column_name in &constraint.columns {
-                        if let Some(column) = table
-                            .columns
-                            .iter_mut()
-                            .find(|column| column.name == *column_name)
-                        {
-                            column.indexed = true;
-                            if constraint.columns.len() == 1 {
-                                column.unique = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        for index in &table.indexes {
-            for column_name in &index.columns {
-                if let Some(column) = table
-                    .columns
-                    .iter_mut()
-                    .find(|column| column.name == *column_name)
-                {
-                    column.indexed = true;
-                    if index.unique && index.columns.len() == 1 {
-                        column.unique = true;
-                    }
-                }
-            }
-        }
-    }
 }

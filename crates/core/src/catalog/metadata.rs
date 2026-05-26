@@ -38,21 +38,6 @@ pub struct ColumnMetadata {
     pub database_type: String,
     pub data_type: DataType,
     pub not_null: bool,
-    #[facet(default)]
-    pub primary_key: bool,
-    #[facet(default)]
-    pub unique: bool,
-    #[facet(default)]
-    pub indexed: bool,
-    #[facet(default, skip_serializing_if = Option::is_none)]
-    pub foreign_key: Option<ForeignKeyMetadata>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Facet)]
-pub struct ForeignKeyMetadata {
-    pub schema: String,
-    pub table: String,
-    pub column: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -297,19 +282,6 @@ impl Catalog {
                     let column_id = ColumnId(columns.len());
                     column_ids.insert(key, column_id);
                     table_columns[table_id.0].push(column_id);
-                    if column_metadata.primary_key {
-                        table_primary_keys[table_id.0].push(column_id);
-                    }
-                    if column_metadata.unique {
-                        table_unique_constraints[table_id.0].push(vec![column_id]);
-                    }
-                    if column_metadata.indexed {
-                        table_indexes[table_id.0].push(Index {
-                            name: None,
-                            columns: vec![column_id],
-                            is_unique: column_metadata.unique,
-                        });
-                    }
                     columns.push(Column::new(
                         column_id,
                         table_id,
@@ -318,8 +290,8 @@ impl Catalog {
                         &column_metadata.name,
                         column_metadata.data_type,
                         column_metadata.not_null,
-                        column_metadata.unique,
-                        column_metadata.indexed,
+                        false,
+                        false,
                     ));
                 }
             }
@@ -458,41 +430,6 @@ impl Catalog {
                         to_table,
                     );
                 }
-                for column_metadata in &table_metadata.columns {
-                    let Some(target) = &column_metadata.foreign_key else {
-                        continue;
-                    };
-                    let from_column = column_ids[&(
-                        table_schema.to_string(),
-                        table_metadata.name.clone(),
-                        column_metadata.name.clone(),
-                    )];
-                    let Some(to_column) = column_ids
-                        .get(&(
-                            target.schema.clone(),
-                            target.table.clone(),
-                            target.column.clone(),
-                        ))
-                        .copied()
-                    else {
-                        return Err(CatalogBuildError::MissingForeignKeyTarget {
-                            schema: target.schema.clone(),
-                            table: target.table.clone(),
-                            column: target.column.clone(),
-                        });
-                    };
-                    let to_table = columns[to_column.0].table;
-                    add_foreign_key(
-                        &mut foreign_keys,
-                        &mut tables,
-                        &mut foreign_key_keys,
-                        None,
-                        vec![from_column],
-                        vec![to_column],
-                        from_table,
-                        to_table,
-                    );
-                }
             }
         }
 
@@ -596,54 +533,5 @@ impl ObjectType {
             "f" => Self::ForeignTable,
             _ => Self::Other,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn table_metadata_yaml_round_trips_columns() {
-        let table = TableMetadata {
-            schema: "public".to_string(),
-            name: "posts".to_string(),
-            object_type: ObjectType::Table,
-            columns: vec![
-                ColumnMetadata {
-                    name: "id".to_string(),
-                    database_type: "int4".to_string(),
-                    data_type: DataType::Int,
-                    not_null: true,
-                    primary_key: true,
-                    unique: true,
-                    indexed: true,
-                    foreign_key: None,
-                },
-                ColumnMetadata {
-                    name: "user_id".to_string(),
-                    database_type: "int4".to_string(),
-                    data_type: DataType::Int,
-                    not_null: true,
-                    primary_key: false,
-                    unique: false,
-                    indexed: true,
-                    foreign_key: Some(ForeignKeyMetadata {
-                        schema: "public".to_string(),
-                        table: "users".to_string(),
-                        column: "id".to_string(),
-                    }),
-                },
-            ],
-            constraints: Vec::new(),
-            foreign_keys: Vec::new(),
-            indexes: Vec::new(),
-        };
-
-        let yaml = table_metadata_to_yaml(&table).expect("table metadata should serialize");
-        assert!(yaml.contains("columns:"));
-        let decoded =
-            table_metadata_from_yaml(&yaml).expect("table metadata yaml should deserialize");
-        assert_eq!(decoded, table);
     }
 }

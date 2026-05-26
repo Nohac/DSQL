@@ -2,64 +2,59 @@
 schema: public
 name: aka_name
 object_type: table
-columns: 
+columns:
   - name: id
     database_type: int4
     data_type: int
     not_null: true
-    primary_key: true
-    unique: false
-    indexed: true
   - name: person_id
     database_type: int4
     data_type: int
     not_null: true
-    primary_key: false
-    unique: false
-    indexed: true
-    foreign_key: 
-      schema: public
-      table: name
-      column: id
   - name: name
     database_type: text
     data_type: text
     not_null: true
-    primary_key: false
-    unique: false
-    indexed: false
   - name: imdb_index
     database_type: varchar
     data_type: text
     not_null: false
-    primary_key: false
-    unique: false
-    indexed: false
   - name: name_pcode_cf
     database_type: varchar
     data_type: text
     not_null: false
-    primary_key: false
-    unique: false
-    indexed: false
   - name: name_pcode_nf
     database_type: varchar
     data_type: text
     not_null: false
-    primary_key: false
-    unique: false
-    indexed: false
   - name: surname_pcode
     database_type: varchar
     data_type: text
     not_null: false
-    primary_key: false
-    unique: false
-    indexed: false
   - name: md5sum
     database_type: varchar
     data_type: text
     not_null: false
-    primary_key: false
+constraints:
+  - name: aka_name_pkey
+    kind: primary_key
+    columns:
+      - id
+foreign_keys:
+  - name: aka_name_person_id_fkey
+    columns:
+      - person_id
+    references:
+      schema: public
+      table: name
+      columns:
+        - id
+indexes:
+  - name: aka_name_pkey
+    columns:
+      - id
+    unique: true
+  - name: person_id_aka_name
+    columns:
+      - person_id
     unique: false
-    indexed: false

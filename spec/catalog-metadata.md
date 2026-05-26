@@ -88,20 +88,14 @@ Unqualified references resolve through the project default schema, which is
 
 ## Column Metadata
 
-Column metadata describes scalar values. Constraints belong to the table-level
-metadata because primary keys, unique constraints, indexes, and foreign keys can
-all span multiple columns.
+Column metadata describes scalar values only. Constraints belong to the
+table-level metadata because primary keys, unique constraints, indexes, and
+foreign keys can all span multiple columns.
 
 - `name`: database column name.
 - `database_type`: database-native type name.
 - `data_type`: dsql logical type name after type mapping.
 - `not_null`: whether the column rejects null values.
-
-Column-level `primary_key`, `unique`, `indexed`, and `foreign_key` fields are
-legacy compatibility fields. New metadata should prefer the table-level
-`constraints`, `foreign_keys`, and `indexes` fields. If column-level flags are
-emitted, they should be treated as derived convenience data and should not be
-the source of truth for composite cardinality.
 
 ## Constraints
 
