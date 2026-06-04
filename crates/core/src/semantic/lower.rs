@@ -1,10 +1,15 @@
-use crate::syntax::{
-    Argument, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Document, Expr,
-    FragmentDef, Literal, QueryDef, Selection, Severity, SourceFile, TextRange,
+use crate::{
+    diagnostics::DsqlDiagnostic,
+    syntax::{
+        Argument, Definition, DiagnosticCode, DiagnosticSource, Document, Expr, FragmentDef,
+        Literal, QueryDef, Selection, Severity, SourceFile, TextRange, source_span,
+    },
 };
 use facet::Facet;
 use lasso::Rodeo;
+use miette::LabeledSpan;
 use std::collections::HashMap;
+use std::fmt;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Facet)]
 #[repr(transparent)]
@@ -46,7 +51,22 @@ pub struct NameIndex {
 #[derive(Clone, Debug, Facet)]
 pub struct LoweredFile {
     pub names: NameIndex,
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<LowerDiagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet, thiserror::Error)]
+#[repr(C)]
+pub enum LowerDiagnosticKind {
+    #[error("duplicate query `{name}`")]
+    DuplicateQuery { name: String },
+    #[error("duplicate fragment `{name}`")]
+    DuplicateFragment { name: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct LowerDiagnostic {
+    pub range: TextRange,
+    pub kind: LowerDiagnosticKind,
 }
 
 pub fn lower_file(source_file: &SourceFile, interner: &mut Interner) -> LoweredFile {
@@ -66,7 +86,7 @@ fn lower_document(
     document: &Document,
     interner: &mut Interner,
     names: &mut NameIndex,
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<LowerDiagnostic>,
 ) {
     for definition in &document.definitions {
         match definition {
@@ -82,17 +102,16 @@ fn lower_query(
     query: &QueryDef,
     interner: &mut Interner,
     names: &mut NameIndex,
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<LowerDiagnostic>,
 ) {
     if let Some(name) = &query.name {
         let id = interner.intern(&name.text);
         if insert_name(&mut names.queries, &name.text, id) {
-            diagnostics.push(Diagnostic {
+            diagnostics.push(LowerDiagnostic {
                 range: name.range,
-                severity: Severity::Error,
-                code: DiagnosticCode::DuplicateDefinition,
-                message: format!("duplicate query `{}`", name.text),
-                source: DiagnosticSource::Lower,
+                kind: LowerDiagnosticKind::DuplicateQuery {
+                    name: name.text.clone(),
+                },
             });
         }
     }
@@ -103,17 +122,16 @@ fn lower_fragment(
     fragment: &FragmentDef,
     interner: &mut Interner,
     names: &mut NameIndex,
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<LowerDiagnostic>,
 ) {
     if let Some(name) = &fragment.name {
         let id = interner.intern(&name.text);
         if insert_name(&mut names.fragments, &name.text, id) {
-            diagnostics.push(Diagnostic {
+            diagnostics.push(LowerDiagnostic {
                 range: name.range,
-                severity: Severity::Error,
-                code: DiagnosticCode::DuplicateDefinition,
-                message: format!("duplicate fragment `{}`", name.text),
-                source: DiagnosticSource::Lower,
+                kind: LowerDiagnosticKind::DuplicateFragment {
+                    name: name.text.clone(),
+                },
             });
         }
     }
@@ -121,6 +139,48 @@ fn lower_fragment(
         interner.intern(&on.text);
     }
     lower_selections(&fragment.selections, interner, names);
+}
+
+impl fmt::Display for LowerDiagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+
+impl std::error::Error for LowerDiagnostic {}
+
+impl miette::Diagnostic for LowerDiagnostic {
+    fn code<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        Some(Box::new(format!("{:?}", DsqlDiagnostic::code(self))))
+    }
+
+    fn severity(&self) -> Option<miette::Severity> {
+        Some(miette::Severity::Error)
+    }
+
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
+        Some(Box::new(std::iter::once(LabeledSpan::underline(
+            source_span(self.range),
+        ))))
+    }
+}
+
+impl DsqlDiagnostic for LowerDiagnostic {
+    fn range(&self) -> TextRange {
+        self.range
+    }
+
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+
+    fn code(&self) -> DiagnosticCode {
+        DiagnosticCode::DuplicateDefinition
+    }
+
+    fn source(&self) -> DiagnosticSource {
+        DiagnosticSource::Lower
+    }
 }
 
 fn insert_name(names: &mut Vec<(String, NameId)>, text: &str, id: NameId) -> bool {

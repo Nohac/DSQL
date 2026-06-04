@@ -1,16 +1,41 @@
 use crate::{
     catalog::{Catalog, FieldCheckResult, ForeignKey, RelationField, TableId, TableResolution},
     definition::{FragmentMap, FragmentRecord, QueryRecord},
+    diagnostics::DsqlDiagnostic,
     syntax::{
-        Clause, Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Expr, ScopedPath,
-        ScopedPathSegment, Selection, SelectionKind, Severity, SourceFile,
+        Clause, Definition, DiagnosticCode, DiagnosticSource, Expr, ScopedPath, ScopedPathSegment,
+        Selection, SelectionKind, Severity, SourceFile, TextRange, source_span,
     },
 };
 use facet::Facet;
+use miette::LabeledSpan;
+use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct LintedFile {
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<LintDiagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet, thiserror::Error)]
+#[repr(C)]
+pub enum LintDiagnosticKind {
+    #[error("relation `{relation}` joins on unindexed column `{column}`; this can be slow")]
+    UnindexedJoinColumn { relation: String, column: String },
+    #[error(
+        "predicate path `{path}` filters on unindexed column `{column}`; nested scans can be slow"
+    )]
+    UnindexedScanColumn { path: String, column: String },
+    #[error(
+        "predicate relation `{relation}` joins on unindexed column `{column}`; nested scans can be slow"
+    )]
+    UnindexedPredicateJoinColumn { relation: String, column: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct LintDiagnostic {
+    pub range: TextRange,
+    pub severity: Severity,
+    pub kind: LintDiagnosticKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
@@ -155,7 +180,7 @@ fn lint_selection_set(
     table: TableId,
     selections: &[Selection],
     options: LintOptions,
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<LintDiagnostic>,
 ) {
     for selection in selections {
         if selection.kind == SelectionKind::FragmentSpread {
@@ -182,7 +207,7 @@ fn lint_relation_indexes(
     relation: &RelationField<'_>,
     selection: &Selection,
     options: LintOptions,
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<LintDiagnostic>,
 ) {
     let Some(severity) = options.unindexed_scan_severity else {
         return;
@@ -199,19 +224,16 @@ fn lint_relation_indexes(
         if column.is_indexed {
             continue;
         }
-        diagnostics.push(Diagnostic {
+        diagnostics.push(LintDiagnostic {
             range: selection.name.range,
             severity,
-            code: DiagnosticCode::UnindexedJoinColumn,
-            message: format!(
-                "relation `{}` joins on unindexed column `{}`; this can be slow",
-                selection.name.text,
-                catalog.table_by_id(column.table).map_or_else(
+            kind: LintDiagnosticKind::UnindexedJoinColumn {
+                relation: selection.name.text.clone(),
+                column: catalog.table_by_id(column.table).map_or_else(
                     || column.name.clone(),
-                    |table| format!("{}.{}", table.name, column.name)
-                )
-            ),
-            source: DiagnosticSource::Lint,
+                    |table| format!("{}.{}", table.name, column.name),
+                ),
+            },
         });
     }
 }
@@ -221,7 +243,7 @@ fn lint_selection_clauses(
     table: TableId,
     selection: &Selection,
     options: LintOptions,
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<LintDiagnostic>,
 ) {
     let Some(severity) = options.unindexed_scan_severity else {
         return;
@@ -244,7 +266,7 @@ fn lint_expr_predicate_indexes(
     table: TableId,
     expr: &Expr,
     severity: Severity,
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<LintDiagnostic>,
 ) {
     match expr {
         Expr::Path(path) => {
@@ -263,7 +285,7 @@ fn lint_predicate_path_indexes(
     table: TableId,
     path: &ScopedPath,
     severity: Severity,
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<LintDiagnostic>,
 ) {
     if path.scope != crate::PathScope::Current || path.segments.len() < 2 {
         return;
@@ -296,19 +318,16 @@ fn lint_predicate_path_indexes(
     if column.is_indexed {
         return;
     }
-    diagnostics.push(Diagnostic {
+    diagnostics.push(LintDiagnostic {
         range: last.range,
         severity,
-        code: DiagnosticCode::UnindexedScanColumn,
-        message: format!(
-            "predicate path `{}` filters on unindexed column `{}`; nested scans can be slow",
-            predicate_path_label(path),
-            catalog.table_by_id(column.table).map_or_else(
+        kind: LintDiagnosticKind::UnindexedScanColumn {
+            path: predicate_path_label(path),
+            column: catalog.table_by_id(column.table).map_or_else(
                 || column.name.clone(),
-                |table| format!("{}.{}", table.name, column.name)
-            )
-        ),
-        source: DiagnosticSource::Lint,
+                |table| format!("{}.{}", table.name, column.name),
+            ),
+        },
     });
 }
 
@@ -317,7 +336,7 @@ fn lint_foreign_key_indexes(
     foreign_key: &ForeignKey,
     segment: &ScopedPathSegment,
     severity: Severity,
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<LintDiagnostic>,
 ) {
     for column_id in foreign_key
         .from_columns
@@ -330,19 +349,16 @@ fn lint_foreign_key_indexes(
         if column.is_indexed {
             continue;
         }
-        diagnostics.push(Diagnostic {
+        diagnostics.push(LintDiagnostic {
             range: segment.range,
             severity,
-            code: DiagnosticCode::UnindexedJoinColumn,
-            message: format!(
-                "predicate relation `{}` joins on unindexed column `{}`; nested scans can be slow",
-                segment.field_ref(),
-                catalog.table_by_id(column.table).map_or_else(
+            kind: LintDiagnosticKind::UnindexedPredicateJoinColumn {
+                relation: segment.field_ref(),
+                column: catalog.table_by_id(column.table).map_or_else(
                     || column.name.clone(),
-                    |table| format!("{}.{}", table.name, column.name)
-                )
-            ),
-            source: DiagnosticSource::Lint,
+                    |table| format!("{}.{}", table.name, column.name),
+                ),
+            },
         });
     }
 }
@@ -364,9 +380,62 @@ fn predicate_path_label(path: &ScopedPath) -> String {
     )
 }
 
+impl fmt::Display for LintDiagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+
+impl std::error::Error for LintDiagnostic {}
+
+impl miette::Diagnostic for LintDiagnostic {
+    fn code<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        Some(Box::new(format!("{:?}", DsqlDiagnostic::code(self))))
+    }
+
+    fn severity(&self) -> Option<miette::Severity> {
+        Some(match self.severity {
+            Severity::Error => miette::Severity::Error,
+            Severity::Warning => miette::Severity::Warning,
+            Severity::Info => miette::Severity::Advice,
+        })
+    }
+
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
+        Some(Box::new(std::iter::once(LabeledSpan::underline(
+            source_span(self.range),
+        ))))
+    }
+}
+
+impl DsqlDiagnostic for LintDiagnostic {
+    fn range(&self) -> TextRange {
+        self.range
+    }
+
+    fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    fn code(&self) -> DiagnosticCode {
+        match self.kind {
+            LintDiagnosticKind::UnindexedJoinColumn { .. }
+            | LintDiagnosticKind::UnindexedPredicateJoinColumn { .. } => {
+                DiagnosticCode::UnindexedJoinColumn
+            }
+            LintDiagnosticKind::UnindexedScanColumn { .. } => DiagnosticCode::UnindexedScanColumn,
+        }
+    }
+
+    fn source(&self) -> DiagnosticSource {
+        DiagnosticSource::Lint
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DsqlDiagnostic;
     use crate::syntax::parse_source;
 
     fn lint(source: &str) -> LintedFile {
@@ -394,12 +463,10 @@ mod tests {
         let lint = lint("query Q { public.users { posts { title } } }");
 
         assert_eq!(lint.diagnostics.len(), 1, "{:?}", lint.diagnostics);
-        assert_eq!(
-            lint.diagnostics[0].code,
-            DiagnosticCode::UnindexedJoinColumn
-        );
-        assert_eq!(lint.diagnostics[0].severity, Severity::Info);
-        assert!(lint.diagnostics[0].message.contains("posts.user_id"));
+        let diagnostic = lint.diagnostics[0].to_transport();
+        assert_eq!(diagnostic.code, DiagnosticCode::UnindexedJoinColumn);
+        assert_eq!(diagnostic.severity, Severity::Info);
+        assert!(diagnostic.message.contains("posts.user_id"));
     }
 
     #[test]
@@ -412,6 +479,7 @@ mod tests {
         assert!(
             lint.diagnostics
                 .iter()
+                .map(DsqlDiagnostic::to_transport)
                 .all(|diagnostic| diagnostic.code == DiagnosticCode::UnindexedJoinColumn)
         );
     }
@@ -423,6 +491,7 @@ mod tests {
         assert!(
             lint.diagnostics
                 .iter()
+                .map(DsqlDiagnostic::to_transport)
                 .any(|diagnostic| diagnostic.code == DiagnosticCode::UnindexedScanColumn),
             "{:?}",
             lint.diagnostics
@@ -430,6 +499,7 @@ mod tests {
         assert!(
             lint.diagnostics
                 .iter()
+                .map(DsqlDiagnostic::to_transport)
                 .any(|diagnostic| diagnostic.message.contains("posts.title")),
             "{:?}",
             lint.diagnostics

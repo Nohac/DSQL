@@ -1,5 +1,4 @@
-use miette::Result;
-
+use crate::GeneratorError;
 use crate::artifacts::WrittenArtifacts;
 
 #[derive(Clone, Debug)]
@@ -11,5 +10,9 @@ pub(crate) struct GenerateTarget {
 
 #[allow(async_fn_in_trait)]
 pub(crate) trait GeneratorRunner {
-    async fn run(&self, target: &GenerateTarget, artifacts: &WrittenArtifacts) -> Result<()>;
+    async fn run(
+        &self,
+        target: &GenerateTarget,
+        artifacts: &WrittenArtifacts,
+    ) -> std::result::Result<(), GeneratorError>;
 }

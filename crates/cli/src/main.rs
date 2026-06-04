@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use dsql_core::{
-    Catalog, DefinitionRecord, Diagnostic, FragmentMap, QueryRecord, SourceSnapshot,
-    check_query_definition, extract_definitions, lint_query_definition_with_options, parse_source,
-    plan_query_definition,
+    Catalog, CompilerDiagnostic, DefinitionRecord, Diagnostic, DsqlDiagnostic, FragmentMap,
+    QueryRecord, SourceSnapshot, TextRange, check_query_definition, extract_definitions,
+    lint_query_definition_with_options, parse_source, plan_query_definition,
 };
-use dsql_frontend::{AnalysisHost, collect_diagnostics};
-use miette::{IntoDiagnostic, Result};
+use dsql_frontend::AnalysisHost;
+use miette::{IntoDiagnostic, NamedSource, Result};
 use sqlx::{Connection, Row, postgres::PgConnection};
 use std::path::{Path, PathBuf};
 
@@ -106,21 +106,22 @@ async fn main() -> Result<()> {
             }
         }
         Command::Parse { file } => {
-            let analysis = analyze_file(file).await?;
+            let analysis = analyze_file(file.clone()).await?;
             print!("{}", analysis.parse.tree);
-            print_diagnostics(&collect_diagnostics(&analysis));
+            print_analysis_diagnostics(&file, &analysis);
         }
         Command::Check { file } => {
-            let analysis = analyze_file(file).await?;
-            print_diagnostics(&collect_diagnostics(&analysis));
+            let analysis = analyze_file(file.clone()).await?;
+            print_analysis_diagnostics(&file, &analysis);
         }
         Command::Fmt { file } => {
-            let analysis = analyze_file(file).await?;
+            let analysis = analyze_file(file.clone()).await?;
             let formatted = dsql_core::format_file(&analysis.parse);
             for diagnostic in &formatted.diagnostics {
-                eprintln!(
-                    "{:?} {:?}: {}",
-                    diagnostic.source, diagnostic.range, diagnostic.message
+                print_miette_diagnostic(
+                    file.display().to_string(),
+                    analysis.parse.source.to_arc_str().to_string(),
+                    diagnostic.clone(),
                 );
             }
             print!("{}", formatted.text);
@@ -143,16 +144,34 @@ async fn main() -> Result<()> {
                 lint_options,
             );
             let planned = plan_query_definition(&query.record, &query.fragments, &catalog);
-            let mut diagnostics = Vec::new();
-            diagnostics.extend(query.parse_diagnostics);
-            diagnostics.extend(checked.diagnostics);
-            diagnostics.extend(linted.diagnostics);
-            diagnostics.extend(planned.diagnostics);
-            diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
-            print_diagnostics(&diagnostics);
+            let mut diagnostics = query.parse_diagnostics.clone();
+            diagnostics.extend(
+                checked
+                    .diagnostics
+                    .into_iter()
+                    .map(CompilerDiagnostic::from),
+            );
+            diagnostics.extend(linted.diagnostics.into_iter().map(CompilerDiagnostic::from));
+            diagnostics.extend(
+                planned
+                    .diagnostics
+                    .into_iter()
+                    .map(CompilerDiagnostic::from),
+            );
+            diagnostics.sort_by_key(|diagnostic| {
+                let range = diagnostic.range();
+                (range.start, range.end)
+            });
+            for diagnostic in &diagnostics {
+                print_miette_diagnostic(
+                    query.source_name.clone(),
+                    query.source_text.clone(),
+                    diagnostic.clone(),
+                );
+            }
             if diagnostics
                 .iter()
-                .any(|diagnostic| matches!(diagnostic.severity, dsql_core::Severity::Error))
+                .any(|diagnostic| matches!(diagnostic.severity(), dsql_core::Severity::Error))
             {
                 return Err(miette::miette!(
                     "cannot generate SQL while diagnostics contain errors"
@@ -303,31 +322,41 @@ async fn cancel_backend(database_url: &str, backend_pid: i32) -> Result<()> {
 struct LoadedQuery {
     record: QueryRecord,
     fragments: FragmentMap,
-    parse_diagnostics: Vec<Diagnostic>,
+    parse_diagnostics: Vec<CompilerDiagnostic>,
+    source_name: String,
+    source_text: String,
 }
 
 fn load_project_query(project: &dsql_project::Project, query_name: &str) -> Result<LoadedQuery> {
-    let files = project_document_files(project)?;
-    if files.is_empty() {
+    let documents = dsql_project::load_project_documents(project)?;
+    if documents.is_empty() {
         return Err(miette::miette!(
             "no dsql documents found in project {}",
-            project_root(project).display()
+            dsql_project::project_base(project).display()
         ));
     }
 
     let mut fragments = FragmentMap::default();
     let mut queries = Vec::<QueryRecord>::new();
-    let mut parse_diagnostics = Vec::<Diagnostic>::new();
+    let mut parse_diagnostics = Vec::<CompilerDiagnostic>::new();
+    let mut matched_source_name = None::<String>;
+    let mut matched_source_text = None::<String>;
 
-    for file in files {
-        let text = std::fs::read_to_string(&file)
-            .map_err(|error| miette::miette!("failed to read {}: {error}", file.display()))?;
-        let parsed = parse_source(SourceSnapshot::from_string(text));
-        parse_diagnostics.extend(parsed.diagnostics.clone());
+    for document in documents {
+        let source_name = document.path.display().to_string();
+        let source_text = document.text;
+        let parsed = parse_source(SourceSnapshot::from_string(source_text.clone()));
+        parse_diagnostics.extend(parsed.diagnostics.clone().into_iter().map(Into::into));
         let extracted = extract_definitions(&parsed.source_file);
         for definition in extracted.definitions {
             match definition {
-                DefinitionRecord::Query(query) => queries.push(query),
+                DefinitionRecord::Query(query) => {
+                    if query.key.name.as_deref() == Some(query_name) {
+                        matched_source_name.get_or_insert_with(|| source_name.clone());
+                        matched_source_text.get_or_insert_with(|| source_text.clone());
+                    }
+                    queries.push(query);
+                }
                 DefinitionRecord::Fragment(fragment) => fragments.insert(fragment),
             }
         }
@@ -343,79 +372,13 @@ fn load_project_query(project: &dsql_project::Project, query_name: &str) -> Resu
             record: query.clone(),
             fragments,
             parse_diagnostics,
+            source_name: matched_source_name.unwrap_or_else(|| "<dsql>".to_string()),
+            source_text: matched_source_text.unwrap_or_default(),
         }),
         _ => Err(miette::miette!(
             "query `{query_name}` is defined multiple times"
         )),
     }
-}
-
-fn project_document_files(project: &dsql_project::Project) -> Result<Vec<PathBuf>> {
-    let base = project_root(project);
-    let mut files = Vec::new();
-    if project.config.documents.is_empty() {
-        collect_dsql_files(&base, Some(&project.root), &mut files)?;
-    } else {
-        for document in &project.config.documents {
-            if document.resolver != "dsql" {
-                continue;
-            }
-            for path in &document.paths {
-                let path = base.join(path);
-                collect_document_path(&path, Some(&project.root), &mut files)?;
-            }
-        }
-    }
-    files.sort();
-    files.dedup();
-    Ok(files)
-}
-
-fn project_root(project: &dsql_project::Project) -> PathBuf {
-    project
-        .root
-        .parent()
-        .map_or_else(|| project.root.clone(), Path::to_path_buf)
-}
-
-fn collect_document_path(
-    path: &Path,
-    excluded_dir: Option<&Path>,
-    files: &mut Vec<PathBuf>,
-) -> Result<()> {
-    if path.is_dir() {
-        collect_dsql_files(path, excluded_dir, files)
-    } else if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
-        files.push(path.to_path_buf());
-        Ok(())
-    } else {
-        Err(miette::miette!(
-            "dsql document path not found: {}",
-            path.display()
-        ))
-    }
-}
-
-fn collect_dsql_files(
-    dir: &Path,
-    excluded_dir: Option<&Path>,
-    files: &mut Vec<PathBuf>,
-) -> Result<()> {
-    if excluded_dir.is_some_and(|excluded| dir == excluded) {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)
-        .map_err(|error| miette::miette!("failed to read directory {}: {error}", dir.display()))?
-    {
-        let entry = entry.into_diagnostic()?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_dsql_files(&path, excluded_dir, files)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
-            files.push(path);
-        }
-    }
-    Ok(())
 }
 
 async fn analyze_file(path: PathBuf) -> Result<dsql_frontend::AnalysisResult> {
@@ -450,26 +413,70 @@ fn load_project_settings_for_path(path: &Path) -> (Catalog, dsql_core::LintOptio
     (catalog, lint_options)
 }
 
-fn print_diagnostics(diagnostics: &[dsql_core::Diagnostic]) {
+fn print_analysis_diagnostics(path: &Path, analysis: &dsql_frontend::AnalysisResult) {
+    let source_name = path.display().to_string();
+    let source_text = analysis.parse.source.to_arc_str().to_string();
+    let mut diagnostics = Vec::new();
+    diagnostics.extend(
+        analysis
+            .parse
+            .diagnostics
+            .iter()
+            .cloned()
+            .map(CompilerDiagnostic::from),
+    );
+    diagnostics.extend(
+        analysis
+            .lower
+            .diagnostics
+            .iter()
+            .cloned()
+            .map(CompilerDiagnostic::from),
+    );
+    diagnostics.extend(
+        analysis
+            .check
+            .diagnostics
+            .iter()
+            .cloned()
+            .map(CompilerDiagnostic::from),
+    );
+    diagnostics.extend(
+        analysis
+            .lint
+            .diagnostics
+            .iter()
+            .cloned()
+            .map(CompilerDiagnostic::from),
+    );
+    diagnostics.sort_by_key(|diagnostic| {
+        let range = diagnostic.range();
+        (range.start, range.end)
+    });
     for diagnostic in diagnostics {
-        eprintln!(
-            "{:?} {:?} {:?}: {}",
-            diagnostic.source, diagnostic.severity, diagnostic.range, diagnostic.message
-        );
+        print_miette_diagnostic(source_name.clone(), source_text.clone(), diagnostic);
     }
+}
+
+fn print_miette_diagnostic(
+    source_name: String,
+    source_text: String,
+    diagnostic: impl std::error::Error + miette::Diagnostic + Send + Sync + 'static,
+) {
+    let source = NamedSource::new(source_name, source_text).with_language("dsql");
+    eprintln!(
+        "{:?}",
+        miette::Report::new(diagnostic).with_source_code(source)
+    );
 }
 
 fn print_validation_output(validation: &dsql_generate::ValidationOutput) {
     for diagnostic in &validation.diagnostics {
-        let start = diagnostic.source_offset + diagnostic.diagnostic.range.start;
-        let end = diagnostic.source_offset + diagnostic.diagnostic.range.end;
-        eprintln!(
-            "{}:{start}..{end}: {:?} {:?} {:?}: {}",
-            diagnostic.file.display(),
-            diagnostic.diagnostic.severity,
-            diagnostic.diagnostic.source,
-            diagnostic.diagnostic.code,
-            diagnostic.diagnostic.message
+        let source_text = std::fs::read_to_string(&diagnostic.file).unwrap_or_default();
+        print_miette_diagnostic(
+            diagnostic.file.display().to_string(),
+            source_text,
+            offset_diagnostic(&diagnostic.diagnostic, diagnostic.source_offset),
         );
     }
     for error in &validation.errors {
@@ -487,4 +494,13 @@ fn print_validation_output(validation: &dsql_generate::ValidationOutput) {
             }
         );
     }
+}
+
+fn offset_diagnostic(diagnostic: &Diagnostic, source_offset: u32) -> Diagnostic {
+    let mut diagnostic = diagnostic.clone();
+    diagnostic.range = TextRange {
+        start: diagnostic.range.start + source_offset,
+        end: diagnostic.range.end + source_offset,
+    };
+    diagnostic
 }

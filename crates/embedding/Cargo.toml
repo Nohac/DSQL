@@ -7,3 +7,4 @@ edition = "2024"
 dsql-core = { workspace = true }
 miette = { workspace = true, features = ["fancy"] }
 regex = { workspace = true }
+thiserror = { workspace = true }

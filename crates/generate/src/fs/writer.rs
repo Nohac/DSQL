@@ -1,7 +1,7 @@
 use dsql_metadata::BuildManifest;
-use miette::{IntoDiagnostic, Result};
 use std::path::{Path, PathBuf};
 
+use crate::ArtifactError;
 use crate::artifacts::{ArtifactRef, ArtifactWriter, FragmentArtifact, OperationArtifact};
 use crate::layout::{fragment_artifact_path, manifest_path, operation_artifact_path};
 
@@ -31,10 +31,13 @@ impl FsArtifactWriter {
 }
 
 impl ArtifactWriter for FsArtifactWriter {
-    async fn write_operation(&self, operation: &OperationArtifact) -> Result<ArtifactRef> {
+    async fn write_operation(
+        &self,
+        operation: &OperationArtifact,
+    ) -> std::result::Result<ArtifactRef, ArtifactError> {
         let path = self.operation_path(operation);
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.into_diagnostic()?;
+            create_dir_all(parent).await?;
         }
         write_json(&path, &operation.metadata).await?;
         Ok(ArtifactRef {
@@ -46,10 +49,13 @@ impl ArtifactWriter for FsArtifactWriter {
         })
     }
 
-    async fn write_fragment(&self, fragment: &FragmentArtifact) -> Result<ArtifactRef> {
+    async fn write_fragment(
+        &self,
+        fragment: &FragmentArtifact,
+    ) -> std::result::Result<ArtifactRef, ArtifactError> {
         let path = self.fragment_path(fragment);
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.into_diagnostic()?;
+            create_dir_all(parent).await?;
         }
         write_json(&path, &fragment.metadata).await?;
         Ok(ArtifactRef {
@@ -61,10 +67,11 @@ impl ArtifactWriter for FsArtifactWriter {
         })
     }
 
-    async fn write_manifest(&self, manifest: &BuildManifest) -> Result<ArtifactRef> {
-        tokio::fs::create_dir_all(&self.build_dir)
-            .await
-            .into_diagnostic()?;
+    async fn write_manifest(
+        &self,
+        manifest: &BuildManifest,
+    ) -> std::result::Result<ArtifactRef, ArtifactError> {
+        create_dir_all(&self.build_dir).await?;
         let path = manifest_path(&self.build_dir);
         write_json(&path, manifest).await?;
         Ok(ArtifactRef {
@@ -73,13 +80,26 @@ impl ArtifactWriter for FsArtifactWriter {
     }
 }
 
-async fn write_json<T>(path: &Path, value: &T) -> Result<()>
+async fn write_json<T>(path: &Path, value: &T) -> std::result::Result<(), ArtifactError>
 where
     T: facet::Facet<'static>,
 {
-    let json = facet_json::to_string_pretty(value).into_diagnostic()?;
+    let json = facet_json::to_string_pretty(value)
+        .map_err(|error| ArtifactError::SerializeJson(error.to_string()))?;
     tokio::fs::write(path, format!("{json}\n"))
         .await
-        .map_err(|error| miette::miette!("failed to write {}: {error}", path.display()))?;
+        .map_err(|source| ArtifactError::WriteFile {
+            path: path.to_path_buf(),
+            source,
+        })?;
     Ok(())
+}
+
+async fn create_dir_all(path: &Path) -> std::result::Result<(), ArtifactError> {
+    tokio::fs::create_dir_all(path)
+        .await
+        .map_err(|source| ArtifactError::CreateDir {
+            path: path.to_path_buf(),
+            source,
+        })
 }

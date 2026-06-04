@@ -1,6 +1,5 @@
 use crate::convert::{semantic_tokens_legend, to_lsp_diagnostic};
 use crate::position::{byte_to_position, encode_semantic_tokens};
-use dsql_embedding::{RegexEmbedding, default_typescript_regex_pattern};
 use dsql_frontend::{
     AnalysisHost, CatalogDefinition, CompletionKind, DefinitionResult, DocumentDiagnostics,
     RevisionId, TextEdit as FrontendTextEdit, TextEditRange, TextPosition,
@@ -515,197 +514,30 @@ struct ProjectIndexDocument {
 fn load_project_index_documents(
     project: &dsql_project::Project,
 ) -> std::result::Result<Vec<ProjectIndexDocument>, String> {
-    let base = project_base(project);
-    let mut documents = Vec::new();
-    if project.config.documents.is_empty() {
-        let mut files = Vec::new();
-        collect_dsql_files(&base, Some(&project.root), &mut files)?;
-        files.sort();
-        files.dedup();
-        for path in files {
-            documents.push(read_index_dsql_document(path)?);
-        }
-    } else {
-        for document_config in &project.config.documents {
-            let mut files = Vec::new();
-            for path in &document_config.paths {
-                collect_resolver_path(&base.join(path), Some(&project.root), &mut files)?;
-            }
-            files.sort();
-            files.dedup();
-
-            if document_config.resolver == "dsql" {
-                for path in files {
-                    if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
-                        documents.push(read_index_dsql_document(path)?);
-                    }
-                }
-            } else {
-                let embedding = embedding_for_resolver(project, &document_config.resolver)?;
-                for path in files {
-                    documents.extend(read_index_embedded_documents(path, &embedding)?);
-                }
-            }
-        }
-    }
+    let documents = dsql_project::load_project_documents(project)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|document| {
+            let revision = file_revision(&document.path);
+            Ok(ProjectIndexDocument {
+                uri: path_to_uri(&document.path)
+                    .map(|uri| uri.to_string())
+                    .ok_or_else(|| {
+                        format!("failed to convert {} to URI", document.path.display())
+                    })?,
+                text: document.text,
+                source_offset: document.source_offset,
+                revision,
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, String>>()?;
+    let mut documents = documents;
     documents.sort_by(|left, right| {
         left.uri
             .cmp(&right.uri)
             .then(left.source_offset.cmp(&right.source_offset))
     });
     Ok(documents)
-}
-
-fn read_index_dsql_document(path: PathBuf) -> std::result::Result<ProjectIndexDocument, String> {
-    let text = fs::read_to_string(&path)
-        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let revision = file_revision(&path);
-    Ok(ProjectIndexDocument {
-        uri: path_to_uri(&path)
-            .map(|uri| uri.to_string())
-            .ok_or_else(|| format!("failed to convert {} to URI", path.display()))?,
-        text,
-        source_offset: 0,
-        revision,
-    })
-}
-
-fn read_index_embedded_documents(
-    path: PathBuf,
-    embedding: &RegexEmbedding,
-) -> std::result::Result<Vec<ProjectIndexDocument>, String> {
-    let source = fs::read_to_string(&path)
-        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let revision = file_revision(&path);
-    let uri = path_to_uri(&path)
-        .map(|uri| uri.to_string())
-        .ok_or_else(|| format!("failed to convert {} to URI", path.display()))?;
-    embedding
-        .extract(&source)
-        .map_err(|error| {
-            format!(
-                "failed to extract embedded DSQL from {}: {error}",
-                path.display()
-            )
-        })?
-        .into_iter()
-        .map(|region| {
-            Ok(ProjectIndexDocument {
-                uri: uri.clone(),
-                text: region.text,
-                source_offset: region.content_range.start as usize,
-                revision,
-            })
-        })
-        .collect()
-}
-
-fn embedding_for_resolver(
-    project: &dsql_project::Project,
-    resolver: &str,
-) -> std::result::Result<RegexEmbedding, String> {
-    let pattern = if let Some(config) = project.config.embedding.get(resolver) {
-        match config.strategy {
-            dsql_project::EmbeddingStrategy::Regex => config.pattern.clone().ok_or_else(|| {
-                format!("embedding `{resolver}` with strategy `regex` requires `pattern`")
-            })?,
-        }
-    } else if resolver == "typescript" {
-        default_typescript_regex_pattern()
-    } else {
-        return Err(format!(
-            "document resolver `{resolver}` requires an [embedding.{resolver}] config"
-        ));
-    };
-    Ok(RegexEmbedding::new(pattern))
-}
-
-fn collect_resolver_path(
-    path: &Path,
-    excluded_dir: Option<&Path>,
-    files: &mut Vec<PathBuf>,
-) -> std::result::Result<(), String> {
-    if path_has_glob(path) {
-        return collect_glob_path(path, excluded_dir, files);
-    }
-    if path.is_dir() {
-        collect_all_files(path, excluded_dir, files)
-    } else if path.is_file() {
-        files.push(path.to_path_buf());
-        Ok(())
-    } else {
-        Err(format!("document path not found: {}", path.display()))
-    }
-}
-
-fn collect_glob_path(
-    path: &Path,
-    excluded_dir: Option<&Path>,
-    files: &mut Vec<PathBuf>,
-) -> std::result::Result<(), String> {
-    let pattern = path.to_string_lossy();
-    for entry in glob::glob(&pattern)
-        .map_err(|error| format!("invalid document glob `{pattern}`: {error}"))?
-    {
-        let path = entry.map_err(|error| format!("failed to read document glob entry: {error}"))?;
-        if excluded_dir.is_some_and(|excluded| path.starts_with(excluded)) {
-            continue;
-        }
-        if path.is_file() {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn path_has_glob(path: &Path) -> bool {
-    path.to_string_lossy()
-        .chars()
-        .any(|char| matches!(char, '*' | '?' | '[' | ']'))
-}
-
-fn collect_all_files(
-    dir: &Path,
-    excluded_dir: Option<&Path>,
-    files: &mut Vec<PathBuf>,
-) -> std::result::Result<(), String> {
-    if excluded_dir.is_some_and(|excluded| dir == excluded) {
-        return Ok(());
-    }
-    for entry in fs::read_dir(dir)
-        .map_err(|error| format!("failed to read directory {}: {error}", dir.display()))?
-    {
-        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_all_files(&path, excluded_dir, files)?;
-        } else if path.is_file() {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn collect_dsql_files(
-    dir: &Path,
-    excluded_dir: Option<&Path>,
-    files: &mut Vec<PathBuf>,
-) -> std::result::Result<(), String> {
-    if excluded_dir.is_some_and(|excluded| dir == excluded) {
-        return Ok(());
-    }
-    for entry in fs::read_dir(dir)
-        .map_err(|error| format!("failed to read directory {}: {error}", dir.display()))?
-    {
-        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_dsql_files(&path, excluded_dir, files)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
-            files.push(path);
-        }
-    }
-    Ok(())
 }
 
 fn source_rope_for_uri(uri: &str) -> Option<ropey::Rope> {
@@ -720,13 +552,6 @@ fn file_revision(path: &Path) -> u64 {
         .ok()
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |duration| duration.as_secs())
-}
-
-fn project_base(project: &dsql_project::Project) -> PathBuf {
-    project
-        .root
-        .parent()
-        .map_or_else(|| project.root.clone(), Path::to_path_buf)
 }
 
 fn completion_source_context(analysis: &AnalysisHost, uri: &str, byte: usize) -> Option<String> {

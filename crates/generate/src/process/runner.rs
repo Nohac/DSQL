@@ -1,7 +1,7 @@
-use miette::Result;
 use tokio::process::Command;
 
 use crate::{
+    GeneratorError,
     artifacts::WrittenArtifacts,
     runner::{GenerateTarget, GeneratorRunner},
 };
@@ -10,7 +10,11 @@ use crate::{
 pub struct CommandGeneratorRunner;
 
 impl GeneratorRunner for CommandGeneratorRunner {
-    async fn run(&self, target: &GenerateTarget, artifacts: &WrittenArtifacts) -> Result<()> {
+    async fn run(
+        &self,
+        target: &GenerateTarget,
+        artifacts: &WrittenArtifacts,
+    ) -> std::result::Result<(), GeneratorError> {
         let Some(program) = target.cmd.first() else {
             return Ok(());
         };
@@ -23,13 +27,15 @@ impl GeneratorRunner for CommandGeneratorRunner {
             .env("DSQL_OUT_DIR", &target.out_dir)
             .status()
             .await
-            .map_err(|error| miette::miette!("failed to run generator `{program}`: {error}"))?;
+            .map_err(|source| GeneratorError::Spawn {
+                program: program.clone(),
+                source,
+            })?;
         if !status.success() {
-            return Err(miette::miette!(
-                "generator `{}` failed with status {}",
-                target.cmd.join(" "),
-                status
-            ));
+            return Err(GeneratorError::Failed {
+                command: target.cmd.join(" "),
+                status,
+            });
         }
         Ok(())
     }

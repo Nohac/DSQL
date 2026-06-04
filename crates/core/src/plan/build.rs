@@ -1,18 +1,15 @@
 use super::{
     FilterColumnScope, FilterExpr, FilterLiteral, FragmentPlan, NestedRelation, OrderByPlan,
-    PlannedFile, Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
-    SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    PlanDiagnostic, PlanDiagnosticKind, PlannedFile, Projection, QueryPlan, SelectionClauses,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
 };
 use crate::{
     VariableRole,
-    catalog::{Catalog, FieldCheckResult, TableId, TableKey, TableResolution},
+    catalog::{Catalog, FieldCheckResult, TableId, TableResolution},
     definition::{
         DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
     },
-    syntax::{
-        Definition, Diagnostic, DiagnosticCode, DiagnosticSource, Selection, SelectionKind,
-        Severity, SourceFile,
-    },
+    syntax::{Definition, Selection, SelectionKind, SourceFile},
     variable_path::{
         InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
     },
@@ -66,23 +63,20 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
                         });
                     }
                 }
-                TableResolution::NotFound { reference } => diagnostics.push(planner_diagnostic(
-                    selection.name.range,
-                    DiagnosticCode::TableNotFound,
-                    format!("table `{reference}` not found"),
-                )),
+                TableResolution::NotFound { reference } => diagnostics.push(PlanDiagnostic {
+                    range: selection.name.range,
+                    kind: PlanDiagnosticKind::TableNotFound { table: reference },
+                }),
                 TableResolution::Ambiguous {
                     reference,
                     candidates,
-                } => diagnostics.push(planner_diagnostic(
-                    selection.name.range,
-                    DiagnosticCode::AmbiguousTable,
-                    format!(
-                        "table `{}` is ambiguous; use an alias with a schema-qualified name ({})",
-                        reference,
-                        format_table_candidates(&candidates)
-                    ),
-                )),
+                } => diagnostics.push(PlanDiagnostic {
+                    range: selection.name.range,
+                    kind: PlanDiagnosticKind::AmbiguousTable {
+                        table: reference,
+                        candidates,
+                    },
+                }),
             }
         }
     }
@@ -102,11 +96,12 @@ pub fn plan_query_definition(
     let mut diagnostics = Vec::new();
     for selection in &query.selections {
         if selection.kind == SelectionKind::FragmentSpread {
-            diagnostics.push(planner_diagnostic(
-                selection.name.range,
-                DiagnosticCode::UnknownFragment,
-                format!("fragment `{}` not found", selection.name.text),
-            ));
+            diagnostics.push(PlanDiagnostic {
+                range: selection.name.range,
+                kind: PlanDiagnosticKind::UnknownFragment {
+                    fragment: selection.name.text.clone(),
+                },
+            });
             continue;
         }
         match catalog.resolve_table_ref(&selection.name.text) {
@@ -143,23 +138,20 @@ pub fn plan_query_definition(
                     });
                 }
             }
-            TableResolution::NotFound { reference } => diagnostics.push(planner_diagnostic(
-                selection.name.range,
-                DiagnosticCode::TableNotFound,
-                format!("table `{reference}` not found"),
-            )),
+            TableResolution::NotFound { reference } => diagnostics.push(PlanDiagnostic {
+                range: selection.name.range,
+                kind: PlanDiagnosticKind::TableNotFound { table: reference },
+            }),
             TableResolution::Ambiguous {
                 reference,
                 candidates,
-            } => diagnostics.push(planner_diagnostic(
-                selection.name.range,
-                DiagnosticCode::AmbiguousTable,
-                format!(
-                    "table `{}` is ambiguous; use an alias with a schema-qualified name ({})",
-                    reference,
-                    format_table_candidates(&candidates)
-                ),
-            )),
+            } => diagnostics.push(PlanDiagnostic {
+                range: selection.name.range,
+                kind: PlanDiagnosticKind::AmbiguousTable {
+                    table: reference,
+                    candidates,
+                },
+            }),
         }
     }
     diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
@@ -179,26 +171,23 @@ pub fn plan_fragment_definition(
         Some(on) => match catalog.resolve_table_ref(on) {
             TableResolution::Found(table) => table.id,
             TableResolution::NotFound { reference } => {
-                diagnostics.push(planner_diagnostic(
-                    fragment.on_range.unwrap_or(fragment.range),
-                    DiagnosticCode::TableNotFound,
-                    format!("table `{reference}` not found"),
-                ));
+                diagnostics.push(PlanDiagnostic {
+                    range: fragment.on_range.unwrap_or(fragment.range),
+                    kind: PlanDiagnosticKind::TableNotFound { table: reference },
+                });
                 return None;
             }
             TableResolution::Ambiguous {
                 reference,
                 candidates,
             } => {
-                diagnostics.push(planner_diagnostic(
-                    fragment.on_range.unwrap_or(fragment.range),
-                    DiagnosticCode::AmbiguousTable,
-                    format!(
-                        "table `{}` is ambiguous; use an alias with a schema-qualified name ({})",
-                        reference,
-                        format_table_candidates(&candidates)
-                    ),
-                ));
+                diagnostics.push(PlanDiagnostic {
+                    range: fragment.on_range.unwrap_or(fragment.range),
+                    kind: PlanDiagnosticKind::AmbiguousTable {
+                        table: reference,
+                        candidates,
+                    },
+                });
                 return None;
             }
         },
@@ -227,7 +216,7 @@ fn plan_selection_set(
     selection_path: SelectionPath,
     variable_scope: &VariablePathScope,
     selections: &[Selection],
-    diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<PlanDiagnostic>,
 ) -> Option<SelectionPlan> {
     let mut items = Vec::new();
     for selection in selections {
@@ -297,15 +286,13 @@ fn plan_selection_set(
             FieldCheckResult::AmbiguousRelation {
                 reference,
                 candidates,
-            } => diagnostics.push(planner_diagnostic(
-                selection.name.range,
-                DiagnosticCode::AmbiguousRelation,
-                format!(
-                    "relation `{}` has multiple foreign-key paths; use one of: {}",
-                    reference,
-                    candidates.join(", ")
-                ),
-            )),
+            } => diagnostics.push(PlanDiagnostic {
+                range: selection.name.range,
+                kind: PlanDiagnosticKind::AmbiguousRelation {
+                    relation: reference,
+                    candidates,
+                },
+            }),
         }
     }
     Some(SelectionPlan {
@@ -918,28 +905,6 @@ fn postgres_operator(op: crate::BinaryOp) -> Option<&'static str> {
         crate::BinaryOp::Like => Some("like"),
         crate::BinaryOp::And | crate::BinaryOp::Or => None,
     }
-}
-
-fn planner_diagnostic(
-    range: crate::TextRange,
-    code: DiagnosticCode,
-    message: impl Into<String>,
-) -> Diagnostic {
-    Diagnostic {
-        range,
-        severity: Severity::Error,
-        code,
-        message: message.into(),
-        source: DiagnosticSource::Check,
-    }
-}
-
-fn format_table_candidates(candidates: &[TableKey]) -> String {
-    candidates
-        .iter()
-        .map(|candidate| format!("{}.{}", candidate.schema, candidate.table))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn response_key(selection: &Selection) -> String {

@@ -10,6 +10,7 @@ pub use ast::{
     QueryDef, ScopedPath, ScopedPathSegment, Selection, SelectionKind, SortDirection,
     SortDirectionExpr, SourceFile, ValueVariable, VariableScope, WhereClause,
 };
+pub(crate) use diagnostics::source_span;
 pub use diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity};
 pub use grammar::lexer::Token;
 pub use parse::{

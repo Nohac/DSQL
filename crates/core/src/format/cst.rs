@@ -1,8 +1,5 @@
-use super::{FormatConfidence, FormattedText};
-use crate::syntax::{
-    CstKind, Diagnostic, DiagnosticCode, DiagnosticSource, ParseResult, Severity, SyntaxNode,
-    SyntaxRule, SyntaxToken, TextRange,
-};
+use super::{FormatConfidence, FormatDiagnostic, FormattedText};
+use crate::syntax::{CstKind, ParseResult, SyntaxNode, SyntaxRule, SyntaxToken, TextRange};
 
 const DEFAULT_FORMAT_LINE_WIDTH: usize = 100;
 
@@ -11,15 +8,11 @@ pub fn format_file(parse: &ParseResult) -> FormattedText {
         return FormattedText {
             text: original_text(parse),
             confidence: FormatConfidence::PreserveOriginal,
-            diagnostics: vec![Diagnostic {
+            diagnostics: vec![FormatDiagnostic {
                 range: parse
                     .diagnostics
                     .first()
                     .map_or(TextRange::default(), |diag| diag.range),
-                severity: Severity::Error,
-                code: DiagnosticCode::FormatParseError,
-                message: "refusing to format a file with parse errors".to_string(),
-                source: DiagnosticSource::Format,
             }],
         };
     }

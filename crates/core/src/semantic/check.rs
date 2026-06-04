@@ -62,10 +62,7 @@ pub fn check_fragment_definition(
 
 fn checked(mut errors: Vec<CheckError>) -> CheckedFile {
     errors.sort_by_key(|error| (error.range.start, error.range.end));
-    let mut diagnostics = errors
-        .iter()
-        .map(|error| error.to_diagnostic())
-        .collect::<Vec<_>>();
+    let mut diagnostics = errors.clone();
     diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
     CheckedFile {
         errors,
@@ -660,6 +657,7 @@ fn unqualified_name(name: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DsqlDiagnostic;
     use crate::syntax::{Diagnostic, DiagnosticCode, parse_source};
 
     fn diagnostics(source: &str) -> Vec<Diagnostic> {
@@ -669,7 +667,11 @@ mod tests {
             "parse diagnostics: {:?}",
             parsed.diagnostics
         );
-        check_file(&parsed.source_file).diagnostics
+        check_file(&parsed.source_file)
+            .diagnostics
+            .iter()
+            .map(DsqlDiagnostic::to_transport)
+            .collect()
     }
 
     #[test]

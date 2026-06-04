@@ -1,7 +1,7 @@
 use dsql_core::{
-    Catalog, Diagnostic, PostgresSqlOptions, Severity, SourceSnapshot, check_file_with_catalog,
-    format_file, generate_postgres_sql_with_options, lint_file_with_catalog, parse_source,
-    plan_file_with_catalog,
+    Catalog, Diagnostic, DsqlDiagnostic, PostgresSqlOptions, Severity, SourceSnapshot,
+    check_file_with_catalog, format_file, generate_postgres_sql_with_options,
+    lint_file_with_catalog, parse_source, plan_file_with_catalog,
 };
 use insta::Settings;
 use sqlx::{Row, postgres::PgPoolOptions};
@@ -75,11 +75,8 @@ fn invalid_query_fixtures_report_diagnostics_against_imdb_schema() {
         let source = fs::read_to_string(&fixture).unwrap();
         let parsed = parse_source(SourceSnapshot::from_string(source));
         let checked = check_file_with_catalog(&parsed.source_file, &catalog);
-        let diagnostics = parsed
-            .diagnostics
-            .iter()
-            .chain(checked.diagnostics.iter())
-            .collect::<Vec<_>>();
+        let mut diagnostics = parsed.diagnostics.clone();
+        diagnostics.extend(checked.diagnostics.iter().map(DsqlDiagnostic::to_transport));
 
         assert!(
             diagnostics
@@ -252,7 +249,7 @@ fn snapshot_name(fixture: &Path, phase: &str) -> String {
     format!("fixtures__{stem}_{phase}")
 }
 
-fn format_diagnostics(diagnostics: &[&Diagnostic]) -> String {
+fn format_diagnostics(diagnostics: &[Diagnostic]) -> String {
     let mut output = String::new();
     for diagnostic in diagnostics {
         output.push_str(&format!(
@@ -276,11 +273,14 @@ fn assert_no_diagnostics(fixture: &Path, phase: &str, diagnostics: &[Diagnostic]
     );
 }
 
-fn assert_no_error_diagnostics(fixture: &Path, phase: &str, diagnostics: &[Diagnostic]) {
+fn assert_no_error_diagnostics<D>(fixture: &Path, phase: &str, diagnostics: &[D])
+where
+    D: DsqlDiagnostic + std::fmt::Debug,
+{
     assert!(
         diagnostics
             .iter()
-            .all(|diagnostic| diagnostic.severity != Severity::Error),
+            .all(|diagnostic| DsqlDiagnostic::severity(diagnostic) != Severity::Error),
         "{} {phase} diagnostics: {diagnostics:?}",
         fixture.display()
     );

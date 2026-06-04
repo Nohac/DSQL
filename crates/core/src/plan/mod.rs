@@ -6,6 +6,6 @@ pub use build::{
 };
 pub use types::{
     FilterColumnScope, FilterExpr, FilterLiteral, FragmentPlan, NestedRelation, OrderByPlan,
-    PlannedFile, Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
-    SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    PlanDiagnostic, PlanDiagnosticKind, PlannedFile, Projection, QueryPlan, SelectionClauses,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
 };

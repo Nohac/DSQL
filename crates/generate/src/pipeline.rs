@@ -1,10 +1,10 @@
 use dsql_core::{
-    Catalog, DefinitionRecord, DefinitionResolver, Diagnostic, FieldCheckResult, FragmentMap,
-    FragmentRecord, InputPathSegment, QueryPlan, QueryRecord, Selection, SelectionClauses,
-    SelectionKind, SelectionPlan, SelectionPlanItem, Severity, SourceSnapshot, SqlValue, TableId,
-    VariableBinding, check_fragment_definition, check_query_definition, extract_definitions,
-    generate_postgres_sql_with_options, infer_fragment_variable_bindings,
-    infer_query_variable_bindings, is_input_path, is_params_path,
+    Catalog, CompilerDiagnostic, DefinitionRecord, DefinitionResolver, Diagnostic, DsqlDiagnostic,
+    FieldCheckResult, FragmentMap, FragmentRecord, InputPathSegment, QueryPlan, QueryRecord,
+    Selection, SelectionClauses, SelectionKind, SelectionPlan, SelectionPlanItem, Severity,
+    SourceSnapshot, SqlValue, TableId, VariableBinding, check_fragment_definition,
+    check_query_definition, extract_definitions, generate_postgres_sql_with_options,
+    infer_fragment_variable_bindings, infer_query_variable_bindings, is_input_path, is_params_path,
     lint_query_definition_with_options, parse_source, plan_fragment_definition,
     plan_query_definition,
 };
@@ -16,13 +16,13 @@ use dsql_metadata::{
     SqlVariantMetadata,
 };
 use facet::Facet;
-use miette::Result;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
 
 use crate::{
+    GenerateError, Result,
     artifacts::{
         ArtifactWriter, FragmentArtifact, OperationArtifact, WrittenArtifacts,
         WrittenFragmentArtifact, WrittenOperationArtifact,
@@ -108,10 +108,9 @@ where
     R: GeneratorRunner,
 {
     if input.documents.is_empty() {
-        return Err(miette::miette!(
-            "no dsql documents found in project {}",
-            project_root(&input.project).display()
-        ));
+        return Err(GenerateError::NoDocuments {
+            project: project_root(&input.project).display().to_string(),
+        });
     }
 
     let built = build_artifacts(&input)?;
@@ -151,7 +150,8 @@ where
         if typescript.cmd.is_empty() {
             return Err(miette::miette!(
                 "generate.typescript.enabled requires generate.typescript.cmd"
-            ));
+            )
+            .into());
         }
         let base = project_root(&input.project);
         let target = GenerateTarget {
@@ -176,10 +176,9 @@ where
 
 pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<GeneratedArtifacts> {
     if input.documents.is_empty() {
-        return Err(miette::miette!(
-            "no dsql documents found in project {}",
-            project_root(&input.project).display()
-        ));
+        return Err(GenerateError::NoDocuments {
+            project: project_root(&input.project).display().to_string(),
+        });
     }
 
     let built = build_artifacts(&input)?;
@@ -299,9 +298,19 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
             checked
                 .diagnostics
                 .into_iter()
-                .chain(linted.diagnostics)
-                .chain(planned.diagnostics)
-                .map(|diagnostic| query_validation_diagnostic(query, diagnostic)),
+                .map(|diagnostic| query_validation_diagnostic(query, diagnostic))
+                .chain(
+                    linted
+                        .diagnostics
+                        .into_iter()
+                        .map(|diagnostic| query_validation_diagnostic(query, diagnostic)),
+                )
+                .chain(
+                    planned
+                        .diagnostics
+                        .into_iter()
+                        .map(|diagnostic| query_validation_diagnostic(query, diagnostic)),
+                ),
         );
         if let Some(query_name) = query.query.key.name.as_deref() {
             let variables =
@@ -342,23 +351,23 @@ fn validation_diagnostic(
 
 fn query_validation_diagnostic(
     query: &LoadedQuery,
-    diagnostic: Diagnostic,
+    diagnostic: impl DsqlDiagnostic,
 ) -> ValidationDiagnostic {
     ValidationDiagnostic {
         file: query.file.clone(),
         source_offset: query.source_offset,
-        diagnostic,
+        diagnostic: diagnostic.to_transport(),
     }
 }
 
 fn fragment_validation_diagnostic(
     fragment: &LoadedFragment,
-    diagnostic: Diagnostic,
+    diagnostic: impl DsqlDiagnostic,
 ) -> ValidationDiagnostic {
     ValidationDiagnostic {
         file: fragment.file.clone(),
         source_offset: fragment.source_offset,
-        diagnostic,
+        diagnostic: diagnostic.to_transport(),
     }
 }
 
@@ -372,11 +381,11 @@ fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
     let mut fragments = FragmentMap::default();
     let mut queries = Vec::<LoadedQuery>::new();
     let mut loaded_fragments = Vec::<LoadedFragment>::new();
-    let mut parse_diagnostics = Vec::<Diagnostic>::new();
+    let mut parse_diagnostics = Vec::<CompilerDiagnostic>::new();
 
     for document in &input.documents {
         let parsed = parse_source(SourceSnapshot::from_string(document.text.clone()));
-        parse_diagnostics.extend(parsed.diagnostics.clone());
+        parse_diagnostics.extend(parsed.diagnostics.clone().into_iter().map(Into::into));
         let extracted = extract_definitions(&parsed.source_file);
         for definition in extracted.definitions {
             match definition {
@@ -442,9 +451,19 @@ fn build_query_operations(
     let planned = plan_query_definition(&query.query, fragments, catalog);
 
     let mut diagnostics = Vec::new();
-    diagnostics.extend(checked.diagnostics);
-    diagnostics.extend(linted.diagnostics);
-    diagnostics.extend(planned.diagnostics);
+    diagnostics.extend(
+        checked
+            .diagnostics
+            .into_iter()
+            .map(CompilerDiagnostic::from),
+    );
+    diagnostics.extend(linted.diagnostics.into_iter().map(CompilerDiagnostic::from));
+    diagnostics.extend(
+        planned
+            .diagnostics
+            .into_iter()
+            .map(CompilerDiagnostic::from),
+    );
     fail_on_error_diagnostics(diagnostics)?;
 
     let query_name = query
@@ -536,7 +555,13 @@ fn build_fragment_artifact(
     fragment: &LoadedFragment,
 ) -> Result<FragmentArtifact> {
     let checked = check_fragment_definition(&fragment.fragment, fragments, catalog);
-    fail_on_error_diagnostics(checked.diagnostics)?;
+    fail_on_error_diagnostics(
+        checked
+            .diagnostics
+            .into_iter()
+            .map(CompilerDiagnostic::from)
+            .collect(),
+    )?;
     let fragment_name = &fragment.fragment.key.name;
     let plan = plan_fragment_definition(&fragment.fragment, fragments, catalog)
         .ok_or_else(|| miette::miette!("fragment `{fragment_name}` cannot be planned"))?;
@@ -648,7 +673,8 @@ fn validate_variable_bindings(query_name: &str, variables: &[VariableBinding]) -
             return Err(miette::miette!(
                 "query `{query_name}` has multiple anonymous variables for `{}`; name one of them to disambiguate",
                 previous.path
-            ));
+            )
+            .into());
         }
     }
     Ok(())
@@ -683,28 +709,31 @@ fn manifest_from_written_artifacts(
     }
 }
 
-fn fail_on_error_diagnostics(mut diagnostics: Vec<Diagnostic>) -> Result<()> {
-    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+fn fail_on_error_diagnostics(mut diagnostics: Vec<CompilerDiagnostic>) -> Result<()> {
+    diagnostics.sort_by_key(|diagnostic| {
+        let range = DsqlDiagnostic::range(diagnostic);
+        (range.start, range.end)
+    });
     let errors = diagnostics
         .into_iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .filter(|diagnostic| DsqlDiagnostic::severity(diagnostic) == Severity::Error)
         .collect::<Vec<_>>();
     if errors.is_empty() {
         return Ok(());
     }
 
-    let mut message = String::from("cannot generate while diagnostics contain errors");
+    let mut details = String::new();
     for diagnostic in errors {
-        message.push_str(&format!(
+        details.push_str(&format!(
             "\n{:?} {:?} {}..{}: {}",
-            diagnostic.source,
-            diagnostic.code,
-            diagnostic.range.start,
-            diagnostic.range.end,
-            diagnostic.message
+            DsqlDiagnostic::source(&diagnostic),
+            DsqlDiagnostic::code(&diagnostic),
+            DsqlDiagnostic::range(&diagnostic).start,
+            DsqlDiagnostic::range(&diagnostic).end,
+            diagnostic
         ));
     }
-    Err(miette::miette!("{message}"))
+    Err(GenerateError::LanguageDiagnostics { details })
 }
 
 fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {

@@ -440,6 +440,7 @@ dependencies = [
  "dsql-core",
  "miette",
  "regex",
+ "thiserror",
 ]
 
 [[package]]
@@ -468,6 +469,7 @@ dependencies = [
  "facet-json",
  "glob",
  "miette",
+ "thiserror",
  "tokio",
 ]
 
@@ -511,9 +513,12 @@ name = "dsql-project"
 version = "0.1.0"
 dependencies = [
  "dsql-core",
+ "dsql-embedding",
  "facet",
  "facet-toml",
+ "glob",
  "miette",
+ "thiserror",
 ]
 
 [[package]]

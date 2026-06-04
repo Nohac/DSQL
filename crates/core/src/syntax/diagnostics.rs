@@ -1,5 +1,7 @@
 use super::TextRange;
 use facet::Facet;
+use miette::{LabeledSpan, SourceSpan};
+use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct Diagnostic {
@@ -49,6 +51,7 @@ pub enum DiagnosticSource {
     Lower,
     Check,
     Lint,
+    Plan,
     Format,
 }
 
@@ -62,4 +65,36 @@ impl Diagnostic {
             source: DiagnosticSource::Parse,
         }
     }
+}
+
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Diagnostic {}
+
+impl miette::Diagnostic for Diagnostic {
+    fn code<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        Some(Box::new(format!("{:?}", self.code)))
+    }
+
+    fn severity(&self) -> Option<miette::Severity> {
+        Some(match self.severity {
+            Severity::Error => miette::Severity::Error,
+            Severity::Warning => miette::Severity::Warning,
+            Severity::Info => miette::Severity::Advice,
+        })
+    }
+
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
+        Some(Box::new(std::iter::once(LabeledSpan::underline(
+            source_span(self.range),
+        ))))
+    }
+}
+
+pub(crate) fn source_span(range: TextRange) -> SourceSpan {
+    (range.start as usize, (range.end - range.start) as usize).into()
 }

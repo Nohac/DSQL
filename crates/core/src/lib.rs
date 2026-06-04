@@ -1,5 +1,6 @@
 pub mod catalog;
 pub mod definition;
+mod diagnostics;
 pub mod format;
 pub mod lint;
 pub mod plan;
@@ -22,21 +23,24 @@ pub use definition::{
     DefinitionRecord, DefinitionResolver, ExtractedFile, FragmentKey, FragmentMap, FragmentRecord,
     FragmentSpreadRef, QueryKey, QueryRecord, extract_definitions,
 };
-pub use format::{FormatConfidence, FormattedText, format_file};
+pub use diagnostics::{CompilerDiagnostic, DsqlDiagnostic};
+pub use format::{FormatConfidence, FormatDiagnostic, FormattedText, format_file};
 pub use lint::{
-    LintOptions, LintedDefinition, LintedFile, lint_file, lint_file_with_catalog,
-    lint_file_with_options, lint_fragment_definition, lint_fragment_definition_with_options,
-    lint_query_definition, lint_query_definition_with_options,
+    LintDiagnostic, LintDiagnosticKind, LintOptions, LintedDefinition, LintedFile, lint_file,
+    lint_file_with_catalog, lint_file_with_options, lint_fragment_definition,
+    lint_fragment_definition_with_options, lint_query_definition,
+    lint_query_definition_with_options,
 };
 pub use plan::{
     FilterColumnScope, FilterExpr, FilterLiteral, FragmentPlan, NestedRelation, OrderByPlan,
-    PlannedFile, Projection, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
-    SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase, plan_file, plan_file_with_catalog,
-    plan_fragment_definition, plan_query_definition,
+    PlanDiagnostic, PlanDiagnosticKind, PlannedFile, Projection, QueryPlan, SelectionClauses,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    plan_file, plan_file_with_catalog, plan_fragment_definition, plan_query_definition,
 };
 pub use semantic::{
-    CheckError, CheckErrorKind, CheckedDefinition, CheckedFile, Interner, LoweredFile, NameId,
-    NameIndex, VariableBinding, VariableBindings, VariableRole, VariableSource, check_file,
+    CheckDiagnostic, CheckDiagnosticKind, CheckError, CheckErrorKind, CheckedDefinition,
+    CheckedFile, Interner, LowerDiagnostic, LowerDiagnosticKind, LoweredFile, NameId, NameIndex,
+    VariableBinding, VariableBindings, VariableRole, VariableSource, check_file,
     check_file_with_catalog, check_fragment_definition, check_query_definition,
     infer_fragment_variable_bindings, infer_query_variable_bindings, infer_variable_bindings,
     lower_file,

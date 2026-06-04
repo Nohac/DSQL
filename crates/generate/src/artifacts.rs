@@ -1,5 +1,6 @@
 use dsql_metadata::{BuildManifest, FragmentMetadata, OperationMetadata};
-use miette::Result;
+
+use crate::ArtifactError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ArtifactRef {
@@ -45,9 +46,18 @@ pub(crate) struct WrittenArtifacts {
 
 #[allow(async_fn_in_trait)]
 pub(crate) trait ArtifactWriter {
-    async fn write_operation(&self, operation: &OperationArtifact) -> Result<ArtifactRef>;
+    async fn write_operation(
+        &self,
+        operation: &OperationArtifact,
+    ) -> std::result::Result<ArtifactRef, ArtifactError>;
 
-    async fn write_fragment(&self, fragment: &FragmentArtifact) -> Result<ArtifactRef>;
+    async fn write_fragment(
+        &self,
+        fragment: &FragmentArtifact,
+    ) -> std::result::Result<ArtifactRef, ArtifactError>;
 
-    async fn write_manifest(&self, manifest: &BuildManifest) -> Result<ArtifactRef>;
+    async fn write_manifest(
+        &self,
+        manifest: &BuildManifest,
+    ) -> std::result::Result<ArtifactRef, ArtifactError>;
 }

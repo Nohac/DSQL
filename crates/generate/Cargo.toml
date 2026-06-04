@@ -17,4 +17,5 @@ facet = { workspace = true }
 facet-json = { workspace = true }
 glob = { workspace = true }
 miette = { workspace = true, features = ["fancy"] }
+thiserror = { workspace = true }
 tokio = { workspace = true }

@@ -1,6 +1,6 @@
 use dsql_core::{
-    Catalog, Diagnostic, Interner, SourceSnapshot, check_file_with_catalog, lint_file_with_catalog,
-    lower_file, parse_source, plan_file_with_catalog,
+    Catalog, Diagnostic, DsqlDiagnostic, Interner, SourceSnapshot, check_file_with_catalog,
+    lint_file_with_catalog, lower_file, parse_source, plan_file_with_catalog,
 };
 
 use crate::db::AnalysisResult;
@@ -32,15 +32,15 @@ pub fn collect_diagnostics(analysis: &AnalysisResult) -> Vec<Diagnostic> {
 
 pub(crate) fn collect_diagnostics_parts(
     parse: &[Diagnostic],
-    lower: &[Diagnostic],
-    check: &[Diagnostic],
-    lint: &[Diagnostic],
+    lower: &[dsql_core::LowerDiagnostic],
+    check: &[dsql_core::CheckDiagnostic],
+    lint: &[dsql_core::LintDiagnostic],
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     diagnostics.extend(parse.iter().cloned());
-    diagnostics.extend(lower.iter().cloned());
-    diagnostics.extend(check.iter().cloned());
-    diagnostics.extend(lint.iter().cloned());
+    diagnostics.extend(lower.iter().map(DsqlDiagnostic::to_transport));
+    diagnostics.extend(check.iter().map(DsqlDiagnostic::to_transport));
+    diagnostics.extend(lint.iter().map(DsqlDiagnostic::to_transport));
     diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
     diagnostics
 }
