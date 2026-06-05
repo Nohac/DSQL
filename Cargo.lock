@@ -461,6 +461,7 @@ dependencies = [
 name = "dsql-generate"
 version = "0.1.0"
 dependencies = [
+ "camino",
  "dsql-core",
  "dsql-embedding",
  "dsql-metadata",

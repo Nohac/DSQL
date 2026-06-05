@@ -13,6 +13,7 @@ dsql-core = { workspace = true }
 dsql-embedding = { workspace = true }
 dsql-metadata = { workspace = true }
 dsql-project = { workspace = true }
+camino = { workspace = true }
 facet = { workspace = true }
 facet-json = { workspace = true }
 glob = { workspace = true }

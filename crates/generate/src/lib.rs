@@ -50,6 +50,8 @@ pub enum ArtifactError {
         path: std::path::PathBuf,
         source: std::io::Error,
     },
+    #[error("artifact path is not valid UTF-8: {path}")]
+    NonUtf8Path { path: std::path::PathBuf },
 }
 
 impl miette::Diagnostic for ArtifactError {}

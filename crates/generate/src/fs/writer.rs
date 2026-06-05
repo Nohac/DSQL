@@ -1,3 +1,4 @@
+use camino::Utf8Path;
 use dsql_metadata::BuildManifest;
 use std::path::{Path, PathBuf};
 
@@ -28,6 +29,22 @@ impl FsArtifactWriter {
     fn fragment_path(&self, fragment: &FragmentArtifact) -> PathBuf {
         fragment_artifact_path(&self.build_dir, &fragment.metadata.name)
     }
+
+    async fn write_build_artifact<T>(
+        &self,
+        path: PathBuf,
+        metadata: &T,
+    ) -> std::result::Result<ArtifactRef, ArtifactError>
+    where
+        T: facet::Facet<'static>,
+    {
+        if let Some(parent) = path.parent() {
+            create_dir_all(parent).await?;
+        }
+        write_json(&path, metadata).await?;
+        let relative = path.strip_prefix(&self.build_dir).unwrap_or(&path);
+        artifact_ref_from_path(relative)
+    }
 }
 
 impl ArtifactWriter for FsArtifactWriter {
@@ -35,36 +52,16 @@ impl ArtifactWriter for FsArtifactWriter {
         &self,
         operation: &OperationArtifact,
     ) -> std::result::Result<ArtifactRef, ArtifactError> {
-        let path = self.operation_path(operation);
-        if let Some(parent) = path.parent() {
-            create_dir_all(parent).await?;
-        }
-        write_json(&path, &operation.metadata).await?;
-        Ok(ArtifactRef {
-            path: path
-                .strip_prefix(&self.build_dir)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string(),
-        })
+        self.write_build_artifact(self.operation_path(operation), &operation.metadata)
+            .await
     }
 
     async fn write_fragment(
         &self,
         fragment: &FragmentArtifact,
     ) -> std::result::Result<ArtifactRef, ArtifactError> {
-        let path = self.fragment_path(fragment);
-        if let Some(parent) = path.parent() {
-            create_dir_all(parent).await?;
-        }
-        write_json(&path, &fragment.metadata).await?;
-        Ok(ArtifactRef {
-            path: path
-                .strip_prefix(&self.build_dir)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string(),
-        })
+        self.write_build_artifact(self.fragment_path(fragment), &fragment.metadata)
+            .await
     }
 
     async fn write_manifest(
@@ -74,10 +71,17 @@ impl ArtifactWriter for FsArtifactWriter {
         create_dir_all(&self.build_dir).await?;
         let path = manifest_path(&self.build_dir);
         write_json(&path, manifest).await?;
-        Ok(ArtifactRef {
-            path: path.to_string_lossy().to_string(),
-        })
+        artifact_ref_from_path(&path)
     }
+}
+
+fn artifact_ref_from_path(path: &Path) -> std::result::Result<ArtifactRef, ArtifactError> {
+    let path = Utf8Path::from_path(path).ok_or_else(|| ArtifactError::NonUtf8Path {
+        path: path.to_path_buf(),
+    })?;
+    Ok(ArtifactRef {
+        path: path.as_str().to_string(),
+    })
 }
 
 async fn write_json<T>(path: &Path, value: &T) -> std::result::Result<(), ArtifactError>
