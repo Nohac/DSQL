@@ -494,6 +494,7 @@ fn push_unique_constraint(unique_constraints: &mut Vec<Vec<ColumnId>>, columns: 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_foreign_key(
     foreign_keys: &mut Vec<ForeignKey>,
     tables: &mut [Table],

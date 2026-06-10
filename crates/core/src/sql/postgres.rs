@@ -295,6 +295,7 @@ fn generate_selection(
     Ok(query.to_owned())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn limited_source_query(
     catalog: &Catalog,
     table: &Table,

@@ -23,7 +23,11 @@ pub use definition::{
     DefinitionRecord, DefinitionResolver, ExtractedFile, FragmentKey, FragmentMap, FragmentRecord,
     FragmentSpreadRef, QueryKey, QueryRecord, extract_definitions,
 };
-pub use diagnostics::{CompilerDiagnostic, DsqlDiagnostic};
+pub use diagnostics::{
+    CompilerDiagnostic, DsqlDiagnostic, collect_checked_compiler_diagnostics,
+    collect_file_compiler_diagnostics, collect_query_compiler_diagnostics,
+    extend_compiler_diagnostics, sort_compiler_diagnostics,
+};
 pub use format::{FormatConfidence, FormatDiagnostic, FormattedText, format_file};
 pub use lint::{
     LintDiagnostic, LintDiagnosticKind, LintOptions, LintedDefinition, LintedFile, lint_file,

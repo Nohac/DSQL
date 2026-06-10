@@ -3,15 +3,33 @@ use crate::{
     lint::LintDiagnostic,
     plan::PlanDiagnostic,
     semantic::{CheckDiagnostic, LowerDiagnostic},
-    syntax::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity, TextRange},
+    syntax::{Diagnostic, DiagnosticCode, DiagnosticSource, ParseResult, Severity, TextRange},
 };
+use enum_dispatch::enum_dispatch;
 use facet::Facet;
 
+#[enum_dispatch(CompilerDiagnostic)]
 pub trait DsqlDiagnostic: std::error::Error + miette::Diagnostic {
     fn range(&self) -> TextRange;
     fn severity(&self) -> Severity;
     fn code(&self) -> DiagnosticCode;
     fn source(&self) -> DiagnosticSource;
+
+    fn fmt_display(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+
+    fn miette_code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        miette::Diagnostic::code(self)
+    }
+
+    fn miette_severity(&self) -> Option<miette::Severity> {
+        miette::Diagnostic::severity(self)
+    }
+
+    fn miette_labels(&self) -> Option<Box<dyn Iterator<Item = miette::LabeledSpan> + '_>> {
+        miette::Diagnostic::labels(self)
+    }
 
     fn to_transport(&self) -> Diagnostic {
         Diagnostic {
@@ -42,6 +60,7 @@ impl DsqlDiagnostic for Diagnostic {
     }
 }
 
+#[enum_dispatch]
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 #[repr(C)]
 pub enum CompilerDiagnostic {
@@ -53,62 +72,9 @@ pub enum CompilerDiagnostic {
     Format(FormatDiagnostic),
 }
 
-impl DsqlDiagnostic for CompilerDiagnostic {
-    fn range(&self) -> TextRange {
-        match self {
-            CompilerDiagnostic::Parse(diagnostic) => diagnostic.range(),
-            CompilerDiagnostic::Lower(diagnostic) => diagnostic.range(),
-            CompilerDiagnostic::Check(diagnostic) => diagnostic.range(),
-            CompilerDiagnostic::Lint(diagnostic) => diagnostic.range(),
-            CompilerDiagnostic::Plan(diagnostic) => diagnostic.range(),
-            CompilerDiagnostic::Format(diagnostic) => diagnostic.range(),
-        }
-    }
-
-    fn severity(&self) -> Severity {
-        match self {
-            CompilerDiagnostic::Parse(diagnostic) => diagnostic.severity(),
-            CompilerDiagnostic::Lower(diagnostic) => diagnostic.severity(),
-            CompilerDiagnostic::Check(diagnostic) => diagnostic.severity(),
-            CompilerDiagnostic::Lint(diagnostic) => diagnostic.severity(),
-            CompilerDiagnostic::Plan(diagnostic) => diagnostic.severity(),
-            CompilerDiagnostic::Format(diagnostic) => diagnostic.severity(),
-        }
-    }
-
-    fn code(&self) -> DiagnosticCode {
-        match self {
-            CompilerDiagnostic::Parse(diagnostic) => diagnostic.code(),
-            CompilerDiagnostic::Lower(diagnostic) => diagnostic.code(),
-            CompilerDiagnostic::Check(diagnostic) => diagnostic.code(),
-            CompilerDiagnostic::Lint(diagnostic) => diagnostic.code(),
-            CompilerDiagnostic::Plan(diagnostic) => diagnostic.code(),
-            CompilerDiagnostic::Format(diagnostic) => diagnostic.code(),
-        }
-    }
-
-    fn source(&self) -> DiagnosticSource {
-        match self {
-            CompilerDiagnostic::Parse(diagnostic) => diagnostic.source(),
-            CompilerDiagnostic::Lower(diagnostic) => diagnostic.source(),
-            CompilerDiagnostic::Check(diagnostic) => diagnostic.source(),
-            CompilerDiagnostic::Lint(diagnostic) => diagnostic.source(),
-            CompilerDiagnostic::Plan(diagnostic) => diagnostic.source(),
-            CompilerDiagnostic::Format(diagnostic) => diagnostic.source(),
-        }
-    }
-}
-
 impl std::fmt::Display for CompilerDiagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CompilerDiagnostic::Parse(diagnostic) => diagnostic.fmt(f),
-            CompilerDiagnostic::Lower(diagnostic) => diagnostic.fmt(f),
-            CompilerDiagnostic::Check(diagnostic) => diagnostic.fmt(f),
-            CompilerDiagnostic::Lint(diagnostic) => diagnostic.fmt(f),
-            CompilerDiagnostic::Plan(diagnostic) => diagnostic.fmt(f),
-            CompilerDiagnostic::Format(diagnostic) => diagnostic.fmt(f),
-        }
+        self.fmt_display(f)
     }
 }
 
@@ -116,71 +82,67 @@ impl std::error::Error for CompilerDiagnostic {}
 
 impl miette::Diagnostic for CompilerDiagnostic {
     fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
-        match self {
-            CompilerDiagnostic::Parse(diagnostic) => miette::Diagnostic::code(diagnostic),
-            CompilerDiagnostic::Lower(diagnostic) => miette::Diagnostic::code(diagnostic),
-            CompilerDiagnostic::Check(diagnostic) => miette::Diagnostic::code(diagnostic),
-            CompilerDiagnostic::Lint(diagnostic) => miette::Diagnostic::code(diagnostic),
-            CompilerDiagnostic::Plan(diagnostic) => miette::Diagnostic::code(diagnostic),
-            CompilerDiagnostic::Format(diagnostic) => miette::Diagnostic::code(diagnostic),
-        }
+        self.miette_code()
     }
 
     fn severity(&self) -> Option<miette::Severity> {
-        match self {
-            CompilerDiagnostic::Parse(diagnostic) => miette::Diagnostic::severity(diagnostic),
-            CompilerDiagnostic::Lower(diagnostic) => miette::Diagnostic::severity(diagnostic),
-            CompilerDiagnostic::Check(diagnostic) => miette::Diagnostic::severity(diagnostic),
-            CompilerDiagnostic::Lint(diagnostic) => miette::Diagnostic::severity(diagnostic),
-            CompilerDiagnostic::Plan(diagnostic) => miette::Diagnostic::severity(diagnostic),
-            CompilerDiagnostic::Format(diagnostic) => miette::Diagnostic::severity(diagnostic),
-        }
+        self.miette_severity()
     }
 
     fn labels(&self) -> Option<Box<dyn Iterator<Item = miette::LabeledSpan> + '_>> {
-        match self {
-            CompilerDiagnostic::Parse(diagnostic) => miette::Diagnostic::labels(diagnostic),
-            CompilerDiagnostic::Lower(diagnostic) => miette::Diagnostic::labels(diagnostic),
-            CompilerDiagnostic::Check(diagnostic) => miette::Diagnostic::labels(diagnostic),
-            CompilerDiagnostic::Lint(diagnostic) => miette::Diagnostic::labels(diagnostic),
-            CompilerDiagnostic::Plan(diagnostic) => miette::Diagnostic::labels(diagnostic),
-            CompilerDiagnostic::Format(diagnostic) => miette::Diagnostic::labels(diagnostic),
-        }
+        self.miette_labels()
     }
 }
 
-impl From<Diagnostic> for CompilerDiagnostic {
-    fn from(diagnostic: Diagnostic) -> Self {
-        Self::Parse(diagnostic)
-    }
+pub fn collect_file_compiler_diagnostics(
+    parse: &ParseResult,
+    lower: &crate::LoweredFile,
+    check: &crate::CheckedFile,
+    lint: &crate::LintedFile,
+) -> Vec<CompilerDiagnostic> {
+    let mut diagnostics = Vec::new();
+    extend_compiler_diagnostics(&mut diagnostics, parse.diagnostics.iter().cloned());
+    extend_compiler_diagnostics(&mut diagnostics, lower.diagnostics.iter().cloned());
+    extend_compiler_diagnostics(&mut diagnostics, check.diagnostics.iter().cloned());
+    extend_compiler_diagnostics(&mut diagnostics, lint.diagnostics.iter().cloned());
+    sort_compiler_diagnostics(&mut diagnostics);
+    diagnostics
 }
 
-impl From<LowerDiagnostic> for CompilerDiagnostic {
-    fn from(diagnostic: LowerDiagnostic) -> Self {
-        Self::Lower(diagnostic)
-    }
+pub fn collect_query_compiler_diagnostics(
+    checked: &crate::CheckedDefinition,
+    linted: &crate::LintedDefinition,
+    planned: &crate::PlannedFile,
+) -> Vec<CompilerDiagnostic> {
+    let mut diagnostics = Vec::new();
+    extend_compiler_diagnostics(&mut diagnostics, checked.diagnostics.iter().cloned());
+    extend_compiler_diagnostics(&mut diagnostics, linted.diagnostics.iter().cloned());
+    extend_compiler_diagnostics(&mut diagnostics, planned.diagnostics.iter().cloned());
+    sort_compiler_diagnostics(&mut diagnostics);
+    diagnostics
 }
 
-impl From<CheckDiagnostic> for CompilerDiagnostic {
-    fn from(diagnostic: CheckDiagnostic) -> Self {
-        Self::Check(diagnostic)
-    }
+pub fn collect_checked_compiler_diagnostics(
+    checked: &crate::CheckedDefinition,
+) -> Vec<CompilerDiagnostic> {
+    let mut diagnostics = Vec::new();
+    extend_compiler_diagnostics(&mut diagnostics, checked.diagnostics.iter().cloned());
+    sort_compiler_diagnostics(&mut diagnostics);
+    diagnostics
 }
 
-impl From<LintDiagnostic> for CompilerDiagnostic {
-    fn from(diagnostic: LintDiagnostic) -> Self {
-        Self::Lint(diagnostic)
-    }
+pub fn extend_compiler_diagnostics<T>(
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+    values: impl IntoIterator<Item = T>,
+) where
+    T: Into<CompilerDiagnostic>,
+{
+    diagnostics.extend(values.into_iter().map(Into::into));
 }
 
-impl From<PlanDiagnostic> for CompilerDiagnostic {
-    fn from(diagnostic: PlanDiagnostic) -> Self {
-        Self::Plan(diagnostic)
-    }
-}
-
-impl From<FormatDiagnostic> for CompilerDiagnostic {
-    fn from(diagnostic: FormatDiagnostic) -> Self {
-        Self::Format(diagnostic)
-    }
+pub fn sort_compiler_diagnostics(diagnostics: &mut [CompilerDiagnostic]) {
+    diagnostics.sort_by_key(|diagnostic| {
+        let range = diagnostic.range();
+        (range.start, range.end)
+    });
 }

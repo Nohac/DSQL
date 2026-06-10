@@ -3,7 +3,8 @@ use dsql_core::{
     FieldCheckResult, FragmentMap, FragmentRecord, InputPathSegment, QueryPlan, QueryRecord,
     Selection, SelectionClauses, SelectionKind, SelectionPlan, SelectionPlanItem, Severity,
     SourceSnapshot, SqlValue, TableId, VariableBinding, check_fragment_definition,
-    check_query_definition, extract_definitions, generate_postgres_sql_with_options,
+    check_query_definition, collect_checked_compiler_diagnostics,
+    collect_query_compiler_diagnostics, extract_definitions, generate_postgres_sql_with_options,
     infer_fragment_variable_bindings, infer_query_variable_bindings, is_input_path, is_params_path,
     lint_query_definition_with_options, parse_source, plan_fragment_definition,
     plan_query_definition,
@@ -450,21 +451,9 @@ fn build_query_operations(
     );
     let planned = plan_query_definition(&query.query, fragments, catalog);
 
-    let mut diagnostics = Vec::new();
-    diagnostics.extend(
-        checked
-            .diagnostics
-            .into_iter()
-            .map(CompilerDiagnostic::from),
-    );
-    diagnostics.extend(linted.diagnostics.into_iter().map(CompilerDiagnostic::from));
-    diagnostics.extend(
-        planned
-            .diagnostics
-            .into_iter()
-            .map(CompilerDiagnostic::from),
-    );
-    fail_on_error_diagnostics(diagnostics)?;
+    fail_on_error_diagnostics(collect_query_compiler_diagnostics(
+        &checked, &linted, &planned,
+    ))?;
 
     let query_name = query
         .query
@@ -555,13 +544,7 @@ fn build_fragment_artifact(
     fragment: &LoadedFragment,
 ) -> Result<FragmentArtifact> {
     let checked = check_fragment_definition(&fragment.fragment, fragments, catalog);
-    fail_on_error_diagnostics(
-        checked
-            .diagnostics
-            .into_iter()
-            .map(CompilerDiagnostic::from)
-            .collect(),
-    )?;
+    fail_on_error_diagnostics(collect_checked_compiler_diagnostics(&checked))?;
     let fragment_name = &fragment.fragment.key.name;
     let plan = plan_fragment_definition(&fragment.fragment, fragments, catalog)
         .ok_or_else(|| miette::miette!("fragment `{fragment_name}` cannot be planned"))?;

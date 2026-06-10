@@ -83,6 +83,20 @@ pub struct Config {
 }
 
 #[derive(Clone, Debug, Facet)]
+struct RawConfig {
+    pub database_url: String,
+    #[facet(default = default_schema())]
+    pub default_schema: String,
+    #[facet(default = default_lint_config())]
+    pub lint: LintConfig,
+    #[facet(default = default_generate_config())]
+    pub generate: GenerateConfig,
+    #[facet(default)]
+    pub embedding: BTreeMap<String, EmbeddingConfig>,
+    pub documents: Vec<RawDocumentConfig>,
+}
+
+#[derive(Clone, Debug, Facet)]
 pub struct LintConfig {
     #[facet(default = default_unindexed_scan_severity())]
     pub unindexed_scan_severity: LintSeverity,
@@ -116,8 +130,43 @@ pub enum LintSeverity {
 
 #[derive(Clone, Debug, Facet)]
 pub struct DocumentConfig {
+    pub resolver: DocumentResolver,
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, Facet)]
+struct RawDocumentConfig {
     pub resolver: String,
     pub paths: Vec<String>,
+}
+
+const DSQL_RESOLVER: &str = "dsql";
+const TYPESCRIPT_RESOLVER: &str = "typescript";
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+#[repr(C)]
+pub enum DocumentResolver {
+    Dsql,
+    Typescript,
+    Other(String),
+}
+
+impl DocumentResolver {
+    fn from_config_value(value: String) -> Self {
+        match value.as_str() {
+            DSQL_RESOLVER => Self::Dsql,
+            TYPESCRIPT_RESOLVER => Self::Typescript,
+            _ => Self::Other(value),
+        }
+    }
+
+    fn embedding_name(&self) -> Option<&str> {
+        match self {
+            DocumentResolver::Dsql => None,
+            DocumentResolver::Typescript => Some(TYPESCRIPT_RESOLVER),
+            DocumentResolver::Other(name) => Some(name),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -152,15 +201,9 @@ impl Project {
     }
 
     pub fn load_from(start_dir: &Path) -> Result<Self> {
-        let root = find_root(start_dir).ok_or(ProjectError::MissingRoot)?;
+        let root = require_project_root(find_root(start_dir))?;
         let config_path = root.join("dsql.toml");
-        let config: Config =
-            facet_toml::from_str(&read_to_string(&config_path)?).map_err(|error| {
-                ProjectError::ParseFile {
-                    path: config_path.clone(),
-                    message: error.to_string(),
-                }
-            })?;
+        let config = parse_project_config(&config_path, &read_to_string(&config_path)?)?;
         Ok(Self {
             schema: root.join("schema"),
             root,
@@ -194,6 +237,32 @@ impl Project {
             },
         }
     }
+}
+
+fn require_project_root(root: Option<PathBuf>) -> Result<PathBuf> {
+    root.ok_or(ProjectError::MissingRoot)
+}
+
+fn parse_project_config(path: &Path, text: &str) -> Result<Config> {
+    let raw: RawConfig = facet_toml::from_str(text).map_err(|error| ProjectError::ParseFile {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    Ok(Config {
+        database_url: raw.database_url,
+        default_schema: raw.default_schema,
+        lint: raw.lint,
+        generate: raw.generate,
+        embedding: raw.embedding,
+        documents: raw
+            .documents
+            .into_iter()
+            .map(|document| DocumentConfig {
+                resolver: DocumentResolver::from_config_value(document.resolver),
+                paths: document.paths,
+            })
+            .collect(),
+    })
 }
 
 fn default_schema() -> String {
@@ -343,10 +412,6 @@ pub fn store_metadata_dir(metadata: &DatabaseMetadata, path: &Path) -> Result<()
     })
     .map_err(|error| ProjectError::SerializeTypeMetadata(error.to_string()))?;
     write_file(&path.join("type_map.yaml"), types_yaml)?;
-    let stale_type_map = path.join("type_map.toml");
-    if stale_type_map.exists() {
-        remove_file(&stale_type_map)?;
-    }
     Ok(())
 }
 
@@ -377,16 +442,19 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
             files.sort();
             files.dedup();
 
-            if document_config.resolver == "dsql" {
-                for path in files {
-                    if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
-                        documents.push(read_dsql_document(path)?);
+            match &document_config.resolver {
+                DocumentResolver::Dsql => {
+                    for path in files {
+                        if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
+                            documents.push(read_dsql_document(path)?);
+                        }
                     }
                 }
-            } else {
-                let embedding = embedding_for_resolver(project, &document_config.resolver)?;
-                for path in files {
-                    documents.extend(read_embedded_documents(path, &embedding)?);
+                resolver => {
+                    let embedding = embedding_for_resolver(project, resolver)?;
+                    for path in files {
+                        documents.extend(read_embedded_documents(path, &embedding)?);
+                    }
                 }
             }
         }
@@ -420,14 +488,22 @@ fn read_embedded_documents(
     embedding: &RegexEmbedding,
 ) -> Result<Vec<ProjectDocument>> {
     let source = read_to_string(&path)?;
+    embedded_documents_from_source(&path, &source, embedding)
+}
+
+fn embedded_documents_from_source(
+    path: &Path,
+    source: &str,
+    embedding: &RegexEmbedding,
+) -> Result<Vec<ProjectDocument>> {
     embedding
-        .extract(&source)
+        .extract(source)
         .map_err(|source| ProjectError::EmbeddedExtraction {
-            path: path.clone(),
+            path: path.to_path_buf(),
             source,
         })?
         .into_iter()
-        .map(|region| embedded_document(&path, region))
+        .map(|region| embedded_document(path, region))
         .collect()
 }
 
@@ -439,23 +515,29 @@ fn embedded_document(path: &Path, region: EmbeddedRegion) -> Result<ProjectDocum
     })
 }
 
-fn embedding_for_resolver(project: &Project, resolver: &str) -> Result<RegexEmbedding> {
-    let pattern = if let Some(config) = project.config.embedding.get(resolver) {
+fn embedding_for_resolver(
+    project: &Project,
+    resolver: &DocumentResolver,
+) -> Result<RegexEmbedding> {
+    let resolver_name = resolver
+        .embedding_name()
+        .expect("dsql resolver does not have an embedding");
+    let pattern = if let Some(config) = project.config.embedding.get(resolver_name) {
         match config.strategy {
             EmbeddingStrategy::Regex => {
                 config
                     .pattern
                     .clone()
                     .ok_or_else(|| ProjectError::MissingEmbeddingPattern {
-                        resolver: resolver.to_string(),
+                        resolver: resolver_name.to_string(),
                     })?
             }
         }
-    } else if resolver == "typescript" {
+    } else if matches!(resolver, DocumentResolver::Typescript) {
         default_typescript_regex_pattern()
     } else {
         return Err(ProjectError::MissingEmbeddingConfig {
-            resolver: resolver.to_string(),
+            resolver: resolver_name.to_string(),
         });
     };
     Ok(RegexEmbedding::new(pattern))
@@ -590,90 +672,112 @@ fn remove_file(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn load_from_reports_missing_root_as_typed_error() {
-        let root = temp_root("missing-root");
-        fs::create_dir_all(&root).unwrap();
-
-        let error = Project::load_from(&root).unwrap_err();
+    fn require_project_root_reports_missing_root_as_typed_error() {
+        let error = require_project_root(None).unwrap_err();
 
         assert!(matches!(error, ProjectError::MissingRoot));
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn load_from_reports_invalid_config_as_typed_error() {
-        let root = temp_root("invalid-config");
-        fs::create_dir_all(root.join("dsql")).unwrap();
-        fs::write(root.join("dsql/dsql.toml"), "database_url = [").unwrap();
-
-        let error = Project::load_from(&root).unwrap_err();
+    fn parse_project_config_reports_invalid_config_as_typed_error() {
+        let error =
+            parse_project_config(Path::new("dsql/dsql.toml"), "database_url = [").unwrap_err();
 
         assert!(matches!(error, ProjectError::ParseFile { .. }));
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn project_documents_load_embedded_typescript_regions() {
-        let root = temp_root("embedded-documents");
-        fs::create_dir_all(root.join("dsql")).unwrap();
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(
-            root.join("dsql/dsql.toml"),
+    fn parse_project_config_maps_document_resolvers_to_runtime_enum() {
+        let config = parse_project_config(
+            Path::new("dsql/dsql.toml"),
             r#"database_url = "<database url>"
-documents = [{ resolver = "typescript", paths = ["src/**/*.ts"] }]
+documents = [
+  { resolver = "dsql", paths = ["queries"] },
+  { resolver = "typescript", paths = ["src/**/*.ts"] },
+  { resolver = "custom", paths = ["src/**/*.custom"] },
+]
 "#,
         )
         .unwrap();
+
+        assert_eq!(config.documents[0].resolver, DocumentResolver::Dsql);
+        assert_eq!(config.documents[1].resolver, DocumentResolver::Typescript);
+        assert_eq!(
+            config.documents[2].resolver,
+            DocumentResolver::Other("custom".to_string())
+        );
+    }
+
+    #[test]
+    fn embedded_documents_from_source_loads_typescript_regions() {
         let source = r#"const query = dsql(`
 query Users { users { id } }
 `);
 "#;
-        fs::write(root.join("src/query.ts"), source).unwrap();
+        let embedding = RegexEmbedding::new(default_typescript_regex_pattern());
 
-        let project = Project::load_from(&root).unwrap();
-        let documents = load_project_documents(&project).unwrap();
+        let documents =
+            embedded_documents_from_source(Path::new("src/query.ts"), source, &embedding).unwrap();
 
         assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].path, PathBuf::from("src/query.ts"));
         assert_eq!(
             documents[0].source_offset,
             source.find(&documents[0].text).unwrap()
         );
         assert!(documents[0].text.contains("query Users"));
-        fs::remove_dir_all(root).unwrap();
     }
 
-    fn temp_root(name: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "dsql-project-{name}-{}-{unique}",
-            std::process::id()
-        ))
+    #[test]
+    fn stale_table_file_removals_keeps_expected_tables_and_ignores_non_yaml_files() {
+        let expected_tables = BTreeSet::from(["title.yaml".to_string(), "name.yaml".to_string()]);
+        let existing_files = vec![
+            PathBuf::from("title.yaml"),
+            PathBuf::from("name.yaml"),
+            PathBuf::from("stale_title.yaml"),
+            PathBuf::from("stale_name.toml"),
+            PathBuf::from("readme.md"),
+        ];
+
+        let removals = stale_table_file_removals(&existing_files, &expected_tables);
+
+        assert_eq!(removals, vec![PathBuf::from("stale_title.yaml")]);
     }
 }
 
 fn remove_stale_table_files(schema_path: &Path, expected_tables: &BTreeSet<String>) -> Result<()> {
+    let mut existing_files = Vec::new();
     for entry in read_dir(schema_path)? {
         let entry = entry.map_err(|source| ProjectError::ReadDirEntry {
             path: schema_path.to_path_buf(),
             source,
         })?;
-        let path = entry.path();
-        let extension = path.extension().and_then(|ext| ext.to_str());
-        if extension != Some("yaml") && extension != Some("toml") {
-            continue;
-        }
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !expected_tables.contains(file_name) {
-            remove_file(&path)?;
-        }
+        existing_files.push(entry.path());
+    }
+    for path in stale_table_file_removals(&existing_files, expected_tables) {
+        remove_file(&path)?;
     }
     Ok(())
+}
+
+fn stale_table_file_removals(
+    existing_files: &[PathBuf],
+    expected_tables: &BTreeSet<String>,
+) -> Vec<PathBuf> {
+    existing_files
+        .iter()
+        .filter(|path| {
+            let extension = path.extension().and_then(|ext| ext.to_str());
+            if extension != Some("yaml") {
+                return false;
+            }
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                return false;
+            };
+            !expected_tables.contains(file_name)
+        })
+        .cloned()
+        .collect()
 }

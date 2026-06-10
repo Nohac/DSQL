@@ -4,3 +4,4 @@
 **/dsql/build/
 **/node_modules/
 integrations/typescript/dist/
+.peers/

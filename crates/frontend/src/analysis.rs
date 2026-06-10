@@ -1,6 +1,7 @@
 use dsql_core::{
-    Catalog, Diagnostic, DsqlDiagnostic, Interner, SourceSnapshot, check_file_with_catalog,
-    lint_file_with_catalog, lower_file, parse_source, plan_file_with_catalog,
+    Catalog, CompilerDiagnostic, Diagnostic, DsqlDiagnostic, Interner, SourceSnapshot,
+    check_file_with_catalog, collect_file_compiler_diagnostics, lint_file_with_catalog, lower_file,
+    parse_source, plan_file_with_catalog,
 };
 
 use crate::db::AnalysisResult;
@@ -43,4 +44,13 @@ pub(crate) fn collect_diagnostics_parts(
     diagnostics.extend(lint.iter().map(DsqlDiagnostic::to_transport));
     diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
     diagnostics
+}
+
+pub fn collect_compiler_diagnostics(analysis: &AnalysisResult) -> Vec<CompilerDiagnostic> {
+    collect_file_compiler_diagnostics(
+        &analysis.parse,
+        &analysis.lower,
+        &analysis.check,
+        &analysis.lint,
+    )
 }

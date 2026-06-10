@@ -9,7 +9,7 @@ mod hover;
 mod provider;
 mod semantic_tokens;
 
-pub use analysis::{analyze_source, collect_diagnostics};
+pub use analysis::{analyze_source, collect_compiler_diagnostics, collect_diagnostics};
 pub use completion::{CompletionItem, CompletionKind};
 pub use db::{AnalysisResult, ParsedFile};
 pub use definition::{CatalogDefinition, DefinitionResult, SourceDefinition, SourceDefinitionKind};

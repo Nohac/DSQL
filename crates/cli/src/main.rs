@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use dsql_core::{
     Catalog, CompilerDiagnostic, DefinitionRecord, Diagnostic, DsqlDiagnostic, FragmentMap,
-    QueryRecord, SourceSnapshot, TextRange, check_query_definition, extract_definitions,
-    lint_query_definition_with_options, parse_source, plan_query_definition,
+    QueryRecord, SourceSnapshot, TextRange, check_query_definition,
+    collect_query_compiler_diagnostics, extract_definitions, lint_query_definition_with_options,
+    parse_source, plan_query_definition, sort_compiler_diagnostics,
 };
 use dsql_frontend::AnalysisHost;
 use miette::{IntoDiagnostic, NamedSource, Result};
@@ -145,23 +146,10 @@ async fn main() -> Result<()> {
             );
             let planned = plan_query_definition(&query.record, &query.fragments, &catalog);
             let mut diagnostics = query.parse_diagnostics.clone();
-            diagnostics.extend(
-                checked
-                    .diagnostics
-                    .into_iter()
-                    .map(CompilerDiagnostic::from),
-            );
-            diagnostics.extend(linted.diagnostics.into_iter().map(CompilerDiagnostic::from));
-            diagnostics.extend(
-                planned
-                    .diagnostics
-                    .into_iter()
-                    .map(CompilerDiagnostic::from),
-            );
-            diagnostics.sort_by_key(|diagnostic| {
-                let range = diagnostic.range();
-                (range.start, range.end)
-            });
+            diagnostics.extend(collect_query_compiler_diagnostics(
+                &checked, &linted, &planned,
+            ));
+            sort_compiler_diagnostics(&mut diagnostics);
             for diagnostic in &diagnostics {
                 print_miette_diagnostic(
                     query.source_name.clone(),
@@ -416,43 +404,7 @@ fn load_project_settings_for_path(path: &Path) -> (Catalog, dsql_core::LintOptio
 fn print_analysis_diagnostics(path: &Path, analysis: &dsql_frontend::AnalysisResult) {
     let source_name = path.display().to_string();
     let source_text = analysis.parse.source.to_arc_str().to_string();
-    let mut diagnostics = Vec::new();
-    diagnostics.extend(
-        analysis
-            .parse
-            .diagnostics
-            .iter()
-            .cloned()
-            .map(CompilerDiagnostic::from),
-    );
-    diagnostics.extend(
-        analysis
-            .lower
-            .diagnostics
-            .iter()
-            .cloned()
-            .map(CompilerDiagnostic::from),
-    );
-    diagnostics.extend(
-        analysis
-            .check
-            .diagnostics
-            .iter()
-            .cloned()
-            .map(CompilerDiagnostic::from),
-    );
-    diagnostics.extend(
-        analysis
-            .lint
-            .diagnostics
-            .iter()
-            .cloned()
-            .map(CompilerDiagnostic::from),
-    );
-    diagnostics.sort_by_key(|diagnostic| {
-        let range = diagnostic.range();
-        (range.start, range.end)
-    });
+    let diagnostics = dsql_frontend::collect_compiler_diagnostics(analysis);
     for diagnostic in diagnostics {
         print_miette_diagnostic(source_name.clone(), source_text.clone(), diagnostic);
     }
@@ -461,7 +413,7 @@ fn print_analysis_diagnostics(path: &Path, analysis: &dsql_frontend::AnalysisRes
 fn print_miette_diagnostic(
     source_name: String,
     source_text: String,
-    diagnostic: impl std::error::Error + miette::Diagnostic + Send + Sync + 'static,
+    diagnostic: impl miette::Diagnostic + Send + Sync + 'static,
 ) {
     let source = NamedSource::new(source_name, source_text).with_language("dsql");
     eprintln!(

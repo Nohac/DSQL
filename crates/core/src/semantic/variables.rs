@@ -68,16 +68,11 @@ pub fn infer_variable_bindings(source_file: &SourceFile, catalog: &Catalog) -> V
     let mut bindings = Vec::new();
     for definition in extracted.definitions {
         match definition {
-            crate::DefinitionRecord::Query(query) => bindings.extend(
-                infer_direct_query_variable_bindings(&query, catalog)
-                    .bindings
-                    .into_iter(),
-            ),
-            crate::DefinitionRecord::Fragment(fragment) => bindings.extend(
-                infer_fragment_variable_bindings(&fragment, &fragments, catalog)
-                    .bindings
-                    .into_iter(),
-            ),
+            crate::DefinitionRecord::Query(query) => {
+                bindings.extend(infer_direct_query_variable_bindings(&query, catalog).bindings)
+            }
+            crate::DefinitionRecord::Fragment(fragment) => bindings
+                .extend(infer_fragment_variable_bindings(&fragment, &fragments, catalog).bindings),
         }
     }
     bindings.sort_by_key(|binding| (binding.range.start, binding.range.end));
@@ -168,6 +163,7 @@ fn infer_direct_query_variable_bindings(
     VariableBindings { bindings }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_selection_bindings(
     catalog: &Catalog,
     resolver: &impl DefinitionResolver,
@@ -231,6 +227,7 @@ fn collect_selection_bindings(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_selection_set_bindings(
     catalog: &Catalog,
     resolver: &impl DefinitionResolver,

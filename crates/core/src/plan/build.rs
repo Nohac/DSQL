@@ -207,6 +207,7 @@ pub fn plan_fragment_definition(
     .map(|selections| FragmentPlan { table, selections })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_selection_set(
     catalog: &Catalog,
     resolver: &impl DefinitionResolver,
@@ -723,6 +724,7 @@ fn plan_filter_path(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn relation_predicate_filter(
     catalog: &Catalog,
     table: TableId,
@@ -748,6 +750,7 @@ fn relation_predicate_filter(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn relation_predicate_segments(
     catalog: &Catalog,
     table: TableId,
