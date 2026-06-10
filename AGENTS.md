@@ -68,9 +68,32 @@
 ## Git And Commits
 
 - Never commit, amend, create a checkpoint commit, or otherwise modify git history unless the user explicitly asks for a commit in the current conversation. Approval to implement, continue, checkpoint, or verify is not approval to commit.
+- After making code changes, stop for user review unless the user has already explicitly asked you to commit those exact changes. Resolving review comments, running verification, or moving to the next issue is not permission to commit.
 - If the user asks for a commit, first check the working tree, stage only the intended files, and then commit.
 - Use conventional commit messages, such as `feat: ...`, `fix: ...`, `test: ...`, `docs: ...`, `refactor: ...`, or `chore: ...`.
 - Keep commits focused around one coherent behavior or infrastructure change.
 - Do not mix unrelated cleanup with feature or bug-fix commits.
 - Do not revert or overwrite user changes unless explicitly asked.
 - Check the working tree before staging and before the final response.
+
+## Issues
+
+Tracked as markdown files in `issues/`. Create new issues with:
+
+```bash
+scripts/create-issue.sh <issue title>
+```
+
+This generates `issues/<id>-<slug>.md` with a header:
+
+```markdown
+# Issue title
+
+**ID:** <8-char-hex> | **Status:** Open | **Created:** <iso-timestamp>
+```
+
+Below the header, write free-form markdown describing the issue — summary, approach, tasks, whatever is relevant. Keep it concise. Issues are tracked in git and must be standalone with enough context to understand without Peers threads, chat logs, or other external review state. Do not reference Peers thread IDs from issue files. Set **Status** to `Done` when resolved. Find open issues with:
+
+```bash
+rg 'Status:.*Open' issues/
+```
