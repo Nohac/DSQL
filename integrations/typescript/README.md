@@ -60,15 +60,16 @@ cmd = ["bun", "dsql/generate.ts"]
 ```ts
 import {
   loadBuildArtifacts,
-  renderDsqlHelper,
-  renderTypes,
+  renderDsql,
 } from "@dsql/typescript/node";
 
 const artifacts = loadBuildArtifacts(process.env.DSQL_MANIFEST!);
 const outDir = process.env.DSQL_OUT_DIR!;
 
-await renderTypes(artifacts, { outDir });
-await renderDsqlHelper(artifacts, { outDir });
+await renderDsql(artifacts, {
+  root: process.cwd(),
+  queriesDir: outDir,
+});
 
 // Add vendored project/framework renderers here.
 // They can read artifacts.operations and write app-specific owned files.
@@ -120,27 +121,108 @@ Vendored generators can import `ts-morph` through
 the DSQL package without requiring the generated browser/runtime modules to
 depend on it.
 
-The exact runtime API is still open. This package is intentionally small until
-the DSQL build metadata format stabilizes.
+The old generated `operations.ts`/`dsql.ts`/`queries.ts` files are not a stable
+API. Before 1.0, prefer the current generated module shape over compatibility
+shims when migrating app code.
 
 ## Generated Output
 
-The base generator writes public TypeScript modules under `src/generated/dsql`:
+The base generator writes one public module per DSQL definition:
 
 ```text
-operations.ts
-dsql.ts
-index.ts
-queries.ts
+src/generated/dsql/
+  MovieInfoLookup.ts
+  MovieFields.fragment.ts
+  index.ts
 ```
 
-`operations.ts` contains typed operation handles and result/input types.
-Browser-facing operation handles do not contain SQL. The typed `dsql` helper
-maps inline query strings to those generated operation types:
+Each operation module exports its result/input/params types, a typed operation
+handle, source-string typing for `dsql(...)`, and, by default, its execution
+payload. Browser-facing operation handles are safe to import; SQL placement is
+controlled by the layout.
 
 ```ts
 const MovieInfo = dsql(`query MovieInfoLookup { movie_info { id } }`);
 ```
+
+For backend-only projects, colocated execution payloads are the simplest layout:
+
+```ts
+await renderDsql(artifacts, {
+  root,
+  queriesDir: "src/generated/dsql/queries",
+});
+```
+
+For frameworks with client/server import boundaries, pass `executionDir` to
+write matching execution modules separately:
+
+```ts
+const dsql = await renderDsql(artifacts, {
+  root,
+  queriesDir: "src/generated/dsql/queries",
+  executionDir: "src/generated/dsql/queries.server",
+});
+```
+
+Output:
+
+```text
+queries/
+  MovieInfoLookup.ts
+  MovieFields.fragment.ts
+  index.ts
+queries.server/
+  MovieInfoLookup.ts
+  index.ts
+```
+
+DSQL does not enforce framework-specific import protection. Choose paths that
+your framework protects, such as a `*.server.*` file pattern or a server-only
+directory configured in your application.
+
+`renderDsql` returns metadata for adapter renderers and Vite transforms:
+
+```ts
+{
+  scope: { name: "frontend", imports: ["shared"] },
+  modules: { queries: "./src/generated/dsql/queries/index" },
+  definitions: {
+    MovieInfoLookup: {
+      operationModule: "./src/generated/dsql/queries/MovieInfoLookup",
+      executionModule: "./src/generated/dsql/queries.server/MovieInfoLookup",
+    },
+  },
+  files: [],
+}
+```
+
+Generation writes through a DSQL-owned manifest so unchanged files keep their
+mtimes and stale files are removed only when a previous DSQL manifest recorded
+ownership.
+
+## Resolution Maps
+
+Projects without explicit maps use one implicit `default` scope. Projects can
+define named maps in `dsql/dsql.toml` to keep independent generated surfaces
+while sharing imported definitions:
+
+```toml
+[resolution.shared]
+documents = ["queries/shared/**/*.dsql"]
+
+[resolution.frontend]
+documents = ["src/**/*.tsx", "queries/frontend/**/*.dsql"]
+imports = ["shared"]
+
+[resolution.api]
+documents = ["queries/api/**/*.dsql"]
+imports = ["shared"]
+```
+
+Each loaded DSQL or embedded document belongs to exactly one scope. Local and
+imported duplicate definitions are diagnostics; DSQL source still uses plain
+fragment/query names with no namespace syntax.
 
 ## Vite Plugin
 
@@ -168,13 +250,14 @@ metadata, then calls the generator in-process.
 // dsql/generate.ts
 import {
   defineDsqlGenerator,
-  renderDsqlHelper,
-  renderTypes,
+  renderDsql,
 } from "@dsql/typescript/node";
 
-export default defineDsqlGenerator(async ({ artifacts, outDir }) => {
-  await renderTypes(artifacts, { outDir });
-  await renderDsqlHelper(artifacts, { outDir });
+export default defineDsqlGenerator(async ({ artifacts, root, outDir }) => {
+  return renderDsql(artifacts, {
+    root,
+    queriesDir: outDir,
+  });
 });
 ```
 
@@ -212,9 +295,9 @@ fragment MovieCompany on movie_companies {
 `);
 ```
 
-The generated `queries` module is a compatibility barrel. Vendored templates
-should prefer importing from the specific generated module they need, such as
-`operations`, `dsql`, `tanstack-query`, or `tanstack-start`.
+For multi-scope projects, Vite needs compiler-provided source-file-to-scope
+metadata plus the returned render metadata to choose the correct generated query
+barrel. Single-scope projects may still use a static `generatedModule`.
 
 ## TanStack Start And Query
 
@@ -233,8 +316,9 @@ The intended app flow is:
 - let the generated Start server function execute the query on the server
 - configure database execution in the app's TanStack Start request context
 
-Generated SQL is kept in `tanstack-start.server.ts`, which is marked
-server-only:
+Generated SQL should come from `renderDsql` execution modules. The TanStack
+Start example imports those payloads from the returned execution module paths
+inside `tanstack-start.server.ts`, which is marked server-only:
 
 ```ts
 import "@tanstack/react-start/server-only";
@@ -275,6 +359,43 @@ export default createServerEntry({
 ```
 
 The executor interface is intentionally provider agnostic.
+
+### Validation Hooks
+
+Adapters can use identity validation or call user-authored validators. DSQL does
+not depend on a validation library.
+
+```ts
+import { z } from "zod";
+import type { DsqlVariables } from "@dsql/typescript/runtime";
+import { MovieInfoLookupOperation } from "./generated/dsql/queries";
+
+export const MovieInfoVariablesSchema = z.object({
+  params: z.object({ id: z.number().int() }),
+  input: z.object({}),
+}) satisfies z.ZodType<DsqlVariables<typeof MovieInfoLookupOperation>>;
+```
+
+```ts
+await renderTanStackStart(artifacts, dsql, {
+  root,
+  outDir: "src/generated/dsql",
+  validatorFor(operation) {
+    if (operation.name === "MovieInfoLookup") {
+      return {
+        import: {
+          name: "MovieInfoVariablesSchema",
+          from: "@/validation/movie-info",
+        },
+        expression: "MovieInfoVariablesSchema.parse",
+      };
+    }
+    return "identity";
+  },
+});
+```
+
+Directive grammar and validation-schema generation are intentionally deferred.
 
 ## Metadata Types
 
