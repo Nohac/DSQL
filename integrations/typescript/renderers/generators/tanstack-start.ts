@@ -11,6 +11,19 @@ import {
 type RenderOptions = {
   readonly outDir: string;
   readonly root?: string;
+  readonly validatorFor?: DsqlValidatorResolver;
+};
+
+export type DsqlValidatorResolver = (
+  operation: BuildArtifacts["operations"][number],
+) => DsqlValidatorExpression | "identity" | undefined;
+
+export type DsqlValidatorExpression = {
+  readonly import?: {
+    readonly name: string;
+    readonly from: string;
+  };
+  readonly expression: string;
 };
 
 export async function renderTanStackStart(
@@ -57,6 +70,12 @@ export async function renderTanStackStart(
       });
     }
   }
+  for (const validator of validatorImports(artifacts, options.validatorFor)) {
+    source.addImportDeclaration({
+      moduleSpecifier: validator.from,
+      namedImports: [validator.name],
+    });
+  }
 
   serverSource.addImportDeclaration({
     moduleSpecifier: "@dsql/typescript/runtime",
@@ -86,7 +105,7 @@ export async function renderTanStackStart(
         {
           name: `${toPascalCase(operation.name)}ServerFn`,
           initializer: `createServerFn({ method: "POST", strict: { output: false } })
-  .inputValidator((variables: DsqlServerVariables<typeof ${operationName}>) => variables)
+  .inputValidator(${validatorExpression(operation, operationName, options.validatorFor)})
   .handler(({ data }) => executeDsqlOperation(${operationName}, data))`,
         },
       ],
@@ -182,4 +201,32 @@ function importSpecifier(root: string, fromFile: string, modulePath: string): st
     .split("\\")
     .join("/");
   return relativePath.startsWith(".") ? relativePath : `./${relativePath}`;
+}
+
+function validatorImports(
+  artifacts: BuildArtifacts,
+  validatorFor: DsqlValidatorResolver | undefined,
+): Array<{ readonly name: string; readonly from: string }> {
+  const imports = new Map<string, { readonly name: string; readonly from: string }>();
+  for (const operation of artifacts.operations) {
+    const validator = validatorFor?.(operation);
+    if (!validator || validator === "identity" || !validator.import) {
+      continue;
+    }
+    imports.set(`${validator.import.from}:${validator.import.name}`, validator.import);
+  }
+  return [...imports.values()];
+}
+
+function validatorExpression(
+  operation: BuildArtifacts["operations"][number],
+  operationName: string,
+  validatorFor: DsqlValidatorResolver | undefined,
+): string {
+  const validator = validatorFor?.(operation);
+  if (!validator || validator === "identity") {
+    return `(variables: DsqlServerVariables<typeof ${operationName}>) => variables`;
+  }
+
+  return `${validator.expression} as (variables: DsqlServerVariables<typeof ${operationName}>) => DsqlServerVariables<typeof ${operationName}>`;
 }
