@@ -1,4 +1,11 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Project, QuoteKind, VariableDeclarationKind } from "ts-morph";
@@ -58,6 +65,8 @@ const RESULT_KIND_ARRAY = "array";
 const PARAMS_PREFIX = "params";
 const INPUT_PREFIX = "input";
 const UNKNOWN_TS_TYPE = "unknown";
+const RENDER_DSQL_VERSION = 1;
+const RENDER_MANIFEST_NAME = ".dsql-render-manifest.json";
 
 type InputRoot = typeof PARAMS_PREFIX | typeof INPUT_PREFIX;
 
@@ -302,10 +311,16 @@ export async function renderDsql(
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([path, contents]) => ({ path, contents }));
 
-  for (const file of renderedFiles) {
-    mkdirSync(dirname(file.path), { recursive: true });
-    writeFileSync(file.path, file.contents);
-  }
+  writeRenderedFiles({
+    manifestPath: join(queriesDir, RENDER_MANIFEST_NAME),
+    files: renderedFiles,
+    artifactHash: artifactHash(artifacts),
+    ...(options.scope?.name ? { scopeName: options.scope.name } : {}),
+    layout: {
+      queriesDir,
+      ...(executionDir ? { executionDir } : {}),
+    },
+  });
 
   return {
     ...(options.scope
@@ -676,6 +691,128 @@ function sqlVariants(operation: OperationMetadata): Record<string, Record<string
       ),
     ]),
   );
+}
+
+type RenderOwnershipManifest = {
+  readonly version: typeof RENDER_DSQL_VERSION;
+  readonly renderer: "renderDsql";
+  readonly rendererVersion: typeof RENDER_DSQL_VERSION;
+  readonly artifactHash: string;
+  readonly scopeName?: string;
+  readonly layoutHash: string;
+  readonly files: readonly {
+    readonly path: string;
+    readonly contentHash: string;
+  }[];
+};
+
+function writeRenderedFiles(options: {
+  readonly manifestPath: string;
+  readonly files: readonly DsqlRenderedFile[];
+  readonly artifactHash: string;
+  readonly scopeName?: string;
+  readonly layout: {
+    readonly queriesDir: string;
+    readonly executionDir?: string;
+  };
+}): void {
+  const manifest = renderOwnershipManifest(options);
+  const previous = readRenderOwnershipManifest(options.manifestPath);
+  const nextPaths = new Set(options.files.map((file) => file.path));
+
+  for (const stale of previous?.files ?? []) {
+    if (nextPaths.has(stale.path) || stale.path === options.manifestPath) {
+      continue;
+    }
+    if (existsSync(stale.path)) {
+      unlinkSync(stale.path);
+    }
+  }
+
+  for (const file of options.files) {
+    writeFileIfChanged(file.path, file.contents);
+  }
+  writeFileIfChanged(
+    options.manifestPath,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+}
+
+function renderOwnershipManifest(options: {
+  readonly files: readonly DsqlRenderedFile[];
+  readonly artifactHash: string;
+  readonly scopeName?: string;
+  readonly layout: {
+    readonly queriesDir: string;
+    readonly executionDir?: string;
+  };
+}): RenderOwnershipManifest {
+  return {
+    version: RENDER_DSQL_VERSION,
+    renderer: "renderDsql",
+    rendererVersion: RENDER_DSQL_VERSION,
+    artifactHash: options.artifactHash,
+    ...(options.scopeName ? { scopeName: options.scopeName } : {}),
+    layoutHash: hashJson({
+      scopeName: options.scopeName,
+      layout: options.layout,
+      rendererVersion: RENDER_DSQL_VERSION,
+    }),
+    files: options.files.map((file) => ({
+      path: file.path,
+      contentHash: hashString(file.contents),
+    })),
+  };
+}
+
+function readRenderOwnershipManifest(
+  manifestPath: string,
+): RenderOwnershipManifest | undefined {
+  if (!existsSync(manifestPath)) {
+    return undefined;
+  }
+
+  try {
+    const manifest = JSON.parse(
+      readFileSync(manifestPath, "utf8"),
+    ) as RenderOwnershipManifest;
+    if (manifest.renderer !== "renderDsql") {
+      return undefined;
+    }
+    return manifest;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeFileIfChanged(path: string, contents: string): void {
+  if (existsSync(path) && readFileSync(path, "utf8") === contents) {
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, contents);
+}
+
+function artifactHash(artifacts: BuildArtifacts): string {
+  return hashJson({
+    manifest: artifacts.manifest,
+    operations: artifacts.manifest.operations.map((operation) => ({
+      name: operation.name,
+      hash: operation.hash,
+    })),
+    fragments: artifacts.manifest.fragments.map((fragment) => ({
+      name: fragment.name,
+      hash: fragment.hash,
+    })),
+  });
+}
+
+function hashJson(value: unknown): string {
+  return hashString(JSON.stringify(value));
+}
+
+function hashString(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function operationSourceMapType(artifacts: BuildArtifacts): string {

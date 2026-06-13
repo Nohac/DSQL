@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
@@ -93,6 +99,48 @@ test("rejects generated file-stem collisions", async () => {
   ).rejects.toThrow(
     'generated DSQL file-stem collision for MovieInfo: operation "movie-info" and operation "movie_info"',
   );
+});
+
+test("does not rewrite unchanged generated files", async () => {
+  const root = createRoot();
+  const artifacts = createArtifacts(root);
+
+  await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+
+  const operationPath = join(root, "src/generated/dsql/queries/MovieInfoLookup.ts");
+  const before = statSync(operationPath).mtimeMs;
+  await Bun.sleep(5);
+
+  await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+
+  expect(statSync(operationPath).mtimeMs).toBe(before);
+});
+
+test("removes stale files recorded in the generated ownership manifest", async () => {
+  const root = createRoot();
+
+  await renderDsql(createArtifacts(root), {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+  const operationPath = join(root, "src/generated/dsql/queries/MovieInfoLookup.ts");
+  expect(existsSync(operationPath)).toBe(true);
+
+  await renderDsql(createArtifacts(root, { operationNames: [] }), {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+
+  expect(existsSync(operationPath)).toBe(false);
+  expect(
+    existsSync(join(root, "src/generated/dsql/queries/MovieFields.fragment.ts")),
+  ).toBe(true);
 });
 
 function createRoot(): string {
