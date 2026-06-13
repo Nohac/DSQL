@@ -7,10 +7,16 @@ import type {
   OperationManifestEntry,
   OperationMetadata,
 } from "./generated/metadata";
-import { renderDsqlHelper, renderTypes } from "./render/types.js";
+import { renderDsql, renderDsqlHelper, renderTypes } from "./render/types.js";
 
-export { renderDsqlHelper, renderTypes } from "./render/types.js";
-export type { RenderOptions } from "./render/types.js";
+export { renderDsql, renderDsqlHelper, renderTypes } from "./render/types.js";
+export type {
+  DsqlRenderDefinitionResult,
+  DsqlRenderedFile,
+  DsqlRenderResult,
+  RenderDsqlOptions,
+  RenderOptions,
+} from "./render/types.js";
 
 export type BuildArtifacts = {
   readonly manifestPath: string;

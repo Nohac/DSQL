@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Project, QuoteKind, VariableDeclarationKind } from "ts-morph";
 import type {
@@ -15,6 +15,40 @@ import type { BuildArtifacts } from "../node";
 
 export type RenderOptions = {
   readonly outDir: string;
+};
+
+export type RenderDsqlOptions = {
+  readonly root: string;
+  readonly queriesDir: string;
+  readonly executionDir?: string;
+  readonly scope?: {
+    readonly name: string;
+    readonly imports?: readonly string[];
+  };
+};
+
+export type DsqlRenderedFile = {
+  readonly path: string;
+  readonly contents: string;
+};
+
+export type DsqlRenderDefinitionResult = {
+  readonly name: string;
+  readonly kind: "query" | "fragment";
+  readonly operationModule: string;
+  readonly executionModule?: string;
+};
+
+export type DsqlRenderResult = {
+  readonly scope?: {
+    readonly name: string;
+    readonly imports: readonly string[];
+  };
+  readonly modules: {
+    readonly queries: string;
+  };
+  readonly definitions: Record<string, DsqlRenderDefinitionResult>;
+  readonly files: readonly DsqlRenderedFile[];
 };
 
 const DEFINITION_KIND_FRAGMENT = "fragment";
@@ -191,6 +225,105 @@ export async function renderDsqlHelper(
   await saveSourceFiles([dsqlSource, indexSource, queriesSource]);
 }
 
+export async function renderDsql(
+  artifacts: BuildArtifacts,
+  options: RenderDsqlOptions,
+): Promise<DsqlRenderResult> {
+  const root = resolve(options.root);
+  const queriesDir = resolveOutputDir(root, options.queriesDir);
+  const executionDir = options.executionDir
+    ? resolveOutputDir(root, options.executionDir)
+    : undefined;
+
+  const renderPlan = buildRenderPlan(artifacts);
+  const files = new Map<string, string>();
+  const definitions: Record<string, DsqlRenderDefinitionResult> = {};
+  const queryExports: string[] = [];
+  const executionExports: string[] = [];
+
+  for (const fragment of artifacts.fragments) {
+    const plan = renderPlan.fragments.get(fragment.name);
+    if (!plan) {
+      throw new Error(`missing render plan for fragment ${fragment.name}`);
+    }
+
+    const filePath = join(queriesDir, `${plan.fileStem}.ts`);
+    files.set(filePath, renderFragmentModule(artifacts, fragment));
+    queryExports.push(exportStatement(plan.fileStem));
+    definitions[fragment.name] = {
+      name: fragment.name,
+      kind: "fragment",
+      operationModule: moduleSpecifier(root, filePath),
+    };
+  }
+
+  for (const operation of artifacts.operations) {
+    const plan = renderPlan.operations.get(operation.name);
+    if (!plan) {
+      throw new Error(`missing render plan for operation ${operation.name}`);
+    }
+
+    const operationPath = join(queriesDir, `${plan.fileStem}.ts`);
+    const executionPath = executionDir
+      ? join(executionDir, `${plan.fileStem}.ts`)
+      : operationPath;
+    files.set(
+      operationPath,
+      renderOperationModule(artifacts, operation, {
+        includeExecutionPayload: executionDir === undefined,
+      }),
+    );
+    queryExports.push(exportStatement(plan.fileStem));
+
+    if (executionDir) {
+      files.set(
+        executionPath,
+        renderOperationExecutionModule(operation, {
+          operationImport: relativeModuleSpecifier(executionPath, operationPath),
+        }),
+      );
+      executionExports.push(exportStatement(plan.fileStem));
+    }
+
+    definitions[operation.name] = {
+      name: operation.name,
+      kind: "query",
+      operationModule: moduleSpecifier(root, operationPath),
+      executionModule: moduleSpecifier(root, executionPath),
+    };
+  }
+
+  files.set(join(queriesDir, "index.ts"), renderBarrel(queryExports));
+  if (executionDir) {
+    files.set(join(executionDir, "index.ts"), renderBarrel(executionExports));
+  }
+
+  const renderedFiles = [...files.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([path, contents]) => ({ path, contents }));
+
+  for (const file of renderedFiles) {
+    mkdirSync(dirname(file.path), { recursive: true });
+    writeFileSync(file.path, file.contents);
+  }
+
+  return {
+    ...(options.scope
+      ? {
+          scope: {
+            name: options.scope.name,
+            imports: [...(options.scope.imports ?? [])],
+          },
+        }
+      : {}),
+    modules: {
+      queries: moduleSpecifier(root, join(queriesDir, "index.ts")),
+    },
+    definitions,
+    files: renderedFiles,
+  };
+}
+
 function createProject(): Project {
   return new Project({
     manipulationSettings: {
@@ -270,6 +403,278 @@ function sourceTextForMap(
       sourceMap.range.start,
       sourceMap.range.end,
     ) ?? source.slice(sourceMap.range.start, sourceMap.range.end)
+  );
+}
+
+function renderOperationModule(
+  artifacts: BuildArtifacts,
+  operation: OperationMetadata,
+  options: {
+    readonly includeExecutionPayload: boolean;
+  },
+): string {
+  const name = toPascalCase(operation.name);
+  const manifestEntry = manifestEntryFor(artifacts, operation);
+  const resultType = `${name}Result`;
+  const paramsType = `${name}Params`;
+  const inputType = `${name}Input`;
+  const statements = [
+    `import type { DsqlExecutionPayload, DsqlOperation } from "@dsql/typescript/runtime";`,
+    "",
+    `export type ${resultType} = ${resultTypeLiteral(
+      operation.result.fields,
+      operation.fragment_spreads,
+      artifacts.fragments,
+    )};`,
+    "",
+    `export type ${paramsType} = ${paramsTypeLiteral(operation.params)};`,
+    "",
+    `export type ${inputType} = ${inputTypeLiteral(
+      operation.input,
+      operation.fragment_spreads,
+      artifacts.fragments,
+    )};`,
+    "",
+    `export const ${name}Operation: DsqlOperation<${resultType}, ${paramsType}, ${inputType}> = {
+  id: ${JSON.stringify(manifestEntry.hash)},
+  name: ${JSON.stringify(operation.name)},
+  kind: ${JSON.stringify(DEFINITION_KIND_QUERY)}
+};`,
+    "",
+    renderSourceRegistryAugmentation(
+      artifacts,
+      operation,
+      `${name}Operation`,
+    ),
+  ];
+
+  if (options.includeExecutionPayload) {
+    statements.push(
+      "",
+      renderExecutionPayload(operation, `${name}Operation`, {
+        exportedName: `${name}ExecutionPayload`,
+      }),
+    );
+  }
+
+  return `${statements.join("\n")}\n`;
+}
+
+function renderOperationExecutionModule(
+  operation: OperationMetadata,
+  options: {
+    readonly operationImport: string;
+  },
+): string {
+  const name = toPascalCase(operation.name);
+  return [
+    `import type { DsqlExecutionPayload } from "@dsql/typescript/runtime";`,
+    `import { ${name}Operation } from ${JSON.stringify(options.operationImport)};`,
+    "",
+    renderExecutionPayload(operation, `${name}Operation`, {
+      exportedName: `${name}ExecutionPayload`,
+    }),
+    "",
+  ].join("\n");
+}
+
+function renderExecutionPayload(
+  operation: OperationMetadata,
+  operationValue: string,
+  options: {
+    readonly exportedName: string;
+  },
+): string {
+  return `export const ${options.exportedName}: DsqlExecutionPayload<typeof ${operationValue}> = {
+  operation: ${operationValue},
+  sql: ${JSON.stringify(operation.sql.text)},
+  parameters: ${JSON.stringify(operation.sql.parameters)},
+  variants: ${JSON.stringify(sqlVariants(operation))}
+};`;
+}
+
+function renderFragmentModule(
+  artifacts: BuildArtifacts,
+  fragment: FragmentMetadata,
+): string {
+  const name = toPascalCase(fragment.name);
+  const resultType = fragmentResultTypeName(fragment.name);
+  const paramsType = fragmentParamsTypeName(fragment.name);
+  const inputType = fragmentInputTypeName(fragment.name);
+  const variablesType = fragmentVariablesTypeName(fragment.name);
+  return [
+    `import type { DsqlFragmentDefinition } from "@dsql/typescript/runtime";`,
+    "",
+    `export type ${resultType} = ${resultTypeLiteral(
+      fragment.result.fields,
+      [],
+      [],
+    )};`,
+    "",
+    `export type ${paramsType} = ${paramsTypeLiteral(fragment.params)};`,
+    "",
+    `export type ${inputType} = ${inputTypeLiteral(fragment.input)};`,
+    "",
+    `export type ${variablesType} = ${fragmentVariablesTypeLiteral(
+      paramsType,
+      inputType,
+      fragment.params.length > 0,
+      fragment.input.length > 0,
+    )};`,
+    "",
+    `export const ${name}Fragment: DsqlFragmentDefinition<${resultType}, ${paramsType}, ${inputType}> = {
+  name: ${JSON.stringify(fragment.name)},
+  kind: ${JSON.stringify(DEFINITION_KIND_FRAGMENT)},
+  table: ${JSON.stringify(fragment.table)}
+};`,
+    "",
+    renderSourceRegistryAugmentation(artifacts, fragment, `${name}Fragment`),
+    "",
+  ].join("\n");
+}
+
+function renderSourceRegistryAugmentation(
+  artifacts: BuildArtifacts,
+  definition: OperationMetadata | FragmentMetadata,
+  valueName: string,
+): string {
+  const sourceText = sourceTextForMap(artifacts, definition);
+  if (!sourceText) {
+    return "";
+  }
+
+  return `declare module "@dsql/typescript/runtime" {
+  interface DsqlSourceRegistry {
+    readonly ${JSON.stringify(sourceText)}: typeof ${valueName};
+  }
+}`;
+}
+
+function buildRenderPlan(artifacts: BuildArtifacts): {
+  readonly operations: ReadonlyMap<
+    string,
+    { readonly fileStem: string; readonly exports: readonly string[] }
+  >;
+  readonly fragments: ReadonlyMap<
+    string,
+    { readonly fileStem: string; readonly exports: readonly string[] }
+  >;
+} {
+  const fileStems = new Map<string, string>();
+  const exportNames = new Map<string, string>();
+  const operations = new Map<
+    string,
+    { readonly fileStem: string; readonly exports: readonly string[] }
+  >();
+  const fragments = new Map<
+    string,
+    { readonly fileStem: string; readonly exports: readonly string[] }
+  >();
+
+  for (const operation of artifacts.operations) {
+    const name = toPascalCase(operation.name);
+    const fileStem = name;
+    const exports = [
+      `${name}Result`,
+      `${name}Params`,
+      `${name}Input`,
+      `${name}Operation`,
+      `${name}ExecutionPayload`,
+    ];
+    recordGeneratedNames("operation", operation.name, fileStem, exports, {
+      fileStems,
+      exportNames,
+    });
+    operations.set(operation.name, { fileStem, exports });
+  }
+
+  for (const fragment of artifacts.fragments) {
+    const name = toPascalCase(fragment.name);
+    const fileStem = `${name}.fragment`;
+    const exports = [
+      fragmentResultTypeName(fragment.name),
+      fragmentParamsTypeName(fragment.name),
+      fragmentInputTypeName(fragment.name),
+      fragmentVariablesTypeName(fragment.name),
+      `${name}Fragment`,
+    ];
+    recordGeneratedNames("fragment", fragment.name, fileStem, exports, {
+      fileStems,
+      exportNames,
+    });
+    fragments.set(fragment.name, { fileStem, exports });
+  }
+
+  return { operations, fragments };
+}
+
+function recordGeneratedNames(
+  kind: "operation" | "fragment",
+  name: string,
+  fileStem: string,
+  exports: readonly string[],
+  seen: {
+    readonly fileStems: Map<string, string>;
+    readonly exportNames: Map<string, string>;
+  },
+): void {
+  const fileOwner = seen.fileStems.get(fileStem);
+  const owner = `${kind} ${JSON.stringify(name)}`;
+  if (fileOwner) {
+    throw new Error(
+      `generated DSQL file-stem collision for ${fileStem}: ${fileOwner} and ${owner}`,
+    );
+  }
+  seen.fileStems.set(fileStem, owner);
+
+  for (const exportName of exports) {
+    const exportOwner = seen.exportNames.get(exportName);
+    if (exportOwner) {
+      throw new Error(
+        `generated TypeScript export-name collision for ${exportName}: ${exportOwner} and ${owner}`,
+      );
+    }
+    seen.exportNames.set(exportName, owner);
+  }
+}
+
+function renderBarrel(exports: readonly string[]): string {
+  return `${[...exports].sort().join("\n")}\n`;
+}
+
+function exportStatement(fileStem: string): string {
+  return `export * from ${JSON.stringify(`./${fileStem}`)};`;
+}
+
+function resolveOutputDir(root: string, path: string): string {
+  return isAbsolute(path) ? path : resolve(root, path);
+}
+
+function moduleSpecifier(root: string, path: string): string {
+  const withoutExtension = path.replace(/\.ts$/, "");
+  const relativePath = normalizeModulePath(relative(root, withoutExtension));
+  return relativePath.startsWith(".") ? relativePath : `./${relativePath}`;
+}
+
+function relativeModuleSpecifier(fromFile: string, toFile: string): string {
+  const fromDir = dirname(fromFile);
+  const withoutExtension = toFile.replace(/\.ts$/, "");
+  const relativePath = normalizeModulePath(relative(fromDir, withoutExtension));
+  return relativePath.startsWith(".") ? relativePath : `./${relativePath}`;
+}
+
+function normalizeModulePath(path: string): string {
+  return path.split("\\").join("/");
+}
+
+function sqlVariants(operation: OperationMetadata): Record<string, Record<string, string>> {
+  return Object.fromEntries(
+    operation.sql.variants.map((variant) => [
+      variant.path,
+      Object.fromEntries(
+        variant.cases.map((case_) => [case_.value, case_.text]),
+      ),
+    ]),
   );
 }
 
