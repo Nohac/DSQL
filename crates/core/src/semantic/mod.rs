@@ -5,6 +5,7 @@ mod variables;
 
 pub use check::{
     check_file, check_file_with_catalog, check_fragment_definition, check_query_definition,
+    duplicate_fragment_errors,
 };
 pub use error::{
     CheckDiagnostic, CheckDiagnosticKind, CheckError, CheckErrorKind, CheckedDefinition,

@@ -4,10 +4,7 @@ use crate::{
     definition::{
         DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
     },
-    syntax::{
-        Clause, Definition, Document, Expr, Literal, Selection, SelectionKind, SourceFile,
-        TextRange,
-    },
+    syntax::{Clause, Expr, Literal, Selection, SelectionKind, SourceFile, TextRange},
 };
 use indexmap::IndexMap;
 use std::collections::HashSet;
@@ -20,7 +17,7 @@ pub fn check_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> C
     let extracted = extract_definitions(source_file);
     let resolver = FragmentMap::from_file(&extracted);
     let mut errors = Vec::new();
-    check_duplicate_fragments(source_file.document(), &mut errors);
+    errors.extend(duplicate_fragment_errors(&resolver));
     for definition in &extracted.definitions {
         match definition {
             crate::DefinitionRecord::Query(query) => {
@@ -70,23 +67,17 @@ fn checked(mut errors: Vec<CheckError>) -> CheckedFile {
     }
 }
 
-fn check_duplicate_fragments(document: &Document, errors: &mut Vec<CheckError>) {
-    let mut fragments = IndexMap::<String, TextRange>::new();
-    for definition in &document.definitions {
-        let Definition::Fragment(fragment) = definition else {
-            continue;
-        };
-        if let Some(name) = &fragment.name
-            && fragments.insert(name.text.clone(), name.range).is_some()
-        {
-            errors.push(CheckError {
-                range: name.range,
-                kind: CheckErrorKind::DuplicateFragment {
-                    name: name.text.clone(),
-                },
-            });
-        }
-    }
+pub fn duplicate_fragment_errors(fragments: &FragmentMap) -> Vec<CheckError> {
+    fragments
+        .duplicate_fragments()
+        .into_iter()
+        .map(|fragment| CheckError {
+            range: fragment.name_range,
+            kind: CheckErrorKind::DuplicateFragment {
+                name: fragment.key.name.clone(),
+            },
+        })
+        .collect()
 }
 
 fn check_fragment_record(

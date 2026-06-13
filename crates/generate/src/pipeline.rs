@@ -4,8 +4,9 @@ use dsql_core::{
     Selection, SelectionClauses, SelectionKind, SelectionPlan, SelectionPlanItem, Severity,
     SourceSnapshot, SqlValue, TableId, VariableBinding, check_fragment_definition,
     check_query_definition, collect_checked_compiler_diagnostics,
-    collect_query_compiler_diagnostics, extract_definitions, generate_postgres_sql_with_options,
-    infer_fragment_variable_bindings, infer_query_variable_bindings, is_input_path, is_params_path,
+    collect_query_compiler_diagnostics, duplicate_fragment_errors, extract_definitions,
+    generate_postgres_sql_with_options, infer_fragment_variable_bindings,
+    infer_query_variable_bindings, is_input_path, is_params_path,
     lint_query_definition_with_options, parse_source, plan_fragment_definition,
     plan_query_definition,
 };
@@ -285,6 +286,25 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
                 .map(|diagnostic| fragment_validation_diagnostic(fragment, diagnostic)),
         );
     }
+    diagnostics.extend(
+        duplicate_fragment_errors(&fragments)
+            .into_iter()
+            .filter_map(|diagnostic| {
+                loaded_fragments
+                    .iter()
+                    .find(|fragment| {
+                        fragment.fragment.key.name.as_str()
+                            == match &diagnostic.kind {
+                                dsql_core::CheckDiagnosticKind::DuplicateFragment { name } => {
+                                    name.as_str()
+                                }
+                                _ => return false,
+                            }
+                            && fragment.fragment.name_range == diagnostic.range
+                    })
+                    .map(|fragment| fragment_validation_diagnostic(fragment, diagnostic))
+            }),
+    );
 
     for query in &queries {
         let checked = check_query_definition(&query.query, &fragments, &input.catalog);
@@ -408,6 +428,12 @@ fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
     }
 
     fail_on_error_diagnostics(parse_diagnostics)?;
+    fail_on_error_diagnostics(
+        duplicate_fragment_errors(&fragments)
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    )?;
 
     let mut fragment_artifacts = Vec::new();
     for fragment in &loaded_fragments {

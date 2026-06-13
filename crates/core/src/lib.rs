@@ -46,8 +46,8 @@ pub use semantic::{
     CheckedFile, Interner, LowerDiagnostic, LowerDiagnosticKind, LoweredFile, NameId, NameIndex,
     VariableBinding, VariableBindings, VariableRole, VariableSource, check_file,
     check_file_with_catalog, check_fragment_definition, check_query_definition,
-    infer_fragment_variable_bindings, infer_query_variable_bindings, infer_variable_bindings,
-    lower_file,
+    duplicate_fragment_errors, infer_fragment_variable_bindings, infer_query_variable_bindings,
+    infer_variable_bindings, lower_file,
 };
 pub use sql::{
     GeneratedSql, PostgresSqlOptions, SqlGenerationError, generate_postgres_sql,

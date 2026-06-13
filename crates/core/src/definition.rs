@@ -59,32 +59,44 @@ pub trait DefinitionResolver {
 
 #[derive(Clone, Debug, Default)]
 pub struct FragmentMap {
-    fragments: HashMap<String, FragmentRecord>,
+    fragments: HashMap<String, Vec<FragmentRecord>>,
 }
 
 impl FragmentMap {
     pub fn from_file(file: &ExtractedFile) -> Self {
-        let fragments = file
-            .definitions
-            .iter()
-            .filter_map(|definition| match definition {
-                DefinitionRecord::Query(_) => None,
-                DefinitionRecord::Fragment(fragment) => {
-                    Some((fragment.key.name.clone(), fragment.clone()))
-                }
-            })
-            .collect();
-        Self { fragments }
+        let mut fragments = Self::default();
+        for definition in &file.definitions {
+            if let DefinitionRecord::Fragment(fragment) = definition {
+                fragments.insert(fragment.clone());
+            }
+        }
+        fragments
     }
 
     pub fn insert(&mut self, fragment: FragmentRecord) {
-        self.fragments.insert(fragment.key.name.clone(), fragment);
+        self.fragments
+            .entry(fragment.key.name.clone())
+            .or_default()
+            .push(fragment);
+    }
+
+    pub fn duplicate_fragments(&self) -> Vec<&FragmentRecord> {
+        let mut duplicates = self
+            .fragments
+            .values()
+            .filter(|fragments| fragments.len() > 1)
+            .flat_map(|fragments| fragments.iter().skip(1))
+            .collect::<Vec<_>>();
+        duplicates.sort_by_key(|fragment| (fragment.name_range.start, fragment.name_range.end));
+        duplicates
     }
 }
 
 impl DefinitionResolver for FragmentMap {
     fn fragment(&self, name: &str) -> Option<&FragmentRecord> {
-        self.fragments.get(name)
+        self.fragments
+            .get(name)
+            .and_then(|fragments| fragments.first())
     }
 }
 
@@ -151,5 +163,44 @@ fn collect_fragment_spreads(selections: &[Selection], spreads: &mut Vec<Fragment
             });
         }
         collect_fragment_spreads(&selection.selections, spreads);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{SourceSnapshot, parse_source};
+
+    #[test]
+    fn fragment_map_preserves_duplicate_fragments_for_diagnostics() {
+        let parsed = parse_source(SourceSnapshot::from_string(
+            r#"
+fragment MovieFields on movie_info {
+  id
+}
+
+fragment MovieFields on movie_info {
+  info
+}
+"#
+            .to_string(),
+        ));
+        let extracted = extract_definitions(&parsed.source_file);
+        let fragments = FragmentMap::from_file(&extracted);
+
+        assert_eq!(
+            fragments
+                .fragment("MovieFields")
+                .map(|fragment| fragment.selections[0].name.text.as_str()),
+            Some("id")
+        );
+        assert_eq!(fragments.duplicate_fragments().len(), 1);
+        assert_eq!(
+            fragments.duplicate_fragments()[0].selections[0]
+                .name
+                .text
+                .as_str(),
+            "info"
+        );
     }
 }
