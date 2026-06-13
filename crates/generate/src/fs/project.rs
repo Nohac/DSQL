@@ -77,6 +77,7 @@ fn load_generate_documents(project: &dsql_project::Project) -> Result<Vec<Genera
             path: document.path,
             text: document.text,
             source_offset: document.source_offset as u32,
+            resolution_scope: document.resolution_scope,
         })
         .collect())
 }

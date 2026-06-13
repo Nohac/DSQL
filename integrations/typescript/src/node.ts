@@ -22,6 +22,8 @@ export type {
 export type BuildArtifacts = {
   readonly manifestPath: string;
   readonly manifest: BuildManifest;
+  readonly scopes: readonly GeneratedResolutionScope[];
+  readonly sourceFileScopes: readonly GeneratedSourceScope[];
   readonly operations: OperationMetadata[];
   readonly operationsByName: ReadonlyMap<string, OperationMetadata>;
   readonly fragments: FragmentMetadata[];
@@ -40,10 +42,23 @@ export type GeneratedFragmentArtifact = {
   readonly source: string;
 };
 
+export type GeneratedResolutionScope = {
+  readonly name: string;
+  readonly imports: string[];
+};
+
+export type GeneratedSourceScope = {
+  readonly file: string;
+  readonly source_offset: number;
+  readonly scope: string;
+};
+
 export type GeneratedArtifacts = {
   readonly project_dir: string;
   readonly out_dir: string;
   readonly manifest_path: string;
+  readonly scopes?: GeneratedResolutionScope[];
+  readonly source_file_scopes?: GeneratedSourceScope[];
   readonly manifest: BuildManifest;
   readonly operations: GeneratedOperationArtifact[];
   readonly fragments: GeneratedFragmentArtifact[];
@@ -106,6 +121,8 @@ export function buildArtifactsFromGenerated(
   return {
     manifestPath: generated.manifest_path,
     manifest: generated.manifest,
+    scopes: generated.scopes ?? [{ name: "default", imports: [] }],
+    sourceFileScopes: generated.source_file_scopes ?? [],
     operations,
     operationsByName: new Map(
       operations.map((operation) => [operation.name, operation]),
@@ -128,6 +145,8 @@ export function loadBuildArtifacts(manifestPath: string): BuildArtifacts {
   return {
     manifestPath,
     manifest,
+    scopes: [{ name: "default", imports: [] }],
+    sourceFileScopes: [],
     operations,
     operationsByName: new Map(
       operations.map((operation) => [operation.name, operation]),

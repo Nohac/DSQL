@@ -165,6 +165,8 @@ function createArtifacts(
   const fragments = [fragmentMetadata("MovieFields")];
   return {
     manifestPath: join(root, "dsql/build/manifest.json"),
+    scopes: [{ name: "default", imports: [] }],
+    sourceFileScopes: [],
     manifest: {
       version: 1,
       operations: operations.map((operation) => ({

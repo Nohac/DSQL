@@ -57,6 +57,8 @@ function createArtifacts(root: string): BuildArtifacts {
   const operation = operationMetadata();
   return {
     manifestPath: join(root, "dsql/build/manifest.json"),
+    scopes: [{ name: "default", imports: [] }],
+    sourceFileScopes: [],
     manifest: {
       version: 1,
       operations: [

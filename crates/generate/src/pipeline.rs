@@ -45,6 +45,7 @@ pub(crate) struct GenerateDocument {
     pub path: PathBuf,
     pub text: String,
     pub source_offset: u32,
+    pub resolution_scope: String,
 }
 
 #[derive(Clone, Debug)]
@@ -91,10 +92,25 @@ pub struct GeneratedFragmentArtifact {
 }
 
 #[derive(Clone, Debug, Facet)]
+pub struct GeneratedResolutionScope {
+    pub name: String,
+    pub imports: Vec<String>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct GeneratedSourceScope {
+    pub file: String,
+    pub source_offset: u32,
+    pub scope: String,
+}
+
+#[derive(Clone, Debug, Facet)]
 pub struct GeneratedArtifacts {
     pub project_dir: String,
     pub out_dir: String,
     pub manifest_path: String,
+    pub scopes: Vec<GeneratedResolutionScope>,
+    pub source_file_scopes: Vec<GeneratedSourceScope>,
     pub manifest: BuildManifest,
     pub operations: Vec<GeneratedOperationArtifact>,
     pub fragments: Vec<GeneratedFragmentArtifact>,
@@ -231,6 +247,8 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
             .join(MANIFEST_FILE)
             .to_string_lossy()
             .to_string(),
+        scopes: generated_resolution_scopes(&input.project),
+        source_file_scopes: generated_source_scopes(&input.documents),
         manifest: BuildManifest {
             version: BUILD_MANIFEST_VERSION,
             operations: operation_manifest_entries,
@@ -239,6 +257,36 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
         operations: generated_operations,
         fragments: generated_fragments,
     })
+}
+
+fn generated_resolution_scopes(project: &dsql_project::Project) -> Vec<GeneratedResolutionScope> {
+    if project.config.resolution.is_empty() {
+        return vec![GeneratedResolutionScope {
+            name: dsql_project::DEFAULT_RESOLUTION_SCOPE.to_string(),
+            imports: Vec::new(),
+        }];
+    }
+
+    project
+        .config
+        .resolution
+        .iter()
+        .map(|(name, config)| GeneratedResolutionScope {
+            name: name.clone(),
+            imports: config.imports.clone(),
+        })
+        .collect()
+}
+
+fn generated_source_scopes(documents: &[GenerateDocument]) -> Vec<GeneratedSourceScope> {
+    documents
+        .iter()
+        .map(|document| GeneratedSourceScope {
+            file: document.path.to_string_lossy().to_string(),
+            source_offset: document.source_offset,
+            scope: document.resolution_scope.clone(),
+        })
+        .collect()
 }
 
 pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {

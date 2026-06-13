@@ -140,6 +140,14 @@ test("builds generator artifacts from daemon output", async () => {
     project_dir: "/project",
     out_dir: "/project/src/generated/dsql",
     manifest_path: "/project/dsql/build/manifest.json",
+    scopes: [{ name: "default", imports: [] }],
+    source_file_scopes: [
+      {
+        file: "/project/queries/movie-info.dsql",
+        source_offset: 0,
+        scope: "default",
+      },
+    ],
     manifest: {
       version: 1,
       operations: [
@@ -182,9 +190,10 @@ test("builds generator artifacts from daemon output", async () => {
   });
 
   const generator = defineDsqlGenerator(({ artifacts }) => {
-    expect(artifacts.operationsByName.get("MovieInfo")?.sql.text).toBe(
+  expect(artifacts.operationsByName.get("MovieInfo")?.sql.text).toBe(
       "select 1",
     );
+    expect(artifacts.scopes[0]?.name).toBe("default");
   });
 
   await generator({
@@ -201,6 +210,8 @@ test("generators may return dsql render metadata", async () => {
     project_dir: "/project",
     out_dir: "/project/src/generated/dsql",
     manifest_path: "/project/dsql/build/manifest.json",
+    scopes: [{ name: "frontend", imports: ["shared"] }],
+    source_file_scopes: [],
     manifest: {
       version: 1,
       operations: [],

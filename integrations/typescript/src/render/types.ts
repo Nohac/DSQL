@@ -243,6 +243,7 @@ export async function renderDsql(
   const executionDir = options.executionDir
     ? resolveOutputDir(root, options.executionDir)
     : undefined;
+  const scope = options.scope ?? singleArtifactScope(artifacts);
 
   const renderPlan = buildRenderPlan(artifacts);
   const files = new Map<string, string>();
@@ -315,7 +316,7 @@ export async function renderDsql(
     manifestPath: join(queriesDir, RENDER_MANIFEST_NAME),
     files: renderedFiles,
     artifactHash: artifactHash(artifacts),
-    ...(options.scope?.name ? { scopeName: options.scope.name } : {}),
+    ...(scope?.name ? { scopeName: scope.name } : {}),
     layout: {
       queriesDir,
       ...(executionDir ? { executionDir } : {}),
@@ -323,11 +324,11 @@ export async function renderDsql(
   });
 
   return {
-    ...(options.scope
+    ...(scope
       ? {
           scope: {
-            name: options.scope.name,
-            imports: [...(options.scope.imports ?? [])],
+            name: scope.name,
+            imports: [...(scope.imports ?? [])],
           },
         }
       : {}),
@@ -680,6 +681,12 @@ function relativeModuleSpecifier(fromFile: string, toFile: string): string {
 
 function normalizeModulePath(path: string): string {
   return path.split("\\").join("/");
+}
+
+function singleArtifactScope(
+  artifacts: BuildArtifacts,
+): RenderDsqlOptions["scope"] | undefined {
+  return artifacts.scopes.length === 1 ? artifacts.scopes[0] : undefined;
 }
 
 function sqlVariants(operation: OperationMetadata): Record<string, Record<string, string>> {
