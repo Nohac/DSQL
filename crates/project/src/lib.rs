@@ -52,6 +52,15 @@ pub enum ProjectError {
     MissingEmbeddingPattern { resolver: String },
     #[error("document resolver `{resolver}` requires an [embedding.{resolver}] config")]
     MissingEmbeddingConfig { resolver: String },
+    #[error(
+        "document {path} at embedded offset {source_offset} is assigned to both resolution maps `{first_scope}` and `{second_scope}`"
+    )]
+    DuplicateResolutionDocument {
+        path: PathBuf,
+        source_offset: usize,
+        first_scope: String,
+        second_scope: String,
+    },
     #[error("failed to extract embedded DSQL from {path}: {source}")]
     EmbeddedExtraction {
         path: PathBuf,
@@ -79,6 +88,8 @@ pub struct Config {
     pub generate: GenerateConfig,
     #[facet(default)]
     pub embedding: BTreeMap<String, EmbeddingConfig>,
+    #[facet(default)]
+    pub resolution: BTreeMap<String, ResolutionMapConfig>,
     pub documents: Vec<DocumentConfig>,
 }
 
@@ -93,6 +104,8 @@ struct RawConfig {
     pub generate: GenerateConfig,
     #[facet(default)]
     pub embedding: BTreeMap<String, EmbeddingConfig>,
+    #[facet(default)]
+    pub resolution: BTreeMap<String, ResolutionMapConfig>,
     pub documents: Vec<RawDocumentConfig>,
 }
 
@@ -135,6 +148,14 @@ pub struct DocumentConfig {
 }
 
 #[derive(Clone, Debug, Facet)]
+pub struct ResolutionMapConfig {
+    #[facet(default)]
+    pub documents: Vec<String>,
+    #[facet(default)]
+    pub imports: Vec<String>,
+}
+
+#[derive(Clone, Debug, Facet)]
 struct RawDocumentConfig {
     pub resolver: String,
     pub paths: Vec<String>,
@@ -142,6 +163,7 @@ struct RawDocumentConfig {
 
 const DSQL_RESOLVER: &str = "dsql";
 const TYPESCRIPT_RESOLVER: &str = "typescript";
+pub const DEFAULT_RESOLUTION_SCOPE: &str = "default";
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 #[repr(C)]
@@ -254,6 +276,7 @@ fn parse_project_config(path: &Path, text: &str) -> Result<Config> {
         lint: raw.lint,
         generate: raw.generate,
         embedding: raw.embedding,
+        resolution: raw.resolution,
         documents: raw
             .documents
             .into_iter()
@@ -322,6 +345,7 @@ pub fn init_project(base_path: &Path, database_url: Option<String>) -> Result<Pr
         lint: default_lint_config(),
         generate: default_generate_config(),
         embedding: BTreeMap::new(),
+        resolution: BTreeMap::new(),
         documents: Vec::new(),
     };
     let config_toml = facet_toml::to_string(&config)
@@ -420,9 +444,14 @@ pub struct ProjectDocument {
     pub path: PathBuf,
     pub text: String,
     pub source_offset: usize,
+    pub resolution_scope: String,
 }
 
 pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>> {
+    if !project.config.resolution.is_empty() {
+        return load_scoped_project_documents(project);
+    }
+
     let base = project_base(project);
     let mut documents = Vec::new();
     if project.config.documents.is_empty() {
@@ -431,7 +460,7 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
         files.sort();
         files.dedup();
         for path in files {
-            documents.push(read_dsql_document(path)?);
+            documents.push(read_dsql_document(path, DEFAULT_RESOLUTION_SCOPE)?);
         }
     } else {
         for document_config in &project.config.documents {
@@ -446,14 +475,18 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
                 DocumentResolver::Dsql => {
                     for path in files {
                         if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
-                            documents.push(read_dsql_document(path)?);
+                            documents.push(read_dsql_document(path, DEFAULT_RESOLUTION_SCOPE)?);
                         }
                     }
                 }
                 resolver => {
                     let embedding = embedding_for_resolver(project, resolver)?;
                     for path in files {
-                        documents.extend(read_embedded_documents(path, &embedding)?);
+                        documents.extend(read_embedded_documents(
+                            path,
+                            &embedding,
+                            DEFAULT_RESOLUTION_SCOPE,
+                        )?);
                     }
                 }
             }
@@ -467,6 +500,49 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
     Ok(documents)
 }
 
+fn load_scoped_project_documents(project: &Project) -> Result<Vec<ProjectDocument>> {
+    let base = project_base(project);
+    let mut documents = Vec::new();
+    let mut owners = BTreeMap::<(PathBuf, usize), String>::new();
+    for (scope, config) in &project.config.resolution {
+        let mut files = Vec::new();
+        for pattern in &config.documents {
+            collect_resolver_path(&base.join(pattern), Some(&project.root), &mut files)?;
+        }
+        files.sort();
+        files.dedup();
+
+        for path in files {
+            let mut scoped_documents =
+                if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
+                    vec![read_dsql_document(path, scope)?]
+                } else {
+                    let embedding = embedding_for_resolver(project, &DocumentResolver::Typescript)?;
+                    read_embedded_documents(path, &embedding, scope)?
+                };
+            for document in scoped_documents.drain(..) {
+                let key = (document.path.clone(), document.source_offset);
+                if let Some(existing) = owners.insert(key.clone(), scope.clone()) {
+                    return Err(ProjectError::DuplicateResolutionDocument {
+                        path: key.0,
+                        source_offset: key.1,
+                        first_scope: existing,
+                        second_scope: scope.clone(),
+                    });
+                }
+                documents.push(document);
+            }
+        }
+    }
+    documents.sort_by(|left, right| {
+        left.resolution_scope
+            .cmp(&right.resolution_scope)
+            .then(left.path.cmp(&right.path))
+            .then(left.source_offset.cmp(&right.source_offset))
+    });
+    Ok(documents)
+}
+
 pub fn project_base(project: &Project) -> PathBuf {
     project
         .root
@@ -474,27 +550,30 @@ pub fn project_base(project: &Project) -> PathBuf {
         .map_or_else(|| project.root.clone(), Path::to_path_buf)
 }
 
-fn read_dsql_document(path: PathBuf) -> Result<ProjectDocument> {
+fn read_dsql_document(path: PathBuf, resolution_scope: &str) -> Result<ProjectDocument> {
     let text = read_to_string(&path)?;
     Ok(ProjectDocument {
         path,
         text,
         source_offset: 0,
+        resolution_scope: resolution_scope.to_string(),
     })
 }
 
 fn read_embedded_documents(
     path: PathBuf,
     embedding: &RegexEmbedding,
+    resolution_scope: &str,
 ) -> Result<Vec<ProjectDocument>> {
     let source = read_to_string(&path)?;
-    embedded_documents_from_source(&path, &source, embedding)
+    embedded_documents_from_source(&path, &source, embedding, resolution_scope)
 }
 
 fn embedded_documents_from_source(
     path: &Path,
     source: &str,
     embedding: &RegexEmbedding,
+    resolution_scope: &str,
 ) -> Result<Vec<ProjectDocument>> {
     embedding
         .extract(source)
@@ -503,15 +582,20 @@ fn embedded_documents_from_source(
             source,
         })?
         .into_iter()
-        .map(|region| embedded_document(path, region))
+        .map(|region| embedded_document(path, region, resolution_scope))
         .collect()
 }
 
-fn embedded_document(path: &Path, region: EmbeddedRegion) -> Result<ProjectDocument> {
+fn embedded_document(
+    path: &Path,
+    region: EmbeddedRegion,
+    resolution_scope: &str,
+) -> Result<ProjectDocument> {
     Ok(ProjectDocument {
         path: path.to_path_buf(),
         text: region.text,
         source_offset: region.content_range.start as usize,
+        resolution_scope: resolution_scope.to_string(),
     })
 }
 
@@ -711,6 +795,108 @@ documents = [
     }
 
     #[test]
+    fn parse_project_config_reads_resolution_maps() {
+        let config = parse_project_config(
+            Path::new("dsql/dsql.toml"),
+            r#"database_url = "<database url>"
+documents = []
+
+[resolution.shared]
+documents = ["queries/shared/**/*.dsql"]
+
+[resolution.frontend]
+documents = ["src/**/*.ts", "queries/frontend/**/*.dsql"]
+imports = ["shared"]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.resolution["frontend"].documents,
+            vec![
+                "src/**/*.ts".to_string(),
+                "queries/frontend/**/*.dsql".to_string()
+            ]
+        );
+        assert_eq!(config.resolution["frontend"].imports, vec!["shared"]);
+        assert_eq!(
+            config.resolution["shared"].documents,
+            vec!["queries/shared/**/*.dsql".to_string()]
+        );
+    }
+
+    #[test]
+    fn scoped_project_documents_record_resolution_scope() {
+        let base = tempfile::tempdir().unwrap();
+        fs::create_dir_all(base.path().join("dsql/schema")).unwrap();
+        fs::create_dir_all(base.path().join("queries/frontend")).unwrap();
+        fs::create_dir_all(base.path().join("queries/api")).unwrap();
+        fs::write(
+            base.path().join("dsql/dsql.toml"),
+            r#"database_url = "<database url>"
+documents = []
+
+[resolution.frontend]
+documents = ["queries/frontend/**/*.dsql"]
+
+[resolution.api]
+documents = ["queries/api/**/*.dsql"]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            base.path().join("queries/frontend/movie.dsql"),
+            "query MoviePage { title { id } }\n",
+        )
+        .unwrap();
+        fs::write(
+            base.path().join("queries/api/movie.dsql"),
+            "query MovieApi { title { id } }\n",
+        )
+        .unwrap();
+
+        let project = Project::load_from(base.path()).unwrap();
+        let documents = load_project_documents(&project).unwrap();
+
+        assert_eq!(documents.len(), 2);
+        assert_eq!(documents[0].resolution_scope, "api");
+        assert_eq!(documents[1].resolution_scope, "frontend");
+    }
+
+    #[test]
+    fn scoped_project_documents_reject_duplicate_ownership() {
+        let base = tempfile::tempdir().unwrap();
+        fs::create_dir_all(base.path().join("dsql/schema")).unwrap();
+        fs::create_dir_all(base.path().join("queries")).unwrap();
+        fs::write(
+            base.path().join("dsql/dsql.toml"),
+            r#"database_url = "<database url>"
+documents = []
+
+[resolution.frontend]
+documents = ["queries/**/*.dsql"]
+
+[resolution.api]
+documents = ["queries/**/*.dsql"]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            base.path().join("queries/movie.dsql"),
+            "query MoviePage { title { id } }\n",
+        )
+        .unwrap();
+
+        let project = Project::load_from(base.path()).unwrap();
+        let error = load_project_documents(&project).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ProjectError::DuplicateResolutionDocument { .. }
+        ));
+    }
+
+    #[test]
     fn embedded_documents_from_source_loads_typescript_regions() {
         let source = r#"const query = dsql(`
 query Users { users { id } }
@@ -718,8 +904,13 @@ query Users { users { id } }
 "#;
         let embedding = RegexEmbedding::new(default_typescript_regex_pattern());
 
-        let documents =
-            embedded_documents_from_source(Path::new("src/query.ts"), source, &embedding).unwrap();
+        let documents = embedded_documents_from_source(
+            Path::new("src/query.ts"),
+            source,
+            &embedding,
+            DEFAULT_RESOLUTION_SCOPE,
+        )
+        .unwrap();
 
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].path, PathBuf::from("src/query.ts"));
@@ -727,6 +918,7 @@ query Users { users { id } }
             documents[0].source_offset,
             source.find(&documents[0].text).unwrap()
         );
+        assert_eq!(documents[0].resolution_scope, DEFAULT_RESOLUTION_SCOPE);
         assert!(documents[0].text.contains("query Users"));
     }
 

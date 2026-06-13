@@ -11,3 +11,6 @@ facet-toml = { workspace = true, features = ["serialize"] }
 glob = { workspace = true }
 miette = { workspace = true, features = ["fancy"] }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
