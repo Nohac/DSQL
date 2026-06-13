@@ -6,17 +6,14 @@ import {
 } from "@tanstack/react-start";
 import type {
   DsqlOperation,
-  DsqlOperationInput,
-  DsqlOperationParams,
   DsqlOperationResult,
-} from "./operations";
+  DsqlVariables,
+} from "@dsql/typescript/runtime";
+import { materializeDsqlQuery } from "@dsql/typescript/runtime";
 
 export type DsqlServerVariables<
   Operation extends DsqlOperation<any, any, any>,
-> = {
-  readonly params: DsqlOperationParams<Operation>;
-  readonly input: DsqlOperationInput<Operation>;
-};
+> = DsqlVariables<Operation>;
 
 export type DsqlServerOperation<
   Operation extends DsqlOperation<any, any, any>,
@@ -36,7 +33,7 @@ export type DsqlExecutionRequest<
   Operation extends DsqlOperation<any, any, any>,
 > = {
   readonly operation: DsqlServerOperation<Operation>;
-  readonly variables: DsqlServerVariables<Operation>;
+  readonly variables: DsqlVariables<Operation>;
   readonly sql: string;
   readonly values: any[];
 };
@@ -55,7 +52,7 @@ export type DsqlServerContext = {
 
 async function executeDsqlOperation<Operation extends DsqlOperation<any, any, any>>(
   operation: Operation,
-  variables: DsqlServerVariables<Operation>,
+  variables: DsqlVariables<Operation>,
 ): Promise<DsqlOperationResult<Operation>> {
   const context = getGlobalStartContext() as Partial<DsqlServerContext> | undefined;
   const executeQuery = context?.dsql?.executeQuery;
@@ -64,50 +61,20 @@ async function executeDsqlOperation<Operation extends DsqlOperation<any, any, an
   }
 
   const serverOperation = await serverOperationFor(operation);
-  const materialized = materializeDsqlOperation(serverOperation, variables);
+  const materialized = materializeDsqlQuery(
+    {
+      operation: serverOperation,
+      sql: serverOperation.sql,
+      parameters: serverOperation.parameters,
+      variants: serverOperation.variants,
+    },
+    variables,
+  );
   return executeQuery({
     operation: serverOperation,
     variables,
     ...materialized,
   });
-}
-
-function materializeDsqlOperation<
-  Operation extends DsqlOperation<any, any, any>,
->(
-  operation: DsqlServerOperation<Operation>,
-  variables: DsqlServerVariables<Operation>,
-): { readonly sql: string; readonly values: any[] } {
-  let sql = operation.sql;
-  for (const [path, cases] of Object.entries(operation.variants)) {
-    const selected = getPath(variables, path);
-    if (typeof selected !== "string") {
-      throw new Error(`missing dsql variant value at ${path}`);
-    }
-    const replacement = cases[selected];
-    if (replacement === undefined) {
-      throw new Error(`invalid dsql variant value at ${path}: ${selected}`);
-    }
-    sql = sql.replaceAll(`{{${path}}}`, replacement);
-  }
-
-  return {
-    sql,
-    values: operation.parameters.map((parameter) =>
-      getPath(variables, parameter.path),
-    ),
-  };
-}
-
-function getPath(value: unknown, path: string): unknown {
-  let current = value;
-  for (const part of path.split(".")) {
-    if (current === null || typeof current !== "object") {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
 }
 
 const serverOperationFor = createServerOnlyFn(

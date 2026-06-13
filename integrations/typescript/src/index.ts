@@ -19,6 +19,8 @@ export type {
   SqlVariantMetadata,
 } from "./generated/metadata";
 
+export * from "./runtime";
+
 import type { OperationMetadata } from "./generated/metadata";
 
 export type DsqlQueryDefinition<
