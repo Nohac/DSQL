@@ -5,6 +5,7 @@ import {
   getGlobalStartContext,
 } from "@tanstack/react-start";
 import type {
+  DsqlExecutionPayload,
   DsqlOperation,
   DsqlOperationResult,
   DsqlVariables,
@@ -15,27 +16,13 @@ export type DsqlServerVariables<
   Operation extends DsqlOperation<any, any, any>,
 > = DsqlVariables<Operation>;
 
-export type DsqlServerOperation<
-  Operation extends DsqlOperation<any, any, any>,
-> = Operation & {
-  readonly sql: string;
-  readonly parameters: readonly DsqlSqlParameter[];
-  readonly variants: DsqlSqlVariants;
-};
-
-export type DsqlSqlParameter = {
-  readonly path: string;
-};
-
-export type DsqlSqlVariants = Record<string, Record<string, string>>;
-
 export type DsqlExecutionRequest<
   Operation extends DsqlOperation<any, any, any>,
 > = {
-  readonly operation: DsqlServerOperation<Operation>;
+  readonly operation: Operation;
   readonly variables: DsqlVariables<Operation>;
   readonly sql: string;
-  readonly values: any[];
+  readonly values: readonly unknown[];
 };
 
 export type DsqlServerExecutor = <
@@ -60,33 +47,28 @@ async function executeDsqlOperation<Operation extends DsqlOperation<any, any, an
     throw new Error("dsql executor is not configured in TanStack Start request context");
   }
 
-  const serverOperation = await serverOperationFor(operation);
+  const payload = await executionPayloadFor(operation);
   const materialized = materializeDsqlQuery(
-    {
-      operation: serverOperation,
-      sql: serverOperation.sql,
-      parameters: serverOperation.parameters,
-      variants: serverOperation.variants,
-    },
+    payload,
     variables,
   );
   return executeQuery({
-    operation: serverOperation,
+    operation,
     variables,
     ...materialized,
   });
 }
 
-const serverOperationFor = createServerOnlyFn(
+const executionPayloadFor = createServerOnlyFn(
   async <Operation extends DsqlOperation<any, any, any>>(
     operation: Operation,
-  ): Promise<DsqlServerOperation<Operation>> => {
-    const { serverOperations } = await import("./tanstack-start.server");
-    const serverOperation = serverOperations[operation.name];
-    if (!serverOperation) {
-      throw new Error(`missing dsql server operation for ${operation.name}`);
+  ): Promise<DsqlExecutionPayload<Operation>> => {
+    const { executionPayloads } = await import("./tanstack-start.server");
+    const payload = executionPayloads[operation.name];
+    if (!payload) {
+      throw new Error(`missing dsql execution payload for ${operation.name}`);
     }
 
-    return serverOperation as DsqlServerOperation<Operation>;
+    return payload as DsqlExecutionPayload<Operation>;
   },
 );

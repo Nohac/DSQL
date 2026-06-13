@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BuildArtifacts } from "@dsql/typescript/node";
+import type { BuildArtifacts, DsqlRenderResult } from "@dsql/typescript/node";
 import {
   Project,
   QuoteKind,
@@ -10,12 +10,16 @@ import {
 
 type RenderOptions = {
   readonly outDir: string;
+  readonly root?: string;
 };
 
 export async function renderTanStackQuery(
   artifacts: BuildArtifacts,
+  dsql: DsqlRenderResult,
   options: RenderOptions,
 ): Promise<void> {
+  const root = resolve(options.root ?? process.cwd());
+  const sourcePath = join(options.outDir, "tanstack-query.ts");
   const project = createProject();
   const source = createSourceFromTemplate(
     project,
@@ -25,7 +29,7 @@ export async function renderTanStackQuery(
 
   if (artifacts.operations.length > 0) {
     source.addImportDeclaration({
-      moduleSpecifier: "./operations",
+      moduleSpecifier: importSpecifier(root, sourcePath, dsql.modules.queries),
       namedImports: artifacts.operations.map(
         (operation) => `${toPascalCase(operation.name)}Operation`,
       ),
@@ -57,8 +61,8 @@ ${artifacts.operations
   });
 
   const queriesSource = project.createSourceFile(
-    join(options.outDir, "queries.ts"),
-    readFileSync(join(options.outDir, "queries.ts"), "utf8"),
+    join(options.outDir, "index.ts"),
+    readFileSync(join(options.outDir, "index.ts"), "utf8"),
     { overwrite: true },
   );
   if (
@@ -133,4 +137,16 @@ function toPascalCase(value: string): string {
   }
 
   return /^[0-9]/.test(result) ? `_${result}` : result;
+}
+
+function importSpecifier(root: string, fromFile: string, modulePath: string): string {
+  if (!modulePath.startsWith(".")) {
+    return modulePath;
+  }
+
+  const absoluteModulePath = resolve(root, modulePath);
+  const relativePath = relative(dirname(fromFile), absoluteModulePath)
+    .split("\\")
+    .join("/");
+  return relativePath.startsWith(".") ? relativePath : `./${relativePath}`;
 }

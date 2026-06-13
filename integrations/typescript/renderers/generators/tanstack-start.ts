@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BuildArtifacts } from "@dsql/typescript/node";
+import type { BuildArtifacts, DsqlRenderResult } from "@dsql/typescript/node";
 import {
   Project,
   QuoteKind,
@@ -10,12 +10,17 @@ import {
 
 type RenderOptions = {
   readonly outDir: string;
+  readonly root?: string;
 };
 
 export async function renderTanStackStart(
   artifacts: BuildArtifacts,
+  dsql: DsqlRenderResult,
   options: RenderOptions,
 ): Promise<void> {
+  const root = resolve(options.root ?? process.cwd());
+  const clientPath = join(options.outDir, "tanstack-start.ts");
+  const serverPath = join(options.outDir, "tanstack-start.server.ts");
   const project = createProject();
   const source = createSourceFromTemplate(
     project,
@@ -23,47 +28,41 @@ export async function renderTanStackStart(
     "tanstack-start.ts",
   );
   const serverSource = project.createSourceFile(
-    join(options.outDir, "tanstack-start.server.ts"),
+    serverPath,
     'import "@tanstack/react-start/server-only";\n',
     { overwrite: true },
   );
 
   if (artifacts.operations.length > 0) {
     source.addImportDeclaration({
-      moduleSpecifier: "./operations",
+      moduleSpecifier: importSpecifier(root, clientPath, dsql.modules.queries),
       namedImports: artifacts.operations.map(
         (operation) => `${toPascalCase(operation.name)}Operation`,
       ),
     });
-    serverSource.addImportDeclaration({
-      moduleSpecifier: "./operations",
-      namedImports: artifacts.operations.map(
-        (operation) => `${toPascalCase(operation.name)}Operation`,
-      ),
-    });
+    for (const operation of artifacts.operations) {
+      const definition = dsql.definitions[operation.name];
+      if (!definition?.executionModule) {
+        throw new Error(`missing DSQL execution module for ${operation.name}`);
+      }
+      serverSource.addImportDeclaration({
+        moduleSpecifier: importSpecifier(
+          root,
+          serverPath,
+          definition.executionModule,
+        ),
+        namedImports: [
+          `${toPascalCase(operation.name)}ExecutionPayload`,
+        ],
+      });
+    }
   }
 
   serverSource.addImportDeclaration({
-    moduleSpecifier: "./operations",
+    moduleSpecifier: "@dsql/typescript/runtime",
     isTypeOnly: true,
-    namedImports: ["DsqlOperation"],
+    namedImports: ["DsqlExecutionPayload"],
   });
-  serverSource.addTypeAlias({
-    isExported: true,
-    name: "DsqlServerOperation",
-    typeParameters: [
-      {
-        name: "Operation",
-        constraint: "DsqlOperation<any, any, any>",
-      },
-    ],
-    type: `Operation & {
-  readonly sql: string;
-  readonly parameters: readonly { readonly path: string }[];
-  readonly variants: Record<string, Record<string, string>>;
-}`,
-  });
-
   source.addVariableStatement({
     isExported: true,
     declarationKind: VariableDeclarationKind.Const,
@@ -80,22 +79,6 @@ export async function renderTanStackStart(
   for (const operation of artifacts.operations) {
     const operationName = `${toPascalCase(operation.name)}Operation`;
     const serverOperationName = `${toPascalCase(operation.name)}ServerOperation`;
-    serverSource.addVariableStatement({
-      isExported: true,
-      declarationKind: VariableDeclarationKind.Const,
-      declarations: [
-        {
-          name: serverOperationName,
-          type: `DsqlServerOperation<typeof ${operationName}>`,
-          initializer: `{
-  ...${operationName},
-  sql: ${JSON.stringify(operation.sql.text)},
-  parameters: ${JSON.stringify(operation.sql.parameters)},
-  variants: ${JSON.stringify(sqlVariants(operation))}
-}`,
-        },
-      ],
-    });
     source.addVariableStatement({
       isExported: true,
       declarationKind: VariableDeclarationKind.Const,
@@ -114,13 +97,13 @@ export async function renderTanStackStart(
     declarationKind: VariableDeclarationKind.Const,
     declarations: [
       {
-        name: "serverOperations",
-        type: "Record<string, DsqlServerOperation<any>>",
+        name: "executionPayloads",
+        type: "Record<string, DsqlExecutionPayload<any>>",
         initializer: `{
 ${artifacts.operations
   .map((operation) => {
     const name = toPascalCase(operation.name);
-    return `  ${JSON.stringify(operation.name)}: ${name}ServerOperation`;
+    return `  ${JSON.stringify(operation.name)}: ${name}ExecutionPayload`;
   })
   .join(",\n")}
 }`,
@@ -189,13 +172,14 @@ function toPascalCase(value: string): string {
   return /^[0-9]/.test(result) ? `_${result}` : result;
 }
 
-function sqlVariants(operation: BuildArtifacts["operations"][number]) {
-  return Object.fromEntries(
-    operation.sql.variants.map((variant) => [
-      variant.path,
-      Object.fromEntries(
-        variant.cases.map((case_) => [case_.value, case_.text]),
-      ),
-    ]),
-  );
+function importSpecifier(root: string, fromFile: string, modulePath: string): string {
+  if (!modulePath.startsWith(".")) {
+    return modulePath;
+  }
+
+  const absoluteModulePath = resolve(root, modulePath);
+  const relativePath = relative(dirname(fromFile), absoluteModulePath)
+    .split("\\")
+    .join("/");
+  return relativePath.startsWith(".") ? relativePath : `./${relativePath}`;
 }

@@ -7,7 +7,7 @@ import type { UseQueryOptions, UseQueryResult } from "@tanstack/react-query";
 import type {
   DsqlOperation,
   DsqlOperationResult,
-} from "./operations";
+} from "@dsql/typescript/runtime";
 import type { DsqlServerVariables } from "./tanstack-start";
 
 export type DsqlQueryVariables<
