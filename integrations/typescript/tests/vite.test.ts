@@ -195,3 +195,36 @@ test("builds generator artifacts from daemon output", async () => {
     command: "serve",
   });
 });
+
+test("generators may return dsql render metadata", async () => {
+  const artifacts = buildArtifactsFromGenerated({
+    project_dir: "/project",
+    out_dir: "/project/src/generated/dsql",
+    manifest_path: "/project/dsql/build/manifest.json",
+    manifest: {
+      version: 1,
+      operations: [],
+      fragments: [],
+    },
+    operations: [],
+    fragments: [],
+  });
+
+  const generator = defineDsqlGenerator(() => ({
+    modules: {
+      queries: "./src/generated/dsql/queries/index",
+    },
+    definitions: {},
+    files: [],
+  }));
+
+  const result = await generator({
+    artifacts,
+    root: "/project",
+    outDir: "/project/src/generated/dsql",
+    mode: "test",
+    command: "serve",
+  });
+
+  expect(result?.modules.queries).toBe("./src/generated/dsql/queries/index");
+});

@@ -1,8 +1,8 @@
 import {
   loadBuildArtifacts,
-  renderDsqlHelper,
-  renderTypes,
+  renderDsql,
 } from "@dsql/typescript/node";
+import { dirname } from "node:path";
 
 const manifestPath = process.env.DSQL_MANIFEST;
 const outDir = process.env.DSQL_OUT_DIR;
@@ -13,5 +13,7 @@ if (!manifestPath || !outDir) {
 
 const artifacts = loadBuildArtifacts(manifestPath);
 
-await renderTypes(artifacts, { outDir });
-await renderDsqlHelper(artifacts, { outDir });
+await renderDsql(artifacts, {
+  root: dirname(dirname(dirname(manifestPath))),
+  queriesDir: outDir,
+});

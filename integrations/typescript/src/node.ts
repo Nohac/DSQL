@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import type { DsqlRenderResult } from "./render/types.js";
 import type {
   BuildManifest,
   FragmentManifestEntry,
@@ -56,9 +57,11 @@ export type DsqlGeneratorContext = {
   readonly command: "serve" | "build";
 };
 
+export type DsqlGeneratorResult = DsqlRenderResult | void;
+
 export type DsqlGenerator = (
   context: DsqlGeneratorContext,
-) => void | Promise<void>;
+) => DsqlGeneratorResult | Promise<DsqlGeneratorResult>;
 
 export function defineDsqlGenerator(generator: DsqlGenerator): DsqlGenerator {
   return generator;
@@ -87,9 +90,11 @@ export async function runDsqlGeneratorFromEnv(
 }
 
 export const defaultDsqlGenerator = defineDsqlGenerator(
-  async ({ artifacts, outDir }) => {
-    await renderTypes(artifacts, { outDir });
-    await renderDsqlHelper(artifacts, { outDir });
+  async ({ artifacts, root, outDir }) => {
+    return renderDsql(artifacts, {
+      root,
+      queriesDir: outDir,
+    });
   },
 );
 
