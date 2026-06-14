@@ -50,7 +50,7 @@ test("renders inline per-definition dsql modules", async () => {
     "utf8",
   );
   expect(index).toBe(
-    'export * from "./MovieFields.fragment";\nexport * from "./MovieInfoLookup";\n',
+    'export { dsql } from "@dsql/typescript/runtime";\nexport type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlVariables } from "@dsql/typescript/runtime";\nexport * from "./MovieFields.fragment";\nexport * from "./MovieInfoLookup";\n',
   );
 });
 
@@ -167,6 +167,7 @@ function createArtifacts(
     manifestPath: join(root, "dsql/build/manifest.json"),
     scopes: [{ name: "default", imports: [] }],
     sourceFileScopes: [],
+    artifactGroups: [],
     manifest: {
       version: 1,
       operations: operations.map((operation) => ({

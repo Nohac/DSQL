@@ -237,5 +237,7 @@ test("generators may return dsql render metadata", async () => {
     command: "serve",
   });
 
-  expect(result?.modules.queries).toBe("./src/generated/dsql/queries/index");
+  expect(Array.isArray(result) ? result[0]?.modules.queries : result?.modules.queries).toBe(
+    "./src/generated/dsql/queries/index",
+  );
 });

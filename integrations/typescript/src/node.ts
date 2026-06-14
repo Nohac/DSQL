@@ -24,6 +24,7 @@ export type BuildArtifacts = {
   readonly manifest: BuildManifest;
   readonly scopes: readonly GeneratedResolutionScope[];
   readonly sourceFileScopes: readonly GeneratedSourceScope[];
+  readonly artifactGroups: readonly BuildArtifacts[];
   readonly operations: OperationMetadata[];
   readonly operationsByName: ReadonlyMap<string, OperationMetadata>;
   readonly fragments: FragmentMetadata[];
@@ -62,6 +63,16 @@ export type GeneratedArtifacts = {
   readonly manifest: BuildManifest;
   readonly operations: GeneratedOperationArtifact[];
   readonly fragments: GeneratedFragmentArtifact[];
+  readonly artifact_groups?: GeneratedArtifactGroup[];
+};
+
+export type GeneratedArtifactGroup = {
+  readonly name: string;
+  readonly imports: string[];
+  readonly manifest: BuildManifest;
+  readonly operations: GeneratedOperationArtifact[];
+  readonly fragments: GeneratedFragmentArtifact[];
+  readonly source_file_scopes: GeneratedSourceScope[];
 };
 
 export type DsqlGeneratorContext = {
@@ -72,7 +83,7 @@ export type DsqlGeneratorContext = {
   readonly command: "serve" | "build";
 };
 
-export type DsqlGeneratorResult = DsqlRenderResult | void;
+export type DsqlGeneratorResult = DsqlRenderResult | DsqlRenderResult[] | void;
 
 export type DsqlGenerator = (
   context: DsqlGeneratorContext,
@@ -106,6 +117,21 @@ export async function runDsqlGeneratorFromEnv(
 
 export const defaultDsqlGenerator = defineDsqlGenerator(
   async ({ artifacts, root, outDir }) => {
+    if (artifacts.artifactGroups.length > 0) {
+      return Promise.all(
+        artifacts.artifactGroups.map((group) =>
+          renderDsql(group, {
+            root,
+            queriesDir: join(outDir, group.scopes[0]?.name ?? "default", "queries"),
+            executionDir: join(
+              outDir,
+              group.scopes[0]?.name ?? "default",
+              "queries.server",
+            ),
+          }),
+        ),
+      );
+    }
     return renderDsql(artifacts, {
       root,
       queriesDir: outDir,
@@ -118,11 +144,43 @@ export function buildArtifactsFromGenerated(
 ): BuildArtifacts {
   const operations = generated.operations.map((operation) => operation.metadata);
   const fragments = generated.fragments.map((fragment) => fragment.metadata);
+  const scopes = generated.scopes ?? [{ name: "default", imports: [] }];
+  const sourceFileScopes = generated.source_file_scopes ?? [];
+  const manifestPath = generated.manifest_path;
+  const artifactGroups =
+    generated.artifact_groups?.map((group) =>
+      buildArtifactsFromGroup(generated, group),
+    ) ?? [];
+  return {
+    manifestPath,
+    manifest: generated.manifest,
+    scopes,
+    sourceFileScopes,
+    artifactGroups,
+    operations,
+    operationsByName: new Map(
+      operations.map((operation) => [operation.name, operation]),
+    ),
+    fragments,
+    fragmentsByName: new Map(
+      fragments.map((fragment) => [fragment.name, fragment]),
+    ),
+  };
+}
+
+function buildArtifactsFromGroup(
+  generated: GeneratedArtifacts,
+  group: GeneratedArtifactGroup,
+): BuildArtifacts {
+  const operations = group.operations.map((operation) => operation.metadata);
+  const fragments = group.fragments.map((fragment) => fragment.metadata);
+  const scope = { name: group.name, imports: group.imports };
   return {
     manifestPath: generated.manifest_path,
-    manifest: generated.manifest,
-    scopes: generated.scopes ?? [{ name: "default", imports: [] }],
-    sourceFileScopes: generated.source_file_scopes ?? [],
+    manifest: group.manifest,
+    scopes: [scope],
+    sourceFileScopes: group.source_file_scopes,
+    artifactGroups: [],
     operations,
     operationsByName: new Map(
       operations.map((operation) => [operation.name, operation]),
@@ -147,6 +205,7 @@ export function loadBuildArtifacts(manifestPath: string): BuildArtifacts {
     manifest,
     scopes: [{ name: "default", imports: [] }],
     sourceFileScopes: [],
+    artifactGroups: [],
     operations,
     operationsByName: new Map(
       operations.map((operation) => [operation.name, operation]),

@@ -27,6 +27,7 @@
         "default": "./src/index.ts"
       },
       "types": "./dist/index.d.ts",
+      "import": "./src/index.ts",
       "default": "./dist/index.js"
     },
     "./node": {
@@ -35,6 +36,7 @@
         "default": "./src/node.ts"
       },
       "types": "./dist/node.d.ts",
+      "import": "./src/node.ts",
       "default": "./dist/node.js"
     },
     "./runtime": {
@@ -43,6 +45,7 @@
         "default": "./src/runtime.ts"
       },
       "types": "./dist/runtime.d.ts",
+      "import": "./src/runtime.ts",
       "default": "./dist/runtime.js"
     },
     "./renderer": {
@@ -51,6 +54,7 @@
         "default": "./src/renderer.ts"
       },
       "types": "./dist/renderer.d.ts",
+      "import": "./src/renderer.ts",
       "default": "./dist/renderer.js"
     },
     "./vite": {
@@ -59,6 +63,7 @@
         "default": "./src/vite.ts"
       },
       "types": "./dist/vite.d.ts",
+      "import": "./src/vite.ts",
       "default": "./dist/vite.js"
     }
   },

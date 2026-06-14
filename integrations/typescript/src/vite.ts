@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { buildArtifactsFromGenerated } from "./node.js";
 import type { DsqlGenerator } from "./node.js";
+import type { DsqlRenderResult } from "./render/types.js";
 import {
   startDsqlDaemon,
   type DsqlDaemon,
@@ -76,6 +77,8 @@ export function dsql(
   let daemon: DsqlDaemon | undefined;
   let config: ViteResolvedConfig | undefined;
   let compilePromise: Promise<void> | undefined;
+  let sourceFileScopes: readonly { readonly file: string; readonly scope: string }[] = [];
+  let renderResults: readonly DsqlRenderResult[] = [];
 
   const closeDaemon = async (): Promise<void> => {
     const current = daemon;
@@ -92,13 +95,15 @@ export function dsql(
     const generated = await daemon.compileProject(root);
     const outDir = resolve(root, options.outDir ?? generated.out_dir ?? DEFAULT_OUT_DIR);
     const artifacts = buildArtifactsFromGenerated(generated);
-    await generator({
+    sourceFileScopes = artifacts.sourceFileScopes;
+    const result = await generator({
       artifacts,
       root,
       outDir,
       mode: config?.mode ?? "development",
       command: config?.command ?? "serve",
     });
+    renderResults = normalizeRenderResults(result);
   };
 
   const scheduleCompile = (): Promise<void> => {
@@ -128,7 +133,7 @@ export function dsql(
         return null;
       }
 
-      return transformDsqlTags(code, generatedModule);
+      return transformDsqlTags(code, generatedModuleForFile(id));
     },
     async handleHotUpdate(context) {
       const root = options.root ?? config?.root ?? process.cwd();
@@ -151,6 +156,51 @@ export function dsql(
   };
 
   return plugin;
+
+  function generatedModuleForFile(id: string): string {
+    if (renderResults.length === 0) {
+      const scope = sourceScopeForFile(id);
+      if (scope && isMultiScope()) {
+        throw new Error(
+          `missing DSQL render metadata for resolution scope ${JSON.stringify(scope)} while transforming ${id}`,
+        );
+      }
+      return generatedModule;
+    }
+    if (renderResults.length === 1 && !isMultiScope()) {
+      return renderResults[0]?.modules.queries ?? generatedModule;
+    }
+
+    const scope = sourceScopeForFile(id);
+    if (!scope) {
+      return generatedModule;
+    }
+    const rendered = renderResults.find((result) => result.scope?.name === scope);
+    if (!rendered) {
+      throw new Error(
+        `missing DSQL render metadata for resolution scope ${JSON.stringify(scope)} while transforming ${id}`,
+      );
+    }
+    return rendered.modules.queries;
+  }
+
+  function isMultiScope(): boolean {
+    return new Set(sourceFileScopes.map((entry) => entry.scope)).size > 1;
+  }
+
+  function sourceScopeForFile(id: string): string | undefined {
+    const file = resolve(id.split("?")[0] ?? id);
+    return sourceFileScopes.find((entry) => resolve(entry.file) === file)?.scope;
+  }
+}
+
+function normalizeRenderResults(
+  result: Awaited<ReturnType<DsqlGenerator>>,
+): readonly DsqlRenderResult[] {
+  if (!result) {
+    return [];
+  }
+  return Array.isArray(result) ? result : [result];
 }
 
 export function transformDsqlTags(

@@ -12,6 +12,12 @@ static GENERATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 async fn generate_project_writes_manifest_and_invokes_typescript_command() {
     let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
+    link_typescript_package(project.path());
+    fs::write(
+        project.path().join("package.json"),
+        r#"{"name":"dsql-generate-test","type":"module","dependencies":{"@dsql/typescript":"file:node_modules/@dsql/typescript"}}"#,
+    )
+    .unwrap();
     create_project_fixture(
         project.path(),
         &format!(
@@ -54,23 +60,27 @@ cmd = ["bun", "{}"]
     facet_json::from_str::<facet_value::Value>(&operation).unwrap();
     snapshot("generate_operation_movie_info_types", &operation);
 
-    let operations =
-        fs::read_to_string(project.path().join("src/generated/dsql/operations.ts")).unwrap();
-    snapshot("generate_typescript_operations_output", &operations);
-    let dsql = fs::read_to_string(project.path().join("src/generated/dsql/dsql.ts")).unwrap();
-    snapshot("generate_typescript_dsql_output", &dsql);
-    let index = fs::read_to_string(project.path().join("src/generated/dsql/index.ts")).unwrap();
-    assert_eq!(
-        index,
-        "export * from \"./operations\";\nexport * from \"./dsql\";\n"
+    let operation =
+        fs::read_to_string(project.path().join("src/generated/dsql/MovieInfoLookup.ts")).unwrap();
+    assert!(
+        operation.contains("export const MovieInfoLookupOperation"),
+        "generated operation module should export the operation handle:\n{operation}"
     );
-    let queries = fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
-    assert_eq!(queries, "export * from \"./index\";\n");
+    assert!(
+        !operation.contains("select\n"),
+        "public generated operation module should not contain SQL text:\n{operation}"
+    );
+    let index = fs::read_to_string(project.path().join("src/generated/dsql/index.ts")).unwrap();
+    assert!(
+        index.contains(r#"export { dsql } from "@dsql/typescript/runtime";"#)
+            && index.contains(r#"export * from "./MovieInfoLookup";"#),
+        "generated query barrel should export runtime helper and operation modules:\n{index}"
+    );
 
     fs::write(
         project.path().join("src/generated/dsql/usage.ts"),
         format!(
-            r#"import {{ dsql, MovieInfoLookupOperation }} from "./queries";
+            r#"import {{ dsql, MovieInfoLookupOperation }} from "./index";
 
 const MovieInfoLookup = dsql(`{}`);
 MovieInfoLookup satisfies typeof MovieInfoLookupOperation;
@@ -124,6 +134,57 @@ async fn generate_project_artifacts_returns_in_memory_metadata() {
     assert_eq!(
         artifacts.manifest.operations[0].hash,
         artifacts.operations[0].hash
+    );
+}
+
+#[tokio::test]
+async fn generate_project_artifacts_groups_definitions_by_resolution_scope() {
+    let _guard = generate_test_lock().await;
+    let project = tempfile::tempdir().unwrap();
+    create_scoped_project_fixture(project.path(), false);
+
+    let artifacts = dsql_generate::generate_project_artifacts_from(project.path()).unwrap();
+
+    let frontend = artifacts
+        .artifact_groups
+        .iter()
+        .find(|group| group.name == "frontend")
+        .expect("frontend group should be returned");
+    let api = artifacts
+        .artifact_groups
+        .iter()
+        .find(|group| group.name == "api")
+        .expect("api group should be returned");
+
+    assert_eq!(frontend.imports, vec!["shared"]);
+    assert_eq!(api.imports, Vec::<String>::new());
+    assert_eq!(frontend.operations[0].metadata.name, "MovieInfoLookup");
+    assert_eq!(api.operations[0].metadata.name, "MovieInfoLookup");
+    assert!(
+        frontend
+            .fragments
+            .iter()
+            .any(|fragment| fragment.metadata.name == "MovieFields"),
+        "imported shared fragments should be emitted into importing groups"
+    );
+    assert!(
+        api.fragments.is_empty(),
+        "independent scopes should not receive fragments they do not import"
+    );
+}
+
+#[tokio::test]
+async fn generate_project_rejects_local_import_fragment_collisions() {
+    let _guard = generate_test_lock().await;
+    let project = tempfile::tempdir().unwrap();
+    create_scoped_project_fixture(project.path(), true);
+
+    let error = dsql_generate::generate_project_artifacts_from(project.path())
+        .expect_err("local/import fragment name collisions should fail");
+    let message = error.to_string();
+    assert!(
+        message.contains("duplicate fragment `MovieFields`"),
+        "expected duplicate fragment diagnostic, got: {message}"
     );
 }
 
@@ -401,9 +462,9 @@ cmd = ["bun", "dsql/generate.ts"]
         project.path().join("dsql/generate.ts"),
         r#"import {
   loadBuildArtifacts,
-  renderDsqlHelper,
-  renderTypes,
+  renderDsql,
 } from "@dsql/typescript/node";
+import path from "node:path";
 import { renderTanStackQuery } from "./generators/tanstack-query";
 import { renderTanStackStart } from "./generators/tanstack-start";
 
@@ -415,11 +476,15 @@ if (!manifestPath || !outDir) {
 }
 
 const artifacts = loadBuildArtifacts(manifestPath);
+const root = path.dirname(path.dirname(path.dirname(manifestPath)));
 
-await renderTypes(artifacts, { outDir });
-await renderDsqlHelper(artifacts, { outDir });
-await renderTanStackStart(artifacts, { outDir });
-await renderTanStackQuery(artifacts, { outDir });
+const dsql = await renderDsql(artifacts, {
+  root,
+  queriesDir: path.join(outDir, "queries"),
+  executionDir: path.join(outDir, "queries.server"),
+});
+await renderTanStackStart(artifacts, dsql, { root, outDir });
+await renderTanStackQuery(artifacts, dsql, { root, outDir });
 "#,
     )
     .unwrap();
@@ -431,10 +496,15 @@ await renderTanStackQuery(artifacts, { outDir });
     assert!(
         project
             .path()
-            .join("src/generated/dsql/operations.ts")
+            .join("src/generated/dsql/queries/MovieInfoLookup.ts")
             .exists()
     );
-    assert!(project.path().join("src/generated/dsql/dsql.ts").exists());
+    assert!(
+        project
+            .path()
+            .join("src/generated/dsql/queries.server/MovieInfoLookup.ts")
+            .exists()
+    );
     assert!(
         project
             .path()
@@ -453,8 +523,12 @@ await renderTanStackQuery(artifacts, { outDir });
             .join("src/generated/dsql/tanstack-start.server.ts")
             .exists()
     );
-    let operations =
-        fs::read_to_string(project.path().join("src/generated/dsql/operations.ts")).unwrap();
+    let operations = fs::read_to_string(
+        project
+            .path()
+            .join("src/generated/dsql/queries/MovieInfoLookup.ts"),
+    )
+    .unwrap();
     assert!(
         !operations.contains("sql:"),
         "public generated operations should not contain SQL:\n{operations}"
@@ -526,26 +600,32 @@ await renderTanStackQuery(artifacts, { outDir });
         "SQL descriptor module should be marked server-only:\n{tanstack_start_server}"
     );
     assert!(
-        tanstack_start_server.contains("sql:"),
-        "server-only SQL descriptor module should contain SQL text:\n{tanstack_start_server}"
+        !tanstack_start_server.contains("sql:"),
+        "TanStack server module should import split DSQL execution payloads instead of containing SQL:\n{tanstack_start_server}"
     );
-    let queries = fs::read_to_string(project.path().join("src/generated/dsql/queries.ts")).unwrap();
+    let dsql_execution = fs::read_to_string(
+        project
+            .path()
+            .join("src/generated/dsql/queries.server/MovieInfoLookup.ts"),
+    )
+    .unwrap();
     assert!(
-        queries.contains(r#"export * from "./tanstack-query";"#),
-        "queries.ts should re-export TanStack query helpers for compatibility:\n{queries}"
+        dsql_execution.contains("sql:"),
+        "split DSQL execution module should contain SQL text:\n{dsql_execution}"
     );
-
     fs::write(
         project.path().join("src/entrypoint-usage.ts"),
         r#"import {
   dsql,
   DsqlOperationResult,
-  executeQuery,
   MovieInfoLookupOperation,
-  queryOptions,
-  useQuery,
 } from "./generated/dsql/queries";
 import type { MovieInfoLookupResult } from "./generated/dsql/queries";
+import {
+  executeQuery,
+  queryOptions,
+  useQuery,
+} from "./generated/dsql/tanstack-query";
 import type { DsqlServerContext } from "./generated/dsql/tanstack-start";
 import { serverOperationNames } from "./generated/dsql/tanstack-start";
 
@@ -670,6 +750,7 @@ export default createServerEntry({
 async fn generate_project_types_embedded_dsql_function_calls() {
     let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
+    link_typescript_package(project.path());
     create_embedded_project_fixture_with_generate(
         project.path(),
         &format!(
@@ -690,7 +771,7 @@ cmd = ["bun", "{}"]
 
     fs::write(
         project.path().join("src/usage.ts"),
-        r#"import { dsql, EmbeddedMovieInfoLookupOperation } from "./generated/dsql/queries";
+        r#"import { dsql, EmbeddedMovieInfoLookupOperation } from "./generated/dsql";
 
 const MovieInfo = dsql(`
   query EmbeddedMovieInfoLookup {
@@ -721,6 +802,7 @@ MovieInfo satisfies typeof EmbeddedMovieInfoLookupOperation;
 async fn generate_project_types_fragment_definitions() {
     let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
+    link_typescript_package(project.path());
     create_project_fixture(
         project.path(),
         &format!(
@@ -785,10 +867,37 @@ query CompanyLimitLookup {
         .await
         .unwrap();
 
-    let operations =
-        fs::read_to_string(project.path().join("src/generated/dsql/operations.ts")).unwrap();
+    let movie_company = fs::read_to_string(
+        project
+            .path()
+            .join("src/generated/dsql/MovieCompany.fragment.ts"),
+    )
+    .unwrap();
+    let company_lookup =
+        fs::read_to_string(project.path().join("src/generated/dsql/CompanyLookup.ts")).unwrap();
+    let company_lookup_fragment_only = fs::read_to_string(
+        project
+            .path()
+            .join("src/generated/dsql/CompanyLookupFragmentOnly.ts"),
+    )
+    .unwrap();
+    let movie_company_limit = fs::read_to_string(
+        project
+            .path()
+            .join("src/generated/dsql/MovieCompanyLimit.fragment.ts"),
+    )
+    .unwrap();
+    let company_limit_lookup = fs::read_to_string(
+        project
+            .path()
+            .join("src/generated/dsql/CompanyLimitLookup.ts"),
+    )
+    .unwrap();
+    let operations = format!(
+        "{movie_company}\n{company_lookup}\n{company_lookup_fragment_only}\n{movie_company_limit}\n{company_limit_lookup}"
+    );
     assert!(
-        operations.contains("export type DsqlFragmentDefinition"),
+        operations.contains("DsqlFragmentDefinition"),
         "generated operations should export fragment helpers:\n{operations}"
     );
     assert!(
@@ -838,7 +947,7 @@ query CompanyLimitLookup {
     fs::write(
         project.path().join("src/generated/dsql/fragment-usage.ts"),
         format!(
-            r#"import {{ dsql, DsqlFragment, DsqlFragmentVariables, MovieCompanyFragment, MovieCompanyLimitFragmentVariables }} from "./queries";
+            r#"import {{ dsql, DsqlFragment, DsqlFragmentVariables, MovieCompanyFragment, MovieCompanyLimitFragmentVariables }} from "./index";
 
 const MovieCompany = dsql(`{fragment_source}`);
 MovieCompany satisfies typeof MovieCompanyFragment;
@@ -895,6 +1004,7 @@ const _limitVars: MovieCompanyLimitFragmentVariables = {{
 async fn generate_project_groups_embedded_source_text_for_multiple_queries() {
     let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
+    link_typescript_package(project.path());
     create_embedded_project_fixture_with_generate(
         project.path(),
         &format!(
@@ -941,7 +1051,7 @@ export const MovieInfo = dsql(`
   dsql,
   FirstEmbeddedMovieInfoLookupOperation,
   SecondEmbeddedMovieInfoLookupOperation,
-} from "./generated/dsql/queries";
+} from "./generated/dsql";
 
 const MovieInfo = dsql(`
   query FirstEmbeddedMovieInfoLookup {
@@ -981,6 +1091,7 @@ MovieInfo satisfies
 async fn generate_project_splits_top_level_params_and_contextual_input() {
     let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
+    link_typescript_package(project.path());
     create_project_fixture(
         project.path(),
         &format!(
@@ -1047,8 +1158,8 @@ cmd = ["bun", "{}"]
     fs::write(
         project.path().join("src/generated/dsql/usage.ts"),
         format!(
-            r#"import {{ dsql, DsqlOperationResult, MovieInfoLookupInput, MovieInfoLookupOperation, MovieInfoLookupParams }} from "./queries";
-import type {{ MovieInfoLookupResult }} from "./queries";
+            r#"import {{ dsql, DsqlOperationResult, MovieInfoLookupInput, MovieInfoLookupOperation, MovieInfoLookupParams }} from "./index";
+import type {{ MovieInfoLookupResult }} from "./index";
 
 const MovieInfoLookup = dsql(`{}`);
 MovieInfoLookup satisfies typeof MovieInfoLookupOperation;
@@ -1090,12 +1201,14 @@ input satisfies MovieInfoLookupInput;
     .unwrap();
 
     let generated =
-        fs::read_to_string(project.path().join("src/generated/dsql/operations.ts")).unwrap();
+        fs::read_to_string(project.path().join("src/generated/dsql/MovieInfoLookup.ts")).unwrap();
     assert!(
-        generated.contains("export type MovieInfoLookupParams = {\n    limit: number;\n};"),
+        generated.contains("export type MovieInfoLookupParams = {")
+            && generated.contains("limit: number;"),
         "expected top-level $$ variables to generate params shape:\n{generated}"
     );
-    assert!(generated.contains("id: {\n                    op: \"==\" | \">\";\n                    value: number;\n                };"),
+    assert!(
+        generated.contains("op: \"==\" | \">\";") && generated.contains("value: number;"),
         "expected anonymous value/operator variables to generate a field control object:\n{generated}"
     );
     assert!(
@@ -1179,6 +1292,77 @@ documents = [{{ resolver = "dsql", paths = ["queries"] }}]
     info_type {
       info
     }
+  }
+}
+"#,
+    )
+    .unwrap();
+}
+
+fn create_scoped_project_fixture(root: &Path, with_collision: bool) {
+    fs::create_dir_all(root.join("dsql/schema")).unwrap();
+    fs::create_dir_all(root.join("shared")).unwrap();
+    fs::create_dir_all(root.join("frontend")).unwrap();
+    fs::create_dir_all(root.join("api")).unwrap();
+
+    copy_dir(
+        &fixture_root().join("schema/imdb"),
+        &root.join("dsql/schema"),
+    );
+    fs::write(
+        root.join("dsql/dsql.toml"),
+        r#"database_url = "<database url>"
+default_schema = "public"
+documents = []
+
+[resolution.shared]
+documents = ["shared"]
+
+[resolution.frontend]
+documents = ["frontend"]
+imports = ["shared"]
+
+[resolution.api]
+documents = ["api"]
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("shared/movie-fields.dsql"),
+        r#"fragment MovieFields on movie_info {
+  info
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("frontend/movie-info.dsql"),
+        format!(
+            r#"query MovieInfoLookup {{
+  movie_info {{
+    id
+    ...MovieFields
+  }}
+}}
+{}
+"#,
+            if with_collision {
+                r#"
+fragment MovieFields on movie_info {
+  note
+}
+"#
+            } else {
+                ""
+            }
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("api/movie-info.dsql"),
+        r#"query MovieInfoLookup {
+  movie_info {
+    id
   }
 }
 "#,

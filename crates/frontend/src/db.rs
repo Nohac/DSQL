@@ -62,9 +62,17 @@ pub struct QueryDefinitionKey {
     pub ordinal: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct FragmentDefinitionKey {
+    pub file: FileId,
+    pub ordinal: u32,
+    pub name: String,
+}
+
 #[picante::input]
 pub struct FragmentDefinitionInput {
     #[key]
+    pub key: FragmentDefinitionKey,
     pub name: String,
     pub record: Option<FragmentRecord>,
     pub fragments: Vec<FragmentDefinitionInput>,
@@ -93,7 +101,7 @@ pub async fn completion_scope_query<DB: CompilerDatabaseTrait>(
     let mut fragments = Vec::new();
     let mut seen = HashSet::<String>::new();
     for fragment_input in input.fragments(db)? {
-        let name = fragment_input.name(db)?.as_ref().clone();
+        let name = fragment_input.name(db)?.clone();
         if !seen.insert(name) {
             continue;
         }
@@ -281,7 +289,7 @@ fn resolve_fragments(
     let mut seen = HashSet::<String>::new();
     let mut stack = inputs;
     while let Some(input) = stack.pop() {
-        let name = input.name(db)?.as_ref().clone();
+        let name = input.name(db)?.clone();
         if !seen.insert(name.clone()) {
             continue;
         }
@@ -343,9 +351,9 @@ fn empty_planned() -> PlannedFile {
 pub struct CompilerDb {
     source_inputs: DashMap<FileId, SourceInput>,
     query_inputs: DashMap<QueryDefinitionKey, QueryDefinitionInput>,
-    fragment_inputs: DashMap<String, FragmentDefinitionInput>,
+    fragment_inputs: DashMap<FragmentDefinitionKey, FragmentDefinitionInput>,
     file_queries: DashMap<FileId, Vec<QueryDefinitionKey>>,
-    file_fragments: DashMap<FileId, Vec<String>>,
+    file_fragments: DashMap<FileId, Vec<FragmentDefinitionKey>>,
 }
 
 impl Default for CompilerDb {
@@ -527,7 +535,7 @@ impl CompilerDb {
     }
 
     pub(crate) fn fragment_definition(&self, name: &str) -> Option<FragmentDefinitionLocation> {
-        let input = self.fragment_inputs.get(name).map(|input| *input)?;
+        let input = self.fragment_inputs_by_name(name).into_iter().next()?;
         let record = input.record(self).ok()??;
         let file = self.indexed_files_for_fragment(name).into_iter().next()?;
         Some(FragmentDefinitionLocation {
@@ -569,6 +577,7 @@ impl CompilerDb {
         let mut next_fragments = Vec::new();
         let mut seen_queries = HashSet::new();
         let mut seen_fragments = HashSet::new();
+        let mut fragment_ordinal = 0;
         for definition in definitions {
             match definition {
                 dsql_core::DefinitionRecord::Query(record) => {
@@ -581,7 +590,12 @@ impl CompilerDb {
                     self.set_query_record(key, Some(record))?;
                 }
                 dsql_core::DefinitionRecord::Fragment(record) => {
-                    let key = record.key.name.clone();
+                    let key = FragmentDefinitionKey {
+                        file,
+                        ordinal: fragment_ordinal,
+                        name: record.key.name.clone(),
+                    };
+                    fragment_ordinal += 1;
                     seen_fragments.insert(key.clone());
                     next_fragments.push(key.clone());
                     self.set_fragment_record(key, Some(record))?;
@@ -600,6 +614,7 @@ impl CompilerDb {
         }
         self.file_queries.insert(file, next_queries);
         self.file_fragments.insert(file, next_fragments);
+        self.refresh_definition_dependencies()?;
         Ok(())
     }
 
@@ -623,15 +638,15 @@ impl CompilerDb {
             if *entry.key() == excluding {
                 continue;
             }
-            for name in entry.value() {
-                if names.insert(name.clone())
-                    && let Some(input) = self.fragment_inputs.get(name).map(|input| *input)
+            for key in entry.value() {
+                if names.insert(key.name.clone())
+                    && let Some(input) = self.fragment_inputs.get(key).map(|input| *input)
                 {
                     inputs.push(input);
                 }
             }
         }
-        inputs.sort_by_key(|input| input.name(self).ok().map(|name| name.as_ref().clone()));
+        inputs.sort_by_key(|input| input.name(self).ok());
         inputs
     }
 
@@ -643,7 +658,7 @@ impl CompilerDb {
                 entry
                     .value()
                     .iter()
-                    .any(|fragment| fragment == name)
+                    .any(|fragment| fragment.name == name)
                     .then_some(*entry.key())
             })
             .collect::<Vec<_>>();
@@ -668,7 +683,7 @@ impl CompilerDb {
 
     fn set_fragment_record(
         &self,
-        key: String,
+        key: FragmentDefinitionKey,
         record: Option<FragmentRecord>,
     ) -> PicanteResult<()> {
         let fragments = record
@@ -676,8 +691,48 @@ impl CompilerDb {
             .map(|record| self.fragment_inputs_for_record(record))
             .transpose()?
             .unwrap_or_default();
-        let input = FragmentDefinitionInput::new(self, key.clone(), record.clone(), fragments)?;
+        let input = FragmentDefinitionInput::new(
+            self,
+            key.clone(),
+            key.name.clone(),
+            record.clone(),
+            fragments,
+        )?;
         self.fragment_inputs.insert(key, input);
+        Ok(())
+    }
+
+    fn refresh_definition_dependencies(&self) -> PicanteResult<()> {
+        let query_records = self
+            .query_inputs
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .record(self)
+                    .ok()
+                    .map(|record| ((*entry.key()), record))
+            })
+            .collect::<Vec<_>>();
+        let fragment_records = self
+            .fragment_inputs
+            .iter()
+            .filter_map(|entry| {
+                if entry.key().file == FileId(u32::MAX) {
+                    return None;
+                }
+                entry
+                    .record(self)
+                    .ok()
+                    .map(|record| (entry.key().clone(), record))
+            })
+            .collect::<Vec<_>>();
+
+        for (key, record) in query_records {
+            self.set_query_record(key, record)?;
+        }
+        for (key, record) in fragment_records {
+            self.set_fragment_record(key, record)?;
+        }
         Ok(())
     }
 
@@ -685,19 +740,42 @@ impl CompilerDb {
         &self,
         record: &impl FragmentSpreadSource,
     ) -> PicanteResult<Vec<FragmentDefinitionInput>> {
-        record
-            .fragment_spread_names()
+        let mut inputs = Vec::new();
+        for name in record.fragment_spread_names() {
+            let found = self.fragment_inputs_by_name(&name);
+            if found.is_empty() {
+                inputs.push(self.missing_fragment_input(name)?);
+            } else {
+                inputs.extend(found);
+            }
+        }
+        Ok(inputs)
+    }
+
+    fn fragment_inputs_by_name(&self, name: &str) -> Vec<FragmentDefinitionInput> {
+        let mut inputs = self
+            .fragment_inputs
+            .iter()
+            .filter_map(|entry| (entry.key().name == name).then_some((*entry.key()).clone()))
+            .collect::<Vec<_>>();
+        inputs.sort_by_key(|key| (key.file.0, key.ordinal));
+        inputs
             .into_iter()
-            .map(|name| self.ensure_fragment_input(name))
+            .filter_map(|key| self.fragment_inputs.get(&key).map(|input| *input))
             .collect()
     }
 
-    fn ensure_fragment_input(&self, name: String) -> PicanteResult<FragmentDefinitionInput> {
-        if let Some(input) = self.fragment_inputs.get(&name).map(|input| *input) {
+    fn missing_fragment_input(&self, name: String) -> PicanteResult<FragmentDefinitionInput> {
+        let key = FragmentDefinitionKey {
+            file: FileId(u32::MAX),
+            ordinal: u32::MAX,
+            name: name.clone(),
+        };
+        if let Some(input) = self.fragment_inputs.get(&key).map(|input| *input) {
             return Ok(input);
         }
-        let input = FragmentDefinitionInput::new(self, name.clone(), None, Vec::new())?;
-        self.fragment_inputs.insert(name, input);
+        let input = FragmentDefinitionInput::new(self, key.clone(), name, None, Vec::new())?;
+        self.fragment_inputs.insert(key, input);
         Ok(input)
     }
 }

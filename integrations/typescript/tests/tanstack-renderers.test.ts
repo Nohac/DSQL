@@ -59,6 +59,7 @@ function createArtifacts(root: string): BuildArtifacts {
     manifestPath: join(root, "dsql/build/manifest.json"),
     scopes: [{ name: "default", imports: [] }],
     sourceFileScopes: [],
+    artifactGroups: [],
     manifest: {
       version: 1,
       operations: [

@@ -303,7 +303,10 @@ export async function renderDsql(
     };
   }
 
-  files.set(join(queriesDir, "index.ts"), renderBarrel(queryExports));
+  files.set(
+    join(queriesDir, "index.ts"),
+    renderBarrel(queryExports, { includeRuntime: true }),
+  );
   if (executionDir) {
     files.set(join(executionDir, "index.ts"), renderBarrel(executionExports));
   }
@@ -654,8 +657,17 @@ function recordGeneratedNames(
   }
 }
 
-function renderBarrel(exports: readonly string[]): string {
-  return `${[...exports].sort().join("\n")}\n`;
+function renderBarrel(
+  exports: readonly string[],
+  options: { readonly includeRuntime?: boolean } = {},
+): string {
+  const runtimeExports = options.includeRuntime
+    ? [
+        'export { dsql } from "@dsql/typescript/runtime";',
+        'export type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlVariables } from "@dsql/typescript/runtime";',
+      ]
+    : [];
+  return `${[...runtimeExports, ...[...exports].sort()].join("\n")}\n`;
 }
 
 function exportStatement(fileStem: string): string {

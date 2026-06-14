@@ -62,7 +62,9 @@ ${artifacts.operations
 
   const queriesSource = project.createSourceFile(
     join(options.outDir, "index.ts"),
-    readFileSync(join(options.outDir, "index.ts"), "utf8"),
+    existsSync(join(options.outDir, "index.ts"))
+      ? readFileSync(join(options.outDir, "index.ts"), "utf8")
+      : "",
     { overwrite: true },
   );
   if (

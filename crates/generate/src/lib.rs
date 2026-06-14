@@ -73,8 +73,8 @@ pub enum GeneratorError {
 impl miette::Diagnostic for GeneratorError {}
 
 pub use pipeline::{
-    GenerateOptions, GenerateOutput, GeneratedArtifacts, GeneratedFragmentArtifact,
-    GeneratedOperationArtifact, ValidationDiagnostic, ValidationOutput,
+    GenerateOptions, GenerateOutput, GeneratedArtifactGroup, GeneratedArtifacts,
+    GeneratedFragmentArtifact, GeneratedOperationArtifact, ValidationDiagnostic, ValidationOutput,
 };
 
 #[cfg(all(feature = "fs", feature = "process"))]

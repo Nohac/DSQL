@@ -19,7 +19,7 @@ use dsql_metadata::{
 };
 use facet::Facet;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -105,6 +105,16 @@ pub struct GeneratedSourceScope {
 }
 
 #[derive(Clone, Debug, Facet)]
+pub struct GeneratedArtifactGroup {
+    pub name: String,
+    pub imports: Vec<String>,
+    pub manifest: BuildManifest,
+    pub operations: Vec<GeneratedOperationArtifact>,
+    pub fragments: Vec<GeneratedFragmentArtifact>,
+    pub source_file_scopes: Vec<GeneratedSourceScope>,
+}
+
+#[derive(Clone, Debug, Facet)]
 pub struct GeneratedArtifacts {
     pub project_dir: String,
     pub out_dir: String,
@@ -114,6 +124,7 @@ pub struct GeneratedArtifacts {
     pub manifest: BuildManifest,
     pub operations: Vec<GeneratedOperationArtifact>,
     pub fragments: Vec<GeneratedFragmentArtifact>,
+    pub artifact_groups: Vec<GeneratedArtifactGroup>,
 }
 
 pub(crate) async fn generate_project<W, R>(
@@ -202,38 +213,75 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
     let built = build_artifacts(&input)?;
     let base = project_root(&input.project);
     let out_dir = resolve_project_path(&base, &input.project.config.generate.typescript.out_dir);
-    let mut generated_operations = Vec::with_capacity(built.operations.len());
-    let mut operation_manifest_entries = Vec::with_capacity(built.operations.len());
-    for operation in built.operations {
-        let operation_path = operation_manifest_path(&operation.metadata.name);
-        operation_manifest_entries.push(OperationManifestEntry {
-            name: operation.metadata.name.clone(),
-            kind: operation.metadata.kind.clone(),
-            path: operation_path,
-            hash: operation.hash.clone(),
-            source: operation.source.clone(),
-        });
-        generated_operations.push(GeneratedOperationArtifact {
-            metadata: operation.metadata,
-            hash: operation.hash,
-            source: operation.source,
-        });
-    }
-    let mut generated_fragments = Vec::with_capacity(built.fragments.len());
-    let mut fragment_manifest_entries = Vec::with_capacity(built.fragments.len());
-    for fragment in built.fragments {
-        let fragment_path = fragment_manifest_path(&fragment.metadata.name);
-        fragment_manifest_entries.push(FragmentManifestEntry {
-            name: fragment.metadata.name.clone(),
-            kind: fragment.metadata.kind.clone(),
-            path: fragment_path,
-            hash: fragment.hash.clone(),
-            source: fragment.source.clone(),
-        });
-        generated_fragments.push(GeneratedFragmentArtifact {
-            metadata: fragment.metadata,
-            hash: fragment.hash,
-            source: fragment.source,
+    let scopes = generated_resolution_scopes(&input.project);
+    let source_file_scopes = generated_source_scopes(&input.documents);
+    let mut generated_operations = Vec::new();
+    let mut generated_fragments = Vec::new();
+    let mut operation_manifest_entries = Vec::new();
+    let mut fragment_manifest_entries = Vec::new();
+    let mut artifact_groups = Vec::new();
+
+    for group in built.groups {
+        let mut group_operations = Vec::new();
+        let mut group_fragments = Vec::new();
+        let mut group_operation_manifest_entries = Vec::new();
+        let mut group_fragment_manifest_entries = Vec::new();
+
+        for operation in group.operations {
+            let operation_path = operation_manifest_path(&operation.metadata.name);
+            let entry = OperationManifestEntry {
+                name: operation.metadata.name.clone(),
+                kind: operation.metadata.kind.clone(),
+                path: operation_path,
+                hash: operation.hash.clone(),
+                source: operation.source.clone(),
+            };
+            let generated = GeneratedOperationArtifact {
+                metadata: operation.metadata,
+                hash: operation.hash,
+                source: operation.source,
+            };
+            operation_manifest_entries.push(entry.clone());
+            group_operation_manifest_entries.push(entry);
+            generated_operations.push(generated.clone());
+            group_operations.push(generated);
+        }
+
+        for fragment in group.fragments {
+            let fragment_path = fragment_manifest_path(&fragment.metadata.name);
+            let entry = FragmentManifestEntry {
+                name: fragment.metadata.name.clone(),
+                kind: fragment.metadata.kind.clone(),
+                path: fragment_path,
+                hash: fragment.hash.clone(),
+                source: fragment.source.clone(),
+            };
+            let generated = GeneratedFragmentArtifact {
+                metadata: fragment.metadata,
+                hash: fragment.hash,
+                source: fragment.source,
+            };
+            fragment_manifest_entries.push(entry.clone());
+            group_fragment_manifest_entries.push(entry);
+            generated_fragments.push(generated.clone());
+            group_fragments.push(generated);
+        }
+
+        artifact_groups.push(GeneratedArtifactGroup {
+            name: group.name,
+            imports: group.imports,
+            manifest: BuildManifest {
+                version: BUILD_MANIFEST_VERSION,
+                operations: group_operation_manifest_entries,
+                fragments: group_fragment_manifest_entries,
+            },
+            operations: group_operations,
+            fragments: group_fragments,
+            source_file_scopes: source_file_scopes
+                .iter()
+                .filter(|source| source.scope == group.scope_name)
+                .cloned()
+                .collect(),
         });
     }
 
@@ -247,8 +295,8 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
             .join(MANIFEST_FILE)
             .to_string_lossy()
             .to_string(),
-        scopes: generated_resolution_scopes(&input.project),
-        source_file_scopes: generated_source_scopes(&input.documents),
+        scopes,
+        source_file_scopes,
         manifest: BuildManifest {
             version: BUILD_MANIFEST_VERSION,
             operations: operation_manifest_entries,
@@ -256,6 +304,7 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
         },
         operations: generated_operations,
         fragments: generated_fragments,
+        artifact_groups,
     })
 }
 
@@ -290,7 +339,6 @@ fn generated_source_scopes(documents: &[GenerateDocument]) -> Vec<GeneratedSourc
 }
 
 pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
-    let mut fragments = FragmentMap::default();
     let mut queries = Vec::<LoadedQuery>::new();
     let mut loaded_fragments = Vec::<LoadedFragment>::new();
     let mut diagnostics = Vec::<ValidationDiagnostic>::new();
@@ -311,13 +359,14 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
                 DefinitionRecord::Query(query) => queries.push(LoadedQuery {
                     file: document.path.clone(),
                     source_offset: document.source_offset,
+                    resolution_scope: document.resolution_scope.clone(),
                     query,
                 }),
                 DefinitionRecord::Fragment(fragment) => {
-                    fragments.insert(fragment.clone());
                     loaded_fragments.push(LoadedFragment {
                         file: document.path.clone(),
                         source_offset: document.source_offset,
+                        resolution_scope: document.resolution_scope.clone(),
                         fragment,
                     });
                 }
@@ -325,71 +374,83 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
         }
     }
 
-    for fragment in &loaded_fragments {
-        let checked = check_fragment_definition(&fragment.fragment, &fragments, &input.catalog);
-        diagnostics.extend(
-            checked
-                .diagnostics
-                .into_iter()
-                .map(|diagnostic| fragment_validation_diagnostic(fragment, diagnostic)),
-        );
-    }
-    diagnostics.extend(
-        duplicate_fragment_errors(&fragments)
-            .into_iter()
-            .filter_map(|diagnostic| {
-                loaded_fragments
-                    .iter()
-                    .find(|fragment| {
-                        fragment.fragment.key.name.as_str()
-                            == match &diagnostic.kind {
-                                dsql_core::CheckDiagnosticKind::DuplicateFragment { name } => {
-                                    name.as_str()
-                                }
-                                _ => return false,
-                            }
-                            && fragment.fragment.name_range == diagnostic.range
-                    })
-                    .map(|fragment| fragment_validation_diagnostic(fragment, diagnostic))
-            }),
-    );
+    let query_count = queries.len();
+    match scope_definitions(&input, queries, loaded_fragments) {
+        Ok(scopes) => {
+            for scope in scopes {
+                let fragments = scope.fragment_map();
+                for fragment in &scope.fragments {
+                    let checked =
+                        check_fragment_definition(&fragment.fragment, &fragments, &input.catalog);
+                    diagnostics.extend(
+                        checked
+                            .diagnostics
+                            .into_iter()
+                            .map(|diagnostic| fragment_validation_diagnostic(fragment, diagnostic)),
+                    );
+                }
+                diagnostics.extend(
+                    duplicate_fragment_errors(&fragments)
+                        .into_iter()
+                        .filter_map(|diagnostic| {
+                            scope
+                                .fragments
+                                .iter()
+                                .find(|fragment| {
+                                    fragment.fragment.key.name.as_str()
+                                        == match &diagnostic.kind {
+                                            dsql_core::CheckDiagnosticKind::DuplicateFragment {
+                                                name,
+                                            } => name.as_str(),
+                                            _ => return false,
+                                        }
+                                        && fragment.fragment.name_range == diagnostic.range
+                                })
+                                .map(|fragment| {
+                                    fragment_validation_diagnostic(fragment, diagnostic)
+                                })
+                        }),
+                );
 
-    for query in &queries {
-        let checked = check_query_definition(&query.query, &fragments, &input.catalog);
-        let linted = lint_query_definition_with_options(
-            &query.query,
-            &fragments,
-            &input.catalog,
-            input.project.lint_options(),
-        );
-        let planned = plan_query_definition(&query.query, &fragments, &input.catalog);
-        diagnostics.extend(
-            checked
-                .diagnostics
-                .into_iter()
-                .map(|diagnostic| query_validation_diagnostic(query, diagnostic))
-                .chain(
-                    linted
-                        .diagnostics
-                        .into_iter()
-                        .map(|diagnostic| query_validation_diagnostic(query, diagnostic)),
-                )
-                .chain(
-                    planned
-                        .diagnostics
-                        .into_iter()
-                        .map(|diagnostic| query_validation_diagnostic(query, diagnostic)),
-                ),
-        );
-        if let Some(query_name) = query.query.key.name.as_deref() {
-            let variables =
-                infer_query_variable_bindings(&query.query, &fragments, &input.catalog).bindings;
-            if let Err(error) = validate_variable_bindings(query_name, &variables) {
-                errors.push(error.to_string());
+                for query in &scope.queries {
+                    let checked = check_query_definition(&query.query, &fragments, &input.catalog);
+                    let linted = lint_query_definition_with_options(
+                        &query.query,
+                        &fragments,
+                        &input.catalog,
+                        input.project.lint_options(),
+                    );
+                    let planned = plan_query_definition(&query.query, &fragments, &input.catalog);
+                    diagnostics.extend(
+                        checked
+                            .diagnostics
+                            .into_iter()
+                            .map(|diagnostic| query_validation_diagnostic(query, diagnostic))
+                            .chain(
+                                linted.diagnostics.into_iter().map(|diagnostic| {
+                                    query_validation_diagnostic(query, diagnostic)
+                                }),
+                            )
+                            .chain(
+                                planned.diagnostics.into_iter().map(|diagnostic| {
+                                    query_validation_diagnostic(query, diagnostic)
+                                }),
+                            ),
+                    );
+                    if let Some(query_name) = query.query.key.name.as_deref() {
+                        let variables =
+                            infer_query_variable_bindings(&query.query, &fragments, &input.catalog)
+                                .bindings;
+                        if let Err(error) = validate_variable_bindings(query_name, &variables) {
+                            errors.push(error.to_string());
+                        }
+                    } else {
+                        errors.push("anonymous queries cannot be generated".to_string());
+                    }
+                }
             }
-        } else {
-            errors.push("anonymous queries cannot be generated".to_string());
         }
+        Err(error) => errors.push(error.to_string()),
     }
 
     diagnostics.sort_by(|left, right| {
@@ -401,7 +462,7 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
     errors.sort();
     ValidationOutput {
         document_count: input.documents.len(),
-        query_count: queries.len(),
+        query_count,
         diagnostics,
         errors,
     }
@@ -444,10 +505,19 @@ fn fragment_validation_diagnostic(
 struct BuiltArtifacts {
     operations: Vec<OperationArtifact>,
     fragments: Vec<FragmentArtifact>,
+    groups: Vec<BuiltArtifactGroup>,
+}
+
+#[derive(Clone, Debug)]
+struct BuiltArtifactGroup {
+    name: String,
+    scope_name: String,
+    imports: Vec<String>,
+    operations: Vec<OperationArtifact>,
+    fragments: Vec<FragmentArtifact>,
 }
 
 fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
-    let mut fragments = FragmentMap::default();
     let mut queries = Vec::<LoadedQuery>::new();
     let mut loaded_fragments = Vec::<LoadedFragment>::new();
     let mut parse_diagnostics = Vec::<CompilerDiagnostic>::new();
@@ -461,13 +531,14 @@ fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
                 DefinitionRecord::Query(query) => queries.push(LoadedQuery {
                     file: document.path.clone(),
                     source_offset: document.source_offset,
+                    resolution_scope: document.resolution_scope.clone(),
                     query,
                 }),
                 DefinitionRecord::Fragment(fragment) => {
-                    fragments.insert(fragment.clone());
                     loaded_fragments.push(LoadedFragment {
                         file: document.path.clone(),
                         source_offset: document.source_offset,
+                        resolution_scope: document.resolution_scope.clone(),
                         fragment,
                     });
                 }
@@ -476,37 +547,198 @@ fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
     }
 
     fail_on_error_diagnostics(parse_diagnostics)?;
-    fail_on_error_diagnostics(
-        duplicate_fragment_errors(&fragments)
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-    )?;
 
-    let mut fragment_artifacts = Vec::new();
-    for fragment in &loaded_fragments {
-        fragment_artifacts.push(build_fragment_artifact(
-            &input.project,
-            &input.catalog,
-            &fragments,
-            fragment,
-        )?);
-    }
+    let scopes = scope_definitions(input, queries, loaded_fragments)?;
+    let mut groups = Vec::new();
+    let mut all_operations = Vec::new();
+    let mut all_fragments = Vec::new();
+    let mut emitted_flat_operations = HashSet::new();
+    let mut emitted_flat_fragments = HashSet::new();
+    for scope in scopes {
+        let fragments = scope.fragment_map();
+        fail_on_error_diagnostics(
+            duplicate_fragment_errors(&fragments)
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        )?;
 
-    let mut operations = Vec::new();
-    for query in queries {
-        operations.extend(build_query_operations(
-            &input.project,
-            &input.catalog,
-            &fragments,
-            &query,
-            input.options,
-        )?);
+        let mut fragment_artifacts = Vec::new();
+        for fragment in &scope.fragments {
+            fragment_artifacts.push(build_fragment_artifact(
+                &input.project,
+                &input.catalog,
+                &fragments,
+                fragment,
+            )?);
+        }
+
+        let mut operations = Vec::new();
+        for query in &scope.queries {
+            operations.extend(build_query_operations(
+                &input.project,
+                &input.catalog,
+                &fragments,
+                query,
+                input.options,
+            )?);
+        }
+
+        for operation in &operations {
+            if emitted_flat_operations.insert(operation.metadata.name.clone()) {
+                all_operations.push(operation.clone());
+            }
+        }
+        for fragment in &fragment_artifacts {
+            if emitted_flat_fragments.insert(fragment.metadata.name.clone()) {
+                all_fragments.push(fragment.clone());
+            }
+        }
+
+        groups.push(BuiltArtifactGroup {
+            name: scope.name.clone(),
+            scope_name: scope.name,
+            imports: scope.imports,
+            operations,
+            fragments: fragment_artifacts,
+        });
     }
     Ok(BuiltArtifacts {
-        operations,
-        fragments: fragment_artifacts,
+        operations: all_operations,
+        fragments: all_fragments,
+        groups,
     })
+}
+
+fn scope_definitions(
+    input: &GenerateInput,
+    queries: Vec<LoadedQuery>,
+    fragments: Vec<LoadedFragment>,
+) -> Result<Vec<ScopeDefinitions>> {
+    let mut locals = scope_locals(input);
+    for query in queries {
+        locals
+            .entry(query.resolution_scope.clone())
+            .or_insert_with(|| ScopeDefinitions::local(query.resolution_scope.clone()))
+            .queries
+            .push(query);
+    }
+    for fragment in fragments {
+        locals
+            .entry(fragment.resolution_scope.clone())
+            .or_insert_with(|| ScopeDefinitions::local(fragment.resolution_scope.clone()))
+            .fragments
+            .push(fragment);
+    }
+
+    let scope_names = locals.keys().cloned().collect::<Vec<_>>();
+    let mut scopes = Vec::new();
+    for name in scope_names {
+        let mut scope = locals
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| ScopeDefinitions::local(name.clone()));
+        append_imported_scope_definitions(&name, &locals, &mut scope, &mut BTreeSet::new())?;
+        validate_duplicate_query_names(&scope)?;
+        scopes.push(scope);
+    }
+    Ok(scopes)
+}
+
+fn scope_locals(input: &GenerateInput) -> BTreeMap<String, ScopeDefinitions> {
+    if input.project.config.resolution.is_empty() {
+        let name = dsql_project::DEFAULT_RESOLUTION_SCOPE.to_string();
+        return BTreeMap::from([(name.clone(), ScopeDefinitions::local(name))]);
+    }
+
+    input
+        .project
+        .config
+        .resolution
+        .iter()
+        .map(|(name, config)| {
+            (
+                name.clone(),
+                ScopeDefinitions {
+                    name: name.clone(),
+                    imports: config.imports.clone(),
+                    queries: Vec::new(),
+                    fragments: Vec::new(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn append_imported_scope_definitions(
+    name: &str,
+    locals: &BTreeMap<String, ScopeDefinitions>,
+    scope: &mut ScopeDefinitions,
+    visiting: &mut BTreeSet<String>,
+) -> Result<()> {
+    if !visiting.insert(name.to_string()) {
+        return Err(miette::miette!("cyclic resolution import involving `{name}`").into());
+    }
+    for import in scope.imports.clone() {
+        let Some(imported) = locals.get(&import) else {
+            return Err(miette::miette!(
+                "resolution map `{}` imports unknown resolution map `{}`",
+                scope.name,
+                import
+            )
+            .into());
+        };
+        let mut effective_import = imported.clone();
+        append_imported_scope_definitions(&import, locals, &mut effective_import, visiting)?;
+        scope.fragments.extend(effective_import.fragments);
+    }
+    visiting.remove(name);
+    Ok(())
+}
+
+fn validate_duplicate_query_names(scope: &ScopeDefinitions) -> Result<()> {
+    let mut seen = HashMap::<&str, &LoadedQuery>::new();
+    for query in &scope.queries {
+        let Some(name) = query.query.key.name.as_deref() else {
+            continue;
+        };
+        if seen.insert(name, query).is_some() {
+            return Err(miette::miette!(
+                "duplicate query `{}` in resolution map `{}`",
+                name,
+                scope.name
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct ScopeDefinitions {
+    name: String,
+    imports: Vec<String>,
+    queries: Vec<LoadedQuery>,
+    fragments: Vec<LoadedFragment>,
+}
+
+impl ScopeDefinitions {
+    fn local(name: String) -> Self {
+        Self {
+            name,
+            imports: Vec::new(),
+            queries: Vec::new(),
+            fragments: Vec::new(),
+        }
+    }
+
+    fn fragment_map(&self) -> FragmentMap {
+        let mut fragments = FragmentMap::default();
+        for fragment in &self.fragments {
+            fragments.insert(fragment.fragment.clone());
+        }
+        fragments
+    }
 }
 
 fn build_query_operations(
@@ -1012,14 +1244,18 @@ fn stable_hash(value: &str) -> String {
     format!("{hash:016x}")
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct LoadedQuery {
     file: PathBuf,
     source_offset: u32,
+    resolution_scope: String,
     query: QueryRecord,
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct LoadedFragment {
     file: PathBuf,
     source_offset: u32,
+    resolution_scope: String,
     fragment: FragmentRecord,
 }
