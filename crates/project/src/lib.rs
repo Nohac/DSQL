@@ -125,8 +125,6 @@ pub struct GenerateConfig {
 pub struct TypescriptGenerateConfig {
     #[facet(default = default_false())]
     pub enabled: bool,
-    #[facet(default = default_typescript_out_dir())]
-    pub out_dir: String,
     #[facet(default)]
     pub cmd: Vec<String>,
 }
@@ -307,17 +305,12 @@ fn default_generate_config() -> GenerateConfig {
 fn default_typescript_generate_config() -> TypescriptGenerateConfig {
     TypescriptGenerateConfig {
         enabled: false,
-        out_dir: default_typescript_out_dir(),
         cmd: Vec::new(),
     }
 }
 
 fn default_false() -> bool {
     false
-}
-
-fn default_typescript_out_dir() -> String {
-    "src/generated/dsql".to_string()
 }
 
 fn default_unindexed_scan_severity() -> LintSeverity {

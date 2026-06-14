@@ -117,7 +117,6 @@ pub struct GeneratedArtifactGroup {
 #[derive(Clone, Debug, Facet)]
 pub struct GeneratedArtifacts {
     pub project_dir: String,
-    pub out_dir: String,
     pub manifest_path: String,
     pub scopes: Vec<GeneratedResolutionScope>,
     pub source_file_scopes: Vec<GeneratedSourceScope>,
@@ -185,9 +184,6 @@ where
         let base = project_root(&input.project);
         let target = GenerateTarget {
             project_dir: base.to_string_lossy().to_string(),
-            out_dir: resolve_project_path(&base, &typescript.out_dir)
-                .to_string_lossy()
-                .to_string(),
             cmd: typescript.cmd.clone(),
         };
         runner.run(&target, &artifacts).await?;
@@ -212,7 +208,6 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
 
     let built = build_artifacts(&input)?;
     let base = project_root(&input.project);
-    let out_dir = resolve_project_path(&base, &input.project.config.generate.typescript.out_dir);
     let scopes = generated_resolution_scopes(&input.project);
     let source_file_scopes = generated_source_scopes(&input.documents);
     let mut generated_operations = Vec::new();
@@ -287,7 +282,6 @@ pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<Generat
 
     Ok(GeneratedArtifacts {
         project_dir: base.to_string_lossy().to_string(),
-        out_dir: out_dir.to_string_lossy().to_string(),
         manifest_path: input
             .project
             .root
@@ -1208,15 +1202,6 @@ fn source_path(project: &dsql_project::Project, file: &Path) -> String {
         .unwrap_or(file)
         .to_string_lossy()
         .to_string()
-}
-
-fn resolve_project_path(base: &Path, path: &str) -> PathBuf {
-    let path = Path::new(path);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    }
 }
 
 fn operation_name(query_name: &str, output_name: &str, count: usize, index: usize) -> String {

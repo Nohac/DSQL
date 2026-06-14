@@ -4,7 +4,6 @@ use crate::artifacts::WrittenArtifacts;
 #[derive(Clone, Debug)]
 pub(crate) struct GenerateTarget {
     pub project_dir: String,
-    pub out_dir: String,
     pub cmd: Vec<String>,
 }
 

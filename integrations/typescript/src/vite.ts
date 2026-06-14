@@ -1,12 +1,12 @@
-import { resolve } from "node:path";
-import { buildArtifactsFromGenerated } from "./node.js";
-import type { DsqlGenerator } from "./node.js";
-import type { DsqlRenderResult } from "./render/types.js";
+import { relative, resolve } from "node:path";
+import { buildArtifactsFromGenerated } from "./node.ts";
+import type { DsqlGenerator } from "./node.ts";
+import type { DsqlRenderResult } from "./render/types.ts";
 import {
   startDsqlDaemon,
   type DsqlDaemon,
   type DsqlDaemonOptions,
-} from "./daemon.js";
+} from "./daemon.ts";
 
 export type DsqlVitePluginOptions = {
   readonly generatedModule?: string;
@@ -93,13 +93,11 @@ export function dsql(
     daemon = daemon ?? startDsqlDaemon(options.daemon);
     const root = options.root ?? config?.root ?? process.cwd();
     const generated = await daemon.compileProject(root);
-    const outDir = resolve(root, options.outDir ?? generated.out_dir ?? DEFAULT_OUT_DIR);
     const artifacts = buildArtifactsFromGenerated(generated);
     sourceFileScopes = artifacts.sourceFileScopes;
     const result = await generator({
       artifacts,
       root,
-      outDir,
       mode: config?.mode ?? "development",
       command: config?.command ?? "serve",
     });
@@ -168,7 +166,8 @@ export function dsql(
       return generatedModule;
     }
     if (renderResults.length === 1 && !isMultiScope()) {
-      return renderResults[0]?.modules.queries ?? generatedModule;
+      const queries = renderResults[0]?.modules.queries;
+      return queries ? viteModuleSpecifier(queries) : generatedModule;
     }
 
     const scope = sourceScopeForFile(id);
@@ -181,7 +180,7 @@ export function dsql(
         `missing DSQL render metadata for resolution scope ${JSON.stringify(scope)} while transforming ${id}`,
       );
     }
-    return rendered.modules.queries;
+    return viteModuleSpecifier(rendered.modules.queries);
   }
 
   function isMultiScope(): boolean {
@@ -192,6 +191,17 @@ export function dsql(
     const file = resolve(id.split("?")[0] ?? id);
     return sourceFileScopes.find((entry) => resolve(entry.file) === file)?.scope;
   }
+
+  function viteModuleSpecifier(modulePath: string): string {
+    const root = options.root ?? config?.root ?? process.cwd();
+    if (modulePath.startsWith(".")) {
+      return rootAbsoluteSpecifier(root, resolve(root, modulePath));
+    }
+    if (modulePath.startsWith(root)) {
+      return rootAbsoluteSpecifier(root, modulePath);
+    }
+    return modulePath;
+  }
 }
 
 function normalizeRenderResults(
@@ -201,6 +211,10 @@ function normalizeRenderResults(
     return [];
   }
   return Array.isArray(result) ? result : [result];
+}
+
+function rootAbsoluteSpecifier(root: string, absolutePath: string): string {
+  return `/${relative(root, absolutePath).split("\\").join("/")}`;
 }
 
 export function transformDsqlTags(

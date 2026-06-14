@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
-import type { DsqlRenderResult } from "./render/types.js";
+import type { DsqlRenderResult } from "./render/types.ts";
 import type {
   BuildManifest,
   FragmentManifestEntry,
@@ -8,16 +8,16 @@ import type {
   OperationManifestEntry,
   OperationMetadata,
 } from "./generated/metadata";
-import { renderDsql, renderDsqlHelper, renderTypes } from "./render/types.js";
+import { renderDsql, renderDsqlHelper, renderTypes } from "./render/types.ts";
 
-export { renderDsql, renderDsqlHelper, renderTypes } from "./render/types.js";
+export { renderDsql, renderDsqlHelper, renderTypes } from "./render/types.ts";
 export type {
   DsqlRenderDefinitionResult,
   DsqlRenderedFile,
   DsqlRenderResult,
   RenderDsqlOptions,
   RenderOptions,
-} from "./render/types.js";
+} from "./render/types.ts";
 
 export type BuildArtifacts = {
   readonly manifestPath: string;
@@ -56,7 +56,6 @@ export type GeneratedSourceScope = {
 
 export type GeneratedArtifacts = {
   readonly project_dir: string;
-  readonly out_dir: string;
   readonly manifest_path: string;
   readonly scopes?: GeneratedResolutionScope[];
   readonly source_file_scopes?: GeneratedSourceScope[];
@@ -78,7 +77,6 @@ export type GeneratedArtifactGroup = {
 export type DsqlGeneratorContext = {
   readonly artifacts: BuildArtifacts;
   readonly root: string;
-  readonly outDir: string;
   readonly mode: string;
   readonly command: "serve" | "build";
 };
@@ -97,18 +95,13 @@ export async function runDsqlGeneratorFromEnv(
   generator: DsqlGenerator,
 ): Promise<boolean> {
   const manifestPath = process.env.DSQL_MANIFEST;
-  const outDir = process.env.DSQL_OUT_DIR;
-  if (!manifestPath && !outDir) {
+  if (!manifestPath) {
     return false;
-  }
-  if (!manifestPath || !outDir) {
-    throw new Error("DSQL_MANIFEST and DSQL_OUT_DIR are required");
   }
 
   await generator({
     artifacts: loadBuildArtifacts(manifestPath),
     root: dirname(dirname(dirname(manifestPath))),
-    outDir,
     mode: process.env.NODE_ENV ?? "production",
     command: "build",
   });
@@ -116,15 +109,20 @@ export async function runDsqlGeneratorFromEnv(
 }
 
 export const defaultDsqlGenerator = defineDsqlGenerator(
-  async ({ artifacts, root, outDir }) => {
+  async ({ artifacts, root }) => {
+    const generatedDir = join(root, "src/generated/dsql");
     if (artifacts.artifactGroups.length > 0) {
       return Promise.all(
         artifacts.artifactGroups.map((group) =>
           renderDsql(group, {
             root,
-            queriesDir: join(outDir, group.scopes[0]?.name ?? "default", "queries"),
+            queriesDir: join(
+              generatedDir,
+              group.scopes[0]?.name ?? "default",
+              "queries",
+            ),
             executionDir: join(
-              outDir,
+              generatedDir,
               group.scopes[0]?.name ?? "default",
               "queries.server",
             ),
@@ -134,7 +132,7 @@ export const defaultDsqlGenerator = defineDsqlGenerator(
     }
     return renderDsql(artifacts, {
       root,
-      queriesDir: outDir,
+      queriesDir: generatedDir,
     });
   },
 );

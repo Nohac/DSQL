@@ -53,7 +53,6 @@ loads DSQL build artifacts and composes generator helpers from
 ```toml
 [generate.typescript]
 enabled = true
-out_dir = "src/generated/dsql"
 cmd = ["bun", "dsql/generate.ts"]
 ```
 
@@ -64,11 +63,10 @@ import {
 } from "@dsql/typescript/node";
 
 const artifacts = loadBuildArtifacts(process.env.DSQL_MANIFEST!);
-const outDir = process.env.DSQL_OUT_DIR!;
 
 await renderDsql(artifacts, {
   root: process.cwd(),
-  queriesDir: outDir,
+  queriesDir: "src/generated/dsql",
 });
 
 // Add vendored project/framework renderers here.
@@ -253,10 +251,10 @@ import {
   renderDsql,
 } from "@dsql/typescript/node";
 
-export default defineDsqlGenerator(async ({ artifacts, root, outDir }) => {
+export default defineDsqlGenerator(async ({ artifacts, root }) => {
   return renderDsql(artifacts, {
     root,
-    queriesDir: outDir,
+    queriesDir: "src/generated/dsql",
   });
 });
 ```

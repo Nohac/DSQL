@@ -88,10 +88,11 @@ export function queryOptions<Result, Params, Input>(
     ...tanStackOptions
   } = options;
   const variables = { params, input };
+  const serverFn = serverFunctionFor(operation);
   return tanStackQueryOptions({
     ...tanStackOptions,
     queryKey: queryKey(operation, variables),
-    queryFn: () => executeQuery(operation, { params, input }),
+    queryFn: () => serverFn({ data: variables }),
   });
 }
 
@@ -121,10 +122,20 @@ export function useQuery<Result, Params, Input>(
   >
 ): UseQueryResult<Result, Error> {
   const [options = {} as DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>] = args;
-  return useTanStackQuery(queryOptions(operation, options)) as UseQueryResult<
-    Result,
-    Error
-  >;
+  const {
+    params = {} as Params,
+    input = {} as Input,
+    ...tanStackOptions
+  } = options;
+  const variables = { params, input };
+  const serverFn = serverFunctionFor(operation);
+  return useTanStackQuery(
+    tanStackQueryOptions({
+      ...tanStackOptions,
+      queryKey: queryKey(operation, variables),
+      queryFn: () => serverFn({ data: variables }),
+    }),
+  ) as UseQueryResult<Result, Error>;
 }
 
 function serverFunctionFor<Operation extends DsqlOperation<any, any, any>>(

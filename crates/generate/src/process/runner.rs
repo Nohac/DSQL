@@ -24,7 +24,6 @@ impl GeneratorRunner for CommandGeneratorRunner {
             .current_dir(&target.project_dir)
             .env("DSQL_PROJECT_DIR", &target.project_dir)
             .env("DSQL_MANIFEST", &artifacts.manifest.path)
-            .env("DSQL_OUT_DIR", &target.out_dir)
             .status()
             .await
             .map_err(|source| GeneratorError::Spawn {

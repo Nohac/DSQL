@@ -97,7 +97,6 @@ export async function renderTanStackStart(
 
   for (const operation of artifacts.operations) {
     const operationName = `${toPascalCase(operation.name)}Operation`;
-    const serverOperationName = `${toPascalCase(operation.name)}ServerOperation`;
     source.addVariableStatement({
       isExported: true,
       declarationKind: VariableDeclarationKind.Const,

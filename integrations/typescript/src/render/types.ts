@@ -437,8 +437,13 @@ function renderOperationModule(
   const resultType = `${name}Result`;
   const paramsType = `${name}Params`;
   const inputType = `${name}Input`;
+  const runtimeImports = ["DsqlOperation"];
+  if (options.includeExecutionPayload) {
+    runtimeImports.unshift("DsqlExecutionPayload");
+  }
   const statements = [
-    `import type { DsqlExecutionPayload, DsqlOperation } from "@dsql/typescript/runtime";`,
+    `import type { ${runtimeImports.join(", ")} } from "@dsql/typescript/runtime";`,
+    ...operationFragmentTypeImports(artifacts, operation),
     "",
     `export type ${resultType} = ${resultTypeLiteral(
       operation.result.fields,
@@ -477,6 +482,43 @@ function renderOperationModule(
   }
 
   return `${statements.join("\n")}\n`;
+}
+
+function operationFragmentTypeImports(
+  artifacts: BuildArtifacts,
+  operation: OperationMetadata,
+): string[] {
+  const fragmentsByName = new Map(
+    artifacts.fragments.map((fragment) => [fragment.name, fragment]),
+  );
+  const inputFragments = new Set(
+    operation.input.flatMap((field) => inputPathFragmentNames(field.path)),
+  );
+  const imports = [...new Set(operation.fragment_spreads.map((spread) => spread.fragment))]
+    .filter((name) => fragmentsByName.has(name))
+    .map((name) => {
+      const importedTypes = [fragmentResultTypeName(name)];
+      if (inputFragments.has(name)) {
+        importedTypes.push(fragmentVariablesTypeName(name));
+      }
+      return `import type { ${importedTypes.join(", ")} } from ${JSON.stringify(
+        `./${fragmentFileStem(name)}`,
+      )};`;
+    });
+  imports.sort();
+  return imports;
+}
+
+function inputPathFragmentNames(path: string): string[] {
+  const parts = publicInputPath(path, INPUT_PREFIX);
+  const names = [];
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    const envelope = parts[index + 1];
+    if (envelope === PARAMS_PREFIX || envelope === INPUT_PREFIX) {
+      names.push(parts[index] ?? "");
+    }
+  }
+  return names.filter(Boolean);
 }
 
 function renderOperationExecutionModule(
@@ -609,7 +651,7 @@ function buildRenderPlan(artifacts: BuildArtifacts): {
 
   for (const fragment of artifacts.fragments) {
     const name = toPascalCase(fragment.name);
-    const fileStem = `${name}.fragment`;
+    const fileStem = fragmentFileStem(fragment.name);
     const exports = [
       fragmentResultTypeName(fragment.name),
       fragmentParamsTypeName(fragment.name),
@@ -625,6 +667,10 @@ function buildRenderPlan(artifacts: BuildArtifacts): {
   }
 
   return { operations, fragments };
+}
+
+function fragmentFileStem(name: string): string {
+  return `${toPascalCase(name)}.fragment`;
 }
 
 function recordGeneratedNames(

@@ -138,7 +138,6 @@ test("rejects JavaScript interpolation in dsql tags", () => {
 test("builds generator artifacts from daemon output", async () => {
   const artifacts = buildArtifactsFromGenerated({
     project_dir: "/project",
-    out_dir: "/project/src/generated/dsql",
     manifest_path: "/project/dsql/build/manifest.json",
     scopes: [{ name: "default", imports: [] }],
     source_file_scopes: [
@@ -190,7 +189,7 @@ test("builds generator artifacts from daemon output", async () => {
   });
 
   const generator = defineDsqlGenerator(({ artifacts }) => {
-  expect(artifacts.operationsByName.get("MovieInfo")?.sql.text).toBe(
+    expect(artifacts.operationsByName.get("MovieInfo")?.sql.text).toBe(
       "select 1",
     );
     expect(artifacts.scopes[0]?.name).toBe("default");
@@ -199,7 +198,6 @@ test("builds generator artifacts from daemon output", async () => {
   await generator({
     artifacts,
     root: "/project",
-    outDir: "/project/src/generated/dsql",
     mode: "test",
     command: "serve",
   });
@@ -208,7 +206,6 @@ test("builds generator artifacts from daemon output", async () => {
 test("generators may return dsql render metadata", async () => {
   const artifacts = buildArtifactsFromGenerated({
     project_dir: "/project",
-    out_dir: "/project/src/generated/dsql",
     manifest_path: "/project/dsql/build/manifest.json",
     scopes: [{ name: "frontend", imports: ["shared"] }],
     source_file_scopes: [],
@@ -232,7 +229,6 @@ test("generators may return dsql render metadata", async () => {
   const result = await generator({
     artifacts,
     root: "/project",
-    outDir: "/project/src/generated/dsql",
     mode: "test",
     command: "serve",
   });

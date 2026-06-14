@@ -23,7 +23,6 @@ async fn generate_project_writes_manifest_and_invokes_typescript_command() {
         &format!(
             r#"[generate.typescript]
 enabled = true
-out_dir = "src/generated/dsql"
 cmd = ["bun", "{}"]
 "#,
             repo_root()
@@ -115,10 +114,6 @@ async fn generate_project_artifacts_returns_in_memory_metadata() {
     let artifacts = dsql_generate::generate_project_artifacts_from(project.path()).unwrap();
 
     assert_eq!(artifacts.project_dir, project.path().to_string_lossy());
-    assert_eq!(
-        artifacts.out_dir,
-        project.path().join("src/generated/dsql").to_string_lossy()
-    );
     assert_eq!(
         artifacts.manifest_path,
         project
@@ -431,7 +426,6 @@ async fn generate_project_supports_user_owned_typescript_entrypoint() {
         project.path(),
         r#"[generate.typescript]
 enabled = true
-out_dir = "src/generated/dsql"
 cmd = ["bun", "dsql/generate.ts"]
 "#,
     );
@@ -469,22 +463,27 @@ import { renderTanStackQuery } from "./generators/tanstack-query";
 import { renderTanStackStart } from "./generators/tanstack-start";
 
 const manifestPath = process.env.DSQL_MANIFEST;
-const outDir = process.env.DSQL_OUT_DIR;
-
-if (!manifestPath || !outDir) {
-  throw new Error("DSQL_MANIFEST and DSQL_OUT_DIR are required");
+if (!manifestPath) {
+  throw new Error("DSQL_MANIFEST is required");
 }
 
 const artifacts = loadBuildArtifacts(manifestPath);
 const root = path.dirname(path.dirname(path.dirname(manifestPath)));
+const generatedDir = path.join(root, "src/generated/dsql");
 
 const dsql = await renderDsql(artifacts, {
   root,
-  queriesDir: path.join(outDir, "queries"),
-  executionDir: path.join(outDir, "queries.server"),
+  queriesDir: path.join(generatedDir, "queries"),
+  executionDir: path.join(generatedDir, "queries.server"),
 });
-await renderTanStackStart(artifacts, dsql, { root, outDir });
-await renderTanStackQuery(artifacts, dsql, { root, outDir });
+await renderTanStackStart(artifacts, dsql, {
+  root,
+  outDir: generatedDir,
+});
+await renderTanStackQuery(artifacts, dsql, {
+  root,
+  outDir: generatedDir,
+});
 "#,
     )
     .unwrap();
@@ -756,7 +755,6 @@ async fn generate_project_types_embedded_dsql_function_calls() {
         &format!(
             r#"[generate.typescript]
 enabled = true
-out_dir = "src/generated/dsql"
 cmd = ["bun", "{}"]
 "#,
             repo_root()
@@ -808,7 +806,6 @@ async fn generate_project_types_fragment_definitions() {
         &format!(
             r#"[generate.typescript]
 enabled = true
-out_dir = "src/generated/dsql"
 cmd = ["bun", "{}"]
 "#,
             repo_root()
@@ -1010,7 +1007,6 @@ async fn generate_project_groups_embedded_source_text_for_multiple_queries() {
         &format!(
             r#"[generate.typescript]
 enabled = true
-out_dir = "src/generated/dsql"
 cmd = ["bun", "{}"]
 "#,
             repo_root()
@@ -1097,7 +1093,6 @@ async fn generate_project_splits_top_level_params_and_contextual_input() {
         &format!(
             r#"[generate.typescript]
 enabled = true
-out_dir = "src/generated/dsql"
 cmd = ["bun", "{}"]
 "#,
             repo_root()

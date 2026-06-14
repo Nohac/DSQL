@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import type { GeneratedArtifacts } from "./node.js";
+import type { GeneratedArtifacts } from "./node.ts";
 
 export type DsqlDaemonOptions = {
   readonly command?: string;

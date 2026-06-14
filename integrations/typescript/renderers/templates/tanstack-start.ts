@@ -22,7 +22,7 @@ export type DsqlExecutionRequest<
   readonly operation: Operation;
   readonly variables: DsqlVariables<Operation>;
   readonly sql: string;
-  readonly values: readonly unknown[];
+  readonly values: unknown[];
 };
 
 export type DsqlServerExecutor = <
@@ -55,7 +55,8 @@ async function executeDsqlOperation<Operation extends DsqlOperation<any, any, an
   return executeQuery({
     operation,
     variables,
-    ...materialized,
+    sql: materialized.sql,
+    values: [...materialized.values],
   });
 }
 
