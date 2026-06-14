@@ -1,4 +1,4 @@
-import { relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { buildArtifactsFromGenerated } from "./node.ts";
 import type { DsqlGenerator } from "./node.ts";
 import type { DsqlRenderResult } from "./render/types.ts";
@@ -9,9 +9,7 @@ import {
 } from "./daemon.ts";
 
 export type DsqlVitePluginOptions = {
-  readonly generatedModule?: string;
-  readonly generator?: DsqlGenerator;
-  readonly outDir?: string;
+  readonly generator: DsqlGenerator;
   readonly root?: string;
   readonly daemon?: DsqlDaemonOptions;
   readonly fullReload?: boolean;
@@ -56,8 +54,6 @@ export type TransformResult =
     }
   | null;
 
-const DEFAULT_GENERATED_MODULE = "/src/generated/dsql/queries";
-const DEFAULT_OUT_DIR = "src/generated/dsql";
 const SUPPORTED_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx"];
 const DSQL_RELEVANT_EXTENSIONS = [".dsql", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml"];
 const DSQL_TAG_PATTERN =
@@ -65,14 +61,13 @@ const DSQL_TAG_PATTERN =
 const DSQL_CALL_PATTERN =
   /(export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*dsql\s*\(\s*`([\s\S]*?)`\s*\)\s*;?/g;
 
-export function dsql(generator?: DsqlGenerator): VitePlugin;
-export function dsql(options?: DsqlVitePluginOptions): VitePlugin;
+export function dsql(generator: DsqlGenerator): VitePlugin;
+export function dsql(options: DsqlVitePluginOptions): VitePlugin;
 export function dsql(
-  input: DsqlGenerator | DsqlVitePluginOptions = {},
+  input: DsqlGenerator | DsqlVitePluginOptions,
 ): VitePlugin {
   const options: DsqlVitePluginOptions =
     typeof input === "function" ? { generator: input } : input;
-  const generatedModule = options.generatedModule ?? DEFAULT_GENERATED_MODULE;
   const generator = options.generator;
   let daemon: DsqlDaemon | undefined;
   let config: ViteResolvedConfig | undefined;
@@ -87,9 +82,6 @@ export function dsql(
   };
 
   const compileAndGenerate = async (): Promise<void> => {
-    if (!generator) {
-      return;
-    }
     daemon = daemon ?? startDsqlDaemon(options.daemon);
     const root = options.root ?? config?.root ?? process.cwd();
     const generated = await daemon.compileProject(root);
@@ -122,24 +114,17 @@ export function dsql(
       });
     },
     async buildStart() {
-      if (generator) {
-        await scheduleCompile();
-      }
+      await scheduleCompile();
     },
     transform(code, id) {
       if (!isSupportedFile(id) || !code.includes("dsql")) {
         return null;
       }
 
-      return transformDsqlTags(code, generatedModuleForFile(id));
+      return transformDsqlTags(code, () => queryModuleForFile(id));
     },
     async handleHotUpdate(context) {
-      const root = options.root ?? config?.root ?? process.cwd();
-      const outDir = resolve(root, options.outDir ?? DEFAULT_OUT_DIR);
-      if (!isDsqlRelevantFile(context.file, outDir)) {
-        return;
-      }
-      if (!generator) {
+      if (!isDsqlRelevantFile(context.file, renderResults)) {
         return;
       }
       await scheduleCompile();
@@ -155,24 +140,27 @@ export function dsql(
 
   return plugin;
 
-  function generatedModuleForFile(id: string): string {
+  function queryModuleForFile(id: string): string {
     if (renderResults.length === 0) {
-      const scope = sourceScopeForFile(id);
-      if (scope && isMultiScope()) {
-        throw new Error(
-          `missing DSQL render metadata for resolution scope ${JSON.stringify(scope)} while transforming ${id}`,
-        );
-      }
-      return generatedModule;
+      throw new Error(
+        `missing DSQL render metadata while transforming ${id}; return renderDsql(...) metadata from the Vite generator`,
+      );
     }
     if (renderResults.length === 1 && !isMultiScope()) {
       const queries = renderResults[0]?.modules.queries;
-      return queries ? viteModuleSpecifier(queries) : generatedModule;
+      if (!queries) {
+        throw new Error(
+          `missing DSQL query module render metadata while transforming ${id}`,
+        );
+      }
+      return viteModuleSpecifier(queries);
     }
 
     const scope = sourceScopeForFile(id);
     if (!scope) {
-      return generatedModule;
+      throw new Error(
+        `missing DSQL source scope metadata while transforming ${id}`,
+      );
     }
     const rendered = renderResults.find((result) => result.scope?.name === scope);
     if (!rendered) {
@@ -219,11 +207,12 @@ function rootAbsoluteSpecifier(root: string, absolutePath: string): string {
 
 export function transformDsqlTags(
   code: string,
-  generatedModule = DEFAULT_GENERATED_MODULE,
+  queryModule: string | (() => string),
 ): TransformResult {
   const imports: string[] = [];
   const exports: string[] = [];
   let changed = false;
+  let resolvedQueryModule: string | undefined;
 
   const replaceDsqlBinding = (
     match: string,
@@ -240,10 +229,12 @@ export function transformDsqlTags(
       return match;
     }
     changed = true;
+    resolvedQueryModule ??=
+      typeof queryModule === "function" ? queryModule() : queryModule;
 
     imports.push(
       `import { ${definition.exportName} as ${localName} } from ${JSON.stringify(
-        generatedModule,
+        resolvedQueryModule,
       )};`,
     );
     if (exportKeyword) {
@@ -274,9 +265,12 @@ function isSupportedFile(id: string): boolean {
   return SUPPORTED_EXTENSIONS.some((extension) => path.endsWith(extension));
 }
 
-function isDsqlRelevantFile(file: string, outDir: string): boolean {
+function isDsqlRelevantFile(
+  file: string,
+  renderResults: readonly DsqlRenderResult[],
+): boolean {
   const absoluteFile = resolve(file);
-  if (absoluteFile === outDir || absoluteFile.startsWith(`${outDir}/`)) {
+  if (isRenderedDsqlFile(absoluteFile, renderResults)) {
     return false;
   }
   if (file.endsWith("dsql.toml")) {
@@ -286,6 +280,26 @@ function isDsqlRelevantFile(file: string, outDir: string): boolean {
     return DSQL_RELEVANT_EXTENSIONS.some((extension) => file.endsWith(extension));
   }
   return DSQL_RELEVANT_EXTENSIONS.some((extension) => file.endsWith(extension));
+}
+
+function isRenderedDsqlFile(
+  absoluteFile: string,
+  renderResults: readonly DsqlRenderResult[],
+): boolean {
+  const renderedFiles = new Set(
+    renderResults.flatMap((result) => result.files.map((file) => resolve(file.path))),
+  );
+  if (renderedFiles.has(absoluteFile)) {
+    return true;
+  }
+
+  if (!absoluteFile.endsWith(".dsql-render-manifest.json")) {
+    return false;
+  }
+  const renderedDirectories = new Set(
+    [...renderedFiles].map((path) => dirname(path)),
+  );
+  return renderedDirectories.has(dirname(absoluteFile));
 }
 
 function definitionFromDsql(

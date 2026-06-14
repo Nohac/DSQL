@@ -7,10 +7,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { Project, QuoteKind, VariableDeclarationKind } from "ts-morph";
 import type {
-  FragmentManifestEntry,
   FragmentMetadata,
   FragmentSpreadMetadata,
   InputField,
@@ -19,10 +16,6 @@ import type {
   ResultField,
 } from "../generated/metadata";
 import type { BuildArtifacts } from "../node";
-
-export type RenderOptions = {
-  readonly outDir: string;
-};
 
 export type RenderDsqlOptions = {
   readonly root: string;
@@ -69,170 +62,6 @@ const RENDER_DSQL_VERSION = 1;
 const RENDER_MANIFEST_NAME = ".dsql-render-manifest.json";
 
 type InputRoot = typeof PARAMS_PREFIX | typeof INPUT_PREFIX;
-
-export async function renderTypes(
-  artifacts: BuildArtifacts,
-  options: RenderOptions,
-): Promise<void> {
-  const project = createProject();
-  const operationsSource = createSourceFromTemplate(
-    project,
-    options.outDir,
-    "operations.ts",
-  );
-
-  for (const fragment of artifacts.fragments) {
-    const resultType = fragmentResultTypeName(fragment.name);
-    const paramsType = fragmentParamsTypeName(fragment.name);
-    const inputType = fragmentInputTypeName(fragment.name);
-    const variablesType = fragmentVariablesTypeName(fragment.name);
-    operationsSource.addTypeAlias({
-      isExported: true,
-      name: resultType,
-      type: resultTypeLiteral(fragment.result.fields, [], []),
-    });
-    operationsSource.addTypeAlias({
-      isExported: true,
-      name: paramsType,
-      type: paramsTypeLiteral(fragment.params),
-    });
-    operationsSource.addTypeAlias({
-      isExported: true,
-      name: inputType,
-      type: inputTypeLiteral(fragment.input),
-    });
-    operationsSource.addTypeAlias({
-      isExported: true,
-      name: variablesType,
-      type: fragmentVariablesTypeLiteral(
-        paramsType,
-        inputType,
-        fragment.params.length > 0,
-        fragment.input.length > 0,
-      ),
-    });
-    operationsSource.addVariableStatement({
-      isExported: true,
-      declarationKind: VariableDeclarationKind.Const,
-      declarations: [
-        {
-          name: fragmentValueName(fragment.name),
-          type: `DsqlFragmentDefinition<${resultType}, ${paramsType}, ${inputType}>`,
-          initializer: `{
-  name: ${JSON.stringify(fragment.name)},
-  kind: ${JSON.stringify(DEFINITION_KIND_FRAGMENT)},
-  table: ${JSON.stringify(fragment.table)}
-}`,
-        },
-      ],
-    });
-  }
-
-  for (const operation of artifacts.operations) {
-    const manifestEntry = manifestEntryFor(artifacts, operation);
-    const resultType = `${toPascalCase(operation.name)}Result`;
-    const paramsType = `${toPascalCase(operation.name)}Params`;
-    const inputType = `${toPascalCase(operation.name)}Input`;
-    operationsSource.addTypeAlias({
-      isExported: true,
-      name: resultType,
-      type: resultTypeLiteral(
-        operation.result.fields,
-        operation.fragment_spreads,
-        artifacts.fragments,
-      ),
-    });
-    operationsSource.addTypeAlias({
-      isExported: true,
-      name: paramsType,
-      type: paramsTypeLiteral(operation.params),
-    });
-    operationsSource.addTypeAlias({
-      isExported: true,
-      name: inputType,
-      type: inputTypeLiteral(
-        operation.input,
-        operation.fragment_spreads,
-        artifacts.fragments,
-      ),
-    });
-    operationsSource.addVariableStatement({
-      isExported: true,
-      declarationKind: VariableDeclarationKind.Const,
-      declarations: [
-        {
-          name: `${toPascalCase(operation.name)}Operation`,
-          type: `DsqlOperation<${resultType}, ${paramsType}, ${inputType}>`,
-          initializer: `{
-  id: ${JSON.stringify(manifestEntry.hash)},
-  name: ${JSON.stringify(operation.name)},
-  kind: ${JSON.stringify(DEFINITION_KIND_QUERY)}
-}`,
-        },
-      ],
-    });
-  }
-
-  operationsSource.addVariableStatement({
-    isExported: true,
-    declarationKind: VariableDeclarationKind.Const,
-    declarations: [
-      {
-        name: "operations",
-        initializer: `[
-${artifacts.operations
-  .map((operation) => `  ${toPascalCase(operation.name)}Operation`)
-  .join(",\n")}
-] as const`,
-      },
-    ],
-  });
-
-  await saveSourceFiles([operationsSource]);
-}
-
-export async function renderDsqlHelper(
-  artifacts: BuildArtifacts,
-  options: RenderOptions,
-): Promise<void> {
-  const project = createProject();
-  const dsqlSource = createSourceFromTemplate(project, options.outDir, "dsql.ts");
-
-  if (artifacts.operations.length > 0) {
-    dsqlSource.addImportDeclaration({
-      moduleSpecifier: "./operations",
-      namedImports: artifacts.operations.map(
-        (operation) => `${toPascalCase(operation.name)}Operation`,
-      ),
-    });
-  }
-  if (artifacts.fragments.length > 0) {
-    dsqlSource.addImportDeclaration({
-      moduleSpecifier: "./operations",
-      namedImports: artifacts.fragments.map((fragment) =>
-        fragmentValueName(fragment.name),
-      ),
-    });
-  }
-
-  dsqlSource.insertStatements(
-    dsqlSource.getImportDeclarations().length,
-    operationSourceMapType(artifacts),
-  );
-
-  const indexSource = createSourceFromTemplate(
-    project,
-    options.outDir,
-    "index.ts",
-  );
-  const queriesSource = project.createSourceFile(
-    join(options.outDir, "queries.ts"),
-    'export * from "./index";\n',
-    { overwrite: true },
-  );
-
-  await saveSourceFiles([dsqlSource, indexSource, queriesSource]);
-}
 
 export async function renderDsql(
   artifacts: BuildArtifacts,
@@ -343,40 +172,6 @@ export async function renderDsql(
   };
 }
 
-function createProject(): Project {
-  return new Project({
-    manipulationSettings: {
-      quoteKind: QuoteKind.Double,
-    },
-  });
-}
-
-function createSourceFromTemplate(
-  project: Project,
-  outDir: string,
-  name: string,
-) {
-  mkdirSync(outDir, { recursive: true });
-  return project.createSourceFile(
-    join(outDir, name),
-    readFileSync(join(packageRoot(), "templates", "bundled", name), "utf8"),
-    { overwrite: true },
-  );
-}
-
-async function saveSourceFiles(
-  sourceFiles: ReturnType<Project["getSourceFiles"]>,
-): Promise<void> {
-  for (const sourceFile of sourceFiles) {
-    sourceFile.formatText();
-    await sourceFile.save();
-  }
-}
-
-function packageRoot(): string {
-  return dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-}
-
 function manifestEntryFor(
   artifacts: BuildArtifacts,
   operation: OperationMetadata,
@@ -386,19 +181,6 @@ function manifestEntryFor(
   );
   if (!entry) {
     throw new Error(`missing manifest entry for operation ${operation.name}`);
-  }
-  return entry;
-}
-
-function fragmentManifestEntryFor(
-  artifacts: BuildArtifacts,
-  fragment: FragmentMetadata,
-): FragmentManifestEntry {
-  const entry = artifacts.manifest.fragments.find(
-    (candidate) => candidate.name === fragment.name,
-  );
-  if (!entry) {
-    throw new Error(`missing manifest entry for fragment ${fragment.name}`);
   }
   return entry;
 }
@@ -880,37 +662,6 @@ function hashString(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function operationSourceMapType(artifacts: BuildArtifacts): string {
-  const definitionsBySource = new Map<string, Array<string>>();
-  for (const operation of artifacts.operations) {
-    const sourceText = sourceTextForMap(artifacts, operation);
-    if (!sourceText) {
-      continue;
-    }
-
-    const definitions = definitionsBySource.get(sourceText) ?? [];
-    definitions.push(`typeof ${toPascalCase(operation.name)}Operation`);
-    definitionsBySource.set(sourceText, definitions);
-  }
-  for (const fragment of artifacts.fragments) {
-    fragmentManifestEntryFor(artifacts, fragment);
-    const sourceText = sourceTextForMap(artifacts, fragment);
-    if (!sourceText) {
-      continue;
-    }
-
-    const definitions = definitionsBySource.get(sourceText) ?? [];
-    definitions.push(`typeof ${fragmentValueName(fragment.name)}`);
-    definitionsBySource.set(sourceText, definitions);
-  }
-
-  const entries = Array.from(definitionsBySource, ([sourceText, definitions]) => {
-    return `  readonly ${JSON.stringify(sourceText)}: ${definitions.join(" | ")};`;
-  });
-
-  return `export type DsqlDefinitionBySource = {\n${entries.join("\n")}\n};`;
-}
-
 function embeddedDsqlTextContainingRange(
   source: string,
   start: number,
@@ -1280,10 +1031,6 @@ function toPascalCase(value: string): string {
   }
 
   return /^[0-9]/.test(result) ? `_${result}` : result;
-}
-
-function fragmentValueName(name: string): string {
-  return `${toPascalCase(name)}Fragment`;
 }
 
 function fragmentResultTypeName(name: string): string {

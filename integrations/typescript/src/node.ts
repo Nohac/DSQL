@@ -8,15 +8,14 @@ import type {
   OperationManifestEntry,
   OperationMetadata,
 } from "./generated/metadata";
-import { renderDsql, renderDsqlHelper, renderTypes } from "./render/types.ts";
+import { renderDsql } from "./render/types.ts";
 
-export { renderDsql, renderDsqlHelper, renderTypes } from "./render/types.ts";
+export { renderDsql } from "./render/types.ts";
 export type {
   DsqlRenderDefinitionResult,
   DsqlRenderedFile,
   DsqlRenderResult,
   RenderDsqlOptions,
-  RenderOptions,
 } from "./render/types.ts";
 
 export type BuildArtifacts = {

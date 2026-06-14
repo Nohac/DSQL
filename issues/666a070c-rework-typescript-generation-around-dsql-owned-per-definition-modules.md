@@ -140,12 +140,9 @@ If execution is inline, the operation module and execution module can be the
 same. If execution is split, adapters import execution payloads only inside
 their framework's protected boundaries.
 
-The current API returns `void` from user generators and the daemon returns a
-single `GeneratedArtifacts` payload. This change needs an explicit compatibility
-path:
+Generators return render metadata. Vite uses that metadata as the source of
+truth for transformed imports:
 
-- Existing single-scope generators that return nothing should keep working when
-  the Vite plugin is configured with a static `generatedModule`.
 - Scoped Vite transforms should require returned render metadata and fail with a
   clear error if it is missing.
 - `runDsqlGeneratorFromEnv`, Vite generation, and CLI-triggered generation
@@ -185,8 +182,9 @@ conversion, and those must be diagnostics rather than overwrites.
   than owning SQL payload layout.
 - Documentation explains how to choose an execution directory that participates
   in framework import protection.
-- Compatibility behavior for existing `renderTypes`, `renderDsqlHelper`,
-  `generatedModule`, `outDir`, and environment-run generator flows is documented.
+- Obsolete flat-layout APIs such as `renderTypes`, `renderDsqlHelper`, and the
+  generated root `operations.ts`/`dsql.ts`/`queries.ts` surface are removed
+  instead of kept as compatibility shims.
 - Filesystem and TypeScript export-name collisions are reported deterministically.
 - TypeScript output paths are determined by the TypeScript generator, while Rust
   continues to produce build artifacts/cache metadata independent of output

@@ -263,9 +263,8 @@ const generator = defineDsqlGenerator(async ({ artifacts, root }) => {
 
 Returned metadata should include the query barrel module, generated files,
 operation modules, execution modules, and scope name when generation is scoped.
-Single-scope projects may still use a static generated module in a host plugin.
-Multi-scope transforms require returned render metadata so each source file can
-import from the generated barrel for its owning resolution scope.
+Transforms require returned render metadata so each source file can import from
+the generated barrel for its owning resolution scope.
 
 ## Runtime Result Contract
 

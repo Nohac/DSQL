@@ -74,7 +74,7 @@ export { Users };`,
 
 test("transforms named dsql fragment calls into generated fragment imports", () => {
   const result = transformDsqlTags(
-    `import { dsql } from "./generated/dsql";
+    `import { dsql } from "./generated/dsql/queries";
 
 const MovieCompany = dsql(\`
 fragment MovieCompany on movie_companies {
@@ -90,7 +90,7 @@ fragment MovieCompany on movie_companies {
 
   expect(result).toEqual({
     code: `import { MovieCompanyFragment as MovieCompany } from "./generated/dsql/queries";
-import { dsql } from "./generated/dsql";
+import { dsql } from "./generated/dsql/queries";
 
 
 `,
@@ -117,7 +117,7 @@ export { MovieCompany };`,
 });
 
 test("leaves unnamed fragment-only dsql bindings untransformed", () => {
-  const code = `import { dsql } from "./generated/dsql";
+  const code = `import { dsql } from "./generated/dsql/queries";
 
 const MovieCompany = dsql(\`
 fragment on movie_companies {
@@ -129,9 +129,29 @@ fragment on movie_companies {
   expect(transformDsqlTags(code, "./generated/dsql/queries")).toBe(null);
 });
 
+test("does not require render metadata for unrelated dsql identifiers", () => {
+  const code = `export const context = {
+  dsql: {
+    executeQuery() {
+      return undefined;
+    },
+  },
+};
+`;
+
+  expect(
+    transformDsqlTags(code, () => {
+      throw new Error("metadata should not be resolved");
+    }),
+  ).toBe(null);
+});
+
 test("rejects JavaScript interpolation in dsql tags", () => {
   expect(() =>
-    transformDsqlTags("const Users = dsql`query Users { users(where .id == ${id}) { id } }`;"),
+    transformDsqlTags(
+      "const Users = dsql`query Users { users(where .id == ${id}) { id } }`;",
+      "./generated/dsql/queries",
+    ),
   ).toThrow("dsql templates do not support JavaScript interpolation");
 });
 

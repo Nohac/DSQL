@@ -7,7 +7,8 @@ Experimental TypeScript integration for DSQL build metadata.
 After generation, app code can use a DSQL query as a typed operation:
 
 ```ts
-import { dsql, useQuery } from "./generated/dsql/queries";
+import { dsql } from "./generated/dsql/queries";
+import { useQuery } from "./generated/dsql/tanstack-query";
 
 const MovieInfo = dsql(`
   query MovieInfoLookup {
@@ -79,13 +80,6 @@ operation types/constants, the typed `dsql` helper, and barrel exports. The
 that additionally writes starter TanStack Query and TanStack Start wrapper
 files without making those TanStack renderers part of the package API.
 
-Renderer files are split by ownership. Package-owned templates are internal to
-`@dsql/typescript`:
-
-```text
-templates/bundled/
-```
-
 Project/framework generators and templates should be local to your app. The
 example `renderers/generate.ts` is meant to be copied to `dsql/generate.ts`;
 after copying, it imports TanStack generator modules from `./generators/*`, and
@@ -118,10 +112,6 @@ Vendored generators can import `ts-morph` through
 `@dsql/typescript/renderer`, which keeps generation tooling resolvable through
 the DSQL package without requiring the generated browser/runtime modules to
 depend on it.
-
-The old generated `operations.ts`/`dsql.ts`/`queries.ts` files are not a stable
-API. Before 1.0, prefer the current generated module shape over compatibility
-shims when migrating app code.
 
 ## Generated Output
 
@@ -224,25 +214,10 @@ fragment/query names with no namespace syntax.
 
 ## Vite Plugin
 
-Without a generator, the Vite plugin is a pure transform. This keeps the older
-setup working when generation runs separately:
-
-```ts
-import { dsql } from "@dsql/typescript/vite";
-import { defineConfig } from "vite";
-
-export default defineConfig({
-  plugins: [
-    dsql({
-      generatedModule: "/src/generated/dsql/queries",
-    }),
-  ],
-});
-```
-
-To let Vite run generation, export a user-owned generator and pass it to the
-plugin. Vite keeps a `dsql daemon` process alive, asks it to compile project
-metadata, then calls the generator in-process.
+Export a user-owned generator and pass it to the plugin. Vite keeps a `dsql
+daemon` process alive, asks it to compile project metadata, then calls the
+generator in-process. The generator return value is the source of truth for
+generated query module paths.
 
 ```ts
 // dsql/generate.ts
@@ -295,7 +270,7 @@ fragment MovieCompany on movie_companies {
 
 For multi-scope projects, Vite needs compiler-provided source-file-to-scope
 metadata plus the returned render metadata to choose the correct generated query
-barrel. Single-scope projects may still use a static `generatedModule`.
+barrel.
 
 ## TanStack Start And Query
 

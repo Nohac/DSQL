@@ -60,30 +60,8 @@ ${artifacts.operations
     ],
   });
 
-  const queriesSource = project.createSourceFile(
-    join(options.outDir, "index.ts"),
-    existsSync(join(options.outDir, "index.ts"))
-      ? readFileSync(join(options.outDir, "index.ts"), "utf8")
-      : "",
-    { overwrite: true },
-  );
-  if (
-    !queriesSource
-      .getExportDeclarations()
-      .some(
-        (declaration) =>
-          declaration.getModuleSpecifierValue() === "./tanstack-query",
-      )
-  ) {
-    queriesSource.addExportDeclaration({
-      moduleSpecifier: "./tanstack-query",
-    });
-  }
-
-  for (const file of [source, queriesSource]) {
-    file.formatText();
-    await file.save();
-  }
+  source.formatText();
+  await source.save();
 }
 
 function createProject(): Project {
