@@ -1,6 +1,6 @@
 # Define deterministic fragment resolution and duplicate diagnostics
 
-**ID:** 8ce0b40e | **Status:** Open | **Created:** 2026-06-11T18:35:53+02:00
+**ID:** 8ce0b40e | **Status:** Implemented | **Created:** 2026-06-11T18:35:53+02:00
 
 ## Summary
 

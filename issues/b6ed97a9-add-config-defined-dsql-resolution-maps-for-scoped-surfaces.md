@@ -1,6 +1,6 @@
 # Add config defined DSQL resolution maps for scoped surfaces
 
-**ID:** b6ed97a9 | **Status:** Open | **Created:** 2026-06-13T14:23:24+02:00
+**ID:** b6ed97a9 | **Status:** Implemented | **Created:** 2026-06-13T14:23:24+02:00
 
 ## Summary
 

@@ -1,6 +1,6 @@
 # Rework TypeScript generation around DSQL owned per definition modules
 
-**ID:** 666a070c | **Status:** Open | **Created:** 2026-06-13T14:23:24+02:00
+**ID:** 666a070c | **Status:** Implemented | **Created:** 2026-06-13T14:23:24+02:00
 
 ## Summary
 
@@ -153,9 +153,9 @@ path:
 - Rust should not own TypeScript output paths after this change. Rust should
   provide scoped build artifacts and compiler metadata; the TypeScript generator
   owns layout, output paths, render metadata, and file-write planning.
-- Existing Rust `generate.typescript.out_dir` behavior needs an explicit
-  migration path, likely as a temporary compatibility input to the default
-  TypeScript generator rather than a long-term Rust-owned output setting.
+- Existing Rust `generate.typescript.out_dir` behavior should be removed rather
+  than preserved. The TypeScript generator entrypoint is the source of truth for
+  output layout.
 
 For scoped projects, render metadata alone is not enough. The Vite plugin also
 needs a deterministic source-file-to-scope lookup from the compiler/daemon or

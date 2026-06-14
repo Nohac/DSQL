@@ -189,24 +189,125 @@ Projects can also delegate rendering to an external command:
 ```toml
 [generate.typescript]
 enabled = true
-out_dir = "src/generated/dsql"
 cmd = ["bun", "scripts/dsql-generate.ts"]
 ```
 
 `dsql generate` should still own parsing, checking, planning, SQL generation,
 and manifest writing. External commands should consume the build manifest and
-write host/framework-specific owned code.
+write host/framework-specific owned code. The TypeScript generator entrypoint is
+the source of truth for generated TypeScript output paths. Rust configuration
+does not define a TypeScript `outDir`.
 
 The command should run once per generation target, not once per query. It should
-receive paths through environment variables:
+receive compiler-owned paths through environment variables:
 
 - `DSQL_PROJECT_DIR`
 - `DSQL_MANIFEST`
-- `DSQL_OUT_DIR`
 
 The manifest should be written to project-local build state such as
 `dsql/build/manifest.json` so users and tools can inspect, debug, and rerun
 generators without recompiling the project every time.
+
+## TypeScript Render Contract
+
+The DSQL-owned TypeScript renderer should emit framework-neutral definition
+modules. The default public surface is one module per top-level definition plus
+a query barrel:
+
+```text
+queries/
+  MovieLookup.ts
+  MovieFields.fragment.ts
+  index.ts
+```
+
+Each public query module contains:
+
+- result, params, and input types
+- a client-safe operation handle
+- source-string registry augmentation for the generated `dsql(...)` helper
+
+Execution payloads can be inline for backend-only projects or split into a
+separate directory:
+
+```ts
+await renderDsql(artifacts, {
+  root,
+  queriesDir: "src/generated/dsql/queries",
+  executionDir: "src/generated/dsql/queries.server",
+});
+```
+
+When execution is split, public query modules must not contain SQL text or
+execution payload data. Framework adapters import public operation handles from
+the query barrel and execution payloads only from the protected execution
+surface.
+
+Generated query barrels should export the `dsql` helper, public runtime types,
+and every per-definition module so source-string typing is visible from one
+import.
+
+Host generators may return render metadata for Vite and other transforms:
+
+```ts
+const generator = defineDsqlGenerator(async ({ artifacts, root }) => {
+  const dsql = await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+    executionDir: "src/generated/dsql/queries.server",
+  });
+
+  return dsql;
+});
+```
+
+Returned metadata should include the query barrel module, generated files,
+operation modules, execution modules, and scope name when generation is scoped.
+Single-scope projects may still use a static generated module in a host plugin.
+Multi-scope transforms require returned render metadata so each source file can
+import from the generated barrel for its owning resolution scope.
+
+## Runtime Result Contract
+
+Generated result types describe the public DSQL output shape. Runtime execution
+must return values with those same public keys.
+
+Internal SQL aliases are compiler implementation details. They may be hashed or
+shortened for PostgreSQL identifier safety, but they must not leak into the
+object returned to user code.
+
+For a root selection such as:
+
+```dsql
+query FeaturedMovie {
+  movie_info_idx(limit 1) {
+    id
+  }
+}
+```
+
+the runtime-facing result must be shaped like:
+
+```ts
+{
+  movie_info_idx: [{ id: 1 }]
+}
+```
+
+not:
+
+```ts
+{
+  movie_info_idx_result_1b1fd7c6: [{ id: 1 }]
+}
+```
+
+The implementation may satisfy this contract by making root SQL result column
+aliases equal to validated public output keys, or by carrying explicit metadata
+that maps internal root SQL columns back to public DSQL output keys before
+returning data to generated clients. Nested relation SQL aliases should remain
+internal and continue to be hidden behind JSON object keys selected by the DSQL
+query shape.
 
 ## Embedded Language Tooling
 
