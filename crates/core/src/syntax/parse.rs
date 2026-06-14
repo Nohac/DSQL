@@ -3,6 +3,9 @@ use super::diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity}
 use super::grammar::lexer::Token;
 use super::grammar::parser::{Cst, Node, NodeRef, Parser, Rule};
 use super::{SourceFile, SourceSnapshot, TextRange};
+use crate::diagnostics::{
+    CompilerDiagnostic, CompilerDiagnosticSource, extend_compiler_diagnostics,
+};
 use facet::Facet;
 
 #[derive(Clone, Debug)]
@@ -11,6 +14,12 @@ pub struct ParseResult {
     pub tree: SyntaxTree,
     pub source_file: SourceFile,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+impl CompilerDiagnosticSource for ParseResult {
+    fn extend_compiler_diagnostics(&self, diagnostics: &mut Vec<CompilerDiagnostic>) {
+        extend_compiler_diagnostics(diagnostics, self.diagnostics.iter().cloned());
+    }
 }
 
 #[derive(Clone, Debug, Facet)]

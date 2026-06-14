@@ -1,6 +1,6 @@
 # Replace stringly generation errors with structured diagnostics
 
-**ID:** 9e976f91 | **Status:** Open | **Created:** 2026-06-14T17:55:00+02:00
+**ID:** 9e976f91 | **Status:** Done | **Created:** 2026-06-14T17:55:00+02:00
 
 ## Summary
 

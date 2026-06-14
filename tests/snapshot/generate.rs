@@ -184,6 +184,96 @@ async fn generate_project_rejects_local_import_fragment_collisions() {
 }
 
 #[tokio::test]
+async fn generate_project_artifacts_returns_structured_language_diagnostics() {
+    let _guard = generate_test_lock().await;
+    let project = tempfile::tempdir().unwrap();
+    create_project_fixture(project.path(), "");
+    let long_alias =
+        "this_alias_name_is_far_longer_than_postgresql_allows_for_identifiers_and_should_shrink";
+    fs::write(
+        project.path().join("queries/movie-info.dsql"),
+        format!(
+            r#"query MovieInfoLookup {{
+  {long_alias}: movie_info {{
+    id
+  }}
+}}
+"#
+        ),
+    )
+    .unwrap();
+
+    let error = dsql_generate::generate_project_artifacts_from(project.path())
+        .expect_err("long output key should fail generation");
+    let dsql_generate::GenerateError::LanguageDiagnostics {
+        diagnostics,
+        errors,
+    } = error
+    else {
+        panic!("expected structured language diagnostics");
+    };
+
+    assert!(
+        errors.is_empty(),
+        "unexpected generation errors: {errors:?}"
+    );
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.diagnostic.code == dsql_core::DiagnosticCode::OutputKeyTooLong
+        })
+        .expect("missing output key diagnostic");
+    assert_eq!(
+        diagnostic.file,
+        project.path().join("queries/movie-info.dsql")
+    );
+    assert_eq!(diagnostic.source_offset, 0);
+    assert_eq!(
+        diagnostic.diagnostic.source,
+        dsql_core::DiagnosticSource::Check
+    );
+    assert_eq!(diagnostic.diagnostic.severity, dsql_core::Severity::Error);
+    assert!(diagnostic.diagnostic.message.contains(long_alias));
+}
+
+#[tokio::test]
+async fn generate_project_artifacts_reports_embedded_host_ranges() {
+    let _guard = generate_test_lock().await;
+    let project = tempfile::tempdir().unwrap();
+    create_embedded_project_fixture(project.path());
+    let long_alias =
+        "this_alias_name_is_far_longer_than_postgresql_allows_for_identifiers_and_should_shrink";
+    let source = format!(
+        r#"import {{ dsql }} from "@dsql/typescript";
+
+export const MovieInfo = dsql(`
+  query EmbeddedMovieInfoLookup {{
+    {long_alias}: movie_info {{
+      id
+    }}
+  }}
+`);
+"#
+    );
+    fs::write(project.path().join("src/movie-info.ts"), &source).unwrap();
+
+    let error = dsql_generate::generate_project_artifacts_from(project.path())
+        .expect_err("embedded long output key should fail generation");
+    let dsql_generate::GenerateError::LanguageDiagnostics { diagnostics, .. } = error else {
+        panic!("expected structured language diagnostics");
+    };
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.diagnostic.code == dsql_core::DiagnosticCode::OutputKeyTooLong
+        })
+        .expect("missing output key diagnostic");
+    let host_start = diagnostic.source_offset + diagnostic.diagnostic.range.start;
+    assert_eq!(diagnostic.file, project.path().join("src/movie-info.ts"));
+    assert_eq!(host_start as usize, source.find(long_alias).unwrap());
+}
+
+#[tokio::test]
 async fn generate_project_writes_fragment_artifacts() {
     let _guard = generate_test_lock().await;
     let project = tempfile::tempdir().unwrap();
@@ -1246,6 +1336,30 @@ async fn generate_project_rejects_ambiguous_anonymous_variables() {
     let error = dsql_generate::generate_project_from(project.path())
         .await
         .expect_err("ambiguous anonymous variables should fail generation");
+    let dsql_generate::GenerateError::LanguageDiagnostics {
+        diagnostics,
+        errors,
+    } = &error
+    else {
+        panic!("expected structured language diagnostics");
+    };
+    assert!(
+        diagnostics.is_empty(),
+        "unexpected diagnostics: {diagnostics:?}"
+    );
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].kind,
+        dsql_generate::ValidationErrorKind::DuplicateAnonymousVariable
+    );
+    assert_eq!(
+        errors[0].file,
+        Some(project.path().join("queries/movie-info.dsql"))
+    );
+    assert!(
+        errors[0].range.is_some(),
+        "error should point at the later variable"
+    );
     let message = error.to_string();
     assert!(
         message.contains("multiple anonymous variables")

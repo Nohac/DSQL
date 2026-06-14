@@ -3,10 +3,14 @@ use crate::{
     lint::LintDiagnostic,
     plan::PlanDiagnostic,
     semantic::{CheckDiagnostic, LowerDiagnostic},
-    syntax::{Diagnostic, DiagnosticCode, DiagnosticSource, ParseResult, Severity, TextRange},
+    syntax::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity, TextRange},
 };
 use enum_dispatch::enum_dispatch;
 use facet::Facet;
+
+pub trait CompilerDiagnosticSource {
+    fn extend_compiler_diagnostics(&self, diagnostics: &mut Vec<CompilerDiagnostic>);
+}
 
 #[enum_dispatch(CompilerDiagnostic)]
 pub trait DsqlDiagnostic: std::error::Error + miette::Diagnostic {
@@ -94,44 +98,26 @@ impl miette::Diagnostic for CompilerDiagnostic {
     }
 }
 
-pub fn collect_file_compiler_diagnostics(
-    parse: &ParseResult,
-    lower: &crate::LoweredFile,
-    check: &crate::CheckedFile,
-    lint: &crate::LintedFile,
-) -> Vec<CompilerDiagnostic> {
-    let mut diagnostics = Vec::new();
-    extend_compiler_diagnostics(&mut diagnostics, parse.diagnostics.iter().cloned());
-    extend_compiler_diagnostics(&mut diagnostics, lower.diagnostics.iter().cloned());
-    extend_compiler_diagnostics(&mut diagnostics, check.diagnostics.iter().cloned());
-    extend_compiler_diagnostics(&mut diagnostics, lint.diagnostics.iter().cloned());
-    sort_compiler_diagnostics(&mut diagnostics);
-    diagnostics
-}
-
 pub fn collect_query_compiler_diagnostics(
     checked: &crate::CheckedDefinition,
     linted: &crate::LintedDefinition,
     planned: &crate::PlannedFile,
 ) -> Vec<CompilerDiagnostic> {
-    let mut diagnostics = Vec::new();
-    extend_compiler_diagnostics(&mut diagnostics, checked.diagnostics.iter().cloned());
-    extend_compiler_diagnostics(&mut diagnostics, linted.diagnostics.iter().cloned());
-    extend_compiler_diagnostics(&mut diagnostics, planned.diagnostics.iter().cloned());
-    sort_compiler_diagnostics(&mut diagnostics);
-    diagnostics
+    collect_compiler_diagnostic_sources(&[checked, linted, planned])
 }
 
-pub fn collect_checked_compiler_diagnostics(
-    checked: &crate::CheckedDefinition,
+pub fn collect_compiler_diagnostic_sources(
+    sources: &[&dyn CompilerDiagnosticSource],
 ) -> Vec<CompilerDiagnostic> {
     let mut diagnostics = Vec::new();
-    extend_compiler_diagnostics(&mut diagnostics, checked.diagnostics.iter().cloned());
+    for source in sources {
+        source.extend_compiler_diagnostics(&mut diagnostics);
+    }
     sort_compiler_diagnostics(&mut diagnostics);
     diagnostics
 }
 
-pub fn extend_compiler_diagnostics<T>(
+pub(crate) fn extend_compiler_diagnostics<T>(
     diagnostics: &mut Vec<CompilerDiagnostic>,
     values: impl IntoIterator<Item = T>,
 ) where

@@ -16,8 +16,14 @@ pub type Result<T> = std::result::Result<T, GenerateError>;
 pub enum GenerateError {
     #[error("no dsql documents found in project {project}")]
     NoDocuments { project: String },
-    #[error("cannot generate while diagnostics contain errors\n{details}")]
-    LanguageDiagnostics { details: String },
+    #[error(
+        "cannot generate while diagnostics contain errors{}",
+        language_diagnostics_details(diagnostics, errors)
+    )]
+    LanguageDiagnostics {
+        diagnostics: Vec<pipeline::ValidationDiagnostic>,
+        errors: Vec<pipeline::ValidationError>,
+    },
     #[error("artifact write failed: {0}")]
     Artifact(#[from] ArtifactError),
     #[error("external generator failed: {0}")]
@@ -34,6 +40,52 @@ impl From<miette::Report> for GenerateError {
     fn from(error: miette::Report) -> Self {
         Self::Other(error.to_string())
     }
+}
+
+impl From<pipeline::ValidationError> for GenerateError {
+    fn from(error: pipeline::ValidationError) -> Self {
+        Self::LanguageDiagnostics {
+            diagnostics: Vec::new(),
+            errors: vec![error],
+        }
+    }
+}
+
+fn language_diagnostics_details(
+    diagnostics: &[pipeline::ValidationDiagnostic],
+    errors: &[pipeline::ValidationError],
+) -> String {
+    let mut details = String::new();
+    for diagnostic in diagnostics {
+        let start = diagnostic.source_offset + diagnostic.diagnostic.range.start;
+        let end = diagnostic.source_offset + diagnostic.diagnostic.range.end;
+        details.push_str(&format!(
+            "\n{} {:?} {:?} {}..{}: {}",
+            diagnostic.file.display(),
+            diagnostic.diagnostic.source,
+            diagnostic.diagnostic.code,
+            start,
+            end,
+            diagnostic.diagnostic.message
+        ));
+    }
+    for error in errors {
+        if let (Some(file), Some(range), Some(source_offset)) =
+            (&error.file, error.range, error.source_offset)
+        {
+            details.push_str(&format!(
+                "\n{} Generate {:?} {}..{}: {}",
+                file.display(),
+                error.kind,
+                source_offset + range.start,
+                source_offset + range.end,
+                error.message
+            ));
+        } else {
+            details.push_str(&format!("\nGenerate {:?}: {}", error.kind, error.message));
+        }
+    }
+    details
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -74,7 +126,8 @@ impl miette::Diagnostic for GeneratorError {}
 
 pub use pipeline::{
     GenerateOptions, GenerateOutput, GeneratedArtifactGroup, GeneratedArtifacts,
-    GeneratedFragmentArtifact, GeneratedOperationArtifact, ValidationDiagnostic, ValidationOutput,
+    GeneratedFragmentArtifact, GeneratedOperationArtifact, ValidationDiagnostic, ValidationError,
+    ValidationErrorKind, ValidationOutput,
 };
 
 #[cfg(all(feature = "fs", feature = "process"))]

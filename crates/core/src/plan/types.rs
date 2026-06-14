@@ -1,6 +1,8 @@
 use crate::{
     catalog::{ColumnId, ForeignKeyId, TableId, TableKey},
-    diagnostics::DsqlDiagnostic,
+    diagnostics::{
+        CompilerDiagnostic, CompilerDiagnosticSource, DsqlDiagnostic, extend_compiler_diagnostics,
+    },
     syntax::{BinaryOp, DiagnosticCode, DiagnosticSource, Severity, TextRange, source_span},
 };
 use facet::Facet;
@@ -11,6 +13,12 @@ use std::fmt;
 pub struct PlannedFile {
     pub queries: Vec<QueryPlan>,
     pub diagnostics: Vec<PlanDiagnostic>,
+}
+
+impl CompilerDiagnosticSource for PlannedFile {
+    fn extend_compiler_diagnostics(&self, diagnostics: &mut Vec<CompilerDiagnostic>) {
+        extend_compiler_diagnostics(diagnostics, self.diagnostics.iter().cloned());
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet, thiserror::Error)]

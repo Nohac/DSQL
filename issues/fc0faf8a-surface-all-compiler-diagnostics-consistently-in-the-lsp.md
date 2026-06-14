@@ -1,6 +1,6 @@
 # Surface all compiler diagnostics consistently in the LSP
 
-**ID:** fc0faf8a | **Status:** Open | **Created:** 2026-06-14T17:55:00+02:00
+**ID:** fc0faf8a | **Status:** Done | **Created:** 2026-06-14T17:55:00+02:00
 
 ## Summary
 

@@ -1,9 +1,9 @@
 use dsql_core::{
-    Catalog, CompilerDiagnostic, DefinitionRecord, DefinitionResolver, Diagnostic, DsqlDiagnostic,
-    FieldCheckResult, FragmentMap, FragmentRecord, InputPathSegment, QueryPlan, QueryRecord,
-    Selection, SelectionClauses, SelectionKind, SelectionPlan, SelectionPlanItem, Severity,
-    SourceSnapshot, SqlValue, TableId, VariableBinding, check_fragment_definition,
-    check_query_definition, collect_checked_compiler_diagnostics,
+    Catalog, DefinitionRecord, DefinitionResolver, Diagnostic, DsqlDiagnostic, FieldCheckResult,
+    FragmentMap, FragmentRecord, InputPathSegment, QueryPlan, QueryRecord, Selection,
+    SelectionClauses, SelectionKind, SelectionPlan, SelectionPlanItem, Severity, SourceSnapshot,
+    SqlValue, TableId, TextRange, VariableBinding, check_fragment_definition,
+    check_query_definition, collect_compiler_diagnostic_sources,
     collect_query_compiler_diagnostics, duplicate_fragment_errors, extract_definitions,
     generate_postgres_sql_with_options, infer_fragment_variable_bindings,
     infer_query_variable_bindings, is_input_path, is_params_path,
@@ -67,7 +67,7 @@ pub struct ValidationOutput {
     pub document_count: usize,
     pub query_count: usize,
     pub diagnostics: Vec<ValidationDiagnostic>,
-    pub errors: Vec<String>,
+    pub errors: Vec<ValidationError>,
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +75,52 @@ pub struct ValidationDiagnostic {
     pub file: PathBuf,
     pub source_offset: u32,
     pub diagnostic: Diagnostic,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidationError {
+    pub kind: ValidationErrorKind,
+    pub message: String,
+    pub file: Option<PathBuf>,
+    pub source_offset: Option<u32>,
+    pub range: Option<TextRange>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ValidationErrorKind {
+    AnonymousQuery,
+    DuplicateAnonymousVariable,
+    DuplicateQuery,
+    CyclicResolutionImport,
+    UnknownResolutionImport,
+}
+
+impl ValidationError {
+    fn project(kind: ValidationErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            file: None,
+            source_offset: None,
+            range: None,
+        }
+    }
+
+    fn source(
+        kind: ValidationErrorKind,
+        message: impl Into<String>,
+        file: impl Into<PathBuf>,
+        source_offset: u32,
+        range: TextRange,
+    ) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            file: Some(file.into()),
+            source_offset: Some(source_offset),
+            range: Some(range),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -336,7 +382,7 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
     let mut queries = Vec::<LoadedQuery>::new();
     let mut loaded_fragments = Vec::<LoadedFragment>::new();
     let mut diagnostics = Vec::<ValidationDiagnostic>::new();
-    let mut errors = Vec::<String>::new();
+    let mut errors = Vec::<ValidationError>::new();
 
     for document in &input.documents {
         let parsed = parse_source(SourceSnapshot::from_string(document.text.clone()));
@@ -383,28 +429,27 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
                             .map(|diagnostic| fragment_validation_diagnostic(fragment, diagnostic)),
                     );
                 }
-                diagnostics.extend(
-                    duplicate_fragment_errors(&fragments)
-                        .into_iter()
-                        .filter_map(|diagnostic| {
-                            scope
-                                .fragments
-                                .iter()
-                                .find(|fragment| {
-                                    fragment.fragment.key.name.as_str()
-                                        == match &diagnostic.kind {
-                                            dsql_core::CheckDiagnosticKind::DuplicateFragment {
-                                                name,
-                                            } => name.as_str(),
-                                            _ => return false,
-                                        }
-                                        && fragment.fragment.name_range == diagnostic.range
-                                })
-                                .map(|fragment| {
-                                    fragment_validation_diagnostic(fragment, diagnostic)
-                                })
-                        }),
-                );
+                diagnostics.extend(duplicate_fragment_validation_diagnostics(
+                    &scope, &fragments,
+                ));
+
+                for fragment in &scope.fragments {
+                    let variables = infer_fragment_variable_bindings(
+                        &fragment.fragment,
+                        &fragments,
+                        &input.catalog,
+                    )
+                    .bindings;
+                    if let Err(error) = validate_variable_bindings(
+                        DefinitionKind::Fragment,
+                        &fragment.fragment.key.name,
+                        &fragment.file,
+                        fragment.source_offset,
+                        &variables,
+                    ) {
+                        errors.push(error);
+                    }
+                }
 
                 for query in &scope.queries {
                     let checked = check_query_definition(&query.query, &fragments, &input.catalog);
@@ -435,31 +480,61 @@ pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
                         let variables =
                             infer_query_variable_bindings(&query.query, &fragments, &input.catalog)
                                 .bindings;
-                        if let Err(error) = validate_variable_bindings(query_name, &variables) {
-                            errors.push(error.to_string());
+                        if let Err(error) = validate_variable_bindings(
+                            DefinitionKind::Query,
+                            query_name,
+                            &query.file,
+                            query.source_offset,
+                            &variables,
+                        ) {
+                            errors.push(error);
                         }
                     } else {
-                        errors.push("anonymous queries cannot be generated".to_string());
+                        errors.push(anonymous_query_error(query));
                     }
                 }
             }
         }
-        Err(error) => errors.push(error.to_string()),
+        Err(error) => errors.push(error),
     }
 
-    diagnostics.sort_by(|left, right| {
-        left.file.cmp(&right.file).then(
-            (left.source_offset + left.diagnostic.range.start)
-                .cmp(&(right.source_offset + right.diagnostic.range.start)),
-        )
-    });
-    errors.sort();
+    sort_validation_diagnostics(&mut diagnostics);
+    sort_validation_errors(&mut errors);
     ValidationOutput {
         document_count: input.documents.len(),
         query_count,
         diagnostics,
         errors,
     }
+}
+
+fn sort_validation_diagnostics(diagnostics: &mut [ValidationDiagnostic]) {
+    diagnostics.sort_by(|left, right| {
+        left.file.cmp(&right.file).then(
+            (left.source_offset + left.diagnostic.range.start)
+                .cmp(&(right.source_offset + right.diagnostic.range.start)),
+        )
+    });
+}
+
+fn sort_validation_errors(errors: &mut [ValidationError]) {
+    errors.sort_by(|left, right| {
+        left.file
+            .cmp(&right.file)
+            .then(
+                left.source_offset
+                    .unwrap_or_default()
+                    .cmp(&right.source_offset.unwrap_or_default()),
+            )
+            .then(
+                left.range
+                    .map(|range| range.start)
+                    .unwrap_or_default()
+                    .cmp(&right.range.map(|range| range.start).unwrap_or_default()),
+            )
+            .then(left.kind.cmp(&right.kind))
+            .then(left.message.cmp(&right.message))
+    });
 }
 
 fn validation_diagnostic(
@@ -495,6 +570,41 @@ fn fragment_validation_diagnostic(
     }
 }
 
+fn duplicate_fragment_validation_diagnostics(
+    scope: &ScopeDefinitions,
+    fragments: &FragmentMap,
+) -> Vec<ValidationDiagnostic> {
+    duplicate_fragment_errors(fragments)
+        .into_iter()
+        .filter_map(|diagnostic| {
+            scope
+                .fragments
+                .iter()
+                .find(|fragment| {
+                    fragment.fragment.key.name.as_str()
+                        == match &diagnostic.kind {
+                            dsql_core::CheckDiagnosticKind::DuplicateFragment { name } => {
+                                name.as_str()
+                            }
+                            _ => return false,
+                        }
+                        && fragment.fragment.name_range == diagnostic.range
+                })
+                .map(|fragment| fragment_validation_diagnostic(fragment, diagnostic))
+        })
+        .collect()
+}
+
+fn anonymous_query_error(query: &LoadedQuery) -> ValidationError {
+    ValidationError::source(
+        ValidationErrorKind::AnonymousQuery,
+        "anonymous queries cannot be generated",
+        query.file.clone(),
+        query.source_offset,
+        query.query.name_range.unwrap_or(query.query.range),
+    )
+}
+
 #[derive(Clone, Debug)]
 struct BuiltArtifacts {
     operations: Vec<OperationArtifact>,
@@ -512,13 +622,21 @@ struct BuiltArtifactGroup {
 }
 
 fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
+    fail_on_validation_output(validate_project(input.clone()))?;
+
     let mut queries = Vec::<LoadedQuery>::new();
     let mut loaded_fragments = Vec::<LoadedFragment>::new();
-    let mut parse_diagnostics = Vec::<CompilerDiagnostic>::new();
+    let mut parse_diagnostics = Vec::<ValidationDiagnostic>::new();
 
     for document in &input.documents {
         let parsed = parse_source(SourceSnapshot::from_string(document.text.clone()));
-        parse_diagnostics.extend(parsed.diagnostics.clone().into_iter().map(Into::into));
+        parse_diagnostics.extend(
+            parsed
+                .diagnostics
+                .clone()
+                .into_iter()
+                .map(|diagnostic| validation_diagnostic(document, diagnostic)),
+        );
         let extracted = extract_definitions(&parsed.source_file);
         for definition in extracted.definitions {
             match definition {
@@ -550,12 +668,9 @@ fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
     let mut emitted_flat_fragments = HashSet::new();
     for scope in scopes {
         let fragments = scope.fragment_map();
-        fail_on_error_diagnostics(
-            duplicate_fragment_errors(&fragments)
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        )?;
+        fail_on_error_diagnostics(duplicate_fragment_validation_diagnostics(
+            &scope, &fragments,
+        ))?;
 
         let mut fragment_artifacts = Vec::new();
         for fragment in &scope.fragments {
@@ -608,7 +723,7 @@ fn scope_definitions(
     input: &GenerateInput,
     queries: Vec<LoadedQuery>,
     fragments: Vec<LoadedFragment>,
-) -> Result<Vec<ScopeDefinitions>> {
+) -> std::result::Result<Vec<ScopeDefinitions>, ValidationError> {
     let mut locals = scope_locals(input);
     for query in queries {
         locals
@@ -669,18 +784,22 @@ fn append_imported_scope_definitions(
     locals: &BTreeMap<String, ScopeDefinitions>,
     scope: &mut ScopeDefinitions,
     visiting: &mut BTreeSet<String>,
-) -> Result<()> {
+) -> std::result::Result<(), ValidationError> {
     if !visiting.insert(name.to_string()) {
-        return Err(miette::miette!("cyclic resolution import involving `{name}`").into());
+        return Err(ValidationError::project(
+            ValidationErrorKind::CyclicResolutionImport,
+            format!("cyclic resolution import involving `{name}`"),
+        ));
     }
     for import in scope.imports.clone() {
         let Some(imported) = locals.get(&import) else {
-            return Err(miette::miette!(
-                "resolution map `{}` imports unknown resolution map `{}`",
-                scope.name,
-                import
-            )
-            .into());
+            return Err(ValidationError::project(
+                ValidationErrorKind::UnknownResolutionImport,
+                format!(
+                    "resolution map `{}` imports unknown resolution map `{}`",
+                    scope.name, import
+                ),
+            ));
         };
         let mut effective_import = imported.clone();
         append_imported_scope_definitions(&import, locals, &mut effective_import, visiting)?;
@@ -690,19 +809,25 @@ fn append_imported_scope_definitions(
     Ok(())
 }
 
-fn validate_duplicate_query_names(scope: &ScopeDefinitions) -> Result<()> {
+fn validate_duplicate_query_names(
+    scope: &ScopeDefinitions,
+) -> std::result::Result<(), ValidationError> {
     let mut seen = HashMap::<&str, &LoadedQuery>::new();
     for query in &scope.queries {
         let Some(name) = query.query.key.name.as_deref() else {
             continue;
         };
         if seen.insert(name, query).is_some() {
-            return Err(miette::miette!(
-                "duplicate query `{}` in resolution map `{}`",
-                name,
-                scope.name
-            )
-            .into());
+            return Err(ValidationError::source(
+                ValidationErrorKind::DuplicateQuery,
+                format!(
+                    "duplicate query `{}` in resolution map `{}`",
+                    name, scope.name
+                ),
+                query.file.clone(),
+                query.source_offset,
+                query.query.name_range.unwrap_or(query.query.range),
+            ));
         }
     }
     Ok(())
@@ -751,18 +876,27 @@ fn build_query_operations(
     );
     let planned = plan_query_definition(&query.query, fragments, catalog);
 
-    fail_on_error_diagnostics(collect_query_compiler_diagnostics(
-        &checked, &linted, &planned,
-    ))?;
+    fail_on_error_diagnostics(
+        collect_query_compiler_diagnostics(&checked, &linted, &planned)
+            .into_iter()
+            .map(|diagnostic| query_validation_diagnostic(query, diagnostic))
+            .collect(),
+    )?;
 
     let query_name = query
         .query
         .key
         .name
         .as_deref()
-        .ok_or_else(|| miette::miette!("anonymous queries cannot be generated"))?;
+        .ok_or_else(|| GenerateError::from(anonymous_query_error(query)))?;
     let variables = infer_query_variable_bindings(&query.query, fragments, catalog).bindings;
-    validate_variable_bindings(query_name, &variables)?;
+    validate_variable_bindings(
+        DefinitionKind::Query,
+        query_name,
+        &query.file,
+        query.source_offset,
+        &variables,
+    )?;
     let mut operations = Vec::new();
     for (index, plan) in planned.queries.iter().enumerate() {
         let generated = generate_postgres_sql_with_options(
@@ -844,7 +978,12 @@ fn build_fragment_artifact(
     fragment: &LoadedFragment,
 ) -> Result<FragmentArtifact> {
     let checked = check_fragment_definition(&fragment.fragment, fragments, catalog);
-    fail_on_error_diagnostics(collect_checked_compiler_diagnostics(&checked))?;
+    fail_on_error_diagnostics(
+        collect_compiler_diagnostic_sources(&[&checked])
+            .into_iter()
+            .map(|diagnostic| fragment_validation_diagnostic(fragment, diagnostic))
+            .collect(),
+    )?;
     let fragment_name = &fragment.fragment.key.name;
     let plan = plan_fragment_definition(&fragment.fragment, fragments, catalog)
         .ok_or_else(|| miette::miette!("fragment `{fragment_name}` cannot be planned"))?;
@@ -854,7 +993,13 @@ fn build_fragment_artifact(
         .ok_or_else(|| miette::miette!("missing fragment table for `{fragment_name}`"))?;
     let variables =
         infer_fragment_variable_bindings(&fragment.fragment, fragments, catalog).bindings;
-    validate_variable_bindings(fragment_name, &variables)?;
+    validate_variable_bindings(
+        DefinitionKind::Fragment,
+        fragment_name,
+        &fragment.file,
+        fragment.source_offset,
+        &variables,
+    )?;
     let metadata = FragmentMetadata {
         name: fragment_name.clone(),
         kind: DefinitionKind::Fragment.as_ref().to_string(),
@@ -949,15 +1094,27 @@ fn collect_fragment_spread_metadata(
     }
 }
 
-fn validate_variable_bindings(query_name: &str, variables: &[VariableBinding]) -> Result<()> {
+fn validate_variable_bindings(
+    definition_kind: DefinitionKind,
+    definition_name: &str,
+    file: &Path,
+    source_offset: u32,
+    variables: &[VariableBinding],
+) -> std::result::Result<(), ValidationError> {
     let mut anonymous_paths = HashMap::<&str, &VariableBinding>::new();
     for binding in variables.iter().filter(|binding| binding.name.is_none()) {
         if let Some(previous) = anonymous_paths.insert(&binding.path, binding) {
-            return Err(miette::miette!(
-                "query `{query_name}` has multiple anonymous variables for `{}`; name one of them to disambiguate",
-                previous.path
-            )
-            .into());
+            return Err(ValidationError::source(
+                ValidationErrorKind::DuplicateAnonymousVariable,
+                format!(
+                    "{} `{definition_name}` has multiple anonymous variables for `{}`; name one of them to disambiguate",
+                    definition_kind.as_ref(),
+                    previous.path
+                ),
+                file.to_path_buf(),
+                source_offset,
+                binding.range,
+            ));
         }
     }
     Ok(())
@@ -992,31 +1149,36 @@ fn manifest_from_written_artifacts(
     }
 }
 
-fn fail_on_error_diagnostics(mut diagnostics: Vec<CompilerDiagnostic>) -> Result<()> {
-    diagnostics.sort_by_key(|diagnostic| {
-        let range = DsqlDiagnostic::range(diagnostic);
-        (range.start, range.end)
-    });
+fn fail_on_error_diagnostics(mut diagnostics: Vec<ValidationDiagnostic>) -> Result<()> {
+    sort_validation_diagnostics(&mut diagnostics);
     let errors = diagnostics
         .into_iter()
-        .filter(|diagnostic| DsqlDiagnostic::severity(diagnostic) == Severity::Error)
+        .filter(|diagnostic| diagnostic.diagnostic.severity == Severity::Error)
         .collect::<Vec<_>>();
     if errors.is_empty() {
         return Ok(());
     }
 
-    let mut details = String::new();
-    for diagnostic in errors {
-        details.push_str(&format!(
-            "\n{:?} {:?} {}..{}: {}",
-            DsqlDiagnostic::source(&diagnostic),
-            DsqlDiagnostic::code(&diagnostic),
-            DsqlDiagnostic::range(&diagnostic).start,
-            DsqlDiagnostic::range(&diagnostic).end,
-            diagnostic
-        ));
+    Err(GenerateError::LanguageDiagnostics {
+        diagnostics: errors,
+        errors: Vec::new(),
+    })
+}
+
+fn fail_on_validation_output(validation: ValidationOutput) -> Result<()> {
+    let diagnostics = validation
+        .diagnostics
+        .into_iter()
+        .filter(|diagnostic| diagnostic.diagnostic.severity == Severity::Error)
+        .collect::<Vec<_>>();
+    if diagnostics.is_empty() && validation.errors.is_empty() {
+        return Ok(());
     }
-    Err(GenerateError::LanguageDiagnostics { details })
+
+    Err(GenerateError::LanguageDiagnostics {
+        diagnostics,
+        errors: validation.errors,
+    })
 }
 
 fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {

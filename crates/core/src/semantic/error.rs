@@ -1,6 +1,8 @@
 use crate::{
     catalog::{DataType, LiteralKind, TableKey},
-    diagnostics::DsqlDiagnostic,
+    diagnostics::{
+        CompilerDiagnostic, CompilerDiagnosticSource, DsqlDiagnostic, extend_compiler_diagnostics,
+    },
     syntax::{DiagnosticCode, DiagnosticSource, Severity, TextRange, source_span},
 };
 use facet::Facet;
@@ -11,6 +13,12 @@ use std::fmt;
 pub struct CheckedFile {
     pub errors: Vec<CheckDiagnostic>,
     pub diagnostics: Vec<CheckDiagnostic>,
+}
+
+impl CompilerDiagnosticSource for CheckedFile {
+    fn extend_compiler_diagnostics(&self, diagnostics: &mut Vec<CompilerDiagnostic>) {
+        extend_compiler_diagnostics(diagnostics, self.diagnostics.iter().cloned());
+    }
 }
 
 pub type CheckedDefinition = CheckedFile;

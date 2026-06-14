@@ -1,5 +1,7 @@
 use crate::{
-    diagnostics::DsqlDiagnostic,
+    diagnostics::{
+        CompilerDiagnostic, CompilerDiagnosticSource, DsqlDiagnostic, extend_compiler_diagnostics,
+    },
     syntax::{
         Argument, Definition, DiagnosticCode, DiagnosticSource, Document, Expr, FragmentDef,
         Literal, QueryDef, Selection, Severity, SourceFile, TextRange, source_span,
@@ -52,6 +54,12 @@ pub struct NameIndex {
 pub struct LoweredFile {
     pub names: NameIndex,
     pub diagnostics: Vec<LowerDiagnostic>,
+}
+
+impl CompilerDiagnosticSource for LoweredFile {
+    fn extend_compiler_diagnostics(&self, diagnostics: &mut Vec<CompilerDiagnostic>) {
+        extend_compiler_diagnostics(diagnostics, self.diagnostics.iter().cloned());
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet, thiserror::Error)]

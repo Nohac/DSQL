@@ -2,8 +2,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use dsql_core::{
     Catalog, CompilerDiagnostic, DefinitionRecord, Diagnostic, DsqlDiagnostic, FragmentMap,
     QueryRecord, SourceSnapshot, TextRange, check_query_definition,
-    collect_query_compiler_diagnostics, extract_definitions, lint_query_definition_with_options,
-    parse_source, plan_query_definition, sort_compiler_diagnostics,
+    collect_compiler_diagnostic_sources, collect_query_compiler_diagnostics, extract_definitions,
+    lint_query_definition_with_options, parse_source, plan_query_definition,
+    sort_compiler_diagnostics,
 };
 use dsql_frontend::AnalysisHost;
 use miette::{IntoDiagnostic, NamedSource, Result};
@@ -404,7 +405,13 @@ fn load_project_settings_for_path(path: &Path) -> (Catalog, dsql_core::LintOptio
 fn print_analysis_diagnostics(path: &Path, analysis: &dsql_frontend::AnalysisResult) {
     let source_name = path.display().to_string();
     let source_text = analysis.parse.source.to_arc_str().to_string();
-    let diagnostics = dsql_frontend::collect_compiler_diagnostics(analysis);
+    let diagnostics = collect_compiler_diagnostic_sources(&[
+        &analysis.parse,
+        &analysis.lower,
+        &analysis.check,
+        &analysis.lint,
+        &analysis.plan,
+    ]);
     for diagnostic in diagnostics {
         print_miette_diagnostic(source_name.clone(), source_text.clone(), diagnostic);
     }
@@ -432,7 +439,7 @@ fn print_validation_output(validation: &dsql_generate::ValidationOutput) {
         );
     }
     for error in &validation.errors {
-        eprintln!("error: {error}");
+        print_validation_error(error);
     }
     if validation.diagnostics.is_empty() && validation.errors.is_empty() {
         println!(
@@ -445,6 +452,23 @@ fn print_validation_output(validation: &dsql_generate::ValidationOutput) {
                 "ies"
             }
         );
+    }
+}
+
+fn print_validation_error(error: &dsql_generate::ValidationError) {
+    if let (Some(file), Some(source_offset), Some(range)) =
+        (&error.file, error.source_offset, error.range)
+    {
+        eprintln!(
+            "error: {} {:?} {}..{}: {}",
+            file.display(),
+            error.kind,
+            source_offset + range.start,
+            source_offset + range.end,
+            error.message
+        );
+    } else {
+        eprintln!("error: {:?}: {}", error.kind, error.message);
     }
 }
 

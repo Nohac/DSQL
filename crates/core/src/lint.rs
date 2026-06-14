@@ -1,7 +1,9 @@
 use crate::{
     catalog::{Catalog, FieldCheckResult, ForeignKey, RelationField, TableId, TableResolution},
     definition::{FragmentMap, FragmentRecord, QueryRecord},
-    diagnostics::DsqlDiagnostic,
+    diagnostics::{
+        CompilerDiagnostic, CompilerDiagnosticSource, DsqlDiagnostic, extend_compiler_diagnostics,
+    },
     syntax::{
         Clause, Definition, DiagnosticCode, DiagnosticSource, Expr, ScopedPath, ScopedPathSegment,
         Selection, SelectionKind, Severity, SourceFile, TextRange, source_span,
@@ -14,6 +16,12 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct LintedFile {
     pub diagnostics: Vec<LintDiagnostic>,
+}
+
+impl CompilerDiagnosticSource for LintedFile {
+    fn extend_compiler_diagnostics(&self, diagnostics: &mut Vec<CompilerDiagnostic>) {
+        extend_compiler_diagnostics(diagnostics, self.diagnostics.iter().cloned());
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet, thiserror::Error)]

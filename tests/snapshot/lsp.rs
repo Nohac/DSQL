@@ -375,6 +375,66 @@ export const MovieInfo = dsql(`
 }
 
 #[tokio::test]
+async fn lsp_diagnostics_include_embedded_output_key_length_errors() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let uri = "file:///tests/src/movie-info.tsx".to_string();
+    let long_alias =
+        "this_alias_name_is_far_longer_than_postgresql_allows_for_identifiers_and_should_shrink";
+    let source = format!(
+        r#"import {{ dsql }} from "@dsql/typescript";
+
+export const MovieInfo = dsql(`
+  query EmbeddedMovieInfoLookup {{
+    {long_alias}: movie_info {{
+      id
+    }}
+  }}
+`);
+"#
+    );
+
+    let diagnostics = host.open_document(uri, 1, source.clone()).await;
+    let diagnostic = diagnostics
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == dsql_core::DiagnosticCode::OutputKeyTooLong)
+        .expect("embedded long output key should produce a mapped diagnostic");
+
+    let expected_start = source.find(long_alias).unwrap();
+    let expected_end = expected_start + long_alias.len();
+    assert_eq!(
+        diagnostic.range,
+        dsql_core::TextRange::new(expected_start, expected_end)
+    );
+}
+
+#[tokio::test]
+async fn lsp_diagnostics_include_duplicate_fragments() {
+    let host = AnalysisHost::new();
+    host.set_catalog(imdb_catalog());
+    let uri = "file:///tests/queries/duplicates.dsql".to_string();
+    let source = r#"fragment MovieFields on movie_info {
+  id
+}
+
+fragment MovieFields on movie_info {
+  info
+}
+"#;
+
+    let diagnostics = host.open_document(uri, 1, source.to_string()).await;
+    assert!(
+        diagnostics.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == dsql_core::DiagnosticCode::DuplicateDefinition
+                && diagnostic.message.contains("MovieFields")
+        }),
+        "duplicate fragment diagnostic missing: {:?}",
+        diagnostics.diagnostics
+    );
+}
+
+#[tokio::test]
 async fn lsp_completions_only_activate_inside_regex_embedded_dsql() {
     let host = AnalysisHost::new();
     host.set_catalog(imdb_catalog());

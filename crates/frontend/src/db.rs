@@ -3,12 +3,13 @@ use crate::completion::CompletionScope;
 use crate::document::{FileId, RevisionId};
 use dashmap::DashMap;
 use dsql_core::{
-    Catalog, CheckedFile, Diagnostic, FragmentMap, FragmentRecord, Interner, LintOptions,
-    LintedFile, LoweredFile, ParseResult, PlannedFile, QueryRecord, SourceFile, SourceSnapshot,
-    SyntaxTree, check_file_with_catalog, check_fragment_definition, check_query_definition,
-    extract_definitions, format_file, lint_file_with_options,
-    lint_fragment_definition_with_options, lint_query_definition_with_options, lower_file,
-    parse_source, plan_file_with_catalog, plan_query_definition,
+    Catalog, CheckedFile, CompilerDiagnostic, CompilerDiagnosticSource, Diagnostic, FragmentMap,
+    FragmentRecord, Interner, LintOptions, LintedFile, LoweredFile, ParseResult, PlannedFile,
+    QueryRecord, SourceFile, SourceSnapshot, SyntaxTree, check_file_with_catalog,
+    check_fragment_definition, check_query_definition, extract_definitions, format_file,
+    lint_file_with_options, lint_fragment_definition_with_options,
+    lint_query_definition_with_options, lower_file, parse_source, plan_file_with_catalog,
+    plan_query_definition,
 };
 use facet::Facet;
 use picante::PicanteResult;
@@ -36,6 +37,17 @@ pub struct ParsedFile {
     pub tree: SyntaxTree,
     pub source_file: SourceFile,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+impl CompilerDiagnosticSource for ParsedFile {
+    fn extend_compiler_diagnostics(&self, diagnostics: &mut Vec<CompilerDiagnostic>) {
+        diagnostics.extend(
+            self.diagnostics
+                .iter()
+                .cloned()
+                .map(CompilerDiagnostic::from),
+        );
+    }
 }
 
 #[picante::input]
@@ -252,12 +264,10 @@ pub async fn diagnostics_for_file<DB: CompilerDatabaseTrait>(
     let lower = lower_file_query(db, source).await?;
     let check = check_file_query(db, source).await?;
     let lint = lint_file_query(db, source).await?;
-    Ok(collect_diagnostics_parts(
-        &parse.diagnostics,
-        &lower.diagnostics,
-        &check.diagnostics,
-        &lint.diagnostics,
-    ))
+    let plan = plan_file_query(db, source).await?;
+    Ok(collect_diagnostics_parts(&[
+        &parse, &lower, &check, &lint, &plan,
+    ]))
 }
 
 #[picante::tracked]
@@ -442,12 +452,10 @@ impl CompilerDb {
         let lower = lower_file_query(self, source).await?;
         let check = self.definition_check(file).await?;
         let lint = self.definition_lint(file).await?;
-        Ok(collect_diagnostics_parts(
-            &parse.diagnostics,
-            &lower.diagnostics,
-            &check.diagnostics,
-            &lint.diagnostics,
-        ))
+        let plan = self.definition_plan(file).await?;
+        Ok(collect_diagnostics_parts(&[
+            &parse, &lower, &check, &lint, &plan,
+        ]))
     }
 
     async fn definition_check(&self, file: FileId) -> PicanteResult<CheckedFile> {

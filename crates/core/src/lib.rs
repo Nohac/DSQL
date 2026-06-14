@@ -24,9 +24,9 @@ pub use definition::{
     FragmentSpreadRef, QueryKey, QueryRecord, extract_definitions,
 };
 pub use diagnostics::{
-    CompilerDiagnostic, DsqlDiagnostic, collect_checked_compiler_diagnostics,
-    collect_file_compiler_diagnostics, collect_query_compiler_diagnostics,
-    extend_compiler_diagnostics, sort_compiler_diagnostics,
+    CompilerDiagnostic, CompilerDiagnosticSource, DsqlDiagnostic,
+    collect_compiler_diagnostic_sources, collect_query_compiler_diagnostics,
+    sort_compiler_diagnostics,
 };
 pub use format::{FormatConfidence, FormatDiagnostic, FormattedText, format_file};
 pub use lint::{

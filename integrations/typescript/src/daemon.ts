@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { GeneratedArtifacts } from "./node.ts";
 
@@ -17,11 +18,56 @@ type PendingRequest = {
   readonly reject: (error: Error) => void;
 };
 
+export type DsqlDiagnosticRange = {
+  readonly start: number;
+  readonly end: number;
+};
+
+export type DsqlDaemonDiagnostic = {
+  readonly file: string;
+  readonly range: DsqlDiagnosticRange;
+  readonly embeddedRange?: DsqlDiagnosticRange;
+  readonly sourceOffset: number;
+  readonly severity: "Error" | "Warning" | "Info";
+  readonly source: "Parse" | "Lower" | "Check" | "Lint" | "Plan" | "Format" | "Generate";
+  readonly code: string;
+  readonly message: string;
+};
+
+export type DsqlGenerationError = {
+  readonly kind: string;
+  readonly message: string;
+  readonly file?: string;
+  readonly range?: DsqlDiagnosticRange;
+  readonly embeddedRange?: DsqlDiagnosticRange;
+  readonly sourceOffset?: number;
+  readonly source: "Generate";
+  readonly code: string;
+};
+
+export class DsqlDaemonError extends Error {
+  readonly diagnostics: readonly DsqlDaemonDiagnostic[];
+  readonly generationErrors: readonly DsqlGenerationError[];
+
+  constructor(
+    message: string,
+    diagnostics: readonly DsqlDaemonDiagnostic[] = [],
+    generationErrors: readonly DsqlGenerationError[] = [],
+  ) {
+    super(formatDsqlDaemonErrorMessage(message, diagnostics, generationErrors));
+    this.name = "DsqlDaemonError";
+    this.diagnostics = diagnostics;
+    this.generationErrors = generationErrors;
+  }
+}
+
 type DaemonResponse = {
   readonly id: number;
   readonly result?: unknown;
   readonly error?: {
     readonly message?: string;
+    readonly diagnostics?: readonly DsqlDaemonDiagnostic[];
+    readonly errors?: readonly DsqlGenerationError[];
   };
 };
 
@@ -77,7 +123,17 @@ export function startDsqlDaemon(options: DsqlDaemonOptions = {}): DsqlDaemon {
     }
     pending.delete(response.id);
     if (response.error) {
-      request.reject(new Error(response.error.message ?? "dsql daemon error"));
+      const diagnostics = response.error.diagnostics ?? [];
+      const generationErrors = response.error.errors ?? [];
+      request.reject(
+        diagnostics.length > 0 || generationErrors.length > 0
+          ? new DsqlDaemonError(
+              response.error.message ?? "dsql daemon error",
+              diagnostics,
+              generationErrors,
+            )
+          : new Error(response.error.message ?? "dsql daemon error"),
+      );
     } else {
       request.resolve(response.result);
     }
@@ -129,4 +185,70 @@ function rejectAll(pending: Map<number, PendingRequest>, error: Error): void {
     request.reject(error);
   }
   pending.clear();
+}
+
+function formatDsqlDaemonErrorMessage(
+  message: string,
+  diagnostics: readonly DsqlDaemonDiagnostic[],
+  generationErrors: readonly DsqlGenerationError[],
+): string {
+  const lines = [message];
+  for (const diagnostic of diagnostics) {
+    lines.push(formatDiagnosticLine(diagnostic));
+  }
+  for (const error of generationErrors) {
+    lines.push(formatGenerationErrorLine(error));
+  }
+  return lines.join("\n");
+}
+
+function formatDiagnosticLine(diagnostic: DsqlDaemonDiagnostic): string {
+  return `${formatLocation(diagnostic.file, diagnostic.range)} ${diagnostic.severity.toLowerCase()} ${diagnostic.source} ${diagnostic.code}: ${diagnostic.message} (${diagnostic.range.start}..${diagnostic.range.end})`;
+}
+
+function formatGenerationErrorLine(error: DsqlGenerationError): string {
+  const location =
+    error.file && error.range
+      ? formatLocation(error.file, error.range)
+      : "project";
+  const range = error.range ? ` (${error.range.start}..${error.range.end})` : "";
+  return `${location} error ${error.source} ${error.code}: ${error.message}${range}`;
+}
+
+function formatLocation(file: string, range: DsqlDiagnosticRange): string {
+  const position = byteOffsetToPosition(file, range.start);
+  if (!position) {
+    return `${file}:${range.start}..${range.end}`;
+  }
+  return `${file}:${position.line}:${position.column}`;
+}
+
+function byteOffsetToPosition(
+  file: string,
+  offset: number,
+): { readonly line: number; readonly column: number } | undefined {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  let byte = 0;
+  let line = 1;
+  let column = 1;
+  for (const char of text) {
+    const charBytes = Buffer.byteLength(char, "utf8");
+    if (byte + charBytes > offset) {
+      break;
+    }
+    byte += charBytes;
+    if (char === "\n") {
+      line += 1;
+      column = 1;
+    } else {
+      column += 1;
+    }
+  }
+  return { line, column };
 }
