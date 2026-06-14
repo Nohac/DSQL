@@ -1,6 +1,6 @@
 # Map SQL root result aliases to public DSQL output keys
 
-**ID:** 4c1ec4f2 | **Status:** Open | **Created:** 2026-06-11T18:35:53+02:00
+**ID:** 4c1ec4f2 | **Status:** Done | **Created:** 2026-06-11T18:35:53+02:00
 
 ## Summary
 

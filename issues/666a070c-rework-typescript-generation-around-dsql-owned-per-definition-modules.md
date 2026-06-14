@@ -1,6 +1,6 @@
 # Rework TypeScript generation around DSQL owned per definition modules
 
-**ID:** 666a070c | **Status:** Implemented | **Created:** 2026-06-13T14:23:24+02:00
+**ID:** 666a070c | **Status:** Done | **Created:** 2026-06-13T14:23:24+02:00
 
 ## Summary
 
