@@ -64,6 +64,7 @@ struct SelectionGenerationContext<'a> {
     root: Option<&'a SelectionContext>,
     cardinality: RelationCardinality,
     options: PostgresSqlOptions,
+    public_result_alias: Option<&'a str>,
 }
 
 struct SqlTemplateContext {
@@ -162,6 +163,7 @@ pub fn generate_postgres_sql_with_options(
             root: None,
             cardinality: RelationCardinality::Collection,
             options,
+            public_result_alias: Some(&plan.output_name),
         },
         &mut template,
     )?;
@@ -273,6 +275,7 @@ fn generate_selection(
                 root: Some(root_context),
                 cardinality: relation_cardinality,
                 options: generation.options,
+                public_result_alias: None,
             },
             template,
         )?;
@@ -291,7 +294,14 @@ fn generate_selection(
         }
         RelationCardinality::Singular => object,
     };
-    query.expr_as(expression, Alias::new(&context.result_alias));
+    query.expr_as(
+        expression,
+        Alias::new(
+            generation
+                .public_result_alias
+                .unwrap_or(&context.result_alias),
+        ),
+    );
     Ok(query.to_owned())
 }
 
@@ -785,6 +795,37 @@ mod tests {
     }
 
     #[test]
+    fn aliases_root_result_column_to_default_public_output_key() {
+        let catalog = Catalog::hardcoded();
+        let parsed = parse_source("query Q { users { id name } }".into());
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let planned = plan_file_with_catalog(&parsed.source_file, &catalog);
+        assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
+
+        let generated = generate_postgres_sql(&planned.queries[0], &catalog).unwrap();
+
+        assert!(generated.sql.contains("as \"users\""), "{}", generated.sql);
+    }
+
+    #[test]
+    fn aliases_root_result_column_to_user_public_output_key() {
+        let catalog = Catalog::hardcoded();
+        let parsed = parse_source("query Q { featured_users: users { id name } }".into());
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let planned = plan_file_with_catalog(&parsed.source_file, &catalog);
+        assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
+
+        let generated = generate_postgres_sql(&planned.queries[0], &catalog).unwrap();
+
+        assert_eq!(generated.output_name, "featured_users");
+        assert!(
+            generated.sql.contains("as \"featured_users\""),
+            "{}",
+            generated.sql
+        );
+    }
+
+    #[test]
     fn generates_parameterized_sql_and_operator_variants() {
         let catalog = Catalog::hardcoded();
         let parsed =
@@ -856,7 +897,7 @@ mod tests {
     #[test]
     fn generated_sql_identifiers_stay_within_postgres_limit() {
         let catalog = Catalog::hardcoded();
-        let long_alias = "this_alias_name_is_far_longer_than_postgresql_allows_for_identifiers_and_should_shrink";
+        let long_alias = "this_alias_name_is_long_but_under_postgres_identifier_limit";
         let parsed = parse_source(
             format!("query Q {{ {long_alias}: users {{ id {long_alias}: posts {{ title }} }} }}")
                 .into(),

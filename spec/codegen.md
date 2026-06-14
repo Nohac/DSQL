@@ -302,12 +302,10 @@ not:
 }
 ```
 
-The implementation may satisfy this contract by making root SQL result column
-aliases equal to validated public output keys, or by carrying explicit metadata
-that maps internal root SQL columns back to public DSQL output keys before
-returning data to generated clients. Nested relation SQL aliases should remain
-internal and continue to be hidden behind JSON object keys selected by the DSQL
-query shape.
+Root SQL result column aliases must be the validated public DSQL output keys.
+Generated runtimes and adapters should not rewrite raw database rows into a
+different public shape. Nested relation SQL aliases should remain internal and
+continue to be hidden behind JSON object keys selected by the DSQL query shape.
 
 ## Embedded Language Tooling
 

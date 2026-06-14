@@ -9,6 +9,8 @@ use crate::{
 use indexmap::IndexMap;
 use std::collections::HashSet;
 
+const POSTGRES_RESULT_ALIAS_MAX_BYTES: usize = 63;
+
 pub fn check_file(source_file: &SourceFile) -> CheckedFile {
     check_file_with_catalog(source_file, &Catalog::hardcoded())
 }
@@ -132,6 +134,7 @@ fn check_root_selections(
     errors: &mut Vec<CheckError>,
 ) {
     check_duplicate_output_keys(selections, errors);
+    check_output_key_lengths(selections, errors);
     for selection in selections {
         if selection.kind == SelectionKind::FragmentSpread {
             errors.push(CheckError {
@@ -188,6 +191,7 @@ fn check_selection_set(
     visiting: &mut HashSet<String>,
 ) {
     check_duplicate_output_keys(selections, errors);
+    check_output_key_lengths(selections, errors);
     for selection in selections {
         if selection.kind == SelectionKind::FragmentSpread {
             check_fragment_spread(catalog, resolver, table, selection, errors, visiting);
@@ -633,6 +637,30 @@ fn check_duplicate_output_keys(selections: &[Selection], errors: &mut Vec<CheckE
     }
 }
 
+fn check_output_key_lengths(selections: &[Selection], errors: &mut Vec<CheckError>) {
+    for selection in selections {
+        if selection.kind == SelectionKind::FragmentSpread {
+            continue;
+        }
+        let key = response_key(selection);
+        let bytes = key.len();
+        if bytes > POSTGRES_RESULT_ALIAS_MAX_BYTES {
+            let range = selection
+                .alias
+                .as_ref()
+                .map_or(selection.name.range, |alias| alias.range);
+            errors.push(CheckError {
+                range,
+                kind: CheckErrorKind::OutputKeyTooLong {
+                    key,
+                    bytes,
+                    max: POSTGRES_RESULT_ALIAS_MAX_BYTES,
+                },
+            });
+        }
+    }
+}
+
 fn response_key(selection: &Selection) -> String {
     selection.alias.as_ref().map_or_else(
         || unqualified_name(&selection.name.text).to_string(),
@@ -792,6 +820,20 @@ mod tests {
         );
 
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn output_keys_must_fit_postgres_result_alias_limit() {
+        let diagnostics = diagnostics(
+            "query Q { this_alias_name_is_far_longer_than_postgresql_allows_for_identifiers_and_should_shrink: users { id } }",
+        );
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].code, DiagnosticCode::OutputKeyTooLong);
+        assert_eq!(
+            diagnostics[0].message,
+            "selection output key `this_alias_name_is_far_longer_than_postgresql_allows_for_identifiers_and_should_shrink` is 86 bytes; PostgreSQL result aliases must be at most 63 bytes"
+        );
     }
 
     #[test]

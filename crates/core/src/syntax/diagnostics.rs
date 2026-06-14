@@ -34,6 +34,7 @@ pub enum DiagnosticCode {
     FieldNotFound,
     AmbiguousRelation,
     DuplicateOutputKey,
+    OutputKeyTooLong,
     UnindexedJoinColumn,
     UnindexedScanColumn,
     ScalarSelectionSet,

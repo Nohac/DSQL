@@ -14,7 +14,7 @@ select
       )
     ),
     '[]'
-  ) as "movie_info_result_d37aaa02"
+  ) as "movie_info"
 from
   (
     select

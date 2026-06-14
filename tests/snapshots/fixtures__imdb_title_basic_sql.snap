@@ -18,7 +18,7 @@ select
       )
     ),
     '[]'
-  ) as "title_result_d4d9f554"
+  ) as "title"
 from
   (
     select

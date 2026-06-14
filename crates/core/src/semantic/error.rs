@@ -47,6 +47,14 @@ pub enum CheckDiagnosticKind {
     },
     #[error("selection output key `{key}` is ambiguous; use an alias")]
     DuplicateOutputKey { key: String },
+    #[error(
+        "selection output key `{key}` is {bytes} bytes; PostgreSQL result aliases must be at most {max} bytes"
+    )]
+    OutputKeyTooLong {
+        key: String,
+        bytes: usize,
+        max: usize,
+    },
     #[error("field `{field}` is a scalar ({data_type}) and cannot have a selection set")]
     ScalarSelectionSet { field: String, data_type: String },
     #[error("field `{field}` is a scalar ({data_type}); only relations can have clauses")]
@@ -88,6 +96,7 @@ impl CheckDiagnosticKind {
             CheckDiagnosticKind::FieldNotFound { .. } => DiagnosticCode::FieldNotFound,
             CheckDiagnosticKind::AmbiguousRelation { .. } => DiagnosticCode::AmbiguousRelation,
             CheckDiagnosticKind::DuplicateOutputKey { .. } => DiagnosticCode::DuplicateOutputKey,
+            CheckDiagnosticKind::OutputKeyTooLong { .. } => DiagnosticCode::OutputKeyTooLong,
             CheckDiagnosticKind::ScalarSelectionSet { .. } => DiagnosticCode::ScalarSelectionSet,
             CheckDiagnosticKind::ScalarClauses { .. } => DiagnosticCode::ScalarClauses,
             CheckDiagnosticKind::RelationSelectionSet { .. } => {

@@ -188,6 +188,10 @@ query Users {
 The alias affects only the output key. Field resolution still uses the original
 field name.
 
+Output keys are runtime result keys. They must be valid PostgreSQL result
+aliases and must be at most 63 bytes. This limit applies to explicit aliases and
+to inferred output keys.
+
 Aliases are used when two selections would produce the same output key.
 
 ```dsql
