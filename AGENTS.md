@@ -40,7 +40,7 @@
 - Use Rope APIs for byte/line/character conversion in editor-facing code.
 - LSP document changes should mutate the stored Rope, then publish a new revision for analysis.
 - Completion and hover should be contextual and catalog-aware, including inside fragments.
-- Avoid keeping a second compiler-state mirror in the LSP. Use the shared analysis host as the source of truth.
+- Avoid keeping a second compiler-state mirror in the LSP. Use the shared frontend/project analysis surface as the source of truth.
 
 ## Dependencies And Abstractions
 
@@ -50,6 +50,13 @@
 - Keep Picante details behind the frontend analysis API. Do not expose query ingredients or runtime internals to adapters.
 - Derive or implement reflection/serialization traits on shared data types where the existing code expects them.
 - Before version 1.0, do not preserve backward compatibility by default. Prefer clean formats, APIs, and data models over migration code unless the user explicitly asks for compatibility.
+
+## Documentation And Literate Code
+
+- Prefer literate, self-explaining compiler code for new architecture-facing APIs.
+- Add proper doc comments to public functions, tracked Picante queries, shared compiler data types, and non-obvious private functions that encode compiler architecture or stage boundaries.
+- Doc comments should explain what the item represents, why it exists, and which layer owns it. Avoid comments that merely repeat the function name or restate obvious parameter types.
+- When introducing a new stage, query, diagnostic carrier, or project/host boundary, document its relationship to parsing, lowering, checking, linting, planning, generation, and adapter formatting.
 
 ## Testing And Verification
 
