@@ -7,6 +7,7 @@ edition = "2024"
 dashmap = { workspace = true }
 dsql-core = { workspace = true }
 dsql-embedding = { workspace = true }
+dsql-project = { workspace = true }
 facet = { workspace = true }
 picante = { workspace = true, features = ["macros"] }
 ropey = { workspace = true, features = ["metric_utf16"] }

@@ -23,12 +23,40 @@ use ropey::Rope;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+/// Stable identity for one analysis context owned by the project layer.
+///
+/// Context IDs are used for lookup and comparison. Display surfaces should use
+/// the associated [`AnalysisContext::label`] instead of printing the ID
+/// directly.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AnalysisContextId(pub String);
+
+/// Project-supplied identity for a bundle of source regions analyzed together.
+///
+/// `AnalysisHost` stores this value but does not interpret it. Resolution maps,
+/// imports, and user-facing labels remain project-layer concerns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalysisContext {
+    pub id: AnalysisContextId,
+    pub label: String,
+}
+
+impl Default for AnalysisContext {
+    fn default() -> Self {
+        Self {
+            id: AnalysisContextId("default".to_string()),
+            label: "default".to_string(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AnalysisHost {
     inner: Arc<AnalysisHostInner>,
 }
 
 struct AnalysisHostInner {
+    context: AnalysisContext,
     db: CompilerDb,
     next_file: AtomicU32,
     documents: DashMap<String, DocumentState>,
@@ -43,21 +71,37 @@ impl Default for AnalysisHost {
 
 impl AnalysisHost {
     pub fn new() -> Self {
-        Self::with_catalog_provider(HardcodedCatalogProvider)
+        Self::with_context(AnalysisContext::default())
+    }
+
+    pub fn with_context(context: AnalysisContext) -> Self {
+        Self::with_context_and_catalog_provider(context, HardcodedCatalogProvider)
     }
 
     pub fn with_catalog_provider(provider: impl CatalogProvider) -> Self {
+        Self::with_context_and_catalog_provider(AnalysisContext::default(), provider)
+    }
+
+    pub fn with_context_and_catalog_provider(
+        context: AnalysisContext,
+        provider: impl CatalogProvider,
+    ) -> Self {
         let db = CompilerDb::default();
         db.set_catalog(provider.load_catalog())
             .expect("catalog should be representable by Picante");
         Self {
             inner: Arc::new(AnalysisHostInner {
+                context,
                 db,
                 next_file: AtomicU32::new(0),
                 documents: DashMap::new(),
                 indexed_documents: DashMap::new(),
             }),
         }
+    }
+
+    pub fn context(&self) -> AnalysisContext {
+        self.inner.context.clone()
     }
 
     pub fn set_catalog(&self, catalog: Catalog) {
@@ -67,6 +111,10 @@ impl AnalysisHost {
             .expect("catalog should be representable by Picante");
     }
 
+    pub fn catalog(&self) -> Catalog {
+        self.inner.db.catalog()
+    }
+
     pub fn set_lint_options(&self, options: LintOptions) {
         self.inner
             .db
@@ -74,11 +122,23 @@ impl AnalysisHost {
             .expect("lint options should be representable by Picante");
     }
 
+    pub fn lint_options(&self) -> LintOptions {
+        self.inner.db.lint_options()
+    }
+
     pub fn create_file(&self, source: SourceSnapshot) -> FileId {
+        self.create_file_with_revision(RevisionId(0), source)
+    }
+
+    pub fn create_file_with_revision(
+        &self,
+        revision: RevisionId,
+        source: SourceSnapshot,
+    ) -> FileId {
         let id = self.alloc_file();
         self.inner
             .db
-            .set_source_rope(id, RevisionId(0), source.into_rope())
+            .set_source_rope(id, revision, source.into_rope())
             .expect("source input should be representable by Picante");
         id
     }

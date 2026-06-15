@@ -3,9 +3,11 @@ mod completion;
 mod cursor;
 mod db;
 mod definition;
+mod definitions;
 mod document;
 mod host;
 mod hover;
+mod project;
 mod provider;
 mod semantic_tokens;
 
@@ -13,12 +15,21 @@ pub use analysis::{analyze_source, collect_diagnostics};
 pub use completion::{CompletionItem, CompletionKind};
 pub use db::{AnalysisResult, ParsedFile};
 pub use definition::{CatalogDefinition, DefinitionResult, SourceDefinition, SourceDefinitionKind};
+pub use definitions::{
+    DefinitionId, DefinitionIndex, FragmentRoot, FragmentRootInner, QueryRoot, QueryRootInner,
+    Root, RootDefinition, RootDefinitionBucket, SourceRegionId,
+};
 pub use document::{
     DocumentDiagnostics, DocumentFormat, DocumentSnapshot, FileId, RevisionId, TextEdit,
     TextEditRange, TextPosition,
 };
-pub use host::AnalysisHost;
+pub use host::{AnalysisContext, AnalysisContextId, AnalysisHost};
 pub use hover::HoverInfo;
+pub use project::{
+    DocumentBundle, PhysicalDocument, PhysicalDocumentId, PresentedDiagnostic, ProjectAnalysis,
+    ProjectDiagnostic, ProjectHostSource, ProjectSourceDb, ProjectSourceRegion, SourceEntry,
+    SourcePosition, SourceResidency,
+};
 pub use provider::{CatalogProvider, HardcodedCatalogProvider};
 pub use semantic_tokens::{DocumentSemanticTokens, SemanticTokenInfo, SemanticTokenKind};
 

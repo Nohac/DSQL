@@ -61,6 +61,10 @@ pub enum ProjectError {
         first_scope: String,
         second_scope: String,
     },
+    #[error("resolution map `{scope}` imports unknown resolution map `{import}`")]
+    UnknownResolutionImport { scope: String, import: String },
+    #[error("cyclic resolution import: {}", cycle.join(" -> "))]
+    CyclicResolutionImport { cycle: Vec<String> },
     #[error("failed to extract embedded DSQL from {path}: {source}")]
     EmbeddedExtraction {
         path: PathBuf,

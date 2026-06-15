@@ -559,6 +559,13 @@ impl CompilerDb {
             .unwrap_or_else(Catalog::hardcoded)
     }
 
+    pub(crate) fn lint_options(&self) -> LintOptions {
+        LintOptionsInput::options(self)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
     fn update_definition_inputs(&self, file: FileId, source: SourceInput) -> PicanteResult<()> {
         let text = source.text(self)?;
         let parsed = parse_source(SourceSnapshot::from_arc(text));
