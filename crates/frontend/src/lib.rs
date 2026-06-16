@@ -27,7 +27,7 @@ pub use host::{AnalysisContext, AnalysisContextId, AnalysisHost};
 pub use hover::HoverInfo;
 pub use project::{
     DocumentBundle, PhysicalDocument, PhysicalDocumentId, PresentedDiagnostic, ProjectAnalysis,
-    ProjectDiagnostic, ProjectHostSource, ProjectSourceDb, ProjectSourceRegion, SourceEntry,
+    ProjectContextSource, ProjectDiagnostic, ProjectSourceDb, ProjectSourceRegion, SourceEntry,
     SourcePosition, SourceResidency,
 };
 pub use provider::{CatalogProvider, HardcodedCatalogProvider};

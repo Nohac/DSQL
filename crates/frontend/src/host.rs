@@ -158,6 +158,25 @@ impl AnalysisHost {
         self.inner.db.diagnostics(file).await.ok()
     }
 
+    pub fn set_context_files(&self, context: &AnalysisContextId, files: Vec<FileId>) {
+        self.inner
+            .db
+            .set_context_files(context.0.clone(), files)
+            .expect("context source set should be representable by Picante");
+    }
+
+    pub async fn diagnostics_in_context(
+        &self,
+        context: &AnalysisContextId,
+        file: FileId,
+    ) -> Option<Vec<Diagnostic>> {
+        self.inner
+            .db
+            .diagnostics_in_context(&context.0, file)
+            .await
+            .ok()
+    }
+
     pub async fn format(&self, file: FileId) -> Option<FormattedText> {
         let text = self.inner.db.formatted_text(file).await.ok()??;
         Some(FormattedText {

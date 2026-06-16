@@ -3,15 +3,14 @@
 ## Summary
 
 The compiler architecture should treat an analysis host as a memoized compiler
-runtime for the documents it is given. Project loading is responsible for
-constructing document bundles, creating one analysis host per bundle, and
-carrying a context label so diagnostics and generated artifacts can explain
-which bundle produced them.
+runtime for source inputs and context-aware semantic queries. Project loading is
+responsible for constructing document bundles, publishing each source region
+once, and carrying context labels so diagnostics and generated artifacts can
+explain which bundle produced them.
 
-This keeps the analysis host small: it does not need to understand project
-resolution maps, scope semantics, or why a document belongs to a bundle. It only
-analyzes the source regions it receives and returns structured outputs tagged
-with the context supplied by the caller.
+This keeps the project layer small: it does not own parsed files or semantic
+indexes. It owns source state and context membership, then publishes explicit
+source revisions and context source sets to Picante-backed analysis queries.
 
 ## Terms
 
@@ -28,20 +27,21 @@ with the context supplied by the caller.
   their `imports`. An edge points from the consuming resolution map to the
   resolution map it imports.
 - **Effective analysis context**: A resolution map that is not imported by any
-  other resolution map. It gets an analysis host containing its own source
+  other resolution map. It gets a context source set containing its own source
   regions plus the source regions from every transitive import.
 - **Imported scope**: A resolution map that is consumed only through another
   resolution map. It contributes source regions to effective contexts but does
-  not get its own analysis host unless it is also an effective context.
-- **Analysis host**: A Picante-backed compiler state instance for one document
-  bundle.
+  not get its own context source set unless it is also an effective context.
+- **Analysis host**: A Picante-backed compiler state instance. Project analysis
+  uses one shared host and routes context-dependent work with explicit context
+  IDs and visible source sets.
 - **Project source DB**: The frontend/project source store that owns Rope-backed
   physical document state, document residency, and revision publication into
-  affected analysis hosts.
+  affected analysis contexts.
 - **Project analysis**: The project-level layer that loads project config, resolves
   document globs and embedded regions, builds document bundles, owns the map of
-  context labels to analysis hosts, and adapts outputs for CLI, daemon, LSP, and
-  generation.
+  context labels to context source sets, and adapts outputs for CLI, daemon,
+  LSP, and generation.
 
 ## Architecture
 
@@ -59,17 +59,17 @@ load project
   -> resolve physical documents in ProjectSourceDb
   -> extract DSQL source regions
   -> build document bundles
-  -> create one AnalysisHost per bundle
-  -> insert that bundle's source regions into the host
-  -> run diagnostics / generation per host
+  -> publish each source region once into a shared AnalysisHost
+  -> publish each effective context's visible source set
+  -> run diagnostics / generation per context
   -> format outputs at the edge
 ```
 
-An analysis host owns only the documents it was given:
+An analysis host owns compiler runtime state, while project analysis owns
+context membership:
 
 ```rust
 AnalysisHost {
-    context: AnalysisContext,
     db: CompilerDb,
 }
 
@@ -80,33 +80,45 @@ AnalysisContext {
 ```
 
 The host does not resolve imports or decide membership. If a shared source file
-must participate in multiple bundles, `ProjectAnalysis` inserts the same source
-region into multiple hosts. This is intentional: the same source can produce
-different diagnostics in different contexts.
+must participate in multiple bundles, `ProjectAnalysis` publishes the source
+region once and includes that source identity in multiple context source sets.
+This is intentional: the same source can produce different diagnostics in
+different contexts, but context-independent parsing should remain shared.
 
 Resolution maps are interpreted as a directed acyclic import graph. For
 example, if `api` and `frontend` both import `shared`, the project layer creates
-hosts for `api` and `frontend` only:
+effective context source sets for `api` and `frontend` only:
 
 ```text
-api host      = api + shared
-frontend host = frontend + shared
+api context      = api + shared
+frontend context = frontend + shared
 ```
 
-`shared` is an imported scope in this example, not a standalone analysis host.
-Project loading must reject cyclic resolution imports before any hosts are
+`shared` is an imported scope in this example, not a standalone analysis context.
+Project loading must reject cyclic resolution imports before any contexts are
 created.
 
 `ProjectAnalysis` should own a source DB rather than scattering source state
-across the LSP, CLI, daemon, and generation adapters:
+across the LSP, CLI, daemon, and generation adapters. `ProjectAnalysis` and
+`ProjectSourceDb` should both be cheap handles whose clones share internally
+mutable state:
 
 ```rust
 ProjectAnalysis {
+    inner: Arc<ProjectAnalysisInner>,
+}
+
+ProjectAnalysisInner {
     sources: ProjectSourceDb,
-    hosts: DashMap<AnalysisContextId, AnalysisHost>,
+    analysis: AnalysisHost,
+    contexts: DashMap<AnalysisContextId, Arc<AnalysisContextState>>,
 }
 
 ProjectSourceDb {
+    inner: Arc<ProjectSourceDbInner>,
+}
+
+ProjectSourceDbInner {
     entries: DashMap<PhysicalDocumentId, SourceEntry>,
 }
 
@@ -129,6 +141,14 @@ compiler core. It is allowed to use internal mutability with `DashMap` because
 it owns mutable project/editor state. The pure language stages still receive
 explicit immutable inputs through the analysis host/query boundary.
 
+`ProjectSourceDb` remains the single source of truth for physical files,
+Ropes, revisions, residency, path/URI identity, and source-region extraction.
+Picante owns derived analysis such as parse trees, lowered definitions,
+context-specific definition indexes, checking, linting, planning, and
+diagnostics. Project code should publish explicit source revisions and context
+source sets into the analysis database; tracked queries should not read mutable
+`ProjectSourceDb` state opportunistically.
+
 `AnalysisSnapshot` entries are loaded to analyze a project, are comparatively
 stable, and may be evicted or reloaded by project policy. `OpenEditable` entries
 represent live editor buffers; they are updated by Rope range operations and
@@ -139,8 +159,9 @@ second source copy.
 
 Filesystem watchers, editor document events, or other project-level invalidation
 sources should live at this project/source-DB boundary. They update
-`ProjectSourceDb` first, then ask `ProjectAnalysis` which analysis hosts contain
-the changed source regions and publish new host inputs only to those hosts.
+`ProjectSourceDb` first, then ask `ProjectAnalysis` which contexts contain the
+changed source regions and publish new source revisions to the shared analysis
+host.
 
 ## Diagnostics
 
@@ -201,6 +222,51 @@ text because LSP diagnostics do not have a native scope dimension. If a project
 has only one effective context, adapters should present diagnostics without a
 context label; the label only carries useful information once two or more
 contexts can report different results for the same source.
+
+## Cross-Context References
+
+Resolution contexts should stay isolated: a host must not resolve a definition
+from a context outside its bundle. However, a plain unresolved-reference
+diagnostic can be confusing when the missing name exists elsewhere in the same
+project. The project layer should add a context-aware diagnostic in that case.
+
+The analysis host can continue to report the local semantic failure, such as
+`UnknownFragment`. `ProjectAnalysis` can then inspect project-level definition
+availability and, when it finds the referenced name in another unreachable
+context, present a more specific diagnostic:
+
+```rust
+CrossContextReferenceDiagnostic {
+    current_context: AnalysisContext,
+    reference_name: String,
+    reference_range: TextRange,
+    available_in: Vec<AnalysisContext>,
+    definition_locations: Vec<DefinitionLocation>,
+}
+```
+
+The important rule is that this diagnostic explains availability; it must not
+make the reference resolve across contexts. For example, if `api` spreads
+`UserFields`, but `UserFields` is only in `frontend`, the diagnostic should say
+that `UserFields` is not available in `api` and is defined in `frontend`. If the
+definition lives in an imported-only scope, the message should describe the
+effective contexts that include that scope, and may suggest importing the scope
+only when doing so would not create a cycle.
+
+`ProjectAnalysis` should derive these diagnostics from a project-level
+availability index:
+
+```text
+definition name
+  -> physical definition locations
+  -> local resolution scopes
+  -> effective contexts whose bundles contain those scopes
+```
+
+This keeps resolution-map knowledge out of parsing, lowering, checking, and
+planning while still giving users and agents an actionable explanation for
+references that look correct globally but are unreachable from the current
+context.
 
 ## Root Definition Index
 
@@ -291,19 +357,23 @@ future root definition kinds should all build on this shared index.
 
 ## Picante Query Shape
 
-Each analysis host uses Picante to memoize work for its own document bundle:
+The project analysis host uses Picante to memoize context-independent work by
+source identity and revision, then runs context-dependent stages from explicit
+context source sets:
 
 ```text
-parse_region(region_id) -> parsed CST/AST and parse diagnostics for one source region
-lower_region(region_id) -> lowered source structure for one parsed region
-definitions_for_region(region_id) -> root definitions extracted from one region
-definition_index() -> merged root definition index for this host's bundle
-fragment_map() -> fragment lookup view derived from the definition index
-check_definition(definition_id) -> check diagnostics for one root definition
-lint_definition(definition_id) -> lint diagnostics for one root definition
-plan_definition(definition_id) -> query/fragment plan output for one definition
-diagnostics_for_region(region_id) -> diagnostics from all stages affecting one region
-diagnostics_for_host() -> all diagnostics for this host/context
+source(file_id, revision, rope) -> SourceInput
+parse_region(file_id) -> parsed CST/AST and parse diagnostics for one source region
+lower_region(file_id) -> lowered source structure for one parsed region
+definitions_for_region(file_id) -> root definitions extracted from one region
+context_sources(context_id) -> visible source region IDs
+definition_index(context_id) -> merged root definition index for one effective context
+fragment_map(context_id) -> fragment lookup view derived from the context definition index
+check_definition(context_id, definition_id) -> check diagnostics for one root definition
+lint_definition(context_id, definition_id) -> lint diagnostics for one root definition
+plan_definition(context_id, definition_id) -> query/fragment plan output for one definition
+diagnostics_for_region(context_id, file_id) -> diagnostics from all stages affecting one region
+diagnostics_for_context(context_id) -> all diagnostics for this effective context
 generation_model() -> validated, planned definitions ready for artifact generation
 ```
 
@@ -319,9 +389,11 @@ query check_definition(definition_id):
 ```
 
 This permits incremental recomputation inside each host. A changed source region
-invalidates that region's parse/lower/definition outputs in every host that
-contains it, but unaffected regions and definitions in those hosts remain
-memoized.
+invalidates that region's parse/lower/definition outputs once by source
+revision. Downstream context queries are invalidated for every effective context
+whose visible source set contains that region, but unaffected source regions and
+unrelated contexts remain memoized. The project layer should not own parsed
+files; parser output reuse belongs to Picante and the frontend analysis layer.
 
 ## Project Loading And Bundles
 
@@ -375,65 +447,116 @@ Bundle construction should first validate the resolution import graph:
 - each effective context bundle contains the context's local regions plus all
   transitive imported regions.
 
-If a shared file is included by multiple bundles, it is inserted into multiple
-hosts. That allows context-specific diagnostics such as duplicate fragment or
-duplicate generated operation errors to surface only for the bundles where they
-actually occur.
+If a shared file is included by multiple bundles, it is published once as a
+source input and referenced by multiple context source sets. That allows
+context-specific diagnostics such as duplicate fragment or duplicate generated
+operation errors to surface only for the contexts where they actually occur,
+without re-parsing the shared file for each context.
 
 ## State And Concurrency
 
 This architecture should preserve the current preference against
 `Arc<Mutex<_>>` and `Arc<RwLock<_>>` as the normal application shape.
 
-`ProjectAnalysis` can own analysis hosts in a concurrent map:
+`ProjectAnalysis`, `ProjectSourceDb`, and `AnalysisHost` should all be cheap
+handles over shared internal state. Cloning one of these handles must share
+state and must not clone retained source Ropes:
 
 ```rust
 ProjectAnalysis {
+    inner: Arc<ProjectAnalysisInner>,
+}
+
+ProjectAnalysisInner {
     sources: ProjectSourceDb,
-    hosts: DashMap<AnalysisContextId, AnalysisHost>,
+    analysis: AnalysisHost,
+    contexts: DashMap<AnalysisContextId, Arc<AnalysisContextState>>,
 }
 ```
 
 `AnalysisHost` should remain cheaply clonable and should rely on Picante/runtime
 internal mutability rather than external locks. `ProjectSourceDb` can use
 `DashMap` to coordinate physical document state, source residency, source
-regions, and affected hosts. If the LSP needs to update every host that contains
-an edited source region, it mutates the Rope in `ProjectSourceDb`, publishes a
-new immutable revision, and updates the hosts found through the project indexes.
+regions, and affected contexts. If the LSP needs to update every context that
+contains an edited source region, it mutates the Rope in `ProjectSourceDb`,
+publishes a new immutable revision to the shared analysis host, and asks
+Picante for diagnostics in each affected context.
 
 ## LSP Integration
 
-The LSP server should talk to `ProjectAnalysis`, not directly to arbitrary
-analysis hosts.
+The LSP server should own `ProjectAnalysis`, not a raw `AnalysisHost`. The
+current single-host LSP shape is transitional: it loads the project catalog into
+one host, indexes all project documents into that host, and drops
+`resolution_scope` while doing so. That flattening loses resolution-context
+isolation and should be removed as the project analysis surface takes over.
+
+The target shape is:
+
+```rust
+Backend {
+    project: ProjectAnalysis,
+}
+```
+
+The LSP backend should treat `ProjectSourceDb` as the source of truth for file
+contents and revisions. Open editor buffers are `OpenEditable` source entries.
+Closed project files used for analysis are `AnalysisSnapshot` entries. The LSP
+should not keep a second compiler-state mirror beside `ProjectAnalysis`.
 
 For open/change/close:
 
 ```text
-edit physical document
+open physical document
+  -> ProjectSourceDb inserts or promotes the document to OpenEditable
+  -> ProjectAnalysis extracts or refreshes DSQL source regions
+  -> publish immutable region revisions to the shared analysis host
+  -> update every affected context source set
+
+change physical document
   -> ProjectSourceDb applies Rope range operations
-  -> ProjectAnalysis updates affected source regions
-  -> publish new immutable revisions into every host whose bundle contains those regions
+  -> ProjectAnalysis refreshes affected source regions
+  -> publish new immutable revisions to the shared analysis host
+  -> invalidate every context whose source set contains those regions
+
+close physical document
+  -> ProjectSourceDb demotes, reloads, or evicts according to project policy
+  -> ProjectAnalysis refreshes affected contexts when the retained source changes
 ```
 
-For hover/completion/definition:
+Diagnostics should be requested from the project layer:
+
+```text
+publish diagnostics for physical document
+  -> ProjectAnalysis::diagnostics_for_document(physical_document)
+  -> collect diagnostics from the shared analysis host for every context containing regions from that document
+  -> map embedded ranges back to the physical document
+  -> derive line/column from ProjectSourceDb Rope state
+  -> flatten for LSP's per-URI diagnostic list
+  -> include context label only when more than one effective context exists
+```
+
+`ProjectSourceDb` owns the Rope state needed for byte-to-line/column conversion,
+but `ProjectAnalysis` owns diagnostic routing because diagnostics require
+analysis hosts, context labels, source-region membership, and presentation
+policy.
+
+For hover/completion/definition/formatting/semantic tokens:
 
 ```text
 cursor in physical document
   -> find source region at byte
   -> find contexts containing that region
   -> choose context from editor state if one is active
-  -> otherwise use a deterministic default or return merged context-aware data
+  -> otherwise use a deterministic default context
+  -> route the request to the shared AnalysisHost with that context ID
 ```
 
-For diagnostics:
-
-```text
-publish diagnostics for physical document
-  -> collect diagnostics from every host containing regions from that document
-  -> map embedded ranges back to the physical document
-  -> derive line/column from ProjectSourceDb Rope state
-  -> include context label only when more than one effective context exists
-```
+Interactive features should not blindly merge responses from multiple effective
+contexts. A shared file can mean different things in different consuming
+contexts, so merging completions, hovers, definitions, semantic tokens, or
+formatting results can be misleading. Until the editor has an active-context
+selector, the fallback context should be deterministic and visible in logs or
+debug output.
 
 If the editor later gains an active-context selector, LSP can filter diagnostics
 and semantic features to that context. Until then, publishing all context-labeled
@@ -441,15 +564,15 @@ diagnostics is the clearest behavior.
 
 ## Generation And Daemon Integration
 
-Generation runs per analysis host:
+Generation runs per effective context through the shared analysis host:
 
 ```text
-for bundle in project.document_bundles:
-  host = project.host(bundle.context)
-  diagnostics = host.diagnostics()
+for context in project.contexts:
+  host = project.analysis_host()
+  diagnostics = host.diagnostics_in_context(context)
   fail if error diagnostics
-  model = host.generation_model()
-  emit artifacts for bundle.context
+  model = host.generation_model(context)
+  emit artifacts for context
 ```
 
 The daemon should serialize structured diagnostics from the host/project layer. It
@@ -471,37 +594,38 @@ but they should not open files to derive positions.
    residency, and revision publication.
 4. Add `ProjectAnalysis` to resolve project documents into
    `DocumentBundle`s using `ProjectSourceDb`.
-5. Create one Picante-backed `AnalysisHost` per bundle and insert each bundle's
-   source regions into it.
+5. Publish each source region once into a shared Picante-backed `AnalysisHost`
+   and publish each effective context's visible source set separately.
 6. Make generation consume `AnalysisHost::generation_model()` instead of
    reparsing and regrouping project documents.
-7. Make LSP diagnostics collect from all hosts that include the edited physical
-   document, deriving positions from `ProjectSourceDb` and preserving context
-   labels.
-8. Move duplicate fragment/query diagnostics into host-level definition indexes
+7. Make LSP diagnostics collect from every context that includes the edited
+   physical document, deriving positions from `ProjectSourceDb` and preserving
+   context labels.
+8. Move duplicate fragment/query diagnostics into context-level definition indexes
    so they are naturally context-specific.
 9. Remove generation-local duplicated parsing, extraction, and scope assembly
    after behavior is covered by tests.
 
 ## Acceptance Criteria
 
-- Analysis hosts analyze only the documents they are given.
+- The shared analysis host parses each published source region by source
+  identity and revision, not once per resolution context.
 - Project resolution maps are expressed as document-bundle construction, not as
   language-stage behavior.
 - Project resolution imports are validated as an acyclic graph.
-- Only effective consuming contexts receive analysis hosts; imported-only scopes
-  are inserted into their consumers' hosts.
+- Only effective consuming contexts receive context source sets; imported-only
+  scopes are referenced by their consumers' context sets.
 - Retained project/editor source state is owned by `ProjectSourceDb` as Ropes
   with explicit `AnalysisSnapshot` or `OpenEditable` residency.
 - The architecture does not keep duplicate long-lived `Rope` and
   `Arc<str>`/`String` representations for the same source snapshot.
-- The same physical document can participate in multiple hosts and produce
+- The same physical document can participate in multiple contexts and produce
   different diagnostics per context.
 - Diagnostics include source byte ranges, but not full source text. Presented
   diagnostics include context identity only when more than one effective context
   exists.
 - LSP can publish context-labeled diagnostics for one physical document.
-- Generation loops analysis hosts/bundles and does not duplicate frontend
-  parsing or definition extraction logic.
+- Generation loops context bundles and does not duplicate frontend parsing or
+  definition extraction logic.
 - Edge adapters format diagnostics; they do not recover compiler state by
   rereading source files.

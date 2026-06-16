@@ -3,7 +3,8 @@ use crate::completion::CompletionScope;
 use crate::document::{FileId, RevisionId};
 use dashmap::DashMap;
 use dsql_core::{
-    Catalog, CheckedFile, CompilerDiagnostic, CompilerDiagnosticSource, Diagnostic, FragmentMap,
+    Catalog, CheckDiagnostic, CheckDiagnosticKind, CheckedFile, CompilerDiagnostic,
+    CompilerDiagnosticSource, DefinitionRecord, Diagnostic, ExtractedFile, FragmentMap,
     FragmentRecord, Interner, LintOptions, LintedFile, LoweredFile, ParseResult, PlannedFile,
     QueryRecord, SourceFile, SourceSnapshot, SyntaxTree, check_file_with_catalog,
     check_fragment_definition, check_query_definition, extract_definitions, format_file,
@@ -58,6 +59,23 @@ pub struct SourceInput {
     pub text: Arc<str>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct ContextSource {
+    pub file: FileId,
+    pub source: SourceInput,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct ContextDefinitionFile {
+    pub file: FileId,
+    pub definitions: Vec<DefinitionRecord>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct ContextDefinitions {
+    pub files: Vec<ContextDefinitionFile>,
+}
+
 #[picante::input]
 pub struct CatalogInput {
     pub catalog: Catalog,
@@ -66,6 +84,13 @@ pub struct CatalogInput {
 #[picante::input]
 pub struct LintOptionsInput {
     pub options: LintOptions,
+}
+
+#[picante::input]
+pub struct ContextSourcesInput {
+    #[key]
+    pub context: String,
+    pub sources: Vec<ContextSource>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
@@ -147,6 +172,31 @@ pub async fn lower_file_query<DB: CompilerDatabaseTrait>(
     let parse = parse_file(db, source).await?;
     let mut interner = Interner::default();
     Ok(lower_file(&parse.source_file, &mut interner))
+}
+
+#[picante::tracked]
+pub async fn extract_definitions_for_file<DB: CompilerDatabaseTrait>(
+    db: &DB,
+    source: SourceInput,
+) -> PicanteResult<ExtractedFile> {
+    let parse = parse_file(db, source).await?;
+    Ok(extract_definitions(&parse.source_file))
+}
+
+#[picante::tracked]
+pub async fn context_definitions_query<DB: CompilerDatabaseTrait>(
+    db: &DB,
+    context: ContextSourcesInput,
+) -> PicanteResult<ContextDefinitions> {
+    let mut files = Vec::new();
+    for source in context.sources(db)? {
+        let extracted = extract_definitions_for_file(db, source.source).await?;
+        files.push(ContextDefinitionFile {
+            file: source.file,
+            definitions: extracted.definitions,
+        });
+    }
+    Ok(ContextDefinitions { files })
 }
 
 #[picante::tracked]
@@ -271,6 +321,26 @@ pub async fn diagnostics_for_file<DB: CompilerDatabaseTrait>(
 }
 
 #[picante::tracked]
+pub async fn diagnostics_for_file_in_context<DB: CompilerDatabaseTrait>(
+    db: &DB,
+    context: ContextSourcesInput,
+    file: FileId,
+    source: SourceInput,
+) -> PicanteResult<Vec<Diagnostic>> {
+    let parse = parse_file(db, source).await?;
+    let lower = lower_file_query(db, source).await?;
+    let definitions = context_definitions_query(db, context).await?;
+    let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
+    let options = LintOptionsInput::options(db)?.unwrap_or_default();
+    let check = context_check_file(&definitions, file, &catalog);
+    let lint = context_lint_file(&definitions, file, &catalog, options);
+    let plan = context_plan_file(&definitions, file, &catalog);
+    Ok(collect_diagnostics_parts(&[
+        &parse, &lower, &check, &lint, &plan,
+    ]))
+}
+
+#[picante::tracked]
 pub async fn formatted_text_for_file<DB: CompilerDatabaseTrait>(
     db: &DB,
     source: SourceInput,
@@ -312,6 +382,133 @@ fn resolve_fragments(
     Ok(fragments)
 }
 
+fn context_fragment_map(definitions: &ContextDefinitions) -> FragmentMap {
+    let mut fragments = FragmentMap::default();
+    for file in &definitions.files {
+        for definition in &file.definitions {
+            if let DefinitionRecord::Fragment(fragment) = definition {
+                fragments.insert(fragment.clone());
+            }
+        }
+    }
+    fragments
+}
+
+fn context_check_file(
+    definitions: &ContextDefinitions,
+    file: FileId,
+    catalog: &Catalog,
+) -> CheckedFile {
+    let resolver = context_fragment_map(definitions);
+    let mut diagnostics = duplicate_fragment_diagnostics_for_file(definitions, file);
+    for definition in definitions_for_file(definitions, file) {
+        match definition {
+            DefinitionRecord::Query(query) => {
+                diagnostics.extend(check_query_definition(query, &resolver, catalog).diagnostics);
+            }
+            DefinitionRecord::Fragment(fragment) => {
+                diagnostics
+                    .extend(check_fragment_definition(fragment, &resolver, catalog).diagnostics);
+            }
+        }
+    }
+    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+    CheckedFile {
+        errors: diagnostics.clone(),
+        diagnostics,
+    }
+}
+
+fn context_lint_file(
+    definitions: &ContextDefinitions,
+    file: FileId,
+    catalog: &Catalog,
+    options: LintOptions,
+) -> LintedFile {
+    let resolver = context_fragment_map(definitions);
+    let mut diagnostics = Vec::new();
+    for definition in definitions_for_file(definitions, file) {
+        match definition {
+            DefinitionRecord::Query(query) => diagnostics.extend(
+                lint_query_definition_with_options(query, &resolver, catalog, options).diagnostics,
+            ),
+            DefinitionRecord::Fragment(fragment) => diagnostics.extend(
+                lint_fragment_definition_with_options(fragment, &resolver, catalog, options)
+                    .diagnostics,
+            ),
+        }
+    }
+    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+    LintedFile { diagnostics }
+}
+
+fn context_plan_file(
+    definitions: &ContextDefinitions,
+    file: FileId,
+    catalog: &Catalog,
+) -> PlannedFile {
+    let resolver = context_fragment_map(definitions);
+    let mut queries = Vec::new();
+    let mut diagnostics = Vec::new();
+    for definition in definitions_for_file(definitions, file) {
+        if let DefinitionRecord::Query(query) = definition {
+            let plan = plan_query_definition(query, &resolver, catalog);
+            queries.extend(plan.queries);
+            diagnostics.extend(plan.diagnostics);
+        }
+    }
+    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+    PlannedFile {
+        queries,
+        diagnostics,
+    }
+}
+
+fn definitions_for_file(
+    definitions: &ContextDefinitions,
+    file: FileId,
+) -> impl Iterator<Item = &DefinitionRecord> {
+    definitions
+        .files
+        .iter()
+        .filter(move |definition_file| definition_file.file == file)
+        .flat_map(|definition_file| definition_file.definitions.iter())
+}
+
+fn duplicate_fragment_diagnostics_for_file(
+    definitions: &ContextDefinitions,
+    file: FileId,
+) -> Vec<CheckDiagnostic> {
+    let mut fragments = Vec::<(String, FileId, FragmentRecord)>::new();
+    for definition_file in &definitions.files {
+        for definition in &definition_file.definitions {
+            if let DefinitionRecord::Fragment(fragment) = definition {
+                fragments.push((
+                    fragment.key.name.clone(),
+                    definition_file.file,
+                    fragment.clone(),
+                ));
+            }
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+    let mut seen = HashSet::<String>::new();
+    for (name, fragment_file, fragment) in fragments {
+        if seen.insert(name.clone()) {
+            continue;
+        }
+        if fragment_file == file {
+            diagnostics.push(CheckDiagnostic {
+                range: fragment.name_range,
+                kind: CheckDiagnosticKind::DuplicateFragment { name },
+            });
+        }
+    }
+    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+    diagnostics
+}
+
 fn empty_checked() -> CheckedFile {
     CheckedFile {
         errors: Vec::new(),
@@ -337,6 +534,7 @@ fn empty_planned() -> PlannedFile {
         SourceInput,
         CatalogInput,
         LintOptionsInput,
+        ContextSourcesInput,
         QueryDefinitionInput,
         FragmentDefinitionInput,
         CompletionScopeInput
@@ -345,6 +543,8 @@ fn empty_planned() -> PlannedFile {
         completion_scope_query,
         parse_file,
         lower_file_query,
+        extract_definitions_for_file,
+        context_definitions_query,
         check_file_query,
         plan_file_query,
         lint_file_query,
@@ -354,6 +554,7 @@ fn empty_planned() -> PlannedFile {
         lint_fragment_definition_query,
         plan_query_definition_query,
         diagnostics_for_file,
+        diagnostics_for_file_in_context,
         formatted_text_for_file
     ),
     db_trait(CompilerDatabaseTrait)
@@ -364,11 +565,13 @@ pub struct CompilerDb {
     fragment_inputs: DashMap<FragmentDefinitionKey, FragmentDefinitionInput>,
     file_queries: DashMap<FileId, Vec<QueryDefinitionKey>>,
     file_fragments: DashMap<FileId, Vec<FragmentDefinitionKey>>,
+    context_inputs: DashMap<String, ContextSourcesInput>,
 }
 
 impl Default for CompilerDb {
     fn default() -> Self {
         let db = Self::new(
+            DashMap::new(),
             DashMap::new(),
             DashMap::new(),
             DashMap::new(),
@@ -456,6 +659,39 @@ impl CompilerDb {
         Ok(collect_diagnostics_parts(&[
             &parse, &lower, &check, &lint, &plan,
         ]))
+    }
+
+    pub(crate) fn set_context_files(
+        &self,
+        context: String,
+        files: Vec<FileId>,
+    ) -> PicanteResult<()> {
+        let mut seen = HashSet::new();
+        let sources = files
+            .into_iter()
+            .filter(|file| seen.insert(*file))
+            .filter_map(|file| {
+                self.source_input(file)
+                    .map(|source| ContextSource { file, source })
+            })
+            .collect();
+        let input = ContextSourcesInput::new(self, context.clone(), sources)?;
+        self.context_inputs.insert(context, input);
+        Ok(())
+    }
+
+    pub(crate) async fn diagnostics_in_context(
+        &self,
+        context: &str,
+        file: FileId,
+    ) -> PicanteResult<Vec<Diagnostic>> {
+        let Some(context) = self.context_inputs.get(context).map(|input| *input) else {
+            return Ok(Vec::new());
+        };
+        let Some(source) = self.source_input(file) else {
+            return Ok(Vec::new());
+        };
+        diagnostics_for_file_in_context(self, context, file, source).await
     }
 
     async fn definition_check(&self, file: FileId) -> PicanteResult<CheckedFile> {

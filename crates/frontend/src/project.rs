@@ -7,6 +7,7 @@ use std::{
     fs::{self, File},
     io,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 /// Stable identity for a physical source document known to project analysis.
@@ -40,7 +41,12 @@ pub struct SourceEntry {
 }
 
 /// Project-level source store for physical documents and live editor buffers.
+#[derive(Clone)]
 pub struct ProjectSourceDb {
+    inner: Arc<ProjectSourceDbInner>,
+}
+
+struct ProjectSourceDbInner {
     entries: DashMap<PhysicalDocumentId, SourceEntry>,
 }
 
@@ -57,8 +63,12 @@ pub struct DocumentBundle {
     pub regions: Vec<ProjectSourceRegion>,
 }
 
+/// A source region published into the shared analysis host for one context.
+///
+/// The `file` is the shared analysis source identity. Multiple contexts can
+/// reference the same `file` when they import the same physical source region.
 #[derive(Clone, Debug)]
-pub struct ProjectHostSource {
+pub struct ProjectContextSource {
     pub context: AnalysisContextId,
     pub physical_document: PhysicalDocumentId,
     pub file: FileId,
@@ -66,11 +76,26 @@ pub struct ProjectHostSource {
     pub source_offset: u32,
 }
 
+/// Project-level analysis handle for source ownership and context routing.
+///
+/// Cloning this handle is cheap and shares the same source DB, shared analysis
+/// host, context source sets, and source-region allocation cache.
+#[derive(Clone)]
 pub struct ProjectAnalysis {
+    inner: Arc<ProjectAnalysisInner>,
+}
+
+struct ProjectAnalysisInner {
     sources: ProjectSourceDb,
-    hosts: DashMap<AnalysisContextId, AnalysisHost>,
-    bundles: DashMap<AnalysisContextId, DocumentBundle>,
-    host_sources: DashMap<AnalysisContextId, Vec<ProjectHostSource>>,
+    analysis: AnalysisHost,
+    contexts: DashMap<AnalysisContextId, Arc<AnalysisContextState>>,
+    source_files: DashMap<ProjectSourceRegion, FileId>,
+}
+
+#[derive(Clone, Debug)]
+struct AnalysisContextState {
+    bundle: DocumentBundle,
+    sources: Vec<ProjectContextSource>,
 }
 
 #[derive(Clone, Debug)]
@@ -119,12 +144,14 @@ impl Default for ProjectSourceDb {
 impl ProjectSourceDb {
     pub fn new() -> Self {
         Self {
-            entries: DashMap::new(),
+            inner: Arc::new(ProjectSourceDbInner {
+                entries: DashMap::new(),
+            }),
         }
     }
 
     pub fn insert(&self, entry: SourceEntry) {
-        self.entries.insert(entry.id.clone(), entry);
+        self.inner.entries.insert(entry.id.clone(), entry);
     }
 
     pub fn load_analysis_snapshot(
@@ -133,7 +160,7 @@ impl ProjectSourceDb {
     ) -> dsql_project::Result<PhysicalDocumentId> {
         let path = path.as_ref();
         let id = PhysicalDocumentId(path.to_path_buf());
-        if self.entries.contains_key(&id) {
+        if self.inner.entries.contains_key(&id) {
             return Ok(id);
         }
         let file = File::open(path).map_err(|source| dsql_project::ProjectError::ReadFile {
@@ -156,20 +183,26 @@ impl ProjectSourceDb {
     }
 
     pub fn physical_document(&self, document_id: &PhysicalDocumentId) -> Option<PhysicalDocument> {
-        self.entries.get(document_id).map(|entry| PhysicalDocument {
-            id: entry.id.clone(),
-            path: entry.path.clone(),
-            revision: entry.revision,
-            residency: entry.residency,
-        })
+        self.inner
+            .entries
+            .get(document_id)
+            .map(|entry| PhysicalDocument {
+                id: entry.id.clone(),
+                path: entry.path.clone(),
+                revision: entry.revision,
+                residency: entry.residency,
+            })
     }
 
     pub fn source(&self, document_id: &PhysicalDocumentId) -> Option<SourceEntry> {
-        self.entries.get(document_id).map(|entry| entry.clone())
+        self.inner
+            .entries
+            .get(document_id)
+            .map(|entry| entry.clone())
     }
 
     pub fn region_rope(&self, region: &ProjectSourceRegion) -> Option<(RevisionId, Rope)> {
-        let entry = self.entries.get(&region.physical_document)?;
+        let entry = self.inner.entries.get(&region.physical_document)?;
         let range = region.content_range.as_usize();
         if range.end > entry.rope.len() {
             return None;
@@ -187,36 +220,43 @@ impl Default for ProjectAnalysis {
 impl ProjectAnalysis {
     pub fn new() -> Self {
         Self {
-            sources: ProjectSourceDb::new(),
-            hosts: DashMap::new(),
-            bundles: DashMap::new(),
-            host_sources: DashMap::new(),
+            inner: Arc::new(ProjectAnalysisInner {
+                sources: ProjectSourceDb::new(),
+                analysis: AnalysisHost::new(),
+                contexts: DashMap::new(),
+                source_files: DashMap::new(),
+            }),
         }
     }
 
-    pub fn sources(&self) -> &ProjectSourceDb {
-        &self.sources
+    /// Returns the shared project source DB handle.
+    pub fn sources(&self) -> ProjectSourceDb {
+        self.inner.sources.clone()
     }
 
+    /// Inserts or replaces a physical source document in the project source DB.
     pub fn insert_source(&self, entry: SourceEntry) {
-        self.sources.insert(entry);
+        self.inner.sources.insert(entry);
     }
 
+    /// Returns physical document metadata without cloning retained source text.
     pub fn document(&self, document_id: &PhysicalDocumentId) -> Option<PhysicalDocument> {
-        self.sources.physical_document(document_id)
+        self.inner.sources.physical_document(document_id)
     }
 
-    pub fn insert_bundle(&self, bundle: DocumentBundle) -> AnalysisHost {
+    /// Publishes a context's visible source regions to the shared analysis host.
+    ///
+    /// Each unique source region is inserted into the analysis host once, then
+    /// referenced by every context source set that includes it.
+    pub fn insert_bundle(&self, bundle: DocumentBundle) {
         let context_id = bundle.context.id.clone();
-        let host = AnalysisHost::with_context(bundle.context.clone());
         let mut sources = Vec::new();
 
         for region in &bundle.regions {
-            let Some((revision, rope)) = self.sources.region_rope(region) else {
+            let Some(file) = self.ensure_source_file(region) else {
                 continue;
             };
-            let file = host.create_file_with_revision(revision, SourceSnapshot::from_rope(rope));
-            sources.push(ProjectHostSource {
+            sources.push(ProjectContextSource {
                 context: context_id.clone(),
                 physical_document: region.physical_document.clone(),
                 file,
@@ -225,48 +265,62 @@ impl ProjectAnalysis {
             });
         }
 
-        self.bundles.insert(context_id.clone(), bundle);
-        self.host_sources.insert(context_id.clone(), sources);
-        self.hosts.insert(context_id, host.clone());
-        host
+        self.inner.analysis.set_context_files(
+            &context_id,
+            sources.iter().map(|source| source.file).collect(),
+        );
+        self.inner.contexts.insert(
+            context_id,
+            Arc::new(AnalysisContextState { bundle, sources }),
+        );
     }
 
-    pub fn host(&self, context_id: &AnalysisContextId) -> Option<AnalysisHost> {
-        self.hosts.get(context_id).map(|host| host.clone())
+    /// Returns the shared Picante-backed analysis host.
+    pub fn analysis_host(&self) -> AnalysisHost {
+        self.inner.analysis.clone()
     }
 
-    pub fn hosts_for_document(&self, document_id: &PhysicalDocumentId) -> Vec<AnalysisHost> {
-        let mut context_ids = self
-            .bundles
+    /// Returns the context label and identity for an effective context.
+    pub fn context(&self, context_id: &AnalysisContextId) -> Option<AnalysisContext> {
+        self.inner
+            .contexts
+            .get(context_id)
+            .map(|state| state.bundle.context.clone())
+    }
+
+    /// Returns every effective context that includes a physical document.
+    pub fn contexts_for_document(&self, document_id: &PhysicalDocumentId) -> Vec<AnalysisContext> {
+        let mut contexts = self
+            .inner
+            .contexts
             .iter()
             .filter_map(|entry| {
                 entry
-                    .regions
+                    .sources
                     .iter()
-                    .any(|region| &region.physical_document == document_id)
-                    .then_some(entry.key().clone())
+                    .any(|source| &source.physical_document == document_id)
+                    .then(|| entry.bundle.context.clone())
             })
             .collect::<Vec<_>>();
-        context_ids.sort();
-        context_ids.dedup();
-        context_ids
-            .into_iter()
-            .filter_map(|context_id| self.host(&context_id))
-            .collect()
+        contexts.sort_by_key(|context| context.id.clone());
+        contexts
     }
 
-    pub fn host_count(&self) -> usize {
-        self.hosts.len()
+    /// Returns the number of effective analysis contexts.
+    pub fn context_count(&self) -> usize {
+        self.inner.contexts.len()
     }
 
-    pub fn host_sources_for_document(
+    /// Returns context source mappings for every context containing a document.
+    pub fn context_sources_for_document(
         &self,
         document_id: &PhysicalDocumentId,
-    ) -> Vec<ProjectHostSource> {
+    ) -> Vec<ProjectContextSource> {
         let mut sources = self
-            .host_sources
+            .inner
+            .contexts
             .iter()
-            .flat_map(|entry| entry.value().clone())
+            .flat_map(|entry| entry.sources.clone())
             .filter(|source| &source.physical_document == document_id)
             .collect::<Vec<_>>();
         sources.sort_by_key(|source| {
@@ -294,6 +348,7 @@ impl ProjectAnalysis {
 
         for project_document in project_documents {
             let document_id = analysis
+                .inner
                 .sources
                 .load_analysis_snapshot(&project_document.path)?;
             let start = project_document.source_offset;
@@ -324,22 +379,22 @@ impl ProjectAnalysis {
                 id: AnalysisContextId(effective.name.clone()),
                 label: effective.name,
             };
-            let host = analysis.insert_bundle(DocumentBundle { context, regions });
-            host.set_catalog(catalog.clone());
-            host.set_lint_options(lint_options);
+            analysis.insert_bundle(DocumentBundle { context, regions });
         }
+        analysis.inner.analysis.set_catalog(catalog);
+        analysis.inner.analysis.set_lint_options(lint_options);
 
         Ok(analysis)
     }
 
     pub fn present_diagnostic(&self, diagnostic: ProjectDiagnostic) -> Option<PresentedDiagnostic> {
-        let source = self.sources.source(&diagnostic.physical_document)?;
+        let source = self.inner.sources.source(&diagnostic.physical_document)?;
         let physical_range = TextRange::new(
             diagnostic.source_offset as usize + diagnostic.diagnostic.range.start as usize,
             diagnostic.source_offset as usize + diagnostic.diagnostic.range.end as usize,
         );
-        let context = if self.hosts.len() > 1 {
-            Some(self.host(&diagnostic.context)?.context())
+        let context = if self.inner.contexts.len() > 1 {
+            Some(self.context(&diagnostic.context)?)
         } else {
             None
         };
@@ -362,11 +417,13 @@ impl ProjectAnalysis {
         document_id: &PhysicalDocumentId,
     ) -> Vec<PresentedDiagnostic> {
         let mut diagnostics = Vec::new();
-        for source in self.host_sources_for_document(document_id) {
-            let Some(host) = self.host(&source.context) else {
-                continue;
-            };
-            let Some(source_diagnostics) = host.diagnostics(source.file).await else {
+        for source in self.context_sources_for_document(document_id) {
+            let Some(source_diagnostics) = self
+                .inner
+                .analysis
+                .diagnostics_in_context(&source.context, source.file)
+                .await
+            else {
                 continue;
             };
             diagnostics.extend(source_diagnostics.into_iter().filter_map(|diagnostic| {
@@ -390,6 +447,22 @@ impl ProjectAnalysis {
             )
         });
         diagnostics
+    }
+
+    fn ensure_source_file(&self, region: &ProjectSourceRegion) -> Option<FileId> {
+        let (revision, rope) = self.inner.sources.region_rope(region)?;
+        if let Some(file) = self.inner.source_files.get(region).map(|file| *file) {
+            self.inner
+                .analysis
+                .set_file_source(file, revision, SourceSnapshot::from_rope(rope));
+            return Some(file);
+        }
+        let file = self
+            .inner
+            .analysis
+            .create_file_with_revision(revision, SourceSnapshot::from_rope(rope));
+        self.inner.source_files.insert(region.clone(), file);
+        Some(file)
     }
 }
 
@@ -515,7 +588,12 @@ fn byte_to_position(rope: &Rope, byte: usize) -> SourcePosition {
 mod tests {
     use super::*;
     use dsql_core::{DiagnosticCode, DiagnosticSource, Severity};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn project_loading_builds_hosts_for_effective_contexts() {
@@ -566,25 +644,96 @@ imports = ["shared"]
         let analysis = ProjectAnalysis::load_from_project(&project).unwrap();
         let shared_id = PhysicalDocumentId(root.join("queries/shared/user_fields.dsql"));
         let shared_contexts = analysis
-            .host_sources_for_document(&shared_id)
+            .context_sources_for_document(&shared_id)
             .into_iter()
             .map(|source| source.context.0)
             .collect::<Vec<_>>();
-        let api = analysis
-            .host(&AnalysisContextId("api".to_string()))
-            .unwrap();
+        let shared_files = analysis
+            .context_sources_for_document(&shared_id)
+            .into_iter()
+            .map(|source| source.file)
+            .collect::<Vec<_>>();
+        let api = analysis.analysis_host();
 
-        assert_eq!(analysis.host_count(), 2);
+        assert_eq!(analysis.context_count(), 2);
         assert!(
             analysis
-                .host(&AnalysisContextId("shared".to_string()))
+                .context(&AnalysisContextId("shared".to_string()))
                 .is_none()
         );
         assert_eq!(shared_contexts, vec!["api", "frontend"]);
+        assert_eq!(shared_files.len(), 2);
+        assert_eq!(shared_files[0], shared_files[1]);
         assert_eq!(api.catalog().default_schema, "app");
         assert_eq!(api.lint_options().unindexed_scan_severity, None);
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cloned_project_handles_share_source_and_context_state() {
+        let analysis = ProjectAnalysis::new();
+        let clone = analysis.clone();
+        let document_id = PhysicalDocumentId(PathBuf::from("queries/users.dsql"));
+        let source = "query Users { users { id } }\n";
+
+        clone.insert_source(source_entry(document_id.clone(), source));
+        analysis.insert_bundle(bundle("api", full_region(&document_id, source)));
+
+        assert!(clone.document(&document_id).is_some());
+        assert_eq!(
+            clone
+                .contexts_for_document(&document_id)
+                .into_iter()
+                .map(|context| context.id.0)
+                .collect::<Vec<_>>(),
+            vec!["api"]
+        );
+    }
+
+    #[test]
+    fn cloned_source_db_handles_share_source_state() {
+        let sources = ProjectSourceDb::new();
+        let clone = sources.clone();
+        let document_id = PhysicalDocumentId(PathBuf::from("queries/shared.dsql"));
+
+        sources.insert(source_entry(
+            document_id.clone(),
+            "fragment Shared on users { id }\n",
+        ));
+
+        assert_eq!(
+            clone.physical_document(&document_id).unwrap().revision,
+            RevisionId(1)
+        );
+    }
+
+    #[test]
+    fn context_diagnostics_do_not_merge_peer_context_definitions() {
+        block_on(async {
+            let analysis = ProjectAnalysis::new();
+            let api_id = PhysicalDocumentId(PathBuf::from("queries/api/users.dsql"));
+            let frontend_id = PhysicalDocumentId(PathBuf::from("queries/frontend/users.dsql"));
+            let api_source = "query ApiUsers { users { ...FrontendOnly } }\n";
+            let frontend_source = "fragment FrontendOnly on users { id }\n";
+
+            analysis.insert_source(source_entry(api_id.clone(), api_source));
+            analysis.insert_source(source_entry(frontend_id.clone(), frontend_source));
+            analysis.insert_bundle(bundle("api", full_region(&api_id, api_source)));
+            analysis.insert_bundle(bundle(
+                "frontend",
+                full_region(&frontend_id, frontend_source),
+            ));
+
+            let diagnostics = analysis.diagnostics_for_document(&api_id).await;
+
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.diagnostic.code == DiagnosticCode::UnknownFragment),
+                "{diagnostics:?}"
+            );
+        });
     }
 
     #[test]
@@ -711,6 +860,24 @@ imports = ["api"]
         }
     }
 
+    fn full_region(document_id: &PhysicalDocumentId, source: &str) -> ProjectSourceRegion {
+        ProjectSourceRegion {
+            physical_document: document_id.clone(),
+            content_range: TextRange::new(0, source.len()),
+            source_offset: 0,
+        }
+    }
+
+    fn source_entry(document_id: PhysicalDocumentId, source: &str) -> SourceEntry {
+        SourceEntry {
+            id: document_id.clone(),
+            path: Some(document_id.0),
+            revision: RevisionId(1),
+            rope: Rope::from_str(source),
+            residency: SourceResidency::AnalysisSnapshot,
+        }
+    }
+
     fn temp_project_root(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -720,5 +887,33 @@ imports = ["api"]
             "dsql-frontend-{name}-{}-{unique}",
             std::process::id()
         ))
+    }
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let waker = noop_waker();
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        loop {
+            match Pin::new(&mut future).poll(&mut context) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
+    }
+
+    fn noop_waker() -> Waker {
+        fn clone(_: *const ()) -> RawWaker {
+            raw_waker()
+        }
+        fn wake(_: *const ()) {}
+        fn wake_by_ref(_: *const ()) {}
+        fn drop(_: *const ()) {}
+        fn raw_waker() -> RawWaker {
+            RawWaker::new(
+                std::ptr::null(),
+                &RawWakerVTable::new(clone, wake, wake_by_ref, drop),
+            )
+        }
+        unsafe { Waker::from_raw(raw_waker()) }
     }
 }
