@@ -225,12 +225,48 @@ import {
   defineDsqlGenerator,
   renderDsql,
 } from "@dsql/typescript/node";
+import path from "node:path";
+
+type ScopeRenderPaths = {
+  readonly queriesDir: string;
+  readonly executionDir?: string;
+};
+
+const renderPathsByScope: Record<string, ScopeRenderPaths | undefined> = {
+  default: {
+    queriesDir: "queries",
+  },
+  frontend: {
+    queriesDir: "queries",
+    executionDir: "queries.server",
+  },
+};
 
 export default defineDsqlGenerator(async ({ artifacts, root }) => {
-  return renderDsql(artifacts, {
-    root,
-    queriesDir: "src/generated/dsql",
-  });
+  const results = [];
+  const outDir = path.join(root, "src/generated/dsql");
+  const groups =
+    artifacts.artifactGroups.length > 0 ? artifacts.artifactGroups : [artifacts];
+
+  for (const group of groups) {
+    const scope = group.scopes[0] ?? { name: "default", imports: [] };
+    const paths = renderPathsByScope[scope.name];
+    if (!paths) {
+      continue;
+    }
+    results.push(
+      await renderDsql(group, {
+        root,
+        scope,
+        queriesDir: path.join(outDir, paths.queriesDir),
+        ...(paths.executionDir
+          ? { executionDir: path.join(outDir, paths.executionDir) }
+          : {}),
+      }),
+    );
+  }
+
+  return results;
 });
 ```
 

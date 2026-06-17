@@ -466,6 +466,7 @@ dependencies = [
  "camino",
  "dsql-core",
  "dsql-embedding",
+ "dsql-frontend",
  "dsql-metadata",
  "dsql-project",
  "facet",

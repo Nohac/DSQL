@@ -1,10 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use dsql_core::{
-    Catalog, CompilerDiagnostic, DefinitionRecord, Diagnostic, DsqlDiagnostic, FragmentMap,
-    QueryRecord, SourceSnapshot, TextRange, check_query_definition,
-    collect_compiler_diagnostic_sources, collect_query_compiler_diagnostics, extract_definitions,
-    lint_query_definition_with_options, parse_source, plan_query_definition,
-    sort_compiler_diagnostics,
+    Catalog, CompilerDiagnostic, DefinitionRecord, DsqlDiagnostic, FragmentMap, QueryRecord,
+    SourceSnapshot, check_query_definition, collect_compiler_diagnostic_sources,
+    collect_query_compiler_diagnostics, extract_definitions, lint_query_definition_with_options,
+    parse_source, plan_query_definition, sort_compiler_diagnostics,
 };
 use dsql_frontend::AnalysisHost;
 use miette::{IntoDiagnostic, NamedSource, Result};
@@ -248,13 +247,13 @@ async fn main() -> Result<()> {
         },
         Command::Validate => {
             let validation =
-                dsql_generate::validate_project_from(&std::env::current_dir().into_diagnostic()?)?;
+                dsql_generate::validate_project_from(&std::env::current_dir().into_diagnostic()?)
+                    .await?;
             print_validation_output(&validation);
             if validation
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.diagnostic.severity == dsql_core::Severity::Error)
-                || !validation.errors.is_empty()
             {
                 return Err(miette::miette!("dsql validation failed"));
             }
@@ -431,17 +430,18 @@ fn print_miette_diagnostic(
 
 fn print_validation_output(validation: &dsql_generate::ValidationOutput) {
     for diagnostic in &validation.diagnostics {
-        let source_text = std::fs::read_to_string(&diagnostic.file).unwrap_or_default();
+        let path = diagnostic
+            .path
+            .as_ref()
+            .unwrap_or(&diagnostic.physical_document.0);
+        let source_text = std::fs::read_to_string(path).unwrap_or_default();
         print_miette_diagnostic(
-            diagnostic.file.display().to_string(),
+            path.display().to_string(),
             source_text,
-            offset_diagnostic(&diagnostic.diagnostic, diagnostic.source_offset),
+            diagnostic.diagnostic.clone(),
         );
     }
-    for error in &validation.errors {
-        print_validation_error(error);
-    }
-    if validation.diagnostics.is_empty() && validation.errors.is_empty() {
+    if validation.diagnostics.is_empty() {
         println!(
             "validated {} document(s), {} quer{}",
             validation.document_count,
@@ -453,30 +453,4 @@ fn print_validation_output(validation: &dsql_generate::ValidationOutput) {
             }
         );
     }
-}
-
-fn print_validation_error(error: &dsql_generate::ValidationError) {
-    if let (Some(file), Some(source_offset), Some(range)) =
-        (&error.file, error.source_offset, error.range)
-    {
-        eprintln!(
-            "error: {} {:?} {}..{}: {}",
-            file.display(),
-            error.kind,
-            source_offset + range.start,
-            source_offset + range.end,
-            error.message
-        );
-    } else {
-        eprintln!("error: {:?}: {}", error.kind, error.message);
-    }
-}
-
-fn offset_diagnostic(diagnostic: &Diagnostic, source_offset: u32) -> Diagnostic {
-    let mut diagnostic = diagnostic.clone();
-    diagnostic.range = TextRange {
-        start: diagnostic.range.start + source_offset,
-        end: diagnostic.range.end + source_offset,
-    };
-    diagnostic
 }

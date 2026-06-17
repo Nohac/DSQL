@@ -11,6 +11,7 @@ process = ["tokio/process"]
 [dependencies]
 dsql-core = { workspace = true }
 dsql-embedding = { workspace = true }
+dsql-frontend = { workspace = true }
 dsql-metadata = { workspace = true }
 dsql-project = { workspace = true }
 camino = { workspace = true }

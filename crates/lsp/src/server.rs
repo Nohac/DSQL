@@ -1,8 +1,8 @@
-use crate::convert::{semantic_tokens_legend, to_lsp_diagnostic};
+use crate::convert::semantic_tokens_legend;
 use crate::position::{byte_to_position, encode_semantic_tokens};
 use dsql_frontend::{
-    AnalysisHost, CatalogDefinition, CompletionKind, DefinitionResult, DocumentDiagnostics,
-    RevisionId, TextEdit as FrontendTextEdit, TextEditRange, TextPosition,
+    CatalogDefinition, CompletionKind, DefinitionResult, PhysicalDocumentId, PresentedDiagnostic,
+    ProjectAnalysis, TextEdit as FrontendTextEdit, TextEditRange, TextPosition,
 };
 use std::str::FromStr;
 use std::{
@@ -47,7 +47,7 @@ pub async fn run_stdio() -> std::result::Result<(), Box<dyn Error + Send + Sync>
 
 struct Backend {
     client: Client,
-    analysis: AnalysisHost,
+    project: ProjectAnalysis,
     project_catalog_loaded: AtomicBool,
 }
 
@@ -55,7 +55,7 @@ impl Backend {
     fn new(client: Client) -> Self {
         Self {
             client,
-            analysis: AnalysisHost::new(),
+            project: ProjectAnalysis::new(),
             project_catalog_loaded: AtomicBool::new(false),
         }
     }
@@ -87,12 +87,10 @@ impl Backend {
     }
 
     async fn apply_project_catalog(&self, project: dsql_project::Project) -> bool {
-        match project.load_catalog() {
-            Ok(catalog) => {
-                info!(schema_dir = %project.schema.display(), "loaded catalog");
-                self.analysis.set_catalog(catalog);
-                self.analysis.set_lint_options(project.lint_options());
-                let indexed_count = self.index_project_documents(&project).await;
+        match self.project.reload_from_project(&project) {
+            Ok(()) => {
+                let indexed_count = self.project.source_scopes().len();
+                info!(schema_dir = %project.schema.display(), "loaded project analysis");
                 self.project_catalog_loaded.store(true, Ordering::Release);
                 self.client
                     .log_message(
@@ -145,52 +143,29 @@ impl Backend {
         self.apply_project_catalog(project).await;
     }
 
-    async fn publish_diagnostics(&self, result: DocumentDiagnostics) {
-        let uri = result.snapshot.uri.parse().ok();
-        let lsp_diagnostics = result
-            .diagnostics
+    async fn publish_diagnostics_for_document(&self, document_id: &PhysicalDocumentId) {
+        let Some(uri) = path_to_uri(&document_id.0) else {
+            return;
+        };
+        let version = self
+            .project
+            .document(document_id)
+            .map(|document| document.revision.0.min(i32::MAX as u64) as i32);
+        let diagnostics = self
+            .project
+            .diagnostics_for_document(document_id)
+            .await
             .iter()
-            .map(|diagnostic| to_lsp_diagnostic(diagnostic, &result.snapshot.rope))
+            .map(to_lsp_presented_diagnostic)
             .collect();
-        if let Some(uri) = uri {
-            self.client
-                .publish_diagnostics(uri, lsp_diagnostics, Some(result.snapshot.version))
-                .await;
-        }
+        self.client
+            .publish_diagnostics(uri, diagnostics, version)
+            .await;
     }
 
-    async fn publish_document_diagnostics(&self, results: Vec<DocumentDiagnostics>) {
-        for result in results {
-            self.publish_diagnostics(result).await;
-        }
-    }
-
-    async fn index_project_documents(&self, project: &dsql_project::Project) -> usize {
-        match load_project_index_documents(project) {
-            Ok(documents) => {
-                let count = documents.len();
-                self.analysis.clear_indexed_documents();
-                for document in documents {
-                    self.analysis.index_document_source(
-                        document.uri,
-                        RevisionId(document.revision),
-                        document.text,
-                        document.source_offset,
-                    );
-                }
-                info!(count, "indexed project documents");
-                count
-            }
-            Err(error) => {
-                warn!(error = ?error, "failed to index project documents");
-                self.client
-                    .log_message(
-                        MessageType::WARNING,
-                        format!("dsql failed to index project documents: {error}"),
-                    )
-                    .await;
-                0
-            }
+    async fn publish_open_document_diagnostics(&self) {
+        for document_id in self.project.open_documents() {
+            self.publish_diagnostics_for_document(&document_id).await;
         }
     }
 }
@@ -247,11 +222,12 @@ impl LanguageServer for Backend {
         let version = params.text_document.version;
         let uri = uri.to_string();
         self.load_project_catalog_for_document(&uri).await;
-        self.analysis
-            .open_document(uri.clone(), version, params.text_document.text)
-            .await;
-        self.publish_document_diagnostics(self.analysis.open_document_diagnostics().await)
-            .await;
+        if let Some(path) = file_uri_to_path(&uri) {
+            let document_id = PhysicalDocumentId(path.clone());
+            self.project
+                .open_document(document_id, Some(path), version, params.text_document.text);
+            self.publish_open_document_diagnostics().await;
+        }
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -274,24 +250,29 @@ impl LanguageServer for Backend {
                 text: change.text,
             })
             .collect();
-        let result = self
-            .analysis
-            .change_document(uri.to_string(), version, edits)
-            .await;
-        if result.is_some() {
-            self.publish_document_diagnostics(self.analysis.open_document_diagnostics().await)
-                .await;
+        if let Some(path) = file_uri_to_path(uri.as_str()) {
+            let document_id = PhysicalDocumentId(path);
+            if self
+                .project
+                .change_document(&document_id, version, edits)
+                .is_some()
+            {
+                self.publish_open_document_diagnostics().await;
+            }
         }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         let uri_string = uri.to_string();
-        self.analysis.close_document(&uri_string);
-        if let Some(path) = file_uri_to_path(&uri_string).and_then(|path| parent_or_self(&path))
-            && let Some(project) = dsql_project::Project::try_load_from(&path)
-        {
-            self.index_project_documents(&project).await;
+        if let Some(path) = file_uri_to_path(&uri_string) {
+            let document_id = PhysicalDocumentId(path.clone());
+            self.project.close_document(&document_id);
+            if let Some(start) = parent_or_self(&path)
+                && let Some(project) = dsql_project::Project::try_load_from(&start)
+            {
+                self.apply_project_catalog(project).await;
+            }
         }
         self.client.publish_diagnostics(uri, Vec::new(), None).await;
     }
@@ -300,7 +281,10 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         let uri_string = uri.to_string();
         info!(uri = %uri_string, "formatting request");
-        let Some(format) = self.analysis.document_format(&uri_string).await else {
+        let Some(document_id) = file_uri_to_path(&uri_string).map(PhysicalDocumentId) else {
+            return Ok(None);
+        };
+        let Some(format) = self.project.document_format(&document_id).await else {
             info!(uri = %uri_string, "formatting skipped; no format result");
             return Ok(None);
         };
@@ -336,23 +320,21 @@ impl LanguageServer for Backend {
             line: position.line,
             character: position.character,
         };
+        let Some(document_id) = file_uri_to_path(&uri_string).map(PhysicalDocumentId) else {
+            return Ok(None);
+        };
         let request_byte = self
-            .analysis
-            .document_byte_offset(&uri_string, text_position);
+            .project
+            .document_byte_offset(&document_id, text_position);
         let request_context = request_byte
-            .and_then(|byte| completion_source_context(&self.analysis, &uri_string, byte));
-        let frontend_context = self
-            .analysis
-            .completion_context_debug(&uri_string, text_position)
-            .await;
-        let Some(items) = self.analysis.completions(&uri_string, text_position).await else {
+            .and_then(|byte| completion_source_context(&self.project, &document_id, byte));
+        let Some(items) = self.project.completions(&document_id, text_position).await else {
             info!(
                 uri = uri.as_str(),
                 line = position.line,
                 character = position.character,
                 byte = request_byte,
                 context = request_context.as_deref().unwrap_or("<unavailable>"),
-                frontend_context = frontend_context.as_deref().unwrap_or("<unavailable>"),
                 "completion request returned no document"
             );
             return Ok(None);
@@ -364,7 +346,6 @@ impl LanguageServer for Backend {
             character = position.character,
             byte = request_byte,
             context = request_context.as_deref().unwrap_or("<unavailable>"),
-            frontend_context = frontend_context.as_deref().unwrap_or("<unavailable>"),
             count = items.len(),
             labels = %items
                 .iter()
@@ -399,10 +380,13 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+        let Some(document_id) = file_uri_to_path(uri.as_str()).map(PhysicalDocumentId) else {
+            return Ok(None);
+        };
         let Some(info) = self
-            .analysis
+            .project
             .hover(
-                &uri.to_string(),
+                &document_id,
                 TextPosition {
                     line: position.line,
                     character: position.character,
@@ -428,10 +412,13 @@ impl LanguageServer for Backend {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+        let Some(document_id) = file_uri_to_path(uri.as_str()).map(PhysicalDocumentId) else {
+            return Ok(None);
+        };
         let Some(definition) = self
-            .analysis
+            .project
             .definition(
-                &uri.to_string(),
+                &document_id,
                 TextPosition {
                     line: position.line,
                     character: position.character,
@@ -444,14 +431,7 @@ impl LanguageServer for Backend {
 
         let location = match definition {
             DefinitionResult::Source(source) => {
-                let Ok(uri) = Uri::from_str(&source.uri) else {
-                    return Ok(None);
-                };
-                let Some(rope) = self
-                    .analysis
-                    .document_snapshot(&source.uri)
-                    .map(|snapshot| snapshot.rope)
-                    .or_else(|| source_rope_for_uri(&source.uri))
+                let Some((uri, rope)) = source_definition_uri_and_rope(&self.project, &source)
                 else {
                     return Ok(None);
                 };
@@ -487,7 +467,10 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri;
-        let Some(tokens) = self.analysis.semantic_tokens(&uri.to_string()).await else {
+        let Some(document_id) = file_uri_to_path(uri.as_str()).map(PhysicalDocumentId) else {
+            return Ok(None);
+        };
+        let Some(tokens) = self.project.semantic_tokens(&document_id).await else {
             return Ok(None);
         };
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
@@ -504,58 +487,66 @@ fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
         .map(|path| path.into_owned())
 }
 
-struct ProjectIndexDocument {
-    uri: String,
-    text: String,
-    source_offset: usize,
-    revision: u64,
+fn to_lsp_presented_diagnostic(
+    diagnostic: &PresentedDiagnostic,
+) -> tower_lsp_server::lsp_types::Diagnostic {
+    let message = if let Some(context) = &diagnostic.context {
+        format!("[{}] {}", context.label, diagnostic.diagnostic.message)
+    } else {
+        diagnostic.diagnostic.message.clone()
+    };
+    tower_lsp_server::lsp_types::Diagnostic {
+        range: Range {
+            start: Position::new(
+                diagnostic.start_position.line,
+                diagnostic.start_position.character,
+            ),
+            end: Position::new(
+                diagnostic.end_position.line,
+                diagnostic.end_position.character,
+            ),
+        },
+        severity: Some(match diagnostic.diagnostic.severity {
+            dsql_core::Severity::Error => tower_lsp_server::lsp_types::DiagnosticSeverity::ERROR,
+            dsql_core::Severity::Warning => {
+                tower_lsp_server::lsp_types::DiagnosticSeverity::WARNING
+            }
+            dsql_core::Severity::Info => {
+                tower_lsp_server::lsp_types::DiagnosticSeverity::INFORMATION
+            }
+        }),
+        code: Some(tower_lsp_server::lsp_types::NumberOrString::String(
+            format!("{:?}", diagnostic.diagnostic.code),
+        )),
+        source: Some("dsql".to_string()),
+        message,
+        ..tower_lsp_server::lsp_types::Diagnostic::default()
+    }
 }
 
-fn load_project_index_documents(
-    project: &dsql_project::Project,
-) -> std::result::Result<Vec<ProjectIndexDocument>, String> {
-    let documents = dsql_project::load_project_documents(project)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .map(|document| {
-            let revision = file_revision(&document.path);
-            Ok(ProjectIndexDocument {
-                uri: path_to_uri(&document.path)
-                    .map(|uri| uri.to_string())
-                    .ok_or_else(|| {
-                        format!("failed to convert {} to URI", document.path.display())
-                    })?,
-                text: document.text,
-                source_offset: document.source_offset,
-                revision,
-            })
-        })
-        .collect::<std::result::Result<Vec<_>, String>>()?;
-    let mut documents = documents;
-    documents.sort_by(|left, right| {
-        left.uri
-            .cmp(&right.uri)
-            .then(left.source_offset.cmp(&right.source_offset))
-    });
-    Ok(documents)
+fn source_definition_uri_and_rope(
+    project: &ProjectAnalysis,
+    source: &dsql_frontend::SourceDefinition,
+) -> Option<(Uri, ropey::Rope)> {
+    let path = file_uri_to_path(&source.uri).unwrap_or_else(|| PathBuf::from(&source.uri));
+    let uri = path_to_uri(&path)?;
+    let rope = project
+        .document_snapshot(&PhysicalDocumentId(path.clone()))
+        .map(|snapshot| snapshot.rope)
+        .or_else(|| {
+            fs::read_to_string(&path)
+                .ok()
+                .map(|text| ropey::Rope::from_str(&text))
+        })?;
+    Some((uri, rope))
 }
 
-fn source_rope_for_uri(uri: &str) -> Option<ropey::Rope> {
-    let path = file_uri_to_path(uri)?;
-    let text = fs::read_to_string(path).ok()?;
-    Some(ropey::Rope::from_str(&text))
-}
-
-fn file_revision(path: &Path) -> u64 {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |duration| duration.as_secs())
-}
-
-fn completion_source_context(analysis: &AnalysisHost, uri: &str, byte: usize) -> Option<String> {
-    let snapshot = analysis.document_snapshot(uri)?;
+fn completion_source_context(
+    project: &ProjectAnalysis,
+    document_id: &PhysicalDocumentId,
+    byte: usize,
+) -> Option<String> {
+    let snapshot = project.document_snapshot(document_id)?;
     let start = byte.saturating_sub(80);
     let end = (byte + 80).min(snapshot.rope.len());
     let before = snapshot.rope.slice(start..byte).to_string();
@@ -643,7 +634,6 @@ fn parent_or_self(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn catalog_yaml_range_targets_column_lines() {
@@ -667,75 +657,33 @@ columns:
     }
 
     #[test]
-    fn project_index_documents_load_default_dsql_files() {
-        let root = temp_project_root("default-dsql");
-        fs::create_dir_all(root.join("dsql")).unwrap();
-        fs::create_dir_all(root.join("queries")).unwrap();
-        fs::write(
-            root.join("dsql/dsql.toml"),
-            r#"database_url = "<database url>"
-documents = []
-"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("queries/fragments.dsql"),
-            "fragment ClosedFields on users { id }",
-        )
-        .unwrap();
+    fn source_definition_plain_path_returns_file_uri() {
+        let root = std::env::temp_dir().join(format!(
+            "dsql-lsp-uri-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("fragments.dsql");
+        fs::write(&path, "fragment TitleFields on titles { id }").unwrap();
 
-        let project = dsql_project::Project::load_from(&root).unwrap();
-        let documents = load_project_index_documents(&project).unwrap();
+        let source = dsql_frontend::SourceDefinition {
+            uri: path.display().to_string(),
+            range: dsql_core::TextRange::new(0, 8),
+            kind: dsql_frontend::SourceDefinitionKind::Fragment,
+        };
 
-        assert_eq!(documents.len(), 1);
-        assert!(documents[0].uri.ends_with("/queries/fragments.dsql"));
-        assert_eq!(documents[0].source_offset, 0);
-        assert_eq!(documents[0].text, "fragment ClosedFields on users { id }");
+        let (uri, rope) = source_definition_uri_and_rope(&ProjectAnalysis::new(), &source).unwrap();
 
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn project_index_documents_load_embedded_typescript_regions() {
-        let root = temp_project_root("embedded-typescript");
-        fs::create_dir_all(root.join("dsql")).unwrap();
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(
-            root.join("dsql/dsql.toml"),
-            r#"database_url = "<database url>"
-documents = [{ resolver = "typescript", paths = ["src/**/*.ts"] }]
-"#,
-        )
-        .unwrap();
-        let source = r#"import { dsql } from "@dsql/typescript";
-
-export const Fields = dsql(`
-fragment ClosedFields on users {
-  id
-}
-`);
-"#;
-        fs::write(root.join("src/fragments.ts"), source).unwrap();
-
-        let project = dsql_project::Project::load_from(&root).unwrap();
-        let documents = load_project_index_documents(&project).unwrap();
-
-        assert_eq!(documents.len(), 1);
-        assert!(documents[0].uri.ends_with("/src/fragments.ts"));
+        assert_eq!(uri.scheme().map(|scheme| scheme.as_str()), Some("file"));
         assert_eq!(
-            documents[0].source_offset,
-            source.find(&documents[0].text).unwrap()
+            file_uri_to_path(uri.as_str()).as_deref(),
+            Some(path.as_path())
         );
-        assert!(documents[0].text.contains("fragment ClosedFields"));
+        assert_eq!(rope.to_string(), "fragment TitleFields on titles { id }");
 
         fs::remove_dir_all(root).unwrap();
-    }
-
-    fn temp_project_root(name: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("dsql-lsp-{name}-{}-{unique}", std::process::id()))
     }
 }

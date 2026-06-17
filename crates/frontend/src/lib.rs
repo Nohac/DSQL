@@ -11,7 +11,6 @@ mod project;
 mod provider;
 mod semantic_tokens;
 
-pub use analysis::{analyze_source, collect_diagnostics};
 pub use completion::{CompletionItem, CompletionKind};
 pub use db::{AnalysisResult, ParsedFile};
 pub use definition::{CatalogDefinition, DefinitionResult, SourceDefinition, SourceDefinitionKind};
@@ -27,7 +26,8 @@ pub use host::{AnalysisContext, AnalysisContextId, AnalysisHost};
 pub use hover::HoverInfo;
 pub use project::{
     DocumentBundle, PhysicalDocument, PhysicalDocumentId, PresentedDiagnostic, ProjectAnalysis,
-    ProjectContextSource, ProjectDiagnostic, ProjectSourceDb, ProjectSourceRegion, SourceEntry,
+    ProjectContextSource, ProjectDiagnostic, ProjectGenerationContext, ProjectGenerationDefinition,
+    ProjectGenerationModel, ProjectSourceDb, ProjectSourceRegion, ProjectSourceScope, SourceEntry,
     SourcePosition, SourceResidency,
 };
 pub use provider::{CatalogProvider, HardcodedCatalogProvider};

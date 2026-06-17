@@ -42,6 +42,8 @@ pub enum DiagnosticCode {
     RelationSelectionSet,
     ClauseValueTypeMismatch,
     PredicateTypeMismatch,
+    AnonymousQuery,
+    DuplicateAnonymousVariable,
     FormatParseError,
 }
 
@@ -53,6 +55,7 @@ pub enum DiagnosticSource {
     Check,
     Lint,
     Plan,
+    Generate,
     Format,
 }
 

@@ -1,15 +1,12 @@
 use dsql_core::{
-    Catalog, DefinitionRecord, DefinitionResolver, Diagnostic, DsqlDiagnostic, FieldCheckResult,
-    FragmentMap, FragmentRecord, InputPathSegment, QueryPlan, QueryRecord, Selection,
-    SelectionClauses, SelectionKind, SelectionPlan, SelectionPlanItem, Severity, SourceSnapshot,
-    SqlValue, TableId, TextRange, VariableBinding, check_fragment_definition,
-    check_query_definition, collect_compiler_diagnostic_sources,
-    collect_query_compiler_diagnostics, duplicate_fragment_errors, extract_definitions,
+    Catalog, DefinitionRecord, DefinitionResolver, FieldCheckResult, FragmentMap, FragmentRecord,
+    InputPathSegment, QueryPlan, QueryRecord, Selection, SelectionClauses, SelectionKind,
+    SelectionPlan, SelectionPlanItem, Severity, SqlValue, TableId, VariableBinding,
     generate_postgres_sql_with_options, infer_fragment_variable_bindings,
-    infer_query_variable_bindings, is_input_path, is_params_path,
-    lint_query_definition_with_options, parse_source, plan_fragment_definition,
+    infer_query_variable_bindings, is_input_path, is_params_path, plan_fragment_definition,
     plan_query_definition,
 };
+use dsql_frontend::ProjectAnalysis;
 use dsql_metadata::{
     BuildManifest, DefinitionKind, DynamicInputMetadata, FragmentManifestEntry, FragmentMetadata,
     FragmentSpreadMetadata, HandoffMetadata, InputField, OperationManifestEntry, OperationMetadata,
@@ -19,7 +16,7 @@ use dsql_metadata::{
 };
 use facet::Facet;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
 };
 
@@ -40,19 +37,11 @@ pub struct GenerateOptions {
     pub sql_collection_limit: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct GenerateDocument {
-    pub path: PathBuf,
-    pub text: String,
-    pub source_offset: u32,
-    pub resolution_scope: String,
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct GenerateInput {
     pub project: dsql_project::Project,
     pub catalog: Catalog,
-    pub documents: Vec<GenerateDocument>,
+    pub analysis: ProjectAnalysis,
     pub options: GenerateOptions,
 }
 
@@ -66,62 +55,10 @@ pub struct GenerateOutput {
 pub struct ValidationOutput {
     pub document_count: usize,
     pub query_count: usize,
-    pub diagnostics: Vec<ValidationDiagnostic>,
-    pub errors: Vec<ValidationError>,
+    pub diagnostics: Vec<LanguageDiagnostic>,
 }
 
-#[derive(Clone, Debug)]
-pub struct ValidationDiagnostic {
-    pub file: PathBuf,
-    pub source_offset: u32,
-    pub diagnostic: Diagnostic,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValidationError {
-    pub kind: ValidationErrorKind,
-    pub message: String,
-    pub file: Option<PathBuf>,
-    pub source_offset: Option<u32>,
-    pub range: Option<TextRange>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ValidationErrorKind {
-    AnonymousQuery,
-    DuplicateAnonymousVariable,
-    DuplicateQuery,
-    CyclicResolutionImport,
-    UnknownResolutionImport,
-}
-
-impl ValidationError {
-    fn project(kind: ValidationErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-            file: None,
-            source_offset: None,
-            range: None,
-        }
-    }
-
-    fn source(
-        kind: ValidationErrorKind,
-        message: impl Into<String>,
-        file: impl Into<PathBuf>,
-        source_offset: u32,
-        range: TextRange,
-    ) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-            file: Some(file.into()),
-            source_offset: Some(source_offset),
-            range: Some(range),
-        }
-    }
-}
+pub type LanguageDiagnostic = dsql_frontend::PresentedDiagnostic;
 
 #[derive(Clone, Debug, Facet)]
 pub struct GeneratedOperationArtifact {
@@ -181,13 +118,13 @@ where
     W: ArtifactWriter,
     R: GeneratorRunner,
 {
-    if input.documents.is_empty() {
+    if input.analysis.source_scopes().is_empty() {
         return Err(GenerateError::NoDocuments {
             project: project_root(&input.project).display().to_string(),
         });
     }
 
-    let built = build_artifacts(&input)?;
+    let built = build_artifacts(&input).await?;
     let operations = built.operations;
     let fragments = built.fragments;
     let mut written_operations = Vec::with_capacity(operations.len());
@@ -245,17 +182,17 @@ where
     })
 }
 
-pub(crate) fn generate_project_artifacts(input: GenerateInput) -> Result<GeneratedArtifacts> {
-    if input.documents.is_empty() {
+pub(crate) async fn generate_project_artifacts(input: GenerateInput) -> Result<GeneratedArtifacts> {
+    if input.analysis.source_scopes().is_empty() {
         return Err(GenerateError::NoDocuments {
             project: project_root(&input.project).display().to_string(),
         });
     }
 
-    let built = build_artifacts(&input)?;
+    let built = build_artifacts(&input).await?;
     let base = project_root(&input.project);
     let scopes = generated_resolution_scopes(&input.project);
-    let source_file_scopes = generated_source_scopes(&input.documents);
+    let source_file_scopes = generated_source_scopes(&input.analysis);
     let mut generated_operations = Vec::new();
     let mut generated_fragments = Vec::new();
     let mut operation_manifest_entries = Vec::new();
@@ -367,242 +304,30 @@ fn generated_resolution_scopes(project: &dsql_project::Project) -> Vec<Generated
         .collect()
 }
 
-fn generated_source_scopes(documents: &[GenerateDocument]) -> Vec<GeneratedSourceScope> {
-    documents
+fn generated_source_scopes(analysis: &ProjectAnalysis) -> Vec<GeneratedSourceScope> {
+    analysis
+        .source_scopes()
         .iter()
-        .map(|document| GeneratedSourceScope {
-            file: document.path.to_string_lossy().to_string(),
-            source_offset: document.source_offset,
-            scope: document.resolution_scope.clone(),
+        .map(|scope| GeneratedSourceScope {
+            file: scope
+                .path
+                .as_ref()
+                .unwrap_or(&scope.physical_document.0)
+                .to_string_lossy()
+                .to_string(),
+            source_offset: scope.source_offset,
+            scope: scope.resolution_scope.clone(),
         })
         .collect()
 }
 
-pub(crate) fn validate_project(input: GenerateInput) -> ValidationOutput {
-    let mut queries = Vec::<LoadedQuery>::new();
-    let mut loaded_fragments = Vec::<LoadedFragment>::new();
-    let mut diagnostics = Vec::<ValidationDiagnostic>::new();
-    let mut errors = Vec::<ValidationError>::new();
-
-    for document in &input.documents {
-        let parsed = parse_source(SourceSnapshot::from_string(document.text.clone()));
-        diagnostics.extend(
-            parsed
-                .diagnostics
-                .iter()
-                .cloned()
-                .map(|diagnostic| validation_diagnostic(document, diagnostic)),
-        );
-        let extracted = extract_definitions(&parsed.source_file);
-        for definition in extracted.definitions {
-            match definition {
-                DefinitionRecord::Query(query) => queries.push(LoadedQuery {
-                    file: document.path.clone(),
-                    source_offset: document.source_offset,
-                    resolution_scope: document.resolution_scope.clone(),
-                    query,
-                }),
-                DefinitionRecord::Fragment(fragment) => {
-                    loaded_fragments.push(LoadedFragment {
-                        file: document.path.clone(),
-                        source_offset: document.source_offset,
-                        resolution_scope: document.resolution_scope.clone(),
-                        fragment,
-                    });
-                }
-            }
-        }
-    }
-
-    let query_count = queries.len();
-    match scope_definitions(&input, queries, loaded_fragments) {
-        Ok(scopes) => {
-            for scope in scopes {
-                let fragments = scope.fragment_map();
-                for fragment in &scope.fragments {
-                    let checked =
-                        check_fragment_definition(&fragment.fragment, &fragments, &input.catalog);
-                    diagnostics.extend(
-                        checked
-                            .diagnostics
-                            .into_iter()
-                            .map(|diagnostic| fragment_validation_diagnostic(fragment, diagnostic)),
-                    );
-                }
-                diagnostics.extend(duplicate_fragment_validation_diagnostics(
-                    &scope, &fragments,
-                ));
-
-                for fragment in &scope.fragments {
-                    let variables = infer_fragment_variable_bindings(
-                        &fragment.fragment,
-                        &fragments,
-                        &input.catalog,
-                    )
-                    .bindings;
-                    if let Err(error) = validate_variable_bindings(
-                        DefinitionKind::Fragment,
-                        &fragment.fragment.key.name,
-                        &fragment.file,
-                        fragment.source_offset,
-                        &variables,
-                    ) {
-                        errors.push(error);
-                    }
-                }
-
-                for query in &scope.queries {
-                    let checked = check_query_definition(&query.query, &fragments, &input.catalog);
-                    let linted = lint_query_definition_with_options(
-                        &query.query,
-                        &fragments,
-                        &input.catalog,
-                        input.project.lint_options(),
-                    );
-                    let planned = plan_query_definition(&query.query, &fragments, &input.catalog);
-                    diagnostics.extend(
-                        checked
-                            .diagnostics
-                            .into_iter()
-                            .map(|diagnostic| query_validation_diagnostic(query, diagnostic))
-                            .chain(
-                                linted.diagnostics.into_iter().map(|diagnostic| {
-                                    query_validation_diagnostic(query, diagnostic)
-                                }),
-                            )
-                            .chain(
-                                planned.diagnostics.into_iter().map(|diagnostic| {
-                                    query_validation_diagnostic(query, diagnostic)
-                                }),
-                            ),
-                    );
-                    if let Some(query_name) = query.query.key.name.as_deref() {
-                        let variables =
-                            infer_query_variable_bindings(&query.query, &fragments, &input.catalog)
-                                .bindings;
-                        if let Err(error) = validate_variable_bindings(
-                            DefinitionKind::Query,
-                            query_name,
-                            &query.file,
-                            query.source_offset,
-                            &variables,
-                        ) {
-                            errors.push(error);
-                        }
-                    } else {
-                        errors.push(anonymous_query_error(query));
-                    }
-                }
-            }
-        }
-        Err(error) => errors.push(error),
-    }
-
-    sort_validation_diagnostics(&mut diagnostics);
-    sort_validation_errors(&mut errors);
+pub(crate) async fn validate_project(input: GenerateInput) -> ValidationOutput {
+    let model = input.analysis.generation_model().await;
     ValidationOutput {
-        document_count: input.documents.len(),
-        query_count,
-        diagnostics,
-        errors,
+        document_count: model.document_count,
+        query_count: model.query_count,
+        diagnostics: model.diagnostics,
     }
-}
-
-fn sort_validation_diagnostics(diagnostics: &mut [ValidationDiagnostic]) {
-    diagnostics.sort_by(|left, right| {
-        left.file.cmp(&right.file).then(
-            (left.source_offset + left.diagnostic.range.start)
-                .cmp(&(right.source_offset + right.diagnostic.range.start)),
-        )
-    });
-}
-
-fn sort_validation_errors(errors: &mut [ValidationError]) {
-    errors.sort_by(|left, right| {
-        left.file
-            .cmp(&right.file)
-            .then(
-                left.source_offset
-                    .unwrap_or_default()
-                    .cmp(&right.source_offset.unwrap_or_default()),
-            )
-            .then(
-                left.range
-                    .map(|range| range.start)
-                    .unwrap_or_default()
-                    .cmp(&right.range.map(|range| range.start).unwrap_or_default()),
-            )
-            .then(left.kind.cmp(&right.kind))
-            .then(left.message.cmp(&right.message))
-    });
-}
-
-fn validation_diagnostic(
-    document: &GenerateDocument,
-    diagnostic: Diagnostic,
-) -> ValidationDiagnostic {
-    ValidationDiagnostic {
-        file: document.path.clone(),
-        source_offset: document.source_offset,
-        diagnostic,
-    }
-}
-
-fn query_validation_diagnostic(
-    query: &LoadedQuery,
-    diagnostic: impl DsqlDiagnostic,
-) -> ValidationDiagnostic {
-    ValidationDiagnostic {
-        file: query.file.clone(),
-        source_offset: query.source_offset,
-        diagnostic: diagnostic.to_transport(),
-    }
-}
-
-fn fragment_validation_diagnostic(
-    fragment: &LoadedFragment,
-    diagnostic: impl DsqlDiagnostic,
-) -> ValidationDiagnostic {
-    ValidationDiagnostic {
-        file: fragment.file.clone(),
-        source_offset: fragment.source_offset,
-        diagnostic: diagnostic.to_transport(),
-    }
-}
-
-fn duplicate_fragment_validation_diagnostics(
-    scope: &ScopeDefinitions,
-    fragments: &FragmentMap,
-) -> Vec<ValidationDiagnostic> {
-    duplicate_fragment_errors(fragments)
-        .into_iter()
-        .filter_map(|diagnostic| {
-            scope
-                .fragments
-                .iter()
-                .find(|fragment| {
-                    fragment.fragment.key.name.as_str()
-                        == match &diagnostic.kind {
-                            dsql_core::CheckDiagnosticKind::DuplicateFragment { name } => {
-                                name.as_str()
-                            }
-                            _ => return false,
-                        }
-                        && fragment.fragment.name_range == diagnostic.range
-                })
-                .map(|fragment| fragment_validation_diagnostic(fragment, diagnostic))
-        })
-        .collect()
-}
-
-fn anonymous_query_error(query: &LoadedQuery) -> ValidationError {
-    ValidationError::source(
-        ValidationErrorKind::AnonymousQuery,
-        "anonymous queries cannot be generated",
-        query.file.clone(),
-        query.source_offset,
-        query.query.name_range.unwrap_or(query.query.range),
-    )
 }
 
 #[derive(Clone, Debug)]
@@ -621,46 +346,10 @@ struct BuiltArtifactGroup {
     fragments: Vec<FragmentArtifact>,
 }
 
-fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
-    fail_on_validation_output(validate_project(input.clone()))?;
-
-    let mut queries = Vec::<LoadedQuery>::new();
-    let mut loaded_fragments = Vec::<LoadedFragment>::new();
-    let mut parse_diagnostics = Vec::<ValidationDiagnostic>::new();
-
-    for document in &input.documents {
-        let parsed = parse_source(SourceSnapshot::from_string(document.text.clone()));
-        parse_diagnostics.extend(
-            parsed
-                .diagnostics
-                .clone()
-                .into_iter()
-                .map(|diagnostic| validation_diagnostic(document, diagnostic)),
-        );
-        let extracted = extract_definitions(&parsed.source_file);
-        for definition in extracted.definitions {
-            match definition {
-                DefinitionRecord::Query(query) => queries.push(LoadedQuery {
-                    file: document.path.clone(),
-                    source_offset: document.source_offset,
-                    resolution_scope: document.resolution_scope.clone(),
-                    query,
-                }),
-                DefinitionRecord::Fragment(fragment) => {
-                    loaded_fragments.push(LoadedFragment {
-                        file: document.path.clone(),
-                        source_offset: document.source_offset,
-                        resolution_scope: document.resolution_scope.clone(),
-                        fragment,
-                    });
-                }
-            }
-        }
-    }
-
-    fail_on_error_diagnostics(parse_diagnostics)?;
-
-    let scopes = scope_definitions(input, queries, loaded_fragments)?;
+async fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
+    fail_on_validation_output(validate_project(input.clone()).await)?;
+    let model = input.analysis.generation_model().await;
+    let scopes = scope_definitions_from_model(input, &model);
     let mut groups = Vec::new();
     let mut all_operations = Vec::new();
     let mut all_fragments = Vec::new();
@@ -668,9 +357,6 @@ fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
     let mut emitted_flat_fragments = HashSet::new();
     for scope in scopes {
         let fragments = scope.fragment_map();
-        fail_on_error_diagnostics(duplicate_fragment_validation_diagnostics(
-            &scope, &fragments,
-        ))?;
 
         let mut fragment_artifacts = Vec::new();
         for fragment in &scope.fragments {
@@ -719,118 +405,53 @@ fn build_artifacts(input: &GenerateInput) -> Result<BuiltArtifacts> {
     })
 }
 
-fn scope_definitions(
+fn scope_definitions_from_model(
     input: &GenerateInput,
-    queries: Vec<LoadedQuery>,
-    fragments: Vec<LoadedFragment>,
-) -> std::result::Result<Vec<ScopeDefinitions>, ValidationError> {
-    let mut locals = scope_locals(input);
-    for query in queries {
-        locals
-            .entry(query.resolution_scope.clone())
-            .or_insert_with(|| ScopeDefinitions::local(query.resolution_scope.clone()))
-            .queries
-            .push(query);
-    }
-    for fragment in fragments {
-        locals
-            .entry(fragment.resolution_scope.clone())
-            .or_insert_with(|| ScopeDefinitions::local(fragment.resolution_scope.clone()))
-            .fragments
-            .push(fragment);
-    }
-
-    let scope_names = locals.keys().cloned().collect::<Vec<_>>();
+    model: &dsql_frontend::ProjectGenerationModel,
+) -> Vec<ScopeDefinitions> {
     let mut scopes = Vec::new();
-    for name in scope_names {
-        let mut scope = locals
-            .get(&name)
-            .cloned()
-            .unwrap_or_else(|| ScopeDefinitions::local(name.clone()));
-        append_imported_scope_definitions(&name, &locals, &mut scope, &mut BTreeSet::new())?;
-        validate_duplicate_query_names(&scope)?;
+    for context in &model.contexts {
+        let mut scope = ScopeDefinitions {
+            name: context.context.label.clone(),
+            imports: input
+                .project
+                .config
+                .resolution
+                .get(&context.context.label)
+                .map(|config| config.imports.clone())
+                .unwrap_or_default(),
+            queries: Vec::new(),
+            fragments: Vec::new(),
+        };
+        for definition in &context.definitions {
+            let path = definition
+                .path
+                .clone()
+                .unwrap_or_else(|| definition.physical_document.0.clone());
+            match &definition.definition {
+                DefinitionRecord::Query(query)
+                    if definition.resolution_scope == context.context.label =>
+                {
+                    scope.queries.push(LoadedQuery {
+                        file: path,
+                        source_offset: definition.source_offset,
+                        query: query.clone(),
+                    });
+                }
+                DefinitionRecord::Query(_) => {}
+                DefinitionRecord::Fragment(fragment) => {
+                    scope.fragments.push(LoadedFragment {
+                        file: path,
+                        source_offset: definition.source_offset,
+                        fragment: fragment.clone(),
+                    });
+                }
+            }
+        }
         scopes.push(scope);
     }
-    Ok(scopes)
-}
-
-fn scope_locals(input: &GenerateInput) -> BTreeMap<String, ScopeDefinitions> {
-    if input.project.config.resolution.is_empty() {
-        let name = dsql_project::DEFAULT_RESOLUTION_SCOPE.to_string();
-        return BTreeMap::from([(name.clone(), ScopeDefinitions::local(name))]);
-    }
-
-    input
-        .project
-        .config
-        .resolution
-        .iter()
-        .map(|(name, config)| {
-            (
-                name.clone(),
-                ScopeDefinitions {
-                    name: name.clone(),
-                    imports: config.imports.clone(),
-                    queries: Vec::new(),
-                    fragments: Vec::new(),
-                },
-            )
-        })
-        .collect()
-}
-
-fn append_imported_scope_definitions(
-    name: &str,
-    locals: &BTreeMap<String, ScopeDefinitions>,
-    scope: &mut ScopeDefinitions,
-    visiting: &mut BTreeSet<String>,
-) -> std::result::Result<(), ValidationError> {
-    if !visiting.insert(name.to_string()) {
-        return Err(ValidationError::project(
-            ValidationErrorKind::CyclicResolutionImport,
-            format!("cyclic resolution import involving `{name}`"),
-        ));
-    }
-    for import in scope.imports.clone() {
-        let Some(imported) = locals.get(&import) else {
-            return Err(ValidationError::project(
-                ValidationErrorKind::UnknownResolutionImport,
-                format!(
-                    "resolution map `{}` imports unknown resolution map `{}`",
-                    scope.name, import
-                ),
-            ));
-        };
-        let mut effective_import = imported.clone();
-        append_imported_scope_definitions(&import, locals, &mut effective_import, visiting)?;
-        scope.fragments.extend(effective_import.fragments);
-    }
-    visiting.remove(name);
-    Ok(())
-}
-
-fn validate_duplicate_query_names(
-    scope: &ScopeDefinitions,
-) -> std::result::Result<(), ValidationError> {
-    let mut seen = HashMap::<&str, &LoadedQuery>::new();
-    for query in &scope.queries {
-        let Some(name) = query.query.key.name.as_deref() else {
-            continue;
-        };
-        if seen.insert(name, query).is_some() {
-            return Err(ValidationError::source(
-                ValidationErrorKind::DuplicateQuery,
-                format!(
-                    "duplicate query `{}` in resolution map `{}`",
-                    name, scope.name
-                ),
-                query.file.clone(),
-                query.source_offset,
-                query.query.name_range.unwrap_or(query.query.range),
-            ));
-        }
-    }
-    Ok(())
+    scopes.sort_by(|left, right| left.name.cmp(&right.name));
+    scopes
 }
 
 #[derive(Clone, Debug)]
@@ -842,15 +463,6 @@ struct ScopeDefinitions {
 }
 
 impl ScopeDefinitions {
-    fn local(name: String) -> Self {
-        Self {
-            name,
-            imports: Vec::new(),
-            queries: Vec::new(),
-            fragments: Vec::new(),
-        }
-    }
-
     fn fragment_map(&self) -> FragmentMap {
         let mut fragments = FragmentMap::default();
         for fragment in &self.fragments {
@@ -867,36 +479,13 @@ fn build_query_operations(
     query: &LoadedQuery,
     options: GenerateOptions,
 ) -> Result<Vec<OperationArtifact>> {
-    let checked = check_query_definition(&query.query, fragments, catalog);
-    let linted = lint_query_definition_with_options(
-        &query.query,
-        fragments,
-        catalog,
-        project.lint_options(),
-    );
     let planned = plan_query_definition(&query.query, fragments, catalog);
 
-    fail_on_error_diagnostics(
-        collect_query_compiler_diagnostics(&checked, &linted, &planned)
-            .into_iter()
-            .map(|diagnostic| query_validation_diagnostic(query, diagnostic))
-            .collect(),
-    )?;
-
-    let query_name = query
-        .query
-        .key
-        .name
-        .as_deref()
-        .ok_or_else(|| GenerateError::from(anonymous_query_error(query)))?;
+    let query_name =
+        query.query.key.name.as_deref().ok_or_else(|| {
+            GenerateError::Other("anonymous queries cannot be generated".to_string())
+        })?;
     let variables = infer_query_variable_bindings(&query.query, fragments, catalog).bindings;
-    validate_variable_bindings(
-        DefinitionKind::Query,
-        query_name,
-        &query.file,
-        query.source_offset,
-        &variables,
-    )?;
     let mut operations = Vec::new();
     for (index, plan) in planned.queries.iter().enumerate() {
         let generated = generate_postgres_sql_with_options(
@@ -977,13 +566,6 @@ fn build_fragment_artifact(
     fragments: &FragmentMap,
     fragment: &LoadedFragment,
 ) -> Result<FragmentArtifact> {
-    let checked = check_fragment_definition(&fragment.fragment, fragments, catalog);
-    fail_on_error_diagnostics(
-        collect_compiler_diagnostic_sources(&[&checked])
-            .into_iter()
-            .map(|diagnostic| fragment_validation_diagnostic(fragment, diagnostic))
-            .collect(),
-    )?;
     let fragment_name = &fragment.fragment.key.name;
     let plan = plan_fragment_definition(&fragment.fragment, fragments, catalog)
         .ok_or_else(|| miette::miette!("fragment `{fragment_name}` cannot be planned"))?;
@@ -993,13 +575,6 @@ fn build_fragment_artifact(
         .ok_or_else(|| miette::miette!("missing fragment table for `{fragment_name}`"))?;
     let variables =
         infer_fragment_variable_bindings(&fragment.fragment, fragments, catalog).bindings;
-    validate_variable_bindings(
-        DefinitionKind::Fragment,
-        fragment_name,
-        &fragment.file,
-        fragment.source_offset,
-        &variables,
-    )?;
     let metadata = FragmentMetadata {
         name: fragment_name.clone(),
         kind: DefinitionKind::Fragment.as_ref().to_string(),
@@ -1094,32 +669,6 @@ fn collect_fragment_spread_metadata(
     }
 }
 
-fn validate_variable_bindings(
-    definition_kind: DefinitionKind,
-    definition_name: &str,
-    file: &Path,
-    source_offset: u32,
-    variables: &[VariableBinding],
-) -> std::result::Result<(), ValidationError> {
-    let mut anonymous_paths = HashMap::<&str, &VariableBinding>::new();
-    for binding in variables.iter().filter(|binding| binding.name.is_none()) {
-        if let Some(previous) = anonymous_paths.insert(&binding.path, binding) {
-            return Err(ValidationError::source(
-                ValidationErrorKind::DuplicateAnonymousVariable,
-                format!(
-                    "{} `{definition_name}` has multiple anonymous variables for `{}`; name one of them to disambiguate",
-                    definition_kind.as_ref(),
-                    previous.path
-                ),
-                file.to_path_buf(),
-                source_offset,
-                binding.range,
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn manifest_from_written_artifacts(
     operations: &[WrittenOperationArtifact],
     fragments: &[WrittenFragmentArtifact],
@@ -1149,36 +698,17 @@ fn manifest_from_written_artifacts(
     }
 }
 
-fn fail_on_error_diagnostics(mut diagnostics: Vec<ValidationDiagnostic>) -> Result<()> {
-    sort_validation_diagnostics(&mut diagnostics);
-    let errors = diagnostics
-        .into_iter()
-        .filter(|diagnostic| diagnostic.diagnostic.severity == Severity::Error)
-        .collect::<Vec<_>>();
-    if errors.is_empty() {
-        return Ok(());
-    }
-
-    Err(GenerateError::LanguageDiagnostics {
-        diagnostics: errors,
-        errors: Vec::new(),
-    })
-}
-
 fn fail_on_validation_output(validation: ValidationOutput) -> Result<()> {
     let diagnostics = validation
         .diagnostics
         .into_iter()
         .filter(|diagnostic| diagnostic.diagnostic.severity == Severity::Error)
         .collect::<Vec<_>>();
-    if diagnostics.is_empty() && validation.errors.is_empty() {
+    if diagnostics.is_empty() {
         return Ok(());
     }
 
-    Err(GenerateError::LanguageDiagnostics {
-        diagnostics,
-        errors: validation.errors,
-    })
+    Err(GenerateError::LanguageDiagnostics { diagnostics })
 }
 
 fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
@@ -1395,7 +925,6 @@ fn stable_hash(value: &str) -> String {
 pub(crate) struct LoadedQuery {
     file: PathBuf,
     source_offset: u32,
-    resolution_scope: String,
     query: QueryRecord,
 }
 
@@ -1403,6 +932,5 @@ pub(crate) struct LoadedQuery {
 pub(crate) struct LoadedFragment {
     file: PathBuf,
     source_offset: u32,
-    resolution_scope: String,
     fragment: FragmentRecord,
 }

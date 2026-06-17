@@ -37,19 +37,6 @@ struct DaemonDiagnostic {
 
 #[derive(Clone, Debug, Facet)]
 #[facet(rename_all = "camelCase")]
-struct DaemonGenerationError {
-    kind: String,
-    message: String,
-    file: Option<String>,
-    range: Option<DaemonRange>,
-    embedded_range: Option<DaemonRange>,
-    source_offset: Option<u32>,
-    source: String,
-    code: String,
-}
-
-#[derive(Clone, Debug, Facet)]
-#[facet(rename_all = "camelCase")]
 struct DaemonGenerationErrorResponse {
     id: u64,
     error: DaemonGenerationErrorPayload,
@@ -60,7 +47,6 @@ struct DaemonGenerationErrorResponse {
 struct DaemonGenerationErrorPayload {
     message: String,
     diagnostics: Vec<DaemonDiagnostic>,
-    errors: Vec<DaemonGenerationError>,
 }
 
 pub async fn run_stdio() -> Result<()> {
@@ -73,7 +59,7 @@ pub async fn run_stdio() -> Result<()> {
         .await
         .map_err(|error| miette::miette!("failed to read daemon request: {error}"))?
     {
-        let response = handle_line(&line);
+        let response = handle_line(&line).await;
         stdout
             .write_all(response.as_bytes())
             .await
@@ -91,7 +77,7 @@ pub async fn run_stdio() -> Result<()> {
     Ok(())
 }
 
-fn handle_line(line: &str) -> String {
+async fn handle_line(line: &str) -> String {
     let request = match facet_json::from_str::<DaemonRequest>(line) {
         Ok(request) => request,
         Err(error) => {
@@ -105,12 +91,12 @@ fn handle_line(line: &str) -> String {
                 return error_response(request.id, "compileProject requires params.root");
             };
             match dsql_generate::generate_project_artifacts_from(std::path::Path::new(&params.root))
+                .await
             {
                 Ok(artifacts) => success_response(request.id, &artifacts),
-                Err(dsql_generate::GenerateError::LanguageDiagnostics {
-                    diagnostics,
-                    errors,
-                }) => generation_error_response(request.id, diagnostics, errors),
+                Err(dsql_generate::GenerateError::LanguageDiagnostics { diagnostics }) => {
+                    generation_error_response(request.id, diagnostics)
+                }
                 Err(error) => error_response(request.id, &error.to_string()),
             }
         }
@@ -137,21 +123,26 @@ fn error_response(id: u64, message: &str) -> String {
 
 fn generation_error_response(
     id: u64,
-    diagnostics: Vec<dsql_generate::ValidationDiagnostic>,
-    errors: Vec<dsql_generate::ValidationError>,
+    diagnostics: Vec<dsql_generate::LanguageDiagnostic>,
 ) -> String {
     let diagnostics = diagnostics
         .into_iter()
         .map(|diagnostic| {
-            let start = diagnostic.source_offset + diagnostic.diagnostic.range.start;
-            let end = diagnostic.source_offset + diagnostic.diagnostic.range.end;
             let embedded_range = DaemonRange {
-                start: diagnostic.diagnostic.range.start,
-                end: diagnostic.diagnostic.range.end,
+                start: diagnostic.embedded_range.start,
+                end: diagnostic.embedded_range.end,
             };
             DaemonDiagnostic {
-                file: diagnostic.file.display().to_string(),
-                range: DaemonRange { start, end },
+                file: diagnostic
+                    .path
+                    .as_ref()
+                    .unwrap_or(&diagnostic.physical_document.0)
+                    .display()
+                    .to_string(),
+                range: DaemonRange {
+                    start: diagnostic.range.start,
+                    end: diagnostic.range.end,
+                },
                 embedded_range,
                 source_offset: diagnostic.source_offset,
                 severity: format!("{:?}", diagnostic.diagnostic.severity),
@@ -161,38 +152,11 @@ fn generation_error_response(
             }
         })
         .collect::<Vec<_>>();
-    let errors = errors
-        .into_iter()
-        .map(|error| {
-            let embedded_range = error.range.map(|range| DaemonRange {
-                start: range.start,
-                end: range.end,
-            });
-            let range = match (error.source_offset, error.range) {
-                (Some(source_offset), Some(range)) => Some(DaemonRange {
-                    start: source_offset + range.start,
-                    end: source_offset + range.end,
-                }),
-                _ => None,
-            };
-            DaemonGenerationError {
-                kind: format!("{:?}", error.kind),
-                message: error.message,
-                file: error.file.map(|file| file.display().to_string()),
-                range,
-                embedded_range,
-                source_offset: error.source_offset,
-                source: "Generate".to_string(),
-                code: format!("{:?}", error.kind),
-            }
-        })
-        .collect::<Vec<_>>();
     let response = DaemonGenerationErrorResponse {
         id,
         error: DaemonGenerationErrorPayload {
             message: "cannot generate while diagnostics contain errors".to_string(),
             diagnostics,
-            errors,
         },
     };
     facet_json::to_string(&response).unwrap_or_else(|error| {

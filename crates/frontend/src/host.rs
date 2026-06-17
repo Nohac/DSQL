@@ -1,7 +1,7 @@
 use crate::AnalysisResult;
 use crate::completion::{CompletionItem, completions_at};
 use crate::cursor::{CursorContext, cursor_context};
-use crate::db::CompilerDb;
+use crate::db::{CompilerDb, ContextDefinitions};
 use crate::definition::{
     DefinitionResult, DefinitionTarget, SourceDefinition, SourceDefinitionKind,
     definition_target_at,
@@ -150,6 +150,10 @@ impl AnalysisHost {
             .expect("source input should be representable by Picante");
     }
 
+    pub fn remove_file(&self, file: FileId) {
+        self.inner.db.remove_source(file);
+    }
+
     pub async fn analyze(&self, file: FileId) -> Option<AnalysisResult> {
         self.inner.db.analysis(file).await
     }
@@ -173,6 +177,25 @@ impl AnalysisHost {
         self.inner
             .db
             .diagnostics_in_context(&context.0, file)
+            .await
+            .ok()
+    }
+
+    pub(crate) async fn context_definitions(
+        &self,
+        context: &AnalysisContextId,
+    ) -> Option<ContextDefinitions> {
+        self.inner.db.context_definitions(&context.0).await.ok()
+    }
+
+    pub(crate) async fn completion_scope_in_context(
+        &self,
+        context: &AnalysisContextId,
+        file: FileId,
+    ) -> Option<crate::completion::CompletionScope> {
+        self.inner
+            .db
+            .completion_scope_in_context(&context.0, file)
             .await
             .ok()
     }
@@ -639,7 +662,10 @@ impl AnalysisHost {
     }
 }
 
-fn format_completion_context(context: &CursorContext, catalog: &dsql_core::Catalog) -> String {
+pub(crate) fn format_completion_context(
+    context: &CursorContext,
+    catalog: &dsql_core::Catalog,
+) -> String {
     match context {
         CursorContext::DocumentRoot
         | CursorContext::FragmentOnKeyword

@@ -694,6 +694,40 @@ impl CompilerDb {
         diagnostics_for_file_in_context(self, context, file, source).await
     }
 
+    pub(crate) async fn context_definitions(
+        &self,
+        context: &str,
+    ) -> PicanteResult<ContextDefinitions> {
+        let Some(context) = self.context_inputs.get(context).map(|input| *input) else {
+            return Ok(ContextDefinitions { files: Vec::new() });
+        };
+        context_definitions_query(self, context).await
+    }
+
+    pub(crate) async fn completion_scope_in_context(
+        &self,
+        context: &str,
+        excluding: FileId,
+    ) -> PicanteResult<CompletionScope> {
+        let definitions = self.context_definitions(context).await?;
+        let mut fragments = Vec::new();
+        let mut seen = HashSet::<String>::new();
+        for file in definitions.files {
+            if file.file == excluding {
+                continue;
+            }
+            for definition in file.definitions {
+                if let DefinitionRecord::Fragment(fragment) = definition
+                    && seen.insert(fragment.key.name.clone())
+                {
+                    fragments.push(fragment);
+                }
+            }
+        }
+        fragments.sort_by(|left, right| left.key.name.cmp(&right.key.name));
+        Ok(CompletionScope { fragments })
+    }
+
     async fn definition_check(&self, file: FileId) -> PicanteResult<CheckedFile> {
         let mut diagnostics = Vec::new();
         if let Some(queries) = self.file_queries.get(&file) {

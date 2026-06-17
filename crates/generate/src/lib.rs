@@ -18,11 +18,10 @@ pub enum GenerateError {
     NoDocuments { project: String },
     #[error(
         "cannot generate while diagnostics contain errors{}",
-        language_diagnostics_details(diagnostics, errors)
+        language_diagnostics_details(diagnostics)
     )]
     LanguageDiagnostics {
-        diagnostics: Vec<pipeline::ValidationDiagnostic>,
-        errors: Vec<pipeline::ValidationError>,
+        diagnostics: Vec<pipeline::LanguageDiagnostic>,
     },
     #[error("artifact write failed: {0}")]
     Artifact(#[from] ArtifactError),
@@ -42,48 +41,22 @@ impl From<miette::Report> for GenerateError {
     }
 }
 
-impl From<pipeline::ValidationError> for GenerateError {
-    fn from(error: pipeline::ValidationError) -> Self {
-        Self::LanguageDiagnostics {
-            diagnostics: Vec::new(),
-            errors: vec![error],
-        }
-    }
-}
-
-fn language_diagnostics_details(
-    diagnostics: &[pipeline::ValidationDiagnostic],
-    errors: &[pipeline::ValidationError],
-) -> String {
+fn language_diagnostics_details(diagnostics: &[pipeline::LanguageDiagnostic]) -> String {
     let mut details = String::new();
     for diagnostic in diagnostics {
-        let start = diagnostic.source_offset + diagnostic.diagnostic.range.start;
-        let end = diagnostic.source_offset + diagnostic.diagnostic.range.end;
         details.push_str(&format!(
             "\n{} {:?} {:?} {}..{}: {}",
-            diagnostic.file.display(),
+            diagnostic
+                .path
+                .as_ref()
+                .unwrap_or(&diagnostic.physical_document.0)
+                .display(),
             diagnostic.diagnostic.source,
             diagnostic.diagnostic.code,
-            start,
-            end,
+            diagnostic.range.start,
+            diagnostic.range.end,
             diagnostic.diagnostic.message
         ));
-    }
-    for error in errors {
-        if let (Some(file), Some(range), Some(source_offset)) =
-            (&error.file, error.range, error.source_offset)
-        {
-            details.push_str(&format!(
-                "\n{} Generate {:?} {}..{}: {}",
-                file.display(),
-                error.kind,
-                source_offset + range.start,
-                source_offset + range.end,
-                error.message
-            ));
-        } else {
-            details.push_str(&format!("\nGenerate {:?}: {}", error.kind, error.message));
-        }
     }
     details
 }
@@ -126,8 +99,7 @@ impl miette::Diagnostic for GeneratorError {}
 
 pub use pipeline::{
     GenerateOptions, GenerateOutput, GeneratedArtifactGroup, GeneratedArtifacts,
-    GeneratedFragmentArtifact, GeneratedOperationArtifact, ValidationDiagnostic, ValidationError,
-    ValidationErrorKind, ValidationOutput,
+    GeneratedFragmentArtifact, GeneratedOperationArtifact, LanguageDiagnostic, ValidationOutput,
 };
 
 #[cfg(all(feature = "fs", feature = "process"))]

@@ -111,7 +111,9 @@ async fn generate_project_artifacts_returns_in_memory_metadata() {
     let project = tempfile::tempdir().unwrap();
     create_project_fixture(project.path(), "");
 
-    let artifacts = dsql_generate::generate_project_artifacts_from(project.path()).unwrap();
+    let artifacts = dsql_generate::generate_project_artifacts_from(project.path())
+        .await
+        .unwrap();
 
     assert_eq!(artifacts.project_dir, project.path().to_string_lossy());
     assert_eq!(
@@ -138,7 +140,9 @@ async fn generate_project_artifacts_groups_definitions_by_resolution_scope() {
     let project = tempfile::tempdir().unwrap();
     create_scoped_project_fixture(project.path(), false);
 
-    let artifacts = dsql_generate::generate_project_artifacts_from(project.path()).unwrap();
+    let artifacts = dsql_generate::generate_project_artifacts_from(project.path())
+        .await
+        .unwrap();
 
     let frontend = artifacts
         .artifact_groups
@@ -175,6 +179,7 @@ async fn generate_project_rejects_local_import_fragment_collisions() {
     create_scoped_project_fixture(project.path(), true);
 
     let error = dsql_generate::generate_project_artifacts_from(project.path())
+        .await
         .expect_err("local/import fragment name collisions should fail");
     let message = error.to_string();
     assert!(
@@ -204,29 +209,20 @@ async fn generate_project_artifacts_returns_structured_language_diagnostics() {
     .unwrap();
 
     let error = dsql_generate::generate_project_artifacts_from(project.path())
+        .await
         .expect_err("long output key should fail generation");
-    let dsql_generate::GenerateError::LanguageDiagnostics {
-        diagnostics,
-        errors,
-    } = error
-    else {
+    let dsql_generate::GenerateError::LanguageDiagnostics { diagnostics } = error else {
         panic!("expected structured language diagnostics");
     };
 
-    assert!(
-        errors.is_empty(),
-        "unexpected generation errors: {errors:?}"
-    );
     let diagnostic = diagnostics
         .iter()
         .find(|diagnostic| {
             diagnostic.diagnostic.code == dsql_core::DiagnosticCode::OutputKeyTooLong
         })
         .expect("missing output key diagnostic");
-    assert_eq!(
-        diagnostic.file,
-        project.path().join("queries/movie-info.dsql")
-    );
+    let expected_path = project.path().join("queries/movie-info.dsql");
+    assert_eq!(diagnostic.path.as_deref(), Some(expected_path.as_path()));
     assert_eq!(diagnostic.source_offset, 0);
     assert_eq!(
         diagnostic.diagnostic.source,
@@ -258,6 +254,7 @@ export const MovieInfo = dsql(`
     fs::write(project.path().join("src/movie-info.ts"), &source).unwrap();
 
     let error = dsql_generate::generate_project_artifacts_from(project.path())
+        .await
         .expect_err("embedded long output key should fail generation");
     let dsql_generate::GenerateError::LanguageDiagnostics { diagnostics, .. } = error else {
         panic!("expected structured language diagnostics");
@@ -268,8 +265,9 @@ export const MovieInfo = dsql(`
             diagnostic.diagnostic.code == dsql_core::DiagnosticCode::OutputKeyTooLong
         })
         .expect("missing output key diagnostic");
-    let host_start = diagnostic.source_offset + diagnostic.diagnostic.range.start;
-    assert_eq!(diagnostic.file, project.path().join("src/movie-info.ts"));
+    let host_start = diagnostic.range.start;
+    let expected_path = project.path().join("src/movie-info.ts");
+    assert_eq!(diagnostic.path.as_deref(), Some(expected_path.as_path()));
     assert_eq!(host_start as usize, source.find(long_alias).unwrap());
 }
 
@@ -464,7 +462,9 @@ async fn validate_project_reports_project_diagnostics_without_writing_artifacts(
     )
     .unwrap();
 
-    let validation = dsql_generate::validate_project_from(project.path()).unwrap();
+    let validation = dsql_generate::validate_project_from(project.path())
+        .await
+        .unwrap();
 
     assert_eq!(validation.document_count, 1);
     assert_eq!(validation.query_count, 1);
@@ -1336,28 +1336,20 @@ async fn generate_project_rejects_ambiguous_anonymous_variables() {
     let error = dsql_generate::generate_project_from(project.path())
         .await
         .expect_err("ambiguous anonymous variables should fail generation");
-    let dsql_generate::GenerateError::LanguageDiagnostics {
-        diagnostics,
-        errors,
-    } = &error
-    else {
+    let dsql_generate::GenerateError::LanguageDiagnostics { diagnostics } = &error else {
         panic!("expected structured language diagnostics");
     };
-    assert!(
-        diagnostics.is_empty(),
-        "unexpected diagnostics: {diagnostics:?}"
-    );
-    assert_eq!(errors.len(), 1);
+    assert_eq!(diagnostics.len(), 1);
     assert_eq!(
-        errors[0].kind,
-        dsql_generate::ValidationErrorKind::DuplicateAnonymousVariable
+        diagnostics[0].diagnostic.code,
+        dsql_core::DiagnosticCode::DuplicateAnonymousVariable
     );
     assert_eq!(
-        errors[0].file,
-        Some(project.path().join("queries/movie-info.dsql"))
+        diagnostics[0].diagnostic.source,
+        dsql_core::DiagnosticSource::Generate
     );
     assert!(
-        errors[0].range.is_some(),
+        diagnostics[0].embedded_range.start < diagnostics[0].embedded_range.end,
         "error should point at the later variable"
     );
     let message = error.to_string();

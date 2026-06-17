@@ -1,10 +1,111 @@
 use dsql_core::{Catalog, SourceSnapshot, parse_source};
 use dsql_frontend::{
-    AnalysisHost, CatalogDefinition, CompletionKind, DefinitionResult, SourceDefinition,
-    SourceDefinitionKind, TextPosition,
+    CatalogDefinition, CompletionKind, DefinitionResult, DocumentFormat, DocumentSemanticTokens,
+    HoverInfo, PhysicalDocumentId, ProjectAnalysis, SourceDefinition, SourceDefinitionKind,
+    TextPosition,
 };
 use insta::Settings;
 use std::{fs, path::PathBuf};
+
+struct TestProject {
+    analysis: ProjectAnalysis,
+}
+
+struct TestDocumentDiagnostics {
+    diagnostics: Vec<dsql_core::Diagnostic>,
+}
+
+impl TestProject {
+    fn new() -> Self {
+        Self {
+            analysis: ProjectAnalysis::new(),
+        }
+    }
+
+    fn set_catalog(&self, catalog: Catalog) {
+        self.analysis.analysis_host().set_catalog(catalog);
+    }
+
+    async fn open_document(
+        &self,
+        uri: String,
+        version: i32,
+        text: String,
+    ) -> TestDocumentDiagnostics {
+        let document_id = document_id(&uri);
+        self.analysis.open_document(
+            document_id.clone(),
+            Some(document_id.0.clone()),
+            version,
+            text,
+        );
+        self.document_diagnostics(&uri).await
+    }
+
+    async fn document_diagnostics(&self, uri: &str) -> TestDocumentDiagnostics {
+        let diagnostics = self
+            .analysis
+            .diagnostics_for_document(&document_id(uri))
+            .await
+            .into_iter()
+            .map(|diagnostic| diagnostic.diagnostic)
+            .collect();
+        TestDocumentDiagnostics { diagnostics }
+    }
+
+    async fn completions(
+        &self,
+        uri: &str,
+        position: TextPosition,
+    ) -> Option<Vec<dsql_frontend::CompletionItem>> {
+        self.analysis.completions(&document_id(uri), position).await
+    }
+
+    async fn completion_context_debug(&self, uri: &str, position: TextPosition) -> Option<String> {
+        self.analysis
+            .completion_context_debug(&document_id(uri), position)
+            .await
+    }
+
+    async fn hover(&self, uri: &str, position: TextPosition) -> Option<HoverInfo> {
+        self.analysis.hover(&document_id(uri), position).await
+    }
+
+    async fn definition(&self, uri: &str, position: TextPosition) -> Option<DefinitionResult> {
+        self.analysis
+            .definition(&document_id(uri), position)
+            .await
+            .map(|definition| match definition {
+                DefinitionResult::Source(mut source) => {
+                    source.uri = path_to_file_uri(&PathBuf::from(source.uri));
+                    DefinitionResult::Source(source)
+                }
+                DefinitionResult::Catalog(target) => DefinitionResult::Catalog(target),
+            })
+    }
+
+    async fn semantic_tokens(&self, uri: &str) -> Option<DocumentSemanticTokens> {
+        self.analysis.semantic_tokens(&document_id(uri)).await
+    }
+
+    async fn document_format(&self, uri: &str) -> Option<DocumentFormat> {
+        self.analysis
+            .document_format(&document_id(uri))
+            .await
+            .map(|mut format| {
+                format.snapshot.uri = uri.to_string();
+                format
+            })
+    }
+}
+
+fn document_id(uri: &str) -> PhysicalDocumentId {
+    PhysicalDocumentId(PathBuf::from(uri.strip_prefix("file://").unwrap_or(uri)))
+}
+
+fn path_to_file_uri(path: &std::path::Path) -> String {
+    format!("file://{}", path.display())
+}
 
 #[tokio::test]
 async fn imdb_lsp_fixture_snapshots() {
@@ -12,7 +113,7 @@ async fn imdb_lsp_fixture_snapshots() {
     let fixture = fixture_root().join("queries/lsp/imdb-title-lsp.dsql");
     let source = fs::read_to_string(&fixture).unwrap();
     let uri = "file:///tests/queries/lsp/imdb-title-lsp.dsql".to_string();
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(catalog);
     host.open_document(uri.clone(), 1, source.clone()).await;
 
@@ -96,7 +197,7 @@ async fn lsp_completion_context_ranges_cover_full_prefix_and_recovery_variants()
 
 #[tokio::test]
 async fn lsp_definitions_resolve_fragment_spreads_across_open_documents() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let fragment_uri = "file:///tests/queries/lsp/imdb-fragments.dsql".to_string();
     let query_uri = "file:///tests/queries/lsp/imdb-query.dsql".to_string();
@@ -124,7 +225,7 @@ async fn lsp_definitions_resolve_fragment_spreads_across_open_documents() {
 
 #[tokio::test]
 async fn lsp_definitions_resolve_fragment_spreads_across_embedded_regions() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let uri = "file:///tests/src/movie-info.ts".to_string();
     let source = r#"import { dsql } from "@dsql/typescript";
@@ -163,8 +264,32 @@ query Movies {
 }
 
 #[tokio::test]
+async fn lsp_diagnostics_include_duplicate_anonymous_variables() {
+    let host = TestProject::new();
+    host.set_catalog(imdb_catalog());
+    let uri = "file:///tests/queries/lsp/duplicate-anonymous-variable.dsql".to_string();
+    let source = r#"query MovieInfoLookup {
+  movie_info(where .id > $ and .id < $) {
+    id
+  }
+}
+"#;
+
+    let diagnostics = host.open_document(uri, 1, source.to_string()).await;
+
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code
+                == dsql_core::DiagnosticCode::DuplicateAnonymousVariable),
+        "LSP diagnostics should include generation validation diagnostics"
+    );
+}
+
+#[tokio::test]
 async fn lsp_completions_resolve_fragment_spreads_across_open_documents() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let fragment_uri = "file:///tests/queries/lsp/imdb-fragments.dsql".to_string();
     let query_uri = "file:///tests/queries/lsp/imdb-query.dsql".to_string();
@@ -190,7 +315,7 @@ async fn lsp_completions_resolve_fragment_spreads_across_open_documents() {
 
 #[tokio::test]
 async fn lsp_completions_resolve_fragment_spreads_across_embedded_regions() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let uri = "file:///tests/src/movie-info.ts".to_string();
     let source = r#"import { dsql } from "@dsql/typescript";
@@ -226,7 +351,7 @@ query Movies {
 
 #[tokio::test]
 async fn lsp_definitions_resolve_tables_relations_and_columns_to_catalog_targets() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let uri = "file:///tests/queries/lsp/imdb-definitions.dsql".to_string();
     let source = "\
@@ -291,7 +416,7 @@ query Movies {
 
 #[tokio::test]
 async fn lsp_hovers_show_inferred_variable_bindings() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let uri = "file:///tests/queries/lsp/imdb-variable-hover.dsql".to_string();
     let source = "\
@@ -338,7 +463,7 @@ query KeywordDiscovery {
 
 #[tokio::test]
 async fn lsp_diagnostics_map_regex_embedded_dsql_ranges_to_host_document() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let uri = "file:///tests/src/movie-info.ts".to_string();
     let source = r#"import { dsql } from "@dsql/typescript";
@@ -376,7 +501,7 @@ export const MovieInfo = dsql(`
 
 #[tokio::test]
 async fn lsp_diagnostics_include_embedded_output_key_length_errors() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let uri = "file:///tests/src/movie-info.tsx".to_string();
     let long_alias =
@@ -411,7 +536,7 @@ export const MovieInfo = dsql(`
 
 #[tokio::test]
 async fn lsp_diagnostics_include_duplicate_fragments() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let uri = "file:///tests/queries/duplicates.dsql".to_string();
     let source = r#"fragment MovieFields on movie_info {
@@ -436,7 +561,7 @@ fragment MovieFields on movie_info {
 
 #[tokio::test]
 async fn lsp_completions_only_activate_inside_regex_embedded_dsql() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let uri = "file:///tests/src/movie-info.ts".to_string();
     let source = r#"import { dsql } from "@dsql/typescript";
@@ -477,7 +602,7 @@ export const MovieInfo = dsql(`
 
 #[tokio::test]
 async fn lsp_formatting_rewrites_regex_embedded_dsql_region() {
-    let host = AnalysisHost::new();
+    let host = TestProject::new();
     host.set_catalog(imdb_catalog());
     let uri = "file:///tests/src/movie-info.ts".to_string();
     let source = r#"import { dsql } from "@dsql/typescript";
@@ -778,7 +903,7 @@ async fn assert_context_ranges(variant: &ContextVariant, mode: ContextMode) {
                     ContextMode::Recovery => "recovery",
                 }
             );
-            let host = AnalysisHost::new();
+            let host = TestProject::new();
             host.set_catalog(imdb_catalog());
             host.open_document(uri.clone(), 1, source.clone()).await;
             let actual = host
