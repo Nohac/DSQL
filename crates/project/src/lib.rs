@@ -61,6 +61,8 @@ pub enum ProjectError {
         first_scope: String,
         second_scope: String,
     },
+    #[error("project config must define at least one named [resolution.<name>] map")]
+    MissingResolutionEnvironment,
     #[error("resolution map `{scope}` imports unknown resolution map `{import}`")]
     UnknownResolutionImport { scope: String, import: String },
     #[error("cyclic resolution import: {}", cycle.join(" -> "))]
@@ -165,7 +167,6 @@ struct RawDocumentConfig {
 
 const DSQL_RESOLVER: &str = "dsql";
 const TYPESCRIPT_RESOLVER: &str = "typescript";
-pub const DEFAULT_RESOLUTION_SCOPE: &str = "default";
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 #[repr(C)]
@@ -342,7 +343,13 @@ pub fn init_project(base_path: &Path, database_url: Option<String>) -> Result<Pr
         lint: default_lint_config(),
         generate: default_generate_config(),
         embedding: BTreeMap::new(),
-        resolution: BTreeMap::new(),
+        resolution: BTreeMap::from([(
+            "main".to_string(),
+            ResolutionMapConfig {
+                documents: vec!["**/*.dsql".to_string()],
+                imports: Vec::new(),
+            },
+        )]),
         documents: Vec::new(),
     };
     let config_toml = facet_toml::to_string(&config)
@@ -445,56 +452,10 @@ pub struct ProjectDocument {
 }
 
 pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>> {
-    if !project.config.resolution.is_empty() {
-        return load_scoped_project_documents(project);
+    if project.config.resolution.is_empty() {
+        return Err(ProjectError::MissingResolutionEnvironment);
     }
-
-    let base = project_base(project);
-    let mut documents = Vec::new();
-    if project.config.documents.is_empty() {
-        let mut files = Vec::new();
-        collect_dsql_files(&base, Some(&project.root), &mut files)?;
-        files.sort();
-        files.dedup();
-        for path in files {
-            documents.push(read_dsql_document(path, DEFAULT_RESOLUTION_SCOPE)?);
-        }
-    } else {
-        for document_config in &project.config.documents {
-            let mut files = Vec::new();
-            for path in &document_config.paths {
-                collect_resolver_path(&base.join(path), Some(&project.root), &mut files)?;
-            }
-            files.sort();
-            files.dedup();
-
-            match &document_config.resolver {
-                DocumentResolver::Dsql => {
-                    for path in files {
-                        if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
-                            documents.push(read_dsql_document(path, DEFAULT_RESOLUTION_SCOPE)?);
-                        }
-                    }
-                }
-                resolver => {
-                    let embedding = embedding_for_resolver(project, resolver)?;
-                    for path in files {
-                        documents.extend(read_embedded_documents(
-                            path,
-                            &embedding,
-                            DEFAULT_RESOLUTION_SCOPE,
-                        )?);
-                    }
-                }
-            }
-        }
-    }
-    documents.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then(left.source_offset.cmp(&right.source_offset))
-    });
-    Ok(documents)
+    load_scoped_project_documents(project)
 }
 
 fn load_scoped_project_documents(project: &Project) -> Result<Vec<ProjectDocument>> {
@@ -692,29 +653,6 @@ fn collect_all_files(
     Ok(())
 }
 
-fn collect_dsql_files(
-    dir: &Path,
-    excluded_dir: Option<&Path>,
-    files: &mut Vec<PathBuf>,
-) -> Result<()> {
-    if excluded_dir.is_some_and(|excluded| dir == excluded) {
-        return Ok(());
-    }
-    for entry in read_dir(dir)? {
-        let entry = entry.map_err(|source| ProjectError::ReadDirEntry {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_dsql_files(&path, excluded_dir, files)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
 fn read_to_string(path: &Path) -> Result<String> {
     fs::read_to_string(path).map_err(|source| ProjectError::ReadFile {
         path: path.to_path_buf(),
@@ -894,20 +832,35 @@ documents = ["queries/**/*.dsql"]
     }
 
     #[test]
+    fn project_documents_require_named_resolution_map() {
+        let base = tempfile::tempdir().unwrap();
+        fs::create_dir_all(base.path().join("dsql")).unwrap();
+        fs::write(
+            base.path().join("dsql/dsql.toml"),
+            r#"database_url = "<database url>"
+documents = []
+"#,
+        )
+        .unwrap();
+
+        let project = Project::load_from(base.path()).unwrap();
+        let error = load_project_documents(&project).unwrap_err();
+
+        assert!(matches!(error, ProjectError::MissingResolutionEnvironment));
+    }
+
+    #[test]
     fn embedded_documents_from_source_loads_typescript_regions() {
         let source = r#"const query = dsql(`
 query Users { users { id } }
 `);
 "#;
         let embedding = RegexEmbedding::new(default_typescript_regex_pattern());
+        let scope = "main";
 
-        let documents = embedded_documents_from_source(
-            Path::new("src/query.ts"),
-            source,
-            &embedding,
-            DEFAULT_RESOLUTION_SCOPE,
-        )
-        .unwrap();
+        let documents =
+            embedded_documents_from_source(Path::new("src/query.ts"), source, &embedding, scope)
+                .unwrap();
 
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].path, PathBuf::from("src/query.ts"));
@@ -915,7 +868,7 @@ query Users { users { id } }
             documents[0].source_offset,
             source.find(&documents[0].text).unwrap()
         );
-        assert_eq!(documents[0].resolution_scope, DEFAULT_RESOLUTION_SCOPE);
+        assert_eq!(documents[0].resolution_scope, scope);
         assert!(documents[0].text.contains("query Users"));
     }
 

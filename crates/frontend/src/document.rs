@@ -1,17 +1,16 @@
 use dsql_core::{Diagnostic, FormattedText};
-use dsql_embedding::EmbeddedRegion;
 use facet::Facet;
 use ropey::{LineType, Rope};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
-pub struct FileId(pub u32);
+pub struct SourceUnitId(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Facet)]
 pub struct RevisionId(pub u64);
 
 #[derive(Clone, Debug)]
 pub struct DocumentSnapshot {
-    pub file: FileId,
+    pub unit_id: SourceUnitId,
     pub uri: String,
     pub version: i32,
     pub revision: RevisionId,
@@ -46,88 +45,6 @@ pub struct TextEditRange {
 pub struct TextEdit {
     pub range: Option<TextEditRange>,
     pub text: String,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct DocumentState {
-    pub(crate) file: FileId,
-    pub(crate) uri: String,
-    pub(crate) version: i32,
-    pub(crate) revision: RevisionId,
-    pub(crate) rope: Rope,
-    pub(crate) kind: DocumentKind,
-}
-
-impl DocumentState {
-    pub(crate) fn snapshot(&self) -> DocumentSnapshot {
-        DocumentSnapshot {
-            file: self.file,
-            uri: self.uri.clone(),
-            version: self.version,
-            revision: self.revision,
-            rope: self.rope.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum DocumentKind {
-    Dsql,
-    Host {
-        regions: Vec<EmbeddedDocumentRegion>,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct EmbeddedDocumentRegion {
-    pub(crate) file: FileId,
-    pub(crate) content_range: dsql_core::TextRange,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct IndexedDocumentState {
-    pub(crate) uri: String,
-    pub(crate) revision: RevisionId,
-    pub(crate) regions: Vec<IndexedDocumentRegion>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct IndexedDocumentRegion {
-    pub(crate) file: FileId,
-    pub(crate) content_start: usize,
-}
-
-impl IndexedDocumentRegion {
-    pub(crate) fn host_range(&self, range: dsql_core::TextRange) -> dsql_core::TextRange {
-        dsql_core::TextRange::new(
-            self.content_start + range.start as usize,
-            self.content_start + range.end as usize,
-        )
-    }
-}
-
-impl EmbeddedDocumentRegion {
-    pub(crate) fn from_region(file: FileId, region: &EmbeddedRegion) -> Self {
-        Self {
-            file,
-            content_range: region.content_range,
-        }
-    }
-
-    pub(crate) fn contains(&self, byte: usize) -> bool {
-        byte >= self.content_range.start as usize && byte <= self.content_range.end as usize
-    }
-
-    pub(crate) fn local_byte(&self, byte: usize) -> usize {
-        byte.saturating_sub(self.content_range.start as usize)
-    }
-
-    pub(crate) fn host_range(&self, range: dsql_core::TextRange) -> dsql_core::TextRange {
-        dsql_core::TextRange::new(
-            self.content_range.start as usize + range.start as usize,
-            self.content_range.start as usize + range.end as usize,
-        )
-    }
 }
 
 pub(crate) fn apply_text_edits(rope: &mut Rope, edits: Vec<TextEdit>) {

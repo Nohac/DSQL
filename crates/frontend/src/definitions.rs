@@ -1,4 +1,4 @@
-use crate::FileId;
+use crate::SourceUnitId;
 use dsql_core::{
     DefinitionRecord, Diagnostic, DiagnosticCode, DiagnosticSource, FragmentRecord, QueryRecord,
     Severity, TextRange,
@@ -11,8 +11,8 @@ pub struct DefinitionId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceRegionId(pub u32);
 
-impl From<FileId> for SourceRegionId {
-    fn from(value: FileId) -> Self {
+impl From<SourceUnitId> for SourceRegionId {
+    fn from(value: SourceUnitId) -> Self {
         Self(value.0)
     }
 }
@@ -235,7 +235,7 @@ mod tests {
         ));
         let extracted = extract_definitions(&parsed.source_file);
 
-        let index = DefinitionIndex::from_records(FileId(7), extracted.definitions);
+        let index = DefinitionIndex::from_records(SourceUnitId(7), extracted.definitions);
 
         assert_eq!(
             index

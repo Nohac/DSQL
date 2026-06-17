@@ -2,7 +2,7 @@ use crate::convert::semantic_tokens_legend;
 use crate::position::{byte_to_position, encode_semantic_tokens};
 use dsql_frontend::{
     CatalogDefinition, CompletionKind, DefinitionResult, PhysicalDocumentId, PresentedDiagnostic,
-    ProjectAnalysis, TextEdit as FrontendTextEdit, TextEditRange, TextPosition,
+    ProjectHost, TextEdit as FrontendTextEdit, TextEditRange, TextPosition,
 };
 use std::str::FromStr;
 use std::{
@@ -47,15 +47,17 @@ pub async fn run_stdio() -> std::result::Result<(), Box<dyn Error + Send + Sync>
 
 struct Backend {
     client: Client,
-    project: ProjectAnalysis,
+    project: ProjectHost,
     project_catalog_loaded: AtomicBool,
 }
 
 impl Backend {
     fn new(client: Client) -> Self {
+        let project = ProjectHost::new();
+        project.set_standalone_context("editor");
         Self {
             client,
-            project: ProjectAnalysis::new(),
+            project,
             project_catalog_loaded: AtomicBool::new(false),
         }
     }
@@ -525,7 +527,7 @@ fn to_lsp_presented_diagnostic(
 }
 
 fn source_definition_uri_and_rope(
-    project: &ProjectAnalysis,
+    project: &ProjectHost,
     source: &dsql_frontend::SourceDefinition,
 ) -> Option<(Uri, ropey::Rope)> {
     let path = file_uri_to_path(&source.uri).unwrap_or_else(|| PathBuf::from(&source.uri));
@@ -542,7 +544,7 @@ fn source_definition_uri_and_rope(
 }
 
 fn completion_source_context(
-    project: &ProjectAnalysis,
+    project: &ProjectHost,
     document_id: &PhysicalDocumentId,
     byte: usize,
 ) -> Option<String> {
@@ -605,14 +607,15 @@ fn init_lsp_logging() {
     let Some(path) = lsp_log_path() else {
         return;
     };
-    let Ok(file) = OpenOptions::new().create(true).append(true).open(path) else {
+    let Ok(unit_id) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
     let _ = tracing_subscriber::fmt()
         .with_ansi(false)
         .with_writer(move || {
-            file.try_clone()
-                .expect("failed to clone dsql lsp log file handle")
+            unit_id
+                .try_clone()
+                .expect("failed to clone dsql lsp log unit_id handle")
         })
         .try_init();
 }
@@ -675,7 +678,7 @@ columns:
             kind: dsql_frontend::SourceDefinitionKind::Fragment,
         };
 
-        let (uri, rope) = source_definition_uri_and_rope(&ProjectAnalysis::new(), &source).unwrap();
+        let (uri, rope) = source_definition_uri_and_rope(&ProjectHost::new(), &source).unwrap();
 
         assert_eq!(uri.scheme().map(|scheme| scheme.as_str()), Some("file"));
         assert_eq!(

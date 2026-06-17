@@ -47,6 +47,17 @@ impl SourceSnapshot {
         Self::Rope(Arc::new(rope))
     }
 
+    pub fn as_contiguous_str(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text.text.as_ref()),
+            Self::Rope(rope) => {
+                let mut chunks = rope.chunks();
+                let chunk = chunks.next()?;
+                chunks.next().is_none().then_some(chunk)
+            }
+        }
+    }
+
     pub fn into_rope(self) -> Rope {
         match self {
             Self::Text(text) => Rope::from_str(text.text.as_ref()),

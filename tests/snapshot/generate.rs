@@ -1373,7 +1373,10 @@ fn create_project_fixture(root: &Path, generate_config: &str) {
         format!(
             r#"database_url = "<database url>"
 default_schema = "public"
-documents = [{{ resolver = "dsql", paths = ["queries"] }}]
+documents = []
+
+[resolution.main]
+documents = ["queries/**/*.dsql"]
 
 {generate_config}"#
         ),
@@ -1492,7 +1495,10 @@ fn create_embedded_project_fixture_with_generate(root: &Path, generate_config: &
         format!(
             r#"database_url = "<database url>"
 default_schema = "public"
-documents = [{{ resolver = "typescript", paths = ["src/**/*.ts"] }}]
+documents = []
+
+[resolution.main]
+documents = ["src/**/*.ts"]
 
 {generate_config}"#
         ),

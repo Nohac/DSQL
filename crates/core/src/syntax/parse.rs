@@ -142,12 +142,17 @@ pub enum AstNode {
 }
 
 pub fn parse_source(source: SourceSnapshot) -> ParseResult {
-    // Lelwel's generated runtime is &str-based. Keep Arc<str> as the parser
-    // source for now; Rope-backed snapshots remain a frontend/LSP boundary until
-    // we patch or replace the generated source storage.
-    let source_text = source.to_arc_str();
     let mut lelwel_diagnostics = Vec::new();
-    let cst = Parser::new(&source_text, &mut lelwel_diagnostics).parse(&mut lelwel_diagnostics);
+    let owned_text;
+    let source_text = if let Some(source_text) = source.as_contiguous_str() {
+        source_text
+    } else {
+        // Lelwel's generated runtime is still &str-based. Multi-chunk Rope
+        // snapshots pay one allocation here until the parser can read chunks.
+        owned_text = source.to_arc_str();
+        &owned_text
+    };
+    let cst = Parser::new(source_text, &mut lelwel_diagnostics).parse(&mut lelwel_diagnostics);
     let diagnostics = lelwel_diagnostics
         .into_iter()
         .map(convert_diagnostic)

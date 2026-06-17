@@ -1,16 +1,15 @@
 use crate::analysis::collect_diagnostics_parts;
 use crate::completion::CompletionScope;
-use crate::document::{FileId, RevisionId};
+use crate::document::{RevisionId, SourceUnitId};
 use dashmap::DashMap;
 use dsql_core::{
     Catalog, CheckDiagnostic, CheckDiagnosticKind, CheckedFile, CompilerDiagnostic,
     CompilerDiagnosticSource, DefinitionRecord, Diagnostic, ExtractedFile, FragmentMap,
     FragmentRecord, Interner, LintOptions, LintedFile, LoweredFile, ParseResult, PlannedFile,
-    QueryRecord, SourceFile, SourceSnapshot, SyntaxTree, check_file_with_catalog,
-    check_fragment_definition, check_query_definition, extract_definitions, format_file,
-    lint_file_with_options, lint_fragment_definition_with_options,
-    lint_query_definition_with_options, lower_file, parse_source, plan_file_with_catalog,
-    plan_query_definition,
+    SourceFile, SourceSnapshot, SyntaxTree, check_file_with_catalog, check_fragment_definition,
+    check_query_definition, extract_definitions, format_file, lint_file_with_options,
+    lint_fragment_definition_with_options, lint_query_definition_with_options, lower_file,
+    parse_source, plan_file_with_catalog, plan_query_definition,
 };
 use facet::Facet;
 use picante::PicanteResult;
@@ -25,12 +24,6 @@ pub struct AnalysisResult {
     pub check: CheckedFile,
     pub lint: LintedFile,
     pub plan: PlannedFile,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FragmentDefinitionLocation {
-    pub file: FileId,
-    pub range: dsql_core::TextRange,
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -54,26 +47,40 @@ impl CompilerDiagnosticSource for ParsedFile {
 #[picante::input]
 pub struct SourceInput {
     #[key]
-    pub file: FileId,
+    pub unit_id: SourceUnitId,
     pub revision: RevisionId,
     pub text: Arc<str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
 pub struct ContextSource {
-    pub file: FileId,
+    pub unit_id: SourceUnitId,
     pub source: SourceInput,
 }
 
 #[derive(Clone, Debug, Facet)]
 pub struct ContextDefinitionFile {
-    pub file: FileId,
+    pub unit_id: SourceUnitId,
     pub definitions: Vec<DefinitionRecord>,
 }
 
 #[derive(Clone, Debug, Facet)]
 pub struct ContextDefinitions {
-    pub files: Vec<ContextDefinitionFile>,
+    pub unit_ids: Vec<ContextDefinitionFile>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct ScopedProgram {
+    pub env_id: String,
+    pub units: Vec<ContextDefinitionFile>,
+    pub fragments: Vec<FragmentRecord>,
+    pub diagnostics: Vec<ScopedDiagnostic>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct ScopedDiagnostic {
+    pub unit_id: SourceUnitId,
+    pub diagnostic: Diagnostic,
 }
 
 #[picante::input]
@@ -93,94 +100,37 @@ pub struct ContextSourcesInput {
     pub sources: Vec<ContextSource>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
-pub struct QueryDefinitionKey {
-    pub file: FileId,
-    pub ordinal: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
-pub struct FragmentDefinitionKey {
-    pub file: FileId,
-    pub ordinal: u32,
-    pub name: String,
-}
-
-#[picante::input]
-pub struct FragmentDefinitionInput {
-    #[key]
-    pub key: FragmentDefinitionKey,
-    pub name: String,
-    pub record: Option<FragmentRecord>,
-    pub fragments: Vec<FragmentDefinitionInput>,
-}
-
-#[picante::input]
-pub struct CompletionScopeInput {
-    #[key]
-    pub file: FileId,
-    pub fragments: Vec<FragmentDefinitionInput>,
-}
-
-#[picante::input]
-pub struct QueryDefinitionInput {
-    #[key]
-    pub key: QueryDefinitionKey,
-    pub record: Option<QueryRecord>,
-    pub fragments: Vec<FragmentDefinitionInput>,
-}
-
-#[picante::tracked]
-pub async fn completion_scope_query<DB: CompilerDatabaseTrait>(
-    db: &DB,
-    input: CompletionScopeInput,
-) -> PicanteResult<CompletionScope> {
-    let mut fragments = Vec::new();
-    let mut seen = HashSet::<String>::new();
-    for fragment_input in input.fragments(db)? {
-        let name = fragment_input.name(db)?.clone();
-        if !seen.insert(name) {
-            continue;
-        }
-        if let Some(record) = fragment_input.record(db)? {
-            fragments.push(record);
-        }
-    }
-    fragments.sort_by(|left, right| left.key.name.cmp(&right.key.name));
-    Ok(CompletionScope { fragments })
-}
-
 #[picante::tracked]
 pub async fn parse_file<DB: CompilerDatabaseTrait>(
     db: &DB,
     source: SourceInput,
-) -> PicanteResult<ParsedFile> {
+) -> PicanteResult<Arc<ParsedFile>> {
     let text = source.text(db)?;
     let parse = parse_source(SourceSnapshot::from_arc(text));
-    Ok(ParsedFile {
+    Ok(Arc::new(ParsedFile {
         tree: parse.tree,
         source_file: parse.source_file,
         diagnostics: parse.diagnostics,
-    })
+    }))
 }
 
 #[picante::tracked]
 pub async fn lower_file_query<DB: CompilerDatabaseTrait>(
     db: &DB,
     source: SourceInput,
-) -> PicanteResult<LoweredFile> {
+) -> PicanteResult<Arc<LoweredFile>> {
     let parse = parse_file(db, source).await?;
     let mut interner = Interner::default();
-    Ok(lower_file(&parse.source_file, &mut interner))
+    Ok(Arc::new(lower_file(&parse.source_file, &mut interner)))
 }
 
 #[picante::tracked]
 pub async fn extract_definitions_for_file<DB: CompilerDatabaseTrait>(
     db: &DB,
     source: SourceInput,
-) -> PicanteResult<ExtractedFile> {
+) -> PicanteResult<Arc<ExtractedFile>> {
     let parse = parse_file(db, source).await?;
-    Ok(extract_definitions(&parse.source_file))
+    Ok(Arc::new(extract_definitions(&parse.source_file)))
 }
 
 #[picante::tracked]
@@ -188,15 +138,32 @@ pub async fn context_definitions_query<DB: CompilerDatabaseTrait>(
     db: &DB,
     context: ContextSourcesInput,
 ) -> PicanteResult<ContextDefinitions> {
-    let mut files = Vec::new();
+    let mut unit_ids = Vec::new();
     for source in context.sources(db)? {
         let extracted = extract_definitions_for_file(db, source.source).await?;
-        files.push(ContextDefinitionFile {
-            file: source.file,
-            definitions: extracted.definitions,
+        unit_ids.push(ContextDefinitionFile {
+            unit_id: source.unit_id,
+            definitions: extracted.definitions.clone(),
         });
     }
-    Ok(ContextDefinitions { files })
+    Ok(ContextDefinitions { unit_ids })
+}
+
+#[picante::tracked]
+pub async fn scoped_program_query<DB: CompilerDatabaseTrait>(
+    db: &DB,
+    context: ContextSourcesInput,
+) -> PicanteResult<Arc<ScopedProgram>> {
+    let env_id = context.context(db)?.to_string();
+    let definitions = context_definitions_query(db, context).await?;
+    let fragments = context_fragments(&definitions);
+    let diagnostics = duplicate_fragment_diagnostics(&definitions);
+    Ok(Arc::new(ScopedProgram {
+        env_id,
+        units: definitions.unit_ids,
+        fragments,
+        diagnostics,
+    }))
 }
 
 #[picante::tracked]
@@ -235,109 +202,31 @@ pub async fn lint_file_query<DB: CompilerDatabaseTrait>(
 }
 
 #[picante::tracked]
-pub async fn check_query_definition_query<DB: CompilerDatabaseTrait>(
-    db: &DB,
-    input: QueryDefinitionInput,
-) -> PicanteResult<CheckedFile> {
-    let Some(record) = input.record(db)? else {
-        return Ok(empty_checked());
-    };
-    let fragments = resolve_fragments(db, input.fragments(db)?)?;
-    let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
-    Ok(check_query_definition(&record, &fragments, &catalog))
-}
-
-#[picante::tracked]
-pub async fn check_fragment_definition_query<DB: CompilerDatabaseTrait>(
-    db: &DB,
-    input: FragmentDefinitionInput,
-) -> PicanteResult<CheckedFile> {
-    let Some(record) = input.record(db)? else {
-        return Ok(empty_checked());
-    };
-    let fragments = resolve_fragments(db, input.fragments(db)?)?;
-    let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
-    Ok(check_fragment_definition(&record, &fragments, &catalog))
-}
-
-#[picante::tracked]
-pub async fn lint_query_definition_query<DB: CompilerDatabaseTrait>(
-    db: &DB,
-    input: QueryDefinitionInput,
-) -> PicanteResult<LintedFile> {
-    let Some(record) = input.record(db)? else {
-        return Ok(empty_linted());
-    };
-    let fragments = resolve_fragments(db, input.fragments(db)?)?;
-    let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
-    let options = LintOptionsInput::options(db)?.unwrap_or_default();
-    Ok(lint_query_definition_with_options(
-        &record, &fragments, &catalog, options,
-    ))
-}
-
-#[picante::tracked]
-pub async fn lint_fragment_definition_query<DB: CompilerDatabaseTrait>(
-    db: &DB,
-    input: FragmentDefinitionInput,
-) -> PicanteResult<LintedFile> {
-    let Some(record) = input.record(db)? else {
-        return Ok(empty_linted());
-    };
-    let fragments = resolve_fragments(db, input.fragments(db)?)?;
-    let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
-    let options = LintOptionsInput::options(db)?.unwrap_or_default();
-    Ok(lint_fragment_definition_with_options(
-        &record, &fragments, &catalog, options,
-    ))
-}
-
-#[picante::tracked]
-pub async fn plan_query_definition_query<DB: CompilerDatabaseTrait>(
-    db: &DB,
-    input: QueryDefinitionInput,
-) -> PicanteResult<PlannedFile> {
-    let Some(record) = input.record(db)? else {
-        return Ok(empty_planned());
-    };
-    let fragments = resolve_fragments(db, input.fragments(db)?)?;
-    let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
-    Ok(plan_query_definition(&record, &fragments, &catalog))
-}
-
-#[picante::tracked]
-pub async fn diagnostics_for_file<DB: CompilerDatabaseTrait>(
-    db: &DB,
-    source: SourceInput,
-) -> PicanteResult<Vec<Diagnostic>> {
-    let parse = parse_file(db, source).await?;
-    let lower = lower_file_query(db, source).await?;
-    let check = check_file_query(db, source).await?;
-    let lint = lint_file_query(db, source).await?;
-    let plan = plan_file_query(db, source).await?;
-    Ok(collect_diagnostics_parts(&[
-        &parse, &lower, &check, &lint, &plan,
-    ]))
-}
-
-#[picante::tracked]
-pub async fn diagnostics_for_file_in_context<DB: CompilerDatabaseTrait>(
+pub async fn diagnostics_for_unit_in_scope<DB: CompilerDatabaseTrait>(
     db: &DB,
     context: ContextSourcesInput,
-    file: FileId,
+    unit_id: SourceUnitId,
     source: SourceInput,
 ) -> PicanteResult<Vec<Diagnostic>> {
     let parse = parse_file(db, source).await?;
     let lower = lower_file_query(db, source).await?;
-    let definitions = context_definitions_query(db, context).await?;
+    let scoped = scoped_program_query(db, context).await?;
     let catalog = CatalogInput::catalog(db)?.unwrap_or_else(Catalog::hardcoded);
     let options = LintOptionsInput::options(db)?.unwrap_or_default();
-    let check = context_check_file(&definitions, file, &catalog);
-    let lint = context_lint_file(&definitions, file, &catalog, options);
-    let plan = context_plan_file(&definitions, file, &catalog);
-    Ok(collect_diagnostics_parts(&[
-        &parse, &lower, &check, &lint, &plan,
-    ]))
+    let check = scoped_check_unit(&scoped, unit_id, &catalog);
+    let lint = scoped_lint_unit(&scoped, unit_id, &catalog, options);
+    let plan = scoped_plan_unit(&scoped, unit_id, &catalog);
+    let mut diagnostics =
+        collect_diagnostics_parts(&[parse.as_ref(), lower.as_ref(), &check, &lint, &plan]);
+    diagnostics.extend(
+        scoped
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.unit_id == unit_id)
+            .map(|diagnostic| diagnostic.diagnostic.clone()),
+    );
+    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+    Ok(diagnostics)
 }
 
 #[picante::tracked]
@@ -349,9 +238,9 @@ pub async fn formatted_text_for_file<DB: CompilerDatabaseTrait>(
     let text = source.text(db)?;
     let parse = ParseResult {
         source: SourceSnapshot::from_arc(text),
-        tree: parsed.tree,
-        source_file: parsed.source_file,
-        diagnostics: parsed.diagnostics,
+        tree: parsed.tree.clone(),
+        source_file: parsed.source_file.clone(),
+        diagnostics: parsed.diagnostics.clone(),
     };
     let formatted = format_file(&parse);
     if formatted.diagnostics.is_empty() {
@@ -361,47 +250,34 @@ pub async fn formatted_text_for_file<DB: CompilerDatabaseTrait>(
     }
 }
 
-fn resolve_fragments(
-    db: &impl CompilerDatabaseTrait,
-    inputs: Vec<FragmentDefinitionInput>,
-) -> PicanteResult<FragmentMap> {
-    let mut fragments = FragmentMap::default();
-    let mut seen = HashSet::<String>::new();
-    let mut stack = inputs;
-    while let Some(input) = stack.pop() {
-        let name = input.name(db)?.clone();
-        if !seen.insert(name.clone()) {
-            continue;
-        }
-        let Some(record) = input.record(db)? else {
-            continue;
-        };
-        stack.extend(input.fragments(db)?);
-        fragments.insert(record);
-    }
-    Ok(fragments)
-}
-
-fn context_fragment_map(definitions: &ContextDefinitions) -> FragmentMap {
-    let mut fragments = FragmentMap::default();
-    for file in &definitions.files {
-        for definition in &file.definitions {
+fn context_fragments(definitions: &ContextDefinitions) -> Vec<FragmentRecord> {
+    let mut fragments = Vec::new();
+    for unit_id in &definitions.unit_ids {
+        for definition in &unit_id.definitions {
             if let DefinitionRecord::Fragment(fragment) = definition {
-                fragments.insert(fragment.clone());
+                fragments.push(fragment.clone());
             }
         }
     }
     fragments
 }
 
-fn context_check_file(
-    definitions: &ContextDefinitions,
-    file: FileId,
+fn scoped_fragment_map(scoped: &ScopedProgram) -> FragmentMap {
+    let mut fragments = FragmentMap::default();
+    for fragment in &scoped.fragments {
+        fragments.insert(fragment.clone());
+    }
+    fragments
+}
+
+fn scoped_check_unit(
+    scoped: &ScopedProgram,
+    unit_id: SourceUnitId,
     catalog: &Catalog,
 ) -> CheckedFile {
-    let resolver = context_fragment_map(definitions);
-    let mut diagnostics = duplicate_fragment_diagnostics_for_file(definitions, file);
-    for definition in definitions_for_file(definitions, file) {
+    let resolver = scoped_fragment_map(scoped);
+    let mut diagnostics = Vec::new();
+    for definition in definitions_for_unit(scoped, unit_id) {
         match definition {
             DefinitionRecord::Query(query) => {
                 diagnostics.extend(check_query_definition(query, &resolver, catalog).diagnostics);
@@ -419,15 +295,15 @@ fn context_check_file(
     }
 }
 
-fn context_lint_file(
-    definitions: &ContextDefinitions,
-    file: FileId,
+fn scoped_lint_unit(
+    scoped: &ScopedProgram,
+    unit_id: SourceUnitId,
     catalog: &Catalog,
     options: LintOptions,
 ) -> LintedFile {
-    let resolver = context_fragment_map(definitions);
+    let resolver = scoped_fragment_map(scoped);
     let mut diagnostics = Vec::new();
-    for definition in definitions_for_file(definitions, file) {
+    for definition in definitions_for_unit(scoped, unit_id) {
         match definition {
             DefinitionRecord::Query(query) => diagnostics.extend(
                 lint_query_definition_with_options(query, &resolver, catalog, options).diagnostics,
@@ -442,15 +318,15 @@ fn context_lint_file(
     LintedFile { diagnostics }
 }
 
-fn context_plan_file(
-    definitions: &ContextDefinitions,
-    file: FileId,
+fn scoped_plan_unit(
+    scoped: &ScopedProgram,
+    unit_id: SourceUnitId,
     catalog: &Catalog,
 ) -> PlannedFile {
-    let resolver = context_fragment_map(definitions);
+    let resolver = scoped_fragment_map(scoped);
     let mut queries = Vec::new();
     let mut diagnostics = Vec::new();
-    for definition in definitions_for_file(definitions, file) {
+    for definition in definitions_for_unit(scoped, unit_id) {
         if let DefinitionRecord::Query(query) = definition {
             let plan = plan_query_definition(query, &resolver, catalog);
             queries.extend(plan.queries);
@@ -464,28 +340,25 @@ fn context_plan_file(
     }
 }
 
-fn definitions_for_file(
-    definitions: &ContextDefinitions,
-    file: FileId,
+fn definitions_for_unit(
+    scoped: &ScopedProgram,
+    unit_id: SourceUnitId,
 ) -> impl Iterator<Item = &DefinitionRecord> {
-    definitions
-        .files
+    scoped
+        .units
         .iter()
-        .filter(move |definition_file| definition_file.file == file)
+        .filter(move |definition_file| definition_file.unit_id == unit_id)
         .flat_map(|definition_file| definition_file.definitions.iter())
 }
 
-fn duplicate_fragment_diagnostics_for_file(
-    definitions: &ContextDefinitions,
-    file: FileId,
-) -> Vec<CheckDiagnostic> {
-    let mut fragments = Vec::<(String, FileId, FragmentRecord)>::new();
-    for definition_file in &definitions.files {
+fn duplicate_fragment_diagnostics(definitions: &ContextDefinitions) -> Vec<ScopedDiagnostic> {
+    let mut fragments = Vec::<(String, SourceUnitId, FragmentRecord)>::new();
+    for definition_file in &definitions.unit_ids {
         for definition in &definition_file.definitions {
             if let DefinitionRecord::Fragment(fragment) = definition {
                 fragments.push((
                     fragment.key.name.clone(),
-                    definition_file.file,
+                    definition_file.unit_id,
                     fragment.clone(),
                 ));
             }
@@ -498,86 +371,49 @@ fn duplicate_fragment_diagnostics_for_file(
         if seen.insert(name.clone()) {
             continue;
         }
-        if fragment_file == file {
-            diagnostics.push(CheckDiagnostic {
+        diagnostics.push(ScopedDiagnostic {
+            unit_id: fragment_file,
+            diagnostic: CheckDiagnostic {
                 range: fragment.name_range,
                 kind: CheckDiagnosticKind::DuplicateFragment { name },
-            });
-        }
+            }
+            .to_diagnostic(),
+        });
     }
-    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+    diagnostics.sort_by_key(|diagnostic| {
+        (
+            diagnostic.unit_id.0,
+            diagnostic.diagnostic.range.start,
+            diagnostic.diagnostic.range.end,
+        )
+    });
     diagnostics
 }
 
-fn empty_checked() -> CheckedFile {
-    CheckedFile {
-        errors: Vec::new(),
-        diagnostics: Vec::new(),
-    }
-}
-
-fn empty_linted() -> LintedFile {
-    LintedFile {
-        diagnostics: Vec::new(),
-    }
-}
-
-fn empty_planned() -> PlannedFile {
-    PlannedFile {
-        queries: Vec::new(),
-        diagnostics: Vec::new(),
-    }
-}
-
 #[picante::db(
-    inputs(
-        SourceInput,
-        CatalogInput,
-        LintOptionsInput,
-        ContextSourcesInput,
-        QueryDefinitionInput,
-        FragmentDefinitionInput,
-        CompletionScopeInput
-    ),
+    inputs(SourceInput, CatalogInput, LintOptionsInput, ContextSourcesInput),
     tracked(
-        completion_scope_query,
         parse_file,
         lower_file_query,
         extract_definitions_for_file,
         context_definitions_query,
+        scoped_program_query,
         check_file_query,
         plan_file_query,
         lint_file_query,
-        check_query_definition_query,
-        check_fragment_definition_query,
-        lint_query_definition_query,
-        lint_fragment_definition_query,
-        plan_query_definition_query,
-        diagnostics_for_file,
-        diagnostics_for_file_in_context,
+        diagnostics_for_unit_in_scope,
         formatted_text_for_file
     ),
     db_trait(CompilerDatabaseTrait)
 )]
 pub struct CompilerDb {
-    source_inputs: DashMap<FileId, SourceInput>,
-    query_inputs: DashMap<QueryDefinitionKey, QueryDefinitionInput>,
-    fragment_inputs: DashMap<FragmentDefinitionKey, FragmentDefinitionInput>,
-    file_queries: DashMap<FileId, Vec<QueryDefinitionKey>>,
-    file_fragments: DashMap<FileId, Vec<FragmentDefinitionKey>>,
+    source_inputs: DashMap<SourceUnitId, SourceInput>,
     context_inputs: DashMap<String, ContextSourcesInput>,
 }
 
 impl Default for CompilerDb {
     fn default() -> Self {
-        let db = Self::new(
-            DashMap::new(),
-            DashMap::new(),
-            DashMap::new(),
-            DashMap::new(),
-            DashMap::new(),
-            DashMap::new(),
-        );
+        let db = Self::new(DashMap::new(), DashMap::new());
         db.set_catalog(Catalog::hardcoded())
             .expect("hardcoded catalog should be representable by Picante");
         db.set_lint_options(LintOptions::default())
@@ -597,82 +433,66 @@ impl CompilerDb {
 
     pub(crate) fn set_source_rope(
         &self,
-        file: FileId,
+        unit_id: SourceUnitId,
         revision: RevisionId,
         rope: Rope,
     ) -> PicanteResult<()> {
         let text = Arc::<str>::from(rope.to_string());
-        let source = SourceInput::new(self, file, revision, text)?;
-        self.source_inputs.insert(file, source);
-        self.update_definition_inputs(file, source)?;
+        let source = SourceInput::new(self, unit_id, revision, text)?;
+        self.source_inputs.insert(unit_id, source);
         Ok(())
     }
 
-    pub(crate) fn set_indexed_source_rope(&self, file: FileId, rope: Rope) -> PicanteResult<()> {
-        self.source_inputs.remove(&file);
-        let text = Arc::<str>::from(rope.to_string());
-        let parsed = parse_source(SourceSnapshot::from_arc(text));
-        let extracted = extract_definitions(&parsed.source_file);
-        self.update_definition_records(file, extracted.definitions)
+    pub(crate) fn remove_source(&self, unit_id: SourceUnitId) {
+        self.source_inputs.remove(&unit_id);
     }
 
-    pub(crate) fn remove_source(&self, file: FileId) {
-        self.source_inputs.remove(&file);
-        self.clear_definition_inputs(file);
+    fn source_input(&self, unit_id: SourceUnitId) -> Option<SourceInput> {
+        self.source_inputs.get(&unit_id).map(|source| *source)
     }
 
-    fn source_input(&self, file: FileId) -> Option<SourceInput> {
-        self.source_inputs.get(&file).map(|source| *source)
-    }
-
-    pub(crate) async fn analysis(&self, file: FileId) -> Option<AnalysisResult> {
-        let source = self.source_input(file)?;
+    pub(crate) async fn analysis_in_scope(
+        &self,
+        context: &str,
+        unit_id: SourceUnitId,
+    ) -> Option<AnalysisResult> {
+        let context = self.context_inputs.get(context).map(|input| *input)?;
+        let source = self.source_input(unit_id)?;
         let parsed = parse_file(self, source).await.ok()?;
         let lower = lower_file_query(self, source).await.ok()?;
-        let check = self.definition_check(file).await.ok()?;
-        let lint = self.definition_lint(file).await.ok()?;
-        let plan = self.definition_plan(file).await.ok()?;
+        let scoped = scoped_program_query(self, context).await.ok()?;
+        let catalog = self.catalog();
+        let options = self.lint_options();
+        let check = scoped_check_unit(&scoped, unit_id, &catalog);
+        let lint = scoped_lint_unit(&scoped, unit_id, &catalog, options);
+        let plan = scoped_plan_unit(&scoped, unit_id, &catalog);
         let text = source.text(self).ok()?;
         Some(AnalysisResult {
             parse: ParseResult {
                 source: SourceSnapshot::from_arc(text),
-                tree: parsed.tree,
-                source_file: parsed.source_file,
-                diagnostics: parsed.diagnostics,
+                tree: parsed.tree.clone(),
+                source_file: parsed.source_file.clone(),
+                diagnostics: parsed.diagnostics.clone(),
             },
-            lower,
+            lower: lower.as_ref().clone(),
             check,
             lint,
             plan,
         })
     }
 
-    pub(crate) async fn diagnostics(&self, file: FileId) -> PicanteResult<Vec<Diagnostic>> {
-        let Some(source) = self.source_input(file) else {
-            return Ok(Vec::new());
-        };
-        let parse = parse_file(self, source).await?;
-        let lower = lower_file_query(self, source).await?;
-        let check = self.definition_check(file).await?;
-        let lint = self.definition_lint(file).await?;
-        let plan = self.definition_plan(file).await?;
-        Ok(collect_diagnostics_parts(&[
-            &parse, &lower, &check, &lint, &plan,
-        ]))
-    }
-
     pub(crate) fn set_context_files(
         &self,
         context: String,
-        files: Vec<FileId>,
+        unit_ids: Vec<SourceUnitId>,
     ) -> PicanteResult<()> {
         let mut seen = HashSet::new();
-        let sources = files
+        let sources = unit_ids
             .into_iter()
-            .filter(|file| seen.insert(*file))
-            .filter_map(|file| {
-                self.source_input(file)
-                    .map(|source| ContextSource { file, source })
+            .filter(|unit_id| seen.insert(*unit_id))
+            .filter_map(|unit_id| {
+                self.source_input(unit_id)
+                    .map(|source| ContextSource { unit_id, source })
             })
             .collect();
         let input = ContextSourcesInput::new(self, context.clone(), sources)?;
@@ -680,47 +500,49 @@ impl CompilerDb {
         Ok(())
     }
 
-    pub(crate) async fn diagnostics_in_context(
+    pub(crate) async fn diagnostics_in_scope(
         &self,
         context: &str,
-        file: FileId,
+        unit_id: SourceUnitId,
     ) -> PicanteResult<Vec<Diagnostic>> {
         let Some(context) = self.context_inputs.get(context).map(|input| *input) else {
             return Ok(Vec::new());
         };
-        let Some(source) = self.source_input(file) else {
+        let Some(source) = self.source_input(unit_id) else {
             return Ok(Vec::new());
         };
-        diagnostics_for_file_in_context(self, context, file, source).await
+        diagnostics_for_unit_in_scope(self, context, unit_id, source).await
     }
 
-    pub(crate) async fn context_definitions(
-        &self,
-        context: &str,
-    ) -> PicanteResult<ContextDefinitions> {
+    pub(crate) async fn scoped_program(&self, context: &str) -> PicanteResult<Arc<ScopedProgram>> {
         let Some(context) = self.context_inputs.get(context).map(|input| *input) else {
-            return Ok(ContextDefinitions { files: Vec::new() });
+            return Ok(Arc::new(ScopedProgram {
+                env_id: context.to_string(),
+                units: Vec::new(),
+                fragments: Vec::new(),
+                diagnostics: Vec::new(),
+            }));
         };
-        context_definitions_query(self, context).await
+        scoped_program_query(self, context).await
     }
 
     pub(crate) async fn completion_scope_in_context(
         &self,
         context: &str,
-        excluding: FileId,
+        excluding: SourceUnitId,
     ) -> PicanteResult<CompletionScope> {
-        let definitions = self.context_definitions(context).await?;
+        let scoped = self.scoped_program(context).await?;
         let mut fragments = Vec::new();
         let mut seen = HashSet::<String>::new();
-        for file in definitions.files {
-            if file.file == excluding {
+        for unit in &scoped.units {
+            if unit.unit_id == excluding {
                 continue;
             }
-            for definition in file.definitions {
+            for definition in &unit.definitions {
                 if let DefinitionRecord::Fragment(fragment) = definition
                     && seen.insert(fragment.key.name.clone())
                 {
-                    fragments.push(fragment);
+                    fragments.push(fragment.clone());
                 }
             }
         }
@@ -728,98 +550,14 @@ impl CompilerDb {
         Ok(CompletionScope { fragments })
     }
 
-    async fn definition_check(&self, file: FileId) -> PicanteResult<CheckedFile> {
-        let mut diagnostics = Vec::new();
-        if let Some(queries) = self.file_queries.get(&file) {
-            for key in queries.iter() {
-                if let Some(input) = self.query_inputs.get(key).map(|input| *input) {
-                    diagnostics
-                        .extend(check_query_definition_query(self, input).await?.diagnostics);
-                }
-            }
-        }
-        if let Some(fragments) = self.file_fragments.get(&file) {
-            for name in fragments.iter() {
-                if let Some(input) = self.fragment_inputs.get(name).map(|input| *input) {
-                    diagnostics.extend(
-                        check_fragment_definition_query(self, input)
-                            .await?
-                            .diagnostics,
-                    );
-                }
-            }
-        }
-        diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
-        Ok(CheckedFile {
-            errors: Vec::new(),
-            diagnostics,
-        })
-    }
-
-    async fn definition_lint(&self, file: FileId) -> PicanteResult<LintedFile> {
-        let mut diagnostics = Vec::new();
-        if let Some(queries) = self.file_queries.get(&file) {
-            for key in queries.iter() {
-                if let Some(input) = self.query_inputs.get(key).map(|input| *input) {
-                    diagnostics.extend(lint_query_definition_query(self, input).await?.diagnostics);
-                }
-            }
-        }
-        if let Some(fragments) = self.file_fragments.get(&file) {
-            for name in fragments.iter() {
-                if let Some(input) = self.fragment_inputs.get(name).map(|input| *input) {
-                    diagnostics.extend(
-                        lint_fragment_definition_query(self, input)
-                            .await?
-                            .diagnostics,
-                    );
-                }
-            }
-        }
-        diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
-        Ok(LintedFile { diagnostics })
-    }
-
-    async fn definition_plan(&self, file: FileId) -> PicanteResult<PlannedFile> {
-        let mut queries = Vec::new();
-        let mut diagnostics = Vec::new();
-        if let Some(query_keys) = self.file_queries.get(&file) {
-            for key in query_keys.iter() {
-                if let Some(input) = self.query_inputs.get(key).map(|input| *input) {
-                    let plan = plan_query_definition_query(self, input).await?;
-                    queries.extend(plan.queries);
-                    diagnostics.extend(plan.diagnostics);
-                }
-            }
-        }
-        diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
-        Ok(PlannedFile {
-            queries,
-            diagnostics,
-        })
-    }
-
-    pub(crate) async fn formatted_text(&self, file: FileId) -> PicanteResult<Option<String>> {
-        let Some(source) = self.source_input(file) else {
+    pub(crate) async fn formatted_text(
+        &self,
+        unit_id: SourceUnitId,
+    ) -> PicanteResult<Option<String>> {
+        let Some(source) = self.source_input(unit_id) else {
             return Ok(None);
         };
         formatted_text_for_file(self, source).await
-    }
-
-    pub(crate) async fn completion_scope(&self, file: FileId) -> PicanteResult<CompletionScope> {
-        let fragments = self.fragment_inputs_for_completion(file);
-        let input = CompletionScopeInput::new(self, file, fragments)?;
-        completion_scope_query(self, input).await
-    }
-
-    pub(crate) fn fragment_definition(&self, name: &str) -> Option<FragmentDefinitionLocation> {
-        let input = self.fragment_inputs_by_name(name).into_iter().next()?;
-        let record = input.record(self).ok()??;
-        let file = self.indexed_files_for_fragment(name).into_iter().next()?;
-        Some(FragmentDefinitionLocation {
-            file,
-            range: record.name_range,
-        })
     }
 
     pub(crate) fn catalog(&self) -> Catalog {
@@ -834,255 +572,5 @@ impl CompilerDb {
             .ok()
             .flatten()
             .unwrap_or_default()
-    }
-
-    fn update_definition_inputs(&self, file: FileId, source: SourceInput) -> PicanteResult<()> {
-        let text = source.text(self)?;
-        let parsed = parse_source(SourceSnapshot::from_arc(text));
-        let extracted = extract_definitions(&parsed.source_file);
-        self.update_definition_records(file, extracted.definitions)
-    }
-
-    fn update_definition_records(
-        &self,
-        file: FileId,
-        definitions: Vec<dsql_core::DefinitionRecord>,
-    ) -> PicanteResult<()> {
-        let old_queries = self
-            .file_queries
-            .get(&file)
-            .map(|queries| queries.clone())
-            .unwrap_or_default();
-        let old_fragments = self
-            .file_fragments
-            .get(&file)
-            .map(|fragments| fragments.clone())
-            .unwrap_or_default();
-        let mut next_queries = Vec::new();
-        let mut next_fragments = Vec::new();
-        let mut seen_queries = HashSet::new();
-        let mut seen_fragments = HashSet::new();
-        let mut fragment_ordinal = 0;
-        for definition in definitions {
-            match definition {
-                dsql_core::DefinitionRecord::Query(record) => {
-                    let key = QueryDefinitionKey {
-                        file,
-                        ordinal: record.key.ordinal,
-                    };
-                    seen_queries.insert(key);
-                    next_queries.push(key);
-                    self.set_query_record(key, Some(record))?;
-                }
-                dsql_core::DefinitionRecord::Fragment(record) => {
-                    let key = FragmentDefinitionKey {
-                        file,
-                        ordinal: fragment_ordinal,
-                        name: record.key.name.clone(),
-                    };
-                    fragment_ordinal += 1;
-                    seen_fragments.insert(key.clone());
-                    next_fragments.push(key.clone());
-                    self.set_fragment_record(key, Some(record))?;
-                }
-            }
-        }
-        for key in old_queries {
-            if !seen_queries.contains(&key) {
-                self.set_query_record(key, None)?;
-            }
-        }
-        for key in old_fragments {
-            if !seen_fragments.contains(&key) {
-                self.set_fragment_record(key, None)?;
-            }
-        }
-        self.file_queries.insert(file, next_queries);
-        self.file_fragments.insert(file, next_fragments);
-        self.refresh_definition_dependencies()?;
-        Ok(())
-    }
-
-    fn clear_definition_inputs(&self, file: FileId) {
-        if let Some((_, queries)) = self.file_queries.remove(&file) {
-            for key in queries {
-                let _ = self.set_query_record(key, None);
-            }
-        }
-        if let Some((_, fragments)) = self.file_fragments.remove(&file) {
-            for key in fragments {
-                let _ = self.set_fragment_record(key, None);
-            }
-        }
-    }
-
-    fn fragment_inputs_for_completion(&self, excluding: FileId) -> Vec<FragmentDefinitionInput> {
-        let mut names = HashSet::new();
-        let mut inputs = Vec::new();
-        for entry in self.file_fragments.iter() {
-            if *entry.key() == excluding {
-                continue;
-            }
-            for key in entry.value() {
-                if names.insert(key.name.clone())
-                    && let Some(input) = self.fragment_inputs.get(key).map(|input| *input)
-                {
-                    inputs.push(input);
-                }
-            }
-        }
-        inputs.sort_by_key(|input| input.name(self).ok());
-        inputs
-    }
-
-    fn indexed_files_for_fragment(&self, name: &str) -> Vec<FileId> {
-        let mut files = self
-            .file_fragments
-            .iter()
-            .filter_map(|entry| {
-                entry
-                    .value()
-                    .iter()
-                    .any(|fragment| fragment.name == name)
-                    .then_some(*entry.key())
-            })
-            .collect::<Vec<_>>();
-        files.sort_by_key(|file| file.0);
-        files
-    }
-
-    fn set_query_record(
-        &self,
-        key: QueryDefinitionKey,
-        record: Option<QueryRecord>,
-    ) -> PicanteResult<()> {
-        let fragments = record
-            .as_ref()
-            .map(|record| self.fragment_inputs_for_record(record))
-            .transpose()?
-            .unwrap_or_default();
-        let input = QueryDefinitionInput::new(self, key, record.clone(), fragments)?;
-        self.query_inputs.insert(key, input);
-        Ok(())
-    }
-
-    fn set_fragment_record(
-        &self,
-        key: FragmentDefinitionKey,
-        record: Option<FragmentRecord>,
-    ) -> PicanteResult<()> {
-        let fragments = record
-            .as_ref()
-            .map(|record| self.fragment_inputs_for_record(record))
-            .transpose()?
-            .unwrap_or_default();
-        let input = FragmentDefinitionInput::new(
-            self,
-            key.clone(),
-            key.name.clone(),
-            record.clone(),
-            fragments,
-        )?;
-        self.fragment_inputs.insert(key, input);
-        Ok(())
-    }
-
-    fn refresh_definition_dependencies(&self) -> PicanteResult<()> {
-        let query_records = self
-            .query_inputs
-            .iter()
-            .filter_map(|entry| {
-                entry
-                    .record(self)
-                    .ok()
-                    .map(|record| ((*entry.key()), record))
-            })
-            .collect::<Vec<_>>();
-        let fragment_records = self
-            .fragment_inputs
-            .iter()
-            .filter_map(|entry| {
-                if entry.key().file == FileId(u32::MAX) {
-                    return None;
-                }
-                entry
-                    .record(self)
-                    .ok()
-                    .map(|record| (entry.key().clone(), record))
-            })
-            .collect::<Vec<_>>();
-
-        for (key, record) in query_records {
-            self.set_query_record(key, record)?;
-        }
-        for (key, record) in fragment_records {
-            self.set_fragment_record(key, record)?;
-        }
-        Ok(())
-    }
-
-    fn fragment_inputs_for_record(
-        &self,
-        record: &impl FragmentSpreadSource,
-    ) -> PicanteResult<Vec<FragmentDefinitionInput>> {
-        let mut inputs = Vec::new();
-        for name in record.fragment_spread_names() {
-            let found = self.fragment_inputs_by_name(&name);
-            if found.is_empty() {
-                inputs.push(self.missing_fragment_input(name)?);
-            } else {
-                inputs.extend(found);
-            }
-        }
-        Ok(inputs)
-    }
-
-    fn fragment_inputs_by_name(&self, name: &str) -> Vec<FragmentDefinitionInput> {
-        let mut inputs = self
-            .fragment_inputs
-            .iter()
-            .filter_map(|entry| (entry.key().name == name).then_some((*entry.key()).clone()))
-            .collect::<Vec<_>>();
-        inputs.sort_by_key(|key| (key.file.0, key.ordinal));
-        inputs
-            .into_iter()
-            .filter_map(|key| self.fragment_inputs.get(&key).map(|input| *input))
-            .collect()
-    }
-
-    fn missing_fragment_input(&self, name: String) -> PicanteResult<FragmentDefinitionInput> {
-        let key = FragmentDefinitionKey {
-            file: FileId(u32::MAX),
-            ordinal: u32::MAX,
-            name: name.clone(),
-        };
-        if let Some(input) = self.fragment_inputs.get(&key).map(|input| *input) {
-            return Ok(input);
-        }
-        let input = FragmentDefinitionInput::new(self, key.clone(), name, None, Vec::new())?;
-        self.fragment_inputs.insert(key, input);
-        Ok(input)
-    }
-}
-
-trait FragmentSpreadSource {
-    fn fragment_spread_names(&self) -> Vec<String>;
-}
-
-impl FragmentSpreadSource for QueryRecord {
-    fn fragment_spread_names(&self) -> Vec<String> {
-        self.fragment_spreads
-            .iter()
-            .map(|spread| spread.name.clone())
-            .collect()
-    }
-}
-
-impl FragmentSpreadSource for FragmentRecord {
-    fn fragment_spread_names(&self) -> Vec<String> {
-        self.fragment_spreads
-            .iter()
-            .map(|spread| spread.name.clone())
-            .collect()
     }
 }

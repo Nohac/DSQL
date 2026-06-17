@@ -6,7 +6,7 @@ use dsql_core::{
     infer_query_variable_bindings, is_input_path, is_params_path, plan_fragment_definition,
     plan_query_definition,
 };
-use dsql_frontend::ProjectAnalysis;
+use dsql_frontend::ProjectHost;
 use dsql_metadata::{
     BuildManifest, DefinitionKind, DynamicInputMetadata, FragmentManifestEntry, FragmentMetadata,
     FragmentSpreadMetadata, HandoffMetadata, InputField, OperationManifestEntry, OperationMetadata,
@@ -41,7 +41,7 @@ pub struct GenerateOptions {
 pub(crate) struct GenerateInput {
     pub project: dsql_project::Project,
     pub catalog: Catalog,
-    pub analysis: ProjectAnalysis,
+    pub analysis: ProjectHost,
     pub options: GenerateOptions,
 }
 
@@ -286,13 +286,6 @@ pub(crate) async fn generate_project_artifacts(input: GenerateInput) -> Result<G
 }
 
 fn generated_resolution_scopes(project: &dsql_project::Project) -> Vec<GeneratedResolutionScope> {
-    if project.config.resolution.is_empty() {
-        return vec![GeneratedResolutionScope {
-            name: dsql_project::DEFAULT_RESOLUTION_SCOPE.to_string(),
-            imports: Vec::new(),
-        }];
-    }
-
     project
         .config
         .resolution
@@ -304,7 +297,7 @@ fn generated_resolution_scopes(project: &dsql_project::Project) -> Vec<Generated
         .collect()
 }
 
-fn generated_source_scopes(analysis: &ProjectAnalysis) -> Vec<GeneratedSourceScope> {
+fn generated_source_scopes(analysis: &ProjectHost) -> Vec<GeneratedSourceScope> {
     analysis
         .source_scopes()
         .iter()

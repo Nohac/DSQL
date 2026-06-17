@@ -5,7 +5,7 @@ use dsql_core::{
     collect_query_compiler_diagnostics, extract_definitions, lint_query_definition_with_options,
     parse_source, plan_query_definition, sort_compiler_diagnostics,
 };
-use dsql_frontend::AnalysisHost;
+use dsql_frontend::{PhysicalDocumentId, ProjectHost};
 use miette::{IntoDiagnostic, NamedSource, Result};
 use sqlx::{Connection, Row, postgres::PgConnection};
 use std::path::{Path, PathBuf};
@@ -380,11 +380,13 @@ async fn analyze_file_with_settings(
     lint_options: dsql_core::LintOptions,
 ) -> Result<dsql_frontend::AnalysisResult> {
     let text = std::fs::read_to_string(&path).into_diagnostic()?;
-    let host = AnalysisHost::new();
+    let host = ProjectHost::new();
+    host.set_standalone_context("file");
     host.set_catalog(catalog);
     host.set_lint_options(lint_options);
-    let file = host.create_file(SourceSnapshot::from_string(text));
-    host.analyze(file)
+    let document_id = PhysicalDocumentId(path.clone());
+    host.open_document(document_id.clone(), Some(path), 0, text);
+    host.analysis_for_document(&document_id)
         .await
         .ok_or_else(|| miette::miette!("analysis failed"))
 }

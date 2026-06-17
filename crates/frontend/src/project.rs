@@ -1,8 +1,8 @@
 use crate::{
-    AnalysisContext, AnalysisContextId, AnalysisHost, CompletionItem, DefinitionResult, FileId,
-    HoverInfo, RevisionId,
+    CompletionItem, DefinitionResult, HoverInfo, RevisionId, SourceUnitId,
     completion::completions_at,
-    cursor::cursor_context,
+    cursor::{CursorContext, cursor_context},
+    db::{AnalysisResult, CompilerDb},
     definition::{DefinitionTarget, SourceDefinition, SourceDefinitionKind, definition_target_at},
     document::{
         DocumentFormat, DocumentSnapshot, TextEdit, TextPosition, apply_text_edits,
@@ -13,8 +13,8 @@ use crate::{
 };
 use dashmap::DashMap;
 use dsql_core::{
-    DefinitionRecord, Diagnostic, DiagnosticCode, DiagnosticSource, FormatConfidence,
-    FormattedText, FragmentMap, Severity, SourceSnapshot, TextRange, VariableBinding,
+    Catalog, DefinitionRecord, Diagnostic, DiagnosticCode, DiagnosticSource, FormatConfidence,
+    FormattedText, FragmentMap, LintOptions, Severity, TextRange, VariableBinding,
     infer_fragment_variable_bindings, infer_query_variable_bindings,
 };
 use dsql_embedding::{RegexEmbedding, default_typescript_regex_pattern};
@@ -25,13 +25,29 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::Arc,
+    sync::atomic::{AtomicU32, Ordering},
 };
+
+/// Stable identity for one effective resolution environment.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AnalysisContextId(pub String);
+
+/// Project-supplied identity and display label for a resolution environment.
+///
+/// Project-backed analysis requires named `[resolution.<name>]` maps in
+/// `dsql.toml`. Callers without a project config must explicitly install a
+/// named in-memory context with `ProjectHost::set_standalone_context`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalysisContext {
+    pub id: AnalysisContextId,
+    pub label: String,
+}
 
 /// Stable identity for a physical source document known to project analysis.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalDocumentId(pub PathBuf);
 
-/// Metadata for a file or editor buffer whose source is stored in `ProjectSourceDb`.
+/// Metadata for a file or editor buffer whose source is stored in `SourceDb`.
 #[derive(Clone, Debug)]
 pub struct PhysicalDocument {
     pub id: PhysicalDocumentId,
@@ -59,12 +75,25 @@ pub struct SourceEntry {
 
 /// Project-level source store for physical documents and live editor buffers.
 #[derive(Clone)]
-pub struct ProjectSourceDb {
-    inner: Arc<ProjectSourceDbInner>,
+pub struct SourceDb {
+    inner: Arc<SourceDbInner>,
 }
 
-struct ProjectSourceDbInner {
+#[doc(hidden)]
+pub struct SourceDbInner {
     entries: DashMap<PhysicalDocumentId, SourceEntry>,
+    source_units: DashMap<ProjectSourceRegion, SourceUnitId>,
+    source_scopes: DashMap<ProjectSourceRegion, String>,
+    regions_by_scope: DashMap<String, Vec<ProjectSourceRegion>>,
+    next_unit: AtomicU32,
+}
+
+impl std::ops::Deref for SourceDb {
+    type Target = SourceDbInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -82,13 +111,13 @@ pub struct DocumentBundle {
 
 /// A source region published into the shared analysis host for one context.
 ///
-/// The `file` is the shared analysis source identity. Multiple contexts can
-/// reference the same `file` when they import the same physical source region.
+/// The `unit_id` is the shared analysis source identity. Multiple contexts can
+/// reference the same `unit_id` when they import the same physical source region.
 #[derive(Clone, Debug)]
 pub struct ProjectContextSource {
     pub context: AnalysisContextId,
     pub physical_document: PhysicalDocumentId,
-    pub file: FileId,
+    pub unit_id: SourceUnitId,
     pub content_range: TextRange,
     pub source_offset: u32,
     pub resolution_scope: String,
@@ -99,17 +128,14 @@ pub struct ProjectContextSource {
 /// Cloning this handle is cheap and shares the same source DB, shared analysis
 /// host, context source sets, and source-region allocation cache.
 #[derive(Clone)]
-pub struct ProjectAnalysis {
-    inner: Arc<ProjectAnalysisInner>,
+pub struct ProjectHost {
+    inner: Arc<ProjectHostInner>,
 }
 
-struct ProjectAnalysisInner {
-    sources: ProjectSourceDb,
-    analysis: AnalysisHost,
+struct ProjectHostInner {
+    sources: SourceDb,
+    db: CompilerDb,
     contexts: DashMap<AnalysisContextId, Arc<AnalysisContextState>>,
-    source_files: DashMap<ProjectSourceRegion, FileId>,
-    source_scopes: DashMap<ProjectSourceRegion, String>,
-    regions_by_scope: DashMap<String, Vec<ProjectSourceRegion>>,
     effective_contexts: DashMap<String, EffectiveResolutionContext>,
 }
 
@@ -173,7 +199,7 @@ pub struct ProjectGenerationContext {
 pub struct ProjectGenerationDefinition {
     pub physical_document: PhysicalDocumentId,
     pub path: Option<PathBuf>,
-    pub file: FileId,
+    pub unit_id: SourceUnitId,
     pub source_offset: u32,
     pub resolution_scope: String,
     pub definition: DefinitionRecord,
@@ -191,23 +217,37 @@ enum VisitState {
     Visited,
 }
 
-impl Default for ProjectSourceDb {
+impl Default for SourceDb {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ProjectSourceDb {
+impl SourceDb {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(ProjectSourceDbInner {
-                entries: DashMap::new(),
-            }),
+            inner: Arc::new(SourceDbInner::new()),
+        }
+    }
+}
+
+impl SourceDbInner {
+    fn new() -> Self {
+        Self {
+            entries: DashMap::new(),
+            source_units: DashMap::new(),
+            source_scopes: DashMap::new(),
+            regions_by_scope: DashMap::new(),
+            next_unit: AtomicU32::new(0),
         }
     }
 
+    fn allocate_unit(&self) -> SourceUnitId {
+        SourceUnitId(self.next_unit.fetch_add(1, Ordering::Relaxed))
+    }
+
     pub fn insert(&self, entry: SourceEntry) {
-        self.inner.entries.insert(entry.id.clone(), entry);
+        self.entries.insert(entry.id.clone(), entry);
     }
 
     pub fn load_analysis_snapshot(
@@ -216,7 +256,7 @@ impl ProjectSourceDb {
     ) -> dsql_project::Result<PhysicalDocumentId> {
         let path = path.as_ref();
         let id = PhysicalDocumentId(path.to_path_buf());
-        if self.inner.entries.contains_key(&id) {
+        if self.entries.contains_key(&id) {
             return Ok(id);
         }
         let file = File::open(path).map_err(|source| dsql_project::ProjectError::ReadFile {
@@ -239,27 +279,20 @@ impl ProjectSourceDb {
     }
 
     pub fn physical_document(&self, document_id: &PhysicalDocumentId) -> Option<PhysicalDocument> {
-        self.inner
-            .entries
-            .get(document_id)
-            .map(|entry| PhysicalDocument {
-                id: entry.id.clone(),
-                path: entry.path.clone(),
-                revision: entry.revision,
-                residency: entry.residency,
-            })
+        self.entries.get(document_id).map(|entry| PhysicalDocument {
+            id: entry.id.clone(),
+            path: entry.path.clone(),
+            revision: entry.revision,
+            residency: entry.residency,
+        })
     }
 
     pub fn source(&self, document_id: &PhysicalDocumentId) -> Option<SourceEntry> {
-        self.inner
-            .entries
-            .get(document_id)
-            .map(|entry| entry.clone())
+        self.entries.get(document_id).map(|entry| entry.clone())
     }
 
     pub fn documents_with_residency(&self, residency: SourceResidency) -> Vec<PhysicalDocumentId> {
         let mut documents = self
-            .inner
             .entries
             .iter()
             .filter_map(|entry| (entry.residency == residency).then(|| entry.id.clone()))
@@ -290,7 +323,7 @@ impl ProjectSourceDb {
         revision: RevisionId,
         edits: Vec<TextEdit>,
     ) -> Option<()> {
-        let mut entry = self.inner.entries.get_mut(document_id)?;
+        let mut entry = self.entries.get_mut(document_id)?;
         apply_text_edits(&mut entry.rope, edits);
         entry.revision = revision;
         entry.residency = SourceResidency::OpenEditable;
@@ -298,7 +331,7 @@ impl ProjectSourceDb {
     }
 
     pub fn close_editable(&self, document_id: &PhysicalDocumentId) -> Option<SourceEntry> {
-        let mut entry = self.inner.entries.get_mut(document_id)?;
+        let mut entry = self.entries.get_mut(document_id)?;
         if entry.residency != SourceResidency::OpenEditable {
             return Some(entry.clone());
         }
@@ -315,7 +348,7 @@ impl ProjectSourceDb {
     }
 
     pub fn region_rope(&self, region: &ProjectSourceRegion) -> Option<(RevisionId, Rope)> {
-        let entry = self.inner.entries.get(&region.physical_document)?;
+        let entry = self.entries.get(&region.physical_document)?;
         let range = region.content_range.as_usize();
         if range.end > entry.rope.len() {
             return None;
@@ -324,29 +357,26 @@ impl ProjectSourceDb {
     }
 }
 
-impl Default for ProjectAnalysis {
+impl Default for ProjectHost {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ProjectAnalysis {
+impl ProjectHost {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(ProjectAnalysisInner {
-                sources: ProjectSourceDb::new(),
-                analysis: AnalysisHost::new(),
+            inner: Arc::new(ProjectHostInner {
+                sources: SourceDb::new(),
+                db: CompilerDb::default(),
                 contexts: DashMap::new(),
-                source_files: DashMap::new(),
-                source_scopes: DashMap::new(),
-                regions_by_scope: DashMap::new(),
                 effective_contexts: DashMap::new(),
             }),
         }
     }
 
     /// Returns the shared project source DB handle.
-    pub fn sources(&self) -> ProjectSourceDb {
+    pub fn sources(&self) -> SourceDb {
         self.inner.sources.clone()
     }
 
@@ -360,6 +390,60 @@ impl ProjectAnalysis {
         self.inner.sources.physical_document(document_id)
     }
 
+    pub fn catalog(&self) -> Catalog {
+        self.inner.db.catalog()
+    }
+
+    pub fn lint_options(&self) -> LintOptions {
+        self.inner.db.lint_options()
+    }
+
+    pub fn set_catalog(&self, catalog: Catalog) {
+        self.inner
+            .db
+            .set_catalog(catalog)
+            .expect("catalog should be representable by Picante");
+    }
+
+    pub fn set_lint_options(&self, options: LintOptions) {
+        self.inner
+            .db
+            .set_lint_options(options)
+            .expect("lint options should be representable by Picante");
+    }
+
+    /// Installs a single named resolution environment for ad hoc analysis.
+    ///
+    /// This is the explicit boundary for LSP sessions and single-file CLI
+    /// analysis that do not have a project config. Project-backed analysis uses
+    /// named `[resolution.<name>]` maps from `dsql.toml` instead.
+    pub fn set_standalone_context(&self, name: impl Into<String>) {
+        let name = name.into();
+        self.inner.effective_contexts.clear();
+        self.inner.effective_contexts.insert(
+            name.clone(),
+            EffectiveResolutionContext {
+                name: name.clone(),
+                scopes: vec![name],
+            },
+        );
+        self.rebuild_contexts_from_scopes();
+    }
+
+    pub async fn analysis_for_document(
+        &self,
+        document_id: &PhysicalDocumentId,
+    ) -> Option<AnalysisResult> {
+        let source = self
+            .context_sources_for_document(document_id)
+            .into_iter()
+            .next()?;
+        self.inner
+            .db
+            .analysis_in_scope(&source.context.0, source.unit_id)
+            .await
+    }
+
     /// Publishes a context's visible source regions to the shared analysis host.
     ///
     /// Each unique source region is inserted into the analysis host once, then
@@ -369,17 +453,18 @@ impl ProjectAnalysis {
         let mut sources = Vec::new();
 
         for region in &bundle.regions {
-            let Some(file) = self.ensure_source_file(region) else {
+            let Some(unit_id) = self.ensure_source_unit(region) else {
                 continue;
             };
             sources.push(ProjectContextSource {
                 context: context_id.clone(),
                 physical_document: region.physical_document.clone(),
-                file,
+                unit_id,
                 content_range: region.content_range,
                 source_offset: region.source_offset,
                 resolution_scope: self
                     .inner
+                    .sources
                     .source_scopes
                     .get(region)
                     .map(|scope| scope.clone())
@@ -387,19 +472,17 @@ impl ProjectAnalysis {
             });
         }
 
-        self.inner.analysis.set_context_files(
-            &context_id,
-            sources.iter().map(|source| source.file).collect(),
-        );
+        self.inner
+            .db
+            .set_context_files(
+                context_id.0.clone(),
+                sources.iter().map(|source| source.unit_id).collect(),
+            )
+            .expect("context source set should be representable by Picante");
         self.inner.contexts.insert(
             context_id,
             Arc::new(AnalysisContextState { bundle, sources }),
         );
-    }
-
-    /// Returns the shared Picante-backed analysis host.
-    pub fn analysis_host(&self) -> AnalysisHost {
-        self.inner.analysis.clone()
     }
 
     /// Returns the context label and identity for an effective context.
@@ -496,6 +579,7 @@ impl ProjectAnalysis {
     pub fn source_scopes(&self) -> Vec<ProjectSourceScope> {
         let mut scopes = self
             .inner
+            .sources
             .source_scopes
             .iter()
             .filter_map(|entry| {
@@ -591,13 +675,13 @@ impl ProjectAnalysis {
 
     pub fn document_snapshot(&self, document_id: &PhysicalDocumentId) -> Option<DocumentSnapshot> {
         let source = self.inner.sources.source(document_id)?;
-        let file = self
+        let unit_id = self
             .context_sources_for_document(document_id)
             .into_iter()
             .next()
-            .map_or(FileId(u32::MAX), |source| source.file);
+            .map_or(SourceUnitId(u32::MAX), |source| source.unit_id);
         Some(DocumentSnapshot {
-            file,
+            unit_id,
             uri: source
                 .path
                 .as_ref()
@@ -627,13 +711,18 @@ impl ProjectAnalysis {
         let Some((source, local_byte)) = self.selected_source_at_byte(document_id, byte) else {
             return Some(Vec::new());
         };
-        let analysis = self.inner.analysis.analyze(source.file).await?;
-        let catalog = self.inner.analysis.catalog();
+        let analysis = self
+            .inner
+            .db
+            .analysis_in_scope(&source.context.0, source.unit_id)
+            .await?;
+        let catalog = self.inner.db.catalog();
         let scope = self
             .inner
-            .analysis
-            .completion_scope_in_context(&source.context, source.file)
+            .db
+            .completion_scope_in_context(&source.context.0, source.unit_id)
             .await
+            .ok()
             .unwrap_or_default();
         Some(completions_at(
             &analysis.parse,
@@ -650,9 +739,13 @@ impl ProjectAnalysis {
     ) -> Option<String> {
         let byte = self.document_byte_offset(document_id, position)?;
         let (source, local_byte) = self.selected_source_at_byte(document_id, byte)?;
-        let analysis = self.inner.analysis.analyze(source.file).await?;
-        let catalog = self.inner.analysis.catalog();
-        Some(crate::host::format_completion_context(
+        let analysis = self
+            .inner
+            .db
+            .analysis_in_scope(&source.context.0, source.unit_id)
+            .await?;
+        let catalog = self.inner.db.catalog();
+        Some(format_completion_context(
             &cursor_context(&analysis.parse, &catalog, local_byte),
             &catalog,
         ))
@@ -665,8 +758,12 @@ impl ProjectAnalysis {
     ) -> Option<HoverInfo> {
         let byte = self.document_byte_offset(document_id, position)?;
         let (source, local_byte) = self.selected_source_at_byte(document_id, byte)?;
-        let analysis = self.inner.analysis.analyze(source.file).await?;
-        let catalog = self.inner.analysis.catalog();
+        let analysis = self
+            .inner
+            .db
+            .analysis_in_scope(&source.context.0, source.unit_id)
+            .await?;
+        let catalog = self.inner.db.catalog();
         hover_at(&analysis.parse.source_file, &catalog, local_byte)
     }
 
@@ -677,8 +774,12 @@ impl ProjectAnalysis {
     ) -> Option<DefinitionResult> {
         let byte = self.document_byte_offset(document_id, position)?;
         let (source, local_byte) = self.selected_source_at_byte(document_id, byte)?;
-        let analysis = self.inner.analysis.analyze(source.file).await?;
-        let catalog = self.inner.analysis.catalog();
+        let analysis = self
+            .inner
+            .db
+            .analysis_in_scope(&source.context.0, source.unit_id)
+            .await?;
+        let catalog = self.inner.db.catalog();
         match definition_target_at(&analysis.parse.source_file, &catalog, local_byte)? {
             DefinitionTarget::Catalog(target) => Some(DefinitionResult::Catalog(target)),
             DefinitionTarget::Fragment { name } => self
@@ -696,14 +797,12 @@ impl ProjectAnalysis {
         let mut sources = self.context_sources_for_document(document_id);
         sources.sort_by_key(|source| (source.content_range.start, source.content_range.end));
         sources.dedup_by_key(|source| (source.content_range.start, source.content_range.end));
-        let Some(source) = sources.first() else {
-            return None;
-        };
+        let source = sources.first()?;
         if sources.len() == 1
             && source.content_range.start == 0
             && source.content_range.end as usize == snapshot.rope.len()
         {
-            let formatted = self.inner.analysis.format(source.file).await?;
+            let formatted = self.format_unit(source.unit_id).await?;
             return Some(DocumentFormat {
                 snapshot,
                 formatted,
@@ -714,7 +813,7 @@ impl ProjectAnalysis {
         let mut diagnostics = Vec::new();
         let mut replacements = Vec::with_capacity(sources.len());
         for source in sources {
-            let formatted = self.inner.analysis.format(source.file).await?;
+            let formatted = self.format_unit(source.unit_id).await?;
             diagnostics.extend(formatted.diagnostics.clone());
             replacements.push((
                 source.content_range.start as usize,
@@ -750,6 +849,15 @@ impl ProjectAnalysis {
         })
     }
 
+    async fn format_unit(&self, unit_id: SourceUnitId) -> Option<FormattedText> {
+        let text = self.inner.db.formatted_text(unit_id).await.ok()??;
+        Some(FormattedText {
+            text,
+            confidence: FormatConfidence::Full,
+            diagnostics: Vec::new(),
+        })
+    }
+
     pub async fn semantic_tokens(
         &self,
         document_id: &PhysicalDocumentId,
@@ -765,8 +873,12 @@ impl ProjectAnalysis {
         {
             return None;
         }
-        let analysis = self.inner.analysis.analyze(source.file).await?;
-        let catalog = self.inner.analysis.catalog();
+        let analysis = self
+            .inner
+            .db
+            .analysis_in_scope(&source.context.0, source.unit_id)
+            .await?;
+        let catalog = self.inner.db.catalog();
         Some(DocumentSemanticTokens {
             snapshot,
             tokens: semantic_tokens_at(&analysis.parse, &catalog),
@@ -828,17 +940,19 @@ impl ProjectAnalysis {
 
         let old_files = self
             .inner
-            .source_files
+            .sources
+            .inner
+            .source_units
             .iter()
             .map(|entry| *entry.value())
             .collect::<Vec<_>>();
-        for file in old_files {
-            self.inner.analysis.remove_file(file);
+        for unit_id in old_files {
+            self.inner.db.remove_source(unit_id);
         }
         self.inner.contexts.clear();
-        self.inner.source_files.clear();
-        self.inner.source_scopes.clear();
-        self.inner.regions_by_scope.clear();
+        self.inner.sources.source_units.clear();
+        self.inner.sources.source_scopes.clear();
+        self.inner.sources.regions_by_scope.clear();
         self.inner.effective_contexts.clear();
         for context in &effective_contexts {
             self.inner
@@ -863,6 +977,7 @@ impl ProjectAnalysis {
                         source_offset: start as u32,
                     };
                     self.inner
+                        .sources
                         .source_scopes
                         .insert(region.clone(), project_document.resolution_scope.clone());
                     region
@@ -871,6 +986,7 @@ impl ProjectAnalysis {
 
         for (scope, regions) in &regions_by_scope {
             self.inner
+                .sources
                 .regions_by_scope
                 .insert(scope.clone(), regions.clone());
         }
@@ -893,8 +1009,14 @@ impl ProjectAnalysis {
             };
             self.insert_bundle(DocumentBundle { context, regions });
         }
-        self.inner.analysis.set_catalog(catalog);
-        self.inner.analysis.set_lint_options(lint_options);
+        self.inner
+            .db
+            .set_catalog(catalog)
+            .expect("catalog should be representable by Picante");
+        self.inner
+            .db
+            .set_lint_options(lint_options)
+            .expect("lint options should be representable by Picante");
 
         Ok(())
     }
@@ -947,9 +1069,10 @@ impl ProjectAnalysis {
         for source in self.context_sources_for_document(document_id) {
             let Some(source_diagnostics) = self
                 .inner
-                .analysis
-                .diagnostics_in_context(&source.context, source.file)
+                .db
+                .diagnostics_in_scope(&source.context.0, source.unit_id)
                 .await
+                .ok()
             else {
                 continue;
             };
@@ -971,16 +1094,17 @@ impl ProjectAnalysis {
             let mut definitions = Vec::new();
             let definitions_by_file = self
                 .inner
-                .analysis
-                .context_definitions(&context.id)
+                .db
+                .scoped_program(&context.id.0)
                 .await
-                .map(|definitions| definitions.files)
+                .ok()
+                .map(|scoped| scoped.units.clone())
                 .unwrap_or_default();
             for definition_file in definitions_by_file {
                 let Some(source) = self
                     .context_sources(&context.id)
                     .into_iter()
-                    .find(|source| source.file == definition_file.file)
+                    .find(|source| source.unit_id == definition_file.unit_id)
                 else {
                     continue;
                 };
@@ -993,7 +1117,7 @@ impl ProjectAnalysis {
                     definitions.push(ProjectGenerationDefinition {
                         physical_document: source.physical_document.clone(),
                         path: path.clone(),
-                        file: source.file,
+                        unit_id: source.unit_id,
                         source_offset: source.source_offset,
                         resolution_scope: source.resolution_scope.clone(),
                         definition,
@@ -1005,7 +1129,7 @@ impl ProjectAnalysis {
                     definition.resolution_scope.clone(),
                     definition.path.clone(),
                     definition.source_offset,
-                    definition.file.0,
+                    definition.unit_id.0,
                 )
             });
             contexts.push(ProjectGenerationContext {
@@ -1031,7 +1155,7 @@ impl ProjectAnalysis {
         &self,
         contexts: &[ProjectGenerationContext],
     ) -> Vec<PresentedDiagnostic> {
-        let catalog = self.inner.analysis.catalog();
+        let catalog = self.inner.db.catalog();
         let mut diagnostics = Vec::new();
         for context in contexts {
             let mut fragments = FragmentMap::default();
@@ -1171,9 +1295,9 @@ impl ProjectAnalysis {
         context: &AnalysisContextId,
         name: &str,
     ) -> Option<SourceDefinition> {
-        let definitions = self.inner.analysis.context_definitions(context).await?;
-        for definition_file in definitions.files {
-            for definition in definition_file.definitions {
+        let scoped = self.inner.db.scoped_program(&context.0).await.ok()?;
+        for definition_file in &scoped.units {
+            for definition in &definition_file.definitions {
                 let DefinitionRecord::Fragment(fragment) = definition else {
                     continue;
                 };
@@ -1183,7 +1307,7 @@ impl ProjectAnalysis {
                 let source = self
                     .context_sources(context)
                     .into_iter()
-                    .find(|source| source.file == definition_file.file)?;
+                    .find(|source| source.unit_id == definition_file.unit_id)?;
                 let range = TextRange::new(
                     source.content_range.start as usize + fragment.name_range.start as usize,
                     source.content_range.start as usize + fragment.name_range.end as usize,
@@ -1198,27 +1322,38 @@ impl ProjectAnalysis {
         None
     }
 
-    fn ensure_source_file(&self, region: &ProjectSourceRegion) -> Option<FileId> {
+    fn ensure_source_unit(&self, region: &ProjectSourceRegion) -> Option<SourceUnitId> {
         let (revision, rope) = self.inner.sources.region_rope(region)?;
-        if let Some(file) = self.inner.source_files.get(region).map(|file| *file) {
-            self.inner
-                .analysis
-                .set_file_source(file, revision, SourceSnapshot::from_rope(rope));
-            return Some(file);
-        }
-        let file = self
+        if let Some(unit_id) = self
             .inner
-            .analysis
-            .create_file_with_revision(revision, SourceSnapshot::from_rope(rope));
-        self.inner.source_files.insert(region.clone(), file);
-        Some(file)
+            .sources
+            .source_units
+            .get(region)
+            .map(|unit_id| *unit_id)
+        {
+            self.inner
+                .db
+                .set_source_rope(unit_id, revision, rope)
+                .expect("source input should be representable by Picante");
+            return Some(unit_id);
+        }
+        let unit_id = self.inner.sources.allocate_unit();
+        self.inner
+            .db
+            .set_source_rope(unit_id, revision, rope)
+            .expect("source input should be representable by Picante");
+        self.inner
+            .sources
+            .source_units
+            .insert(region.clone(), unit_id);
+        Some(unit_id)
     }
 
     fn refresh_document_regions(&self, document_id: &PhysicalDocumentId) {
         let mut scopes = BTreeSet::<String>::new();
         let mut old_regions = Vec::<ProjectSourceRegion>::new();
 
-        for mut entry in self.inner.regions_by_scope.iter_mut() {
+        for mut entry in self.inner.sources.regions_by_scope.iter_mut() {
             let scope = entry.key().clone();
             entry.value_mut().retain(|region| {
                 if &region.physical_document == document_id {
@@ -1232,14 +1367,14 @@ impl ProjectAnalysis {
         }
 
         for region in old_regions {
-            self.inner.source_scopes.remove(&region);
-            if let Some((_, file)) = self.inner.source_files.remove(&region) {
-                self.inner.analysis.remove_file(file);
+            self.inner.sources.source_scopes.remove(&region);
+            if let Some((_, unit_id)) = self.inner.sources.source_units.remove(&region) {
+                self.inner.db.remove_source(unit_id);
             }
         }
 
         if scopes.is_empty() {
-            scopes.insert(dsql_project::DEFAULT_RESOLUTION_SCOPE.to_string());
+            scopes.extend(self.standalone_source_scopes());
         }
 
         if let Some(source) = self.inner.sources.source(document_id) {
@@ -1247,11 +1382,13 @@ impl ProjectAnalysis {
             for scope in &scopes {
                 let mut entry = self
                     .inner
+                    .sources
                     .regions_by_scope
                     .entry(scope.clone())
                     .or_default();
                 for region in &regions {
                     self.inner
+                        .sources
                         .source_scopes
                         .insert(region.clone(), scope.clone());
                     entry.push(region.clone());
@@ -1262,6 +1399,24 @@ impl ProjectAnalysis {
         self.rebuild_contexts_from_scopes();
     }
 
+    fn standalone_source_scopes(&self) -> Vec<String> {
+        let mut contexts = self
+            .inner
+            .effective_contexts
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        if contexts.len() != 1 {
+            return Vec::new();
+        }
+        contexts.sort_by(|left, right| left.name.cmp(&right.name));
+        contexts
+            .pop()
+            .and_then(|context| context.scopes.into_iter().next())
+            .into_iter()
+            .collect()
+    }
+
     fn rebuild_contexts_from_scopes(&self) {
         self.inner.contexts.clear();
         let mut effective_contexts = self
@@ -1270,16 +1425,13 @@ impl ProjectAnalysis {
             .iter()
             .map(|entry| entry.value().clone())
             .collect::<Vec<_>>();
-        if effective_contexts.is_empty() {
-            effective_contexts = default_effective_contexts();
-        }
         effective_contexts.sort_by(|left, right| left.name.cmp(&right.name));
 
         for effective in effective_contexts {
             let mut seen = HashSet::<ProjectSourceRegion>::new();
             let mut regions = Vec::new();
             for scope in &effective.scopes {
-                if let Some(scope_regions) = self.inner.regions_by_scope.get(scope) {
+                if let Some(scope_regions) = self.inner.sources.regions_by_scope.get(scope) {
                     for region in scope_regions.iter() {
                         if seen.insert(region.clone()) {
                             regions.push(region.clone());
@@ -1300,10 +1452,7 @@ fn effective_resolution_contexts(
     project: &dsql_project::Project,
 ) -> dsql_project::Result<Vec<EffectiveResolutionContext>> {
     if project.config.resolution.is_empty() {
-        return Ok(vec![EffectiveResolutionContext {
-            name: dsql_project::DEFAULT_RESOLUTION_SCOPE.to_string(),
-            scopes: vec![dsql_project::DEFAULT_RESOLUTION_SCOPE.to_string()],
-        }]);
+        return Err(dsql_project::ProjectError::MissingResolutionEnvironment);
     }
 
     validate_resolution_imports(project)?;
@@ -1394,13 +1543,6 @@ fn collect_resolution_scope_closure(
     }
 }
 
-fn default_effective_contexts() -> Vec<EffectiveResolutionContext> {
-    vec![EffectiveResolutionContext {
-        name: dsql_project::DEFAULT_RESOLUTION_SCOPE.to_string(),
-        scopes: vec![dsql_project::DEFAULT_RESOLUTION_SCOPE.to_string()],
-    }]
-}
-
 fn source_regions_for_entry(source: &SourceEntry) -> Vec<ProjectSourceRegion> {
     let source_path = source.path.as_deref().unwrap_or(source.id.0.as_path());
     if source_path
@@ -1441,6 +1583,46 @@ fn format_embedded_replacement(original: &str, mut formatted: String) -> String 
         formatted.push('\n');
     }
     formatted
+}
+
+fn format_completion_context(context: &CursorContext, catalog: &dsql_core::Catalog) -> String {
+    match context {
+        CursorContext::DocumentRoot
+        | CursorContext::FragmentOnKeyword
+        | CursorContext::FragmentType
+        | CursorContext::RootSelection
+        | CursorContext::Invalid
+        | CursorContext::WhereScope
+        | CursorContext::SortDirection => context.as_ref().to_string(),
+        CursorContext::FragmentSpread { table }
+        | CursorContext::SelectionBody { table }
+        | CursorContext::ClauseList { table, used: _ }
+        | CursorContext::WhereBooleanOperator { table, used: _ }
+        | CursorContext::WhereColumn { table }
+        | CursorContext::OrderByColumn { table } => {
+            format!("{}({})", context.as_ref(), table_name(catalog, *table))
+        }
+        CursorContext::WhereRelationSelector { table, relation } => {
+            format!(
+                "{}({}, {})",
+                context.as_ref(),
+                table_name(catalog, *table),
+                relation
+            )
+        }
+        CursorContext::WhereOperator { data_type } => {
+            format!("{}({})", context.as_ref(), data_type.as_str())
+        }
+    }
+}
+
+fn table_name(catalog: &dsql_core::Catalog, table: dsql_core::TableId) -> String {
+    catalog
+        .tables
+        .iter()
+        .find(|candidate| candidate.id == table)
+        .map(|candidate| candidate.name.clone())
+        .unwrap_or_else(|| format!("table#{}", table.0))
 }
 
 fn sort_presented_diagnostics(diagnostics: &mut [PresentedDiagnostic]) {
@@ -1536,7 +1718,7 @@ imports = ["shared"]
         .unwrap();
 
         let project = dsql_project::Project::load_from(&root).unwrap();
-        let analysis = ProjectAnalysis::load_from_project(&project).unwrap();
+        let analysis = ProjectHost::load_from_project(&project).unwrap();
         let shared_id = PhysicalDocumentId(root.join("queries/shared/user_fields.dsql"));
         let shared_contexts = analysis
             .context_sources_for_document(&shared_id)
@@ -1546,10 +1728,8 @@ imports = ["shared"]
         let shared_files = analysis
             .context_sources_for_document(&shared_id)
             .into_iter()
-            .map(|source| source.file)
+            .map(|source| source.unit_id)
             .collect::<Vec<_>>();
-        let api = analysis.analysis_host();
-
         assert_eq!(analysis.context_count(), 2);
         assert!(
             analysis
@@ -1559,15 +1739,15 @@ imports = ["shared"]
         assert_eq!(shared_contexts, vec!["api", "frontend"]);
         assert_eq!(shared_files.len(), 2);
         assert_eq!(shared_files[0], shared_files[1]);
-        assert_eq!(api.catalog().default_schema, "app");
-        assert_eq!(api.lint_options().unindexed_scan_severity, None);
+        assert_eq!(analysis.catalog().default_schema, "app");
+        assert_eq!(analysis.lint_options().unindexed_scan_severity, None);
 
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn cloned_project_handles_share_source_and_context_state() {
-        let analysis = ProjectAnalysis::new();
+        let analysis = ProjectHost::new();
         let clone = analysis.clone();
         let document_id = PhysicalDocumentId(PathBuf::from("queries/users.dsql"));
         let source = "query Users { users { id } }\n";
@@ -1588,7 +1768,7 @@ imports = ["shared"]
 
     #[test]
     fn cloned_source_db_handles_share_source_state() {
-        let sources = ProjectSourceDb::new();
+        let sources = SourceDb::new();
         let clone = sources.clone();
         let document_id = PhysicalDocumentId(PathBuf::from("queries/shared.dsql"));
 
@@ -1606,7 +1786,7 @@ imports = ["shared"]
     #[test]
     fn context_diagnostics_do_not_merge_peer_context_definitions() {
         block_on(async {
-            let analysis = ProjectAnalysis::new();
+            let analysis = ProjectHost::new();
             let api_id = PhysicalDocumentId(PathBuf::from("queries/api/users.dsql"));
             let frontend_id = PhysicalDocumentId(PathBuf::from("queries/frontend/users.dsql"));
             let api_source = "query ApiUsers { users { ...FrontendOnly } }\n";
@@ -1652,7 +1832,7 @@ imports = ["api"]
         .unwrap();
 
         let project = dsql_project::Project::load_from(&root).unwrap();
-        let error = match ProjectAnalysis::load_from_project(&project) {
+        let error = match ProjectHost::load_from_project(&project) {
             Ok(_) => panic!("expected cyclic resolution import error"),
             Err(error) => error,
         };
@@ -1683,7 +1863,7 @@ imports = ["api"]
             message: "missing table".to_string(),
         };
 
-        let analysis = ProjectAnalysis::new();
+        let analysis = ProjectHost::new();
         analysis.insert_source(SourceEntry {
             id: document_id.clone(),
             path: Some(PathBuf::from("src/users.ts")),
@@ -1716,7 +1896,7 @@ imports = ["api"]
             }
         );
 
-        let single_context = ProjectAnalysis::new();
+        let single_context = ProjectHost::new();
         single_context.insert_source(SourceEntry {
             id: document_id.clone(),
             path: Some(PathBuf::from("src/users.ts")),

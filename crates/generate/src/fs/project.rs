@@ -16,7 +16,7 @@ pub async fn generate_project_from_with_options(
 ) -> Result<GenerateOutput> {
     let project = dsql_project::Project::load_from(start_dir)?;
     let catalog = project.load_catalog()?;
-    let analysis = dsql_frontend::ProjectAnalysis::load_from_project(&project)?;
+    let analysis = dsql_frontend::ProjectHost::load_from_project(&project)?;
     let writer = crate::fs::FsArtifactWriter::new(project.root.join("build"));
     let runner = crate::process::CommandGeneratorRunner;
     generate_project(
@@ -42,7 +42,7 @@ pub async fn generate_project_artifacts_from_with_options(
 ) -> Result<GeneratedArtifacts> {
     let project = dsql_project::Project::load_from(start_dir)?;
     let catalog = project.load_catalog()?;
-    let analysis = dsql_frontend::ProjectAnalysis::load_from_project(&project)?;
+    let analysis = dsql_frontend::ProjectHost::load_from_project(&project)?;
     generate_project_artifacts(GenerateInput {
         project,
         catalog,
@@ -62,7 +62,7 @@ pub async fn validate_project_from_with_options(
 ) -> Result<ValidationOutput> {
     let project = dsql_project::Project::load_from(start_dir)?;
     let catalog = project.load_catalog()?;
-    let analysis = dsql_frontend::ProjectAnalysis::load_from_project(&project)?;
+    let analysis = dsql_frontend::ProjectHost::load_from_project(&project)?;
     Ok(validate_project(GenerateInput {
         project,
         catalog,

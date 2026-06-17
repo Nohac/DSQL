@@ -1,14 +1,14 @@
 use dsql_core::{Catalog, SourceSnapshot, parse_source};
 use dsql_frontend::{
     CatalogDefinition, CompletionKind, DefinitionResult, DocumentFormat, DocumentSemanticTokens,
-    HoverInfo, PhysicalDocumentId, ProjectAnalysis, SourceDefinition, SourceDefinitionKind,
+    HoverInfo, PhysicalDocumentId, ProjectHost, SourceDefinition, SourceDefinitionKind,
     TextPosition,
 };
 use insta::Settings;
 use std::{fs, path::PathBuf};
 
 struct TestProject {
-    analysis: ProjectAnalysis,
+    analysis: ProjectHost,
 }
 
 struct TestDocumentDiagnostics {
@@ -17,13 +17,13 @@ struct TestDocumentDiagnostics {
 
 impl TestProject {
     fn new() -> Self {
-        Self {
-            analysis: ProjectAnalysis::new(),
-        }
+        let analysis = ProjectHost::new();
+        analysis.set_standalone_context("editor");
+        Self { analysis }
     }
 
     fn set_catalog(&self, catalog: Catalog) {
-        self.analysis.analysis_host().set_catalog(catalog);
+        self.analysis.set_catalog(catalog);
     }
 
     async fn open_document(
@@ -863,7 +863,7 @@ fn parse_context_fixture_parts_until_close(
 
     assert!(
         !stop_on_optional_close,
-        "unterminated optional fixture block before end of file"
+        "unterminated optional fixture block before end of unit_id"
     );
     parts
 }
