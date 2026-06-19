@@ -1,4 +1,4 @@
-import { dirname, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { buildArtifactsFromGenerated } from "./node.ts";
 import type { DsqlGenerator } from "./node.ts";
 import type { DsqlRenderResult } from "./render/types.ts";
@@ -15,8 +15,23 @@ export type DsqlVitePluginOptions = {
   readonly fullReload?: boolean;
 };
 
+type SourceFileScope = {
+  readonly file: string;
+  readonly scope: string;
+};
+
+export type ViteWatchIgnored =
+  | string
+  | RegExp
+  | ((path: string) => boolean)
+  | readonly ViteWatchIgnored[];
+
 export type VitePlugin = {
   readonly name: string;
+  config?(
+    config: ViteUserConfig,
+    env: ViteConfigEnv,
+  ): ViteUserConfig | void | Promise<ViteUserConfig | void>;
   configResolved?(config: ViteResolvedConfig): void | Promise<void>;
   configureServer?(server: ViteDevServer): void | Promise<void>;
   buildStart?(): void | Promise<void>;
@@ -29,6 +44,20 @@ export type ViteResolvedConfig = {
   readonly root: string;
   readonly mode: string;
   readonly command: "serve" | "build";
+};
+
+export type ViteConfigEnv = {
+  readonly mode: string;
+  readonly command: "serve" | "build";
+};
+
+export type ViteUserConfig = {
+  readonly root?: string;
+  readonly server?: {
+    readonly watch?: {
+      readonly ignored?: ViteWatchIgnored;
+    };
+  };
 };
 
 export type ViteHotUpdateContext = {
@@ -44,6 +73,9 @@ export type ViteDevServer = {
   readonly httpServer?: {
     once(event: "close", listener: () => void): void;
   };
+  readonly watcher?: {
+    unwatch(paths: string | readonly string[]): void;
+  };
 };
 
 export type TransformResult =
@@ -55,7 +87,7 @@ export type TransformResult =
   | null;
 
 const SUPPORTED_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx"];
-const DSQL_RELEVANT_EXTENSIONS = [".dsql", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml"];
+const SCHEMA_RELEVANT_EXTENSIONS = [".yaml", ".yml"];
 const DSQL_TAG_PATTERN =
   /(export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*dsql`([\s\S]*?)`\s*;?/g;
 const DSQL_CALL_PATTERN =
@@ -71,9 +103,14 @@ export function dsql(
   const generator = options.generator;
   let daemon: DsqlDaemon | undefined;
   let config: ViteResolvedConfig | undefined;
+  let configEnv: ViteConfigEnv | undefined;
+  let configRoot: string | undefined;
   let compilePromise: Promise<void> | undefined;
-  let sourceFileScopes: readonly { readonly file: string; readonly scope: string }[] = [];
+  let devServer: ViteDevServer | undefined;
+  let sourceFileScopes: readonly SourceFileScope[] = [];
   let renderResults: readonly DsqlRenderResult[] = [];
+  const ignoredOutputDirectories = new Set<string>();
+  let compiledOnce = false;
 
   const closeDaemon = async (): Promise<void> => {
     const current = daemon;
@@ -83,17 +120,20 @@ export function dsql(
 
   const compileAndGenerate = async (): Promise<void> => {
     daemon = daemon ?? startDsqlDaemon(options.daemon);
-    const root = options.root ?? config?.root ?? process.cwd();
+    const root = options.root ?? config?.root ?? configRoot ?? process.cwd();
     const generated = await daemon.compileProject(root);
     const artifacts = buildArtifactsFromGenerated(generated);
     sourceFileScopes = artifacts.sourceFileScopes;
+    ignoreRenderedOutputDirectories();
     const result = await generator({
       artifacts,
       root,
-      mode: config?.mode ?? "development",
-      command: config?.command ?? "serve",
+      mode: config?.mode ?? configEnv?.mode ?? "development",
+      command: config?.command ?? configEnv?.command ?? "serve",
     });
     renderResults = normalizeRenderResults(result);
+    ignoreRenderedOutputDirectories();
+    compiledOnce = true;
   };
 
   const scheduleCompile = (): Promise<void> => {
@@ -105,16 +145,37 @@ export function dsql(
 
   const plugin: VitePlugin = {
     name: "dsql",
+    async config(userConfig, env) {
+      configEnv = env;
+      configRoot = userConfig.root ? resolve(userConfig.root) : undefined;
+      await scheduleCompile();
+      const ignored = renderedOutputWatchIgnored(
+        userConfig.server?.watch?.ignored,
+        renderResults,
+      );
+      return ignored
+        ? {
+            server: {
+              watch: {
+                ignored,
+              },
+            },
+          }
+        : undefined;
+    },
     configResolved(resolved) {
       config = resolved;
     },
     configureServer(server) {
+      devServer = server;
       server.httpServer?.once("close", () => {
         void closeDaemon();
       });
     },
     async buildStart() {
-      await scheduleCompile();
+      if (!compiledOnce) {
+        await scheduleCompile();
+      }
     },
     transform(code, id) {
       if (!isSupportedFile(id) || !code.includes("dsql")) {
@@ -124,7 +185,10 @@ export function dsql(
       return transformDsqlTags(code, () => queryModuleForFile(id));
     },
     async handleHotUpdate(context) {
-      if (!isDsqlRelevantFile(context.file, renderResults)) {
+      if (isRenderedDsqlOutputFile(context.file, renderResults)) {
+        return [];
+      }
+      if (!isDsqlRelevantFile(context.file, renderResults, sourceFileScopes)) {
         return;
       }
       await scheduleCompile();
@@ -139,6 +203,19 @@ export function dsql(
   };
 
   return plugin;
+
+  function ignoreRenderedOutputDirectories(): void {
+    const directories = renderedOutputDirectories(renderResults).filter(
+      (directory) => !ignoredOutputDirectories.has(directory),
+    );
+    if (directories.length === 0) {
+      return;
+    }
+    for (const directory of directories) {
+      ignoredOutputDirectories.add(directory);
+    }
+    ignoreDsqlOutputDirectories(devServer, directories);
+  }
 
   function queryModuleForFile(id: string): string {
     if (renderResults.length === 0) {
@@ -265,41 +342,96 @@ function isSupportedFile(id: string): boolean {
   return SUPPORTED_EXTENSIONS.some((extension) => path.endsWith(extension));
 }
 
-function isDsqlRelevantFile(
+export function isDsqlRelevantFile(
   file: string,
   renderResults: readonly DsqlRenderResult[],
+  sourceFileScopes: readonly SourceFileScope[] = [],
 ): boolean {
   const absoluteFile = resolve(file);
-  if (isRenderedDsqlFile(absoluteFile, renderResults)) {
+  if (isRenderedDsqlOutputFile(absoluteFile, renderResults)) {
     return false;
   }
   if (file.endsWith("dsql.toml")) {
     return true;
   }
   if (file.split(/[\\/]/).includes("schema")) {
-    return DSQL_RELEVANT_EXTENSIONS.some((extension) => file.endsWith(extension));
+    return SCHEMA_RELEVANT_EXTENSIONS.some((extension) => file.endsWith(extension));
   }
-  return DSQL_RELEVANT_EXTENSIONS.some((extension) => file.endsWith(extension));
-}
-
-function isRenderedDsqlFile(
-  absoluteFile: string,
-  renderResults: readonly DsqlRenderResult[],
-): boolean {
-  const renderedFiles = new Set(
-    renderResults.flatMap((result) => result.files.map((file) => resolve(file.path))),
-  );
-  if (renderedFiles.has(absoluteFile)) {
+  if (absoluteFile.endsWith(".dsql")) {
     return true;
   }
+  return sourceFileScopes.some((entry) => resolve(entry.file) === absoluteFile);
+}
 
-  if (!absoluteFile.endsWith(".dsql-render-manifest.json")) {
-    return false;
-  }
-  const renderedDirectories = new Set(
-    [...renderedFiles].map((path) => dirname(path)),
+export function isRenderedDsqlOutputFile(
+  file: string,
+  renderResults: readonly DsqlRenderResult[],
+): boolean {
+  const absoluteFile = resolve(file);
+  return renderedOutputDirectories(renderResults).some((directory) =>
+    pathContains(directory, absoluteFile),
   );
-  return renderedDirectories.has(dirname(absoluteFile));
+}
+
+export function renderedOutputDirectories(
+  renderResults: readonly DsqlRenderResult[],
+): readonly string[] {
+  const directories = new Set<string>();
+  for (const result of renderResults) {
+    for (const file of result.files) {
+      directories.add(dirname(resolve(file.path)));
+    }
+  }
+  return [...directories].sort();
+}
+
+export function ignoreDsqlRenderedOutput(
+  server: ViteDevServer | undefined,
+  renderResults: readonly DsqlRenderResult[],
+): void {
+  ignoreDsqlOutputDirectories(server, renderedOutputDirectories(renderResults));
+}
+
+export function renderedOutputWatchIgnored(
+  existing: ViteWatchIgnored | undefined,
+  renderResults: readonly DsqlRenderResult[],
+): ViteWatchIgnored | undefined {
+  const directories = renderedOutputDirectories(renderResults);
+  return directories.length > 0
+    ? mergeWatchIgnored(existing, directories)
+    : undefined;
+}
+
+function ignoreDsqlOutputDirectories(
+  server: ViteDevServer | undefined,
+  directories: readonly string[],
+): void {
+  if (directories.length === 0 || !server?.watcher) {
+    return;
+  }
+
+  server.watcher.unwatch(directories);
+}
+
+function mergeWatchIgnored(
+  existing: ViteWatchIgnored | undefined,
+  directories: readonly string[],
+): ViteWatchIgnored {
+  const directoryMatcher = (path: string): boolean => {
+    const absolutePath = resolve(path);
+    return directories.some((directory) => pathContains(directory, absolutePath));
+  };
+  return existing ? [existing, directoryMatcher] : directoryMatcher;
+}
+
+function pathContains(directory: string, file: string): boolean {
+  const relativePath = relative(resolve(directory), resolve(file));
+  return (
+    relativePath === "" ||
+    (relativePath.length > 0 &&
+      !relativePath.startsWith("..") &&
+      !isAbsolute(relativePath))
+  );
 }
 
 function definitionFromDsql(
