@@ -16,6 +16,7 @@ match the current design direction.
 - [Variables](variables.md)
 - [Functions](functions.md)
 - [Directives](directives.md)
+- [Decorators](decorators.md)
 - [Relationship Naming](relationship-naming.md)
 - [Resolution Scopes](resolution-scopes.md)
 - [Catalog Metadata](catalog-metadata.md)
@@ -45,8 +46,9 @@ match the current design direction.
 - dsql is a domain specific query language for describing result shape and
   generating SQL and application artifacts.
 - Query bodies should look SQL-like where applicable.
-- Catalog resolution is schema-aware. Unqualified table names resolve through
-  the project default schema, which is `public` unless configured otherwise.
+- Catalog resolution is schema-aware. Unqualified table names are valid only
+  when they are unique across visible schemas; use `schema::table` to
+  disambiguate collisions.
 - Relation names come from catalog relationship metadata and should not be
   singularized, pluralized, or otherwise rewritten by the language layer.
 
@@ -60,4 +62,5 @@ intentionally narrows and normalizes the query language:
 - Examples assume relation names are catalog names, not inferred singular or
   plural variants.
 - Examples assume schema-qualified references are valid and that unqualified
-  table references resolve through the configured default schema.
+  table references resolve only when the table name is unique across visible
+  schemas.

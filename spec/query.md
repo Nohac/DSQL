@@ -9,13 +9,13 @@ result shape, and SQL-like where it filters, orders, and slices data.
 ## Example
 
 ```dsql
-fragment PostSummary on public.posts {
+fragment PostSummary on public::posts {
   id
   title
 }
 
 query UsersWithPosts {
-  public.users(where .id > 100 limit 20) {
+  public::users(where .id > 100 limit 20) {
     id
     display_name: name
     posts(order by created_at desc limit 5) {
@@ -26,8 +26,8 @@ query UsersWithPosts {
 ```
 
 This describes a result rooted at `users`. `id` and `name` resolve to columns on
-`public.users`. `posts` resolves through catalog relationship metadata from
-`public.users` to `public.posts`. The fragment is valid because it targets the
+`public::users`. `posts` resolves through catalog relationship metadata from
+`public::users` to `public::posts`. The fragment is valid because it targets the
 same table as the current relation selection.
 
 ## Documents
@@ -59,35 +59,41 @@ Ordinary identifiers use this shape:
 [A-Za-z_][A-Za-z0-9_]*
 ```
 
-Qualified names use one schema segment and one object segment:
+Schema-qualified table references use `::` between the schema segment and the
+table or view segment:
 
 ```dsql
-public.users
-other_schema.users
+public::users
+other_schema::users
 ```
 
-Relationship paths may add a foreign-key selector after the table reference:
+Relationship references may add a relation edge selector after the table
+reference:
 
 ```dsql
-public.users::assignee_id
-users::reviewer_id
+public::users->assignee_id
+users->reviewer_id
 ```
 
-The part before `::` is still the table reference. The part after `::`
-selects which foreign-key path connects the current table to that relation
-target.
+The part before `->` is still the table reference. The part after `->` selects
+which foreign-key path connects the current table to that relation target. The
+arrow is intentionally pointer-like: it points at the specific relation edge to
+use when multiple edges reach the same table.
 
-The default schema is configured by the project. If it is not configured, the
-default schema is `public`.
+All catalog schemas in the selected resolution environment are visible for table
+resolution. An unqualified table reference is valid only when exactly one
+visible schema contains a table or view with that name.
 
-An unqualified table reference resolves through the default schema. With the
-default configuration, `users` resolves as `public.users`.
+For example, `users` resolves as `public::users` if `public` is the only visible
+schema with a `users` object. If both `public::users` and `auth::users` exist,
+the unqualified reference is ambiguous and must be written with a schema
+selector.
 
 The output key for a schema-qualified table or relation is still the table name
-unless an alias is provided. For example, `public.users` produces `users`.
+unless an alias is provided. For example, `public::users` produces `users`.
 
-The output key for a relation with a foreign-key selector is also the table
-name unless an alias is provided. For example, `users::assignee_id` produces
+The output key for a relation with a relation edge selector is also the table
+name unless an alias is provided. For example, `users->assignee_id` produces
 `users`.
 
 ## Queries
@@ -172,6 +178,174 @@ query Users {
 }
 ```
 
+## Dotted Selection Paths
+
+Status: proposed extension.
+
+Dotted selection paths are shorthand for selecting through a nested relation or
+object path.
+
+```dsql
+query Movies {
+  movies {
+    id
+    title
+    director.name
+    director.profile.image_url
+  }
+}
+```
+
+Unaliased dotted selections preserve the nested result shape. The example above
+is equivalent to:
+
+```dsql
+query Movies {
+  movies {
+    id
+    title
+    director {
+      name
+      profile {
+        image_url
+      }
+    }
+  }
+}
+```
+
+A dotted path is resolved from left to right in the current selection context.
+Intermediate segments must resolve to relation or object-valued fields. The
+final segment may resolve to a scalar field or to a relation when the selection
+has a subselection.
+
+Dotted scalar selections do not flatten output by default. Flattening requires
+an explicit alias:
+
+```dsql
+query Movies {
+  movies {
+    director_name: director.name
+  }
+}
+```
+
+The alias projects the terminal scalar value into the current object under the
+alias key. Flattening through a collection-valued relation is invalid unless a
+future aggregate or list-projection feature defines the behavior explicitly.
+
+## Relationship Chain Selections
+
+Status: proposed extension.
+
+Relationship chain selections allow a relation path to be written as one
+selection while still attaching clauses to individual path segments.
+
+```dsql
+query Movies {
+  movies {
+    cast(where .role == "lead" limit 5).actor {
+      name
+      profile.image_url
+    }
+  }
+}
+```
+
+This is equivalent to:
+
+```dsql
+query Movies {
+  movies {
+    cast(where .role == "lead" limit 5) {
+      actor {
+        name
+        profile {
+          image_url
+        }
+      }
+    }
+  }
+}
+```
+
+Clauses belong to the segment they follow.
+
+```dsql
+cast(where .role == "lead" limit 10).actor {
+  name
+}
+```
+
+The `where` and `limit` clauses apply to `cast`.
+
+```dsql
+cast.actor(where .name like $$actor_name) {
+  name
+}
+```
+
+The `where` clause applies to `actor`.
+
+Conceptual grammar:
+
+```text
+selection_path = relation_step ("." relation_step)*
+relation_step  = relation_ref clause_list?
+selection      = alias? selection_path directives? selection_set?
+```
+
+Unaliased relationship chains preserve nested shape:
+
+```dsql
+cast.actor {
+  name
+}
+```
+
+Conceptual result shape:
+
+```json
+{
+  "cast": [
+    {
+      "actor": {
+        "name": "Greta Lee"
+      }
+    }
+  ]
+}
+```
+
+An alias on a relationship chain projects the terminal relation under the alias:
+
+```dsql
+performers: cast.actor {
+  name
+}
+```
+
+Conceptual result shape:
+
+```json
+{
+  "performers": [
+    {
+      "name": "Greta Lee"
+    }
+  ]
+}
+```
+
+This is not only formatter sugar. Alias projection affects result shape,
+cardinality, generated types, variables, fragments, and SQL generation, so it
+should be implemented as an explicit language feature.
+
+Dotted selection paths and relationship chains share the same semantic rule:
+each segment is checked against the result of the previous segment. Since schema
+qualification uses `::`, `.` is available for selection traversal without
+overlapping with schema-qualified table references.
+
 ## Aliases
 
 A selection may be aliased.
@@ -196,11 +370,11 @@ Aliases are used when two selections would produce the same output key.
 
 ```dsql
 query Users {
-  public_users: public.users {
+  public_users: public::users {
     id
   }
 
-  other_users: other_schema.users {
+  other_users: other_schema::users {
     id
   }
 }
@@ -223,11 +397,22 @@ query Users {
 }
 ```
 
-Qualified roots are explicit:
+Unqualified roots are valid only when the table or view name is unique across
+visible schemas. Ambiguous names are diagnostics:
+
+```text
+ambiguous table reference `users`
+candidates:
+  public::users
+  auth::users
+use `schema::users` to disambiguate
+```
+
+Schema-qualified roots are explicit and bypass ambiguity:
 
 ```dsql
 query Users {
-  other_schema.users {
+  other_schema::users {
     id
   }
 }
@@ -235,6 +420,12 @@ query Users {
 
 Relationship names are catalog-driven. The language does not singularize,
 pluralize, or otherwise rewrite them by itself.
+
+Nested relation selections resolve from the current table's catalog
+relationships. They do not scan every visible schema the way root table
+references do. If the relation target name is ambiguous from the current table,
+use `schema::table` and, when needed, `->edge` to identify the intended
+relationship.
 
 Relation result cardinality also comes from catalog metadata. Relation
 selections are collection-valued unless catalog constraints prove at-most-one
@@ -245,23 +436,23 @@ Qualified relation references are allowed:
 
 ```dsql
 query Users {
-  public.users {
-    public.posts {
+  public::users {
+    public::posts {
       id
     }
   }
 }
 ```
 
-The output key for `public.posts` is still `posts`.
+The output key for `public::posts` is still `posts`.
 
 If multiple foreign-key paths connect the current table to the same relation
-target, the relation must include a foreign-key selector.
+target, the relation must include a relation edge selector.
 
 ```dsql
 query Tasks {
   tasks {
-    users::assignee_id {
+    users->assignee_id {
       id
     }
   }
@@ -274,19 +465,19 @@ key, the selector is the local column name, such as `assignee_id`. For a
 composite foreign key, the selector joins the local column names in constraint
 order with underscores, such as `tenant_id_order_id`.
 
-Schema qualification and foreign-key selectors may be combined:
+Schema qualification and relation edge selectors may be combined:
 
 ```dsql
 query Tasks {
   tasks {
-    public.users::reviewer_id {
+    public::users->reviewer_id {
       id
     }
   }
 }
 ```
 
-When only one foreign-key path connects the current table to the relation
+When only one relation edge connects the current table to the relation
 target, the selector may be omitted.
 
 ## Relationship Ambiguity
@@ -294,12 +485,12 @@ target, the selector may be omitted.
 A relation selection is ambiguous when it names a relation target but multiple
 foreign-key paths connect the current table to that target.
 
-For example, ambiguity exists if `public.tasks` has both of these foreign keys
-to `public.users`:
+For example, ambiguity exists if `public::tasks` has both of these foreign keys
+to `public::users`:
 
 ```text
-public.tasks.assignee_id -> public.users.id
-public.tasks.reviewer_id -> public.users.id
+public.tasks.assignee_id references public.users.id
+public.tasks.reviewer_id references public.users.id
 ```
 
 Then this selection has no way to choose which foreign key to use:
@@ -314,12 +505,12 @@ query Tasks {
 }
 ```
 
-The selection must disambiguate the foreign-key path:
+The selection must disambiguate the relation edge:
 
 ```dsql
 query Tasks {
   tasks {
-    users::assignee_id {
+    users->assignee_id {
       id
     }
   }
@@ -332,11 +523,11 @@ required.
 ```dsql
 query Tasks {
   tasks {
-    assignee: users::assignee_id {
+    assignee: users->assignee_id {
       id
     }
 
-    reviewer: users::reviewer_id {
+    reviewer: users->reviewer_id {
       id
     }
   }
@@ -478,7 +669,7 @@ null
 Fragments define reusable selection sets for a catalog target.
 
 ```dsql
-fragment UserSummary on public.users {
+fragment UserSummary on public::users {
   id
   name
 }

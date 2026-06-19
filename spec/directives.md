@@ -100,7 +100,7 @@ The argument list uses DSQL expression values plus typed references:
   null_value: null,
   variable_value: $enabled,
   column_ref: .email,
-  table_ref: public.users,
+  table_ref: public::users,
 )
 ```
 
@@ -109,10 +109,49 @@ but they overlap with JSON expression support that is not fully specified yet.
 The first implementation may restrict directive values to scalars, variables,
 and typed references.
 
+## Directive Placement
+
+Directive placement is source syntax. A directive can appear only where the
+grammar allows it, and then the checked directive definition further constrains
+whether that placement is valid for the resolved construct.
+
+Proposed source placements:
+
+```dsql
+@project.namespace(name: "billing")
+
+query Users @.deprecated(reason: "Use ActiveUsers") {
+  users {
+    id
+  }
+}
+
+fragment UserFields on users @tag.public {
+  id
+  name
+}
+
+query UserCards {
+  users {
+    name @ui.column(label: "Name")
+    posts @.include_if(if: $include_posts) {
+      title
+    }
+    ...UserFields @.include_if(if: $include_user_fields)
+  }
+}
+```
+
+Document directives apply to the whole source document or bundle member. Query
+and fragment directives attach to the declaration header. Selection and fragment
+spread directives attach to the specific selection or spread. Future clause
+directives may attach to clause lists or individual clauses only if the grammar
+adds an unambiguous placement for them.
+
 ## Directive Locations
 
-Directive declarations specify the source locations where the directive is
-valid.
+Directive declarations specify the checked locations where the directive is
+valid. These are semantic locations, not raw grammar rules.
 
 Initial directive locations:
 
@@ -161,16 +200,28 @@ This lets a directive declare precise placement:
 The compiler should report a diagnostic when a directive is used at an
 unsupported location.
 
+Syntax placement and semantic location are intentionally separate. The parser
+only records that a directive is attached to a document, declaration, selection,
+spread, or clause syntax node. Checking resolves that attachment into semantic
+locations such as `scalar_selection`, `relation_selection`, or
+`fragment_spread`.
+
 ## Directive Definitions
 
 All directives are defined by directive definition documents. A definition uses
 JSON Schema for its argument object and DSQL-specific extension fields for
 language metadata.
 
+Directive definition documents should use a single supported JSON Schema
+dialect. The initial dialect is JSON Schema 2020-12 unless an implementation
+explicitly chooses a narrower dialect. Schema documents should declare the
+dialect with `$schema`.
+
 Conceptual shape:
 
 ```json
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dsql.dev/directives/dsql/include_if.schema.json",
   "title": "dsql.include_if",
   "type": "object",
@@ -221,6 +272,42 @@ possible:
 - `description`
 
 DSQL-specific behavior belongs under `x-dsql-*` extension keys.
+
+## Directive Value Model
+
+Directive source values are not passed directly to JSON Schema consumers. The
+compiler first parses them as DSQL syntax and normalizes them into a checked
+directive value model.
+
+Conceptual shape:
+
+```text
+DirectiveValue =
+  Null(source_range)
+  | Boolean(value, source_range)
+  | Number(value, source_range)
+  | String(value, source_range)
+  | Variable(VariableRef, source_range)
+  | TypedReference(ReferenceKind, ResolvedReference, source_range)
+  | Array(Vec<DirectiveValue>, source_range)
+  | Object(Vec<(Name, DirectiveValue)>, source_range)
+```
+
+JSON Schema validates the public JSON-compatible shape of the argument object.
+The DSQL-specific extensions then decide whether a source value is allowed to be
+an expression, variable, or typed reference, and how that reference resolves.
+
+This gives the compiler one boundary between syntax and metadata:
+
+1. parse directive syntax from source;
+2. normalize names and argument values into checked directive values;
+3. validate JSON-compatible shape;
+4. resolve DSQL-specific references and variables;
+5. expose checked directive metadata to generation, editor, and provider stages.
+
+Generators should consume checked directive values, not raw syntax and not
+already-stringified JSON, so source ranges and resolved references remain
+available for diagnostics and editor features.
 
 ## System Directives
 
@@ -275,8 +362,6 @@ metadata
 validation
 generation
 editor
-plan
-sql
 result_shape
 generation_input
 runtime
@@ -294,9 +379,13 @@ Most extension directives should be metadata-only:
 }
 ```
 
-Extension directives that claim `plan`, `sql`, or `result_shape` effects require
-a compiler/provider implementation. A schema alone cannot change query
-semantics.
+Extension directives that claim `result_shape`, `generation_input`, or
+`runtime` effects require a compiler/provider implementation. A schema alone
+cannot change query semantics.
+
+Plan and SQL mutation effects are intentionally reserved. They should not be
+accepted for extension directives until DSQL has a provider capability contract
+that can make planning and SQL generation deterministic, typed, and reviewable.
 
 Unknown extension directives should be diagnostics by default. A project may
 allow preserving unknown extension directives as metadata, but that mode should
@@ -320,7 +409,7 @@ table
 column
 relation
 field
-field_selector
+relation_selector
 selected_field
 output_path
 fragment
@@ -342,7 +431,7 @@ A catalog table reference.
 Accepted syntax:
 
 ```dsql
-@example.table(target: public.users)
+@example.table(target: public::users)
 @example.table(target: users)
 ```
 
@@ -411,7 +500,7 @@ Accepted syntax:
 
 ```dsql
 @example.prefetch(relation: posts)
-@example.prefetch(relation: public.posts::user_id)
+@example.prefetch(relation: public::posts->user_id)
 ```
 
 Completion should use the same relation resolution as normal field selections.
@@ -431,14 +520,14 @@ relation, computed field, or future catalog-backed field.
 
 Use this when the directive accepts any selectable field.
 
-### `field_selector`
+### `relation_selector`
 
-A relation selector such as the part after `::`.
+A relation edge selector such as the part after `->`.
 
 ```json
 {
   "type": "string",
-  "x-dsql-ref": "field_selector",
+  "x-dsql-ref": "relation_selector",
   "x-dsql-relation": { "argument": "relation" }
 }
 ```
@@ -532,7 +621,7 @@ Directive arguments may use ordinary literals or typed references.
 Examples:
 
 ```dsql
-@example.table(target: public.users)
+@example.table(target: public::users)
 @example.column(target: .email)
 @example.relation(target: posts)
 @example.fragment(target: UserFields)
@@ -625,6 +714,19 @@ The directive registry should be immutable tracked input so registry changes
 invalidate checking, editor completion, generation metadata, and any directive
 effect stages.
 
+Registry precedence:
+
+1. built-in `dsql` system directives;
+2. explicitly configured project-local directives;
+3. provider package directives;
+4. generator or adapter integration directives.
+
+The `dsql` namespace is reserved and cannot be replaced by project or provider
+schemas. For extension namespaces, duplicate definitions for the same fully
+qualified directive name are diagnostics unless the project config explicitly
+chooses one provider as the owner. Silent last-writer-wins merging is invalid
+because directive schemas affect compiler behavior.
+
 ## Validation Rules
 
 The compiler validates directives in this order:
@@ -671,6 +773,26 @@ The directive definition may opt into repeatability:
 If a non-repeatable directive appears twice on the same construct, the compiler
 reports a diagnostic.
 
+Repeatable directives preserve source order in checked metadata. Consumers must
+not sort repeatable directives unless the directive definition declares that
+order is irrelevant.
+
+Order-sensitive repeatable directives should say so explicitly:
+
+```json
+{
+  "x-dsql-directive": {
+    "name": "pipeline.step",
+    "locations": ["query"],
+    "repeatable": true,
+    "orderSensitive": true
+  }
+}
+```
+
+If a directive is repeatable and order-sensitive, generation and provider stages
+must consume the checked directives in source order.
+
 ## Effects
 
 Directive effects describe which stages must account for the directive.
@@ -682,8 +804,6 @@ metadata
 validation
 generation
 editor
-plan
-sql
 result_shape
 generation_input
 runtime
@@ -695,8 +815,6 @@ Effect meanings:
 - `validation`: produces semantic diagnostics.
 - `generation`: affects generated code but not query semantics.
 - `editor`: affects completion, hover, semantic tokens, or editor metadata.
-- `plan`: changes the execution plan.
-- `sql`: changes generated SQL.
 - `result_shape`: changes result fields, nullability, or conditionality.
 - `generation_input`: changes generated params/input/context types.
 - `runtime`: requires host/runtime enforcement.
@@ -706,6 +824,25 @@ System directives with non-metadata effects must be implemented by DSQL.
 Extension directives with non-metadata effects must have a provider capability
 registered. A JSON Schema definition alone only gives validation, typed
 references, completion, and metadata preservation.
+
+The initial extension capability surface should distinguish metadata/editor
+capabilities from semantic effects:
+
+```text
+metadata capability:
+  metadata
+  validation
+  generation
+  editor
+
+semantic capability:
+  result_shape
+  generation_input
+  runtime
+```
+
+Plan and SQL effects are not part of the initial extension capability surface.
+They are reserved until the planner exposes a typed provider API.
 
 ## Metadata Preservation
 

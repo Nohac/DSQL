@@ -83,8 +83,10 @@ Object metadata identifies a selectable database object.
 - `foreign_keys`: table-level foreign-key constraints.
 - `indexes`: table-level index metadata.
 
-Unqualified references resolve through the project default schema, which is
-`public` unless configured otherwise.
+Unqualified table references resolve only when exactly one visible schema
+contains an object with that name. If multiple visible schemas contain the same
+object name, source must use an explicit schema selector such as
+`public::users`.
 
 ## Column Metadata
 
@@ -150,8 +152,8 @@ provides an explicit relationship name. The language layer does not singularize,
 pluralize, or otherwise rewrite relation names.
 
 When multiple foreign-key paths connect the same source and target tables, a
-query must disambiguate the path with a foreign-key selector, such as
-`users::assignee_id`.
+query must disambiguate the path with a relation edge selector, such as
+`users->assignee_id`.
 
 For composite foreign keys, the default selector joins the local column names in
 foreign-key column order with underscores, such as `tenant_id_user_id`.

@@ -15,7 +15,7 @@ A query should be able to filter a root collection by related rows.
 
 ```dsql
 query Users {
-  public.users(where .posts.title like "%foo%") {
+  public::users(where .posts.title like "%foo%") {
     id
     posts {
       id
@@ -31,7 +31,7 @@ Nested relation clauses should also be able to reference the root selection.
 
 ```dsql
 query Users {
-  public.users(where .posts.title like "%foo%") {
+  public::users(where .posts.title like "%foo%") {
     id
     admin
 
@@ -42,7 +42,7 @@ query Users {
 }
 ```
 
-The `~admin` path resolves against the root `public.users` selection, not the
+The `~admin` path resolves against the root `public::users` selection, not the
 nested `posts` selection.
 
 ## Scope Prefixes
@@ -93,7 +93,7 @@ For to-one relationships, the compiler may emit an equivalent join or exists
 predicate as long as result semantics are preserved.
 
 Relationship paths may use the same relationship references as selection sets,
-including schema-qualified names and foreign-key selectors.
+including schema-qualified table references and relation edge selectors.
 
 ```dsql
 query Users {
@@ -275,8 +275,8 @@ Possible shape:
     {
       "path": ".posts.comments.body",
       "resolved": [
-        "public.users",
-        "public.posts",
+        "public::users",
+        "public::posts",
         "public.comments",
         "public.comments.body"
       ],

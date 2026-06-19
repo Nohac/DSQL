@@ -41,8 +41,8 @@ Potential imported metadata:
 - Column mappings and manual join definitions.
 
 This could let projects migrate existing Hasura relationship names into dsql
-defined relationship aliases instead of exposing only raw foreign-key selectors
-such as `users::assignee_id`.
+defined relationship aliases instead of exposing only raw relation edge
+selectors such as `users->assignee_id`.
 
 ## Provider Swap Goal
 

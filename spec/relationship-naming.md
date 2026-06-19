@@ -7,7 +7,7 @@ pluralize, or otherwise rewrite table names by itself.
 
 ## Current Rule
 
-If a relationship points to `public.posts`, the default selectable relation name
+If a relationship points to `public::posts`, the default selectable relation name
 is `posts`, unless catalog metadata provides another name.
 
 ```dsql
@@ -50,8 +50,8 @@ foreign-key path.
 Example idea:
 
 ```text
-assignee -> users::assignee_id
-reviewer -> users::reviewer_id
+assignee = users->assignee_id
+reviewer = users->reviewer_id
 ```
 
 Those names could then be selected directly:
@@ -73,7 +73,7 @@ query Tasks {
 ```
 
 This would provide stable, user-owned relationship names while keeping the raw
-`[schema.]table::foreign_key` selector available as an explicit lower-level
+`[schema::]table->edge` selector available as an explicit lower-level
 reference.
 
 Potential benefits:
