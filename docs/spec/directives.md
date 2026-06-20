@@ -273,6 +273,100 @@ possible:
 
 DSQL-specific behavior belongs under `x-dsql-*` extension keys.
 
+## Schema Representation And Tooling
+
+The compiler should treat directive schemas as JSON Schema data, not primarily
+as Rust type-derived schemas. A directive definition needs three related
+representations:
+
+```text
+DirectiveDefinition {
+  name: DirectiveName,
+  locations: Vec<DirectiveLocation>,
+  repeatable: bool,
+  effects: Vec<DirectiveEffect>,
+  raw_schema: JsonValue,
+  schema_ast: DirectiveSchemaAst,
+  validator: CompiledJsonSchemaValidator,
+}
+```
+
+`raw_schema` preserves the authored schema document for standards-compliant
+validation, round-tripping, diagnostics, and unsupported keywords.
+`schema_ast` is a normalized compiler-owned projection used by checking,
+completion, hover, semantic tokens, and generation metadata. `validator` is an
+opaque compiled JSON Schema validator used only for JSON Schema validation.
+
+This representation should be shared with other schema-backed language features
+where possible. In particular, JSON/JSONB column shape overrides need the same
+raw schema, normalized schema AST, and validator boundary, but attach it to a
+catalog column or JSON path instead of to a directive invocation.
+
+The compiler should not rely on a validator crate as the editor-facing schema
+AST. Validator APIs typically optimize for validation and either keep their
+compiled schema private or expose details that are not stable enough for DSQL
+language semantics.
+
+The normalized directive schema AST should initially cover only the subset DSQL
+needs to reason about directive invocations:
+
+```text
+DirectiveSchemaAst {
+  properties: Map<String, DirectiveArgumentSchema>,
+  required: Set<String>,
+  additional_properties: AdditionalPropertiesPolicy,
+}
+
+DirectiveArgumentSchema {
+  value_shape: JsonValueShape,
+  description: Option<String>,
+  default: Option<JsonValue>,
+  enum_values: Vec<JsonValue>,
+  dsql_ref: Option<DirectiveReferenceKind>,
+  dsql_expression: bool,
+  raw_schema: JsonValue,
+}
+```
+
+The AST may preserve unsupported or unnormalized schema keywords in `raw_schema`
+without making them available for editor intelligence. For example, a schema
+using complex `oneOf` branches can still be passed to the JSON Schema validator,
+while completion only offers argument names and enum values that the
+normalization step can derive unambiguously.
+
+Programmatic directive definitions should construct this compiler model
+directly and be able to emit the equivalent JSON Schema. They do not need to be
+derived from Rust structs. A builder-style API is acceptable for built-in system
+directives and provider registrations:
+
+```rust
+DirectiveDefinition::new("dsql.include_if")
+    .locations([DirectiveLocation::FieldSelection, DirectiveLocation::FragmentSpread])
+    .argument(
+        "if",
+        DirectiveArgumentSchema::boolean()
+            .required()
+            .expression(true)
+            .description("Controls whether the selection is included"),
+    )
+    .effect(DirectiveEffect::ResultShape)
+    .effect(DirectiveEffect::GenerationInput);
+```
+
+The `facet-json-schema` crate exposes public `JsonSchema`, `SchemaType`,
+`SchemaTypes`, and `AdditionalProperties` types that can be built and traversed
+manually, and may be a useful base for this model. The older
+`facet-jsonschema` crate currently used in the workspace is a different crate
+with a string-emitting API and is not suitable as the directive schema model.
+
+Before implementation, run a focused dependency update/design pass to decide
+whether to:
+
+- move to the newer `facet-json-schema` crate and matching Facet version;
+- vendor or fork a small JSON Schema data model;
+- define a DSQL-owned directive schema model and only convert to/from JSON
+  values at the registry boundary.
+
 ## Directive Value Model
 
 Directive source values are not passed directly to JSON Schema consumers. The
@@ -734,12 +828,14 @@ The compiler validates directives in this order:
 1. Parse directive syntax.
 2. Normalize directive names, including `@.` to `@dsql.`.
 3. Resolve the directive definition from the registry.
-4. Validate the directive location.
-5. Validate argument names, required arguments, and primitive JSON Schema shape.
-6. Resolve typed references using the directive schema and current semantic
+4. Normalize the directive schema into the compiler-owned directive schema AST.
+5. Validate the directive location.
+6. Validate argument names, required arguments, and JSON Schema shape using the
+   compiled validator and source-range mapping.
+7. Resolve typed references using the directive schema AST and current semantic
    context.
-7. Validate variable usage and infer directive variables when allowed.
-8. Apply system or provider effects for directives that are not metadata-only.
+8. Validate variable usage and infer directive variables when allowed.
+9. Apply system or provider effects for directives that are not metadata-only.
 
 Diagnostics should include:
 
@@ -877,14 +973,18 @@ Directive definitions should power editor behavior:
 - after `@.`, complete DSQL system directives;
 - after `@namespace.`, complete directives in that namespace;
 - inside argument lists, complete valid argument names;
+- for `enum` arguments, complete allowed enum values, inserting quoted strings
+  for string-valued enums;
+- for boolean arguments, complete `true` and `false`;
 - for typed reference arguments, complete catalog tables, columns, relations,
   fragments, output paths, or selected fields according to `x-dsql-ref`;
 - hover on directive names should show schema `description`;
 - hover on directive arguments should show schema property `description`;
 - semantic tokens should classify directive names and typed references.
 
-Completion must use the selected resolution environment and current catalog
-snapshot.
+Completion should use the normalized directive schema AST, not an opaque JSON
+Schema validator. It must use the selected resolution environment and current
+catalog snapshot.
 
 ## Formatting
 
