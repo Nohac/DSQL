@@ -1,106 +1,68 @@
 # Agent Guidelines
 
-## Engineering Direction
+## Workflow
 
-- Keep syntax and semantics separate. Parsing should describe source structure; lowering should extract names and structure; checking should resolve against catalog and schema information.
-- Treat the CST and original source text as the source of truth for rewriting and formatting. The AST is for typed access and analysis, not for reconstructing user text.
-- Formatter changes must be conservative. Preserve comments, trivia, malformed regions, and unknown syntax unless the formatter has enough structure to rewrite safely.
-- Store spans as byte ranges internally. Convert to editor protocol positions only at the protocol boundary.
-- Use interned names and IDs for identity, comparison, and semantic indexing, not for printing source text.
-- Return diagnostics explicitly from analysis stages and aggregate them in source order where possible.
-- Keep parser-generated types behind local wrappers or facades. Do not let generated parser APIs leak into unrelated layers.
-- Keep the compiler core pure and reusable. Stateful incremental analysis belongs at the frontend boundary.
-- CLI and LSP code should be thin adapters over the analysis API. They should not contain language rules.
-- The LSP/editor layer should own editable Rope state, apply text edits through Rope range operations, and publish new immutable revisions to analysis.
-- Immutable snapshots may use `Arc<str>` for now. Avoid copying source text when a direct Rope-backed parser path becomes practical.
-- Do not use `Arc<Mutex<_>>` or `Arc<RwLock<_>>` as the normal application architecture. If mutable concurrent maps are needed, prefer `DashMap`.
-- Analysis host handles should be cheaply clonable and use internal mutability through the intended query/runtime boundaries.
-- Catalog access should go through provider-style interfaces so swapping a hardcoded catalog for a PostgreSQL-backed catalog is a provider change.
-- Schema-qualified references should be supported. Unqualified table references default to `public`.
-- Relation names are table names with foreign-key relationships. Do not singularize, pluralize, or otherwise rewrite relation names.
-- Hover, completion, checking, diagnostics, formatting, and CLI behavior should all use the same analysis surface instead of duplicating logic.
+- Read [`docs/architecture/compiler.md`](docs/architecture/compiler.md) before changing compiler, frontend analysis, diagnostics, formatting, generation, LSP, or source/project ownership.
+- Read relevant docs in [`docs/proposals`](docs/proposals) and [`docs/spec`](docs/spec) before implementing language features.
+- ALWAYS check the working tree before staging or committing.
+- ALWAYS preserve user changes. Do not revert, overwrite, or reformat unrelated files unless explicitly asked.
+- ALWAYS keep commits focused around one coherent behavior or infrastructure change.
+- NEVER commit, amend, create a checkpoint commit, or otherwise modify git history unless the user explicitly asks for a commit in the current conversation.
+- NEVER treat approval to implement, continue, checkpoint, verify, or resolve review comments as approval to commit.
+- If the user asks for a commit, first check the working tree, stage only the intended files, and then commit.
+- Use conventional commit messages, such as `feat: ...`, `fix: ...`, `test: ...`, `docs: ...`, `refactor: ...`, or `chore: ...`.
+- Check the working tree before the final response.
 
-## Parser And Grammar
+## Tools And Verification
 
-- Prefer extending the grammar over adding ad hoc text parsing.
-- Keep the grammar small and explicit until the language spec settles.
-- Query bodies should look SQL-like where applicable, for example `where ...` rather than `where: ...`.
-- Qualified names should be parsed structurally and preserved in spans/text.
-- If parser support for Rope chunks becomes available, pursue a path that avoids full source allocation across all layers.
+- PREFER running specific tests over running the entire test suite.
+- ALWAYS run formatting, focused tests, and relevant checks before handing off code changes when practical.
+- PREFER `cargo test -p <package> <test-name>` or the nearest package-level test over `cargo test --workspace` while iterating.
+- Use `cargo test --workspace` when a change crosses compiler, frontend, generate, LSP, or CLI boundaries and a full pass is practical.
+- PREFER `cargo check --workspace` for broad compile verification after API or type changes.
+- Run clippy with warnings denied when practical; NEVER assume clippy warnings are pre-existing.
+- NEVER perform builds with the release profile unless asked or reproducing performance issues.
+- When making Windows-specific changes from Unix, use `cargo xwin clippy` to check compilation when available; if it cannot be run, say so.
+- NEVER update all dependencies in the lockfile. ALWAYS use `cargo update --precise` for lockfile changes.
 
-## Formatting
+## Testing
 
-- The formatter must operate from the CST/source spans, not from the AST.
-- If a file has parse errors, refuse formatting or preserve malformed subtrees rather than producing guessed output.
-- Do not normalize trivia or comments unless the behavior is deliberate and covered by tests.
+- For issues and bug reports, add or run a focused test that reproduces the behavior before starting the fix.
+- PREFER integration tests. Use `insta` snapshots and copy nearby fixture/query patterns where possible.
+- NEVER test external crate functionality or simple encode/decode behavior with `string contains` assertions. Tests should protect dsql semantics, integration behavior, or project-specific boundaries.
 
-## Diagnostics And LSP
+## Rust Style
 
-- Diagnostics should include precise byte ranges and a stable source category.
-- Use Rope APIs for byte/line/character conversion in editor-facing code.
-- LSP document changes should mutate the stored Rope, then publish a new revision for analysis.
-- Completion and hover should be contextual and catalog-aware, including inside fragments.
-- Avoid keeping a second compiler-state mirror in the LSP. Use the shared frontend/project analysis surface as the source of truth.
+- PREFER top-level imports over local imports or fully qualified names.
+- PREFER clear variable names over abbreviations, e.g. `version` instead of `ver`.
+- PREFER patterns like `if let` to handle fallibility.
+- PREFER let chains (`if let` combined with `&&`) over nested `if let` statements.
+- AVOID `panic!`, `unreachable!`, `.unwrap()`, unsafe code, and clippy rule ignores.
+- PREFER `#[expect(...)]` over `#[allow(...)]` if a lint must be disabled.
+- ALWAYS write `SAFETY` comments following the surrounding style when writing unsafe code.
+- PREFER [`TypeName`] references when writing Rust doc comments.
+- Add succinct comments only where the code is not self-explanatory.
 
-## Dependencies And Abstractions
+## Project Patterns
 
 - Prefer existing project patterns and local helper APIs over new abstractions.
 - Add abstractions only when they remove real duplication or make a provider/runtime boundary clearer.
-- Bind repeated or semantically important strings to a single source of truth, or colocate them with the enum/type/API they describe. Avoid randomly hardcoding keywords, metadata labels, path segments, protocol fields, or artifact names at call sites.
-- Keep Picante details behind the frontend analysis API. Do not expose query ingredients or runtime internals to adapters.
+- Bind repeated or semantically important strings to a single source of truth, or colocate them with the enum/type/API they describe.
+- Do not randomly hardcode keywords, metadata labels, path segments, protocol fields, or artifact names at call sites.
 - Derive or implement reflection/serialization traits on shared data types where the existing code expects them.
-- Before version 1.0, do not preserve backward compatibility by default. Prefer clean formats, APIs, and data models over migration code unless the user explicitly asks for compatibility.
+- Before version 1.0, refactors are replacement changes by default. If a refactor touches an API, format, data model, or behavior, update all affected callers to the new shape and remove the old path. Do not add compatibility bridges, migration layers, aliases, or old-to-new adapters unless the user explicitly asks for backward compatibility.
 
-## Documentation And Literate Code
+## Documentation
 
 - Prefer literate, self-explaining compiler code for new architecture-facing APIs.
 - Add proper doc comments to public functions, tracked Picante queries, shared compiler data types, and non-obvious private functions that encode compiler architecture or stage boundaries.
-- Doc comments should explain what the item represents, why it exists, and which layer owns it. Avoid comments that merely repeat the function name or restate obvious parameter types.
-- When introducing a new stage, query, diagnostic carrier, or project/host boundary, document its relationship to parsing, lowering, checking, linting, planning, generation, and adapter formatting.
-
-## Testing And Verification
-
-- For bug reports, first add or run a focused failing regression test that
-  demonstrates the reported behavior. Confirm the failure before changing
-  implementation, unless the user explicitly asks for exploratory or speculative
-  edits.
-- Add focused regression tests for language behavior, diagnostics, and editor-facing analysis when changing those areas.
-- For TypeScript inference bugs, inspect the actual checker type rather than relying only on emitted errors. A small script using the `typescript` package can load `tsconfig.json`, create a `Program`, call `checker.getTypeAtLocation(...)`, and print `checker.typeToString(...)` for the node that would be hovered in an editor. This is often simpler than manually driving the LSP protocol and gives the same actionable type information.
-- When debugging generated TypeScript, regenerate the consuming fixture/app and inspect the generated files before changing the generator. If a value unexpectedly becomes `never`, add a type-level regression assertion such as `type IsNever<T> = [T] extends [never] ? true : false` and `type AssertFalse<T extends false> = T`; a plain `satisfies` assertion can miss this because `never` satisfies every type.
-- Do not test external crate functionality. Tests should protect dsql semantics, integration behavior, or project-specific boundaries, not verify that dependencies parse defaults or expose documented behavior.
-- Avoid tests that only restate library behavior without protecting project semantics.
-- Before handing off code changes, run formatting, tests, and clippy with warnings denied when practical.
-- If a verification command cannot be run, say why in the final response.
-
-## Git And Commits
-
-- Never commit, amend, create a checkpoint commit, or otherwise modify git history unless the user explicitly asks for a commit in the current conversation. Approval to implement, continue, checkpoint, or verify is not approval to commit.
-- After making code changes, stop for user review unless the user has already explicitly asked you to commit those exact changes. Resolving review comments, running verification, or moving to the next issue is not permission to commit.
-- If the user asks for a commit, first check the working tree, stage only the intended files, and then commit.
-- Use conventional commit messages, such as `feat: ...`, `fix: ...`, `test: ...`, `docs: ...`, `refactor: ...`, or `chore: ...`.
-- Keep commits focused around one coherent behavior or infrastructure change.
-- Do not mix unrelated cleanup with feature or bug-fix commits.
-- Do not revert or overwrite user changes unless explicitly asked.
-- Check the working tree before staging and before the final response.
+- Doc comments should explain what the item represents, why it exists, and which layer owns it when that context is not obvious. Do not add redundant comments for simple/self-evident functions, and avoid comments that merely repeat the function name or restate obvious parameter types.
 
 ## Issues
 
-Tracked as markdown files in `issues/`. Create new issues with:
-
-```bash
-scripts/create-issue.sh <issue title>
-```
-
-This generates `issues/<id>-<slug>.md` with a header:
-
-```markdown
-# Issue title
-
-**ID:** <8-char-hex> | **Status:** Open | **Created:** <iso-timestamp>
-```
-
-Below the header, write free-form markdown describing the issue — summary, approach, tasks, whatever is relevant. Keep it concise. Issues are tracked in git and must be standalone with enough context to understand without Peers threads, chat logs, or other external review state. Do not reference Peers thread IDs from issue files. Set **Status** to `Done` when resolved. Find open issues with:
-
-```bash
-rg 'Status:.*Open' issues/
-```
+- Issues are tracked as markdown files in `issues/`.
+- Create new issues with `scripts/create-issue.sh <issue title>`.
+- Keep issue files concise and standalone enough to understand without Peers threads, chat logs, or other external review state.
+- Do not reference Peers thread IDs from issue files.
+- Set `Status` to `Done` when resolved.
+- Find open issues with `rg 'Status:.*Open' issues/`.

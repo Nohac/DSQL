@@ -1,6 +1,7 @@
 # dsql Specification
 
-This directory contains the tracked dsql language specification.
+This directory contains the tracked dsql language specification. Specs describe
+desired target behavior and may be ahead of the current implementation.
 
 The current focus is the read-query language: documents, queries, selection
 sets, catalog resolution, fragments, aliases, and core clauses.

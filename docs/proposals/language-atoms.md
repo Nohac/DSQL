@@ -1,5 +1,7 @@
 # Language Atoms
 
+Status: proposal, not implemented current architecture.
+
 ## Summary
 
 A language atom is an indivisible compiler responsibility for one source-level

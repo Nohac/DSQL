@@ -159,6 +159,7 @@ DSQL is likely strongest for:
 ## Status
 
 This project is pre-1.0 and still shaping the language and architecture. The
-tracked specs in [`spec/`](spec/) describe current direction and open questions.
+tracked specs in [`docs/spec/`](docs/spec/) describe desired target behavior
+and open questions.
 
 Backwards compatibility is not a goal before 1.0.
