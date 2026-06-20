@@ -1,4 +1,4 @@
-use tower_lsp_server::lsp_types::{SemanticTokenType, SemanticTokensLegend};
+use tower_lsp_server::ls_types::{SemanticTokenType, SemanticTokensLegend};
 
 pub(crate) fn semantic_tokens_legend() -> SemanticTokensLegend {
     SemanticTokensLegend {

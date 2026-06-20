@@ -7,7 +7,7 @@ use dsql_core::{
 };
 use dsql_frontend::{PhysicalDocumentId, ProjectHost};
 use miette::{IntoDiagnostic, NamedSource, Result};
-use sqlx::{Connection, Row, postgres::PgConnection};
+use sqlx::{AssertSqlSafe, Connection, Row, postgres::PgConnection};
 use std::path::{Path, PathBuf};
 
 mod daemon;
@@ -198,7 +198,7 @@ async fn main() -> Result<()> {
                 for generated in generated_queries {
                     let exec_sql = format!("select ({})::text", generated.sql);
                     let row = tokio::select! {
-                        row = sqlx::query(&exec_sql).fetch_one(&mut connection) => {
+                        row = sqlx::query(AssertSqlSafe(exec_sql)).fetch_one(&mut connection) => {
                             row.map_err(|error| miette::miette!("failed to execute SQL: {error}"))?
                         }
                         signal = tokio::signal::ctrl_c() => {

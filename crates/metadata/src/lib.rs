@@ -1,5 +1,17 @@
 use facet::Facet;
 
+const BUILD_MANIFEST_SCHEMA_ID: &str = "https://dsql.dev/schemas/build-manifest.schema.json";
+const JSON_SCHEMA_DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
+
+#[derive(Debug, Facet)]
+#[facet(skip_all_unless_truthy)]
+struct BuildManifestJsonSchema {
+    #[facet(rename = "$id")]
+    id: &'static str,
+    #[facet(flatten)]
+    schema: facet_json_schema::JsonSchema,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum DefinitionKind {
@@ -34,7 +46,6 @@ pub enum ResultDataType {
 }
 
 #[derive(Clone, Debug, Facet)]
-#[facet(facet_jsonschema::id = "https://dsql.dev/schemas/build-manifest.schema.json")]
 pub struct BuildManifest {
     pub version: u32,
     pub operations: Vec<OperationManifestEntry>,
@@ -195,7 +206,13 @@ pub struct SourceRange {
 }
 
 pub fn build_manifest_json_schema() -> String {
-    facet_jsonschema::to_string::<BuildManifest>()
+    let mut generated_schema = facet_json_schema::schema_for::<BuildManifest>();
+    generated_schema.schema = Some(JSON_SCHEMA_DRAFT_2020_12.to_string());
+    let schema = BuildManifestJsonSchema {
+        id: BUILD_MANIFEST_SCHEMA_ID,
+        schema: generated_schema,
+    };
+    facet_json::to_string_pretty(&schema).expect("JSON Schema serialization should not fail")
 }
 
 pub fn build_manifest_typescript() -> String {

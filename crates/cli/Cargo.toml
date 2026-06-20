@@ -20,7 +20,7 @@ facet = { workspace = true }
 facet-json = { workspace = true }
 facet-toml = { workspace = true, features = ["serialize"] }
 miette = { workspace = true, features = ["fancy"] }
-sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres"] }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

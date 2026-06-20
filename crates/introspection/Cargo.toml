@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 dsql-core = { workspace = true }
-sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "derive"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "derive"] }
 thiserror = { workspace = true }

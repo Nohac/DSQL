@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 facet = { workspace = true }
-facet-jsonschema = { workspace = true }
+facet-json = { workspace = true }
+facet-json-schema = { workspace = true }
 facet-typescript = { workspace = true }
 strum = { workspace = true, features = ["derive"] }

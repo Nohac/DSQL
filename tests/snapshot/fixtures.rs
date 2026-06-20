@@ -4,7 +4,7 @@ use dsql_core::{
     lint_file_with_catalog, parse_source, plan_file_with_catalog,
 };
 use insta::Settings;
-use sqlx::{Row, postgres::PgPoolOptions};
+use sqlx::{AssertSqlSafe, Row, postgres::PgPoolOptions};
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -128,7 +128,7 @@ async fn valid_query_fixtures_execute_when_database_url_is_set() {
                 },
             )
             .unwrap();
-            let row = sqlx::query(&json_text_query(&generated.sql))
+            let row = sqlx::query(AssertSqlSafe(json_text_query(&generated.sql)))
                 .fetch_one(&pool)
                 .await
                 .unwrap();
@@ -186,7 +186,7 @@ async fn integration_query_fixtures_match_expected_output_when_database_url_is_s
             },
         )
         .unwrap();
-        let row = sqlx::query(&json_text_query(&generated.sql))
+        let row = sqlx::query(AssertSqlSafe(json_text_query(&generated.sql)))
             .fetch_one(&pool)
             .await
             .unwrap();

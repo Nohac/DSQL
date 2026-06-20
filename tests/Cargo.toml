@@ -12,7 +12,7 @@ dsql-project = { workspace = true }
 facet-json = { workspace = true }
 facet-value = { workspace = true }
 ropey = { workspace = true, features = ["metric_utf16"] }
-sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 

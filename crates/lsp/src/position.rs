@@ -1,6 +1,6 @@
 use dsql_frontend::{SemanticTokenInfo, SemanticTokenKind};
 use ropey::{LineType, Rope};
-use tower_lsp_server::lsp_types::{Position, SemanticToken};
+use tower_lsp_server::ls_types::{Position, SemanticToken};
 
 pub(crate) fn encode_semantic_tokens(
     rope: &Rope,

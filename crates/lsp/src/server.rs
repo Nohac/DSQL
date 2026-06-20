@@ -12,17 +12,18 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use tower_lsp_server::jsonrpc::Result;
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-    HoverParams, InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent,
-    MarkupKind, MessageType, OneOf, Position, Range, SemanticTokens, SemanticTokensFullOptions,
+    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
+    MessageType, NumberOrString, OneOf, Position, Range, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, TextEdit, Uri,
 };
-use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
+use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use tracing::{info, warn};
 
 pub async fn run_stdio() -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
@@ -190,9 +191,7 @@ impl LanguageServer for Backend {
                     ..CompletionOptions::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
-                hover_provider: Some(
-                    tower_lsp_server::lsp_types::HoverProviderCapability::Simple(true),
-                ),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -489,15 +488,13 @@ fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
         .map(|path| path.into_owned())
 }
 
-fn to_lsp_presented_diagnostic(
-    diagnostic: &PresentedDiagnostic,
-) -> tower_lsp_server::lsp_types::Diagnostic {
+fn to_lsp_presented_diagnostic(diagnostic: &PresentedDiagnostic) -> Diagnostic {
     let message = if let Some(context) = &diagnostic.context {
         format!("[{}] {}", context.label, diagnostic.diagnostic.message)
     } else {
         diagnostic.diagnostic.message.clone()
     };
-    tower_lsp_server::lsp_types::Diagnostic {
+    Diagnostic {
         range: Range {
             start: Position::new(
                 diagnostic.start_position.line,
@@ -509,20 +506,17 @@ fn to_lsp_presented_diagnostic(
             ),
         },
         severity: Some(match diagnostic.diagnostic.severity {
-            dsql_core::Severity::Error => tower_lsp_server::lsp_types::DiagnosticSeverity::ERROR,
-            dsql_core::Severity::Warning => {
-                tower_lsp_server::lsp_types::DiagnosticSeverity::WARNING
-            }
-            dsql_core::Severity::Info => {
-                tower_lsp_server::lsp_types::DiagnosticSeverity::INFORMATION
-            }
+            dsql_core::Severity::Error => DiagnosticSeverity::ERROR,
+            dsql_core::Severity::Warning => DiagnosticSeverity::WARNING,
+            dsql_core::Severity::Info => DiagnosticSeverity::INFORMATION,
         }),
-        code: Some(tower_lsp_server::lsp_types::NumberOrString::String(
-            format!("{:?}", diagnostic.diagnostic.code),
-        )),
+        code: Some(NumberOrString::String(format!(
+            "{:?}",
+            diagnostic.diagnostic.code
+        ))),
         source: Some("dsql".to_string()),
         message,
-        ..tower_lsp_server::lsp_types::Diagnostic::default()
+        ..Diagnostic::default()
     }
 }
 
@@ -680,7 +674,7 @@ columns:
 
         let (uri, rope) = source_definition_uri_and_rope(&ProjectHost::new(), &source).unwrap();
 
-        assert_eq!(uri.scheme().map(|scheme| scheme.as_str()), Some("file"));
+        assert_eq!(uri.scheme().as_str(), "file");
         assert_eq!(
             file_uri_to_path(uri.as_str()).as_deref(),
             Some(path.as_path())
