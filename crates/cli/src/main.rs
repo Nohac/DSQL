@@ -1,14 +1,15 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use dsql_core::{
-    Catalog, CompilerDiagnostic, DefinitionRecord, DsqlDiagnostic, FragmentMap, QueryRecord,
-    SourceSnapshot, check_query_definition, collect_compiler_diagnostic_sources,
-    collect_query_compiler_diagnostics, extract_definitions, lint_query_definition_with_options,
-    parse_source, plan_query_definition, sort_compiler_diagnostics,
-};
+use dsql_core::{Catalog, collect_compiler_diagnostic_sources};
 use dsql_frontend::{PhysicalDocumentId, ProjectHost};
-use miette::{IntoDiagnostic, NamedSource, Result};
-use sqlx::{AssertSqlSafe, Connection, Row, postgres::PgConnection};
-use std::path::{Path, PathBuf};
+use miette::{
+    IntoDiagnostic, MietteError, MietteSpanContents, Result, SourceCode, SourceSpan, SpanContents,
+};
+use ropey::{LineType, Rope};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 mod daemon;
 
@@ -39,13 +40,6 @@ enum Command {
     },
     Fmt {
         file: PathBuf,
-    },
-    Exec {
-        #[arg(long)]
-        dry_run: bool,
-        #[arg(long, default_value_t = 100)]
-        limit: u64,
-        query: String,
     },
     Generate {
         #[arg(long, value_enum, default_value_t = GenerateTarget::Project)]
@@ -120,114 +114,14 @@ async fn main() -> Result<()> {
             let formatted = dsql_core::format_file(&analysis.parse);
             for diagnostic in &formatted.diagnostics {
                 print_miette_diagnostic(
-                    file.display().to_string(),
-                    analysis.parse.source.to_arc_str().to_string(),
+                    RopeDiagnosticSource::new(
+                        file.display().to_string(),
+                        analysis.parse.source.arc_rope(),
+                    ),
                     diagnostic.clone(),
                 );
             }
             print!("{}", formatted.text);
-        }
-        Command::Exec {
-            dry_run,
-            limit,
-            query,
-        } => {
-            let project = dsql_project::Project::load()?;
-            let catalog = project.load_catalog()?;
-            let lint_options = project.lint_options();
-            let query = load_project_query(&project, &query)?;
-
-            let checked = check_query_definition(&query.record, &query.fragments, &catalog);
-            let linted = lint_query_definition_with_options(
-                &query.record,
-                &query.fragments,
-                &catalog,
-                lint_options,
-            );
-            let planned = plan_query_definition(&query.record, &query.fragments, &catalog);
-            let mut diagnostics = query.parse_diagnostics.clone();
-            diagnostics.extend(collect_query_compiler_diagnostics(
-                &checked, &linted, &planned,
-            ));
-            sort_compiler_diagnostics(&mut diagnostics);
-            for diagnostic in &diagnostics {
-                print_miette_diagnostic(
-                    query.source_name.clone(),
-                    query.source_text.clone(),
-                    diagnostic.clone(),
-                );
-            }
-            if diagnostics
-                .iter()
-                .any(|diagnostic| matches!(diagnostic.severity(), dsql_core::Severity::Error))
-            {
-                return Err(miette::miette!(
-                    "cannot generate SQL while diagnostics contain errors"
-                ));
-            }
-            let mut generated_queries = Vec::new();
-            let sql_options = dsql_core::PostgresSqlOptions {
-                collection_limit: (limit > 0).then_some(limit),
-            };
-            for query in &planned.queries {
-                generated_queries.push(
-                    dsql_core::generate_postgres_sql_with_options(query, &catalog, sql_options)
-                        .map_err(|error| miette::miette!("failed to generate SQL: {error}"))?,
-                );
-            }
-
-            if dry_run {
-                for generated in generated_queries {
-                    print!("{}", generated.sql);
-                    if !generated.sql.ends_with('\n') {
-                        println!();
-                    }
-                }
-            } else {
-                let mut connection = PgConnection::connect(&project.config.database_url)
-                    .await
-                    .map_err(|error| miette::miette!("failed to connect to database: {error}"))?;
-                let backend_pid = sqlx::query("select pg_backend_pid()")
-                    .fetch_one(&mut connection)
-                    .await
-                    .and_then(|row| row.try_get::<i32, _>(0))
-                    .map_err(|error| {
-                        miette::miette!("failed to read database backend pid: {error}")
-                    })?;
-                let mut output = String::from("{");
-                for generated in generated_queries {
-                    let exec_sql = format!("select ({})::text", generated.sql);
-                    let row = tokio::select! {
-                        row = sqlx::query(AssertSqlSafe(exec_sql)).fetch_one(&mut connection) => {
-                            row.map_err(|error| miette::miette!("failed to execute SQL: {error}"))?
-                        }
-                        signal = tokio::signal::ctrl_c() => {
-                            signal
-                                .map_err(|error| miette::miette!("failed to listen for Ctrl+C: {error}"))?;
-                            cancel_backend(&project.config.database_url, backend_pid).await?;
-                            return Err(miette::miette!("query execution cancelled"));
-                        }
-                    };
-                    let value = row
-                        .try_get::<String, _>(0)
-                        .map_err(|error| miette::miette!("failed to read JSON result: {error}"))?;
-                    if output.len() > 1 {
-                        output.push(',');
-                    }
-                    output.push('\n');
-                    output.push_str("  ");
-                    output.push_str(
-                        &facet_json::to_string(&generated.output_name).into_diagnostic()?,
-                    );
-                    output.push_str(": ");
-                    output.push_str(&value);
-                }
-                if output.len() > 1 {
-                    output.push('\n');
-                }
-                output.push('}');
-                println!("{output}");
-            }
         }
         Command::Generate { target, out_dir } => match target {
             GenerateTarget::Project => {
@@ -295,80 +189,6 @@ async fn generate_typescript_metadata(out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn cancel_backend(database_url: &str, backend_pid: i32) -> Result<()> {
-    let mut connection = PgConnection::connect(database_url)
-        .await
-        .map_err(|error| miette::miette!("failed to connect for query cancellation: {error}"))?;
-    sqlx::query("select pg_cancel_backend($1)")
-        .bind(backend_pid)
-        .execute(&mut connection)
-        .await
-        .map_err(|error| miette::miette!("failed to cancel database query: {error}"))?;
-    Ok(())
-}
-
-struct LoadedQuery {
-    record: QueryRecord,
-    fragments: FragmentMap,
-    parse_diagnostics: Vec<CompilerDiagnostic>,
-    source_name: String,
-    source_text: String,
-}
-
-fn load_project_query(project: &dsql_project::Project, query_name: &str) -> Result<LoadedQuery> {
-    let documents = dsql_project::load_project_documents(project)?;
-    if documents.is_empty() {
-        return Err(miette::miette!(
-            "no dsql documents found in project {}",
-            dsql_project::project_base(project).display()
-        ));
-    }
-
-    let mut fragments = FragmentMap::default();
-    let mut queries = Vec::<QueryRecord>::new();
-    let mut parse_diagnostics = Vec::<CompilerDiagnostic>::new();
-    let mut matched_source_name = None::<String>;
-    let mut matched_source_text = None::<String>;
-
-    for document in documents {
-        let source_name = document.path.display().to_string();
-        let source_text = document.text;
-        let parsed = parse_source(SourceSnapshot::from_string(source_text.clone()));
-        parse_diagnostics.extend(parsed.diagnostics.clone().into_iter().map(Into::into));
-        let extracted = extract_definitions(&parsed.source_file);
-        for definition in extracted.definitions {
-            match definition {
-                DefinitionRecord::Query(query) => {
-                    if query.key.name.as_deref() == Some(query_name) {
-                        matched_source_name.get_or_insert_with(|| source_name.clone());
-                        matched_source_text.get_or_insert_with(|| source_text.clone());
-                    }
-                    queries.push(query);
-                }
-                DefinitionRecord::Fragment(fragment) => fragments.insert(fragment),
-            }
-        }
-    }
-
-    let matching = queries
-        .into_iter()
-        .filter(|query| query.key.name.as_deref() == Some(query_name))
-        .collect::<Vec<_>>();
-    match matching.as_slice() {
-        [] => Err(miette::miette!("query `{query_name}` not found")),
-        [query] => Ok(LoadedQuery {
-            record: query.clone(),
-            fragments,
-            parse_diagnostics,
-            source_name: matched_source_name.unwrap_or_else(|| "<dsql>".to_string()),
-            source_text: matched_source_text.unwrap_or_default(),
-        }),
-        _ => Err(miette::miette!(
-            "query `{query_name}` is defined multiple times"
-        )),
-    }
-}
-
 async fn analyze_file(path: PathBuf) -> Result<dsql_frontend::AnalysisResult> {
     let (catalog, lint_options) = load_project_settings_for_path(&path);
     analyze_file_with_settings(path, catalog, lint_options).await
@@ -405,7 +225,6 @@ fn load_project_settings_for_path(path: &Path) -> (Catalog, dsql_core::LintOptio
 
 fn print_analysis_diagnostics(path: &Path, analysis: &dsql_frontend::AnalysisResult) {
     let source_name = path.display().to_string();
-    let source_text = analysis.parse.source.to_arc_str().to_string();
     let diagnostics = collect_compiler_diagnostic_sources(&[
         &analysis.parse,
         &analysis.lower,
@@ -413,17 +232,16 @@ fn print_analysis_diagnostics(path: &Path, analysis: &dsql_frontend::AnalysisRes
         &analysis.lint,
         &analysis.plan,
     ]);
+    let source = RopeDiagnosticSource::new(source_name, analysis.parse.source.arc_rope());
     for diagnostic in diagnostics {
-        print_miette_diagnostic(source_name.clone(), source_text.clone(), diagnostic);
+        print_miette_diagnostic(source.clone(), diagnostic);
     }
 }
 
 fn print_miette_diagnostic(
-    source_name: String,
-    source_text: String,
+    source: RopeDiagnosticSource,
     diagnostic: impl miette::Diagnostic + Send + Sync + 'static,
 ) {
-    let source = NamedSource::new(source_name, source_text).with_language("dsql");
     eprintln!(
         "{:?}",
         miette::Report::new(diagnostic).with_source_code(source)
@@ -436,10 +254,8 @@ fn print_validation_output(validation: &dsql_generate::ValidationOutput) {
             .path
             .as_ref()
             .unwrap_or(&diagnostic.physical_document.0);
-        let source_text = std::fs::read_to_string(path).unwrap_or_default();
         print_miette_diagnostic(
-            path.display().to_string(),
-            source_text,
+            RopeDiagnosticSource::from_path(path),
             diagnostic.diagnostic.clone(),
         );
     }
@@ -454,5 +270,107 @@ fn print_validation_output(validation: &dsql_generate::ValidationOutput) {
                 "ies"
             }
         );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RopeDiagnosticSource {
+    name: String,
+    rope: Arc<Rope>,
+    buffers: Arc<Mutex<Vec<Box<[u8]>>>>,
+}
+
+impl RopeDiagnosticSource {
+    fn new(name: String, rope: Arc<Rope>) -> Self {
+        Self {
+            name,
+            rope,
+            buffers: Arc::default(),
+        }
+    }
+
+    fn from_path(path: &Path) -> Self {
+        let rope = File::open(path)
+            .ok()
+            .and_then(|file| Rope::from_reader(file).ok())
+            .unwrap_or_default();
+        Self::new(path.display().to_string(), Arc::new(rope))
+    }
+
+    fn cache_bytes(&self, bytes: Vec<u8>) -> &[u8] {
+        let mut buffers = self
+            .buffers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = buffers.len();
+        buffers.push(bytes.into_boxed_slice());
+        let cached = &buffers[index];
+        let ptr = cached.as_ptr();
+        let len = cached.len();
+        drop(buffers);
+
+        // SAFETY: the slice points into a boxed buffer stored in `self.buffers`.
+        // Box allocations remain stable when the Vec reallocates, and returned
+        // span contents are tied to the lifetime of `&self`, so the cache
+        // cannot be dropped while miette can still read the slice.
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+}
+
+impl SourceCode for RopeDiagnosticSource {
+    fn read_span<'a>(
+        &'a self,
+        span: &SourceSpan,
+        context_lines_before: usize,
+        context_lines_after: usize,
+    ) -> std::result::Result<Box<dyn SpanContents<'a> + 'a>, MietteError> {
+        let len = self.rope.len();
+        let span_end = span
+            .offset()
+            .checked_add(span.len())
+            .filter(|end| *end <= len)
+            .ok_or(MietteError::OutOfBounds)?;
+        if span.offset() > len {
+            return Err(MietteError::OutOfBounds);
+        }
+
+        let line_type = LineType::LF;
+        let start_line = self.rope.byte_to_line_idx(span.offset(), line_type);
+        let end_byte = if span_end == span.offset() {
+            span.offset()
+        } else {
+            span_end.saturating_sub(1)
+        };
+        let end_line = self.rope.byte_to_line_idx(end_byte, line_type);
+        let context_start_line = start_line.saturating_sub(context_lines_before);
+        let context_end_line = end_line
+            .saturating_add(context_lines_after)
+            .saturating_add(1)
+            .min(self.rope.len_lines(line_type));
+        let context_start = self.rope.line_to_byte_idx(context_start_line, line_type);
+        let context_end = if context_end_line >= self.rope.len_lines(line_type) {
+            len
+        } else {
+            self.rope.line_to_byte_idx(context_end_line, line_type)
+        };
+        let column = span
+            .offset()
+            .saturating_sub(self.rope.line_to_byte_idx(start_line, line_type));
+        let line_count = context_end_line.saturating_sub(context_start_line).max(1);
+        let data = self
+            .rope
+            .slice(context_start..context_end)
+            .to_string()
+            .into_bytes();
+        let contents = MietteSpanContents::new_named(
+            self.name.clone(),
+            self.cache_bytes(data),
+            (context_start, context_end.saturating_sub(context_start)).into(),
+            context_start_line,
+            column,
+            line_count,
+        )
+        .with_language("dsql");
+        Ok(Box::new(contents))
     }
 }

@@ -143,34 +143,30 @@ pub enum AstNode {
 }
 
 pub fn parse_source(source: SourceSnapshot) -> ParseResult {
-    let mut lelwel_diagnostics = Vec::new();
-    let owned_text;
-    let source_text = if let Some(source_text) = source.as_contiguous_str() {
-        source_text
-    } else {
-        // Lelwel's generated runtime is still &str-based. Multi-chunk Rope
-        // snapshots pay one allocation here until the parser can read chunks.
-        owned_text = source.to_arc_str();
-        &owned_text
+    let (tree, source_file, diagnostics) = {
+        let source_text = source.full_text();
+        let mut lelwel_diagnostics = Vec::new();
+        let cst = Parser::new(source_text.as_ref(), &mut lelwel_diagnostics)
+            .parse(&mut lelwel_diagnostics);
+        let diagnostics = lelwel_diagnostics
+            .into_iter()
+            .map(convert_diagnostic)
+            .collect::<Vec<_>>();
+        let document = AstBuilder::new(&cst).document();
+        let tree = build_syntax_tree(&cst);
+        (tree, SourceFile::new(document), diagnostics)
     };
-    let cst = Parser::new(source_text, &mut lelwel_diagnostics).parse(&mut lelwel_diagnostics);
-    let diagnostics = lelwel_diagnostics
-        .into_iter()
-        .map(convert_diagnostic)
-        .collect::<Vec<_>>();
-    let document = AstBuilder::new(&cst).document();
-    let tree = build_syntax_tree(&cst);
 
     ParseResult {
         source,
         tree,
-        source_file: SourceFile::new(document),
+        source_file,
         diagnostics,
     }
 }
 
 pub fn expected_tokens_at(source: &SourceSnapshot, byte: usize) -> Vec<SyntaxToken> {
-    let source_text = source.to_arc_str();
+    let source_text = source.full_text();
     if byte > source_text.len() || !source_text.is_char_boundary(byte) {
         return Vec::new();
     }
@@ -1013,7 +1009,7 @@ impl std::fmt::Display for SyntaxTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ropey::Rope;
+    use ropey::RopeBuilder;
 
     #[test]
     fn parses_query_from_text() {
@@ -1092,9 +1088,16 @@ mod tests {
     }
 
     #[test]
-    fn rope_snapshots_are_flattened_for_lelwel_for_now() {
-        let src = "query Users { users { id } }";
-        let parsed = parse_source(SourceSnapshot::from_rope(Rope::from_str(src)));
+    fn parses_query_from_multi_chunk_rope_snapshot() {
+        let mut builder = RopeBuilder::new();
+        for _ in 0..2048 {
+            builder.append("# source padding\n");
+        }
+        builder.append("query Users { users { id } }");
+        let rope = builder.finish();
+        assert!(rope.chunks().nth(1).is_some());
+
+        let parsed = parse_source(SourceSnapshot::from_rope(rope));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         assert_eq!(parsed.source_file.queries().count(), 1);
     }

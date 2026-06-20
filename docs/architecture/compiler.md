@@ -26,21 +26,21 @@ state belongs at the frontend boundary.
 Source text enters core analysis through `SourceSnapshot`:
 
 ```rust
-pub enum SourceSnapshot {
-    Text(SourceText),
-    Rope(Arc<Rope>),
+pub struct SourceSnapshot {
+    rope: Arc<Rope>,
 }
 ```
 
-`SourceSnapshot` supports borrowed contiguous text when available and falls back
-to Rope chunk access or conversion when needed. Today it still has both
-`Text(Arc<str>)` and `Rope(Arc<Rope>)` variants because tests and some direct
-core callers pass strings, while editor/project source starts as Rope.
+`SourceSnapshot` is always Rope-backed so editor and project source can cross
+compiler boundaries without first flattening into a contiguous string. APIs
+that need contiguous full source text, including the current Lelwel/Logos parser
+path, call `SourceSnapshot::full_text()`: if the rope has one chunk it returns
+borrowed text from the snapshot, otherwise it flattens the rope into an owned
+`String`.
 
-That mixed representation is transitional. The intended boundary is that
-frontend/editor source stays Rope-backed and any full-text allocation required
-by the current `&str`-based Lelwel/Logos parser happens at the parser call site,
-not earlier in project source publication.
+Compiler stages should prefer Rope operations, ranges, or short borrowed token
+text over full-source strings. Full-source materialization belongs only at true
+output boundaries or temporary `&str`-based integration points.
 
 Spans are stored as byte ranges internally. Editor-facing line/character
 positions are computed only at the protocol or presentation boundary.
@@ -72,9 +72,9 @@ document can contain one full-file DSQL source unit or multiple embedded units,
 for example DSQL regions extracted from a TypeScript file. `SourceDb` allocates
 and reuses `SourceUnitId` values for stable `ProjectSourceRegion` keys.
 
-Current debt: `CompilerDb::set_source_rope` converts the Rope to `Arc<str>`
-before publishing `SourceInput`. That means project analysis currently performs
-the full-text conversion one layer earlier than intended.
+`CompilerDb::set_source_rope` publishes an `Arc<Rope>` as the frontend
+`SourceInput`, so tracked analysis inputs preserve the same Rope-backed source
+model as `SourceDb`.
 
 ## Parsing And Syntax
 
@@ -177,8 +177,8 @@ queries should not know about resolution maps or imports.
 
 Current tracked inputs include:
 
-- `SourceInput`, keyed by `SourceUnitId` and source revision, currently storing
-  `Arc<str>`;
+- `SourceInput`, keyed by `SourceUnitId` and source revision, storing
+  `Arc<Rope>`;
 - `ContextSourcesInput`, keyed by context name;
 - `CatalogInput`;
 - `LintOptionsInput`.

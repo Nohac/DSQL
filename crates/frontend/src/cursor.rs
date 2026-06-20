@@ -75,21 +75,19 @@ fn fragment_spread_context(
 }
 
 fn is_fragment_spread_position(parse: &ParseResult, byte: usize) -> bool {
-    let source = parse.source.to_arc_str();
-    let source = source.as_bytes();
-    if byte > source.len() {
+    if byte > parse.source.len_bytes() {
         return false;
     }
 
     for start in byte.saturating_sub(3)..=byte {
-        if byte > start && source.get(start..start + 3) == Some(b"...") {
+        if byte > start && parse.source.bytes_eq(start, b"...") {
             return true;
         }
     }
 
     let mut dot_count = 0usize;
     let mut index = byte;
-    while index > 0 && source[index - 1] == b'.' && dot_count < 3 {
+    while index > 0 && parse.source.byte_at(index - 1) == Some(b'.') && dot_count < 3 {
         dot_count += 1;
         index -= 1;
     }
@@ -98,10 +96,15 @@ fn is_fragment_spread_position(parse: &ParseResult, byte: usize) -> bool {
     }
 
     let mut name_start = byte;
-    while name_start > 0 && is_identifier_byte(source[name_start - 1]) {
+    while name_start > 0
+        && parse
+            .source
+            .byte_at(name_start - 1)
+            .is_some_and(is_identifier_byte)
+    {
         name_start -= 1;
     }
-    name_start >= 3 && source.get(name_start - 3..name_start) == Some(b"...")
+    name_start >= 3 && parse.source.bytes_eq(name_start - 3, b"...")
 }
 
 fn is_identifier_byte(byte: u8) -> bool {

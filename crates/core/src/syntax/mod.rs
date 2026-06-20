@@ -18,4 +18,4 @@ pub use parse::{
     AstNode, CstKind, ParseResult, SyntaxNode, SyntaxRule, SyntaxToken, SyntaxTree,
     expected_tokens_at, parse_source,
 };
-pub use text::{SourceSnapshot, SourceText, TextRange};
+pub use text::{SourceSnapshot, TextRange};

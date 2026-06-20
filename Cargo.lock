@@ -462,7 +462,7 @@ dependencies = [
  "facet-json",
  "facet-toml",
  "miette",
- "sqlx",
+ "ropey",
  "tokio",
  "tracing",
  "tracing-subscriber",

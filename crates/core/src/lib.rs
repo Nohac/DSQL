@@ -57,7 +57,7 @@ pub use syntax::{
     BinaryOp, BinaryOperator, Clause, CstKind, Definition, Diagnostic, DiagnosticCode,
     DiagnosticSource, Expr, Literal, NameRef, OperatorVariable, ParseResult, PathScope,
     QualifiedNameRef, RelationRef, ScopedPath, ScopedPathSegment, Selection, SelectionKind,
-    Severity, SortDirection, SortDirectionExpr, SourceFile, SourceSnapshot, SourceText, SyntaxNode,
+    Severity, SortDirection, SortDirectionExpr, SourceFile, SourceSnapshot, SyntaxNode,
     SyntaxToken, SyntaxTree, TextRange, Token, ValueVariable, VariableScope, expected_tokens_at,
     parse_source,
 };

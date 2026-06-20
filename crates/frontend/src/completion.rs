@@ -1,5 +1,5 @@
 use crate::cursor::{CursorContext, UsedClauses, cursor_context};
-use dsql_core::{BinaryOp, Catalog, DataType, FragmentRecord, TableId, Token};
+use dsql_core::{BinaryOp, Catalog, DataType, FragmentRecord, TableId, TextRange, Token};
 use facet::Facet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,20 +152,26 @@ fn fragment_completion(
 }
 
 fn fragment_insert_text(parse: &dsql_core::ParseResult, byte: usize, name: &str) -> String {
-    let source = parse.source.to_arc_str();
-    let source = source.as_bytes();
     let mut name_start = byte;
-    while name_start > 0 && is_identifier_byte(source[name_start - 1]) {
+    while name_start > 0
+        && parse
+            .source
+            .byte_at(name_start - 1)
+            .is_some_and(is_identifier_byte)
+    {
         name_start -= 1;
     }
-    if name_start < byte && source.get(name_start.saturating_sub(3)..name_start) == Some(b"...") {
-        let typed = std::str::from_utf8(&source[name_start..byte]).unwrap_or_default();
-        return name.strip_prefix(typed).unwrap_or(name).to_string();
+    if name_start < byte && name_start >= 3 && parse.source.bytes_eq(name_start - 3, b"...") {
+        let typed = parse.source.text(TextRange::new(name_start, byte));
+        return name
+            .strip_prefix(typed.as_ref())
+            .unwrap_or(name)
+            .to_string();
     }
 
     let mut dot_count = 0usize;
     let mut index = byte;
-    while index > 0 && source[index - 1] == b'.' && dot_count < 3 {
+    while index > 0 && parse.source.byte_at(index - 1) == Some(b'.') && dot_count < 3 {
         dot_count += 1;
         index -= 1;
     }

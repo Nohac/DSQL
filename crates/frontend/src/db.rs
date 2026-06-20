@@ -44,12 +44,26 @@ impl CompilerDiagnosticSource for ParsedFile {
     }
 }
 
+#[derive(Clone, Debug, Facet)]
+#[facet(opaque, traits(Debug))]
+pub struct SourceRope(Arc<Rope>);
+
+impl SourceRope {
+    fn new(rope: Rope) -> Self {
+        Self(Arc::new(rope))
+    }
+
+    fn arc(&self) -> Arc<Rope> {
+        self.0.clone()
+    }
+}
+
 #[picante::input]
 pub struct SourceInput {
     #[key]
     pub unit_id: SourceUnitId,
     pub revision: RevisionId,
-    pub text: Arc<str>,
+    pub rope: SourceRope,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
@@ -105,8 +119,8 @@ pub async fn parse_file<DB: CompilerDatabaseTrait>(
     db: &DB,
     source: SourceInput,
 ) -> PicanteResult<Arc<ParsedFile>> {
-    let text = source.text(db)?;
-    let parse = parse_source(SourceSnapshot::from_arc(text));
+    let rope = source.rope(db)?.arc();
+    let parse = parse_source(SourceSnapshot::from_arc_rope(rope));
     Ok(Arc::new(ParsedFile {
         tree: parse.tree,
         source_file: parse.source_file,
@@ -235,9 +249,9 @@ pub async fn formatted_text_for_file<DB: CompilerDatabaseTrait>(
     source: SourceInput,
 ) -> PicanteResult<Option<String>> {
     let parsed = parse_file(db, source).await?;
-    let text = source.text(db)?;
+    let rope = source.rope(db)?.arc();
     let parse = ParseResult {
-        source: SourceSnapshot::from_arc(text),
+        source: SourceSnapshot::from_arc_rope(rope),
         tree: parsed.tree.clone(),
         source_file: parsed.source_file.clone(),
         diagnostics: parsed.diagnostics.clone(),
@@ -437,8 +451,7 @@ impl CompilerDb {
         revision: RevisionId,
         rope: Rope,
     ) -> PicanteResult<()> {
-        let text = Arc::<str>::from(rope.to_string());
-        let source = SourceInput::new(self, unit_id, revision, text)?;
+        let source = SourceInput::new(self, unit_id, revision, SourceRope::new(rope))?;
         self.source_inputs.insert(unit_id, source);
         Ok(())
     }
@@ -466,10 +479,10 @@ impl CompilerDb {
         let check = scoped_check_unit(&scoped, unit_id, &catalog);
         let lint = scoped_lint_unit(&scoped, unit_id, &catalog, options);
         let plan = scoped_plan_unit(&scoped, unit_id, &catalog);
-        let text = source.text(self).ok()?;
+        let rope = source.rope(self).ok()?.arc();
         Some(AnalysisResult {
             parse: ParseResult {
-                source: SourceSnapshot::from_arc(text),
+                source: SourceSnapshot::from_arc_rope(rope),
                 tree: parsed.tree.clone(),
                 source_file: parsed.source_file.clone(),
                 diagnostics: parsed.diagnostics.clone(),
