@@ -70,6 +70,8 @@ pub enum Token {
     RBracket,
     #[token("::")]
     ColonColon,
+    #[token("->")]
+    Arrow,
     #[token(":")]
     Colon,
     #[token("@")]

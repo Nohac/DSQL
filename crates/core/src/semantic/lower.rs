@@ -144,7 +144,7 @@ fn lower_fragment(
         }
     }
     if let Some(on) = &fragment.on {
-        interner.intern(&on.text);
+        interner.intern(&on.display_text());
     }
     lower_selections(&fragment.selections, interner, names);
 }
@@ -205,9 +205,10 @@ fn lower_selections(selections: &[Selection], interner: &mut Interner, names: &m
         if let Some(alias) = &selection.alias {
             interner.intern(&alias.text);
         }
-        names
-            .fields
-            .push((interner.intern(&selection.name.text), selection.name.range));
+        names.fields.push((
+            interner.intern(&selection.name.display_text()),
+            selection.name.range,
+        ));
         for argument in &selection.arguments {
             lower_argument(argument, interner, names);
         }

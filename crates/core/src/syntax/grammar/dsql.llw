@@ -1,5 +1,5 @@
 token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or';
-token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' Colon=':' At='@' Comma=',' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$';
+token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' Arrow='->' Colon=':' At='@' Comma=',' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
 token Whitespace Comment;
@@ -15,9 +15,9 @@ definition^:
 ;
 query_def: 'query' Name selection_set;
 fragment_def: 'fragment' Name 'on' qualified_name selection_set;
-qualified_name: Name [?1 '.' Name];
-relation_ref: qualified_name ['::' Name];
-scoped_path_segment: Name ['::' Name];
+qualified_name: Name [?1 '::' Name];
+relation_ref: qualified_name ['->' Name];
+scoped_path_segment: qualified_name ['->' Name];
 scoped_path: ('.' | '..' | '~') scoped_path_segment ('.' scoped_path_segment)*;
 value_variable: ('$' | '$$') [Name];
 comparison_operator: '==' | '!=' | '>' | '>=' | '<' | '<=' | 'like';

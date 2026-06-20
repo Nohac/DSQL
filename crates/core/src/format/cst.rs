@@ -604,7 +604,7 @@ impl<'a> CstFormatter<'a> {
         if parts.is_empty() {
             None
         } else {
-            Some(parts.join("."))
+            Some(parts.join("::"))
         }
     }
 
@@ -616,14 +616,14 @@ impl<'a> CstFormatter<'a> {
             .children
             .iter()
             .copied()
-            .skip_while(|child| self.token(*child) != Some(SyntaxToken::ColonColon))
+            .skip_while(|child| self.token(*child) != Some(SyntaxToken::Arrow))
             .skip(1)
             .find_map(|child| {
                 (self.token(child) == Some(SyntaxToken::Name))
                     .then(|| self.text(self.node(child).range))
             });
         selector.map_or(Some(qualified.clone()), |selector| {
-            Some(format!("{qualified}::{selector}"))
+            Some(format!("{qualified}->{selector}"))
         })
     }
 

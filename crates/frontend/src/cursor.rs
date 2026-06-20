@@ -1,7 +1,8 @@
 use crate::range_contains;
 use dsql_core::{
-    Catalog, CstKind, DataType, Definition, FieldCheckResult, ParseResult, Selection,
-    SelectionKind, SyntaxNode, SyntaxToken, TableId, expected_tokens_at,
+    Catalog, CstKind, DataType, Definition, FieldCheckResult, NameRef, ParseResult,
+    QualifiedNameRef, RelationRef, Selection, SelectionKind, SyntaxNode, SyntaxToken, TableId,
+    TextRange, expected_tokens_at,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, strum::AsRefStr)]
@@ -169,7 +170,7 @@ fn selection_body_context(
                     if !range_contains(selection.range, byte) {
                         continue;
                     }
-                    let Some(table) = catalog.table_ref(&selection.name.text) else {
+                    let Some(table) = catalog.table_ref_for(&selection.name.target) else {
                         return Some(CursorContext::Invalid);
                     };
                     return nested_selection_body_context(
@@ -189,7 +190,7 @@ fn selection_body_context(
                 let Some(on) = &fragment.on else {
                     return Some(CursorContext::Invalid);
                 };
-                let Some(table) = catalog.table_ref(&on.text) else {
+                let Some(table) = catalog.table_ref_for(on) else {
                     return Some(CursorContext::Invalid);
                 };
                 return nested_selection_list_body_context(
@@ -212,7 +213,7 @@ fn nested_selection_body_context(
     selections: &[Selection],
     byte: usize,
 ) -> Option<CursorContext> {
-    match catalog.check_field(parent_table, &selection.name.text) {
+    match catalog.check_field_ref(parent_table, &selection.name) {
         FieldCheckResult::Relation(relation) => {
             nested_selection_list_body_context(catalog, relation.table.id, selections, byte).or(
                 Some(CursorContext::SelectionBody {
@@ -303,7 +304,7 @@ fn table_for_lbrace(
     }
 
     if let Some(BodyTarget::Table(parent_table)) = parent {
-        return match catalog.check_field(parent_table, &selection_ref.name) {
+        return match catalog.check_field_ref(parent_table, &selection_ref.name) {
             FieldCheckResult::Relation(relation) => BodyTarget::Table(relation.table.id),
             FieldCheckResult::Column(_)
             | FieldCheckResult::NotFound
@@ -312,12 +313,12 @@ fn table_for_lbrace(
     }
 
     catalog
-        .table_ref(&selection_ref.name)
+        .table_ref_for(&selection_ref.name.target)
         .map_or(BodyTarget::Invalid, |table| BodyTarget::Table(table.id))
 }
 
 struct SelectionRef {
-    name: String,
+    name: RelationRef,
     is_query_body: bool,
 }
 
@@ -334,8 +335,12 @@ fn selection_ref_before_lbrace(
                 .and_then(|index| token_kind(tokens[index]))
                 == Some(SyntaxToken::Query);
             Some(SelectionRef {
-                name: relation_ref_ending_at(parse, tokens, previous_index)
-                    .unwrap_or_else(|| parse.source.text(tokens[previous_index].range).to_string()),
+                name: relation_ref_ending_at(parse, tokens, previous_index).unwrap_or_else(|| {
+                    bare_relation_ref(
+                        &parse.source.text(tokens[previous_index].range),
+                        tokens[previous_index].range,
+                    )
+                }),
                 is_query_body,
             })
         }
@@ -429,7 +434,7 @@ fn clause_cursor<'a>(
     let ast_target = selection_clause_target(parse, catalog, byte, &table_ref);
     let cst_target = cst_clause_target(parse, catalog, &tokens, lpar_index, &table_ref);
     let root_target = catalog
-        .table_ref(&table_ref)
+        .table_ref_for(&table_ref.target)
         .map(|table| ClauseTarget::Table(table.id));
     let target = [ast_target, cst_target, root_target]
         .into_iter()
@@ -471,7 +476,7 @@ fn ast_root_table_at(parse: &ParseResult, catalog: &Catalog, byte: usize) -> Opt
                 for selection in &query.selections {
                     if range_contains(selection.range, byte) {
                         return catalog
-                            .table_ref(&selection.name.text)
+                            .table_ref_for(&selection.name.target)
                             .map(|table| table.id);
                     }
                 }
@@ -481,7 +486,7 @@ fn ast_root_table_at(parse: &ParseResult, catalog: &Catalog, byte: usize) -> Opt
                     return fragment
                         .on
                         .as_ref()
-                        .and_then(|on| catalog.table_ref(&on.text))
+                        .and_then(|on| catalog.table_ref_for(on))
                         .map(|table| table.id);
                 }
             }
@@ -645,7 +650,8 @@ fn predicate_path_context(
         &path.segments[..path.segments.len().saturating_sub(1)]
     };
     for segment in relation_segments {
-        let FieldCheckResult::Relation(relation) = catalog.check_field(table, &segment.field_ref())
+        let FieldCheckResult::Relation(relation) =
+            catalog.check_field_ref(table, &segment.relation_ref())
         else {
             return None;
         };
@@ -666,7 +672,7 @@ fn predicate_path_context(
     }
 
     let last = path.segments.last()?;
-    match catalog.check_field(table, &last.field_ref()) {
+    match catalog.check_field_ref(table, &last.relation_ref()) {
         FieldCheckResult::Column(column) => Some(CursorContext::WhereOperator {
             data_type: column.data_type,
         }),
@@ -716,16 +722,22 @@ struct PredicatePathPrefix {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PredicatePathSegmentPrefix {
+    schema: Option<String>,
     name: String,
     selector: Option<String>,
     selector_pending: bool,
 }
 
 impl PredicatePathSegmentPrefix {
-    fn field_ref(&self) -> String {
-        self.selector.as_ref().map_or_else(
-            || self.name.clone(),
-            |selector| format!("{}::{}", self.name, selector),
+    fn relation_ref(&self) -> RelationRef {
+        qualified_relation_ref(
+            self.schema.as_deref().unwrap_or_default(),
+            TextRange::default(),
+            &self.name,
+            TextRange::default(),
+            self.selector
+                .as_ref()
+                .map(|selector| (selector.as_str(), TextRange::default())),
         )
     }
 }
@@ -775,35 +787,54 @@ fn scoped_path_segment_at(
     if tokens.get(index).and_then(|token| token_kind(token)) != Some(SyntaxToken::Name) {
         return None;
     }
-    let name = parse.source.text(tokens[index].range);
-    if tokens.get(index + 1).and_then(|token| token_kind(token)) == Some(SyntaxToken::ColonColon) {
-        if tokens.get(index + 2).and_then(|token| token_kind(token)) == Some(SyntaxToken::Name) {
-            let selector = parse.source.text(tokens[index + 2].range);
+    let mut name = parse.source.text(tokens[index].range).to_string();
+    let mut schema = None;
+    let mut next_index = index + 1;
+    if tokens.get(next_index).and_then(|token| token_kind(token)) == Some(SyntaxToken::ColonColon)
+        && tokens
+            .get(next_index + 1)
+            .and_then(|token| token_kind(token))
+            == Some(SyntaxToken::Name)
+    {
+        schema = Some(name);
+        name = parse.source.text(tokens[next_index + 1].range).to_string();
+        next_index += 2;
+    }
+    if tokens.get(next_index).and_then(|token| token_kind(token)) == Some(SyntaxToken::Arrow) {
+        if tokens
+            .get(next_index + 1)
+            .and_then(|token| token_kind(token))
+            == Some(SyntaxToken::Name)
+        {
+            let selector = parse.source.text(tokens[next_index + 1].range);
             return Some((
                 PredicatePathSegmentPrefix {
-                    name: name.to_string(),
+                    schema,
+                    name,
                     selector: Some(selector.to_string()),
                     selector_pending: false,
                 },
-                index + 3,
+                next_index + 2,
             ));
         }
         return Some((
             PredicatePathSegmentPrefix {
-                name: name.to_string(),
+                schema,
+                name,
                 selector: None,
                 selector_pending: true,
             },
-            index + 2,
+            next_index + 1,
         ));
     }
     Some((
         PredicatePathSegmentPrefix {
-            name: name.to_string(),
+            schema,
+            name,
             selector: None,
             selector_pending: false,
         },
-        index + 1,
+        next_index,
     ))
 }
 
@@ -811,16 +842,18 @@ fn selection_clause_target(
     parse: &ParseResult,
     catalog: &Catalog,
     byte: usize,
-    field: &str,
+    field: &RelationRef,
 ) -> Option<ClauseTarget> {
     for definition in parse.source_file.definitions() {
         match definition {
             Definition::Query(query) => {
                 for selection in &query.selections {
-                    let Some(table) = catalog.table_ref(&selection.name.text) else {
+                    let Some(table) = catalog.table_ref_for(&selection.name.target) else {
                         continue;
                     };
-                    if selection.name.text == field && byte >= selection.name.range.end as usize {
+                    if selection.name.display_text() == field.display_text()
+                        && byte >= selection.name.range.end as usize
+                    {
                         return Some(ClauseTarget::Table(table.id));
                     }
                     if let Some(target) =
@@ -834,7 +867,7 @@ fn selection_clause_target(
                 let Some(on) = &fragment.on else {
                     continue;
                 };
-                let Some(table) = catalog.table_ref(&on.text) else {
+                let Some(table) = catalog.table_ref_for(on) else {
                     continue;
                 };
                 for selection in &fragment.selections {
@@ -855,19 +888,21 @@ fn nested_clause_target(
     parent_table: TableId,
     selection: &Selection,
     byte: usize,
-    field: &str,
+    field: &RelationRef,
 ) -> Option<ClauseTarget> {
     if selection.kind == SelectionKind::FragmentSpread || !range_contains(selection.range, byte) {
         return None;
     }
 
-    let field_result = catalog.check_field(parent_table, &selection.name.text);
+    let field_result = catalog.check_field_ref(parent_table, &selection.name);
     let current_table = match &field_result {
         FieldCheckResult::Relation(relation) => relation.table.id,
         FieldCheckResult::Column(_)
         | FieldCheckResult::NotFound
         | FieldCheckResult::AmbiguousRelation { .. } => {
-            if selection.name.text == field && byte >= selection.name.range.end as usize {
+            if selection.name.display_text() == field.display_text()
+                && byte >= selection.name.range.end as usize
+            {
                 parent_table
             } else {
                 return Some(ClauseTarget::Invalid);
@@ -875,7 +910,9 @@ fn nested_clause_target(
         }
     };
 
-    if selection.name.text == field && byte >= selection.name.range.end as usize {
+    if selection.name.display_text() == field.display_text()
+        && byte >= selection.name.range.end as usize
+    {
         return Some(match field_result {
             FieldCheckResult::Relation(relation) => ClauseTarget::Table(relation.table.id),
             FieldCheckResult::Column(_) => ClauseTarget::Invalid,
@@ -896,11 +933,11 @@ fn cst_clause_target(
     catalog: &Catalog,
     tokens: &[&SyntaxNode],
     lpar_index: usize,
-    field: &str,
+    field: &RelationRef,
 ) -> Option<ClauseTarget> {
     let parent_table = cst_body_table_before(parse, catalog, &tokens[..lpar_index]);
     if let Some(BodyTarget::Table(parent_table)) = parent_table {
-        return Some(match catalog.check_field(parent_table, field) {
+        return Some(match catalog.check_field_ref(parent_table, field) {
             FieldCheckResult::Relation(relation) => ClauseTarget::Table(relation.table.id),
             FieldCheckResult::Column(_) => ClauseTarget::Invalid,
             FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {
@@ -910,7 +947,7 @@ fn cst_clause_target(
     }
 
     catalog
-        .table_ref(field)
+        .table_ref_for(&field.target)
         .map(|table| ClauseTarget::Table(table.id))
 }
 
@@ -998,7 +1035,7 @@ fn table_ref_before_lpar(
     parse: &ParseResult,
     tokens: &[&SyntaxNode],
     lpar_index: usize,
-) -> Option<String> {
+) -> Option<RelationRef> {
     relation_ref_ending_at(parse, tokens, lpar_index.checked_sub(1)?)
 }
 
@@ -1006,17 +1043,21 @@ fn relation_ref_ending_at(
     parse: &ParseResult,
     tokens: &[&SyntaxNode],
     end_index: usize,
-) -> Option<String> {
+) -> Option<RelationRef> {
     let mut parts = Vec::new();
     let mut index = end_index;
     let mut expected_end = tokens[end_index].range.end;
-    while let Some(SyntaxToken::Name | SyntaxToken::Dot | SyntaxToken::ColonColon) =
+    while let Some(SyntaxToken::Name | SyntaxToken::ColonColon | SyntaxToken::Arrow) =
         token_kind(tokens[index])
     {
         if tokens[index].range.end != expected_end {
             break;
         }
-        parts.push(parse.source.text(tokens[index].range).to_string());
+        parts.push((
+            token_kind(tokens[index])?,
+            parse.source.text(tokens[index].range).to_string(),
+            tokens[index].range,
+        ));
         expected_end = tokens[index].range.start;
         let Some(next) = index.checked_sub(1) else {
             break;
@@ -1024,7 +1065,93 @@ fn relation_ref_ending_at(
         index = next;
     }
     parts.reverse();
-    (!parts.is_empty()).then(|| parts.join(""))
+    relation_ref_from_token_parts(&parts)
+}
+
+fn relation_ref_from_token_parts(
+    parts: &[(SyntaxToken, String, TextRange)],
+) -> Option<RelationRef> {
+    match parts {
+        [(SyntaxToken::Name, name, range)] => Some(bare_relation_ref(name, *range)),
+        [
+            (SyntaxToken::Name, schema, schema_range),
+            (SyntaxToken::ColonColon, _, _),
+            (SyntaxToken::Name, name, name_range),
+        ] => Some(qualified_relation_ref(
+            schema,
+            *schema_range,
+            name,
+            *name_range,
+            None,
+        )),
+        [
+            (SyntaxToken::Name, name, name_range),
+            (SyntaxToken::Arrow, _, _),
+            (SyntaxToken::Name, selector, selector_range),
+        ] => Some(qualified_relation_ref(
+            "",
+            TextRange::default(),
+            name,
+            *name_range,
+            Some((selector, *selector_range)),
+        )),
+        [
+            (SyntaxToken::Name, schema, schema_range),
+            (SyntaxToken::ColonColon, _, _),
+            (SyntaxToken::Name, name, name_range),
+            (SyntaxToken::Arrow, _, _),
+            (SyntaxToken::Name, selector, selector_range),
+        ] => Some(qualified_relation_ref(
+            schema,
+            *schema_range,
+            name,
+            *name_range,
+            Some((selector, *selector_range)),
+        )),
+        _ => None,
+    }
+}
+
+fn bare_relation_ref(name: &str, range: TextRange) -> RelationRef {
+    RelationRef::from_name(NameRef {
+        range,
+        text: name.to_string(),
+    })
+}
+
+fn qualified_relation_ref(
+    schema: &str,
+    schema_range: TextRange,
+    name: &str,
+    name_range: TextRange,
+    selector: Option<(&str, TextRange)>,
+) -> RelationRef {
+    let schema = (!schema.is_empty()).then(|| NameRef {
+        range: schema_range,
+        text: schema.to_string(),
+    });
+    let target = QualifiedNameRef {
+        range: TextRange {
+            start: schema
+                .as_ref()
+                .map_or(name_range.start, |schema| schema.range.start),
+            end: name_range.end,
+        },
+        schema,
+        name: NameRef {
+            range: name_range,
+            text: name.to_string(),
+        },
+    };
+    let mut relation = RelationRef::from_qualified(target);
+    if let Some((selector, range)) = selector {
+        relation.range.end = range.end;
+        relation.selector = Some(NameRef {
+            range,
+            text: selector.to_string(),
+        });
+    }
+    relation
 }
 
 fn used_clauses_in_tokens(tokens: &[&SyntaxNode]) -> UsedClauses {

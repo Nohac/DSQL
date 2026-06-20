@@ -1,7 +1,7 @@
 use crate::range_contains;
 use dsql_core::{
-    Catalog, Clause, Definition, Expr, FieldCheckResult, Selection, SelectionKind, SourceFile,
-    TableId, TextRange,
+    Catalog, Clause, Definition, Expr, FieldCheckResult, RelationRef, Selection, SelectionKind,
+    SourceFile, TableId, TextRange,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,7 +55,7 @@ pub(crate) fn definition_target_at(
                     {
                         continue;
                     }
-                    let table = catalog.table_ref(&selection.name.text)?;
+                    let table = catalog.table_ref_for(&selection.name.target)?;
                     if range_contains(selection.name.range, byte) {
                         return Some(table_target(table));
                     }
@@ -77,7 +77,7 @@ pub(crate) fn definition_target_at(
                 let Some(on) = &fragment.on else {
                     continue;
                 };
-                let table = catalog.table_ref(&on.text)?;
+                let table = catalog.table_ref_for(on)?;
                 if range_contains(on.range, byte) {
                     return Some(table_target(table));
                 }
@@ -102,7 +102,7 @@ fn definition_in_selections(
         if selection.kind == SelectionKind::FragmentSpread {
             if range_contains(selection.name.range, byte) {
                 return Some(DefinitionTarget::Fragment {
-                    name: selection.name.text.clone(),
+                    name: selection.name.target.name.text.clone(),
                 });
             }
             continue;
@@ -110,7 +110,7 @@ fn definition_in_selections(
         if !range_contains(selection.name.range, byte) && !range_contains(selection.range, byte) {
             continue;
         }
-        match catalog.check_field(table, &selection.name.text) {
+        match catalog.check_field_ref(table, &selection.name) {
             FieldCheckResult::Column(column) if range_contains(selection.name.range, byte) => {
                 return Some(DefinitionTarget::Catalog(CatalogDefinition::Column {
                     schema: column.key.schema.clone(),
@@ -165,8 +165,10 @@ fn definition_in_clauses(
             Clause::OrderBy(order_by) => {
                 for item in &order_by.items {
                     if range_contains(item.field.range, byte)
-                        && let FieldCheckResult::Column(column) =
-                            catalog.check_field(table, &item.field.text)
+                        && let FieldCheckResult::Column(column) = catalog.check_field_ref(
+                            table,
+                            &RelationRef::from_qualified(item.field.clone()),
+                        )
                     {
                         return Some(DefinitionTarget::Catalog(CatalogDefinition::Column {
                             schema: column.key.schema.clone(),
@@ -191,7 +193,8 @@ fn definition_in_expr(
     match expr {
         Expr::Name(name) => {
             if range_contains(name.range, byte)
-                && let FieldCheckResult::Column(column) = catalog.check_field(table, &name.text)
+                && let FieldCheckResult::Column(column) =
+                    catalog.check_field_ref(table, &RelationRef::from_name(name.clone()))
             {
                 return Some(DefinitionTarget::Catalog(CatalogDefinition::Column {
                     schema: column.key.schema.clone(),
@@ -220,7 +223,7 @@ fn definition_in_path(
         if index + 1 == path.segments.len() {
             if range_contains(segment.range, byte)
                 && let FieldCheckResult::Column(column) =
-                    catalog.check_field(current_table, &segment.field_ref())
+                    catalog.check_field_ref(current_table, &segment.relation_ref())
             {
                 return Some(DefinitionTarget::Catalog(CatalogDefinition::Column {
                     schema: column.key.schema.clone(),
@@ -231,7 +234,7 @@ fn definition_in_path(
             return None;
         }
         let FieldCheckResult::Relation(relation) =
-            catalog.check_field(current_table, &segment.field_ref())
+            catalog.check_field_ref(current_table, &segment.relation_ref())
         else {
             return None;
         };

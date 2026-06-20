@@ -122,7 +122,7 @@ fn fragment_completions(
         .filter_map(|fragment| {
             let name = fragment.name.as_ref()?;
             let on = fragment.on.as_ref()?;
-            fragment_completion(parse, catalog, table, byte, &name.text, &on.text)
+            fragment_completion(parse, catalog, table, byte, &name.text, on)
         })
         .collect::<Vec<_>>();
     completions.extend(scope.fragments.iter().filter_map(|fragment| {
@@ -140,13 +140,13 @@ fn fragment_completion(
     table: TableId,
     byte: usize,
     name: &str,
-    on: &str,
+    on: &dsql_core::QualifiedNameRef,
 ) -> Option<CompletionItem> {
-    let target = catalog.table_ref(on)?;
+    let target = catalog.table_ref_for(on)?;
     (target.id == table).then(|| CompletionItem {
         label: name.to_string(),
         kind: CompletionKind::Fragment,
-        detail: Some(format!("fragment on {on}")),
+        detail: Some(format!("fragment on {}", on.display_text())),
         insert_text: Some(fragment_insert_text(parse, byte, name)),
     })
 }
@@ -207,7 +207,7 @@ fn field_completions(catalog: &Catalog, table: TableId) -> Vec<CompletionItem> {
             .count();
         let table_ref = completion_table_ref(catalog, &relation.table.schema, relation.name);
         let label = if relation_count > 1 {
-            format!("{table_ref}::{}", relation.selector)
+            format!("{table_ref}->{}", relation.selector)
         } else {
             table_ref
         };
@@ -342,6 +342,6 @@ fn completion_table_ref(catalog: &Catalog, schema: &str, table: &str) -> String 
     if schema == catalog.default_schema() {
         table.to_string()
     } else {
-        format!("{schema}.{table}")
+        format!("{schema}::{table}")
     }
 }

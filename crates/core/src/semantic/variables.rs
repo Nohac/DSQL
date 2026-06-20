@@ -89,7 +89,8 @@ pub fn infer_query_variable_bindings(
         if selection.kind == SelectionKind::FragmentSpread {
             continue;
         }
-        let TableResolution::Found(table) = catalog.resolve_table_ref(&selection.name.text) else {
+        let TableResolution::Found(table) = catalog.resolve_table_ref_for(&selection.name.target)
+        else {
             continue;
         };
         let path = vec![response_key(selection)];
@@ -116,10 +117,10 @@ pub fn infer_fragment_variable_bindings(
     catalog: &Catalog,
 ) -> VariableBindings {
     let mut bindings = Vec::new();
-    let Some(on) = fragment.on.as_deref() else {
+    let Some(on) = fragment.on.as_ref() else {
         return VariableBindings { bindings };
     };
-    let TableResolution::Found(table) = catalog.resolve_table_ref(on) else {
+    let TableResolution::Found(table) = catalog.resolve_table_ref_for(on) else {
         return VariableBindings { bindings };
     };
     let scope = VariablePathScope::fragment();
@@ -147,7 +148,8 @@ fn infer_direct_query_variable_bindings(
         if selection.kind == SelectionKind::FragmentSpread {
             continue;
         }
-        let TableResolution::Found(table) = catalog.resolve_table_ref(&selection.name.text) else {
+        let TableResolution::Found(table) = catalog.resolve_table_ref_for(&selection.name.target)
+        else {
             continue;
         };
         collect_selection_bindings_without_fragments(
@@ -241,7 +243,7 @@ fn collect_selection_set_bindings(
 ) {
     for child in selections {
         if child.kind == SelectionKind::FragmentSpread {
-            let Some(fragment) = resolver.fragment(&child.name.text) else {
+            let Some(fragment) = resolver.fragment(&child.name.target.name.text) else {
                 continue;
             };
             if visiting.iter().any(|name| name == &fragment.key.name) {
@@ -263,7 +265,7 @@ fn collect_selection_set_bindings(
             visiting.pop();
             continue;
         }
-        let FieldCheckResult::Relation(relation) = catalog.check_field(table, &child.name.text)
+        let FieldCheckResult::Relation(relation) = catalog.check_field_ref(table, &child.name)
         else {
             continue;
         };
@@ -339,7 +341,7 @@ fn collect_selection_bindings_without_fragments(
         if child.kind == SelectionKind::FragmentSpread {
             continue;
         }
-        let FieldCheckResult::Relation(relation) = catalog.check_field(table, &child.name.text)
+        let FieldCheckResult::Relation(relation) = catalog.check_field_ref(table, &child.name)
         else {
             continue;
         };
@@ -373,7 +375,9 @@ fn collect_order_by_binding(
         SortDirectionExpr::Variable(variable) => variable,
         SortDirectionExpr::Static(_) => return,
     };
-    let FieldCheckResult::Column(column) = catalog.check_field(table, &item.field.text) else {
+    let FieldCheckResult::Column(column) =
+        catalog.check_field_ref(table, &qualified_name_relation_ref(item.field.clone()))
+    else {
         return;
     };
     let inferred_path = [
@@ -618,16 +622,19 @@ fn resolve_predicate_path(
     let (last, relations) = path.segments.split_last()?;
     let mut field_path = Vec::new();
     for relation_ref in relations {
-        let field_ref = relation_ref.field_ref();
-        let FieldCheckResult::Relation(relation) = catalog.check_field(current_table, &field_ref)
+        let field_ref = relation_ref.display_text();
+        let FieldCheckResult::Relation(relation) =
+            catalog.check_field_ref(current_table, &relation_ref.relation_ref())
         else {
             return None;
         };
         field_path.push(field_ref);
         current_table = relation.table.id;
     }
-    let field_ref = last.field_ref();
-    let FieldCheckResult::Column(column) = catalog.check_field(current_table, &field_ref) else {
+    let field_ref = last.display_text();
+    let FieldCheckResult::Column(column) =
+        catalog.check_field_ref(current_table, &last.relation_ref())
+    else {
         return None;
     };
     field_path.push(field_ref);
@@ -636,11 +643,15 @@ fn resolve_predicate_path(
 
 fn response_key(selection: &Selection) -> String {
     selection.alias.as_ref().map_or_else(
-        || unqualified_name(&selection.name.text).to_string(),
+        || selection.name.output_name().to_string(),
         |alias| alias.text.clone(),
     )
 }
 
-fn unqualified_name(name: &str) -> &str {
-    name.rsplit_once('.').map_or(name, |(_, name)| name)
+fn qualified_name_relation_ref(target: crate::QualifiedNameRef) -> crate::RelationRef {
+    crate::RelationRef {
+        range: target.range,
+        target,
+        selector: None,
+    }
 }

@@ -2,6 +2,7 @@ use super::{
     Catalog, Column, ColumnId, FieldCheckResult, ForeignKey, ForeignKeyId, RelationCardinality,
     RelationField, Table, TableId, TableResolution,
 };
+use crate::{QualifiedNameRef, RelationRef};
 
 impl Catalog {
     pub fn table(&self, schema: &str, name: &str) -> Option<&Table> {
@@ -10,30 +11,30 @@ impl Catalog {
             .find(|table| table.schema == schema && table.name == name)
     }
 
-    pub fn table_ref(&self, reference: &str) -> Option<&Table> {
-        match self.resolve_table_ref(reference) {
+    pub fn table_ref_for(&self, reference: &QualifiedNameRef) -> Option<&Table> {
+        match self.resolve_table_ref_for(reference) {
             TableResolution::Found(table) => Some(table),
             TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => None,
         }
     }
 
-    pub fn resolve_table_ref(&self, reference: &str) -> TableResolution<'_> {
-        let (schema, name) = split_schema_ref(reference);
-        if let Some(schema) = schema {
-            return self.table(schema, name).map_or_else(
+    pub fn resolve_table_ref_for(&self, reference: &QualifiedNameRef) -> TableResolution<'_> {
+        if let Some(schema) = reference.schema_name() {
+            return self.table(schema, reference.object_name()).map_or_else(
                 || TableResolution::NotFound {
-                    reference: reference.to_string(),
+                    reference: reference.display_text(),
                 },
                 TableResolution::Found,
             );
         }
 
-        self.table(&self.default_schema, name).map_or_else(
-            || TableResolution::NotFound {
-                reference: reference.to_string(),
-            },
-            TableResolution::Found,
-        )
+        self.table(&self.default_schema, reference.object_name())
+            .map_or_else(
+                || TableResolution::NotFound {
+                    reference: reference.display_text(),
+                },
+                TableResolution::Found,
+            )
     }
 
     pub fn table_by_id(&self, id: TableId) -> Option<&Table> {
@@ -171,29 +172,33 @@ impl Catalog {
         })
     }
 
-    pub fn check_field(&self, table: TableId, field: &str) -> FieldCheckResult<'_> {
+    pub fn check_field_ref(&self, table: TableId, field: &RelationRef) -> FieldCheckResult<'_> {
         let Some(table) = self.tables.get(table.0) else {
             return FieldCheckResult::NotFound;
         };
 
-        let (field_ref, field_selector) = split_relation_selector(field);
-        let (field_schema, field_name) = split_schema_ref(field_ref);
-        if field_schema.is_none()
+        if field.target.schema.is_none()
+            && field.selector.is_none()
             && let Some(column) = table
                 .columns
                 .iter()
                 .filter_map(|id| self.columns.get(id.0))
-                .find(|column| column.name == field_name)
+                .find(|column| column.name == field.target.object_name())
         {
             return FieldCheckResult::Column(column);
         }
 
+        let field_schema = field.target.schema_name().unwrap_or(&self.default_schema);
+        let field_selector = field
+            .selector
+            .as_ref()
+            .map(|selector| selector.text.as_str());
         let relation_candidates = self
             .relation_fields_for_table(table.id)
             .into_iter()
             .filter(|relation| {
-                relation.name == field_name
-                    && relation.table.schema == field_schema.unwrap_or(&self.default_schema)
+                relation.name == field.target.object_name()
+                    && relation.table.schema == field_schema
                     && field_selector.is_none_or(|selector| selector == relation.selector)
             })
             .collect::<Vec<_>>();
@@ -201,12 +206,12 @@ impl Catalog {
             [] => FieldCheckResult::NotFound,
             [relation] => FieldCheckResult::Relation(relation.clone()),
             _ => FieldCheckResult::AmbiguousRelation {
-                reference: field.to_string(),
+                reference: field.display_text(),
                 candidates: relation_candidates
                     .iter()
                     .map(|relation| {
                         format!(
-                            "{}.{}::{}",
+                            "{}::{}->{}",
                             relation.table.schema, relation.name, relation.selector
                         )
                     })
@@ -221,18 +226,4 @@ fn column_set_covers(columns: &[ColumnId], unique_columns: &[ColumnId]) -> bool 
         && unique_columns
             .iter()
             .all(|unique_column| columns.contains(unique_column))
-}
-
-fn split_relation_selector(reference: &str) -> (&str, Option<&str>) {
-    reference
-        .split_once("::")
-        .map_or((reference, None), |(relation, selector)| {
-            (relation, Some(selector))
-        })
-}
-
-fn split_schema_ref(reference: &str) -> (Option<&str>, &str) {
-    reference
-        .split_once('.')
-        .map_or((None, reference), |(schema, name)| (Some(schema), name))
 }

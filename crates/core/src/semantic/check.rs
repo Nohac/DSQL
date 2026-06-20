@@ -93,7 +93,7 @@ fn check_fragment_record(
         return;
     };
     let range = fragment.on_range.unwrap_or(fragment.range);
-    let table = match catalog.resolve_table_ref(on) {
+    let table = match catalog.resolve_table_ref_for(on) {
         TableResolution::Found(table) => table,
         TableResolution::NotFound { reference } => {
             errors.push(CheckError {
@@ -140,12 +140,12 @@ fn check_root_selections(
             errors.push(CheckError {
                 range: selection.name.range,
                 kind: CheckErrorKind::UnknownFragment {
-                    fragment: selection.name.text.clone(),
+                    fragment: selection.name.target.name.text.clone(),
                 },
             });
             continue;
         }
-        let table = match catalog.resolve_table_ref(&selection.name.text) {
+        let table = match catalog.resolve_table_ref_for(&selection.name.target) {
             TableResolution::Found(table) => table,
             TableResolution::NotFound { reference } => {
                 errors.push(CheckError {
@@ -197,13 +197,13 @@ fn check_selection_set(
             check_fragment_spread(catalog, resolver, table, selection, errors, visiting);
             continue;
         }
-        match catalog.check_field(table, &selection.name.text) {
+        match catalog.check_field_ref(table, &selection.name) {
             FieldCheckResult::Column(column) => {
                 if selection.has_clause_list {
                     errors.push(CheckError {
                         range: selection.name.range,
                         kind: CheckErrorKind::ScalarClauses {
-                            field: selection.name.text.clone(),
+                            field: selection.name.display_text(),
                             data_type: column.data_type.as_str().to_string(),
                         },
                     });
@@ -212,7 +212,7 @@ fn check_selection_set(
                     errors.push(CheckError {
                         range: selection.name.range,
                         kind: CheckErrorKind::ScalarSelectionSet {
-                            field: selection.name.text.clone(),
+                            field: selection.name.display_text(),
                             data_type: column.data_type.as_str().to_string(),
                         },
                     });
@@ -224,7 +224,7 @@ fn check_selection_set(
                     errors.push(CheckError {
                         range: selection.name.range,
                         kind: CheckErrorKind::RelationSelectionSet {
-                            field: selection.name.text.clone(),
+                            field: selection.name.display_text(),
                         },
                     });
                 } else {
@@ -247,7 +247,7 @@ fn check_selection_set(
                 errors.push(CheckError {
                     range: selection.name.range,
                     kind: CheckErrorKind::FieldNotFound {
-                        field: selection.name.text.clone(),
+                        field: selection.name.display_text(),
                         table: table_name.to_string(),
                     },
                 });
@@ -283,7 +283,14 @@ fn check_clauses(
             Clause::OrderBy(order_by) => {
                 for item in &order_by.items {
                     if !matches!(
-                        catalog.check_field(table, &item.field.text),
+                        catalog.check_field_ref(
+                            table,
+                            &crate::RelationRef {
+                                range: item.field.range,
+                                target: item.field.clone(),
+                                selector: None,
+                            },
+                        ),
                         FieldCheckResult::Column(_)
                     ) {
                         let table_name = catalog
@@ -293,7 +300,7 @@ fn check_clauses(
                         errors.push(CheckError {
                             range: item.field.range,
                             kind: CheckErrorKind::FieldNotFound {
-                                field: item.field.text.clone(),
+                                field: item.field.display_text(),
                                 table: table_name.to_string(),
                             },
                         });
@@ -457,13 +464,14 @@ fn resolve_predicate_path(
     let (last, relations) = segments.split_last()?;
     for relation_ref in relations {
         let FieldCheckResult::Relation(relation) =
-            catalog.check_field(current_table, &relation_ref.field_ref())
+            catalog.check_field_ref(current_table, &relation_ref.relation_ref())
         else {
             return None;
         };
         current_table = relation.table.id;
     }
-    let FieldCheckResult::Column(column) = catalog.check_field(current_table, &last.field_ref())
+    let FieldCheckResult::Column(column) =
+        catalog.check_field_ref(current_table, &last.relation_ref())
     else {
         return None;
     };
@@ -481,7 +489,7 @@ fn predicate_path_label(path: &crate::ScopedPath) -> String {
         prefix,
         path.segments
             .iter()
-            .map(|segment| segment.field_ref())
+            .map(|segment| segment.display_text())
             .collect::<Vec<_>>()
             .join(".")
     )
@@ -555,7 +563,7 @@ fn check_fragment_spread(
     errors: &mut Vec<CheckError>,
     visiting: &mut HashSet<String>,
 ) {
-    let name = &selection.name.text;
+    let name = &selection.name.target.name.text;
     let Some(fragment) = resolver.fragment(name) else {
         errors.push(CheckError {
             range: selection.name.range,
@@ -578,7 +586,7 @@ fn check_fragment_spread(
         visiting.remove(name);
         return;
     };
-    let fragment_table = match catalog.resolve_table_ref(on) {
+    let fragment_table = match catalog.resolve_table_ref_for(on) {
         TableResolution::Found(fragment_table) => fragment_table,
         TableResolution::NotFound { reference } => {
             errors.push(CheckError {
@@ -663,14 +671,9 @@ fn check_output_key_lengths(selections: &[Selection], errors: &mut Vec<CheckErro
 
 fn response_key(selection: &Selection) -> String {
     selection.alias.as_ref().map_or_else(
-        || unqualified_name(&selection.name.text).to_string(),
+        || selection.name.output_name().to_string(),
         |alias| alias.text.clone(),
     )
-}
-
-fn unqualified_name(name: &str) -> &str {
-    let name = name.split_once("::").map_or(name, |(name, _)| name);
-    name.rsplit_once('.').map_or(name, |(_, name)| name)
 }
 
 #[cfg(test)]
@@ -696,14 +699,14 @@ mod tests {
     #[test]
     fn hardcoded_catalog_accepts_columns_and_relations() {
         let diagnostics = diagnostics(
-            "query Q { public.users { id name posts { title users { name } } } posts { users { email } } }",
+            "query Q { public::users { id name posts { title users { name } } } posts { users { email } } }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
     fn hardcoded_catalog_reports_unknown_table_and_field() {
-        let diagnostics = diagnostics("query Q { comments { id } public.users { missing } }");
+        let diagnostics = diagnostics("query Q { comments { id } public::users { missing } }");
         assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::TableNotFound
@@ -718,7 +721,7 @@ mod tests {
     #[test]
     fn hardcoded_catalog_reports_selection_set_shape_errors() {
         let diagnostics =
-            diagnostics("query Q { public.users { id { name } name(where .id == 1) posts } }");
+            diagnostics("query Q { public::users { id { name } name(where .id == 1) posts } }");
         assert_eq!(diagnostics.len(), 3, "{diagnostics:?}");
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::ScalarSelectionSet
@@ -739,14 +742,15 @@ mod tests {
 
     #[test]
     fn hardcoded_catalog_checks_fragment_fields() {
-        let diagnostics = diagnostics("fragment UserFields on public.users { id posts { title } }");
+        let diagnostics =
+            diagnostics("fragment UserFields on public::users { id posts { title } }");
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
     fn fragment_spreads_are_checked_in_query_context() {
         let diagnostics = diagnostics(
-            "fragment UserFields on public.users { id posts { title } }\nquery Q { users { ...UserFields } }",
+            "fragment UserFields on public::users { id posts { title } }\nquery Q { users { ...UserFields } }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
@@ -773,7 +777,7 @@ mod tests {
     #[test]
     fn hardcoded_catalog_accepts_qualified_table_and_relation_names() {
         let diagnostics = diagnostics(
-            "query Q { public.users { id public.posts { title } } public.posts { public.users { email } } }",
+            "query Q { public::users { id public::posts { title } } public::posts { public::users { email } } }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
@@ -781,7 +785,7 @@ mod tests {
     #[test]
     fn relation_clauses_are_checked_against_related_table() {
         let diagnostics = diagnostics(
-            "query Q { public.users { posts(where .title == \"hello\" order by title) { id } } }",
+            "query Q { public::users { posts(where .title == \"hello\" order by title) { id } } }",
         );
 
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
@@ -790,7 +794,7 @@ mod tests {
     #[test]
     fn hardcoded_catalog_accepts_qualified_fragment_type() {
         let diagnostics =
-            diagnostics("fragment UserFields on public.users { id public.posts { title } }");
+            diagnostics("fragment UserFields on public::users { id public::posts { title } }");
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
@@ -803,7 +807,8 @@ mod tests {
 
     #[test]
     fn duplicate_output_keys_require_aliases() {
-        let diagnostics = diagnostics("query Q { public.users { id } other_schema.users { id } }");
+        let diagnostics =
+            diagnostics("query Q { public::users { id } other_schema::users { id } }");
 
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert_eq!(diagnostics[0].code, DiagnosticCode::DuplicateOutputKey);
@@ -816,7 +821,7 @@ mod tests {
     #[test]
     fn aliases_disambiguate_duplicate_output_keys() {
         let diagnostics = diagnostics(
-            "query Q { public_users: public.users { id } other_users: other_schema.users { id } }",
+            "query Q { public_users: public::users { id } other_users: other_schema::users { id } }",
         );
 
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
@@ -838,7 +843,7 @@ mod tests {
 
     #[test]
     fn hardcoded_catalog_reports_fragment_field_errors() {
-        let diagnostics = diagnostics("fragment UserFields on public.users { missing }");
+        let diagnostics = diagnostics("fragment UserFields on public::users { missing }");
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert_eq!(diagnostics[0].code, DiagnosticCode::FieldNotFound);
         assert_eq!(

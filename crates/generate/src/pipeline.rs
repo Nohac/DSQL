@@ -620,9 +620,9 @@ fn collect_fragment_spread_metadata(
         if selection.kind == SelectionKind::FragmentSpread {
             spreads.push(FragmentSpreadMetadata {
                 path: result_path.to_string(),
-                fragment: selection.name.text.clone(),
+                fragment: selection.name.target.name.text.clone(),
             });
-            let Some(fragment) = fragments.fragment(&selection.name.text) else {
+            let Some(fragment) = fragments.fragment(&selection.name.target.name.text) else {
                 continue;
             };
             if visiting.iter().any(|name| name == &fragment.key.name) {
@@ -643,7 +643,7 @@ fn collect_fragment_spread_metadata(
         }
 
         if let FieldCheckResult::Relation(relation) =
-            catalog.check_field(table, &selection.name.text)
+            catalog.check_field_ref(table, &selection.name)
         {
             let child_name = selection
                 .alias

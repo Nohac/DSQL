@@ -3,4 +3,4 @@ source: tests/tests/fixtures.rs
 assertion_line: 185
 expression: contents
 ---
-Check Error AmbiguousRelation 55..64: relation `aka_title` has multiple foreign-key paths; use one of: public.aka_title::movie_id, public.aka_title::episode_of_id
+Check Error AmbiguousRelation 55..64: relation `aka_title` has multiple foreign-key paths; use one of: public::aka_title->movie_id, public::aka_title->episode_of_id

@@ -24,7 +24,7 @@ pub struct QueryDef {
 pub struct FragmentDef {
     pub range: TextRange,
     pub name: Option<NameRef>,
-    pub on: Option<NameRef>,
+    pub on: Option<QualifiedNameRef>,
     pub selections: Vec<Selection>,
 }
 
@@ -33,7 +33,7 @@ pub struct Selection {
     pub range: TextRange,
     pub kind: SelectionKind,
     pub alias: Option<NameRef>,
-    pub name: NameRef,
+    pub name: RelationRef,
     pub arguments: Vec<Argument>,
     pub has_clause_list: bool,
     pub clauses: Vec<Clause>,
@@ -79,7 +79,7 @@ pub struct OrderByClause {
 #[derive(Clone, Debug, PartialEq, Facet)]
 pub struct OrderByItem {
     pub range: TextRange,
-    pub field: NameRef,
+    pub field: QualifiedNameRef,
     pub direction: SortDirectionExpr,
 }
 
@@ -180,16 +180,32 @@ pub enum PathScope {
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct ScopedPathSegment {
     pub range: TextRange,
+    pub schema: Option<NameRef>,
     pub name: NameRef,
     pub selector: Option<NameRef>,
 }
 
 impl ScopedPathSegment {
-    pub fn field_ref(&self) -> String {
-        self.selector.as_ref().map_or_else(
-            || self.name.text.clone(),
-            |selector| format!("{}::{}", self.name.text, selector.text),
-        )
+    pub fn relation_ref(&self) -> RelationRef {
+        RelationRef {
+            range: self.range,
+            target: QualifiedNameRef {
+                range: TextRange {
+                    start: self
+                        .schema
+                        .as_ref()
+                        .map_or(self.name.range.start, |schema| schema.range.start),
+                    end: self.name.range.end,
+                },
+                schema: self.schema.clone(),
+                name: self.name.clone(),
+            },
+            selector: self.selector.clone(),
+        }
+    }
+
+    pub fn display_text(&self) -> String {
+        self.relation_ref().display_text()
     }
 }
 
@@ -265,6 +281,70 @@ impl BinaryOp {
 pub struct NameRef {
     pub range: TextRange,
     pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct QualifiedNameRef {
+    pub range: TextRange,
+    pub schema: Option<NameRef>,
+    pub name: NameRef,
+}
+
+impl QualifiedNameRef {
+    pub fn display_text(&self) -> String {
+        self.schema.as_ref().map_or_else(
+            || self.name.text.clone(),
+            |schema| format!("{}::{}", schema.text, self.name.text),
+        )
+    }
+
+    pub fn schema_name(&self) -> Option<&str> {
+        self.schema.as_ref().map(|schema| schema.text.as_str())
+    }
+
+    pub fn object_name(&self) -> &str {
+        self.name.text.as_str()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct RelationRef {
+    pub range: TextRange,
+    pub target: QualifiedNameRef,
+    pub selector: Option<NameRef>,
+}
+
+impl RelationRef {
+    pub fn from_name(name: NameRef) -> Self {
+        Self {
+            range: name.range,
+            target: QualifiedNameRef {
+                range: name.range,
+                schema: None,
+                name,
+            },
+            selector: None,
+        }
+    }
+
+    pub fn from_qualified(target: QualifiedNameRef) -> Self {
+        Self {
+            range: target.range,
+            target,
+            selector: None,
+        }
+    }
+
+    pub fn display_text(&self) -> String {
+        self.selector.as_ref().map_or_else(
+            || self.target.display_text(),
+            |selector| format!("{}->{}", self.target.display_text(), selector.text),
+        )
+    }
+
+    pub fn output_name(&self) -> &str {
+        self.target.object_name()
+    }
 }
 
 #[derive(Clone, Debug, Facet)]

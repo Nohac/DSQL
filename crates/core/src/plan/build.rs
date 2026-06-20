@@ -29,7 +29,7 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
             continue;
         };
         for selection in &query.selections {
-            match catalog.resolve_table_ref(&selection.name.text) {
+            match catalog.resolve_table_ref_for(&selection.name.target) {
                 TableResolution::Found(table) => {
                     let selection_path = vec![response_key(selection)];
                     let variable_scope = VariablePathScope::operation();
@@ -99,12 +99,12 @@ pub fn plan_query_definition(
             diagnostics.push(PlanDiagnostic {
                 range: selection.name.range,
                 kind: PlanDiagnosticKind::UnknownFragment {
-                    fragment: selection.name.text.clone(),
+                    fragment: selection.name.target.name.text.clone(),
                 },
             });
             continue;
         }
-        match catalog.resolve_table_ref(&selection.name.text) {
+        match catalog.resolve_table_ref_for(&selection.name.target) {
             TableResolution::Found(table) => {
                 let selection_path = vec![response_key(selection)];
                 let variable_scope = VariablePathScope::operation();
@@ -167,8 +167,8 @@ pub fn plan_fragment_definition(
     catalog: &Catalog,
 ) -> Option<FragmentPlan> {
     let mut diagnostics = Vec::new();
-    let table = match fragment.on.as_deref() {
-        Some(on) => match catalog.resolve_table_ref(on) {
+    let table = match fragment.on.as_ref() {
+        Some(on) => match catalog.resolve_table_ref_for(on) {
             TableResolution::Found(table) => table.id,
             TableResolution::NotFound { reference } => {
                 diagnostics.push(PlanDiagnostic {
@@ -222,7 +222,7 @@ fn plan_selection_set(
     let mut items = Vec::new();
     for selection in selections {
         if selection.kind == SelectionKind::FragmentSpread {
-            if let Some(fragment) = resolver.fragment(&selection.name.text)
+            if let Some(fragment) = resolver.fragment(&selection.name.target.name.text)
                 && let Some(fragment_plan) = plan_selection_set(
                     catalog,
                     resolver,
@@ -239,7 +239,7 @@ fn plan_selection_set(
             }
             continue;
         }
-        match catalog.check_field(table, &selection.name.text) {
+        match catalog.check_field_ref(table, &selection.name) {
             FieldCheckResult::Column(column) => {
                 if selection.selections.is_empty() {
                     items.push(SelectionPlanItem::Projection(Projection {
@@ -272,7 +272,7 @@ fn plan_selection_set(
                     diagnostics,
                 ) {
                     items.push(SelectionPlanItem::Relation(NestedRelation {
-                        relation_name: selection.name.text.clone(),
+                        relation_name: selection.name.display_text(),
                         output_name: selection
                             .alias
                             .as_ref()
@@ -342,9 +342,14 @@ fn plan_clauses(
                 clauses
                     .order_by
                     .extend(order_by.items.iter().filter_map(|item| {
-                        let crate::FieldCheckResult::Column(column) =
-                            catalog.check_field(table, &item.field.text)
-                        else {
+                        let crate::FieldCheckResult::Column(column) = catalog.check_field_ref(
+                            table,
+                            &crate::RelationRef {
+                                range: item.field.range,
+                                target: item.field.clone(),
+                                selector: None,
+                            },
+                        ) else {
                             return None;
                         };
                         Some(OrderByPlan {
@@ -714,7 +719,7 @@ fn plan_filter_path(
         crate::PathScope::Parent => return None,
     };
     let crate::FieldCheckResult::Column(column) =
-        catalog.check_field(source_table, &path.segments[0].field_ref())
+        catalog.check_field_ref(source_table, &path.segments[0].relation_ref())
     else {
         return None;
     };
@@ -765,13 +770,13 @@ fn relation_predicate_segments(
         return None;
     }
     let crate::FieldCheckResult::Relation(relation) =
-        catalog.check_field(table, &segments[0].field_ref())
+        catalog.check_field_ref(table, &segments[0].relation_ref())
     else {
         return None;
     };
     let filter = if segments.len() == 2 {
         let crate::FieldCheckResult::Column(column) =
-            catalog.check_field(relation.table.id, &segments[1].field_ref())
+            catalog.check_field_ref(relation.table.id, &segments[1].relation_ref())
         else {
             return None;
         };
@@ -786,8 +791,10 @@ fn relation_predicate_segments(
                 right: Box::new(right),
             },
             crate::BinaryOperator::Variable(variable) => {
-                let inferred = operator_path
-                    .map_or_else(|| vec![segments[1].field_ref()], |path| path_parts(&path));
+                let inferred = operator_path.map_or_else(
+                    || vec![segments[1].display_text()],
+                    |path| path_parts(&path),
+                );
                 FilterExpr::VariantBinary {
                     left: Box::new(left),
                     path: variable_path(
@@ -876,17 +883,19 @@ fn predicate_path(
     let (last, relations) = path.segments.split_last()?;
     let mut field_path = Vec::new();
     for relation_ref in relations {
-        let field_ref = relation_ref.field_ref();
+        let field_ref = relation_ref.display_text();
         let crate::FieldCheckResult::Relation(relation) =
-            catalog.check_field(current_table, &field_ref)
+            catalog.check_field_ref(current_table, &relation_ref.relation_ref())
         else {
             return None;
         };
         field_path.push(field_ref);
         current_table = relation.table.id;
     }
-    let field_ref = last.field_ref();
-    let crate::FieldCheckResult::Column(_) = catalog.check_field(current_table, &field_ref) else {
+    let field_ref = last.display_text();
+    let crate::FieldCheckResult::Column(_) =
+        catalog.check_field_ref(current_table, &last.relation_ref())
+    else {
         return None;
     };
     field_path.push(field_ref);
@@ -912,13 +921,9 @@ fn postgres_operator(op: crate::BinaryOp) -> Option<&'static str> {
 
 fn response_key(selection: &Selection) -> String {
     selection.alias.as_ref().map_or_else(
-        || unqualified_name(&selection.name.text).to_string(),
+        || selection.name.output_name().to_string(),
         |alias| alias.text.clone(),
     )
-}
-
-fn unqualified_name(name: &str) -> &str {
-    name.rsplit_once('.').map_or(name, |(_, name)| name)
 }
 
 #[cfg(test)]
@@ -938,7 +943,7 @@ mod tests {
 
     #[test]
     fn plans_scalar_projections_and_nested_relations() {
-        let planned = plan("query Q { public.users { id name posts { title } } }");
+        let planned = plan("query Q { public::users { id name posts { title } } }");
 
         assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
         assert_eq!(planned.queries.len(), 1);

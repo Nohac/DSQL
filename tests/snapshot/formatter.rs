@@ -23,7 +23,7 @@ fn formatter_cases_match_expected_output() {
         ),
         (
             "clause_line_groups",
-            "query Movies { title(where .aka_title::episode_of_id.episode_nr > 0\norder by production_year desc limit 25) { id } }",
+            "query Movies { title(where .aka_title->episode_of_id.episode_nr > 0\norder by production_year desc limit 25) { id } }",
         ),
         (
             "variables_in_clauses",
@@ -31,7 +31,7 @@ fn formatter_cases_match_expected_output() {
         ),
         (
             "long_inline_clauses",
-            "query Movies { title(where .aka_title::episode_of_id.episode_nr > 0 order by production_year desc limit 25 offset 12345) { id } }",
+            "query Movies { title(where .aka_title->episode_of_id.episode_nr > 0 order by production_year desc limit 25 offset 12345) { id } }",
         ),
         ("comment_trivia", "query Users { # ids\n id }"),
     ];

@@ -80,7 +80,7 @@ pub fn lint_file_with_options(
             Definition::Query(query) => {
                 for selection in &query.selections {
                     if let TableResolution::Found(table) =
-                        catalog.resolve_table_ref(&selection.name.text)
+                        catalog.resolve_table_ref_for(&selection.name.target)
                     {
                         lint_selection_set(
                             catalog,
@@ -103,7 +103,7 @@ pub fn lint_file_with_options(
                 let Some(on) = &fragment.on else {
                     continue;
                 };
-                if let TableResolution::Found(table) = catalog.resolve_table_ref(&on.text) {
+                if let TableResolution::Found(table) = catalog.resolve_table_ref_for(on) {
                     lint_selection_set(
                         catalog,
                         table.id,
@@ -138,7 +138,8 @@ pub fn lint_query_definition_with_options(
         if selection.kind == SelectionKind::FragmentSpread {
             continue;
         }
-        if let TableResolution::Found(table) = catalog.resolve_table_ref(&selection.name.text) {
+        if let TableResolution::Found(table) = catalog.resolve_table_ref_for(&selection.name.target)
+        {
             lint_selection_set(
                 catalog,
                 table.id,
@@ -169,7 +170,7 @@ pub fn lint_fragment_definition_with_options(
 ) -> LintedDefinition {
     let mut diagnostics = Vec::new();
     if let Some(on) = &fragment.on
-        && let TableResolution::Found(table) = catalog.resolve_table_ref(on)
+        && let TableResolution::Found(table) = catalog.resolve_table_ref_for(on)
     {
         lint_selection_set(
             catalog,
@@ -195,7 +196,7 @@ fn lint_selection_set(
             continue;
         }
         if let FieldCheckResult::Relation(relation) =
-            catalog.check_field(table, &selection.name.text)
+            catalog.check_field_ref(table, &selection.name)
         {
             lint_relation_indexes(catalog, &relation, selection, options, diagnostics);
             lint_selection_clauses(catalog, relation.table.id, selection, options, diagnostics);
@@ -236,7 +237,7 @@ fn lint_relation_indexes(
             range: selection.name.range,
             severity,
             kind: LintDiagnosticKind::UnindexedJoinColumn {
-                relation: selection.name.text.clone(),
+                relation: selection.name.display_text(),
                 column: catalog.table_by_id(column.table).map_or_else(
                     || column.name.clone(),
                     |table| format!("{}.{}", table.name, column.name),
@@ -305,7 +306,7 @@ fn lint_predicate_path_indexes(
     };
     for relation_segment in relations {
         let FieldCheckResult::Relation(relation) =
-            catalog.check_field(current_table, &relation_segment.field_ref())
+            catalog.check_field_ref(current_table, &relation_segment.relation_ref())
         else {
             return;
         };
@@ -319,7 +320,8 @@ fn lint_predicate_path_indexes(
         current_table = relation.table.id;
     }
 
-    let FieldCheckResult::Column(column) = catalog.check_field(current_table, &last.field_ref())
+    let FieldCheckResult::Column(column) =
+        catalog.check_field_ref(current_table, &last.relation_ref())
     else {
         return;
     };
@@ -361,7 +363,7 @@ fn lint_foreign_key_indexes(
             range: segment.range,
             severity,
             kind: LintDiagnosticKind::UnindexedPredicateJoinColumn {
-                relation: segment.field_ref(),
+                relation: segment.display_text(),
                 column: catalog.table_by_id(column.table).map_or_else(
                     || column.name.clone(),
                     |table| format!("{}.{}", table.name, column.name),
@@ -382,7 +384,7 @@ fn predicate_path_label(path: &ScopedPath) -> String {
         prefix,
         path.segments
             .iter()
-            .map(|segment| segment.field_ref())
+            .map(|segment| segment.display_text())
             .collect::<Vec<_>>()
             .join(".")
     )
@@ -468,7 +470,7 @@ mod tests {
 
     #[test]
     fn reports_unindexed_join_columns_for_relation_selections() {
-        let lint = lint("query Q { public.users { posts { title } } }");
+        let lint = lint("query Q { public::users { posts { title } } }");
 
         assert_eq!(lint.diagnostics.len(), 1, "{:?}", lint.diagnostics);
         let diagnostic = lint.diagnostics[0].to_transport();
@@ -480,7 +482,7 @@ mod tests {
     #[test]
     fn reports_unindexed_join_columns_inside_fragment_spreads() {
         let lint = lint(
-            "fragment UserFields on public.users { posts { title } }\nquery Q { public.users { ...UserFields } }",
+            "fragment UserFields on public::users { posts { title } }\nquery Q { public::users { ...UserFields } }",
         );
 
         assert_eq!(lint.diagnostics.len(), 1, "{:?}", lint.diagnostics);
@@ -494,7 +496,7 @@ mod tests {
 
     #[test]
     fn reports_unindexed_predicate_relationship_scans() {
-        let lint = lint("query Q { public.users(where .posts.title == \"foo\") { id } }");
+        let lint = lint("query Q { public::users(where .posts.title == \"foo\") { id } }");
 
         assert!(
             lint.diagnostics
@@ -517,7 +519,7 @@ mod tests {
     #[test]
     fn unindexed_scan_lint_severity_is_configurable() {
         let warning = lint_with_options(
-            "query Q { public.users(where .posts.title == \"foo\") { id } }",
+            "query Q { public::users(where .posts.title == \"foo\") { id } }",
             LintOptions {
                 unindexed_scan_severity: Some(Severity::Warning),
             },
@@ -532,7 +534,7 @@ mod tests {
         );
 
         let off = lint_with_options(
-            "query Q { public.users(where .posts.title == \"foo\") { id } }",
+            "query Q { public::users(where .posts.title == \"foo\") { id } }",
             LintOptions {
                 unindexed_scan_severity: None,
             },

@@ -1,5 +1,6 @@
 use crate::syntax::{
-    Definition, FragmentDef, QueryDef, Selection, SelectionKind, SourceFile, TextRange,
+    Definition, FragmentDef, QualifiedNameRef, QueryDef, Selection, SelectionKind, SourceFile,
+    TextRange,
 };
 use facet::Facet;
 use std::collections::HashMap;
@@ -41,7 +42,7 @@ pub struct FragmentRecord {
     pub key: FragmentKey,
     pub range: TextRange,
     pub name_range: TextRange,
-    pub on: Option<String>,
+    pub on: Option<QualifiedNameRef>,
     pub on_range: Option<TextRange>,
     pub selections: Vec<Selection>,
     pub fragment_spreads: Vec<FragmentSpreadRef>,
@@ -141,7 +142,7 @@ fn fragment_record(fragment: &FragmentDef) -> FragmentRecord {
             .name
             .as_ref()
             .map_or(fragment.range, |name| name.range),
-        on: fragment.on.as_ref().map(|on| on.text.clone()),
+        on: fragment.on.clone(),
         on_range: fragment.on.as_ref().map(|on| on.range),
         fragment_spreads: fragment_spreads(&fragment.selections),
         selections: fragment.selections.clone(),
@@ -158,7 +159,7 @@ fn collect_fragment_spreads(selections: &[Selection], spreads: &mut Vec<Fragment
     for selection in selections {
         if selection.kind == SelectionKind::FragmentSpread {
             spreads.push(FragmentSpreadRef {
-                name: selection.name.text.clone(),
+                name: selection.name.target.name.text.clone(),
                 range: selection.name.range,
             });
         }
@@ -191,12 +192,14 @@ fragment MovieFields on movie_info {
         assert_eq!(
             fragments
                 .fragment("MovieFields")
-                .map(|fragment| fragment.selections[0].name.text.as_str()),
+                .map(|fragment| fragment.selections[0].name.target.name.text.as_str()),
             Some("id")
         );
         assert_eq!(fragments.duplicate_fragments().len(), 1);
         assert_eq!(
             fragments.duplicate_fragments()[0].selections[0]
+                .name
+                .target
                 .name
                 .text
                 .as_str(),

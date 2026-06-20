@@ -51,7 +51,7 @@ query Movies {
 
 clause_line_groups
 query Movies {
-  title(where .aka_title::episode_of_id.episode_nr > 0
+  title(where .aka_title->episode_of_id.episode_nr > 0
     order by production_year desc limit 25
   ) {
     id
@@ -73,7 +73,7 @@ query KeywordDiscovery {
 
 long_inline_clauses
 query Movies {
-  title(where .aka_title::episode_of_id.episode_nr > 0
+  title(where .aka_title->episode_of_id.episode_nr > 0
     order by production_year desc limit 25 offset 12345
   ) {
     id

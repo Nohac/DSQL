@@ -1,7 +1,7 @@
 use crate::range_contains;
 use dsql_core::{
-    Catalog, Clause, Definition, Expr, FieldCheckResult, Selection, SelectionKind, SourceFile,
-    TableId, VariableBinding, VariableRole, VariableSource, infer_variable_bindings,
+    Catalog, Clause, Definition, Expr, FieldCheckResult, RelationRef, Selection, SelectionKind,
+    SourceFile, TableId, VariableBinding, VariableRole, VariableSource, infer_variable_bindings,
 };
 use std::collections::BTreeMap;
 
@@ -44,10 +44,10 @@ pub(crate) fn hover_at(
                     {
                         continue;
                     }
-                    let table = catalog.table_ref(&selection.name.text)?;
+                    let table = catalog.table_ref_for(&selection.name.target)?;
                     if range_contains(selection.name.range, byte) {
                         return Some(HoverInfo {
-                            label: selection.name.text.clone(),
+                            label: selection.name.display_text(),
                             detail: format!("table {}.{}", table.schema, table.name),
                             markdown: table_hover_markdown(table),
                         });
@@ -69,12 +69,12 @@ pub(crate) fn hover_at(
                 let Some(on) = &fragment.on else {
                     continue;
                 };
-                let Some(table) = catalog.table_ref(&on.text) else {
+                let Some(table) = catalog.table_ref_for(on) else {
                     continue;
                 };
                 if range_contains(on.range, byte) {
                     return Some(HoverInfo {
-                        label: on.text.clone(),
+                        label: on.display_text(),
                         detail: format!("table {}.{}", table.schema, table.name),
                         markdown: table_hover_markdown(table),
                     });
@@ -116,10 +116,10 @@ fn hover_in_selections(
         if !range_contains(selection.name.range, byte) && !range_contains(selection.range, byte) {
             continue;
         }
-        match catalog.check_field(table, &selection.name.text) {
+        match catalog.check_field_ref(table, &selection.name) {
             FieldCheckResult::Column(column) if range_contains(selection.name.range, byte) => {
                 return Some(HoverInfo {
-                    label: selection.name.text.clone(),
+                    label: selection.name.display_text(),
                     detail: format!("column: {}", column.data_type.as_str()),
                     markdown: column_hover_markdown(catalog, column),
                 });
@@ -127,7 +127,7 @@ fn hover_in_selections(
             FieldCheckResult::Relation(related) => {
                 if range_contains(selection.name.range, byte) {
                     return Some(HoverInfo {
-                        label: selection.name.text.clone(),
+                        label: selection.name.display_text(),
                         detail: format!(
                             "relation: {}.{}",
                             related.table.schema, related.table.name
@@ -168,11 +168,13 @@ fn hover_in_clauses(
             Clause::OrderBy(order_by) => {
                 for item in &order_by.items {
                     if range_contains(item.field.range, byte)
-                        && let FieldCheckResult::Column(column) =
-                            catalog.check_field(table, &item.field.text)
+                        && let FieldCheckResult::Column(column) = catalog.check_field_ref(
+                            table,
+                            &RelationRef::from_qualified(item.field.clone()),
+                        )
                     {
                         return Some(HoverInfo {
-                            label: item.field.text.clone(),
+                            label: item.field.display_text(),
                             detail: format!("column: {}", column.data_type.as_str()),
                             markdown: column_hover_markdown(catalog, column),
                         });
@@ -189,7 +191,8 @@ fn hover_in_expr(catalog: &Catalog, table: TableId, expr: &Expr, byte: usize) ->
     match expr {
         Expr::Name(name) => {
             if range_contains(name.range, byte)
-                && let FieldCheckResult::Column(column) = catalog.check_field(table, &name.text)
+                && let FieldCheckResult::Column(column) =
+                    catalog.check_field_ref(table, &RelationRef::from_name(name.clone()))
             {
                 return Some(HoverInfo {
                     label: name.text.clone(),
@@ -220,10 +223,10 @@ fn hover_in_path(
         if index + 1 == path.segments.len() {
             if range_contains(segment.range, byte)
                 && let FieldCheckResult::Column(column) =
-                    catalog.check_field(current_table, &segment.field_ref())
+                    catalog.check_field_ref(current_table, &segment.relation_ref())
             {
                 return Some(HoverInfo {
-                    label: segment.field_ref(),
+                    label: segment.display_text(),
                     detail: format!("column: {}", column.data_type.as_str()),
                     markdown: column_hover_markdown(catalog, column),
                 });
@@ -231,13 +234,13 @@ fn hover_in_path(
             return None;
         }
         let FieldCheckResult::Relation(relation) =
-            catalog.check_field(current_table, &segment.field_ref())
+            catalog.check_field_ref(current_table, &segment.relation_ref())
         else {
             return None;
         };
         if range_contains(segment.range, byte) {
             return Some(HoverInfo {
-                label: segment.field_ref(),
+                label: segment.display_text(),
                 detail: format!(
                     "relation to {}.{}",
                     relation.table.schema, relation.table.name

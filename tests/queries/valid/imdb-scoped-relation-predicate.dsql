@@ -1,5 +1,5 @@
 query ScopedRelationPredicate {
-  title(where .aka_title::movie_id.title like "%foo%" limit 1) {
+  title(where .aka_title->movie_id.title like "%foo%" limit 1) {
     id
     title
   }

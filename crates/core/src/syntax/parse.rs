@@ -105,6 +105,7 @@ pub enum SyntaxToken {
     LBracket,
     RBracket,
     ColonColon,
+    Arrow,
     Colon,
     At,
     Comma,
@@ -335,6 +336,7 @@ fn map_token(token: Token) -> SyntaxToken {
         Token::LBracket => SyntaxToken::LBracket,
         Token::RBracket => SyntaxToken::RBracket,
         Token::ColonColon => SyntaxToken::ColonColon,
+        Token::Arrow => SyntaxToken::Arrow,
         Token::Colon => SyntaxToken::Colon,
         Token::At => SyntaxToken::At,
         Token::Comma => SyntaxToken::Comma,
@@ -428,26 +430,26 @@ impl<'a> AstBuilder<'a> {
             if tail_names.is_empty() {
                 (
                     None,
-                    first_name.unwrap_or_else(|| self.missing_name(node)),
+                    first_name.unwrap_or_else(|| self.missing_relation_ref(node)),
                     self.direct_rule(tail, Rule::FieldSuffix),
                 )
             } else {
                 (
                     first_name.map(|name| NameRef {
                         range: name.range,
-                        text: name.text,
+                        text: name.display_text(),
                     }),
                     tail_names
                         .first()
                         .cloned()
-                        .unwrap_or_else(|| self.missing_name(tail)),
+                        .unwrap_or_else(|| self.missing_relation_ref(tail)),
                     self.direct_rule(tail, Rule::FieldSuffix),
                 )
             }
         } else {
             (
                 None,
-                first_name.unwrap_or_else(|| self.missing_name(node)),
+                first_name.unwrap_or_else(|| self.missing_relation_ref(node)),
                 None,
             )
         };
@@ -491,7 +493,7 @@ impl<'a> AstBuilder<'a> {
             range: range(self.cst.span(node)),
             kind: SelectionKind::FragmentSpread,
             alias: None,
-            name,
+            name: self.relation_ref_from_name(name),
             arguments: Vec::new(),
             has_clause_list: false,
             clauses: Vec::new(),
@@ -557,7 +559,7 @@ impl<'a> AstBuilder<'a> {
                 .direct_qualified_names(node)
                 .into_iter()
                 .next()
-                .unwrap_or_else(|| self.missing_name(node)),
+                .unwrap_or_else(|| self.missing_qualified_name(node)),
             direction,
         }
     }
@@ -625,7 +627,7 @@ impl<'a> AstBuilder<'a> {
             return Expr::Variable(self.value_variable(variable));
         }
         if let Some(name) = self.direct_qualified_names(node).into_iter().next() {
-            return Expr::Name(name);
+            return Expr::Name(name.name);
         }
         if let Some(name) = self.direct_names(node).into_iter().next() {
             return Expr::Name(name);
@@ -774,9 +776,8 @@ impl<'a> AstBuilder<'a> {
         self.direct_rules(node, Rule::ScopedPathSegment)
             .into_iter()
             .filter_map(|segment| {
-                let names = self.direct_names(segment);
-                let name = names.first()?.clone();
-                let selector = names.get(1).cloned();
+                let name = self.direct_qualified_names(segment).into_iter().next()?;
+                let selector = self.edge_selector(segment);
                 let end = selector
                     .as_ref()
                     .map_or(name.range.end, |selector| selector.range.end);
@@ -785,7 +786,8 @@ impl<'a> AstBuilder<'a> {
                         start: name.range.start,
                         end,
                     },
-                    name,
+                    schema: name.schema,
+                    name: name.name,
                     selector,
                 })
             })
@@ -805,62 +807,60 @@ impl<'a> AstBuilder<'a> {
             .collect()
     }
 
-    fn direct_qualified_names(&self, node: NodeRef) -> Vec<NameRef> {
+    fn direct_qualified_names(&self, node: NodeRef) -> Vec<QualifiedNameRef> {
         self.direct_rules(node, Rule::QualifiedName)
             .into_iter()
             .filter_map(|qualified| {
                 let names = self.direct_names(qualified);
-                if names.is_empty() {
-                    return None;
-                }
-                let text = names
-                    .iter()
-                    .map(|name| name.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(".");
-                Some(NameRef {
+                let name = names.last()?.clone();
+                let schema = (names.len() > 1).then(|| names[0].clone());
+                Some(QualifiedNameRef {
                     range: range(self.cst.span(qualified)),
-                    text,
+                    schema,
+                    name,
                 })
             })
             .collect()
     }
 
-    fn direct_relation_refs(&self, node: NodeRef) -> Vec<NameRef> {
+    fn direct_relation_refs(&self, node: NodeRef) -> Vec<RelationRef> {
         self.direct_rules(node, Rule::RelationRef)
             .into_iter()
             .filter_map(|relation| self.relation_ref(relation))
             .collect()
     }
 
-    fn relation_ref(&self, relation: NodeRef) -> Option<NameRef> {
+    fn relation_ref(&self, relation: NodeRef) -> Option<RelationRef> {
         let qualified = self.direct_qualified_names(relation).into_iter().next()?;
-        let selector = self
-            .cst
-            .children(relation)
+        let selector = self.edge_selector(relation);
+        Some(RelationRef {
+            range: TextRange {
+                start: qualified.range.start,
+                end: selector
+                    .as_ref()
+                    .map_or(qualified.range.end, |selector| selector.range.end),
+            },
+            target: qualified,
+            selector,
+        })
+    }
+
+    fn edge_selector(&self, node: NodeRef) -> Option<NameRef> {
+        self.cst
+            .children(node)
             .filter_map(|child| token_text(self.cst, child))
-            .scan(false, |after_colon_colon, (token, text, token_range)| {
-                if *after_colon_colon && token == Token::Name {
+            .scan(false, |after_arrow, (token, text, token_range)| {
+                if *after_arrow && token == Token::Name {
                     return Some(Some(NameRef {
                         range: token_range,
                         text: text.to_string(),
                     }));
                 }
-                *after_colon_colon = token == Token::ColonColon;
+                *after_arrow = token == Token::Arrow;
                 Some(None)
             })
             .flatten()
-            .next();
-        let Some(selector) = selector else {
-            return Some(qualified);
-        };
-        Some(NameRef {
-            range: TextRange {
-                start: qualified.range.start,
-                end: selector.range.end,
-            },
-            text: format!("{}::{}", qualified.text, selector.text),
-        })
+            .next()
     }
 
     fn direct_rule(&self, node: NodeRef, target: Rule) -> Option<NodeRef> {
@@ -959,6 +959,28 @@ impl<'a> AstBuilder<'a> {
             text: "<missing>".to_string(),
         }
     }
+
+    fn missing_qualified_name(&self, node: NodeRef) -> QualifiedNameRef {
+        let name = self.missing_name(node);
+        QualifiedNameRef {
+            range: name.range,
+            schema: None,
+            name,
+        }
+    }
+
+    fn missing_relation_ref(&self, node: NodeRef) -> RelationRef {
+        let target = self.missing_qualified_name(node);
+        RelationRef {
+            range: target.range,
+            target,
+            selector: None,
+        }
+    }
+
+    fn relation_ref_from_name(&self, name: NameRef) -> RelationRef {
+        RelationRef::from_name(name)
+    }
 }
 
 fn rule(cst: &Cst<'_>, node: NodeRef) -> Option<Rule> {
@@ -1023,7 +1045,7 @@ mod tests {
         assert_eq!(
             path.segments
                 .iter()
-                .map(|segment| segment.field_ref())
+                .map(|segment| segment.display_text())
                 .collect::<Vec<_>>(),
             ["posts", "title"],
         );
@@ -1031,7 +1053,7 @@ mod tests {
 
     #[test]
     fn parses_scoped_relationship_selector_paths_into_segments() {
-        let src = "query Titles { title(where .aka_title::movie_id.title like \"%foo%\") { id } }";
+        let src = "query Titles { title(where .aka_title->movie_id.title like \"%foo%\") { id } }";
         let parsed = parse_source(SourceSnapshot::from(src));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         let query = parsed.source_file.queries().next().unwrap();
@@ -1049,9 +1071,9 @@ mod tests {
         assert_eq!(
             path.segments
                 .iter()
-                .map(|segment| segment.field_ref())
+                .map(|segment| segment.display_text())
                 .collect::<Vec<_>>(),
-            ["aka_title::movie_id", "title"],
+            ["aka_title->movie_id", "title"],
         );
         assert_eq!(path.segments[0].name.text, "aka_title");
         assert_eq!(

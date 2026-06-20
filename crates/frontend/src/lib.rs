@@ -92,14 +92,14 @@ mod tests {
             completion.label == "users" && completion.kind == completion::CompletionKind::Table
         }));
         assert!(completions.iter().any(|completion| {
-            completion.label == "other_schema.users"
+            completion.label == "other_schema::users"
                 && completion.kind == completion::CompletionKind::Table
         }));
     }
 
     #[test]
     fn completions_and_hover_work_inside_fragments() {
-        let source = "fragment UserFields on public.users {\n  posts {\n    title\n  }\n}";
+        let source = "fragment UserFields on public::users {\n  posts {\n    title\n  }\n}";
         let parsed = parsed(source);
         let source_file = parsed.source_file.clone();
         let catalog = Catalog::hardcoded();
@@ -121,12 +121,12 @@ mod tests {
 
     #[test]
     fn hover_and_completions_support_qualified_names() {
-        let source = "query Q { public.users { public.posts { title } } }";
+        let source = "query Q { public::users { public::posts { title } } }";
         let parsed = parsed(source);
         let source_file = parsed.source_file.clone();
         let catalog = Catalog::hardcoded();
-        let completion_byte = source.find("public.posts").unwrap() - 1;
-        let hover_byte = source.find("public.posts").unwrap();
+        let completion_byte = source.find("public::posts").unwrap() - 1;
+        let hover_byte = source.find("public::posts").unwrap();
 
         let completions =
             completion::completions_at_empty_scope(&parsed, &catalog, completion_byte);
@@ -135,7 +135,7 @@ mod tests {
         assert!(completions.iter().any(|completion| {
             completion.label == "posts" && completion.kind == completion::CompletionKind::Relation
         }));
-        assert_eq!(hover.label, "public.posts");
+        assert_eq!(hover.label, "public::posts");
         assert_eq!(hover.detail, "relation: public.posts");
         assert!(hover.markdown.contains("Foreign key"));
         assert!(hover.markdown.contains("posts.user_id"));
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn semantic_tokens_classify_schema_tables_relations_and_columns() {
-        let source = "query Q { public.users { id posts { title } } }";
+        let source = "query Q { public::users { id posts { title } } }";
         let parse = parse_source(source.into());
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         let catalog = Catalog::hardcoded();

@@ -55,9 +55,10 @@ pub use sql::{
 };
 pub use syntax::{
     BinaryOp, BinaryOperator, Clause, CstKind, Definition, Diagnostic, DiagnosticCode,
-    DiagnosticSource, Expr, Literal, OperatorVariable, ParseResult, PathScope, ScopedPath,
-    ScopedPathSegment, Selection, SelectionKind, Severity, SortDirection, SortDirectionExpr,
-    SourceFile, SourceSnapshot, SourceText, SyntaxNode, SyntaxToken, SyntaxTree, TextRange, Token,
-    ValueVariable, VariableScope, expected_tokens_at, parse_source,
+    DiagnosticSource, Expr, Literal, NameRef, OperatorVariable, ParseResult, PathScope,
+    QualifiedNameRef, RelationRef, ScopedPath, ScopedPathSegment, Selection, SelectionKind,
+    Severity, SortDirection, SortDirectionExpr, SourceFile, SourceSnapshot, SourceText, SyntaxNode,
+    SyntaxToken, SyntaxTree, TextRange, Token, ValueVariable, VariableScope, expected_tokens_at,
+    parse_source,
 };
 pub use variable_path::{InputPathSegment, is_input_path, is_params_path};

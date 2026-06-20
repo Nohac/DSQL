@@ -1,7 +1,7 @@
 use crate::DocumentSnapshot;
 use dsql_core::{
-    Catalog, Clause, Definition, Expr, FieldCheckResult, ParseResult, Selection, SelectionKind,
-    SourceSnapshot, TableId, TextRange,
+    Catalog, Clause, Definition, Expr, FieldCheckResult, ParseResult, RelationRef, Selection,
+    SelectionKind, SourceSnapshot, TableId, TextRange,
 };
 
 #[derive(Clone, Debug)]
@@ -39,7 +39,7 @@ pub(crate) fn semantic_tokens_at(parse: &ParseResult, catalog: &Catalog) -> Vec<
                 }
                 for selection in &query.selections {
                     add_table_ref_tokens(&mut tokens, &parse.source, selection.name.range);
-                    if let Some(table) = catalog.table_ref(&selection.name.text) {
+                    if let Some(table) = catalog.table_ref_for(&selection.name.target) {
                         add_clause_tokens(&mut tokens, catalog, table.id, selection);
                         add_selection_tokens(
                             &mut tokens,
@@ -60,7 +60,7 @@ pub(crate) fn semantic_tokens_at(parse: &ParseResult, catalog: &Catalog) -> Vec<
                 }
                 if let Some(on) = &fragment.on {
                     add_table_ref_tokens(&mut tokens, &parse.source, on.range);
-                    if let Some(table) = catalog.table_ref(&on.text) {
+                    if let Some(table) = catalog.table_ref_for(on) {
                         add_selection_tokens(
                             &mut tokens,
                             &parse.source,
@@ -98,7 +98,7 @@ fn add_selection_tokens(
                 kind: SemanticTokenKind::Alias,
             });
         }
-        match catalog.check_field(table, &selection.name.text) {
+        match catalog.check_field_ref(table, &selection.name) {
             FieldCheckResult::Column(_) => {
                 tokens.push(SemanticTokenInfo {
                     range: selection.name.range,
@@ -135,7 +135,10 @@ fn add_clause_tokens(
             Clause::OrderBy(order_by) => {
                 for item in &order_by.items {
                     if matches!(
-                        catalog.check_field(table, &item.field.text),
+                        catalog.check_field_ref(
+                            table,
+                            &RelationRef::from_qualified(item.field.clone()),
+                        ),
                         FieldCheckResult::Column(_)
                     ) {
                         tokens.push(SemanticTokenInfo {
@@ -159,7 +162,7 @@ fn add_expr_tokens(
     match expr {
         Expr::Name(name) => {
             if matches!(
-                catalog.check_field(table, &name.text),
+                catalog.check_field_ref(table, &RelationRef::from_name(name.clone())),
                 FieldCheckResult::Column(_)
             ) {
                 tokens.push(SemanticTokenInfo {
@@ -188,7 +191,7 @@ fn add_path_tokens(
     for (index, segment) in path.segments.iter().enumerate() {
         if index + 1 == path.segments.len() {
             if matches!(
-                catalog.check_field(current_table, &segment.field_ref()),
+                catalog.check_field_ref(current_table, &segment.relation_ref()),
                 FieldCheckResult::Column(_)
             ) {
                 tokens.push(SemanticTokenInfo {
@@ -199,7 +202,7 @@ fn add_path_tokens(
             return;
         }
         let FieldCheckResult::Relation(relation) =
-            catalog.check_field(current_table, &segment.field_ref())
+            catalog.check_field_ref(current_table, &segment.relation_ref())
         else {
             return;
         };
@@ -234,30 +237,30 @@ fn add_qualified_ref_tokens(
     tail_kind: SemanticTokenKind,
 ) {
     let text = source.text(range);
-    let relation_end = text.find("::").unwrap_or(text.len());
-    let relation_range = TextRange {
+    let target_end = text.find("->").unwrap_or(text.len());
+    let target_range = TextRange {
         start: range.start,
-        end: range.start + relation_end as u32,
+        end: range.start + target_end as u32,
     };
-    let relation_text = &text[..relation_end];
-    if let Some(dot) = relation_text.find('.') {
+    let target_text = &text[..target_end];
+    if let Some(delimiter) = target_text.find("::") {
         tokens.push(SemanticTokenInfo {
             range: TextRange {
-                start: relation_range.start,
-                end: relation_range.start + dot as u32,
+                start: target_range.start,
+                end: target_range.start + delimiter as u32,
             },
             kind: SemanticTokenKind::Schema,
         });
         tokens.push(SemanticTokenInfo {
             range: TextRange {
-                start: relation_range.start + dot as u32 + 1,
-                end: relation_range.end,
+                start: target_range.start + delimiter as u32 + 2,
+                end: target_range.end,
             },
             kind: tail_kind,
         });
     } else {
         tokens.push(SemanticTokenInfo {
-            range: relation_range,
+            range: target_range,
             kind: tail_kind,
         });
     }
