@@ -19,6 +19,12 @@ pub struct EmbeddedRegion {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbeddedRegionRange {
+    pub ordinal: u32,
+    pub content_range: TextRange,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegexEmbedding {
     pub pattern: String,
 }
@@ -32,6 +38,10 @@ impl RegexEmbedding {
 
     pub fn extract(&self, source: &str) -> Result<Vec<EmbeddedRegion>> {
         extract_regex(&self.pattern, source)
+    }
+
+    pub fn extract_ranges(&self, source: &str) -> Result<Vec<EmbeddedRegionRange>> {
+        extract_regex_ranges(&self.pattern, source)
     }
 }
 
@@ -50,6 +60,25 @@ pub fn extract_regex(pattern: &str, source: &str) -> Result<Vec<EmbeddedRegion>>
             ordinal: regions.len() as u32,
             content_range: TextRange::new(content.start(), content.end()),
             text: content.as_str().to_string(),
+        });
+    }
+    Ok(regions)
+}
+
+pub fn extract_regex_ranges(pattern: &str, source: &str) -> Result<Vec<EmbeddedRegionRange>> {
+    let regex = Regex::new(pattern)?;
+    if regex.capture_names().all(|name| name != Some("content")) {
+        return Err(EmbeddingError::MissingContentCapture);
+    }
+
+    let mut regions = Vec::new();
+    for captures in regex.captures_iter(source) {
+        let Some(content) = captures.name("content") else {
+            continue;
+        };
+        regions.push(EmbeddedRegionRange {
+            ordinal: regions.len() as u32,
+            content_range: TextRange::new(content.start(), content.end()),
         });
     }
     Ok(regions)
@@ -75,5 +104,17 @@ mod tests {
         let error = extract_regex("(?P<query>.*)", "").unwrap_err();
 
         assert!(matches!(error, EmbeddingError::MissingContentCapture));
+    }
+
+    #[test]
+    fn extract_ranges_returns_content_offsets_without_text() {
+        let source = "const query = dsql`query Users { users { id } }`;";
+        let regions = extract_regex_ranges(&default_typescript_regex_pattern(), source).unwrap();
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!(
+            &source[regions[0].content_range.as_usize()],
+            "query Users { users { id } }"
+        );
     }
 }

@@ -7,21 +7,21 @@ use dsql_frontend::{
 use std::str::FromStr;
 use std::{
     error::Error,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    MessageType, NumberOrString, OneOf, Position, Range, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri,
+    CodeActionParams, CodeActionResponse, CompletionItem, CompletionItemKind, CompletionOptions,
+    CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentFormattingParams, ExecuteCommandParams, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, LSPAny, Location, MarkupContent, MarkupKind, MessageType, NumberOrString,
+    OneOf, Position, Range, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use tracing::{info, warn};
@@ -176,34 +176,30 @@ impl Backend {
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         self.load_project_catalog().await;
-        Ok(InitializeResult {
-            capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
-                )),
-                document_formatting_provider: Some(OneOf::Left(true)),
-                completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![
-                        ".".to_string(),
-                        "~".to_string(),
-                        ":".to_string(),
-                    ]),
-                    ..CompletionOptions::default()
+        let mut capabilities = ServerCapabilities {
+            text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                TextDocumentSyncKind::INCREMENTAL,
+            )),
+            document_formatting_provider: Some(OneOf::Left(true)),
+            completion_provider: Some(CompletionOptions {
+                trigger_characters: Some(vec![".".to_string(), "~".to_string(), ":".to_string()]),
+                ..CompletionOptions::default()
+            }),
+            definition_provider: Some(OneOf::Left(true)),
+            hover_provider: Some(HoverProviderCapability::Simple(true)),
+            semantic_tokens_provider: Some(
+                SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                    legend: semantic_tokens_legend(),
+                    range: None,
+                    full: Some(SemanticTokensFullOptions::Bool(true)),
+                    ..SemanticTokensOptions::default()
                 }),
-                definition_provider: Some(OneOf::Left(true)),
-                hover_provider: Some(HoverProviderCapability::Simple(true)),
-                semantic_tokens_provider: Some(
-                    SemanticTokensServerCapabilities::SemanticTokensOptions(
-                        SemanticTokensOptions {
-                            legend: semantic_tokens_legend(),
-                            range: None,
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
-                            ..SemanticTokensOptions::default()
-                        },
-                    ),
-                ),
-                ..ServerCapabilities::default()
-            },
+            ),
+            ..ServerCapabilities::default()
+        };
+        crate::debug::configure_capabilities(&mut capabilities);
+        Ok(InitializeResult {
+            capabilities,
             ..InitializeResult::default()
         })
     }
@@ -479,6 +475,14 @@ impl LanguageServer for Backend {
             data: encode_semantic_tokens(&tokens.snapshot.rope, &tokens.tokens),
         })))
     }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        crate::debug::code_action(params).await
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<LSPAny>> {
+        crate::debug::execute_command(&self.client, params).await
+    }
 }
 
 fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
@@ -530,9 +534,9 @@ fn source_definition_uri_and_rope(
         .document_snapshot(&PhysicalDocumentId(path.clone()))
         .map(|snapshot| snapshot.rope)
         .or_else(|| {
-            fs::read_to_string(&path)
+            File::open(&path)
                 .ok()
-                .map(|text| ropey::Rope::from_str(&text))
+                .and_then(|file| ropey::Rope::from_reader(file).ok())
         })?;
     Some((uri, rope))
 }

@@ -14,8 +14,8 @@ use crate::{
 use dashmap::DashMap;
 use dsql_core::{
     Catalog, DefinitionRecord, Diagnostic, DiagnosticCode, DiagnosticSource, FormatConfidence,
-    FormattedText, FragmentMap, LintOptions, Severity, TextRange, VariableBinding,
-    infer_fragment_variable_bindings, infer_query_variable_bindings,
+    FormattedText, FragmentMap, LintOptions, Severity, SourceDocument, SourceRegion, TextRange,
+    VariableBinding, infer_fragment_variable_bindings, infer_query_variable_bindings,
 };
 use dsql_embedding::{RegexEmbedding, default_typescript_regex_pattern};
 use ropey::{LineType, Rope};
@@ -69,7 +69,7 @@ pub struct SourceEntry {
     pub id: PhysicalDocumentId,
     pub path: Option<PathBuf>,
     pub revision: RevisionId,
-    pub rope: Rope,
+    pub document: SourceDocument,
     pub residency: SourceResidency,
 }
 
@@ -272,7 +272,7 @@ impl SourceDbInner {
             id: id.clone(),
             path: Some(path.to_path_buf()),
             revision: file_revision(path).unwrap_or_default(),
-            rope,
+            document: SourceDocument::from_rope(rope),
             residency: SourceResidency::AnalysisSnapshot,
         });
         Ok(id)
@@ -312,7 +312,7 @@ impl SourceDbInner {
             id,
             path,
             revision,
-            rope: Rope::from_str(&text),
+            document: SourceDocument::from_string(text),
             residency: SourceResidency::OpenEditable,
         });
     }
@@ -324,7 +324,9 @@ impl SourceDbInner {
         edits: Vec<TextEdit>,
     ) -> Option<()> {
         let mut entry = self.entries.get_mut(document_id)?;
-        apply_text_edits(&mut entry.rope, edits);
+        let mut rope = entry.document.as_rope().clone();
+        apply_text_edits(&mut rope, edits);
+        entry.document = SourceDocument::from_rope(rope);
         entry.revision = revision;
         entry.residency = SourceResidency::OpenEditable;
         Some(())
@@ -340,20 +342,30 @@ impl SourceDbInner {
             && let Ok(rope) = Rope::from_reader(file)
         {
             entry.revision = file_revision(&path).unwrap_or_default();
-            entry.rope = rope;
+            entry.document = SourceDocument::from_rope(rope);
             entry.residency = SourceResidency::AnalysisSnapshot;
             return Some(entry.clone());
         }
         Some(entry.clone())
     }
 
-    pub fn region_rope(&self, region: &ProjectSourceRegion) -> Option<(RevisionId, Rope)> {
+    pub fn source_region(
+        &self,
+        region: &ProjectSourceRegion,
+    ) -> Option<(RevisionId, SourceRegion)> {
         let entry = self.entries.get(&region.physical_document)?;
         let range = region.content_range.as_usize();
-        if range.end > entry.rope.len() {
+        if range.end > entry.document.len_bytes() {
             return None;
         }
-        Some((entry.revision, Rope::from(entry.rope.slice(range))))
+        Some((
+            entry.revision,
+            SourceRegion::new(
+                entry.document.clone(),
+                region.content_range,
+                region.source_offset,
+            ),
+        ))
     }
 }
 
@@ -689,7 +701,7 @@ impl ProjectHost {
                 .unwrap_or_else(|| source.id.0.display().to_string()),
             version: source.revision.0.min(i32::MAX as u64) as i32,
             revision: source.revision,
-            rope: source.rope,
+            rope: source.document.as_rope().clone(),
         })
     }
 
@@ -699,7 +711,7 @@ impl ProjectHost {
         position: TextPosition,
     ) -> Option<usize> {
         let source = self.inner.sources.source(document_id)?;
-        Some(position_to_byte(&source.rope, position))
+        Some(position_to_byte(source.document.as_rope(), position))
     }
 
     pub async fn completions(
@@ -1039,8 +1051,11 @@ impl ProjectHost {
             source_offset: diagnostic.source_offset,
             embedded_range: diagnostic.diagnostic.range,
             range: physical_range,
-            start_position: byte_to_position(&source.rope, physical_range.start as usize),
-            end_position: byte_to_position(&source.rope, physical_range.end as usize),
+            start_position: byte_to_position(
+                source.document.as_rope(),
+                physical_range.start as usize,
+            ),
+            end_position: byte_to_position(source.document.as_rope(), physical_range.end as usize),
             diagnostic: Diagnostic {
                 range: physical_range,
                 ..diagnostic.diagnostic
@@ -1323,7 +1338,7 @@ impl ProjectHost {
     }
 
     fn ensure_source_unit(&self, region: &ProjectSourceRegion) -> Option<SourceUnitId> {
-        let (revision, rope) = self.inner.sources.region_rope(region)?;
+        let (revision, source_region) = self.inner.sources.source_region(region)?;
         if let Some(unit_id) = self
             .inner
             .sources
@@ -1333,14 +1348,14 @@ impl ProjectHost {
         {
             self.inner
                 .db
-                .set_source_rope(unit_id, revision, rope)
+                .set_source_region(unit_id, revision, source_region)
                 .expect("source input should be representable by Picante");
             return Some(unit_id);
         }
         let unit_id = self.inner.sources.allocate_unit();
         self.inner
             .db
-            .set_source_rope(unit_id, revision, rope)
+            .set_source_region(unit_id, revision, source_region)
             .expect("source input should be representable by Picante");
         self.inner
             .sources
@@ -1552,15 +1567,15 @@ fn source_regions_for_entry(source: &SourceEntry) -> Vec<ProjectSourceRegion> {
     {
         return vec![ProjectSourceRegion {
             physical_document: source.id.clone(),
-            content_range: TextRange::new(0, source.rope.len()),
+            content_range: TextRange::new(0, source.document.len_bytes()),
             source_offset: 0,
         }];
     }
 
-    let text = source.rope.to_string();
+    let text = source.document.source_view();
     let embedding = RegexEmbedding::new(default_typescript_regex_pattern());
     embedding
-        .extract(&text)
+        .extract_ranges(text)
         .unwrap_or_default()
         .into_iter()
         .map(|region| ProjectSourceRegion {
@@ -1868,7 +1883,7 @@ imports = ["api"]
             id: document_id.clone(),
             path: Some(PathBuf::from("src/users.ts")),
             revision: RevisionId(1),
-            rope: Rope::from_str(source),
+            document: SourceDocument::from_string(source.to_string()),
             residency: SourceResidency::OpenEditable,
         });
         analysis.insert_bundle(bundle("api", region.clone()));
@@ -1901,7 +1916,7 @@ imports = ["api"]
             id: document_id.clone(),
             path: Some(PathBuf::from("src/users.ts")),
             revision: RevisionId(1),
-            rope: Rope::from_str(source),
+            document: SourceDocument::from_string(source.to_string()),
             residency: SourceResidency::OpenEditable,
         });
         single_context.insert_bundle(bundle(
@@ -1948,7 +1963,7 @@ imports = ["api"]
             id: document_id.clone(),
             path: Some(document_id.0),
             revision: RevisionId(1),
-            rope: Rope::from_str(source),
+            document: SourceDocument::from_string(source.to_string()),
             residency: SourceResidency::AnalysisSnapshot,
         }
     }

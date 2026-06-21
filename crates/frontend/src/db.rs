@@ -6,14 +6,14 @@ use dsql_core::{
     Catalog, CheckDiagnostic, CheckDiagnosticKind, CheckedFile, CompilerDiagnostic,
     CompilerDiagnosticSource, DefinitionRecord, Diagnostic, ExtractedFile, FragmentMap,
     FragmentRecord, Interner, LintOptions, LintedFile, LoweredFile, ParseResult, PlannedFile,
-    SourceFile, SourceSnapshot, SyntaxTree, check_file_with_catalog, check_fragment_definition,
-    check_query_definition, extract_definitions, format_file, lint_file_with_options,
-    lint_fragment_definition_with_options, lint_query_definition_with_options, lower_file,
-    parse_source, plan_file_with_catalog, plan_query_definition,
+    SourceFile, SourceRegion, SourceSnapshot, SyntaxTree, check_file_with_catalog,
+    check_fragment_definition, check_query_definition, extract_definitions, format_file,
+    lint_file_with_options, lint_fragment_definition_with_options,
+    lint_query_definition_with_options, lower_file, parse_source, plan_file_with_catalog,
+    plan_query_definition,
 };
 use facet::Facet;
 use picante::PicanteResult;
-use ropey::Rope;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -44,26 +44,12 @@ impl CompilerDiagnosticSource for ParsedFile {
     }
 }
 
-#[derive(Clone, Debug, Facet)]
-#[facet(opaque, traits(Debug))]
-pub struct SourceRope(Arc<Rope>);
-
-impl SourceRope {
-    fn new(rope: Rope) -> Self {
-        Self(Arc::new(rope))
-    }
-
-    fn arc(&self) -> Arc<Rope> {
-        self.0.clone()
-    }
-}
-
 #[picante::input]
 pub struct SourceInput {
     #[key]
     pub unit_id: SourceUnitId,
     pub revision: RevisionId,
-    pub rope: SourceRope,
+    pub region: SourceRegion,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
@@ -119,8 +105,8 @@ pub async fn parse_file<DB: CompilerDatabaseTrait>(
     db: &DB,
     source: SourceInput,
 ) -> PicanteResult<Arc<ParsedFile>> {
-    let rope = source.rope(db)?.arc();
-    let parse = parse_source(SourceSnapshot::from_arc_rope(rope));
+    let region = source.region(db)?.clone();
+    let parse = parse_source(SourceSnapshot::from_region(region));
     Ok(Arc::new(ParsedFile {
         tree: parse.tree,
         source_file: parse.source_file,
@@ -249,9 +235,9 @@ pub async fn formatted_text_for_file<DB: CompilerDatabaseTrait>(
     source: SourceInput,
 ) -> PicanteResult<Option<String>> {
     let parsed = parse_file(db, source).await?;
-    let rope = source.rope(db)?.arc();
+    let region = source.region(db)?.clone();
     let parse = ParseResult {
-        source: SourceSnapshot::from_arc_rope(rope),
+        source: SourceSnapshot::from_region(region),
         tree: parsed.tree.clone(),
         source_file: parsed.source_file.clone(),
         diagnostics: parsed.diagnostics.clone(),
@@ -445,13 +431,13 @@ impl CompilerDb {
         LintOptionsInput::set(self, options)
     }
 
-    pub(crate) fn set_source_rope(
+    pub(crate) fn set_source_region(
         &self,
         unit_id: SourceUnitId,
         revision: RevisionId,
-        rope: Rope,
+        region: SourceRegion,
     ) -> PicanteResult<()> {
-        let source = SourceInput::new(self, unit_id, revision, SourceRope::new(rope))?;
+        let source = SourceInput::new(self, unit_id, revision, region)?;
         self.source_inputs.insert(unit_id, source);
         Ok(())
     }
@@ -479,10 +465,10 @@ impl CompilerDb {
         let check = scoped_check_unit(&scoped, unit_id, &catalog);
         let lint = scoped_lint_unit(&scoped, unit_id, &catalog, options);
         let plan = scoped_plan_unit(&scoped, unit_id, &catalog);
-        let rope = source.rope(self).ok()?.arc();
+        let region = source.region(self).ok()?.clone();
         Some(AnalysisResult {
             parse: ParseResult {
-                source: SourceSnapshot::from_arc_rope(rope),
+                source: SourceSnapshot::from_region(region),
                 tree: parsed.tree.clone(),
                 source_file: parsed.source_file.clone(),
                 diagnostics: parsed.diagnostics.clone(),

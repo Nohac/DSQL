@@ -8,6 +8,7 @@ dsql-core = { workspace = true }
 dsql-embedding = { workspace = true }
 dsql-frontend = { workspace = true }
 dsql-project = { workspace = true }
+facet-json = { workspace = true }
 glob = { workspace = true }
 ropey = { workspace = true, features = ["metric_utf16"] }
 tokio = { workspace = true, features = ["full"] }

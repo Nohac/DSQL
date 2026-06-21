@@ -144,10 +144,9 @@ pub enum AstNode {
 
 pub fn parse_source(source: SourceSnapshot) -> ParseResult {
     let (tree, source_file, diagnostics) = {
-        let source_text = source.full_text();
+        let source_text = source.source_view();
         let mut lelwel_diagnostics = Vec::new();
-        let cst = Parser::new(source_text.as_ref(), &mut lelwel_diagnostics)
-            .parse(&mut lelwel_diagnostics);
+        let cst = Parser::new(source_text, &mut lelwel_diagnostics).parse(&mut lelwel_diagnostics);
         let diagnostics = lelwel_diagnostics
             .into_iter()
             .map(convert_diagnostic)
@@ -166,7 +165,7 @@ pub fn parse_source(source: SourceSnapshot) -> ParseResult {
 }
 
 pub fn expected_tokens_at(source: &SourceSnapshot, byte: usize) -> Vec<SyntaxToken> {
-    let source_text = source.full_text();
+    let source_text = source.source_view();
     if byte > source_text.len() || !source_text.is_char_boundary(byte) {
         return Vec::new();
     }

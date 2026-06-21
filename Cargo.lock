@@ -551,6 +551,7 @@ dependencies = [
  "dsql-embedding",
  "dsql-frontend",
  "dsql-project",
+ "facet-json",
  "glob",
  "ropey",
  "tokio",

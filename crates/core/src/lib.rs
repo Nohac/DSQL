@@ -1,4 +1,5 @@
 pub mod catalog;
+pub mod debug;
 pub mod definition;
 mod diagnostics;
 pub mod format;
@@ -57,8 +58,8 @@ pub use syntax::{
     BinaryOp, BinaryOperator, Clause, CstKind, Definition, Diagnostic, DiagnosticCode,
     DiagnosticSource, Expr, Literal, NameRef, OperatorVariable, ParseResult, PathScope,
     QualifiedNameRef, RelationRef, ScopedPath, ScopedPathSegment, Selection, SelectionKind,
-    Severity, SortDirection, SortDirectionExpr, SourceFile, SourceSnapshot, SyntaxNode,
-    SyntaxToken, SyntaxTree, TextRange, Token, ValueVariable, VariableScope, expected_tokens_at,
-    parse_source,
+    Severity, SortDirection, SortDirectionExpr, SourceDocument, SourceFile, SourceRegion,
+    SourceSnapshot, SyntaxNode, SyntaxToken, SyntaxTree, TextRange, Token, ValueVariable,
+    VariableScope, expected_tokens_at, parse_source,
 };
 pub use variable_path::{InputPathSegment, is_input_path, is_params_path};

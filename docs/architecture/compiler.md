@@ -64,7 +64,7 @@ Embedded DSQL is represented as a region over the host document, with
 `source_offset` equal to the embedded content start. Embedded regions should not
 become independent canonical documents.
 
-APIs that need contiguous source text call `SourceSnapshot::full_text()`. It
+APIs that need contiguous source text call `SourceSnapshot::source_view()`. It
 borrows from the document full-text cache when available, borrows directly from
 the Rope when the requested region is contiguous, and otherwise materializes the
 document text once for the current document revision. This keeps repeated
