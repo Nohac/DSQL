@@ -23,41 +23,68 @@ state belongs at the frontend boundary.
 
 ## Source Model
 
-Source text enters core analysis through `SourceSnapshot`:
+Source text enters analysis through immutable document revisions owned by
+`SourceDb`. A document revision is the canonical source object for one physical
+document at one revision:
 
 ```rust
-pub struct SourceSnapshot {
-    rope: Arc<Rope>,
+pub struct SourceDocumentRevision {
+    pub id: PhysicalDocumentId,
+    pub path: Option<PathBuf>,
+    pub revision: RevisionId,
+    pub rope: Rope,
+    pub full_text: OnceLock<Arc<str>>,
+    pub residency: SourceResidency,
 }
 ```
 
-`SourceSnapshot` is always Rope-backed so editor and project source can cross
-compiler boundaries without first flattening into a contiguous string. APIs
-that need contiguous full source text, including the current Lelwel/Logos parser
-path, call `SourceSnapshot::full_text()`: if the rope has one chunk it returns
-borrowed text from the snapshot, otherwise it flattens the rope into an owned
-`String`.
+`SourceDb` is the only owner of loaded project files and live editor buffers.
+The Rope remains the editing and source-query representation. The optional
+full-text cache records the contiguous document text only when a stage already
+needs the full source, for example embedded-source extraction or a parser API
+that requires `&str`.
+
+Compiler source units are regions over document revisions, not detached source
+copies:
+
+```rust
+pub struct SourceRegion {
+    pub document: Arc<SourceDocumentRevision>,
+    pub content_range: TextRange,
+    pub source_offset: u32,
+}
+
+pub struct SourceSnapshot {
+    region: SourceRegion,
+}
+```
+
+A full `.dsql` file is represented as a region covering the entire document.
+Embedded DSQL is represented as a region over the host document, with
+`source_offset` equal to the embedded content start. Embedded regions should not
+become independent canonical documents.
+
+APIs that need contiguous source text call `SourceSnapshot::full_text()`. It
+borrows from the document full-text cache when available, borrows directly from
+the Rope when the requested region is contiguous, and otherwise materializes the
+document text once for the current document revision. This keeps repeated
+embedding, parsing, formatting, and diagnostic work from flattening the same
+source multiple times.
 
 Compiler stages should prefer Rope operations, ranges, or short borrowed token
 text over full-source strings. Full-source materialization belongs only at true
-output boundaries or temporary `&str`-based integration points.
+output boundaries or temporary `&str`-based integration points. When
+materialization is required, it should happen through the document revision so
+all source regions for that revision can share it.
 
 Spans are stored as byte ranges internally. Editor-facing line/character
 positions are computed only at the protocol or presentation boundary.
 
 `ProjectHost` owns a `SourceDb` for project and editor state. `SourceDb` stores
-physical documents as Rope-backed `SourceEntry` values and tracks source-unit
-membership by `ProjectSourceRegion`.
+physical document revisions and tracks source-unit membership by
+`ProjectSourceRegion`.
 
 ```rust
-pub struct SourceEntry {
-    pub id: PhysicalDocumentId,
-    pub path: Option<PathBuf>,
-    pub revision: RevisionId,
-    pub rope: Rope,
-    pub residency: SourceResidency,
-}
-
 pub enum SourceResidency {
     AnalysisSnapshot,
     OpenEditable,
@@ -72,9 +99,9 @@ document can contain one full-file DSQL source unit or multiple embedded units,
 for example DSQL regions extracted from a TypeScript file. `SourceDb` allocates
 and reuses `SourceUnitId` values for stable `ProjectSourceRegion` keys.
 
-`CompilerDb::set_source_rope` publishes an `Arc<Rope>` as the frontend
-`SourceInput`, so tracked analysis inputs preserve the same Rope-backed source
-model as `SourceDb`.
+`CompilerDb` publishes `SourceRegion` values as `SourceInput`, keyed by
+`SourceUnitId` and revision. Tracked analysis can therefore depend on immutable
+source regions while all loaded source text remains owned by `SourceDb`.
 
 ## Parsing And Syntax
 
@@ -178,7 +205,7 @@ queries should not know about resolution maps or imports.
 Current tracked inputs include:
 
 - `SourceInput`, keyed by `SourceUnitId` and source revision, storing
-  `Arc<Rope>`;
+  a `SourceRegion`;
 - `ContextSourcesInput`, keyed by context name;
 - `CatalogInput`;
 - `LintOptionsInput`.
@@ -223,7 +250,6 @@ Not yet implemented:
   formatting, generation, and catalog configuration;
 - a revisioned `CatalogSnapshot` wrapper around `Arc<Catalog>`;
 - selective invalidation keyed by config/catalog revision.
-- Rope-backed `SourceInput` values in `CompilerDb`.
 
 Until those inputs exist, code should still treat catalog and project config as
 external immutable inputs at the frontend boundary.
