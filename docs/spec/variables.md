@@ -236,6 +236,231 @@ The compiler may eventually infer operator-qualified anonymous names such as
 `id_gt` and `id_lt`, but the first implementation should prefer diagnostics
 over surprising generated names.
 
+## Bound Definition Inputs
+
+Some source constructs reference another definition that has its own inferred
+variables. Fragment spreads are the first example, but the same model should
+also apply to query references in directives, split-fetch handles, and future
+definition-like language constructs.
+
+The general model is a bound definition reference:
+
+```text
+BoundDefinitionRef {
+  target: Fragment | Query | FutureDefinition,
+  bindings: Vec<VariableBinding>,
+}
+
+VariableBinding =
+  Forward(VariableRef)
+  | Map { target: VariableRef, source: VariableRef }
+```
+
+The target definition infers its own `$` structured inputs and `$$` top-level
+params from its body. A reference may either leave those target variables
+contained under the reference namespace or explicitly bind them into the
+caller/reference-site input contract.
+
+### Default Fragment Containment
+
+A fragment spread without a binding list keeps the fragment's inferred variables
+contained under the spread path.
+
+```dsql
+fragment UserPanel on users {
+  posts(where .created_at > $created_after limit $$limit) {
+    id
+  }
+}
+
+query Users {
+  users {
+    ...UserPanel
+  }
+}
+```
+
+The generated input shape is implementation-defined, but conceptually the
+fragment variables stay under the `UserPanel` spread namespace:
+
+```text
+input.users.UserPanel.input.posts.created_after
+input.users.UserPanel.params.limit
+```
+
+This is valid without explicit bindings. The fragment is a reusable source
+definition and the spread site owns a contained instance of its input contract.
+
+### Explicit Bindings
+
+A binding list lets the caller lift, rename, or merge target variables into the
+caller input contract.
+
+```dsql
+query Users {
+  users(where .created_at > $after limit $$page_size) {
+    ...UserPanel(
+      $created_after <- $after,
+      $$limit <- $$page_size,
+    )
+  }
+}
+```
+
+The left side of `<-` identifies a variable inferred by the target definition.
+The right side is a variable occurrence in the caller context. The source
+variable participates in the caller's normal inference and merge rules exactly
+as if it appeared in a clause at that reference site, using the target
+variable's expected type and role as its inference context.
+
+Explicit mappings may cross variable roots when the inferred types are
+compatible:
+
+```dsql
+...UserPanel(
+  $inner_input <- $$outer_param,
+  $$inner_param <- $outer_input,
+)
+```
+
+This maps a target structured input from a caller top-level param and a target
+top-level param from a caller structured input. The generated caller paths come
+from the source variables, not the target variables.
+
+### Forwarding Shorthand
+
+A binding item may omit `<-` when the target and source variable names are the
+same, or when an anonymous variable can be inferred unambiguously.
+
+```dsql
+...UserPanel($created_after, $$limit)
+```
+
+This is equivalent to forwarding target `$created_after` from caller
+`$created_after`, and target `$$limit` from caller `$$limit`.
+
+Anonymous forwarding is also allowed:
+
+```dsql
+...UserPanel($$, $)
+```
+
+If `UserPanel` has exactly one required target param and exactly one required
+target structured input, this lifts both roots into the caller. For the example
+above, the caller's generated input becomes conceptually:
+
+```text
+params.limit
+input.users.created_after
+```
+
+The anonymous source variables are normal caller variables. If compatible
+caller variables already exist, they merge by the ordinary merge rules. If not,
+they create caller inputs using the target variable's inferred type, role, and
+name. If the target has multiple compatible variables for an anonymous binding,
+the compiler reports the normal ambiguity diagnostic and asks the user to name
+or map the binding.
+
+### Per-Root Binding Mode
+
+Explicit binding mode is activated independently for each variable root:
+
+```text
+$    structured input root
+$$   top-level params root
+```
+
+If a binding list mentions any `$` binding, all required target structured input
+variables must be bound by that list. Unbound target `$$` params remain contained
+unless the list also mentions a `$$` binding.
+
+If a binding list mentions any `$$` binding, all required target params must be
+bound by that list. Unbound target `$` inputs remain contained unless the list
+also mentions a `$` binding.
+
+For example:
+
+```dsql
+...UserPanel($$)
+```
+
+Only the target params root is explicitly bound. The target structured input
+root remains contained:
+
+```text
+params.limit
+input.users.UserPanel.input.posts.created_after
+```
+
+And:
+
+```dsql
+...UserPanel($)
+```
+
+Only the target structured input root is explicitly bound. The target params
+root remains contained:
+
+```text
+input.users.created_after
+input.users.UserPanel.params.limit
+```
+
+This avoids forcing users to bind every root when they only want to lift one
+class of variable, while still preventing half-lifted variables within the same
+root.
+
+### Binding Diagnostics
+
+Within an explicitly bound root:
+
+- every required target variable for that root must be bound;
+- a target variable may be bound at most once;
+- binding a variable that the target definition does not infer is a diagnostic;
+- source and target inferred types must be compatible;
+- anonymous bindings are diagnostics when more than one target variable could
+  match;
+- source variables merge into the caller using the same ambiguity rules as
+  ordinary variable usage.
+
+Missing target variables are diagnostics at the reference site only for roots
+that are in explicit binding mode. Roots not mentioned in the binding list keep
+their default contained input shape.
+
+### Bound Query References
+
+The same binding model applies when a directive or future metadata feature
+references a query with inferred inputs.
+
+```dsql
+query UserCard @cache(
+  invalidated_by: [
+    {
+      query: UserCardCacheKey($$id <- $$user_id),
+      keys: [.updated_at],
+    },
+  ],
+) {
+  users(where .id == $$user_id) {
+    id
+    name
+  }
+}
+
+query UserCardCacheKey {
+  users(where .id == $$id) {
+    id
+    updated_at
+  }
+}
+```
+
+The cache directive does not define variables itself. It references a query and
+uses the shared binding model to map the referenced query's inferred variables
+from the current query's inferred variables. Context values are not bound here:
+`$:name` values are global host context and are supplied by the runtime through
+the normal context mechanism.
+
 ## Bounded Dynamic Filters And Ordering
 
 Some generated API surfaces need programmatic, type-safe filtering and ordering

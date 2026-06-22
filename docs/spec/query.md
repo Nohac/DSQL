@@ -702,6 +702,176 @@ query Users {
 
 Fragments may be defined before or after the query that spreads them.
 
+### Fragment Spread Aliases And Merging
+
+Status: proposed extension.
+
+Conceptual syntax:
+
+```text
+fragment_spread = alias? "..." fragment_name binding_list? directives?
+```
+
+`binding_list` uses the bound definition input syntax described in the
+variables spec.
+
+An unaliased fragment spread merges the fragment selection set into the current
+selection object.
+
+```dsql
+fragment UserSummary on users {
+  id
+  name
+}
+
+query Users {
+  users {
+    ...UserSummary
+  }
+}
+```
+
+An aliased fragment spread wraps the fragment selection set under the alias in
+the result shape:
+
+```dsql
+fragment RecentPosts on users {
+  posts(where .created_at > $recent_after) {
+    id
+    title
+  }
+}
+
+fragment PopularPosts on users {
+  posts(where .score > $min_score) {
+    id
+    title
+  }
+}
+
+query Users {
+  users {
+    recent: ...RecentPosts($recent_after <- $after)
+    popular: ...PopularPosts($min_score <- $score)
+  }
+}
+```
+
+Conceptual result shape:
+
+```json
+{
+  "users": [
+    {
+      "recent": {
+        "posts": [{ "id": "...", "title": "..." }]
+      },
+      "popular": {
+        "posts": [{ "id": "...", "title": "..." }]
+      }
+    }
+  ]
+}
+```
+
+The alias applies to the spread as a wrapper object. It does not rename each
+field inside the fragment. If a flatter shape is desired, the fields inside the
+fragment should be aliased instead:
+
+```dsql
+fragment RecentPosts on users {
+  recent_posts: posts(where .created_at > $recent_after) {
+    id
+    title
+  }
+}
+```
+
+Duplicate selections contributed by direct fields and unaliased fragments merge
+only when they are structurally compatible:
+
+- same output key;
+- same resolved field or relation;
+- same scalar type and nullability for scalar fields;
+- compatible clauses, bindings, directives, and cardinality;
+- compatible subselections for object or relation results.
+
+Scalar selections from multiple fragments therefore merge when they name the
+same output key and resolve to the same catalog field:
+
+```dsql
+fragment UserIdentity on users {
+  id
+  name
+}
+
+fragment UserLabel on users {
+  id
+  name
+}
+
+query Users {
+  users {
+    ...UserIdentity
+    ...UserLabel
+  }
+}
+```
+
+The result still contains one `id` field and one `name` field. Aliased scalar
+fields follow the same rule by output key:
+
+```dsql
+fragment UserDisplayA on users {
+  display_name: name
+}
+
+fragment UserDisplayB on users {
+  display_name: name
+}
+```
+
+Both fragments contribute the same `display_name` output from the same resolved
+field, so they are compatible. This is invalid:
+
+```dsql
+fragment UserDisplayName on users {
+  display_name: name
+}
+
+fragment UserDisplayEmail on users {
+  display_name: email
+}
+```
+
+Both fragments produce `display_name`, but they resolve to different catalog
+fields.
+
+If two selections produce the same output key but differ in field resolution,
+clauses, ordering, limits, variable bindings, or other structural semantics, the
+compiler reports a merge conflict. The compiler should not invent a merge
+strategy for divergent selections. Users must alias either the conflicting
+fields or the fragment spread.
+
+Directive metadata participates in compatibility through the directive system.
+If two merged selections carry the same non-repeatable directive with different
+arguments, the compiler reports a directive conflict unless that directive
+definition later declares a specific merge rule. Repeatable directives preserve
+source order in checked metadata.
+
+```dsql
+query Users {
+  users {
+    ...RecentPosts($recent_after <- $after)
+    ...PopularPosts($min_score <- $score)
+  }
+}
+```
+
+This is invalid because both fragments contribute a `posts` relation with
+different clauses and bindings. The user can fix it by aliasing the spread, as
+above, or by aliasing the relation fields inside the fragments.
+
 ## Comments
 
 Line comments use `#`.
