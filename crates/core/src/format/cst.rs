@@ -33,7 +33,7 @@ fn original_text(parse: &ParseResult) -> String {
         .into_owned()
 }
 
-struct CstFormatter<'a> {
+pub(crate) struct CstFormatter<'a> {
     parse: &'a ParseResult,
     out: String,
     indent: usize,

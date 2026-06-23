@@ -1,4 +1,5 @@
 use super::TextRange;
+use crate::language::atoms::directive::Directive;
 use facet::Facet;
 
 #[derive(Clone, Debug, PartialEq, Facet)]
@@ -37,7 +38,7 @@ pub struct Selection {
     pub arguments: Vec<Argument>,
     pub has_clause_list: bool,
     pub clauses: Vec<Clause>,
-    pub directives: Vec<NameRef>,
+    pub directives: Vec<Directive>,
     pub selections: Vec<Selection>,
 }
 

@@ -1,9 +1,10 @@
 mod ast;
 mod diagnostics;
-mod grammar;
-mod parse;
+pub(crate) mod grammar;
+pub(crate) mod parse;
 mod text;
 
+pub use crate::language::atoms::directive::Directive;
 pub use ast::{
     Argument, BinaryOp, BinaryOperator, Clause, Definition, Document, Expr, FragmentDef,
     LimitClause, Literal, NameRef, OffsetClause, OperatorVariable, OrderByClause, OrderByItem,

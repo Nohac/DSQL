@@ -215,7 +215,7 @@ fn lower_selections(selections: &[Selection], interner: &mut Interner, names: &m
         for directive in &selection.directives {
             names
                 .directives
-                .push((interner.intern(&directive.text), directive.range));
+                .push((interner.intern(&directive.name.text), directive.name.range));
         }
         for clause in &selection.clauses {
             if let crate::Clause::OrderBy(order_by) = clause {

@@ -3,6 +3,7 @@ pub mod debug;
 pub mod definition;
 mod diagnostics;
 pub mod format;
+pub(crate) mod language;
 pub mod lint;
 pub mod plan;
 pub mod semantic;

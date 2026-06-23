@@ -1,4 +1,4 @@
-mod cst;
+pub(crate) mod cst;
 mod types;
 
 pub use cst::format_file;

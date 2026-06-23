@@ -2,7 +2,7 @@ use super::ast::*;
 use super::diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity};
 use super::grammar::lexer::Token;
 use super::grammar::parser::{Cst, Node, NodeRef, Parser, Rule};
-use super::{SourceFile, SourceSnapshot, TextRange};
+use super::{Directive, SourceFile, SourceSnapshot, TextRange};
 use crate::diagnostics::{
     CompilerDiagnostic, CompilerDiagnosticSource, extend_compiler_diagnostics,
 };
@@ -357,7 +357,7 @@ fn map_token(token: Token) -> SyntaxToken {
     }
 }
 
-struct AstBuilder<'a> {
+pub(crate) struct AstBuilder<'a> {
     cst: &'a Cst<'a>,
 }
 
@@ -450,12 +450,7 @@ impl<'a> AstBuilder<'a> {
         };
         let clause_list = suffix.and_then(|suffix| self.direct_rule(suffix, Rule::ClauseList));
         let clauses = clause_list.map_or_else(Vec::new, |clauses| self.clauses(clauses));
-        let directives = suffix.map_or_else(Vec::new, |suffix| {
-            self.direct_rules(suffix, Rule::Directive)
-                .into_iter()
-                .filter_map(|directive| self.direct_names(directive).into_iter().next())
-                .collect()
-        });
+        let directives = suffix.map_or_else(Vec::new, |suffix| self.directives(suffix));
         let selections = suffix
             .and_then(|suffix| self.direct_rule(suffix, Rule::SelectionSet))
             .map_or_else(Vec::new, |selection_set| self.selection_set(selection_set));
@@ -482,7 +477,7 @@ impl<'a> AstBuilder<'a> {
         let directives = self
             .direct_rules(node, Rule::Directive)
             .into_iter()
-            .filter_map(|directive| self.direct_names(directive).into_iter().next())
+            .filter_map(|directive| self.directive(directive))
             .collect();
         Selection {
             range: range(self.cst.span(node)),
@@ -516,6 +511,21 @@ impl<'a> AstBuilder<'a> {
                 None
             })
             .collect()
+    }
+
+    fn directives(&self, node: NodeRef) -> Vec<Directive> {
+        self.direct_rules(node, Rule::Directive)
+            .into_iter()
+            .filter_map(|directive| self.directive(directive))
+            .collect()
+    }
+
+    fn directive(&self, node: NodeRef) -> Option<Directive> {
+        let name = self.direct_names(node).into_iter().next()?;
+        Some(Directive {
+            range: range(self.cst.span(node)),
+            name,
+        })
     }
 
     fn where_clause(&self, node: NodeRef) -> WhereClause {
