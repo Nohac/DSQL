@@ -33,11 +33,39 @@ language_atom! {
     }
 }
 
-impl BuildsAst<DirectiveAtom> for AstBuilder<'_> {}
+impl BuildsAst<DirectiveAtom> for AstBuilder<'_> {
+    fn build(&self, node: NodeRef) -> Directive {
+        Directive {
+            range: self.node_range(node),
+            name: self
+                .direct_names(node)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| self.missing_name(node)),
+        }
+    }
+}
 
-impl FormatsAtom<DirectiveAtom> for CstFormatter<'_> {}
+impl FormatsAtom<DirectiveAtom> for CstFormatter<'_> {
+    fn format(&mut self, node: usize) {
+        if let Some(name) = self.direct_token_text(node, crate::SyntaxToken::Name) {
+            self.write_str(" @");
+            self.write_str(&name);
+        }
+    }
+}
 
-impl LowersAtom<DirectiveAtom> for Lowerer {}
+impl LowersAtom<DirectiveAtom> for Lowerer {
+    fn lower(
+        directive: &Directive,
+        interner: &mut Interner,
+        names: &mut NameIndex,
+    ) -> LoweredDirective {
+        let name = interner.intern(&directive.name.text);
+        names.directives.push((name, directive.name.range));
+        LoweredDirective { name }
+    }
+}
 
 impl ChecksAtom<DirectiveAtom> for Checker {}
 

@@ -6,6 +6,7 @@ use super::{Directive, SourceFile, SourceSnapshot, TextRange};
 use crate::diagnostics::{
     CompilerDiagnostic, CompilerDiagnosticSource, extend_compiler_diagnostics,
 };
+use crate::language::{atoms::directive::DirectiveAtom, stages::BuildsAst};
 use facet::Facet;
 
 #[derive(Clone, Debug)]
@@ -477,7 +478,7 @@ impl<'a> AstBuilder<'a> {
         let directives = self
             .direct_rules(node, Rule::Directive)
             .into_iter()
-            .filter_map(|directive| self.directive(directive))
+            .map(|directive| <Self as BuildsAst<DirectiveAtom>>::build(self, directive))
             .collect();
         Selection {
             range: range(self.cst.span(node)),
@@ -516,16 +517,8 @@ impl<'a> AstBuilder<'a> {
     fn directives(&self, node: NodeRef) -> Vec<Directive> {
         self.direct_rules(node, Rule::Directive)
             .into_iter()
-            .filter_map(|directive| self.directive(directive))
+            .map(|directive| <Self as BuildsAst<DirectiveAtom>>::build(self, directive))
             .collect()
-    }
-
-    fn directive(&self, node: NodeRef) -> Option<Directive> {
-        let name = self.direct_names(node).into_iter().next()?;
-        Some(Directive {
-            range: range(self.cst.span(node)),
-            name,
-        })
     }
 
     fn where_clause(&self, node: NodeRef) -> WhereClause {
@@ -799,7 +792,7 @@ impl<'a> AstBuilder<'a> {
             .collect()
     }
 
-    fn direct_names(&self, node: NodeRef) -> Vec<NameRef> {
+    pub(crate) fn direct_names(&self, node: NodeRef) -> Vec<NameRef> {
         self.cst
             .children(node)
             .filter_map(|child| {
@@ -958,7 +951,11 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn missing_name(&self, node: NodeRef) -> NameRef {
+    pub(crate) fn node_range(&self, node: NodeRef) -> TextRange {
+        range(self.cst.span(node))
+    }
+
+    pub(crate) fn missing_name(&self, node: NodeRef) -> NameRef {
         NameRef {
             range: range(self.cst.span(node)),
             text: "<missing>".to_string(),

@@ -1,10 +1,20 @@
-use crate::language::atom::LanguageAtom;
+use crate::{
+    language::atom::LanguageAtom,
+    semantic::{Interner, NameIndex},
+    syntax::grammar::parser::NodeRef,
+};
 
-pub trait BuildsAst<A: LanguageAtom> {}
+pub trait BuildsAst<A: LanguageAtom> {
+    fn build(&self, node: NodeRef) -> A::Ast;
+}
 
-pub trait FormatsAtom<A: LanguageAtom> {}
+pub trait FormatsAtom<A: LanguageAtom> {
+    fn format(&mut self, node: usize);
+}
 
-pub trait LowersAtom<A: LanguageAtom> {}
+pub trait LowersAtom<A: LanguageAtom> {
+    fn lower(ast: &A::Ast, interner: &mut Interner, names: &mut NameIndex) -> A::Lowered;
+}
 
 pub trait ChecksAtom<A: LanguageAtom> {}
 

@@ -1,4 +1,5 @@
 use super::{FormatConfidence, FormatDiagnostic, FormattedText};
+use crate::language::{atoms::directive::DirectiveAtom, stages::FormatsAtom};
 use crate::syntax::{CstKind, ParseResult, SyntaxNode, SyntaxRule, SyntaxToken, TextRange};
 
 const DEFAULT_FORMAT_LINE_WIDTH: usize = 100;
@@ -154,7 +155,7 @@ impl<'a> CstFormatter<'a> {
             self.out.push_str(&name);
         }
         for directive in self.direct_rules(node, SyntaxRule::Directive) {
-            self.directive(directive);
+            <Self as FormatsAtom<DirectiveAtom>>::format(self, directive);
         }
     }
 
@@ -192,7 +193,7 @@ impl<'a> CstFormatter<'a> {
             self.clause_list(clauses);
         }
         for directive in self.direct_rules(node, SyntaxRule::Directive) {
-            self.directive(directive);
+            <Self as FormatsAtom<DirectiveAtom>>::format(self, directive);
         }
         if let Some(selection_set) = self.direct_rule(node, SyntaxRule::SelectionSet) {
             self.selection_set(selection_set);
@@ -345,13 +346,6 @@ impl<'a> CstFormatter<'a> {
         if let Some(direction) = self.direct_rule(node, SyntaxRule::SortDirection) {
             self.out.push(' ');
             self.out.push_str(&self.text(self.node(direction).range));
-        }
-    }
-
-    fn directive(&mut self, node: usize) {
-        if let Some(name) = self.direct_token_text(node, SyntaxToken::Name) {
-            self.out.push_str(" @");
-            self.out.push_str(&name);
         }
     }
 
@@ -584,8 +578,12 @@ impl<'a> CstFormatter<'a> {
             .collect()
     }
 
-    fn direct_token_text(&self, node: usize, target: SyntaxToken) -> Option<String> {
+    pub(crate) fn direct_token_text(&self, node: usize, target: SyntaxToken) -> Option<String> {
         self.direct_token_texts(node, target).into_iter().next()
+    }
+
+    pub(crate) fn write_str(&mut self, text: &str) {
+        self.out.push_str(text);
     }
 
     fn direct_token_texts(&self, node: usize, target: SyntaxToken) -> Vec<String> {

@@ -2,6 +2,10 @@ use crate::{
     diagnostics::{
         CompilerDiagnostic, CompilerDiagnosticSource, DsqlDiagnostic, extend_compiler_diagnostics,
     },
+    language::{
+        atoms::directive::DirectiveAtom,
+        stages::{Lowerer, LowersAtom},
+    },
     syntax::{
         Argument, Definition, DiagnosticCode, DiagnosticSource, Document, Expr, FragmentDef,
         Literal, QueryDef, Selection, Severity, SourceFile, TextRange, source_span,
@@ -213,9 +217,7 @@ fn lower_selections(selections: &[Selection], interner: &mut Interner, names: &m
             lower_argument(argument, interner, names);
         }
         for directive in &selection.directives {
-            names
-                .directives
-                .push((interner.intern(&directive.name.text), directive.name.range));
+            <Lowerer as LowersAtom<DirectiveAtom>>::lower(directive, interner, names);
         }
         for clause in &selection.clauses {
             if let crate::Clause::OrderBy(order_by) = clause {

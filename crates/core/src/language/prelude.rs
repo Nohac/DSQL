@@ -8,6 +8,10 @@ pub(crate) use crate::{
             ProvidesEditorSupport, VariableInference,
         },
     },
-    semantic::NameId,
-    syntax::{NameRef, TextRange, grammar::parser::Rule, parse::AstBuilder},
+    semantic::{Interner, NameId, NameIndex},
+    syntax::{
+        NameRef, TextRange,
+        grammar::parser::{NodeRef, Rule},
+        parse::AstBuilder,
+    },
 };
