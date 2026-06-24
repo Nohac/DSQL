@@ -87,6 +87,28 @@ pub enum CheckDiagnosticKind {
         expected: DataType,
         actual: LiteralKind,
     },
+    /// Directive name did not resolve to a known built-in or registered external directive.
+    #[error("directive `{name}` not found")]
+    UnknownDirective { name: String },
+    /// Directive resolved, but cannot be used at the current semantic location.
+    #[error("directive `{name}` is not allowed on {location}")]
+    DirectiveNotAllowed { name: String, location: String },
+    /// Directive invocation omitted a required argument.
+    #[error("directive `{name}` requires argument `{argument}`")]
+    MissingDirectiveArgument { name: String, argument: String },
+    /// Directive invocation supplied an argument not declared by the directive.
+    #[error("directive `{name}` does not define argument `{argument}`")]
+    UnknownDirectiveArgument { name: String, argument: String },
+    /// Directive invocation supplied the same argument more than once.
+    #[error("directive `{name}` repeats argument `{argument}`")]
+    DuplicateDirectiveArgument { name: String, argument: String },
+    /// Directive argument value does not match the lightweight built-in expectation.
+    #[error("directive `{name}` argument `{argument}` expects {expected}")]
+    DirectiveArgumentTypeMismatch {
+        name: String,
+        argument: String,
+        expected: String,
+    },
 }
 
 impl CheckDiagnostic {
@@ -120,6 +142,20 @@ impl CheckDiagnosticKind {
             }
             CheckDiagnosticKind::PredicateTypeMismatch { .. } => {
                 DiagnosticCode::PredicateTypeMismatch
+            }
+            CheckDiagnosticKind::UnknownDirective { .. } => DiagnosticCode::UnknownDirective,
+            CheckDiagnosticKind::DirectiveNotAllowed { .. } => DiagnosticCode::DirectiveNotAllowed,
+            CheckDiagnosticKind::MissingDirectiveArgument { .. } => {
+                DiagnosticCode::MissingDirectiveArgument
+            }
+            CheckDiagnosticKind::UnknownDirectiveArgument { .. } => {
+                DiagnosticCode::UnknownDirectiveArgument
+            }
+            CheckDiagnosticKind::DuplicateDirectiveArgument { .. } => {
+                DiagnosticCode::DuplicateDirectiveArgument
+            }
+            CheckDiagnosticKind::DirectiveArgumentTypeMismatch { .. } => {
+                DiagnosticCode::DirectiveArgumentTypeMismatch
             }
         }
     }

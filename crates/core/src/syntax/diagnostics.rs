@@ -42,6 +42,18 @@ pub enum DiagnosticCode {
     RelationSelectionSet,
     ClauseValueTypeMismatch,
     PredicateTypeMismatch,
+    /// Unknown directive name.
+    UnknownDirective,
+    /// Directive is not valid at its semantic location.
+    DirectiveNotAllowed,
+    /// Required directive argument is missing.
+    MissingDirectiveArgument,
+    /// Directive argument is not declared by the directive schema.
+    UnknownDirectiveArgument,
+    /// Directive argument appears more than once in one invocation.
+    DuplicateDirectiveArgument,
+    /// Directive argument value does not match the expected kind.
+    DirectiveArgumentTypeMismatch,
     AnonymousQuery,
     DuplicateAnonymousVariable,
     FormatParseError,

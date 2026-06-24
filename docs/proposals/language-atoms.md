@@ -160,19 +160,21 @@ Coverage traits should be small and stage-specific:
 
 ```rust
 pub trait BuildsAst<A: LanguageAtom> {
-    fn build_ast(&self, node: NodeRef) -> A::Ast;
+    fn build(&self, node: NodeRef) -> A::Ast;
 }
 
-pub trait FormatsAtom<A: LanguageAtom> {
-    fn format_atom(&mut self, node: SyntaxNodeRef);
+pub trait Formats<A: LanguageAtom> {
+    fn format(&mut self, node: SyntaxNodeRef);
 }
 
-pub trait LowersAtom<A: LanguageAtom> {
-    fn lower_atom(&mut self, ast: &A::Ast) -> A::Lowered;
+pub trait Lowers<A: LanguageAtom> {
+    fn lower(ast: &A::Ast, interner: &mut Interner, names: &mut NameIndex) -> A::Lowered;
 }
 
-pub trait ChecksAtom<A: LanguageAtom> {
-    fn check_atom(&mut self, ast: &A::Ast, context: CheckContext<'_>);
+pub trait Checks<A: LanguageAtom> {
+    type Context<'a>;
+
+    fn check(ast: &A::Ast, context: Self::Context<'_>);
 }
 ```
 
@@ -180,7 +182,7 @@ Stages that may not apply to all atoms should require either a positive
 implementation or a no-effect implementation:
 
 ```rust
-pub trait PlansAtom<A: LanguageAtom> {}
+pub trait Plans<A: LanguageAtom> {}
 
 pub trait NoPlanEffect<A: LanguageAtom> {
     const REASON: &'static str;
@@ -190,7 +192,7 @@ pub trait NoPlanEffect<A: LanguageAtom> {
 The atom contract should accept either:
 
 ```rust
-impl PlansAtom<DirectiveAtom> for Planner {}
+impl Plans<DirectiveAtom> for Planner {}
 ```
 
 or:
@@ -212,15 +214,15 @@ pub trait AtomCoverage<A: LanguageAtom>
 where
     A::GrammarRule: GrammarRuleMarker + GrammarRuleOwner<Atom = A>,
     AstBuilder: BuildsAst<A>,
-    CstFormatter: FormatsAtom<A>,
-    Lowerer: LowersAtom<A>,
+    CstFormatter: Formats<A>,
+    Lowerer: Lowers<A>,
     Checker: ChecksCoverage<A>,
     Linter: LintCoverage<A>,
     VariableInference: VariableCoverage<A>,
     Planner: PlanCoverage<A>,
     PostgresSqlGenerator: SqlCoverage<A>,
     MetadataGenerator: MetadataCoverage<A>,
-    EditorFeatures: EditorCoverage<A>,
+    LanguageService: EditorCoverage<A>,
 {
 }
 ```
@@ -233,7 +235,7 @@ pub trait PlanCoverage<A: LanguageAtom> {}
 impl<A, T> PlanCoverage<A> for T
 where
     A: LanguageAtom,
-    T: PlansAtom<A>,
+    T: Plans<A>,
 {
 }
 
@@ -330,20 +332,22 @@ impl BuildsAst<DirectiveAtom> for AstBuilder<'_> {
     }
 }
 
-impl FormatsAtom<DirectiveAtom> for CstFormatter<'_> {
-    fn format_atom(&mut self, node: SyntaxNodeRef) {
+impl Formats<DirectiveAtom> for CstFormatter<'_> {
+    fn format(&mut self, node: SyntaxNodeRef) {
         todo!()
     }
 }
 
-impl LowersAtom<DirectiveAtom> for Lowerer {
-    fn lower_atom(&mut self, directive: &ast::Directive) -> lowered::Directive {
+impl Lowers<DirectiveAtom> for Lowerer {
+    fn lower(directive: &ast::Directive, interner: &mut Interner, names: &mut NameIndex) -> lowered::Directive {
         todo!()
     }
 }
 
-impl ChecksAtom<DirectiveAtom> for Checker {
-    fn check_atom(&mut self, directive: &ast::Directive, context: CheckContext<'_>) {
+impl Checks<DirectiveAtom> for Checker {
+    type Context<'a> = CheckContext<'a>;
+
+    fn check(directive: &ast::Directive, context: Self::Context<'_>) {
         todo!()
     }
 }
@@ -357,15 +361,20 @@ construction, or adapter protocol conversion.
 Stages remain responsible for traversal and context. Atoms own behavior for one
 construct when the stage reaches it.
 
+Stage consumers must pass enough normalized context for the atom capability to
+do its work without rediscovering global state. The context should describe the
+local role the atom is playing, not force the atom to query project state or
+reconstruct traversal history.
+
 For example, checking still owns selection traversal:
 
 ```rust
 fn check_selection_set(&mut self, table: TableId, selections: &[Selection]) {
     for selection in selections {
-        self.check_atom::<FieldSelectionAtom>(selection, table);
+        self.check::<FieldSelectionAtom>(selection, table);
 
         for directive in selection.directives() {
-            self.check_atom::<DirectiveAtom>(
+            self.check::<DirectiveAtom>(
                 directive,
                 CheckContext::directive(DirectiveLocation::Selection, table),
             );
@@ -380,6 +389,64 @@ visible source units, imports, or catalog snapshots by itself.
 This preserves the rule that context enters once at the scoped/checking
 boundary.
 
+For formatting, this means parent formatters can provide layout intent rather
+than requiring atom formatters to know absolute indentation depth:
+
+```rust
+ctx.format_child(directive, LayoutHint::Inline);
+ctx.format_child(selection, LayoutHint::IndentedBlock);
+```
+
+The directive atom can then write itself as an inline child, while a selection
+atom can format block children using the formatter-provided indentation
+operations. Atoms should prefer contextual operations such as `space`,
+`newline`, `with_indent`, `format_child`, and `preserve_original` over hardcoded
+indent levels or parent-specific traversal assumptions.
+
+## Typed Stage Parameters
+
+If generic atom registries start to need different input shapes per stage, the
+atom system can grow a typed parameter extractor model instead of forcing every
+stage through one oversized context object. This is similar in spirit to Bevy
+system parameters: the stage provides a small runtime context, and each typed
+parameter declares how it is extracted from that context.
+
+For example:
+
+```rust
+pub struct AtomStageContext<'a> {
+    pub parse: Option<&'a ParseResult>,
+    pub node: Option<NodeRef>,
+    pub check: Option<CheckContext<'a>>,
+}
+
+pub trait AtomParam<'a>: Sized {
+    fn from_context(context: &'a AtomStageContext<'a>) -> Option<Self>;
+}
+
+impl<'a> AtomParam<'a> for NodeRef {
+    fn from_context(context: &'a AtomStageContext<'a>) -> Option<Self> {
+        context.node
+    }
+}
+```
+
+Generated adapter descriptors can then call typed atom implementations while
+the stage dispatcher stays generic:
+
+```rust
+pub struct FormatterDescriptor {
+    pub rule: Rule,
+    pub format: fn(&mut CstFormatter<'_>, AtomStageContext<'_>),
+}
+```
+
+This should remain an implementation detail of the atom provider. Public atom
+implementations should stay ordinary Rust trait impls such as
+`impl Formats<DirectiveAtom> for CstFormatter<'_>`. The parameter system is only
+worth adding once multiple atoms or stages need heterogeneous inputs that would
+otherwise require ad hoc erased dispatch.
+
 ## Context Rules
 
 Atoms may use context supplied by a stage, but they must not create context.
@@ -387,8 +454,8 @@ Atoms may use context supplied by a stage, but they must not create context.
 Allowed:
 
 ```rust
-impl ChecksAtom<DirectiveAtom> for Checker {
-    fn check_atom(&mut self, directive: &ast::Directive, context: CheckContext<'_>) {
+impl Checks<DirectiveAtom> for Checker {
+    fn check(directive: &ast::Directive, context: CheckContext<'_>) {
         context.catalog();
         context.directive_location();
         context.current_table();
@@ -399,8 +466,8 @@ impl ChecksAtom<DirectiveAtom> for Checker {
 Not allowed:
 
 ```rust
-impl ChecksAtom<DirectiveAtom> for Checker {
-    fn check_atom(&mut self, directive: &ast::Directive, context: CheckContext<'_>) {
+impl Checks<DirectiveAtom> for Checker {
+    fn check(directive: &ast::Directive, context: CheckContext<'_>) {
         context.resolve_environment_imports();
         context.load_project_config();
         context.query_source_membership();
@@ -440,7 +507,7 @@ block on that.
 
 ## Formatting
 
-Formatting is CST-owned. `FormatsAtom<A>` should receive syntax-node access,
+Formatting is CST-owned. `Formats<A>` should receive syntax-node access,
 not just AST data.
 
 The formatter must continue to preserve comments, trivia, malformed regions,
@@ -451,15 +518,15 @@ stage closest to original source text:
 
 ```rust
 match node.rule() {
-    SyntaxRule::Directive => self.format_atom::<DirectiveAtom>(node),
-    SyntaxRule::Clause => self.format_atom::<ClauseAtom>(node),
+    SyntaxRule::Directive => self.format::<DirectiveAtom>(node),
+    SyntaxRule::Clause => self.format::<ClauseAtom>(node),
     _ => self.format_internal(node),
 }
 ```
 
 ## Lowering
 
-Lowering is context-free. `LowersAtom<A>` may intern names, collect spans,
+Lowering is context-free. `Lowers<A>` may intern names, collect spans,
 extract structural facts, and produce lowered source-owned data.
 
 Lowering must not validate catalog existence, fragment visibility, resolution
@@ -478,7 +545,7 @@ Linting reports advisory diagnostics and may depend on catalog/config inputs.
 Atoms may provide separate check and lint coverage:
 
 ```rust
-impl ChecksAtom<DirectiveAtom> for Checker {}
+impl Checks<DirectiveAtom> for Checker {}
 
 impl NoLintEffect<DirectiveAtom> for Linter {
     const REASON: &'static str = "directives currently have no lint rules";
@@ -496,7 +563,7 @@ the atom contract because generated input shapes depend on it.
 An atom that can contain or imply variables must implement variable coverage:
 
 ```rust
-impl InfersVariablesAtom<DirectiveAtom> for VariableInference {}
+impl InfersVariables<DirectiveAtom> for VariableInference {}
 ```
 
 An atom that cannot affect variables must say so:
@@ -557,7 +624,9 @@ Editor coverage includes:
 The editor coverage trait can be coarse at first:
 
 ```rust
-pub trait ProvidesEditorSupport<A: LanguageAtom> {}
+pub trait Completer<A: LanguageAtom> {
+    fn completions(request: EditorCompletionRequest<'_>) -> Vec<EditorCompletion>;
+}
 
 pub trait NoEditorEffect<A: LanguageAtom> {
     const REASON: &'static str;
@@ -566,11 +635,11 @@ pub trait NoEditorEffect<A: LanguageAtom> {
 
 If editor drift remains common, split it into:
 
-- `ProvidesCursorContext<A>`;
-- `ProvidesCompletion<A>`;
-- `ProvidesHover<A>`;
-- `ProvidesDefinition<A>`;
-- `ProvidesSemanticTokens<A>`.
+- `ContextProvider<A>`;
+- `Completer<A>`;
+- `HoverProvider<A>`;
+- `DefinitionProvider<A>`;
+- `SemanticTokenProvider<A>`.
 
 ## Compile-Time Guarantees
 

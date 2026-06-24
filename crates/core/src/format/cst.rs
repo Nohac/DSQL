@@ -1,5 +1,5 @@
 use super::{FormatConfidence, FormatDiagnostic, FormattedText};
-use crate::language::{atoms::directive::DirectiveAtom, stages::FormatsAtom};
+use crate::language::grammar::LanguageAtoms;
 use crate::syntax::{CstKind, ParseResult, SyntaxNode, SyntaxRule, SyntaxToken, TextRange};
 
 const DEFAULT_FORMAT_LINE_WIDTH: usize = 100;
@@ -75,6 +75,9 @@ impl<'a> CstFormatter<'a> {
         if let Some(name) = self.direct_token_text(node, SyntaxToken::Name) {
             self.out.push(' ');
             self.out.push_str(&name);
+        }
+        for directive in self.direct_rules(node, SyntaxRule::Directive) {
+            self.atom_format(directive);
         }
         if let Some(selection_set) = self.direct_rule(node, SyntaxRule::SelectionSet) {
             self.selection_set(selection_set);
@@ -155,7 +158,7 @@ impl<'a> CstFormatter<'a> {
             self.out.push_str(&name);
         }
         for directive in self.direct_rules(node, SyntaxRule::Directive) {
-            <Self as FormatsAtom<DirectiveAtom>>::format(self, directive);
+            self.atom_format(directive);
         }
     }
 
@@ -193,7 +196,7 @@ impl<'a> CstFormatter<'a> {
             self.clause_list(clauses);
         }
         for directive in self.direct_rules(node, SyntaxRule::Directive) {
-            <Self as FormatsAtom<DirectiveAtom>>::format(self, directive);
+            self.atom_format(directive);
         }
         if let Some(selection_set) = self.direct_rule(node, SyntaxRule::SelectionSet) {
             self.selection_set(selection_set);
@@ -556,6 +559,17 @@ impl<'a> CstFormatter<'a> {
         }
     }
 
+    fn atom_format(&mut self, node: usize) -> bool {
+        let Some(rule) = self.rule(node) else {
+            return false;
+        };
+        let Some(formatter) = LanguageAtoms::formatter_for_syntax_rule(rule) else {
+            return false;
+        };
+        formatter.format(self, node);
+        true
+    }
+
     fn token_children(&self, node: usize) -> Vec<usize> {
         self.node(node)
             .children
@@ -580,6 +594,10 @@ impl<'a> CstFormatter<'a> {
 
     pub(crate) fn direct_token_text(&self, node: usize, target: SyntaxToken) -> Option<String> {
         self.direct_token_texts(node, target).into_iter().next()
+    }
+
+    pub(crate) fn node_text(&self, node: usize) -> String {
+        self.text(self.node(node).range)
     }
 
     pub(crate) fn write_str(&mut self, text: &str) {

@@ -4,7 +4,7 @@ use crate::{
     },
     language::{
         atoms::directive::DirectiveAtom,
-        stages::{Lowerer, LowersAtom},
+        stages::{Lowerer, Lowers},
     },
     syntax::{
         Argument, Definition, DiagnosticCode, DiagnosticSource, Document, Expr, FragmentDef,
@@ -127,6 +127,9 @@ fn lower_query(
             });
         }
     }
+    for directive in &query.directives {
+        <Lowerer as Lowers<DirectiveAtom>>::lower(directive, interner, names);
+    }
     lower_selections(&query.selections, interner, names);
 }
 
@@ -217,7 +220,7 @@ fn lower_selections(selections: &[Selection], interner: &mut Interner, names: &m
             lower_argument(argument, interner, names);
         }
         for directive in &selection.directives {
-            <Lowerer as LowersAtom<DirectiveAtom>>::lower(directive, interner, names);
+            <Lowerer as Lowers<DirectiveAtom>>::lower(directive, interner, names);
         }
         for clause in &selection.clauses {
             if let crate::Clause::OrderBy(order_by) = clause {

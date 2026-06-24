@@ -4,6 +4,7 @@ use crate::{
     definition::{
         DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
     },
+    language::atoms::directive::{DirectiveAtom, DirectiveLocation, DirectiveRegistry},
     syntax::{Clause, Expr, Literal, Selection, SelectionKind, SourceFile, TextRange},
 };
 use indexmap::IndexMap;
@@ -39,6 +40,13 @@ pub fn check_query_definition(
     catalog: &Catalog,
 ) -> CheckedFile {
     let mut errors = Vec::new();
+    let directive_registry = DirectiveRegistry::new();
+    DirectiveAtom::check_all(
+        &query.directives,
+        &directive_registry,
+        DirectiveLocation::Query,
+        &mut errors,
+    );
     check_root_selections(catalog, resolver, &query.selections, &mut errors);
     checked(errors)
 }
@@ -133,10 +141,19 @@ fn check_root_selections(
     selections: &[Selection],
     errors: &mut Vec<CheckError>,
 ) {
+    let directive_registry = DirectiveRegistry::new();
     check_duplicate_output_keys(selections, errors);
     check_output_key_lengths(selections, errors);
     for selection in selections {
+        // Selection traversal is still legacy-owned. Until selection becomes an atom,
+        // the checker only locates contained directives and delegates directive behavior.
         if selection.kind == SelectionKind::FragmentSpread {
+            DirectiveAtom::check_all(
+                &selection.directives,
+                &directive_registry,
+                DirectiveLocation::FragmentSpread,
+                errors,
+            );
             errors.push(CheckError {
                 range: selection.name.range,
                 kind: CheckErrorKind::UnknownFragment {
@@ -145,6 +162,12 @@ fn check_root_selections(
             });
             continue;
         }
+        DirectiveAtom::check_all(
+            &selection.directives,
+            &directive_registry,
+            DirectiveLocation::Field,
+            errors,
+        );
         let table = match catalog.resolve_table_ref_for(&selection.name.target) {
             TableResolution::Found(table) => table,
             TableResolution::NotFound { reference } => {
@@ -190,13 +213,28 @@ fn check_selection_set(
     errors: &mut Vec<CheckError>,
     visiting: &mut HashSet<String>,
 ) {
+    let directive_registry = DirectiveRegistry::new();
     check_duplicate_output_keys(selections, errors);
     check_output_key_lengths(selections, errors);
     for selection in selections {
+        // Selection traversal is still legacy-owned. Until selection becomes an atom,
+        // the checker only locates contained directives and delegates directive behavior.
         if selection.kind == SelectionKind::FragmentSpread {
+            DirectiveAtom::check_all(
+                &selection.directives,
+                &directive_registry,
+                DirectiveLocation::FragmentSpread,
+                errors,
+            );
             check_fragment_spread(catalog, resolver, table, selection, errors, visiting);
             continue;
         }
+        DirectiveAtom::check_all(
+            &selection.directives,
+            &directive_registry,
+            DirectiveLocation::Field,
+            errors,
+        );
         match catalog.check_field_ref(table, &selection.name) {
             FieldCheckResult::Column(column) => {
                 if selection.has_clause_list {

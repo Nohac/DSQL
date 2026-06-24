@@ -1,5 +1,8 @@
 use crate::cursor::{CursorContext, UsedClauses, cursor_context};
-use dsql_core::{BinaryOp, Catalog, DataType, FragmentRecord, TableId, TextRange, Token};
+use dsql_core::{
+    BinaryOp, Catalog, DataType, EditorCompletion, EditorCompletionKind, EditorCompletionRequest,
+    FragmentRecord, TableId, TextRange, Token, editor_completions,
+};
 use facet::Facet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +58,7 @@ pub enum CompletionKind {
     Column,
     Relation,
     Fragment,
+    Directive,
     Keyword,
     Operator,
 }
@@ -70,6 +74,17 @@ pub(crate) fn completions_at(
     byte: usize,
     scope: &CompletionScope,
 ) -> Vec<CompletionItem> {
+    let atom_completions = editor_completions(EditorCompletionRequest {
+        source: &parse.source,
+        byte,
+    });
+    if !atom_completions.is_empty() {
+        return atom_completions
+            .into_iter()
+            .map(frontend_atom_completion)
+            .collect();
+    }
+
     match cursor_context(parse, catalog, byte) {
         CursorContext::Invalid => Vec::new(),
         CursorContext::DocumentRoot => document_root_completions(),
@@ -97,6 +112,18 @@ pub(crate) fn completions_at(
             CompletionAtom::Token(Token::Asc, "sort ascending"),
             CompletionAtom::Token(Token::Desc, "sort descending"),
         ]),
+    }
+}
+
+fn frontend_atom_completion(completion: EditorCompletion) -> CompletionItem {
+    CompletionItem {
+        label: completion.label,
+        kind: match completion.kind {
+            EditorCompletionKind::Directive => CompletionKind::Directive,
+            EditorCompletionKind::Keyword => CompletionKind::Keyword,
+        },
+        detail: completion.detail,
+        insert_text: completion.insert_text,
     }
 }
 

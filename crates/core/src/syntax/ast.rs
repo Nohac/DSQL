@@ -18,6 +18,8 @@ pub enum Definition {
 pub struct QueryDef {
     pub range: TextRange,
     pub name: Option<NameRef>,
+    /// Directives attached to the query definition header.
+    pub directives: Vec<Directive>,
     pub selections: Vec<Selection>,
 }
 

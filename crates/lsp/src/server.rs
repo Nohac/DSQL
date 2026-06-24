@@ -182,7 +182,12 @@ impl LanguageServer for Backend {
             )),
             document_formatting_provider: Some(OneOf::Left(true)),
             completion_provider: Some(CompletionOptions {
-                trigger_characters: Some(vec![".".to_string(), "~".to_string(), ":".to_string()]),
+                trigger_characters: Some(vec![
+                    ".".to_string(),
+                    "~".to_string(),
+                    ":".to_string(),
+                    "@".to_string(),
+                ]),
                 ..CompletionOptions::default()
             }),
             definition_provider: Some(OneOf::Left(true)),
@@ -363,6 +368,7 @@ impl LanguageServer for Backend {
                         CompletionKind::Column => CompletionItemKind::FIELD,
                         CompletionKind::Relation => CompletionItemKind::REFERENCE,
                         CompletionKind::Fragment => CompletionItemKind::MODULE,
+                        CompletionKind::Directive => CompletionItemKind::FUNCTION,
                         CompletionKind::Keyword => CompletionItemKind::KEYWORD,
                         CompletionKind::Operator => CompletionItemKind::OPERATOR,
                     }),

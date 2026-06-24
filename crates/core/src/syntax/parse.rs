@@ -54,6 +54,8 @@ pub enum SyntaxRule {
     ComparisonOperator,
     Definition,
     Directive,
+    DirectiveArgument,
+    DirectiveName,
     Document,
     Error,
     Expr,
@@ -280,6 +282,8 @@ fn map_rule(rule: Rule) -> SyntaxRule {
         Rule::ComparisonOperator => SyntaxRule::ComparisonOperator,
         Rule::Definition => SyntaxRule::Definition,
         Rule::Directive => SyntaxRule::Directive,
+        Rule::DirectiveArgument => SyntaxRule::DirectiveArgument,
+        Rule::DirectiveName => SyntaxRule::DirectiveName,
         Rule::Document => SyntaxRule::Document,
         Rule::Error => SyntaxRule::Error,
         Rule::Expr => SyntaxRule::Expr,
@@ -385,6 +389,7 @@ impl<'a> AstBuilder<'a> {
         QueryDef {
             range: range(self.cst.span(node)),
             name: names.first().cloned(),
+            directives: self.directives(node),
             selections: self
                 .direct_rule(node, Rule::SelectionSet)
                 .map_or_else(Vec::new, |selection_set| self.selection_set(selection_set)),
@@ -605,7 +610,7 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn expr(&self, node: NodeRef) -> Expr {
+    pub(crate) fn expr(&self, node: NodeRef) -> Expr {
         if rule(self.cst, node) == Some(Rule::BinaryExpr) {
             return self.binary_expr(node);
         }
@@ -805,6 +810,13 @@ impl<'a> AstBuilder<'a> {
             .collect()
     }
 
+    /// Returns the first token that is a direct child of `node`.
+    pub(crate) fn first_direct_token(&self, node: NodeRef) -> Option<(Token, TextRange)> {
+        self.cst
+            .children(node)
+            .find_map(|child| token_text(self.cst, child).map(|(token, _, range)| (token, range)))
+    }
+
     fn direct_qualified_names(&self, node: NodeRef) -> Vec<QualifiedNameRef> {
         self.direct_rules(node, Rule::QualifiedName)
             .into_iter()
@@ -861,11 +873,11 @@ impl<'a> AstBuilder<'a> {
             .next()
     }
 
-    fn direct_rule(&self, node: NodeRef, target: Rule) -> Option<NodeRef> {
+    pub(crate) fn direct_rule(&self, node: NodeRef, target: Rule) -> Option<NodeRef> {
         self.direct_rules(node, target).into_iter().next()
     }
 
-    fn direct_value_rule(&self, node: NodeRef) -> Option<NodeRef> {
+    pub(crate) fn direct_value_rule(&self, node: NodeRef) -> Option<NodeRef> {
         self.cst.children(node).find(|child| {
             matches!(
                 rule(self.cst, *child),
@@ -926,7 +938,7 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn direct_rules(&self, node: NodeRef, target: Rule) -> Vec<NodeRef> {
+    pub(crate) fn direct_rules(&self, node: NodeRef, target: Rule) -> Vec<NodeRef> {
         self.cst
             .children(node)
             .filter(|child| rule(self.cst, *child) == Some(target))

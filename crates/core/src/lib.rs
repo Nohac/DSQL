@@ -31,6 +31,12 @@ pub use diagnostics::{
     sort_compiler_diagnostics,
 };
 pub use format::{FormatConfidence, FormatDiagnostic, FormattedText, format_file};
+pub use language::{
+    atom::AtomDescriptor,
+    editor::editor_completions,
+    grammar::{CompleterDescriptor, LanguageAtoms, RuleClassification},
+    stages::{EditorCompletion, EditorCompletionKind, EditorCompletionRequest},
+};
 pub use lint::{
     LintDiagnostic, LintDiagnosticKind, LintOptions, LintedDefinition, LintedFile, lint_file,
     lint_file_with_catalog, lint_file_with_options, lint_fragment_definition,
@@ -57,10 +63,11 @@ pub use sql::{
 };
 pub use syntax::{
     BinaryOp, BinaryOperator, Clause, CstKind, Definition, Diagnostic, DiagnosticCode,
-    DiagnosticSource, Expr, Literal, NameRef, OperatorVariable, ParseResult, PathScope,
-    QualifiedNameRef, RelationRef, ScopedPath, ScopedPathSegment, Selection, SelectionKind,
-    Severity, SortDirection, SortDirectionExpr, SourceDocument, SourceFile, SourceRegion,
-    SourceSnapshot, SyntaxNode, SyntaxToken, SyntaxTree, TextRange, Token, ValueVariable,
-    VariableScope, expected_tokens_at, parse_source,
+    DiagnosticSource, DirectiveArgumentDefinition, DirectiveArgumentValueKind, DirectiveLocation,
+    Expr, Literal, NameRef, OperatorVariable, ParseResult, PathScope, QualifiedNameRef,
+    RelationRef, ScopedPath, ScopedPathSegment, Selection, SelectionKind, Severity, SortDirection,
+    SortDirectionExpr, SourceDocument, SourceFile, SourceRegion, SourceSnapshot, SyntaxNode,
+    SyntaxToken, SyntaxTree, SystemDirectiveDefinition, SystemDirectiveKind, TextRange, Token,
+    ValueVariable, VariableScope, expected_tokens_at, parse_source, system_directive_definitions,
 };
 pub use variable_path::{InputPathSegment, is_input_path, is_params_path};

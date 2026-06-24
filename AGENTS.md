@@ -28,7 +28,8 @@
 ## Testing
 
 - For issues and bug reports, add or run a focused test that reproduces the behavior before starting the fix.
-- PREFER integration tests. Use `insta` snapshots and copy nearby fixture/query patterns where possible.
+- For compiler, language, frontend analysis, diagnostics, formatting, generation, LSP, source/project ownership, and other user-visible dsql behavior, ALWAYS use integration tests. Use `insta` snapshots and copy nearby fixture/query patterns where possible.
+- Smaller targeted unit tests are acceptable for isolated utilities, data structures, parsers, or algorithms with non-trivial internal logic, when the behavior is not better covered through a compiler-facing integration path.
 - NEVER test external crate functionality or simple encode/decode behavior with `string contains` assertions. Tests should protect dsql semantics, integration behavior, or project-specific boundaries.
 
 ## Rust Style
@@ -55,7 +56,8 @@
 ## Documentation
 
 - Prefer literate, self-explaining compiler code for new architecture-facing APIs.
-- Add proper doc comments to public functions, tracked Picante queries, shared compiler data types, and non-obvious private functions that encode compiler architecture or stage boundaries.
+- ALWAYS add proper doc comments to every new or changed compiler-facing `pub` or `pub(crate)` item, tracked Picante query, shared compiler data type, and non-obvious private function that encodes compiler architecture or stage boundaries.
+- Treat `pub(crate)` architecture APIs as documentation-required even when they live in private modules or are not re-exported outside the crate.
 - Doc comments should explain what the item represents, why it exists, and which layer owns it when that context is not obvious. Do not add redundant comments for simple/self-evident functions, and avoid comments that merely repeat the function name or restate obvious parameter types.
 
 ## Issues

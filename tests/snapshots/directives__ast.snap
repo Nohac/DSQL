@@ -1,0 +1,263 @@
+---
+source: tests/snapshot/directives.rs
+expression: contents
+---
+[
+    (
+        "Users",
+        Directive {
+            range: TextRange {
+                start: 13,
+                end: 49,
+            },
+            name: DirectiveName {
+                range: TextRange {
+                    start: 14,
+                    end: 25,
+                },
+                namespace: DsqlShorthand {
+                    range: TextRange {
+                        start: 14,
+                        end: 15,
+                    },
+                },
+                member: Some(
+                    NameRef {
+                        range: TextRange {
+                            start: 15,
+                            end: 25,
+                        },
+                        text: "deprecated",
+                    },
+                ),
+            },
+            arguments: [
+                DirectiveArgument {
+                    range: TextRange {
+                        start: 26,
+                        end: 48,
+                    },
+                    name: NameRef {
+                        range: TextRange {
+                            start: 26,
+                            end: 32,
+                        },
+                        text: "reason",
+                    },
+                    value: Literal(
+                        String {
+                            range: TextRange {
+                                start: 34,
+                                end: 48,
+                            },
+                            value: "Use accounts",
+                        },
+                    ),
+                },
+            ],
+        },
+    ),
+    (
+        "Users.users",
+        Directive {
+            range: TextRange {
+                start: 64,
+                end: 100,
+            },
+            name: DirectiveName {
+                range: TextRange {
+                    start: 65,
+                    end: 76,
+                },
+                namespace: DsqlShorthand {
+                    range: TextRange {
+                        start: 65,
+                        end: 66,
+                    },
+                },
+                member: Some(
+                    NameRef {
+                        range: TextRange {
+                            start: 66,
+                            end: 76,
+                        },
+                        text: "deprecated",
+                    },
+                ),
+            },
+            arguments: [
+                DirectiveArgument {
+                    range: TextRange {
+                        start: 77,
+                        end: 99,
+                    },
+                    name: NameRef {
+                        range: TextRange {
+                            start: 77,
+                            end: 83,
+                        },
+                        text: "reason",
+                    },
+                    value: Literal(
+                        String {
+                            range: TextRange {
+                                start: 85,
+                                end: 99,
+                            },
+                            value: "Use accounts",
+                        },
+                    ),
+                },
+            ],
+        },
+    ),
+    (
+        "Users.users",
+        Directive {
+            range: TextRange {
+                start: 105,
+                end: 134,
+            },
+            name: DirectiveName {
+                range: TextRange {
+                    start: 106,
+                    end: 118,
+                },
+                namespace: Named(
+                    NameRef {
+                        range: TextRange {
+                            start: 106,
+                            end: 111,
+                        },
+                        text: "table",
+                    },
+                ),
+                member: Some(
+                    NameRef {
+                        range: TextRange {
+                            start: 112,
+                            end: 118,
+                        },
+                        text: "column",
+                    },
+                ),
+            },
+            arguments: [
+                DirectiveArgument {
+                    range: TextRange {
+                        start: 119,
+                        end: 133,
+                    },
+                    name: NameRef {
+                        range: TextRange {
+                            start: 119,
+                            end: 124,
+                        },
+                        text: "label",
+                    },
+                    value: Literal(
+                        String {
+                            range: TextRange {
+                                start: 126,
+                                end: 133,
+                            },
+                            value: "Email",
+                        },
+                    ),
+                },
+            ],
+        },
+    ),
+    (
+        "Users.users.id",
+        Directive {
+            range: TextRange {
+                start: 146,
+                end: 176,
+            },
+            name: DirectiveName {
+                range: TextRange {
+                    start: 147,
+                    end: 162,
+                },
+                namespace: Named(
+                    NameRef {
+                        range: TextRange {
+                            start: 147,
+                            end: 151,
+                        },
+                        text: "dsql",
+                    },
+                ),
+                member: Some(
+                    NameRef {
+                        range: TextRange {
+                            start: 152,
+                            end: 162,
+                        },
+                        text: "include_if",
+                    },
+                ),
+            },
+            arguments: [
+                DirectiveArgument {
+                    range: TextRange {
+                        start: 163,
+                        end: 175,
+                    },
+                    name: NameRef {
+                        range: TextRange {
+                            start: 163,
+                            end: 165,
+                        },
+                        text: "if",
+                    },
+                    value: Binary {
+                        range: TextRange {
+                            start: 167,
+                            end: 175,
+                        },
+                        left: Path(
+                            ScopedPath {
+                                range: TextRange {
+                                    start: 167,
+                                    end: 170,
+                                },
+                                scope: Current,
+                                segments: [
+                                    ScopedPathSegment {
+                                        range: TextRange {
+                                            start: 168,
+                                            end: 170,
+                                        },
+                                        schema: None,
+                                        name: NameRef {
+                                            range: TextRange {
+                                                start: 168,
+                                                end: 170,
+                                            },
+                                            text: "id",
+                                        },
+                                        selector: None,
+                                    },
+                                ],
+                            },
+                        ),
+                        op: Static(
+                            Eq,
+                        ),
+                        right: Literal(
+                            Number {
+                                range: TextRange {
+                                    start: 174,
+                                    end: 175,
+                                },
+                                value: "1",
+                            },
+                        ),
+                    },
+                },
+            ],
+        },
+    ),
+]

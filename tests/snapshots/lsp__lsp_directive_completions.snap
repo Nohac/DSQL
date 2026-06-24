@@ -1,0 +1,30 @@
+---
+source: tests/snapshot/lsp.rs
+expression: contents
+---
+namespace
+Directive . dsql directive shorthand
+Directive dsql directive namespace
+
+---
+
+shorthand_member
+Directive include_if dsql directive (IncludeIf)
+Directive deprecated dsql directive (Deprecated)
+
+---
+
+explicit_member
+Directive include_if dsql directive (IncludeIf)
+Directive deprecated dsql directive (Deprecated)
+
+---
+
+argument
+Directive if directive argument
+
+---
+
+boolean_value
+Keyword true boolean
+Keyword false boolean

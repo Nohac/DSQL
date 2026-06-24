@@ -177,6 +177,54 @@ async fn imdb_lsp_fixture_snapshots() {
 }
 
 #[tokio::test]
+async fn lsp_directive_completions() {
+    let uri = "file:///tests/queries/lsp/directive-completions.dsql".to_string();
+    let host = TestProject::new();
+    host.set_catalog(Catalog::hardcoded());
+
+    let cases = [
+        (
+            "namespace",
+            "query DirectiveCompletions @ { users { id } }",
+            "query DirectiveCompletions @",
+        ),
+        (
+            "shorthand_member",
+            "query DirectiveCompletions { users @. { id } }",
+            "users @.",
+        ),
+        (
+            "explicit_member",
+            "query DirectiveCompletions { users @dsql. { id } }",
+            "users @dsql.",
+        ),
+        (
+            "argument",
+            "query DirectiveCompletions { users { id @.include_if( } }",
+            "@.include_if(",
+        ),
+        (
+            "boolean_value",
+            "query DirectiveCompletions { users { id @.include_if(if:  } }",
+            "@.include_if(if: ",
+        ),
+    ];
+
+    let mut output = Vec::new();
+    for (index, (name, source, marker)) in cases.iter().enumerate() {
+        host.open_document(uri.clone(), index as i32 + 1, (*source).to_string())
+            .await;
+        let completions = host
+            .completions(&uri, position_after(source, marker))
+            .await
+            .unwrap_or_default();
+        output.push(format!("{name}\n{}", format_completions(&completions)));
+    }
+
+    snapshot("lsp_directive_completions", &output.join("\n\n---\n\n"));
+}
+
+#[tokio::test]
 async fn lsp_completion_context_ranges_cover_full_prefix_and_recovery_variants() {
     let fixture = context_fixture("queries/lsp/imdb-context-ranges.dsql");
     let variants = fixture.variants();

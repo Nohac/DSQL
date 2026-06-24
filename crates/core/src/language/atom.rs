@@ -77,19 +77,19 @@ macro_rules! language_atom {
                     crate::syntax::parse::AstBuilder<'static>:
                         crate::language::stages::BuildsAst<$atom>,
                     crate::format::cst::CstFormatter<'static>:
-                        crate::language::stages::FormatsAtom<$atom>,
-                    crate::language::stages::Lowerer: crate::language::stages::LowersAtom<$atom>,
-                    crate::language::stages::Checker: crate::language::stages::ChecksAtom<$atom>,
+                        crate::language::stages::Formats<$atom>,
+                    crate::language::stages::Lowerer: crate::language::stages::Lowers<$atom>,
+                    crate::language::stages::Checker: crate::language::stages::Checks<$atom>,
                     crate::language::stages::Linter: crate::language::stages::NoLintEffect<$atom>,
                     crate::language::stages::VariableInference:
-                        crate::language::stages::InfersVariablesAtom<$atom>,
-                    crate::language::stages::Planner: crate::language::stages::PlansAtom<$atom>,
+                        crate::language::stages::InfersVariables<$atom>,
+                    crate::language::stages::Planner: crate::language::stages::Plans<$atom>,
                     crate::language::stages::PostgresSqlGenerator:
                         crate::language::stages::NoSqlEffect<$atom>,
                     crate::language::stages::MetadataGenerator:
-                        crate::language::stages::GeneratesMetadataAtom<$atom>,
-                    crate::language::stages::EditorFeatures:
-                        crate::language::stages::ProvidesEditorSupport<$atom>,
+                        crate::language::stages::GeneratesMetadata<$atom>,
+                    crate::language::stages::LanguageService:
+                        crate::language::stages::Completer<$atom>,
                 {
                 }
 

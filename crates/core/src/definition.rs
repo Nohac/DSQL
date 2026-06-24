@@ -1,6 +1,6 @@
 use crate::syntax::{
-    Definition, FragmentDef, QualifiedNameRef, QueryDef, Selection, SelectionKind, SourceFile,
-    TextRange,
+    Definition, Directive, FragmentDef, QualifiedNameRef, QueryDef, Selection, SelectionKind,
+    SourceFile, TextRange,
 };
 use facet::Facet;
 use std::collections::HashMap;
@@ -33,6 +33,8 @@ pub struct QueryRecord {
     pub key: QueryKey,
     pub range: TextRange,
     pub name_range: Option<TextRange>,
+    /// Directives attached to the query header before semantic validation.
+    pub directives: Vec<Directive>,
     pub selections: Vec<Selection>,
     pub fragment_spreads: Vec<FragmentSpreadRef>,
 }
@@ -125,6 +127,7 @@ fn query_record(query: &QueryDef, ordinal: u32) -> QueryRecord {
         },
         range: query.range,
         name_range: query.name.as_ref().map(|name| name.range),
+        directives: query.directives.clone(),
         fragment_spreads: fragment_spreads(&query.selections),
         selections: query.selections.clone(),
     }

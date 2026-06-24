@@ -1,3 +1,5 @@
+#[path = "snapshot/directives.rs"]
+mod directives;
 #[path = "snapshot/fixtures.rs"]
 mod fixtures;
 #[path = "snapshot/formatter.rs"]

@@ -1,54 +1,193 @@
 use crate::{
+    format::cst::CstFormatter,
     language::{atom::AtomDescriptor, atoms::directive::DirectiveAtom},
-    syntax::grammar::parser::Rule,
+    language::{
+        atom::LanguageAtom,
+        stages::{Completer, EditorCompletion, EditorCompletionRequest, Formats, LanguageService},
+    },
+    syntax::{SyntaxRule, grammar::parser::Rule},
 };
+
+type CompletionHandler = for<'a> fn(EditorCompletionRequest<'a>) -> Vec<EditorCompletion>;
+type FormatHandler = for<'a> fn(&mut CstFormatter<'a>, usize);
+
+/// Runtime descriptor for a language atom that can provide completions.
+#[derive(Clone, Copy)]
+pub struct CompleterDescriptor {
+    completions: CompletionHandler,
+}
+
+impl CompleterDescriptor {
+    const fn new(completions: CompletionHandler) -> Self {
+        Self { completions }
+    }
+
+    /// Runs this atom's completion provider for the given request.
+    pub fn completions(self, request: EditorCompletionRequest<'_>) -> Vec<EditorCompletion> {
+        (self.completions)(request)
+    }
+}
+
+/// Runtime descriptor for a language atom that can format a CST node.
+#[derive(Clone, Copy)]
+pub(crate) struct FormatterDescriptor {
+    format: FormatHandler,
+}
+
+impl FormatterDescriptor {
+    const fn new(format: FormatHandler) -> Self {
+        Self { format }
+    }
+
+    /// Runs this atom's formatter for the given CST node.
+    pub(crate) fn format(self, formatter: &mut CstFormatter<'_>, node: usize) {
+        (self.format)(formatter, node);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuleClassification {
     Owned(AtomDescriptor),
+    Delegated(AtomDescriptor),
     Legacy,
     Internal,
 }
 
-/// Classifies every generated Lelwel rule as atom-owned or intentionally internal.
-///
-/// This match must stay exhaustive and must not use a wildcard arm. Adding a
-/// grammar rule to `dsql.llw` then fails compilation until that new rule gets
-/// an ownership decision here.
-pub const fn classify_rule(rule: Rule) -> RuleClassification {
-    match rule {
-        Rule::BinaryExpr => RuleClassification::Legacy,
-        Rule::BinaryOperator => RuleClassification::Legacy,
-        Rule::Clause => RuleClassification::Legacy,
-        Rule::ClauseList => RuleClassification::Internal,
-        Rule::ComparisonOperator => RuleClassification::Legacy,
-        Rule::Definition => RuleClassification::Internal,
-        Rule::Directive => RuleClassification::Owned(DirectiveAtom::DESCRIPTOR),
-        Rule::Document => RuleClassification::Internal,
-        Rule::Error => RuleClassification::Internal,
-        Rule::Expr => RuleClassification::Legacy,
-        Rule::FieldSelection => RuleClassification::Legacy,
-        Rule::FieldSelectionTail => RuleClassification::Internal,
-        Rule::FieldSuffix => RuleClassification::Internal,
-        Rule::FragmentDef => RuleClassification::Legacy,
-        Rule::FragmentSpread => RuleClassification::Legacy,
-        Rule::LimitClause => RuleClassification::Legacy,
-        Rule::Literal => RuleClassification::Legacy,
-        Rule::OffsetClause => RuleClassification::Legacy,
-        Rule::OperatorVariable => RuleClassification::Legacy,
-        Rule::OrderByClause => RuleClassification::Legacy,
-        Rule::OrderItem => RuleClassification::Legacy,
-        Rule::QualifiedName => RuleClassification::Legacy,
-        Rule::QueryDef => RuleClassification::Legacy,
-        Rule::RelationRef => RuleClassification::Internal,
-        Rule::ScopedPath => RuleClassification::Legacy,
-        Rule::ScopedPathSegment => RuleClassification::Legacy,
-        Rule::Selection => RuleClassification::Internal,
-        Rule::SelectionSet => RuleClassification::Internal,
-        Rule::SortDirection => RuleClassification::Legacy,
-        Rule::ValueVariable => RuleClassification::Legacy,
-        Rule::WhereClause => RuleClassification::Legacy,
+/// Provider for generated language atom registries and grammar ownership.
+pub struct LanguageAtoms;
+
+impl LanguageAtoms {
+    /// Classifies a generated Lelwel rule by atom ownership.
+    ///
+    /// The backing match is generated without a wildcard arm, so adding a rule
+    /// to `dsql.llw` fails compilation until the rule receives a classification.
+    pub const fn classify(rule: Rule) -> RuleClassification {
+        generated::classify(rule)
+    }
+
+    /// Returns all atom completion providers registered for the language service.
+    pub fn completers() -> &'static [CompleterDescriptor] {
+        generated::COMPLETERS
+    }
+
+    /// Returns the atom formatter registered for a CST syntax rule, when any.
+    pub(crate) fn formatter_for_syntax_rule(rule: SyntaxRule) -> Option<FormatterDescriptor> {
+        generated::formatter_for_syntax_rule(rule)
     }
 }
 
-const _: RuleClassification = classify_rule(Rule::Directive);
+fn complete<A>(request: EditorCompletionRequest<'_>) -> Vec<EditorCompletion>
+where
+    A: LanguageAtom,
+    LanguageService: Completer<A>,
+{
+    <LanguageService as Completer<A>>::completions(request)
+}
+
+fn format<A>(formatter: &mut CstFormatter<'_>, node: usize)
+where
+    A: LanguageAtom,
+    for<'a> CstFormatter<'a>: Formats<A>,
+{
+    Formats::<A>::format(formatter, node);
+}
+
+macro_rules! language_grammar {
+    (
+        atoms {
+            $(
+                $atom:ident {
+                    owns: $owned:path,
+                    syntax: $syntax:path,
+                    delegates: [$($delegated:path),* $(,)?] $(,)?
+                }
+            ),* $(,)?
+        }
+
+        legacy: [$($legacy:path),* $(,)?]
+        internal: [$($internal:path),* $(,)?]
+    ) => {
+        mod generated {
+            use super::*;
+
+            pub(super) const COMPLETERS: &[CompleterDescriptor] = &[
+                $(
+                    CompleterDescriptor::new(complete::<$atom>),
+                )*
+            ];
+
+            pub(super) fn formatter_for_syntax_rule(
+                rule: SyntaxRule,
+            ) -> Option<FormatterDescriptor> {
+                match rule {
+                    $(
+                        $syntax => Some(FormatterDescriptor::new(format::<$atom>)),
+                    )*
+                    _ => None,
+                }
+            }
+
+            pub(super) const fn classify(rule: Rule) -> RuleClassification {
+                match rule {
+                    $(
+                        $owned => RuleClassification::Owned($atom::DESCRIPTOR),
+                        $(
+                            $delegated => RuleClassification::Delegated($atom::DESCRIPTOR),
+                        )*
+                    )*
+                    $(
+                        $legacy => RuleClassification::Legacy,
+                    )*
+                    $(
+                        $internal => RuleClassification::Internal,
+                    )*
+                }
+            }
+        }
+    };
+}
+
+language_grammar! {
+    atoms {
+        DirectiveAtom {
+            owns: Rule::Directive,
+            syntax: SyntaxRule::Directive,
+            delegates: [Rule::DirectiveArgument, Rule::DirectiveName],
+        },
+    }
+
+    legacy: [
+        Rule::BinaryExpr,
+        Rule::BinaryOperator,
+        Rule::Clause,
+        Rule::ComparisonOperator,
+        Rule::Expr,
+        Rule::FieldSelection,
+        Rule::FragmentDef,
+        Rule::FragmentSpread,
+        Rule::LimitClause,
+        Rule::Literal,
+        Rule::OffsetClause,
+        Rule::OperatorVariable,
+        Rule::OrderByClause,
+        Rule::OrderItem,
+        Rule::QualifiedName,
+        Rule::QueryDef,
+        Rule::RelationRef,
+        Rule::ScopedPath,
+        Rule::ScopedPathSegment,
+        Rule::SortDirection,
+        Rule::ValueVariable,
+        Rule::WhereClause,
+    ]
+    internal: [
+        Rule::ClauseList,
+        Rule::Definition,
+        Rule::Document,
+        Rule::Error,
+        Rule::FieldSelectionTail,
+        Rule::FieldSuffix,
+        Rule::Selection,
+        Rule::SelectionSet,
+    ]
+}

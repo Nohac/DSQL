@@ -13,7 +13,7 @@ definition^:
   query_def
 | fragment_def
 ;
-query_def: 'query' Name selection_set;
+query_def: 'query' Name directive* selection_set;
 fragment_def: 'fragment' Name 'on' qualified_name selection_set;
 qualified_name: Name [?1 '::' Name];
 relation_ref: qualified_name ['->' Name];
@@ -48,7 +48,9 @@ sort_direction: 'asc' | 'desc' | value_variable;
 order_item: qualified_name [sort_direction];
 limit_clause: 'limit' expr;
 offset_clause: 'offset' expr;
-directive: '@' Name;
+directive: '@' directive_name [?1 '(' directive_argument (?2 ',' directive_argument)* [','] ')'];
+directive_name: ['.'] Name ['.' Name];
+directive_argument: Name ':' expr;
 expr:
   expr binary_operator expr @binary_expr
 | expr 'and' expr @binary_expr
