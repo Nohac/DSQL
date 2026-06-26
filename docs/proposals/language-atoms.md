@@ -46,8 +46,8 @@ explicit.
 ## Terms
 
 - **Language atom**: one source-level construct with a single ownership point,
-  for example a directive, field selection, fragment spread, clause, variable,
-  or expression form.
+  for example a document, directive, field selection, fragment spread, clause,
+  variable, or expression form.
 - **Grammar rule**: the parser rule that anchors an atom in source syntax.
 - **Owned rule**: a grammar rule claimed by exactly one atom.
 - **Internal rule**: a grammar rule used only to structure syntax and not owned
@@ -160,11 +160,13 @@ Coverage traits should be small and stage-specific:
 
 ```rust
 pub trait BuildsAst<A: LanguageAtom> {
-    fn build(&self, node: NodeRef) -> A::Ast;
+    type Output;
+
+    fn build(&self, node: NodeRef, context: &mut AstBuildContext<'_>) -> Self::Output;
 }
 
 pub trait Formats<A: LanguageAtom> {
-    fn format(&mut self, node: SyntaxNodeRef);
+    fn format(&mut self, node: SyntaxNodeRef, context: &mut FormatContext<'_>) -> FormatEffect;
 }
 
 pub trait Lowers<A: LanguageAtom> {
@@ -172,9 +174,9 @@ pub trait Lowers<A: LanguageAtom> {
 }
 
 pub trait Checks<A: LanguageAtom> {
-    type Context<'a>;
+    type Params<'a>: AtomParam<'a, CheckContext<'a>>;
 
-    fn check(ast: &A::Ast, context: Self::Context<'_>);
+    fn check(params: Self::Params<'_>);
 }
 ```
 
@@ -300,6 +302,7 @@ crates/core/src/language/
   grammar.rs
   stages.rs
   atoms/
+    document.rs
     directive.rs
     field_selection.rs
     fragment_spread.rs
@@ -334,13 +337,15 @@ language_atom! {
 }
 
 impl BuildsAst<DirectiveAtom> for AstBuilder<'_> {
-    fn build_ast(&self, node: NodeRef) -> ast::Directive {
+    type Output = ast::Directive;
+
+    fn build(&self, node: NodeRef, context: &mut AstBuildContext<'_>) -> ast::Directive {
         todo!()
     }
 }
 
 impl Formats<DirectiveAtom> for CstFormatter<'_> {
-    fn format(&mut self, node: SyntaxNodeRef) {
+    fn format(&mut self, node: SyntaxNodeRef, context: &mut FormatContext<'_>) -> FormatEffect {
         todo!()
     }
 }
@@ -352,9 +357,14 @@ impl Lowers<DirectiveAtom> for Lowerer {
 }
 
 impl Checks<DirectiveAtom> for Checker {
-    type Context<'a> = CheckContext<'a>;
+    type Params<'a> = (
+        &'a DirectiveRegistry,
+        &'a DiagnosticStore<CheckDiagnostic>,
+        &'a ast::Directive,
+        DirectiveLocation,
+    );
 
-    fn check(directive: &ast::Directive, context: Self::Context<'_>) {
+    fn check(params: Self::Params<'_>) {
         todo!()
     }
 }
@@ -362,6 +372,16 @@ impl Checks<DirectiveAtom> for Checker {
 
 The atom file should not own stage orchestration, source lookup, scoped-program
 construction, or adapter protocol conversion.
+
+`DocumentAtom` is a real atom, not merely an internal traversal detail. It owns
+the root source construct and should provide document-level AST building,
+formatting, root completions, and any source-wide diagnostics or metadata that
+belong to the document syntax itself. It can delegate definition work to
+`QueryDefAtom` and `FragmentDefAtom` through dispatcher helpers.
+
+`DocumentAtom` must still not own project orchestration. Source loading,
+source-unit membership, scoped-program construction, config resolution, Picante
+queries, and LSP protocol conversion remain outside the atom.
 
 ## Stage Orchestration
 
@@ -447,52 +467,173 @@ indent levels or parent-specific traversal assumptions.
 
 ## Typed Stage Parameters
 
-If generic atom registries start to need different input shapes per stage, the
-atom system can grow a typed parameter extractor model instead of forcing every
-stage through one oversized context object. This is similar in spirit to Bevy
-system parameters: the stage provides a small runtime context, and each typed
-parameter declares how it is extracted from that context.
+Atom stage implementations should declare the narrow parameters they need. The
+dispatcher owns the full stage context, extracts the declared parameters, and
+only then calls the typed atom implementation. This gives atom impls Bevy-like
+ergonomics without exposing a broad project context.
 
 For example:
 
 ```rust
-pub struct AtomStageContext<'a> {
-    pub parse: Option<&'a ParseResult>,
-    pub node: Option<NodeRef>,
-    pub check: Option<CheckContext<'a>>,
+pub struct LanguageServiceContext<'a> {
+    pub request: LanguageServiceRequest<'a>,
+    pub language_context: &'a LanguageContext<'a>,
+    pub assets: &'a AssetRegistry,
 }
 
-pub trait AtomParam<'a>: Sized {
-    fn from_context(context: &'a AtomStageContext<'a>) -> Option<Self>;
+pub trait AtomParam<'a, Ctx>: Sized {
+    fn extract(context: &'a Ctx) -> Option<Self>;
 }
 
-impl<'a> AtomParam<'a> for NodeRef {
-    fn from_context(context: &'a AtomStageContext<'a>) -> Option<Self> {
-        context.node
+impl<'a> AtomParam<'a, LanguageServiceContext<'a>> for &'a LanguageContext<'a> {
+    fn extract(context: &'a LanguageServiceContext<'a>) -> Option<Self> {
+        Some(context.language_context)
+    }
+}
+
+impl<'a> AtomParam<'a, LanguageServiceContext<'a>> for &'a DirectiveRegistry {
+    fn extract(context: &'a LanguageServiceContext<'a>) -> Option<Self> {
+        context.assets.get::<DirectiveRegistry>()
     }
 }
 ```
 
-Generated adapter descriptors can then call typed atom implementations while
-the stage dispatcher stays generic:
+Tuple extraction should be generated with `variadics_please` or an equivalent
+small local macro so atom impls can request multiple params without hand-written
+arity impls.
+
+The atom implementation then names only the resources it needs:
 
 ```rust
-pub struct FormatterDescriptor {
-    pub rule: Rule,
-    pub format: fn(&mut CstFormatter<'_>, AtomStageContext<'_>),
+impl Completer<DirectiveAtom> for LanguageService {
+    type Params<'a> = (&'a LanguageContext<'a>, &'a DirectiveRegistry);
+
+    fn completions((context, registry): Self::Params<'_>) -> Vec<EditorCompletion> {
+        directive_completions(context, registry)
+    }
 }
 ```
 
-This should remain an implementation detail of the atom provider. Public atom
-implementations should stay ordinary Rust trait impls such as
-`impl Formats<DirectiveAtom> for CstFormatter<'_>`. The parameter system is only
-worth adding once multiple atoms or stages need heterogeneous inputs that would
-otherwise require ad hoc erased dispatch.
+Generated adapter descriptors call extraction before invoking the typed impl:
+
+```rust
+fn complete<'a, A>(context: &'a LanguageServiceContext<'a>) -> Vec<EditorCompletion>
+where
+    A: LanguageAtom,
+    LanguageService: Completer<A>,
+{
+    let Some(params) = <LanguageService as Completer<A>>::Params::extract(context) else {
+        return Vec::new();
+    };
+
+    <LanguageService as Completer<A>>::completions(params)
+}
+```
 
 The parameter system should preserve the same consumer contract: stages provide
 the current node, typed semantic item, and stage context; atom descriptors
 extract what their implementation needs. It should not become a back door for
 callers to name a specific atom.
+
+## Asset Registry
+
+Use a general `AssetRegistry` for atom-dispatched stages:
+
+```rust
+pub struct AssetRegistry {
+    pub project: ProjectAssets,
+    pub atom: AtomAssets,
+}
+```
+
+Project assets are long-lived for a project, context, or revision. Examples:
+
+- `DirectiveRegistry`;
+- external directive schemas;
+- catalog snapshots;
+- scoped fragment maps;
+- codegen options.
+
+Atom assets are recreated for each stage pass. Examples:
+
+- `DiagnosticStore<CheckDiagnostic>`;
+- temporary validation caches;
+- completion scratch;
+- per-pass accumulators.
+
+The lifecycle for a stage is:
+
+1. build or update project assets;
+2. create fresh atom assets;
+3. run stage/atom asset providers;
+4. dispatch atom implementations;
+5. drain atom assets into the stage return value;
+6. drop atom assets.
+
+Normal stage execution should not mutate project assets. Project assets are
+prepared before the pass; atom assets are the mutable per-pass surface.
+
+Atoms can provide assets during a preparation phase:
+
+```rust
+impl ProvidesAssets<DirectiveAtom, LanguageServiceInputs<'_>> for LanguageService {
+    fn provide(assets: &mut AssetRegistry, inputs: &LanguageServiceInputs<'_>) {
+        assets.project.insert(DirectiveRegistry::system());
+    }
+}
+```
+
+Atom implementations should request specific assets through typed params rather
+than accepting `&AssetRegistry` directly. This keeps dependencies visible in the
+impl signature.
+
+## Picante Boundaries
+
+Picante should wrap atom-dispatched stage boundaries rather than being
+available inside atom implementations.
+
+Short term, memoization should stay coarse:
+
+```rust
+parse_file(source) -> SourceFile
+lower_file(source_file) -> LoweredFile
+check_file(source_file, asset_fingerprint) -> CheckedFile
+```
+
+The tracked query builds or receives stable project assets, creates fresh atom
+assets, calls the registry-dispatched pure stage code, drains atom assets into
+the explicit return value, and returns that value to Picante.
+
+Atoms should consume materialized assets, not `CompilerDb`, `ProjectHost`,
+`SourceDb`, LSP state, or file-system handles. If an atom needs data computed
+by Picante, the query layer should compute that data before entering the atom
+stage and insert the materialized result into project assets.
+
+Longer term, atom declarations may expose memoization policy:
+
+```rust
+language_atom! {
+    FieldSelectionAtom {
+        lower_memo: per_node,
+        check_memo: per_node,
+        plan_memo: per_node,
+    }
+}
+```
+
+Generated descriptors can then expose policy generically:
+
+```rust
+LowerDescriptor {
+    input_kind: LowerInputKind::FieldSelection,
+    memo_policy: MemoPolicy::PerNode,
+    lower: lower_field_selection_adapter,
+}
+```
+
+The Picante layer can consume those descriptors without knowing which atom owns
+the construct. Project assets used by a memoized atom must contribute stable
+fingerprints to the tracked input. The atom still remains a pure stage function.
 
 ## Context Rules
 
@@ -502,10 +643,15 @@ Allowed:
 
 ```rust
 impl Checks<DirectiveAtom> for Checker {
-    fn check(directive: &ast::Directive, context: CheckContext<'_>) {
-        context.catalog();
-        context.directive_location();
-        context.current_table();
+    type Params<'a> = (
+        &'a DirectiveRegistry,
+        &'a DiagnosticStore<CheckDiagnostic>,
+        &'a ast::Directive,
+        DirectiveLocation,
+    );
+
+    fn check((registry, diagnostics, directive, location): Self::Params<'_>) {
+        validate_directive(registry, diagnostics, directive, location);
     }
 }
 ```
@@ -514,10 +660,12 @@ Not allowed:
 
 ```rust
 impl Checks<DirectiveAtom> for Checker {
-    fn check(directive: &ast::Directive, context: CheckContext<'_>) {
-        context.resolve_environment_imports();
-        context.load_project_config();
-        context.query_source_membership();
+    type Params<'a> = (&'a ProjectHost, &'a ast::Directive);
+
+    fn check((project, directive): Self::Params<'_>) {
+        project.resolve_environment_imports();
+        project.load_project_config();
+        project.query_source_membership();
     }
 }
 ```
@@ -541,6 +689,44 @@ pub enum DirectiveCheckDiagnostic {
 The diagnostic must still flow through the common diagnostic carrier and
 presentation path. Atom diagnostics should not create a second reporting
 system.
+
+Diagnostics should be emitted through typed atom assets rather than carried in
+every return type. For example, checking can install a
+`DiagnosticStore<CheckDiagnostic>` in atom assets at the start of the pass:
+
+```rust
+assets.atom.insert(DiagnosticStore::<CheckDiagnostic>::new());
+```
+
+An atom checker can request that store as a parameter:
+
+```rust
+impl Checks<DirectiveAtom> for Checker {
+    type Params<'a> = (
+        &'a DirectiveRegistry,
+        &'a DiagnosticStore<CheckDiagnostic>,
+        &'a Directive,
+        DirectiveLocation,
+    );
+
+    fn check((registry, diagnostics, directive, location): Self::Params<'_>) {
+        if let Some(diagnostic) = validate_directive(registry, directive, location) {
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+```
+
+The owning stage drains diagnostics centrally:
+
+```rust
+let diagnostics = assets.atom.take_all::<CheckStage>();
+```
+
+`take_all::<Stage>()` should be driven by a stage marker trait that knows which
+diagnostic stores belong to the stage and how to sort, deduplicate, and convert
+them. This preserves explicit stage outputs while avoiding diagnostic plumbing
+in every atom return type.
 
 If a diagnostic is part of a stage enum, adding it should update:
 
@@ -573,6 +759,104 @@ if let Some(formatter) = LanguageAtoms::formatter_for_syntax_rule(node.rule()) {
 
 The formatter may keep legacy fallback paths during migration, but new atom
 formatters should be reached through the registry.
+
+CST traversal should be cooperative. A formatter descriptor should return a
+traversal effect so the dispatcher knows whether the atom consumed the subtree:
+
+```rust
+pub enum FormatEffect {
+    HandledSkipChildren,
+    HandledContinueChildren,
+    NotHandled,
+}
+```
+
+Most owning atoms should return `HandledSkipChildren` because they own the full
+construct and decide how to handle nested syntax. Wrapper and internal nodes can
+continue traversal or remain legacy fallback.
+
+When an atom owns an outer construct but needs nested constructs formatted by
+their own atoms, it should call a controlled dispatcher handle supplied by the
+stage context:
+
+```rust
+ctx.format_child(directive, LayoutHint::Inline);
+ctx.format_child(selection_set, LayoutHint::IndentedBlock);
+```
+
+Atoms should call stage dispatcher helpers such as `format_child`, not
+`LanguageAtoms` directly and not another atom by name. The dispatcher remains
+responsible for fallback, traversal effects, ordering, and diagnostics.
+
+## AST Building
+
+AST building dispatches from parser rules, but typed atom impls should return
+their natural AST type:
+
+```rust
+impl BuildsAst<DocumentAtom> for AstBuilder<'_> {
+    type Output = Document;
+
+    fn build(&self, node: NodeRef, ctx: &mut AstBuildContext<'_>) -> Document {
+        let definitions = ctx.build_children::<Definition>(node, Rule::Definition);
+
+        Document { definitions }
+    }
+}
+
+impl BuildsAst<FieldSelectionAtom> for AstBuilder<'_> {
+    type Output = FieldSelection;
+
+    fn build(&self, node: NodeRef, ctx: &mut AstBuildContext<'_>) -> FieldSelection {
+        let name = ctx.build_child::<RelationRef>(name_node);
+        let clauses = ctx.build_children::<Clause>(suffix_node, Rule::Clause);
+        let directives = ctx.build_children::<Directive>(suffix_node, Rule::Directive);
+        let selections = ctx.build_children::<Selection>(suffix_node, Rule::Selection);
+
+        FieldSelection { name, clauses, directives, selections }
+    }
+}
+```
+
+The descriptor erases outputs at the dispatch boundary:
+
+```rust
+pub enum AstBuildOutput {
+    Document(Document),
+    Definition(Definition),
+    Selection(Selection),
+    Clause(Clause),
+    Expr(Expr),
+    Directive(Directive),
+    QualifiedName(QualifiedNameRef),
+    RelationRef(RelationRef),
+}
+```
+
+Parents request the output type they need:
+
+```rust
+let document = ctx.build::<Document>(NodeRef::ROOT);
+let definitions = ctx.build_children::<Definition>(document_node, Rule::Definition);
+let selections = ctx.build_children::<Selection>(selection_set, Rule::Selection);
+let clauses = ctx.build_children::<Clause>(suffix, Rule::Clause);
+```
+
+The erased enum should stay an implementation detail of the dispatcher. Atom
+code works with typed outputs through `build_child::<T>` and
+`build_children::<T>`.
+
+`IntoAstOutput` can be implemented with a declarative macro rather than a
+derive macro:
+
+```rust
+impl_into_ast_output!(Document => AstBuildOutput::Document);
+impl_into_ast_output!(Directive => AstBuildOutput::Directive);
+impl_into_ast_output!(FragmentDef => AstBuildOutput::Definition => Definition::Fragment);
+impl_into_ast_output!(FieldSelection => AstBuildOutput::Selection => Selection::Field);
+```
+
+This keeps nested output mappings explicit while avoiding repetitive impls.
 
 ## Lowering
 
@@ -682,7 +966,9 @@ pub trait ProvidesContext<A: LanguageAtom> {
 }
 
 pub trait Completer<A: LanguageAtom> {
-    fn completions(context: &LanguageContext<'_>) -> Vec<EditorCompletion>;
+    type Params<'a>: AtomParam<'a, LanguageServiceContext<'a>>;
+
+    fn completions(params: Self::Params<'_>) -> Vec<EditorCompletion>;
 }
 
 pub trait NoEditorEffect<A: LanguageAtom> {
@@ -696,6 +982,11 @@ If editor drift remains common, add feature-specific providers:
 - `HoverProvider<A>`;
 - `DefinitionProvider<A>`;
 - `SemanticTokenProvider<A>`.
+
+`DocumentAtom` owns root editor behavior. It should provide root completions
+such as `query` and `fragment`, and it should classify source-root cursor
+contexts without requiring frontend completion code to special-case the document
+root.
 
 ## Compile-Time Guarantees
 
@@ -742,21 +1033,27 @@ they should be visible in the atom declaration so reviews can challenge them.
 
 ## Migration Plan
 
-1. Add `crates/core/src/language` with stage traits and a small atom declaration
-   macro.
-2. Add grammar-rule marker types for the current generated parser rules.
-   Handwritten markers are acceptable for the first version; generation can
-   follow.
-3. Classify current grammar rules as owned or internal.
-4. Pilot with `DirectiveAtom` because directives are already parsed and
-   formatted but not fully semantic.
-5. Before making directives semantic, replace `Selection.directives:
-   Vec<NameRef>` with a first-class `Directive` AST type.
-6. Add no-effect declarations for stages where directives intentionally do not
-   apply yet.
-7. Move directive-specific formatter, AST builder, lowering, checking, and
-   editor behavior into `language/atoms/directive.rs`.
-8. Repeat for fragment spread and field selection if the pilot reduces drift.
+1. Keep `DirectiveAtom` as the reference slice for grammar classification,
+   formatting, AST building, checking, and language-service behavior.
+2. Add `AssetRegistry` with project assets and per-pass atom assets.
+3. Add typed atom parameter extraction, using generated tuple impls to avoid
+   handwritten arity boilerplate.
+4. Move directive completion to request `(&LanguageContext, &DirectiveRegistry)`
+   and provide the system directive registry as a project asset.
+5. Add `DocumentAtom` for root AST building, formatting, and root completions.
+6. Add traversal effects and dispatcher handles for CST stages so parent atoms
+   can consume subtrees while delegating nested constructs back into the same
+   stage pipeline.
+7. Add AST build descriptors, `AstBuildOutput`, `IntoAstOutput`, and
+   `build_child::<T>` / `build_children::<T>` dispatcher helpers.
+8. Split shared AST wrappers where needed, especially selections and clauses,
+   so semantic stages can dispatch by typed construct rather than
+   `SelectionKind` or broad enum branching.
+9. Move lowering, checking, variable inference, planning, and generation onto
+   atom descriptors after typed AST shapes make those dispatch keys clear.
+10. Keep Picante memoization at per-file/stage boundaries until descriptors can
+   expose atom-level memoization policy without teaching the DB layer specific
+   atom names.
 
 ## Current Codebase Friction
 

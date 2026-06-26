@@ -149,6 +149,9 @@ Language atoms colocate grammar ownership with construct-specific stage
 behavior. An atom file should own the parsing/AST construction, formatting,
 lowering, checking, language-service behavior, and no-effect declarations for
 one source construct. `DirectiveAtom` is the current reference slice.
+`DocumentAtom` owns the source root and is responsible for document-level AST
+building, formatting, root completions, and document-syntax diagnostics while
+still delegating child definitions to their own atoms.
 
 Atoms are consumed through stage registries, not through ad hoc calls to a
 specific atom. A stage should normally traverse the CST, AST, or lowered model,
@@ -183,6 +186,44 @@ Direct calls such as "run the directive checker here" are migration code unless
 they are hidden inside the atom registry. The desired end state is that adding
 or moving a construct changes the atom declaration and stage implementation,
 not every traversal that might encounter that construct.
+
+Atom-dispatched stages may use an `AssetRegistry` to provide shared compiler
+assets and per-pass output capabilities without passing a broad project object
+into atom implementations. The registry has two lifetimes:
+
+- project assets are long-lived for a project/context/revision, for example a
+  directive registry, external directive schemas, catalog snapshots, scoped
+  fragments, and codegen options;
+- atom assets are recreated for each stage pass, for example diagnostic
+  stores, validation caches, completion scratch, and other accumulators.
+
+Atoms should not receive the whole registry directly. They declare typed
+parameters, and the stage descriptor extracts only those parameters from the
+stage context. For example, directive completion can request
+`(&LanguageContext, &DirectiveRegistry)` while field completion can request a
+catalog and current table. Tuple extraction should be generated rather than
+handwritten when this pattern grows.
+
+Diagnostics can be emitted through atom assets such as
+`DiagnosticStore<CheckDiagnostic>`. Atom implementations push diagnostics into
+the requested store while their return value remains the semantic stage output.
+The owning stage drains, sorts, deduplicates, and converts diagnostic stores at
+the end of the pass. This keeps diagnostics centralized without forcing every
+atom return type to carry side-channel data.
+
+Picante memoization remains outside atom implementations. Tracked queries own
+stage boundaries, build or receive stable project assets, create fresh atom
+assets for the pass, dispatch pure atom stage functions, and drain atom assets
+into explicit query outputs. Atoms consume materialized assets, not
+`CompilerDb`, `ProjectHost`, `SourceDb`, or LSP state. If atom-level
+memoization is added later, atom descriptors can declare memoization policy
+while the Picante layer consumes those descriptors generically.
+
+The document root is not project orchestration. `DocumentAtom` may own root
+syntax behavior such as `query`/`fragment` completions and blank-line formatting
+between definitions, but source loading, source-unit membership, scoped-program
+construction, config resolution, and protocol adaptation remain frontend or
+adapter responsibilities.
 
 Language-service context has two phases:
 
