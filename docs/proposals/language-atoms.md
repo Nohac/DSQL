@@ -1,6 +1,6 @@
 # Language Atoms
 
-Status: proposal, not implemented current architecture.
+Status: partially implemented architecture.
 
 ## Summary
 
@@ -281,7 +281,14 @@ The macro should generate:
 - the `LanguageAtom` implementation;
 - the grammar-rule owner implementation;
 - compile-time stage coverage assertions;
-- a single atom descriptor for tests and debug output.
+- a single atom descriptor for tests and debug output;
+- stage provider descriptors used by generic dispatchers.
+
+Generated descriptors are the consumer-facing part of the atom system. Stage
+orchestration should ask the atom registry for "the formatter for this rule",
+"all context providers", or "the checker for this typed node". It should not
+hardcode knowledge that a directive, field selection, or fragment spread owns
+the current syntax.
 
 ## File Layout
 
@@ -361,20 +368,49 @@ construction, or adapter protocol conversion.
 Stages remain responsible for traversal and context. Atoms own behavior for one
 construct when the stage reaches it.
 
+The intended consumption model is registry-driven:
+
+1. a stage walks the representation it already owns;
+2. the stage extracts a parser rule or typed node key from the current item;
+3. the stage asks `LanguageAtoms` for the provider registered for that rule and
+   capability;
+4. the provider calls the typed atom implementation.
+
+For example, the formatter should not have a handwritten branch saying
+"directives format here". It should ask for the formatter registered for the
+current `SyntaxRule`:
+
+```rust
+if let Some(formatter) = LanguageAtoms::formatter_for_syntax_rule(node.rule()) {
+    formatter.format(self, node);
+} else {
+    self.format_legacy(node);
+}
+```
+
+Likewise, editor completion should not decide which atom might apply at a
+cursor. It should build ranked `LanguageContext` values, loop all registered
+completion providers, and let each provider return zero or more completions for
+contexts it understands.
+
 Stage consumers must pass enough normalized context for the atom capability to
 do its work without rediscovering global state. The context should describe the
 local role the atom is playing, not force the atom to query project state or
 reconstruct traversal history.
 
-For example, checking still owns selection traversal:
+For semantic stages, traversal may start from AST or lowered nodes rather than
+CST rules. The same rule applies: the traversal owns context and the registry
+selects the construct behavior. A checker might still have to walk selection
+sets, but the construct-specific step should sit behind a provider lookup:
 
 ```rust
 fn check_selection_set(&mut self, table: TableId, selections: &[Selection]) {
     for selection in selections {
-        self.check::<FieldSelectionAtom>(selection, table);
+        self.check_by_kind(selection.kind(), selection, CheckContext::selection(table));
 
         for directive in selection.directives() {
-            self.check::<DirectiveAtom>(
+            self.check_by_kind(
+                directive.kind(),
                 directive,
                 CheckContext::directive(DirectiveLocation::Selection, table),
             );
@@ -383,8 +419,14 @@ fn check_selection_set(&mut self, table: TableId, selections: &[Selection]) {
 }
 ```
 
+The names above are illustrative. The important property is that callers ask
+for a capability by rule or typed construct key, while the registry owns the
+mapping from that key to `DirectiveAtom` or any other atom. Explicit
+`self.check::<DirectiveAtom>(...)` calls are acceptable during migration only
+when the surrounding stage has not yet gained a registry descriptor.
+
 The atom receives context. It does not discover resolution environments,
-visible source units, imports, or catalog snapshots by itself.
+visible source units, imports, catalog snapshots, or traversal state by itself.
 
 This preserves the rule that context enters once at the scoped/checking
 boundary.
@@ -446,6 +488,11 @@ implementations should stay ordinary Rust trait impls such as
 `impl Formats<DirectiveAtom> for CstFormatter<'_>`. The parameter system is only
 worth adding once multiple atoms or stages need heterogeneous inputs that would
 otherwise require ad hoc erased dispatch.
+
+The parameter system should preserve the same consumer contract: stages provide
+the current node, typed semantic item, and stage context; atom descriptors
+extract what their implementation needs. It should not become a back door for
+callers to name a specific atom.
 
 ## Context Rules
 
@@ -513,16 +560,19 @@ not just AST data.
 The formatter must continue to preserve comments, trivia, malformed regions,
 and unknown syntax unless it has enough CST structure to rewrite safely.
 
-Formatting may dispatch directly from grammar rules because formatting is the
-stage closest to original source text:
+Formatting dispatches from grammar rules because formatting is the stage
+closest to original source text:
 
 ```rust
-match node.rule() {
-    SyntaxRule::Directive => self.format::<DirectiveAtom>(node),
-    SyntaxRule::Clause => self.format::<ClauseAtom>(node),
-    _ => self.format_internal(node),
+if let Some(formatter) = LanguageAtoms::formatter_for_syntax_rule(node.rule()) {
+    formatter.format(self, node);
+} else {
+    self.format_legacy(node);
 }
 ```
+
+The formatter may keep legacy fallback paths during migration, but new atom
+formatters should be reached through the registry.
 
 ## Lowering
 
@@ -621,11 +671,18 @@ Editor coverage includes:
 - semantic tokens;
 - LSP conversion when new editor token or completion kinds are introduced.
 
-The editor coverage trait can be coarse at first:
+Editor coverage starts with a generic cursor-context phase plus feature
+providers. Context providers classify raw parse/cursor evidence into generic
+syntax contexts; feature providers consume those contexts and should not
+rediscover the cursor role by reparsing source strings:
 
 ```rust
+pub trait ProvidesContext<A: LanguageAtom> {
+    fn contexts(input: &LanguageContextInput<'_>) -> Vec<LanguageContext<'_>>;
+}
+
 pub trait Completer<A: LanguageAtom> {
-    fn completions(request: EditorCompletionRequest<'_>) -> Vec<EditorCompletion>;
+    fn completions(context: &LanguageContext<'_>) -> Vec<EditorCompletion>;
 }
 
 pub trait NoEditorEffect<A: LanguageAtom> {
@@ -633,9 +690,8 @@ pub trait NoEditorEffect<A: LanguageAtom> {
 }
 ```
 
-If editor drift remains common, split it into:
+If editor drift remains common, add feature-specific providers:
 
-- `ContextProvider<A>`;
 - `Completer<A>`;
 - `HoverProvider<A>`;
 - `DefinitionProvider<A>`;
@@ -650,12 +706,14 @@ The atom model should guarantee:
 - every generated grammar rule is owned or explicitly internal;
 - every atom has required stage coverage;
 - every optional stage has either an implementation or no-effect declaration;
-- adding an atom without editor/generation/variable decisions fails to compile.
+- adding an atom without editor/generation/variable decisions fails to compile;
+- registered stage consumers can discover atom providers without naming the
+  atom directly.
 
 The model cannot guarantee:
 
 - grammar semantics are correct;
-- the atom implementation is called from every traversal;
+- every legacy traversal has already been converted to registry dispatch;
 - diagnostics are precise;
 - generated TypeScript behavior is correct;
 - runtime SQL behavior matches intent.

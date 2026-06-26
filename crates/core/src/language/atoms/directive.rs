@@ -1,5 +1,6 @@
 use crate::language::prelude::*;
 use facet::Facet;
+use std::borrow::Cow;
 
 /// Directive attached to a selection or fragment spread.
 #[derive(Clone, Debug, PartialEq, Facet)]
@@ -102,23 +103,17 @@ pub struct DirectiveArgumentDefinition {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DirectiveCompletionContext<'a> {
-    Namespace {
-        prefix: &'a str,
-    },
-    Member {
-        namespace: &'a str,
-        prefix: &'a str,
-    },
-    Argument {
-        directive: &'a str,
-        prefix: &'a str,
-    },
-    Value {
-        directive: &'a str,
-        argument: &'a str,
-        prefix: &'a str,
-    },
+/// Generic context ranges produced by directive context classification.
+///
+/// The type is directive-local, but it only carries generic syntax data:
+/// a [`SyntaxRule`], optional CST node, and the construct/focus ranges that a
+/// language-service consumer can read. It intentionally does not encode a
+/// directive-specific completion enum.
+struct DirectiveSourceWindow {
+    construct_range: TextRange,
+    focus_range: TextRange,
+    rule: SyntaxRule,
+    node: Option<usize>,
 }
 
 /// Directive definition loaded from external schema metadata.
@@ -300,28 +295,35 @@ impl BuildsAst<DirectiveAtom> for AstBuilder<'_> {
 
 impl AstBuilder<'_> {
     fn directive_name(&self, node: NodeRef) -> DirectiveName {
-        let names = self.direct_names(node);
         let range = self.node_range(node);
         if let Some((Token::Dot, dot_range)) = self.first_direct_token(node) {
             return DirectiveName {
                 range,
                 namespace: DirectiveNamespace::DsqlShorthand { range: dot_range },
-                member: names
-                    .first()
-                    .cloned()
+                member: self
+                    .directive_member(node)
                     .or_else(|| Some(self.missing_name(node))),
             };
         }
 
-        let namespace = names
-            .first()
-            .cloned()
+        let namespace = self
+            .directive_namespace(node)
             .unwrap_or_else(|| self.missing_name(node));
         DirectiveName {
             range,
             namespace: DirectiveNamespace::Named(namespace),
-            member: names.get(1).cloned(),
+            member: self.directive_member(node),
         }
+    }
+
+    fn directive_namespace(&self, node: NodeRef) -> Option<NameRef> {
+        self.direct_rule(node, Rule::DirectiveNamespace)
+            .and_then(|namespace| self.direct_names(namespace).into_iter().next())
+    }
+
+    fn directive_member(&self, node: NodeRef) -> Option<NameRef> {
+        self.direct_rule(node, Rule::DirectiveMember)
+            .and_then(|member| self.direct_names(member).into_iter().next())
     }
 
     fn directive_argument(&self, node: NodeRef) -> DirectiveArgument {
@@ -403,80 +405,452 @@ impl DirectiveAtom {
     }
 }
 
+impl ProvidesContext<DirectiveAtom> for LanguageService {
+    /// Refines cursor evidence into precise directive syntax contexts.
+    ///
+    /// The order is part of the contract for future atoms:
+    /// 1. use parsed CST structure when available;
+    /// 2. use parser recovery/expected-token evidence for malformed positions;
+    /// 3. use bounded source-window recovery only as a fallback.
+    fn contexts<'a>(input: &LanguageContextInput<'a>) -> Vec<LanguageContext<'a>> {
+        if let Some(window) = directive_cst_window(input) {
+            return vec![directive_context(
+                input,
+                window,
+                ContextOrigin::Cst,
+                ContextConfidence::Exact,
+            )];
+        }
+
+        if let Some(window) = directive_expected_token_window(input) {
+            return vec![directive_context(
+                input,
+                window,
+                ContextOrigin::ExpectedTokens,
+                ContextConfidence::Inferred,
+            )];
+        }
+
+        directive_source_window(input)
+            .map(|window| {
+                directive_context(
+                    input,
+                    window,
+                    ContextOrigin::SourceWindow,
+                    ContextConfidence::Fallback,
+                )
+            })
+            .into_iter()
+            .collect()
+    }
+}
+
+/// Wraps a directive-local window as a generic language-service context.
+fn directive_context<'a>(
+    input: &LanguageContextInput<'a>,
+    window: DirectiveSourceWindow,
+    origin: ContextOrigin,
+    confidence: ContextConfidence,
+) -> LanguageContext<'a> {
+    LanguageContext {
+        request: input.request,
+        rule: window.rule,
+        node: window.node,
+        token: input.token,
+        origin,
+        confidence,
+        construct_range: window.construct_range,
+        focus_range: window.focus_range,
+    }
+}
+
 impl Completer<DirectiveAtom> for LanguageService {
-    fn completions(request: EditorCompletionRequest<'_>) -> Vec<EditorCompletion> {
-        let before = request.source.text(TextRange::new(0, request.byte));
-        let Some(directive_start) = before.as_ref().rfind('@') else {
-            return Vec::new();
-        };
-        if before.as_ref()[directive_start..]
-            .chars()
-            .any(|character| matches!(character, '{' | '}' | '\n'))
-        {
+    /// Provides directive completions from already-classified syntax contexts.
+    ///
+    /// This method matches on generic [`SyntaxRule`] values and reads
+    /// `construct_range`/`focus_range`. It should not parse directive names or
+    /// arguments from scratch; if a rule is missing, the grammar or context
+    /// provider should be made more structural.
+    fn completions(context: &LanguageContext<'_>) -> Vec<EditorCompletion> {
+        if !is_directive_context(context) {
             return Vec::new();
         }
 
-        let directive = &before.as_ref()[directive_start + 1..];
-        let Some(context) = directive_completion_context(directive) else {
-            return Vec::new();
-        };
-
-        match context {
-            DirectiveCompletionContext::Namespace { prefix } => namespace_completions(prefix),
-            DirectiveCompletionContext::Member { namespace, prefix } => {
-                member_completions(namespace, prefix)
+        match context.rule {
+            SyntaxRule::DirectiveNamespace => {
+                let prefix = context_text(context, context.focus_range);
+                namespace_completions(prefix.as_ref())
             }
-            DirectiveCompletionContext::Argument { directive, prefix } => {
-                argument_completions(directive, prefix)
+            SyntaxRule::DirectiveMember => {
+                let Some(namespace) = directive_namespace_for_context(context) else {
+                    return Vec::new();
+                };
+                let prefix = context_text(context, context.focus_range);
+                member_completions(namespace.as_ref(), prefix.as_ref())
             }
-            DirectiveCompletionContext::Value {
-                directive,
-                argument,
-                prefix,
-            } => value_completions(directive, argument, prefix),
+            SyntaxRule::DirectiveArgument => {
+                let directive = context_text(context, context.construct_range);
+                let prefix = context_text(context, context.focus_range);
+                if directive_argument_value_context(context) {
+                    let Some(argument) = directive_argument_name_for_context(context) else {
+                        return Vec::new();
+                    };
+                    value_completions(directive.as_ref(), argument.as_ref(), prefix.as_ref())
+                } else {
+                    argument_completions(directive.as_ref(), prefix.as_ref())
+                }
+            }
+            _ => Vec::new(),
         }
     }
 }
 
-fn directive_completion_context(directive: &str) -> Option<DirectiveCompletionContext<'_>> {
-    if let Some(open_paren) = directive.rfind('(')
-        && !directive[open_paren + 1..].contains(')')
+/// Returns whether a context targets a directive completion role owned by this atom.
+fn is_directive_context(context: &LanguageContext<'_>) -> bool {
+    matches!(
+        context.origin,
+        ContextOrigin::Cst | ContextOrigin::ExpectedTokens | ContextOrigin::SourceWindow
+    ) && matches!(
+        context.rule,
+        SyntaxRule::DirectiveArgument
+            | SyntaxRule::DirectiveMember
+            | SyntaxRule::DirectiveNamespace
+    )
+}
+
+/// Reads a context range from the original source snapshot.
+fn context_text<'a>(context: &LanguageContext<'a>, range: TextRange) -> Cow<'a, str> {
+    context.request.parse.source.text(range)
+}
+
+/// Classifies directive contexts from concrete CST structure.
+///
+/// This is the preferred path. It relies on the grammar exposing
+/// `directive_namespace`, `directive_member`, and `directive_argument` nodes so
+/// completion does not need to infer those concepts by splitting strings.
+fn directive_cst_window(input: &LanguageContextInput<'_>) -> Option<DirectiveSourceWindow> {
+    let directive = input
+        .enclosing_rules
+        .iter()
+        .find(|rule| rule.rule == SyntaxRule::Directive)?;
+    let directive_name = direct_child_rule(input, directive.node, SyntaxRule::DirectiveName)?;
+
+    if let Some(argument) = input
+        .enclosing_rules
+        .iter()
+        .find(|rule| rule.rule == SyntaxRule::DirectiveArgument)
     {
-        let directive_name = &directive[..open_paren];
-        let current_argument = directive[open_paren + 1..]
-            .rsplit_once(',')
-            .map_or(&directive[open_paren + 1..], |(_, argument)| argument)
-            .trim_start();
-        return if let Some((argument, prefix)) = current_argument.split_once(':') {
-            Some(DirectiveCompletionContext::Value {
-                directive: directive_name,
-                argument: argument.trim(),
-                prefix: prefix.trim_start(),
-            })
-        } else {
-            Some(DirectiveCompletionContext::Argument {
-                directive: directive_name,
-                prefix: current_argument.trim(),
-            })
-        };
+        return directive_argument_window(input, directive_name, argument.node);
     }
 
-    if directive.is_empty() || is_name_prefix(directive) {
-        return Some(DirectiveCompletionContext::Namespace { prefix: directive });
+    if let Some(argument_list) =
+        directive_argument_list_window(input, directive.node, directive_name)
+    {
+        return Some(argument_list);
     }
-    if let Some(prefix) = directive.strip_prefix('.') {
-        return Some(DirectiveCompletionContext::Member {
-            namespace: "dsql",
-            prefix,
+
+    if let Some(member) = direct_child_rule(input, directive_name, SyntaxRule::DirectiveMember) {
+        return Some(DirectiveSourceWindow {
+            construct_range: input.request.parse.tree.nodes[directive_name].range,
+            focus_range: clipped_node_range(input, member),
+            rule: SyntaxRule::DirectiveMember,
+            node: Some(member),
         });
     }
-    if let Some(prefix) = directive.strip_prefix("dsql.") {
-        return Some(DirectiveCompletionContext::Member {
-            namespace: "dsql",
-            prefix,
+
+    if let Some(namespace) =
+        direct_child_rule(input, directive_name, SyntaxRule::DirectiveNamespace)
+    {
+        return Some(DirectiveSourceWindow {
+            construct_range: input.request.parse.tree.nodes[directive_name].range,
+            focus_range: clipped_node_range(input, namespace),
+            rule: SyntaxRule::DirectiveNamespace,
+            node: Some(namespace),
+        });
+    }
+
+    directive_source_window(input)
+}
+
+/// Classifies malformed directive positions using parser recovery evidence.
+///
+/// Expected-token evidence proves the parser was actively recovering at the
+/// cursor. The range still comes from a bounded source window because there may
+/// be no useful CST node for the incomplete child yet.
+fn directive_expected_token_window(
+    input: &LanguageContextInput<'_>,
+) -> Option<DirectiveSourceWindow> {
+    if input.expected_tokens.is_empty() {
+        return None;
+    }
+
+    directive_source_window(input)
+}
+
+/// Builds a directive context from a small source window around the cursor.
+///
+/// This is intentionally the last resort. It only looks backward to the nearest
+/// `@` in the current line/block and then emits the same generic syntax-rule
+/// contexts as the CST classifier.
+fn directive_source_window(input: &LanguageContextInput<'_>) -> Option<DirectiveSourceWindow> {
+    let before = input
+        .request
+        .parse
+        .source
+        .text(TextRange::new(0, input.request.byte));
+    let directive_start = before.as_ref().rfind('@')?;
+    if before.as_ref()[directive_start..]
+        .chars()
+        .any(|character| matches!(character, '{' | '}' | '\n'))
+    {
+        return None;
+    }
+
+    directive_source_window_from_range(
+        input,
+        TextRange::new(directive_start + 1, input.request.byte),
+    )
+}
+
+/// Classifies an empty or partially typed argument list after the opening `(`.
+fn directive_argument_list_window(
+    input: &LanguageContextInput<'_>,
+    directive: usize,
+    directive_name: usize,
+) -> Option<DirectiveSourceWindow> {
+    let lpar = direct_child_token(input, directive, SyntaxToken::LPar)?;
+    let lpar_range = input.request.parse.tree.nodes[lpar].range;
+    if input.request.byte < lpar_range.end as usize {
+        return None;
+    }
+
+    Some(DirectiveSourceWindow {
+        construct_range: input.request.parse.tree.nodes[directive_name].range,
+        focus_range: TextRange::new(input.request.byte, input.request.byte),
+        rule: SyntaxRule::DirectiveArgument,
+        node: None,
+    })
+}
+
+/// Classifies a concrete directive argument node as name or value completion.
+///
+/// `construct_range` is the directive name range so completions can resolve the
+/// directive definition. `focus_range` is either the argument name prefix or the
+/// value prefix after `:`.
+fn directive_argument_window(
+    input: &LanguageContextInput<'_>,
+    directive_name: usize,
+    argument: usize,
+) -> Option<DirectiveSourceWindow> {
+    let argument_range = input.request.parse.tree.nodes[argument].range;
+    let name = first_direct_name_token(input, argument)?;
+    let colon = direct_child_token(input, argument, SyntaxToken::Colon);
+    let focus_range = if let Some(colon) = colon
+        && input.request.byte > input.request.parse.tree.nodes[colon].range.end as usize
+    {
+        TextRange::new(
+            input.request.parse.tree.nodes[colon].range.end as usize,
+            input.request.byte.min(argument_range.end as usize),
+        )
+    } else {
+        let name_range = input.request.parse.tree.nodes[name].range;
+        TextRange::new(
+            name_range.start as usize,
+            input.request.byte.min(name_range.end as usize),
+        )
+    };
+
+    Some(DirectiveSourceWindow {
+        construct_range: input.request.parse.tree.nodes[directive_name].range,
+        focus_range,
+        rule: SyntaxRule::DirectiveArgument,
+        node: Some(argument),
+    })
+}
+
+/// Converts a source-window range into a generic directive context.
+///
+/// This helper exists only for malformed/incomplete text where the CST lacks
+/// the structural node that would normally provide the same ranges.
+fn directive_source_window_from_range(
+    input: &LanguageContextInput<'_>,
+    source_range: TextRange,
+) -> Option<DirectiveSourceWindow> {
+    let source = input.request.parse.source.text(source_range);
+    let source = source.as_ref();
+    if let Some(open_paren) = source.rfind('(')
+        && !source[open_paren + 1..].contains(')')
+    {
+        let directive_end = source_range.start as usize + open_paren;
+        let arguments_start = open_paren + 1;
+        let arguments = &source[arguments_start..];
+        let current_start = arguments.rfind(',').map_or(0, |comma| comma + 1);
+        let current = &arguments[current_start..];
+        let trimmed = current.trim_start();
+        let trimmed_start =
+            source_range.start as usize + arguments_start + current_start + current.len()
+                - trimmed.len();
+        let prefix_start = trimmed
+            .split_once(':')
+            .map_or(trimmed_start, |(name, value)| {
+                trimmed_start + name.len() + 1 + value.len() - value.trim_start().len()
+            });
+        return Some(DirectiveSourceWindow {
+            construct_range: TextRange::new(source_range.start as usize, directive_end),
+            focus_range: TextRange::new(prefix_start, source_range.end as usize),
+            rule: SyntaxRule::DirectiveArgument,
+            node: None,
+        });
+    }
+
+    if let Some((namespace, member)) = source.split_once('.') {
+        let member_start = source_range.start as usize + namespace.len() + 1;
+        return Some(DirectiveSourceWindow {
+            construct_range: source_range,
+            focus_range: TextRange::new(member_start, member_start + member.len()),
+            rule: SyntaxRule::DirectiveMember,
+            node: None,
+        });
+    }
+
+    if source.is_empty() || is_name_prefix(source) {
+        return Some(DirectiveSourceWindow {
+            construct_range: source_range,
+            focus_range: source_range,
+            rule: SyntaxRule::DirectiveNamespace,
+            node: None,
         });
     }
     None
+}
+
+/// Resolves the namespace text for a member-completion context.
+///
+/// The directive-name grammar guarantees a namespace/member split for CST
+/// contexts. Source-window contexts use the same `construct_range` convention.
+fn directive_namespace_for_context<'a>(context: &LanguageContext<'a>) -> Option<Cow<'a, str>> {
+    let directive = context_text(context, context.construct_range);
+    let directive = directive.as_ref();
+    if directive.starts_with('.') {
+        return Some(Cow::Borrowed("dsql"));
+    }
+    let namespace = directive.split_once('.')?.0;
+    Some(Cow::Owned(namespace.to_string()))
+}
+
+/// Returns whether a directive argument context is completing a value.
+///
+/// CST contexts use the colon token. Source-window contexts fall back to the
+/// text between the directive name and the value focus range.
+fn directive_argument_value_context(context: &LanguageContext<'_>) -> bool {
+    if let Some(node) = context.node
+        && let Some(colon) = direct_context_token(context, node, SyntaxToken::Colon)
+    {
+        return context.request.byte > context.request.parse.tree.nodes[colon].range.end as usize;
+    }
+    argument_source_prefix(context).is_some_and(|prefix| prefix.contains(':'))
+}
+
+/// Reads the argument name associated with a directive value context.
+fn directive_argument_name_for_context<'a>(context: &LanguageContext<'a>) -> Option<Cow<'a, str>> {
+    if let Some(node) = context.node
+        && let Some(name) = first_direct_context_name_token(context, node)
+    {
+        return Some(context_text(
+            context,
+            context.request.parse.tree.nodes[name].range,
+        ));
+    }
+
+    let prefix = argument_source_prefix(context)?;
+    let argument = prefix.split_once(':')?.0.trim();
+    Some(Cow::Owned(argument.to_string()))
+}
+
+/// Returns the source-window text between directive name and argument focus.
+fn argument_source_prefix<'a>(context: &LanguageContext<'a>) -> Option<Cow<'a, str>> {
+    let start = context.construct_range.end as usize + 1;
+    if start > context.focus_range.start as usize {
+        return None;
+    }
+    Some(context_text(
+        context,
+        TextRange::new(start, context.focus_range.start as usize),
+    ))
+}
+
+/// Finds a direct child CST rule without descending into nested constructs.
+fn direct_child_rule(
+    input: &LanguageContextInput<'_>,
+    node: usize,
+    target: SyntaxRule,
+) -> Option<usize> {
+    input.request.parse.tree.nodes[node]
+        .children
+        .iter()
+        .copied()
+        .find(|child| {
+            matches!(
+                input.request.parse.tree.nodes[*child].cst_kind,
+                CstKind::Rule(rule) if rule == target
+            )
+        })
+}
+
+/// Finds a direct child token in a node from raw context input.
+fn direct_child_token(
+    input: &LanguageContextInput<'_>,
+    node: usize,
+    target: SyntaxToken,
+) -> Option<usize> {
+    input.request.parse.tree.nodes[node]
+        .children
+        .iter()
+        .copied()
+        .find(|child| {
+            matches!(
+                input.request.parse.tree.nodes[*child].cst_kind,
+                CstKind::Token(token) if token == target
+            )
+        })
+}
+
+/// Finds a direct child token in a node from a normalized context.
+fn direct_context_token(
+    context: &LanguageContext<'_>,
+    node: usize,
+    target: SyntaxToken,
+) -> Option<usize> {
+    context.request.parse.tree.nodes[node]
+        .children
+        .iter()
+        .copied()
+        .find(|child| {
+            matches!(
+                context.request.parse.tree.nodes[*child].cst_kind,
+                CstKind::Token(token) if token == target
+            )
+        })
+}
+
+fn first_direct_name_token(input: &LanguageContextInput<'_>, node: usize) -> Option<usize> {
+    direct_child_token(input, node, SyntaxToken::Name)
+}
+
+fn first_direct_context_name_token(context: &LanguageContext<'_>, node: usize) -> Option<usize> {
+    direct_context_token(context, node, SyntaxToken::Name)
+}
+
+/// Clips a CST node range to the cursor for prefix completion.
+fn clipped_node_range(input: &LanguageContextInput<'_>, node: usize) -> TextRange {
+    let range = input.request.parse.tree.nodes[node].range;
+    if input.request.byte < range.start as usize {
+        return TextRange::new(input.request.byte, input.request.byte);
+    }
+    TextRange::new(
+        range.start as usize,
+        input.request.byte.min(range.end as usize),
+    )
 }
 
 fn namespace_completions(prefix: &str) -> Vec<EditorCompletion> {

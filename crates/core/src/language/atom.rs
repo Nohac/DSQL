@@ -89,6 +89,8 @@ macro_rules! language_atom {
                     crate::language::stages::MetadataGenerator:
                         crate::language::stages::GeneratesMetadata<$atom>,
                     crate::language::stages::LanguageService:
+                        crate::language::stages::ProvidesContext<$atom>,
+                    crate::language::stages::LanguageService:
                         crate::language::stages::Completer<$atom>,
                 {
                 }

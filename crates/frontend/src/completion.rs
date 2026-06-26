@@ -1,7 +1,7 @@
 use crate::cursor::{CursorContext, UsedClauses, cursor_context};
 use dsql_core::{
-    BinaryOp, Catalog, DataType, EditorCompletion, EditorCompletionKind, EditorCompletionRequest,
-    FragmentRecord, TableId, TextRange, Token, editor_completions,
+    BinaryOp, Catalog, DataType, EditorCompletion, EditorCompletionKind, FragmentRecord,
+    LanguageServiceRequest, TableId, TextRange, Token, editor_completions,
 };
 use facet::Facet;
 
@@ -74,10 +74,7 @@ pub(crate) fn completions_at(
     byte: usize,
     scope: &CompletionScope,
 ) -> Vec<CompletionItem> {
-    let atom_completions = editor_completions(EditorCompletionRequest {
-        source: &parse.source,
-        byte,
-    });
+    let atom_completions = editor_completions(LanguageServiceRequest { parse, byte });
     if !atom_completions.is_empty() {
         return atom_completions
             .into_iter()

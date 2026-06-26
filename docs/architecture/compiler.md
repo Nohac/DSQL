@@ -123,6 +123,92 @@ Qualified names and relation references are parsed structurally. For example,
 schema/table and relation selector spelling are preserved as separate AST
 fields instead of being collapsed into strings and split later.
 
+Parser structure should be specific enough for downstream semantic and editor
+features to avoid reparsing source strings. When a language construct has
+semantic subparts, the grammar should expose those subparts as rules or tokens.
+For example, directives are parsed as `directive_namespace`,
+`directive_member`, and `directive_argument` instead of a flat string that later
+needs to be split on dots.
+
+String inspection is acceptable only as bounded recovery at integration points
+where a dependency requires `&str`, or where editor input is malformed enough
+that the CST cannot expose the missing child yet. Those fallback paths must
+produce the same rule/range shape as the structured parser path so consumers do
+not need separate language-specific parsing logic.
+
+Semantic tokens, completions, hover, definition, formatting, lowering, and
+checking should prefer CST/AST ranges and parser-owned structure. If an editor
+feature needs to know whether the cursor is inside a namespace, member,
+argument name, argument value, relation selector, or similar subpart, that
+subpart should normally be represented in the grammar rather than inferred by
+string manipulation.
+
+## Language Atoms And Context
+
+Language atoms colocate grammar ownership with construct-specific stage
+behavior. An atom file should own the parsing/AST construction, formatting,
+lowering, checking, language-service behavior, and no-effect declarations for
+one source construct. `DirectiveAtom` is the current reference slice.
+
+Atoms are consumed through stage registries, not through ad hoc calls to a
+specific atom. A stage should normally traverse the CST, AST, or lowered model,
+identify the relevant grammar rule or typed node, and ask the atom registry for
+the provider for that rule and stage. The stage supplies traversal context; the
+atom supplies construct behavior. This keeps the caller from needing to know
+whether a directive, fragment spread, field selection, or future construct owns
+the current syntax.
+
+Grammar rules are classified as one of:
+
+- owned by an atom;
+- delegated to an atom because the rule is a structural child of the owned
+  construct;
+- legacy, meaning it has not moved into an atom yet;
+- internal, meaning it only groups syntax and has no direct feature owner.
+
+Adding a grammar rule should force a classification decision in
+`LanguageAtoms`. Rules that carry semantic or editor meaning should not be left
+internal merely because no current stage consumes them.
+
+Stage dispatch should follow this shape:
+
+1. the consumer walks its native representation, for example CST nodes for
+   formatting or AST/lowered nodes for semantic stages;
+2. the consumer converts the current item to the parser rule or typed atom key;
+3. `LanguageAtoms` returns the registered provider for that stage, or reports
+   that the rule is still legacy/internal;
+4. the consumer invokes the provider with normalized stage context.
+
+Direct calls such as "run the directive checker here" are migration code unless
+they are hidden inside the atom registry. The desired end state is that adding
+or moving a construct changes the atom declaration and stage implementation,
+not every traversal that might encounter that construct.
+
+Language-service context has two phases:
+
+1. `LanguageContextInput` records raw cursor evidence from the parse result:
+   enclosing CST rules, containing token, expected tokens, and source position.
+2. Atom context providers refine that input into generic `LanguageContext`
+   values with a concrete `SyntaxRule`, evidence origin, confidence,
+   `construct_range`, and `focus_range`.
+
+The context provider is generic over syntax. It must not expose atom-specific
+payload enums. An atom can use local helper structs while classifying, but the
+published context should be expressed as syntax rules plus ranges. Completion,
+hover, definition, semantic-token, and future editor consumers should match the
+generic rule and read the supplied ranges.
+
+Context providers should classify in this order:
+
+1. exact CST evidence;
+2. parser expected-token or recovery evidence;
+3. bounded source-window fallback.
+
+Fallback source-window classification is recovery only. It should be small,
+cursor-local, and produce the same `SyntaxRule`/range shape as the CST path.
+If a fallback grows into general parsing logic, the grammar likely needs a new
+structural rule instead.
+
 ## Core Stages
 
 Core analysis is organized as explicit stages:

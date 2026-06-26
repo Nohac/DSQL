@@ -55,7 +55,9 @@ pub enum SyntaxRule {
     Definition,
     Directive,
     DirectiveArgument,
+    DirectiveMember,
     DirectiveName,
+    DirectiveNamespace,
     Document,
     Error,
     Expr,
@@ -245,7 +247,7 @@ fn build_syntax_tree(cst: &Cst<'_>) -> SyntaxTree {
 fn push_node(cst: &Cst<'_>, node_ref: NodeRef, tree: &mut SyntaxTree) -> usize {
     let idx = tree.nodes.len();
     let cst_kind = match cst.get(node_ref) {
-        Node::Rule(rule, _) => CstKind::Rule(map_rule(rule)),
+        Node::Rule(rule, _) => CstKind::Rule(SyntaxRule::from(rule)),
         Node::Token(token, _) => CstKind::Token(map_token(token)),
     };
     let kind = match cst_kind {
@@ -273,41 +275,87 @@ fn push_node(cst: &Cst<'_>, node_ref: NodeRef, tree: &mut SyntaxTree) -> usize {
     idx
 }
 
-fn map_rule(rule: Rule) -> SyntaxRule {
-    match rule {
-        Rule::BinaryExpr => SyntaxRule::BinaryExpr,
-        Rule::BinaryOperator => SyntaxRule::BinaryOperator,
-        Rule::Clause => SyntaxRule::Clause,
-        Rule::ClauseList => SyntaxRule::ClauseList,
-        Rule::ComparisonOperator => SyntaxRule::ComparisonOperator,
-        Rule::Definition => SyntaxRule::Definition,
-        Rule::Directive => SyntaxRule::Directive,
-        Rule::DirectiveArgument => SyntaxRule::DirectiveArgument,
-        Rule::DirectiveName => SyntaxRule::DirectiveName,
-        Rule::Document => SyntaxRule::Document,
-        Rule::Error => SyntaxRule::Error,
-        Rule::Expr => SyntaxRule::Expr,
-        Rule::FieldSelection => SyntaxRule::FieldSelection,
-        Rule::FieldSelectionTail => SyntaxRule::FieldSelectionTail,
-        Rule::FieldSuffix => SyntaxRule::FieldSuffix,
-        Rule::FragmentDef => SyntaxRule::FragmentDef,
-        Rule::FragmentSpread => SyntaxRule::FragmentSpread,
-        Rule::Literal => SyntaxRule::Literal,
-        Rule::LimitClause => SyntaxRule::LimitClause,
-        Rule::OffsetClause => SyntaxRule::OffsetClause,
-        Rule::OperatorVariable => SyntaxRule::OperatorVariable,
-        Rule::OrderByClause => SyntaxRule::OrderByClause,
-        Rule::OrderItem => SyntaxRule::OrderItem,
-        Rule::QueryDef => SyntaxRule::QueryDef,
-        Rule::QualifiedName => SyntaxRule::QualifiedName,
-        Rule::RelationRef => SyntaxRule::RelationRef,
-        Rule::ScopedPath => SyntaxRule::ScopedPath,
-        Rule::ScopedPathSegment => SyntaxRule::ScopedPathSegment,
-        Rule::Selection => SyntaxRule::Selection,
-        Rule::SelectionSet => SyntaxRule::SelectionSet,
-        Rule::SortDirection => SyntaxRule::SortDirection,
-        Rule::ValueVariable => SyntaxRule::ValueVariable,
-        Rule::WhereClause => SyntaxRule::WhereClause,
+impl From<Rule> for SyntaxRule {
+    fn from(rule: Rule) -> Self {
+        match rule {
+            Rule::BinaryExpr => SyntaxRule::BinaryExpr,
+            Rule::BinaryOperator => SyntaxRule::BinaryOperator,
+            Rule::Clause => SyntaxRule::Clause,
+            Rule::ClauseList => SyntaxRule::ClauseList,
+            Rule::ComparisonOperator => SyntaxRule::ComparisonOperator,
+            Rule::Definition => SyntaxRule::Definition,
+            Rule::Directive => SyntaxRule::Directive,
+            Rule::DirectiveArgument => SyntaxRule::DirectiveArgument,
+            Rule::DirectiveMember => SyntaxRule::DirectiveMember,
+            Rule::DirectiveName => SyntaxRule::DirectiveName,
+            Rule::DirectiveNamespace => SyntaxRule::DirectiveNamespace,
+            Rule::Document => SyntaxRule::Document,
+            Rule::Error => SyntaxRule::Error,
+            Rule::Expr => SyntaxRule::Expr,
+            Rule::FieldSelection => SyntaxRule::FieldSelection,
+            Rule::FieldSelectionTail => SyntaxRule::FieldSelectionTail,
+            Rule::FieldSuffix => SyntaxRule::FieldSuffix,
+            Rule::FragmentDef => SyntaxRule::FragmentDef,
+            Rule::FragmentSpread => SyntaxRule::FragmentSpread,
+            Rule::Literal => SyntaxRule::Literal,
+            Rule::LimitClause => SyntaxRule::LimitClause,
+            Rule::OffsetClause => SyntaxRule::OffsetClause,
+            Rule::OperatorVariable => SyntaxRule::OperatorVariable,
+            Rule::OrderByClause => SyntaxRule::OrderByClause,
+            Rule::OrderItem => SyntaxRule::OrderItem,
+            Rule::QueryDef => SyntaxRule::QueryDef,
+            Rule::QualifiedName => SyntaxRule::QualifiedName,
+            Rule::RelationRef => SyntaxRule::RelationRef,
+            Rule::ScopedPath => SyntaxRule::ScopedPath,
+            Rule::ScopedPathSegment => SyntaxRule::ScopedPathSegment,
+            Rule::Selection => SyntaxRule::Selection,
+            Rule::SelectionSet => SyntaxRule::SelectionSet,
+            Rule::SortDirection => SyntaxRule::SortDirection,
+            Rule::ValueVariable => SyntaxRule::ValueVariable,
+            Rule::WhereClause => SyntaxRule::WhereClause,
+        }
+    }
+}
+
+impl From<SyntaxRule> for Rule {
+    fn from(rule: SyntaxRule) -> Self {
+        match rule {
+            SyntaxRule::BinaryExpr => Rule::BinaryExpr,
+            SyntaxRule::BinaryOperator => Rule::BinaryOperator,
+            SyntaxRule::Clause => Rule::Clause,
+            SyntaxRule::ClauseList => Rule::ClauseList,
+            SyntaxRule::ComparisonOperator => Rule::ComparisonOperator,
+            SyntaxRule::Definition => Rule::Definition,
+            SyntaxRule::Directive => Rule::Directive,
+            SyntaxRule::DirectiveArgument => Rule::DirectiveArgument,
+            SyntaxRule::DirectiveMember => Rule::DirectiveMember,
+            SyntaxRule::DirectiveName => Rule::DirectiveName,
+            SyntaxRule::DirectiveNamespace => Rule::DirectiveNamespace,
+            SyntaxRule::Document => Rule::Document,
+            SyntaxRule::Error => Rule::Error,
+            SyntaxRule::Expr => Rule::Expr,
+            SyntaxRule::FieldSelection => Rule::FieldSelection,
+            SyntaxRule::FieldSelectionTail => Rule::FieldSelectionTail,
+            SyntaxRule::FieldSuffix => Rule::FieldSuffix,
+            SyntaxRule::FragmentDef => Rule::FragmentDef,
+            SyntaxRule::FragmentSpread => Rule::FragmentSpread,
+            SyntaxRule::Literal => Rule::Literal,
+            SyntaxRule::LimitClause => Rule::LimitClause,
+            SyntaxRule::OffsetClause => Rule::OffsetClause,
+            SyntaxRule::OperatorVariable => Rule::OperatorVariable,
+            SyntaxRule::OrderByClause => Rule::OrderByClause,
+            SyntaxRule::OrderItem => Rule::OrderItem,
+            SyntaxRule::QueryDef => Rule::QueryDef,
+            SyntaxRule::QualifiedName => Rule::QualifiedName,
+            SyntaxRule::RelationRef => Rule::RelationRef,
+            SyntaxRule::ScopedPath => Rule::ScopedPath,
+            SyntaxRule::ScopedPathSegment => Rule::ScopedPathSegment,
+            SyntaxRule::Selection => Rule::Selection,
+            SyntaxRule::SelectionSet => Rule::SelectionSet,
+            SyntaxRule::SortDirection => Rule::SortDirection,
+            SyntaxRule::ValueVariable => Rule::ValueVariable,
+            SyntaxRule::WhereClause => Rule::WhereClause,
+        }
     }
 }
 
@@ -810,11 +858,12 @@ impl<'a> AstBuilder<'a> {
             .collect()
     }
 
-    /// Returns the first token that is a direct child of `node`.
+    /// Returns the direct child token when the first child of `node` is a token.
     pub(crate) fn first_direct_token(&self, node: NodeRef) -> Option<(Token, TextRange)> {
         self.cst
             .children(node)
-            .find_map(|child| token_text(self.cst, child).map(|(token, _, range)| (token, range)))
+            .next()
+            .and_then(|child| token_text(self.cst, child).map(|(token, _, range)| (token, range)))
     }
 
     fn direct_qualified_names(&self, node: NodeRef) -> Vec<QualifiedNameRef> {

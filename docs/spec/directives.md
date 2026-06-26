@@ -113,6 +113,14 @@ Name normalization examples:
 A directive invocation starts with `@`, followed by a directive name, followed
 by an optional argument list.
 
+```text
+directive           = "@" directive_name argument_list?
+directive_name      = "." directive_member
+                    | directive_namespace ("." directive_member)?
+directive_namespace = Name
+directive_member    = Name
+```
+
 ```dsql
 @zod(schema: "User")
 @.include_if(if: $include_posts)

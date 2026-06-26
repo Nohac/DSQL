@@ -1,0 +1,68 @@
+---
+source: tests/snapshot/language_context.rs
+expression: output
+---
+namespace
+Exact Cst rule=Directive class=owned:Directive token=At("@") construct=24..26 focus=24..26
+Exact Cst rule=Document class=internal token=At("@") construct=0..42 focus=0..42
+Exact Cst rule=QueryDef class=legacy token=At("@") construct=0..42 focus=0..42
+Exact Cst rule=DirectiveNamespace class=delegated:Directive token=At("@") construct=25..25 focus=25..25
+
+---
+
+shorthand_member
+Exact Cst rule=DirectiveMember class=delegated:Directive token=Dot(".") construct=33..35 focus=34..34
+Exact Cst rule=DirectiveName class=delegated:Directive token=Dot(".") construct=33..35 focus=33..35
+Exact Cst rule=Directive class=owned:Directive token=Dot(".") construct=32..35 focus=32..35
+Exact Cst rule=FieldSelectionTail class=internal token=Dot(".") construct=32..41 focus=32..41
+Exact Cst rule=FieldSuffix class=internal token=Dot(".") construct=32..41 focus=32..41
+Exact Cst rule=Selection class=internal token=Dot(".") construct=26..41 focus=26..41
+Exact Cst rule=FieldSelection class=legacy token=Dot(".") construct=26..41 focus=26..41
+Exact Cst rule=SelectionSet class=internal token=Dot(".") construct=24..43 focus=24..43
+Exact Cst rule=Document class=internal token=Dot(".") construct=0..43 focus=0..43
+Exact Cst rule=QueryDef class=legacy token=Dot(".") construct=0..43 focus=0..43
+
+---
+
+explicit_member
+Exact Cst rule=DirectiveMember class=delegated:Directive token=Dot(".") construct=33..39 focus=38..38
+Exact Cst rule=DirectiveName class=delegated:Directive token=Dot(".") construct=33..39 focus=33..39
+Exact Cst rule=Directive class=owned:Directive token=Dot(".") construct=32..39 focus=32..39
+Exact Cst rule=FieldSelectionTail class=internal token=Dot(".") construct=32..45 focus=32..45
+Exact Cst rule=FieldSuffix class=internal token=Dot(".") construct=32..45 focus=32..45
+Exact Cst rule=Selection class=internal token=Dot(".") construct=26..45 focus=26..45
+Exact Cst rule=FieldSelection class=legacy token=Dot(".") construct=26..45 focus=26..45
+Exact Cst rule=SelectionSet class=internal token=Dot(".") construct=24..47 focus=24..47
+Exact Cst rule=Document class=internal token=Dot(".") construct=0..47 focus=0..47
+Exact Cst rule=QueryDef class=legacy token=Dot(".") construct=0..47 focus=0..47
+
+---
+
+argument
+Exact Cst rule=FieldSelectionTail class=internal token=LPar("(") construct=37..51 focus=37..51
+Exact Cst rule=FieldSuffix class=internal token=LPar("(") construct=37..51 focus=37..51
+Exact Cst rule=Directive class=owned:Directive token=LPar("(") construct=37..51 focus=37..51
+Exact Cst rule=Selection class=internal token=LPar("(") construct=34..51 focus=34..51
+Exact Cst rule=FieldSelection class=legacy token=LPar("(") construct=34..51 focus=34..51
+Exact Cst rule=FieldSelectionTail class=internal token=LPar("(") construct=32..52 focus=32..52
+Exact Cst rule=FieldSuffix class=internal token=LPar("(") construct=32..52 focus=32..52
+Exact Cst rule=SelectionSet class=internal token=LPar("(") construct=32..52 focus=32..52
+Exact Cst rule=Selection class=internal token=LPar("(") construct=26..52 focus=26..52
+Exact Cst rule=FieldSelection class=legacy token=LPar("(") construct=26..52 focus=26..52
+Exact Cst rule=SelectionSet class=internal token=LPar("(") construct=24..54 focus=24..54
+Exact Cst rule=Document class=internal token=LPar("(") construct=0..54 focus=0..54
+Exact Cst rule=QueryDef class=legacy token=LPar("(") construct=0..54 focus=0..54
+Exact Cst rule=DirectiveArgument class=delegated:Directive token=LPar("(") construct=38..49 focus=50..50
+
+---
+
+boolean_value
+Exact Cst rule=FieldSelectionTail class=internal token=Whitespace("  ") construct=32..56 focus=32..56
+Exact Cst rule=FieldSuffix class=internal token=Whitespace("  ") construct=32..56 focus=32..56
+Exact Cst rule=SelectionSet class=internal token=Whitespace("  ") construct=32..56 focus=32..56
+Exact Cst rule=Selection class=internal token=Whitespace("  ") construct=26..56 focus=26..56
+Exact Cst rule=FieldSelection class=legacy token=Whitespace("  ") construct=26..56 focus=26..56
+Exact Cst rule=SelectionSet class=internal token=Whitespace("  ") construct=24..58 focus=24..58
+Exact Cst rule=Document class=internal token=Whitespace("  ") construct=0..58 focus=0..58
+Exact Cst rule=QueryDef class=legacy token=Whitespace("  ") construct=0..58 focus=0..58
+Inferred ExpectedTokens rule=DirectiveArgument class=delegated:Directive token=Whitespace("  ") construct=38..49 focus=54..54

@@ -6,6 +6,8 @@ mod fixtures;
 mod formatter;
 #[path = "snapshot/generate.rs"]
 mod generate;
+#[path = "snapshot/language_context.rs"]
+mod language_context;
 #[path = "snapshot/lsp.rs"]
 mod lsp;
 #[path = "snapshot/variables.rs"]
