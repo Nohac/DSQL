@@ -1,6 +1,6 @@
 use crate::syntax::{
-    Definition, Directive, FragmentDef, QualifiedNameRef, QueryDef, Selection, SelectionKind,
-    SourceFile, TextRange,
+    Definition, Directive, FragmentDef, QualifiedNameRef, QueryDef, Selection, SourceFile,
+    TextRange,
 };
 use facet::Facet;
 use std::collections::HashMap;
@@ -160,13 +160,13 @@ fn fragment_spreads(selections: &[Selection]) -> Vec<FragmentSpreadRef> {
 
 fn collect_fragment_spreads(selections: &[Selection], spreads: &mut Vec<FragmentSpreadRef>) {
     for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread {
-            spreads.push(FragmentSpreadRef {
-                name: selection.name.target.name.text.clone(),
-                range: selection.name.range,
-            });
+        match selection {
+            Selection::Field(field) => collect_fragment_spreads(&field.selections, spreads),
+            Selection::FragmentSpread(spread) => spreads.push(FragmentSpreadRef {
+                name: spread.name.text.clone(),
+                range: spread.name.range,
+            }),
         }
-        collect_fragment_spreads(&selection.selections, spreads);
     }
 }
 
@@ -195,18 +195,16 @@ fragment MovieFields on movie_info {
         assert_eq!(
             fragments
                 .fragment("MovieFields")
-                .map(|fragment| fragment.selections[0].name.target.name.text.as_str()),
+                .and_then(|fragment| fragment.selections[0].as_field())
+                .map(|selection| selection.name.target.name.text.as_str()),
             Some("id")
         );
         assert_eq!(fragments.duplicate_fragments().len(), 1);
         assert_eq!(
             fragments.duplicate_fragments()[0].selections[0]
-                .name
-                .target
-                .name
-                .text
-                .as_str(),
-            "info"
+                .as_field()
+                .map(|selection| selection.name.target.name.text.as_str()),
+            Some("info")
         );
     }
 }

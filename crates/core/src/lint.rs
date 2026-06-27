@@ -5,8 +5,8 @@ use crate::{
         CompilerDiagnostic, CompilerDiagnosticSource, DsqlDiagnostic, extend_compiler_diagnostics,
     },
     syntax::{
-        Clause, Definition, DiagnosticCode, DiagnosticSource, Expr, ScopedPath, ScopedPathSegment,
-        Selection, SelectionKind, Severity, SourceFile, TextRange, source_span,
+        Clause, Definition, DiagnosticCode, DiagnosticSource, Expr, FieldSelection, ScopedPath,
+        ScopedPathSegment, Selection, Severity, SourceFile, TextRange, source_span,
     },
 };
 use facet::Facet;
@@ -79,6 +79,9 @@ pub fn lint_file_with_options(
         match definition {
             Definition::Query(query) => {
                 for selection in &query.selections {
+                    let Some(selection) = selection.as_field() else {
+                        continue;
+                    };
                     if let TableResolution::Found(table) =
                         catalog.resolve_table_ref_for(&selection.name.target)
                     {
@@ -135,9 +138,9 @@ pub fn lint_query_definition_with_options(
 ) -> LintedDefinition {
     let mut diagnostics = Vec::new();
     for selection in &query.selections {
-        if selection.kind == SelectionKind::FragmentSpread {
+        let Some(selection) = selection.as_field() else {
             continue;
-        }
+        };
         if let TableResolution::Found(table) = catalog.resolve_table_ref_for(&selection.name.target)
         {
             lint_selection_set(
@@ -192,9 +195,9 @@ fn lint_selection_set(
     diagnostics: &mut Vec<LintDiagnostic>,
 ) {
     for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread {
+        let Some(selection) = selection.as_field() else {
             continue;
-        }
+        };
         if let FieldCheckResult::Relation(relation) =
             catalog.check_field_ref(table, &selection.name)
         {
@@ -214,7 +217,7 @@ fn lint_selection_set(
 fn lint_relation_indexes(
     catalog: &Catalog,
     relation: &RelationField<'_>,
-    selection: &Selection,
+    selection: &FieldSelection,
     options: LintOptions,
     diagnostics: &mut Vec<LintDiagnostic>,
 ) {
@@ -250,7 +253,7 @@ fn lint_relation_indexes(
 fn lint_selection_clauses(
     catalog: &Catalog,
     table: TableId,
-    selection: &Selection,
+    selection: &FieldSelection,
     options: LintOptions,
     diagnostics: &mut Vec<LintDiagnostic>,
 ) {

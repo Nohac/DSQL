@@ -1,7 +1,7 @@
 use crate::DocumentSnapshot;
 use dsql_core::{
-    Catalog, Clause, Definition, Expr, FieldCheckResult, ParseResult, RelationRef, Selection,
-    SelectionKind, SourceSnapshot, TableId, TextRange,
+    Catalog, Clause, Definition, Expr, FieldCheckResult, FieldSelection, ParseResult, RelationRef,
+    Selection, SourceSnapshot, TableId, TextRange,
 };
 
 #[derive(Clone, Debug)]
@@ -38,6 +38,9 @@ pub(crate) fn semantic_tokens_at(parse: &ParseResult, catalog: &Catalog) -> Vec<
                     });
                 }
                 for selection in &query.selections {
+                    let Some(selection) = selection.as_field() else {
+                        continue;
+                    };
                     add_table_ref_tokens(&mut tokens, &parse.source, selection.name.range);
                     if let Some(table) = catalog.table_ref_for(&selection.name.target) {
                         add_clause_tokens(&mut tokens, catalog, table.id, selection);
@@ -85,13 +88,16 @@ fn add_selection_tokens(
     selections: &[Selection],
 ) {
     for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread {
-            tokens.push(SemanticTokenInfo {
-                range: selection.name.range,
-                kind: SemanticTokenKind::Fragment,
-            });
-            continue;
-        }
+        let selection = match selection {
+            Selection::FragmentSpread(spread) => {
+                tokens.push(SemanticTokenInfo {
+                    range: spread.name.range,
+                    kind: SemanticTokenKind::Fragment,
+                });
+                continue;
+            }
+            Selection::Field(selection) => selection,
+        };
         if let Some(alias) = &selection.alias {
             tokens.push(SemanticTokenInfo {
                 range: alias.range,
@@ -125,7 +131,7 @@ fn add_clause_tokens(
     tokens: &mut Vec<SemanticTokenInfo>,
     catalog: &Catalog,
     table: TableId,
-    selection: &Selection,
+    selection: &FieldSelection,
 ) {
     for clause in &selection.clauses {
         match clause {

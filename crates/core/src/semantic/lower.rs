@@ -2,13 +2,10 @@ use crate::{
     diagnostics::{
         CompilerDiagnostic, CompilerDiagnosticSource, DsqlDiagnostic, extend_compiler_diagnostics,
     },
-    language::{
-        atoms::directive::DirectiveAtom,
-        stages::{Lowerer, Lowers},
-    },
+    language::stages::{LowerContext, LowerTarget},
     syntax::{
-        Argument, Definition, DiagnosticCode, DiagnosticSource, Document, Expr, FragmentDef,
-        Literal, QueryDef, Selection, Severity, SourceFile, TextRange, source_span,
+        Argument, DiagnosticCode, DiagnosticSource, Expr, Literal, NameRef, Selection, Severity,
+        SourceFile, TextRange, source_span,
     },
 };
 use facet::Facet;
@@ -54,6 +51,38 @@ pub struct NameIndex {
     pub directives: Vec<(NameId, TextRange)>,
 }
 
+impl NameIndex {
+    /// Inserts a query name and returns a duplicate-name diagnostic when needed.
+    pub(crate) fn insert_query(
+        &mut self,
+        name: &NameRef,
+        interner: &mut Interner,
+    ) -> Option<LowerDiagnostic> {
+        let id = interner.intern(&name.text);
+        insert_name(&mut self.queries, &name.text, id).then(|| LowerDiagnostic {
+            range: name.range,
+            kind: LowerDiagnosticKind::DuplicateQuery {
+                name: name.text.clone(),
+            },
+        })
+    }
+
+    /// Inserts a fragment name and returns a duplicate-name diagnostic when needed.
+    pub(crate) fn insert_fragment(
+        &mut self,
+        name: &NameRef,
+        interner: &mut Interner,
+    ) -> Option<LowerDiagnostic> {
+        let id = interner.intern(&name.text);
+        insert_name(&mut self.fragments, &name.text, id).then(|| LowerDiagnostic {
+            range: name.range,
+            kind: LowerDiagnosticKind::DuplicateFragment {
+                name: name.text.clone(),
+            },
+        })
+    }
+}
+
 #[derive(Clone, Debug, Facet)]
 pub struct LoweredFile {
     pub names: NameIndex,
@@ -84,76 +113,10 @@ pub struct LowerDiagnostic {
 pub fn lower_file(source_file: &SourceFile, interner: &mut Interner) -> LoweredFile {
     let mut names = NameIndex::default();
     let mut diagnostics = Vec::new();
-    lower_document(
-        source_file.document(),
-        interner,
-        &mut names,
-        &mut diagnostics,
-    );
+    let mut context = LowerContext::new(interner, &mut names, &mut diagnostics);
+    context.lower(LowerTarget::Document(source_file.document()));
     diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
     LoweredFile { names, diagnostics }
-}
-
-fn lower_document(
-    document: &Document,
-    interner: &mut Interner,
-    names: &mut NameIndex,
-    diagnostics: &mut Vec<LowerDiagnostic>,
-) {
-    for definition in &document.definitions {
-        match definition {
-            Definition::Query(query) => lower_query(query, interner, names, diagnostics),
-            Definition::Fragment(fragment) => {
-                lower_fragment(fragment, interner, names, diagnostics)
-            }
-        }
-    }
-}
-
-fn lower_query(
-    query: &QueryDef,
-    interner: &mut Interner,
-    names: &mut NameIndex,
-    diagnostics: &mut Vec<LowerDiagnostic>,
-) {
-    if let Some(name) = &query.name {
-        let id = interner.intern(&name.text);
-        if insert_name(&mut names.queries, &name.text, id) {
-            diagnostics.push(LowerDiagnostic {
-                range: name.range,
-                kind: LowerDiagnosticKind::DuplicateQuery {
-                    name: name.text.clone(),
-                },
-            });
-        }
-    }
-    for directive in &query.directives {
-        <Lowerer as Lowers<DirectiveAtom>>::lower(directive, interner, names);
-    }
-    lower_selections(&query.selections, interner, names);
-}
-
-fn lower_fragment(
-    fragment: &FragmentDef,
-    interner: &mut Interner,
-    names: &mut NameIndex,
-    diagnostics: &mut Vec<LowerDiagnostic>,
-) {
-    if let Some(name) = &fragment.name {
-        let id = interner.intern(&name.text);
-        if insert_name(&mut names.fragments, &name.text, id) {
-            diagnostics.push(LowerDiagnostic {
-                range: name.range,
-                kind: LowerDiagnosticKind::DuplicateFragment {
-                    name: name.text.clone(),
-                },
-            });
-        }
-    }
-    if let Some(on) = &fragment.on {
-        interner.intern(&on.display_text());
-    }
-    lower_selections(&fragment.selections, interner, names);
 }
 
 impl fmt::Display for LowerDiagnostic {
@@ -207,41 +170,36 @@ fn insert_name(names: &mut Vec<(String, NameId)>, text: &str, id: NameId) -> boo
     }
 }
 
-fn lower_selections(selections: &[Selection], interner: &mut Interner, names: &mut NameIndex) {
+/// Lowers a legacy selection list while selection ownership is migrating to atoms.
+pub(crate) fn lower_selection_list(selections: &[Selection], context: &mut LowerContext<'_>) {
     for selection in selections {
-        if let Some(alias) = &selection.alias {
-            interner.intern(&alias.text);
+        match selection {
+            Selection::Field(field) => context.lower(LowerTarget::FieldSelection(field)),
+            Selection::FragmentSpread(spread) => context.lower(LowerTarget::FragmentSpread(spread)),
         }
-        names.fields.push((
-            interner.intern(&selection.name.display_text()),
-            selection.name.range,
-        ));
-        for argument in &selection.arguments {
-            lower_argument(argument, interner, names);
-        }
-        for directive in &selection.directives {
-            <Lowerer as Lowers<DirectiveAtom>>::lower(directive, interner, names);
-        }
-        for clause in &selection.clauses {
-            if let crate::Clause::OrderBy(order_by) = clause {
-                for item in &order_by.items {
-                    if let crate::SortDirectionExpr::Variable(variable) = &item.direction
-                        && let Some(name) = &variable.name
-                    {
-                        interner.intern(&name.text);
-                    }
-                }
-            }
-        }
-        lower_selections(&selection.selections, interner, names);
     }
 }
 
-fn lower_argument(argument: &Argument, interner: &mut Interner, names: &mut NameIndex) {
-    names
-        .arguments
-        .push((interner.intern(&argument.name.text), argument.name.range));
-    lower_expr(&argument.value, interner);
+pub(crate) fn lower_argument(argument: &Argument, context: &mut LowerContext<'_>) {
+    context.names.arguments.push((
+        context.interner.intern(&argument.name.text),
+        argument.name.range,
+    ));
+    lower_expr(&argument.value, context.interner);
+}
+
+pub(crate) fn lower_selection_clauses(clauses: &[crate::Clause], context: &mut LowerContext<'_>) {
+    for clause in clauses {
+        if let crate::Clause::OrderBy(order_by) = clause {
+            for item in &order_by.items {
+                if let crate::SortDirectionExpr::Variable(variable) = &item.direction
+                    && let Some(name) = &variable.name
+                {
+                    context.interner.intern(&name.text);
+                }
+            }
+        }
+    }
 }
 
 fn lower_expr(expr: &Expr, interner: &mut Interner) {

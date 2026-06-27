@@ -391,15 +391,11 @@ impl Formats<DirectiveAtom> for CstFormatter<'_> {
 }
 
 impl Lowers<DirectiveAtom> for Lowerer {
-    fn lower(
-        directive: &Directive,
-        interner: &mut Interner,
-        names: &mut NameIndex,
-    ) -> LoweredDirective {
-        let name = interner.intern(&directive.name.canonical_text());
-        names.directives.push((name, directive.name.range));
+    fn lower(directive: &Directive, context: &mut LowerContext<'_>) -> LoweredDirective {
+        let name = context.interner.intern(&directive.name.canonical_text());
+        context.names.directives.push((name, directive.name.range));
         for argument in &directive.arguments {
-            interner.intern(&argument.name.text);
+            context.interner.intern(&argument.name.text);
         }
         LoweredDirective { name }
     }
@@ -420,27 +416,6 @@ impl Checks<DirectiveAtom> for Checker {
                     name: directive.name.canonical_text(),
                 },
             }),
-        }
-    }
-}
-
-impl DirectiveAtom {
-    /// Checks all directives attached to one syntax owner at the given semantic location.
-    pub fn check_all(
-        directives: &[Directive],
-        registry: &DirectiveRegistry,
-        location: DirectiveLocation,
-        errors: &mut Vec<CheckError>,
-    ) {
-        for directive in directives {
-            <Checker as Checks<DirectiveAtom>>::check(
-                directive,
-                DirectiveCheckContext {
-                    registry,
-                    location,
-                    errors,
-                },
-            );
         }
     }
 }

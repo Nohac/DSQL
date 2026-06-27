@@ -14,6 +14,7 @@ pub use error::{
 pub use lower::{
     Interner, LowerDiagnostic, LowerDiagnosticKind, LoweredFile, NameId, NameIndex, lower_file,
 };
+pub(crate) use lower::{lower_argument, lower_selection_clauses, lower_selection_list};
 pub use variables::{
     VariableBinding, VariableBindings, VariableRole, VariableSource,
     infer_fragment_variable_bindings, infer_query_variable_bindings, infer_variable_bindings,

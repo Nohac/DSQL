@@ -1,6 +1,6 @@
 use crate::range_contains;
 use dsql_core::{
-    Catalog, Clause, Definition, Expr, FieldCheckResult, RelationRef, Selection, SelectionKind,
+    Catalog, Clause, Definition, Expr, FieldCheckResult, FieldSelection, RelationRef, Selection,
     SourceFile, TableId, VariableBinding, VariableRole, VariableSource, infer_variable_bindings,
 };
 use std::collections::BTreeMap;
@@ -39,6 +39,9 @@ pub(crate) fn hover_at(
                     ));
                 }
                 for selection in &query.selections {
+                    let Some(selection) = selection.as_field() else {
+                        continue;
+                    };
                     if !range_contains(selection.name.range, byte)
                         && !range_contains(selection.range, byte)
                     {
@@ -110,9 +113,9 @@ fn hover_in_selections(
     byte: usize,
 ) -> Option<HoverInfo> {
     for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread {
+        let Some(selection) = selection.as_field() else {
             continue;
-        }
+        };
         if !range_contains(selection.name.range, byte) && !range_contains(selection.range, byte) {
             continue;
         }
@@ -155,7 +158,7 @@ fn hover_in_selections(
 fn hover_in_clauses(
     catalog: &Catalog,
     table: TableId,
-    selection: &Selection,
+    selection: &FieldSelection,
     byte: usize,
 ) -> Option<HoverInfo> {
     for clause in &selection.clauses {

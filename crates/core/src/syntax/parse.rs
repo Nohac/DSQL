@@ -2,11 +2,11 @@ use super::ast::*;
 use super::diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity};
 use super::grammar::lexer::Token;
 use super::grammar::parser::{Cst, Node, NodeRef, Parser, Rule};
-use super::{Directive, SourceFile, SourceSnapshot, TextRange};
+use super::{Directive, Document, SourceFile, SourceSnapshot, TextRange};
 use crate::diagnostics::{
     CompilerDiagnostic, CompilerDiagnosticSource, extend_compiler_diagnostics,
 };
-use crate::language::{atoms::directive::DirectiveAtom, stages::BuildsAst};
+use crate::language::grammar::{AstBuildOutput, LanguageAtoms};
 use facet::Facet;
 
 #[derive(Clone, Debug)]
@@ -420,133 +420,40 @@ impl<'a> AstBuilder<'a> {
     }
 
     fn document(&self) -> Document {
-        let definitions = self
-            .descendant_rules(NodeRef::ROOT, &[Rule::QueryDef, Rule::FragmentDef])
-            .into_iter()
-            .filter_map(|node| match rule(self.cst, node) {
-                Some(Rule::QueryDef) => Some(Definition::Query(self.query(node))),
-                Some(Rule::FragmentDef) => Some(Definition::Fragment(self.fragment(node))),
-                _ => None,
-            })
-            .collect();
-        Document { definitions }
-    }
-
-    fn query(&self, node: NodeRef) -> QueryDef {
-        let names = self.direct_names(node);
-        QueryDef {
-            range: range(self.cst.span(node)),
-            name: names.first().cloned(),
-            directives: self.directives(node),
-            selections: self
-                .direct_rule(node, Rule::SelectionSet)
-                .map_or_else(Vec::new, |selection_set| self.selection_set(selection_set)),
+        match self.build_node(NodeRef::ROOT) {
+            Some(AstBuildOutput::Document(document)) => document,
+            _ => Document {
+                definitions: Vec::new(),
+            },
         }
     }
 
-    fn fragment(&self, node: NodeRef) -> FragmentDef {
-        let names = self.direct_names(node);
-        let qualified_names = self.direct_qualified_names(node);
-        FragmentDef {
-            range: range(self.cst.span(node)),
-            name: names.first().cloned(),
-            on: qualified_names.first().cloned(),
-            selections: self
-                .direct_rule(node, Rule::SelectionSet)
-                .map_or_else(Vec::new, |selection_set| self.selection_set(selection_set)),
-        }
-    }
-
-    fn selection_set(&self, node: NodeRef) -> Vec<Selection> {
+    pub(crate) fn selection_set(&self, node: NodeRef) -> Vec<Selection> {
         self.direct_rules(node, Rule::Selection)
             .into_iter()
             .filter_map(|selection| {
-                self.direct_rule(selection, Rule::FieldSelection)
-                    .map(|field| self.field_selection(field))
-                    .or_else(|| {
-                        self.direct_rule(selection, Rule::FragmentSpread)
-                            .map(|spread| self.fragment_spread(spread))
-                    })
+                if let Some(field) = self.direct_rule(selection, Rule::FieldSelection) {
+                    return match self.build_node(field) {
+                        Some(AstBuildOutput::FieldSelection(field)) => {
+                            Some(Selection::Field(field))
+                        }
+                        _ => None,
+                    };
+                }
+                if let Some(spread) = self.direct_rule(selection, Rule::FragmentSpread) {
+                    return match self.build_node(spread) {
+                        Some(AstBuildOutput::FragmentSpread(spread)) => {
+                            Some(Selection::FragmentSpread(spread))
+                        }
+                        _ => None,
+                    };
+                }
+                None
             })
             .collect()
     }
 
-    fn field_selection(&self, node: NodeRef) -> Selection {
-        let first_name = self.direct_relation_refs(node).into_iter().next();
-        let tail = self.direct_rule(node, Rule::FieldSelectionTail);
-        let (alias, name, suffix) = if let Some(tail) = tail {
-            let tail_names = self.direct_relation_refs(tail);
-            if tail_names.is_empty() {
-                (
-                    None,
-                    first_name.unwrap_or_else(|| self.missing_relation_ref(node)),
-                    self.direct_rule(tail, Rule::FieldSuffix),
-                )
-            } else {
-                (
-                    first_name.map(|name| NameRef {
-                        range: name.range,
-                        text: name.display_text(),
-                    }),
-                    tail_names
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| self.missing_relation_ref(tail)),
-                    self.direct_rule(tail, Rule::FieldSuffix),
-                )
-            }
-        } else {
-            (
-                None,
-                first_name.unwrap_or_else(|| self.missing_relation_ref(node)),
-                None,
-            )
-        };
-        let clause_list = suffix.and_then(|suffix| self.direct_rule(suffix, Rule::ClauseList));
-        let clauses = clause_list.map_or_else(Vec::new, |clauses| self.clauses(clauses));
-        let directives = suffix.map_or_else(Vec::new, |suffix| self.directives(suffix));
-        let selections = suffix
-            .and_then(|suffix| self.direct_rule(suffix, Rule::SelectionSet))
-            .map_or_else(Vec::new, |selection_set| self.selection_set(selection_set));
-
-        Selection {
-            range: range(self.cst.span(node)),
-            kind: SelectionKind::Field,
-            alias,
-            name,
-            arguments: Vec::new(),
-            has_clause_list: clause_list.is_some(),
-            clauses,
-            directives,
-            selections,
-        }
-    }
-
-    fn fragment_spread(&self, node: NodeRef) -> Selection {
-        let name = self
-            .direct_names(node)
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| self.missing_name(node));
-        let directives = self
-            .direct_rules(node, Rule::Directive)
-            .into_iter()
-            .map(|directive| <Self as BuildsAst<DirectiveAtom>>::build(self, directive))
-            .collect();
-        Selection {
-            range: range(self.cst.span(node)),
-            kind: SelectionKind::FragmentSpread,
-            alias: None,
-            name: self.relation_ref_from_name(name),
-            arguments: Vec::new(),
-            has_clause_list: false,
-            clauses: Vec::new(),
-            directives,
-            selections: Vec::new(),
-        }
-    }
-
-    fn clauses(&self, node: NodeRef) -> Vec<Clause> {
+    pub(crate) fn clauses(&self, node: NodeRef) -> Vec<Clause> {
         self.direct_rules(node, Rule::Clause)
             .into_iter()
             .filter_map(|clause| {
@@ -567,10 +474,13 @@ impl<'a> AstBuilder<'a> {
             .collect()
     }
 
-    fn directives(&self, node: NodeRef) -> Vec<Directive> {
+    pub(crate) fn directives(&self, node: NodeRef) -> Vec<Directive> {
         self.direct_rules(node, Rule::Directive)
             .into_iter()
-            .map(|directive| <Self as BuildsAst<DirectiveAtom>>::build(self, directive))
+            .filter_map(|directive| match self.build_node(directive) {
+                Some(AstBuildOutput::Directive(directive)) => Some(directive),
+                _ => None,
+            })
             .collect()
     }
 
@@ -866,7 +776,7 @@ impl<'a> AstBuilder<'a> {
             .and_then(|child| token_text(self.cst, child).map(|(token, _, range)| (token, range)))
     }
 
-    fn direct_qualified_names(&self, node: NodeRef) -> Vec<QualifiedNameRef> {
+    pub(crate) fn direct_qualified_names(&self, node: NodeRef) -> Vec<QualifiedNameRef> {
         self.direct_rules(node, Rule::QualifiedName)
             .into_iter()
             .filter_map(|qualified| {
@@ -882,7 +792,7 @@ impl<'a> AstBuilder<'a> {
             .collect()
     }
 
-    fn direct_relation_refs(&self, node: NodeRef) -> Vec<RelationRef> {
+    pub(crate) fn direct_relation_refs(&self, node: NodeRef) -> Vec<RelationRef> {
         self.direct_rules(node, Rule::RelationRef)
             .into_iter()
             .filter_map(|relation| self.relation_ref(relation))
@@ -994,7 +904,7 @@ impl<'a> AstBuilder<'a> {
             .collect()
     }
 
-    fn descendant_rules(&self, node: NodeRef, targets: &[Rule]) -> Vec<NodeRef> {
+    pub(crate) fn descendant_rules(&self, node: NodeRef, targets: &[Rule]) -> Vec<NodeRef> {
         let mut out = Vec::new();
         self.collect_descendant_rules(node, targets, &mut out);
         out
@@ -1016,6 +926,34 @@ impl<'a> AstBuilder<'a> {
         range(self.cst.span(node))
     }
 
+    /// Builds the atom-owned AST node for a CST node by grammar-rule lookup.
+    pub(crate) fn build_node(&self, node: NodeRef) -> Option<AstBuildOutput> {
+        let rule = rule(self.cst, node)?;
+        LanguageAtoms::ast_builder_for_rule(rule).map(|builder| builder.build(self, node))
+    }
+
+    /// Builds the first direct child owned by `target` through the atom registry.
+    #[expect(
+        dead_code,
+        reason = "available for atoms as more syntax constructs migrate into registry dispatch"
+    )]
+    pub(crate) fn build_child(&self, node: NodeRef, target: Rule) -> Option<AstBuildOutput> {
+        self.direct_rule(node, target)
+            .and_then(|child| self.build_node(child))
+    }
+
+    /// Builds direct children owned by `target` through the atom registry.
+    #[expect(
+        dead_code,
+        reason = "available for atoms as more syntax constructs migrate into registry dispatch"
+    )]
+    pub(crate) fn build_children(&self, node: NodeRef, target: Rule) -> Vec<AstBuildOutput> {
+        self.direct_rules(node, target)
+            .into_iter()
+            .filter_map(|child| self.build_node(child))
+            .collect()
+    }
+
     pub(crate) fn missing_name(&self, node: NodeRef) -> NameRef {
         NameRef {
             range: range(self.cst.span(node)),
@@ -1032,17 +970,13 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn missing_relation_ref(&self, node: NodeRef) -> RelationRef {
+    pub(crate) fn missing_relation_ref(&self, node: NodeRef) -> RelationRef {
         let target = self.missing_qualified_name(node);
         RelationRef {
             range: target.range,
             target,
             selector: None,
         }
-    }
-
-    fn relation_ref_from_name(&self, name: NameRef) -> RelationRef {
-        RelationRef::from_name(name)
     }
 }
 
@@ -1078,6 +1012,12 @@ mod tests {
     use super::*;
     use ropey::RopeBuilder;
 
+    fn first_field(query: &crate::syntax::QueryDef) -> &crate::FieldSelection {
+        query.selections[0]
+            .as_field()
+            .expect("expected first selection to be a field")
+    }
+
     #[test]
     fn parses_query_from_text() {
         let src = "query Users { users(where .id > 18 order by name desc limit 10 offset 2) { id, name } }";
@@ -1085,7 +1025,7 @@ mod tests {
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         assert_eq!(parsed.source_file.queries().count(), 1);
         let query = parsed.source_file.queries().next().unwrap();
-        assert_eq!(query.selections[0].clauses.len(), 4);
+        assert_eq!(first_field(query).clauses.len(), 4);
     }
 
     #[test]
@@ -1094,7 +1034,7 @@ mod tests {
         let parsed = parse_source(SourceSnapshot::from(src));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         let query = parsed.source_file.queries().next().unwrap();
-        let Clause::Where(where_clause) = &query.selections[0].clauses[0] else {
+        let Clause::Where(where_clause) = &first_field(query).clauses[0] else {
             panic!("expected where clause");
         };
         let Expr::Binary { left, op, .. } = &where_clause.predicate else {
@@ -1120,7 +1060,7 @@ mod tests {
         let parsed = parse_source(SourceSnapshot::from(src));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         let query = parsed.source_file.queries().next().unwrap();
-        let Clause::Where(where_clause) = &query.selections[0].clauses[0] else {
+        let Clause::Where(where_clause) = &first_field(query).clauses[0] else {
             panic!("expected where clause");
         };
         let Expr::Binary { left, op, .. } = &where_clause.predicate else {

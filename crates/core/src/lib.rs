@@ -72,10 +72,11 @@ pub use sql::{
 pub use syntax::{
     BinaryOp, BinaryOperator, Clause, CstKind, Definition, Diagnostic, DiagnosticCode,
     DiagnosticSource, DirectiveArgumentDefinition, DirectiveArgumentValueKind, DirectiveLocation,
-    Expr, Literal, NameRef, OperatorVariable, ParseResult, PathScope, QualifiedNameRef,
-    RelationRef, ScopedPath, ScopedPathSegment, Selection, SelectionKind, Severity, SortDirection,
-    SortDirectionExpr, SourceDocument, SourceFile, SourceRegion, SourceSnapshot, SyntaxNode,
-    SyntaxRule, SyntaxToken, SyntaxTree, SystemDirectiveDefinition, SystemDirectiveKind, TextRange,
-    Token, ValueVariable, VariableScope, expected_tokens_at, parse_source,
+    Expr, FieldSelection, FragmentSpread, Literal, NameRef, OperatorVariable, ParseResult,
+    PathScope, QualifiedNameRef, RelationRef, ScopedPath, ScopedPathSegment, Selection, Severity,
+    SortDirection, SortDirectionExpr, SourceDocument, SourceFile, SourceRegion, SourceSnapshot,
+    SyntaxNode, SyntaxRule, SyntaxToken, SyntaxTree, SystemDirectiveDefinition,
+    SystemDirectiveKind, TextRange, Token, ValueVariable, VariableScope, expected_tokens_at,
+    parse_source,
 };
 pub use variable_path::{InputPathSegment, is_input_path, is_params_path};

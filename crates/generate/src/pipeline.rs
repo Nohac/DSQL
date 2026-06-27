@@ -1,6 +1,6 @@
 use dsql_core::{
-    Catalog, DefinitionRecord, DefinitionResolver, FieldCheckResult, FragmentMap, FragmentRecord,
-    InputPathSegment, QueryPlan, QueryRecord, Selection, SelectionClauses, SelectionKind,
+    Catalog, DefinitionRecord, DefinitionResolver, FieldCheckResult, FieldSelection, FragmentMap,
+    FragmentRecord, InputPathSegment, QueryPlan, QueryRecord, Selection, SelectionClauses,
     SelectionPlan, SelectionPlanItem, Severity, SqlValue, TableId, VariableBinding,
     generate_postgres_sql_with_options, infer_fragment_variable_bindings,
     infer_query_variable_bindings, is_input_path, is_params_path, plan_fragment_definition,
@@ -535,7 +535,7 @@ fn build_query_operations(
                 .query
                 .selections
                 .iter()
-                .filter(|selection| selection.kind != SelectionKind::FragmentSpread)
+                .filter_map(Selection::as_field)
                 .nth(index)
                 .map(|selection| operation_fragment_spreads(catalog, fragments, plan, selection))
                 .unwrap_or_default(),
@@ -592,7 +592,7 @@ fn operation_fragment_spreads(
     catalog: &Catalog,
     fragments: &FragmentMap,
     plan: &QueryPlan,
-    root_selection: &Selection,
+    root_selection: &FieldSelection,
 ) -> Vec<FragmentSpreadMetadata> {
     let mut spreads = Vec::new();
     collect_fragment_spread_metadata(
@@ -617,30 +617,33 @@ fn collect_fragment_spread_metadata(
     spreads: &mut Vec<FragmentSpreadMetadata>,
 ) {
     for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread {
-            spreads.push(FragmentSpreadMetadata {
-                path: result_path.to_string(),
-                fragment: selection.name.target.name.text.clone(),
-            });
-            let Some(fragment) = fragments.fragment(&selection.name.target.name.text) else {
-                continue;
-            };
-            if visiting.iter().any(|name| name == &fragment.key.name) {
+        let selection = match selection {
+            Selection::FragmentSpread(spread) => {
+                spreads.push(FragmentSpreadMetadata {
+                    path: result_path.to_string(),
+                    fragment: spread.name.text.clone(),
+                });
+                let Some(fragment) = fragments.fragment(&spread.name.text) else {
+                    continue;
+                };
+                if visiting.iter().any(|name| name == &fragment.key.name) {
+                    continue;
+                }
+                visiting.push(fragment.key.name.clone());
+                collect_fragment_spread_metadata(
+                    catalog,
+                    fragments,
+                    table,
+                    result_path,
+                    &fragment.selections,
+                    visiting,
+                    spreads,
+                );
+                visiting.pop();
                 continue;
             }
-            visiting.push(fragment.key.name.clone());
-            collect_fragment_spread_metadata(
-                catalog,
-                fragments,
-                table,
-                result_path,
-                &fragment.selections,
-                visiting,
-                spreads,
-            );
-            visiting.pop();
-            continue;
-        }
+            Selection::Field(selection) => selection,
+        };
 
         if let FieldCheckResult::Relation(relation) =
             catalog.check_field_ref(table, &selection.name)

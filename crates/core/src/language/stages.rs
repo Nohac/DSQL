@@ -1,11 +1,19 @@
 use crate::{
     asset::{AtomAssets, ProjectAssets},
     language::atom::LanguageAtom,
+    language::atoms::{
+        directive::{Directive, DirectiveLocation, DirectiveRegistry},
+        document::Document,
+        field_selection::FieldSelection,
+        fragment_def::FragmentDef,
+        fragment_spread::FragmentSpread,
+        query_def::QueryDef,
+    },
     language::context::{
         LanguageContext, LanguageContextInput, LanguageServiceAssetContext, LanguageServiceContext,
     },
     language::params::AtomParam,
-    semantic::{Interner, NameIndex},
+    semantic::{CheckError, Interner, LowerDiagnostic, NameIndex},
     syntax::grammar::parser::NodeRef,
 };
 
@@ -31,7 +39,7 @@ pub trait Formats<A: LanguageAtom> {
 /// Lowering remains context-free. The typed implementation is selected by the
 /// stage dispatcher or a future descriptor, not by scattered caller branches.
 pub trait Lowers<A: LanguageAtom> {
-    fn lower(ast: &A::Ast, interner: &mut Interner, names: &mut NameIndex) -> A::Lowered;
+    fn lower(ast: &A::Ast, context: &mut LowerContext<'_>) -> A::Lowered;
 }
 
 /// Checks the typed AST owned by one language atom.
@@ -58,6 +66,99 @@ pub trait NoSqlEffect<A: LanguageAtom> {
 }
 
 pub trait GeneratesMetadata<A: LanguageAtom> {}
+
+/// Stable typed key used by semantic stages to request atom-owned behavior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TypedConstructKey {
+    Document,
+    QueryDef,
+    FragmentDef,
+    Directive,
+    FieldSelection,
+    FragmentSpread,
+}
+
+/// Typed AST target passed to erased lower descriptors.
+pub(crate) enum LowerTarget<'a> {
+    Document(&'a Document),
+    QueryDef(&'a QueryDef),
+    FragmentDef(&'a FragmentDef),
+    Directive(&'a Directive),
+    FieldSelection(&'a FieldSelection),
+    FragmentSpread(&'a FragmentSpread),
+}
+
+impl LowerTarget<'_> {
+    /// Returns the atom construct key for descriptor lookup.
+    pub(crate) fn key(&self) -> TypedConstructKey {
+        match self {
+            Self::Document(_) => TypedConstructKey::Document,
+            Self::QueryDef(_) => TypedConstructKey::QueryDef,
+            Self::FragmentDef(_) => TypedConstructKey::FragmentDef,
+            Self::Directive(_) => TypedConstructKey::Directive,
+            Self::FieldSelection(_) => TypedConstructKey::FieldSelection,
+            Self::FragmentSpread(_) => TypedConstructKey::FragmentSpread,
+        }
+    }
+}
+
+/// Mutable context owned by one lowering pass.
+pub(crate) struct LowerContext<'a> {
+    pub(crate) interner: &'a mut Interner,
+    pub(crate) names: &'a mut NameIndex,
+    pub(crate) diagnostics: &'a mut Vec<LowerDiagnostic>,
+}
+
+impl<'a> LowerContext<'a> {
+    /// Creates the lowering context passed to atom descriptors.
+    pub(crate) fn new(
+        interner: &'a mut Interner,
+        names: &'a mut NameIndex,
+        diagnostics: &'a mut Vec<LowerDiagnostic>,
+    ) -> Self {
+        Self {
+            interner,
+            names,
+            diagnostics,
+        }
+    }
+}
+
+/// Typed semantic target passed to erased check descriptors.
+pub(crate) enum CheckTarget<'a> {
+    Directive {
+        directive: &'a Directive,
+        location: DirectiveLocation,
+    },
+}
+
+impl CheckTarget<'_> {
+    /// Returns the atom construct key for descriptor lookup.
+    pub(crate) fn key(&self) -> TypedConstructKey {
+        match self {
+            Self::Directive { .. } => TypedConstructKey::Directive,
+        }
+    }
+}
+
+/// Mutable context owned by one checking pass.
+pub(crate) struct CheckContext<'a, 'errors> {
+    pub(crate) directive_registry: &'a DirectiveRegistry,
+    pub(crate) errors: &'errors mut Vec<CheckError>,
+}
+
+impl<'a, 'errors> CheckContext<'a, 'errors> {
+    /// Creates the checking context passed to atom descriptors.
+    pub(crate) fn new(
+        directive_registry: &'a DirectiveRegistry,
+        errors: &'errors mut Vec<CheckError>,
+    ) -> Self {
+        Self {
+            directive_registry,
+            errors,
+        }
+    }
+}
 
 /// Generic completion category produced by compiler atoms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

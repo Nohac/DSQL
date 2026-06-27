@@ -9,7 +9,7 @@ use crate::{
     definition::{
         DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
     },
-    syntax::{Definition, Selection, SelectionKind, SourceFile},
+    syntax::{Definition, FieldSelection, Selection, SourceFile},
     variable_path::{
         InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
     },
@@ -29,6 +29,9 @@ pub fn plan_file_with_catalog(source_file: &SourceFile, catalog: &Catalog) -> Pl
             continue;
         };
         for selection in &query.selections {
+            let Some(selection) = selection.as_field() else {
+                continue;
+            };
             match catalog.resolve_table_ref_for(&selection.name.target) {
                 TableResolution::Found(table) => {
                     let selection_path = vec![response_key(selection)];
@@ -95,15 +98,18 @@ pub fn plan_query_definition(
     let mut queries = Vec::new();
     let mut diagnostics = Vec::new();
     for selection in &query.selections {
-        if selection.kind == SelectionKind::FragmentSpread {
-            diagnostics.push(PlanDiagnostic {
-                range: selection.name.range,
-                kind: PlanDiagnosticKind::UnknownFragment {
-                    fragment: selection.name.target.name.text.clone(),
-                },
-            });
-            continue;
-        }
+        let selection = match selection {
+            Selection::Field(selection) => selection,
+            Selection::FragmentSpread(spread) => {
+                diagnostics.push(PlanDiagnostic {
+                    range: spread.name.range,
+                    kind: PlanDiagnosticKind::UnknownFragment {
+                        fragment: spread.name.text.clone(),
+                    },
+                });
+                continue;
+            }
+        };
         match catalog.resolve_table_ref_for(&selection.name.target) {
             TableResolution::Found(table) => {
                 let selection_path = vec![response_key(selection)];
@@ -221,24 +227,27 @@ fn plan_selection_set(
 ) -> Option<SelectionPlan> {
     let mut items = Vec::new();
     for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread {
-            if let Some(fragment) = resolver.fragment(&selection.name.target.name.text)
-                && let Some(fragment_plan) = plan_selection_set(
-                    catalog,
-                    resolver,
-                    root_table,
-                    table,
-                    &SelectionClauses::default(),
-                    SelectionPath::fragment_root(),
-                    &variable_scope.for_fragment_spread(&selection_path, &fragment.key.name),
-                    &fragment.selections,
-                    diagnostics,
-                )
-            {
-                items.extend(fragment_plan.items);
+        let selection = match selection {
+            Selection::FragmentSpread(spread) => {
+                if let Some(fragment) = resolver.fragment(&spread.name.text)
+                    && let Some(fragment_plan) = plan_selection_set(
+                        catalog,
+                        resolver,
+                        root_table,
+                        table,
+                        &SelectionClauses::default(),
+                        SelectionPath::fragment_root(),
+                        &variable_scope.for_fragment_spread(&selection_path, &fragment.key.name),
+                        &fragment.selections,
+                        diagnostics,
+                    )
+                {
+                    items.extend(fragment_plan.items);
+                }
+                continue;
             }
-            continue;
-        }
+            Selection::Field(selection) => selection,
+        };
         match catalog.check_field_ref(table, &selection.name) {
             FieldCheckResult::Column(column) => {
                 if selection.selections.is_empty() {
@@ -305,7 +314,7 @@ fn plan_selection_set(
 
 fn relation_child_path(
     path: &SelectionPath,
-    selection: &Selection,
+    selection: &FieldSelection,
     relation_name: &str,
 ) -> Vec<String> {
     path.relation_child_path(
@@ -322,7 +331,7 @@ fn plan_clauses(
     table: TableId,
     selection_path: &[String],
     variable_scope: &VariablePathScope,
-    selection: &Selection,
+    selection: &FieldSelection,
 ) -> SelectionClauses {
     let mut clauses = SelectionClauses::default();
     for clause in &selection.clauses {
@@ -919,7 +928,7 @@ fn postgres_operator(op: crate::BinaryOp) -> Option<&'static str> {
     }
 }
 
-fn response_key(selection: &Selection) -> String {
+fn response_key(selection: &FieldSelection) -> String {
     selection.alias.as_ref().map_or_else(
         || selection.name.output_name().to_string(),
         |alias| alias.text.clone(),

@@ -4,8 +4,8 @@ use crate::{
         DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
     },
     syntax::{
-        BinaryOperator, Clause, Expr, OperatorVariable, OrderByItem, PathScope, ScopedPath,
-        Selection, SelectionKind, SortDirectionExpr, SourceFile, TextRange, ValueVariable,
+        BinaryOperator, Clause, Expr, FieldSelection, OperatorVariable, OrderByItem, PathScope,
+        ScopedPath, Selection, SortDirectionExpr, SourceFile, TextRange, ValueVariable,
         VariableScope,
     },
     variable_path::{
@@ -86,9 +86,9 @@ pub fn infer_query_variable_bindings(
 ) -> VariableBindings {
     let mut bindings = Vec::new();
     for selection in &query.selections {
-        if selection.kind == SelectionKind::FragmentSpread {
+        let Some(selection) = selection.as_field() else {
             continue;
-        }
+        };
         let TableResolution::Found(table) = catalog.resolve_table_ref_for(&selection.name.target)
         else {
             continue;
@@ -145,9 +145,9 @@ fn infer_direct_query_variable_bindings(
 ) -> VariableBindings {
     let mut bindings = Vec::new();
     for selection in &query.selections {
-        if selection.kind == SelectionKind::FragmentSpread {
+        let Some(selection) = selection.as_field() else {
             continue;
-        }
+        };
         let TableResolution::Found(table) = catalog.resolve_table_ref_for(&selection.name.target)
         else {
             continue;
@@ -171,7 +171,7 @@ fn collect_selection_bindings(
     resolver: &impl DefinitionResolver,
     root_table: TableId,
     table: TableId,
-    selection: &Selection,
+    selection: &FieldSelection,
     path: SelectionPath,
     scope: &VariablePathScope,
     visiting: &mut Vec<String>,
@@ -242,29 +242,32 @@ fn collect_selection_set_bindings(
     bindings: &mut Vec<VariableBinding>,
 ) {
     for child in selections {
-        if child.kind == SelectionKind::FragmentSpread {
-            let Some(fragment) = resolver.fragment(&child.name.target.name.text) else {
-                continue;
-            };
-            if visiting.iter().any(|name| name == &fragment.key.name) {
+        let child = match child {
+            Selection::FragmentSpread(spread) => {
+                let Some(fragment) = resolver.fragment(&spread.name.text) else {
+                    continue;
+                };
+                if visiting.iter().any(|name| name == &fragment.key.name) {
+                    continue;
+                }
+                visiting.push(fragment.key.name.clone());
+                let spread_scope = scope.for_fragment_spread(&path, &fragment.key.name);
+                collect_selection_set_bindings(
+                    catalog,
+                    resolver,
+                    root_table,
+                    table,
+                    &fragment.selections,
+                    SelectionPath::fragment_root(),
+                    &spread_scope,
+                    visiting,
+                    bindings,
+                );
+                visiting.pop();
                 continue;
             }
-            visiting.push(fragment.key.name.clone());
-            let spread_scope = scope.for_fragment_spread(&path, &fragment.key.name);
-            collect_selection_set_bindings(
-                catalog,
-                resolver,
-                root_table,
-                table,
-                &fragment.selections,
-                SelectionPath::fragment_root(),
-                &spread_scope,
-                visiting,
-                bindings,
-            );
-            visiting.pop();
-            continue;
-        }
+            Selection::Field(field) => field,
+        };
         let FieldCheckResult::Relation(relation) = catalog.check_field_ref(table, &child.name)
         else {
             continue;
@@ -293,7 +296,7 @@ fn collect_selection_bindings_without_fragments(
     catalog: &Catalog,
     root_table: TableId,
     table: TableId,
-    selection: &Selection,
+    selection: &FieldSelection,
     path: SelectionPath,
     scope: &VariablePathScope,
     bindings: &mut Vec<VariableBinding>,
@@ -338,9 +341,9 @@ fn collect_selection_bindings_without_fragments(
     }
 
     for child in &selection.selections {
-        if child.kind == SelectionKind::FragmentSpread {
+        let Some(child) = child.as_field() else {
             continue;
-        }
+        };
         let FieldCheckResult::Relation(relation) = catalog.check_field_ref(table, &child.name)
         else {
             continue;
@@ -641,7 +644,7 @@ fn resolve_predicate_path(
     Some((column.data_type, field_path))
 }
 
-fn response_key(selection: &Selection) -> String {
+fn response_key(selection: &FieldSelection) -> String {
     selection.alias.as_ref().map_or_else(
         || selection.name.output_name().to_string(),
         |alias| alias.text.clone(),

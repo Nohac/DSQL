@@ -19,7 +19,7 @@ pub fn format_file(parse: &ParseResult) -> FormattedText {
     }
 
     let mut formatter = CstFormatter::new(parse);
-    formatter.document(0);
+    formatter.format_child(0);
     FormattedText {
         text: formatter.finish(),
         confidence: FormatConfidence::Full,
@@ -49,59 +49,7 @@ impl<'a> CstFormatter<'a> {
         }
     }
 
-    fn document(&mut self, node: usize) {
-        let mut first = true;
-        for child in self.node(node).children.clone() {
-            match (self.rule(child), self.token(child)) {
-                (_, Some(SyntaxToken::Comment)) => {
-                    self.blank_between_definitions(&mut first);
-                    self.out.push_str(&self.text(self.node(child).range));
-                }
-                (Some(SyntaxRule::QueryDef), _) => {
-                    self.blank_between_definitions(&mut first);
-                    self.query(child);
-                }
-                (Some(SyntaxRule::FragmentDef), _) => {
-                    self.blank_between_definitions(&mut first);
-                    self.fragment(child);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn query(&mut self, node: usize) {
-        self.out.push_str("query");
-        if let Some(name) = self.direct_token_text(node, SyntaxToken::Name) {
-            self.out.push(' ');
-            self.out.push_str(&name);
-        }
-        for directive in self.direct_rules(node, SyntaxRule::Directive) {
-            self.atom_format(directive);
-        }
-        if let Some(selection_set) = self.direct_rule(node, SyntaxRule::SelectionSet) {
-            self.selection_set(selection_set);
-        }
-    }
-
-    fn fragment(&mut self, node: usize) {
-        self.out.push_str("fragment");
-        let names = self.direct_token_texts(node, SyntaxToken::Name);
-        if let Some(name) = names.first() {
-            self.out.push(' ');
-            self.out.push_str(name);
-        }
-        self.out.push_str(" on");
-        if let Some(on) = self.direct_qualified_name_text(node) {
-            self.out.push(' ');
-            self.out.push_str(&on);
-        }
-        if let Some(selection_set) = self.direct_rule(node, SyntaxRule::SelectionSet) {
-            self.selection_set(selection_set);
-        }
-    }
-
-    fn selection_set(&mut self, node: usize) {
+    pub(crate) fn selection_set(&mut self, node: usize) {
         self.out.push_str(" {\n");
         self.indent += 1;
         let children = self.node(node).children.clone();
@@ -146,57 +94,18 @@ impl<'a> CstFormatter<'a> {
 
     fn selection(&mut self, node: usize) {
         if let Some(field) = self.direct_rule(node, SyntaxRule::FieldSelection) {
-            self.field_selection(field);
+            self.format_child(field);
         } else if let Some(spread) = self.direct_rule(node, SyntaxRule::FragmentSpread) {
-            self.fragment_spread(spread);
+            self.format_child(spread);
         }
     }
 
-    fn fragment_spread(&mut self, node: usize) {
-        if let Some(name) = self.direct_token_text(node, SyntaxToken::Name) {
-            self.out.push_str("...");
-            self.out.push_str(&name);
-        }
-        for directive in self.direct_rules(node, SyntaxRule::Directive) {
-            self.atom_format(directive);
-        }
-    }
-
-    fn field_selection(&mut self, node: usize) {
-        let first = self.direct_relation_ref_text(node);
-        let tail = self.direct_rule(node, SyntaxRule::FieldSelectionTail);
-        let (alias, name, suffix) = if let Some(tail) = tail {
-            let tail_name = self.direct_relation_ref_text(tail);
-            if tail_name.is_some() {
-                (
-                    first,
-                    tail_name,
-                    self.direct_rule(tail, SyntaxRule::FieldSuffix),
-                )
-            } else {
-                (None, first, self.direct_rule(tail, SyntaxRule::FieldSuffix))
-            }
-        } else {
-            (None, first, None)
-        };
-        if let Some(alias) = alias {
-            self.out.push_str(&alias);
-            self.out.push_str(": ");
-        }
-        if let Some(name) = name {
-            self.out.push_str(&name);
-        }
-        if let Some(suffix) = suffix {
-            self.field_suffix(suffix);
-        }
-    }
-
-    fn field_suffix(&mut self, node: usize) {
+    pub(crate) fn field_suffix(&mut self, node: usize) {
         if let Some(clauses) = self.direct_rule(node, SyntaxRule::ClauseList) {
             self.clause_list(clauses);
         }
         for directive in self.direct_rules(node, SyntaxRule::Directive) {
-            self.atom_format(directive);
+            self.format_child(directive);
         }
         if let Some(selection_set) = self.direct_rule(node, SyntaxRule::SelectionSet) {
             self.selection_set(selection_set);
@@ -497,7 +406,7 @@ impl<'a> CstFormatter<'a> {
         }
     }
 
-    fn blank_between_definitions(&mut self, first: &mut bool) {
+    pub(crate) fn blank_between_definitions(&mut self, first: &mut bool) {
         if *first {
             *first = false;
         } else {
@@ -545,21 +454,21 @@ impl<'a> CstFormatter<'a> {
         &self.parse.tree.nodes[node]
     }
 
-    fn rule(&self, node: usize) -> Option<SyntaxRule> {
+    pub(crate) fn rule(&self, node: usize) -> Option<SyntaxRule> {
         match self.node(node).cst_kind {
             CstKind::Rule(rule) => Some(rule),
             CstKind::Token(_) => None,
         }
     }
 
-    fn token(&self, node: usize) -> Option<SyntaxToken> {
+    pub(crate) fn token(&self, node: usize) -> Option<SyntaxToken> {
         match self.node(node).cst_kind {
             CstKind::Rule(_) => None,
             CstKind::Token(token) => Some(token),
         }
     }
 
-    fn atom_format(&mut self, node: usize) -> bool {
+    pub(crate) fn format_child(&mut self, node: usize) -> bool {
         let Some(rule) = self.rule(node) else {
             return false;
         };
@@ -579,11 +488,11 @@ impl<'a> CstFormatter<'a> {
             .collect()
     }
 
-    fn direct_rule(&self, node: usize, target: SyntaxRule) -> Option<usize> {
+    pub(crate) fn direct_rule(&self, node: usize, target: SyntaxRule) -> Option<usize> {
         self.direct_rules(node, target).into_iter().next()
     }
 
-    fn direct_rules(&self, node: usize, target: SyntaxRule) -> Vec<usize> {
+    pub(crate) fn direct_rules(&self, node: usize, target: SyntaxRule) -> Vec<usize> {
         self.node(node)
             .children
             .iter()
@@ -604,7 +513,7 @@ impl<'a> CstFormatter<'a> {
         self.out.push_str(text);
     }
 
-    fn direct_token_texts(&self, node: usize, target: SyntaxToken) -> Vec<String> {
+    pub(crate) fn direct_token_texts(&self, node: usize, target: SyntaxToken) -> Vec<String> {
         self.node(node)
             .children
             .iter()
@@ -614,7 +523,7 @@ impl<'a> CstFormatter<'a> {
             .collect()
     }
 
-    fn direct_qualified_name_text(&self, node: usize) -> Option<String> {
+    pub(crate) fn direct_qualified_name_text(&self, node: usize) -> Option<String> {
         let name = self.direct_rule(node, SyntaxRule::QualifiedName)?;
         let parts = self.direct_token_texts(name, SyntaxToken::Name);
         if parts.is_empty() {
@@ -624,7 +533,7 @@ impl<'a> CstFormatter<'a> {
         }
     }
 
-    fn direct_relation_ref_text(&self, node: usize) -> Option<String> {
+    pub(crate) fn direct_relation_ref_text(&self, node: usize) -> Option<String> {
         let relation = self.direct_rule(node, SyntaxRule::RelationRef)?;
         let qualified = self.direct_qualified_name_text(relation)?;
         let selector = self
@@ -701,6 +610,19 @@ impl<'a> CstFormatter<'a> {
             .source
             .text(TextRange::new(left_end as usize, right_start as usize))
             .into_owned()
+    }
+
+    pub(crate) fn children(&self, node: usize) -> Vec<usize> {
+        self.node(node).children.clone()
+    }
+
+    pub(crate) fn node_range(&self, node: usize) -> TextRange {
+        self.node(node).range
+    }
+
+    pub(crate) fn write_range_text(&mut self, range: TextRange) {
+        let text = self.text(range);
+        self.out.push_str(&text);
     }
 }
 

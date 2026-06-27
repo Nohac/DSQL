@@ -1,8 +1,8 @@
 use crate::range_contains;
 use dsql_core::{
-    Catalog, CstKind, DataType, Definition, FieldCheckResult, NameRef, ParseResult,
-    QualifiedNameRef, RelationRef, Selection, SelectionKind, SyntaxNode, SyntaxToken, TableId,
-    TextRange, expected_tokens_at,
+    Catalog, CstKind, DataType, Definition, FieldCheckResult, FieldSelection, NameRef, ParseResult,
+    QualifiedNameRef, RelationRef, Selection, SyntaxNode, SyntaxToken, TableId, TextRange,
+    expected_tokens_at,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, strum::AsRefStr)]
@@ -170,6 +170,9 @@ fn selection_body_context(
         match definition {
             Definition::Query(query) => {
                 for selection in &query.selections {
+                    let Some(selection) = selection.as_field() else {
+                        continue;
+                    };
                     if !range_contains(selection.range, byte) {
                         continue;
                     }
@@ -212,7 +215,7 @@ fn selection_body_context(
 fn nested_selection_body_context(
     catalog: &Catalog,
     parent_table: TableId,
-    selection: &Selection,
+    selection: &FieldSelection,
     selections: &[Selection],
     byte: usize,
 ) -> Option<CursorContext> {
@@ -237,8 +240,10 @@ fn nested_selection_list_body_context(
     byte: usize,
 ) -> Option<CursorContext> {
     for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread || !range_contains(selection.range, byte)
-        {
+        let Some(selection) = selection.as_field() else {
+            continue;
+        };
+        if !range_contains(selection.range, byte) {
             continue;
         }
         return nested_selection_body_context(
@@ -477,6 +482,9 @@ fn ast_root_table_at(parse: &ParseResult, catalog: &Catalog, byte: usize) -> Opt
         match definition {
             Definition::Query(query) => {
                 for selection in &query.selections {
+                    let Some(selection) = selection.as_field() else {
+                        continue;
+                    };
                     if range_contains(selection.range, byte) {
                         return catalog
                             .table_ref_for(&selection.name.target)
@@ -851,6 +859,9 @@ fn selection_clause_target(
         match definition {
             Definition::Query(query) => {
                 for selection in &query.selections {
+                    let Some(selection) = selection.as_field() else {
+                        continue;
+                    };
                     let Some(table) = catalog.table_ref_for(&selection.name.target) else {
                         continue;
                     };
@@ -874,6 +885,9 @@ fn selection_clause_target(
                     continue;
                 };
                 for selection in &fragment.selections {
+                    let Some(selection) = selection.as_field() else {
+                        continue;
+                    };
                     if let Some(target) =
                         nested_clause_target(catalog, table.id, selection, byte, field)
                     {
@@ -889,11 +903,11 @@ fn selection_clause_target(
 fn nested_clause_target(
     catalog: &Catalog,
     parent_table: TableId,
-    selection: &Selection,
+    selection: &FieldSelection,
     byte: usize,
     field: &RelationRef,
 ) -> Option<ClauseTarget> {
-    if selection.kind == SelectionKind::FragmentSpread || !range_contains(selection.range, byte) {
+    if !range_contains(selection.range, byte) {
         return None;
     }
 
@@ -928,6 +942,7 @@ fn nested_clause_target(
     selection
         .selections
         .iter()
+        .filter_map(Selection::as_field)
         .find_map(|child| nested_clause_target(catalog, current_table, child, byte, field))
 }
 

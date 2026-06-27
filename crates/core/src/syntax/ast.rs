@@ -1,54 +1,35 @@
 use super::TextRange;
-use crate::language::atoms::directive::Directive;
+use crate::language::atoms::{field_selection::FieldSelection, fragment_spread::FragmentSpread};
 use facet::Facet;
 
 #[derive(Clone, Debug, PartialEq, Facet)]
-pub struct Document {
-    pub definitions: Vec<Definition>,
-}
-
-#[derive(Clone, Debug, PartialEq, Facet)]
 #[repr(C)]
-pub enum Definition {
-    Query(QueryDef),
-    Fragment(FragmentDef),
+pub enum Selection {
+    Field(FieldSelection),
+    FragmentSpread(FragmentSpread),
 }
 
-#[derive(Clone, Debug, PartialEq, Facet)]
-pub struct QueryDef {
-    pub range: TextRange,
-    pub name: Option<NameRef>,
-    /// Directives attached to the query definition header.
-    pub directives: Vec<Directive>,
-    pub selections: Vec<Selection>,
-}
+impl Selection {
+    pub fn range(&self) -> TextRange {
+        match self {
+            Self::Field(selection) => selection.range,
+            Self::FragmentSpread(spread) => spread.range,
+        }
+    }
 
-#[derive(Clone, Debug, PartialEq, Facet)]
-pub struct FragmentDef {
-    pub range: TextRange,
-    pub name: Option<NameRef>,
-    pub on: Option<QualifiedNameRef>,
-    pub selections: Vec<Selection>,
-}
+    pub fn as_field(&self) -> Option<&FieldSelection> {
+        match self {
+            Self::Field(selection) => Some(selection),
+            Self::FragmentSpread(_) => None,
+        }
+    }
 
-#[derive(Clone, Debug, PartialEq, Facet)]
-pub struct Selection {
-    pub range: TextRange,
-    pub kind: SelectionKind,
-    pub alias: Option<NameRef>,
-    pub name: RelationRef,
-    pub arguments: Vec<Argument>,
-    pub has_clause_list: bool,
-    pub clauses: Vec<Clause>,
-    pub directives: Vec<Directive>,
-    pub selections: Vec<Selection>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
-#[repr(u8)]
-pub enum SelectionKind {
-    Field,
-    FragmentSpread,
+    pub fn as_fragment_spread(&self) -> Option<&FragmentSpread> {
+        match self {
+            Self::Field(_) => None,
+            Self::FragmentSpread(spread) => Some(spread),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Facet)]
@@ -347,64 +328,5 @@ impl RelationRef {
 
     pub fn output_name(&self) -> &str {
         self.target.object_name()
-    }
-}
-
-#[derive(Clone, Debug, Facet)]
-pub struct SourceFile {
-    document: Document,
-}
-
-impl SourceFile {
-    pub fn new(document: Document) -> Self {
-        Self { document }
-    }
-
-    pub fn definitions(&self) -> impl Iterator<Item = &Definition> {
-        self.document.definitions.iter()
-    }
-
-    pub fn queries(&self) -> impl Iterator<Item = &QueryDef> {
-        self.document
-            .definitions
-            .iter()
-            .filter_map(|definition| match definition {
-                Definition::Query(query) => Some(query),
-                Definition::Fragment(_) => None,
-            })
-    }
-
-    pub fn fragments(&self) -> impl Iterator<Item = &FragmentDef> {
-        self.document
-            .definitions
-            .iter()
-            .filter_map(|definition| match definition {
-                Definition::Query(_) => None,
-                Definition::Fragment(fragment) => Some(fragment),
-            })
-    }
-
-    pub fn document(&self) -> &Document {
-        &self.document
-    }
-}
-
-impl QueryDef {
-    pub fn name(&self) -> Option<&NameRef> {
-        self.name.as_ref()
-    }
-
-    pub fn selections(&self) -> impl Iterator<Item = &Selection> {
-        self.selections.iter()
-    }
-}
-
-impl FragmentDef {
-    pub fn name(&self) -> Option<&NameRef> {
-        self.name.as_ref()
-    }
-
-    pub fn selections(&self) -> impl Iterator<Item = &Selection> {
-        self.selections.iter()
     }
 }

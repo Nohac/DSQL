@@ -4,8 +4,13 @@ use crate::{
     definition::{
         DefinitionResolver, FragmentMap, FragmentRecord, QueryRecord, extract_definitions,
     },
-    language::atoms::directive::{DirectiveAtom, DirectiveLocation, DirectiveRegistry},
-    syntax::{Clause, Expr, Literal, Selection, SelectionKind, SourceFile, TextRange},
+    language::{
+        atoms::directive::{Directive, DirectiveLocation, DirectiveRegistry},
+        stages::{CheckContext, CheckTarget},
+    },
+    syntax::{
+        Clause, Expr, FieldSelection, FragmentSpread, Literal, Selection, SourceFile, TextRange,
+    },
 };
 use indexmap::IndexMap;
 use std::collections::HashSet;
@@ -41,9 +46,9 @@ pub fn check_query_definition(
 ) -> CheckedFile {
     let mut errors = Vec::new();
     let directive_registry = DirectiveRegistry::system();
-    DirectiveAtom::check_all(
-        &query.directives,
+    check_directives(
         &directive_registry,
+        &query.directives,
         DirectiveLocation::Query,
         &mut errors,
     );
@@ -145,62 +150,64 @@ fn check_root_selections(
     check_duplicate_output_keys(selections, errors);
     check_output_key_lengths(selections, errors);
     for selection in selections {
-        // Selection traversal is still legacy-owned. Until selection becomes an atom,
-        // the checker only locates contained directives and delegates directive behavior.
-        if selection.kind == SelectionKind::FragmentSpread {
-            DirectiveAtom::check_all(
-                &selection.directives,
-                &directive_registry,
-                DirectiveLocation::FragmentSpread,
-                errors,
-            );
-            errors.push(CheckError {
-                range: selection.name.range,
-                kind: CheckErrorKind::UnknownFragment {
-                    fragment: selection.name.target.name.text.clone(),
-                },
-            });
-            continue;
-        }
-        DirectiveAtom::check_all(
-            &selection.directives,
-            &directive_registry,
-            DirectiveLocation::Field,
-            errors,
-        );
-        let table = match catalog.resolve_table_ref_for(&selection.name.target) {
-            TableResolution::Found(table) => table,
-            TableResolution::NotFound { reference } => {
+        match selection {
+            Selection::FragmentSpread(spread) => {
+                check_directives(
+                    &directive_registry,
+                    &spread.directives,
+                    DirectiveLocation::FragmentSpread,
+                    errors,
+                );
                 errors.push(CheckError {
-                    range: selection.name.range,
-                    kind: CheckErrorKind::TableNotFound { table: reference },
-                });
-                continue;
-            }
-            TableResolution::Ambiguous {
-                reference,
-                candidates,
-            } => {
-                errors.push(CheckError {
-                    range: selection.name.range,
-                    kind: CheckErrorKind::AmbiguousTable {
-                        table: reference,
-                        candidates,
+                    range: spread.name.range,
+                    kind: CheckErrorKind::UnknownFragment {
+                        fragment: spread.name.text.clone(),
                     },
                 });
                 continue;
             }
-        };
-        check_clauses(catalog, table.id, table.id, selection, errors);
-        check_selection_set(
-            catalog,
-            resolver,
-            table.id,
-            table.id,
-            &selection.selections,
-            errors,
-            &mut HashSet::new(),
-        );
+            Selection::Field(field) => {
+                check_directives(
+                    &directive_registry,
+                    &field.directives,
+                    DirectiveLocation::Field,
+                    errors,
+                );
+                let table = match catalog.resolve_table_ref_for(&field.name.target) {
+                    TableResolution::Found(table) => table,
+                    TableResolution::NotFound { reference } => {
+                        errors.push(CheckError {
+                            range: field.name.range,
+                            kind: CheckErrorKind::TableNotFound { table: reference },
+                        });
+                        continue;
+                    }
+                    TableResolution::Ambiguous {
+                        reference,
+                        candidates,
+                    } => {
+                        errors.push(CheckError {
+                            range: field.name.range,
+                            kind: CheckErrorKind::AmbiguousTable {
+                                table: reference,
+                                candidates,
+                            },
+                        });
+                        continue;
+                    }
+                };
+                check_clauses(catalog, table.id, table.id, field, errors);
+                check_selection_set(
+                    catalog,
+                    resolver,
+                    table.id,
+                    table.id,
+                    &field.selections,
+                    errors,
+                    &mut HashSet::new(),
+                );
+            }
+        }
     }
 }
 
@@ -217,52 +224,53 @@ fn check_selection_set(
     check_duplicate_output_keys(selections, errors);
     check_output_key_lengths(selections, errors);
     for selection in selections {
-        // Selection traversal is still legacy-owned. Until selection becomes an atom,
-        // the checker only locates contained directives and delegates directive behavior.
-        if selection.kind == SelectionKind::FragmentSpread {
-            DirectiveAtom::check_all(
-                &selection.directives,
-                &directive_registry,
-                DirectiveLocation::FragmentSpread,
-                errors,
-            );
-            check_fragment_spread(catalog, resolver, table, selection, errors, visiting);
-            continue;
-        }
-        DirectiveAtom::check_all(
-            &selection.directives,
+        let field = match selection {
+            Selection::FragmentSpread(spread) => {
+                check_directives(
+                    &directive_registry,
+                    &spread.directives,
+                    DirectiveLocation::FragmentSpread,
+                    errors,
+                );
+                check_fragment_spread(catalog, resolver, table, spread, errors, visiting);
+                continue;
+            }
+            Selection::Field(field) => field,
+        };
+        check_directives(
             &directive_registry,
+            &field.directives,
             DirectiveLocation::Field,
             errors,
         );
-        match catalog.check_field_ref(table, &selection.name) {
+        match catalog.check_field_ref(table, &field.name) {
             FieldCheckResult::Column(column) => {
-                if selection.has_clause_list {
+                if field.has_clause_list {
                     errors.push(CheckError {
-                        range: selection.name.range,
+                        range: field.name.range,
                         kind: CheckErrorKind::ScalarClauses {
-                            field: selection.name.display_text(),
+                            field: field.name.display_text(),
                             data_type: column.data_type.as_str().to_string(),
                         },
                     });
                 }
-                if !selection.selections.is_empty() {
+                if !field.selections.is_empty() {
                     errors.push(CheckError {
-                        range: selection.name.range,
+                        range: field.name.range,
                         kind: CheckErrorKind::ScalarSelectionSet {
-                            field: selection.name.display_text(),
+                            field: field.name.display_text(),
                             data_type: column.data_type.as_str().to_string(),
                         },
                     });
                 }
             }
             FieldCheckResult::Relation(relation) => {
-                check_clauses(catalog, root_table, relation.table.id, selection, errors);
-                if selection.selections.is_empty() {
+                check_clauses(catalog, root_table, relation.table.id, field, errors);
+                if field.selections.is_empty() {
                     errors.push(CheckError {
-                        range: selection.name.range,
+                        range: field.name.range,
                         kind: CheckErrorKind::RelationSelectionSet {
-                            field: selection.name.display_text(),
+                            field: field.name.display_text(),
                         },
                     });
                 } else {
@@ -271,7 +279,7 @@ fn check_selection_set(
                         resolver,
                         root_table,
                         relation.table.id,
-                        &selection.selections,
+                        &field.selections,
                         errors,
                         visiting,
                     );
@@ -283,9 +291,9 @@ fn check_selection_set(
                     .get(table.0)
                     .map_or("<unknown>", |table| table.name.as_str());
                 errors.push(CheckError {
-                    range: selection.name.range,
+                    range: field.name.range,
                     kind: CheckErrorKind::FieldNotFound {
-                        field: selection.name.display_text(),
+                        field: field.name.display_text(),
                         table: table_name.to_string(),
                     },
                 });
@@ -295,7 +303,7 @@ fn check_selection_set(
                 candidates,
             } => {
                 errors.push(CheckError {
-                    range: selection.name.range,
+                    range: field.name.range,
                     kind: CheckErrorKind::AmbiguousRelation {
                         relation: reference,
                         candidates,
@@ -310,7 +318,7 @@ fn check_clauses(
     catalog: &Catalog,
     root_table: TableId,
     table: TableId,
-    selection: &Selection,
+    selection: &FieldSelection,
     errors: &mut Vec<CheckError>,
 ) {
     for clause in &selection.clauses {
@@ -352,6 +360,21 @@ fn check_clauses(
                 check_non_negative_integer("offset", &offset.value, offset.range, errors);
             }
         }
+    }
+}
+
+fn check_directives(
+    registry: &DirectiveRegistry,
+    directives: &[Directive],
+    location: DirectiveLocation,
+    errors: &mut Vec<CheckError>,
+) {
+    let mut context = CheckContext::new(registry, errors);
+    for directive in directives {
+        context.check(CheckTarget::Directive {
+            directive,
+            location,
+        });
     }
 }
 
@@ -597,14 +620,14 @@ fn check_fragment_spread(
     catalog: &Catalog,
     resolver: &impl DefinitionResolver,
     table: TableId,
-    selection: &Selection,
+    spread: &FragmentSpread,
     errors: &mut Vec<CheckError>,
     visiting: &mut HashSet<String>,
 ) {
-    let name = &selection.name.target.name.text;
+    let name = &spread.name.text;
     let Some(fragment) = resolver.fragment(name) else {
         errors.push(CheckError {
-            range: selection.name.range,
+            range: spread.name.range,
             kind: CheckErrorKind::UnknownFragment {
                 fragment: name.clone(),
             },
@@ -613,7 +636,7 @@ fn check_fragment_spread(
     };
     if !visiting.insert(name.clone()) {
         errors.push(CheckError {
-            range: selection.name.range,
+            range: spread.name.range,
             kind: CheckErrorKind::CircularFragmentSpread {
                 fragment: name.clone(),
             },
@@ -654,7 +677,7 @@ fn check_fragment_spread(
             .table_by_id(table)
             .map_or_else(|| "<unknown>".to_string(), |table| table.key.table.clone());
         errors.push(CheckError {
-            range: selection.name.range,
+            range: spread.name.range,
             kind: CheckErrorKind::FragmentTypeMismatch {
                 fragment: name.clone(),
                 expected,
@@ -670,9 +693,9 @@ fn check_fragment_spread(
 fn check_duplicate_output_keys(selections: &[Selection], errors: &mut Vec<CheckError>) {
     let mut keys = IndexMap::<String, TextRange>::new();
     for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread {
+        let Some(selection) = selection.as_field() else {
             continue;
-        }
+        };
         let key = response_key(selection);
         if keys.insert(key.clone(), selection.name.range).is_some() {
             errors.push(CheckError {
@@ -685,9 +708,9 @@ fn check_duplicate_output_keys(selections: &[Selection], errors: &mut Vec<CheckE
 
 fn check_output_key_lengths(selections: &[Selection], errors: &mut Vec<CheckError>) {
     for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread {
+        let Some(selection) = selection.as_field() else {
             continue;
-        }
+        };
         let key = response_key(selection);
         let bytes = key.len();
         if bytes > POSTGRES_RESULT_ALIAS_MAX_BYTES {
@@ -707,7 +730,7 @@ fn check_output_key_lengths(selections: &[Selection], errors: &mut Vec<CheckErro
     }
 }
 
-fn response_key(selection: &Selection) -> String {
+fn response_key(selection: &FieldSelection) -> String {
     selection.alias.as_ref().map_or_else(
         || selection.name.output_name().to_string(),
         |alias| alias.text.clone(),

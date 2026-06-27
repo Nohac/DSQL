@@ -25,6 +25,14 @@
 - When making Windows-specific changes from Unix, use `cargo xwin clippy` to check compilation when available; if it cannot be run, say so.
 - NEVER update all dependencies in the lockfile. ALWAYS use `cargo update --precise` for lockfile changes.
 
+## Secondary Goal Review
+
+- For large ongoing refactors, create or use a task-prefixed goal file in `local-docs`, such as `local-docs/<task>-goal.md`.
+- Before handing off a substantial slice or preparing a commit, run a secondary review using the goal file that matches the active task and a task-specific prompt, for example:
+  `cat local-docs/<task>-goal.md | codex exec "Using the provided context, solve this problem: review the current diff against this goal and report concrete deviations, missing coverage, and risky shortcuts."`
+- Replace both `<task>-goal.md` and the quoted prompt with the current task. Do not hardcode one goal file for unrelated work.
+- Treat the secondary review output as review input: address valid findings or mention unresolved risks in the handoff.
+
 ## Testing
 
 - For issues and bug reports, add or run a focused test that reproduces the behavior before starting the fix.

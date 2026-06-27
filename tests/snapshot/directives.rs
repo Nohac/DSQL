@@ -116,13 +116,26 @@ fn collect_directives<'a>(
     directives: &mut Vec<(String, &'a Directive)>,
 ) {
     for selection in selections {
-        let selection_path = format!("{parent_path}.{}", selection.name.display_text());
-        directives.extend(
-            selection
-                .directives
-                .iter()
-                .map(|directive| (selection_path.clone(), directive)),
-        );
-        collect_directives(selection_path, selection.selections.iter(), directives);
+        match selection {
+            Selection::Field(field) => {
+                let selection_path = format!("{parent_path}.{}", field.name.display_text());
+                directives.extend(
+                    field
+                        .directives
+                        .iter()
+                        .map(|directive| (selection_path.clone(), directive)),
+                );
+                collect_directives(selection_path, field.selections.iter(), directives);
+            }
+            Selection::FragmentSpread(spread) => {
+                let selection_path = format!("{parent_path}....{}", spread.name.text);
+                directives.extend(
+                    spread
+                        .directives
+                        .iter()
+                        .map(|directive| (selection_path.clone(), directive)),
+                );
+            }
+        }
     }
 }

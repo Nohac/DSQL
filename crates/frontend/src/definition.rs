@@ -1,6 +1,6 @@
 use crate::range_contains;
 use dsql_core::{
-    Catalog, Clause, Definition, Expr, FieldCheckResult, RelationRef, Selection, SelectionKind,
+    Catalog, Clause, Definition, Expr, FieldCheckResult, FieldSelection, RelationRef, Selection,
     SourceFile, TableId, TextRange,
 };
 
@@ -50,6 +50,9 @@ pub(crate) fn definition_target_at(
         match definition {
             Definition::Query(query) => {
                 for selection in &query.selections {
+                    let Some(selection) = selection.as_field() else {
+                        continue;
+                    };
                     if !range_contains(selection.name.range, byte)
                         && !range_contains(selection.range, byte)
                     {
@@ -99,14 +102,17 @@ fn definition_in_selections(
     byte: usize,
 ) -> Option<DefinitionTarget> {
     for selection in selections {
-        if selection.kind == SelectionKind::FragmentSpread {
-            if range_contains(selection.name.range, byte) {
-                return Some(DefinitionTarget::Fragment {
-                    name: selection.name.target.name.text.clone(),
-                });
+        let selection = match selection {
+            Selection::FragmentSpread(spread) => {
+                if range_contains(spread.name.range, byte) {
+                    return Some(DefinitionTarget::Fragment {
+                        name: spread.name.text.clone(),
+                    });
+                }
+                continue;
             }
-            continue;
-        }
+            Selection::Field(selection) => selection,
+        };
         if !range_contains(selection.name.range, byte) && !range_contains(selection.range, byte) {
             continue;
         }
@@ -150,7 +156,7 @@ fn definition_in_selections(
 fn definition_in_clauses(
     catalog: &Catalog,
     table: TableId,
-    selection: &Selection,
+    selection: &FieldSelection,
     byte: usize,
 ) -> Option<DefinitionTarget> {
     for clause in &selection.clauses {
