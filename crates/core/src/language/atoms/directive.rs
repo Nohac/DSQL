@@ -82,21 +82,21 @@ impl DirectiveArgumentValueKind {
     }
 }
 
-/// Static schema entry for a compiler-owned directive.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+/// Schema entry for a compiler-owned directive stored in a directive registry.
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct SystemDirectiveDefinition {
     pub kind: SystemDirectiveKind,
-    pub namespace: &'static str,
-    pub member: &'static str,
+    pub namespace: String,
+    pub member: String,
     /// Semantic locations where the directive may appear.
-    pub locations: &'static [DirectiveLocation],
-    pub arguments: &'static [DirectiveArgumentDefinition],
+    pub locations: Vec<DirectiveLocation>,
+    pub arguments: Vec<DirectiveArgumentDefinition>,
 }
 
-/// Static directive argument schema used by system directives.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+/// Directive argument schema used by system directives.
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct DirectiveArgumentDefinition {
-    pub name: &'static str,
+    pub name: String,
     pub required: bool,
     /// Lightweight expected value category used by the built-in validator.
     pub value: DirectiveArgumentValueKind,
@@ -126,52 +126,21 @@ pub struct ExternalDirectiveDefinition {
 /// Resolved directive definition, preserving whether the directive is compiler-owned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DirectiveDefinition<'a> {
-    System(&'static SystemDirectiveDefinition),
+    System(&'a SystemDirectiveDefinition),
     External(&'a ExternalDirectiveDefinition),
 }
 
 /// Registry used by directive-aware stages to resolve parsed directive names.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Facet)]
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct DirectiveRegistry {
+    system: Vec<SystemDirectiveDefinition>,
     external: Vec<ExternalDirectiveDefinition>,
 }
 
-const INCLUDE_IF_ARGUMENTS: &[DirectiveArgumentDefinition] = &[DirectiveArgumentDefinition {
-    name: "if",
-    required: true,
-    value: DirectiveArgumentValueKind::BooleanExpression,
-}];
-
-const DEPRECATED_ARGUMENTS: &[DirectiveArgumentDefinition] = &[DirectiveArgumentDefinition {
-    name: "reason",
-    required: false,
-    value: DirectiveArgumentValueKind::String,
-}];
-
-const FIELD_LOCATIONS: &[DirectiveLocation] = &[DirectiveLocation::Field];
-const QUERY_AND_FIELD_LOCATIONS: &[DirectiveLocation] =
-    &[DirectiveLocation::Query, DirectiveLocation::Field];
-
-const SYSTEM_DIRECTIVES: &[SystemDirectiveDefinition] = &[
-    SystemDirectiveDefinition {
-        kind: SystemDirectiveKind::IncludeIf,
-        namespace: "dsql",
-        member: "include_if",
-        locations: FIELD_LOCATIONS,
-        arguments: INCLUDE_IF_ARGUMENTS,
-    },
-    SystemDirectiveDefinition {
-        kind: SystemDirectiveKind::Deprecated,
-        namespace: "dsql",
-        member: "deprecated",
-        locations: QUERY_AND_FIELD_LOCATIONS,
-        arguments: DEPRECATED_ARGUMENTS,
-    },
-];
-
-/// Returns the compiler-owned directive definitions used by checking and editor features.
-pub fn system_directive_definitions() -> &'static [SystemDirectiveDefinition] {
-    SYSTEM_DIRECTIVES
+impl Default for DirectiveRegistry {
+    fn default() -> Self {
+        Self::system()
+    }
 }
 
 impl DirectiveName {
@@ -200,25 +169,52 @@ impl DirectiveName {
 impl DirectiveRegistry {
     /// Creates a registry containing the compiler-owned directive definitions.
     pub fn new() -> Self {
-        Self::default()
+        Self::system()
+    }
+
+    /// Creates a registry containing the compiler-owned directive definitions.
+    pub fn system() -> Self {
+        Self {
+            system: vec![
+                SystemDirectiveDefinition {
+                    kind: SystemDirectiveKind::IncludeIf,
+                    namespace: "dsql".to_string(),
+                    member: "include_if".to_string(),
+                    locations: vec![DirectiveLocation::Field],
+                    arguments: vec![DirectiveArgumentDefinition {
+                        name: "if".to_string(),
+                        required: true,
+                        value: DirectiveArgumentValueKind::BooleanExpression,
+                    }],
+                },
+                SystemDirectiveDefinition {
+                    kind: SystemDirectiveKind::Deprecated,
+                    namespace: "dsql".to_string(),
+                    member: "deprecated".to_string(),
+                    locations: vec![DirectiveLocation::Query, DirectiveLocation::Field],
+                    arguments: vec![DirectiveArgumentDefinition {
+                        name: "reason".to_string(),
+                        required: false,
+                        value: DirectiveArgumentValueKind::String,
+                    }],
+                },
+            ],
+            external: Vec::new(),
+        }
     }
 
     /// Registers an externally supplied directive definition for metadata/codegen use.
-    #[expect(
-        dead_code,
-        reason = "external schema loading will register definitions through this API"
-    )]
     pub fn register_external(&mut self, definition: ExternalDirectiveDefinition) {
         self.external.push(definition);
     }
 
     /// Resolves a parsed directive name against system and external definitions.
     pub fn resolve<'a>(&'a self, name: &DirectiveName) -> Option<DirectiveDefinition<'a>> {
-        SYSTEM_DIRECTIVES
+        self.system
             .iter()
             .find(|definition| {
                 name.namespace_text() == definition.namespace
-                    && name.member_text() == Some(definition.member)
+                    && name.member_text() == Some(definition.member.as_str())
             })
             .map(DirectiveDefinition::System)
             .or_else(|| {
@@ -230,6 +226,50 @@ impl DirectiveRegistry {
                     })
                     .map(DirectiveDefinition::External)
             })
+    }
+
+    /// Resolves a directive name spelled in source-window completion syntax.
+    pub(crate) fn resolve_syntax_name<'a>(&'a self, name: &str) -> Option<DirectiveDefinition<'a>> {
+        let (namespace, member) = name
+            .strip_prefix('.')
+            .map_or_else(|| name.split_once('.'), |member| Some(("dsql", member)))?;
+        self.system
+            .iter()
+            .find(|definition| definition.namespace == namespace && definition.member == member)
+            .map(DirectiveDefinition::System)
+            .or_else(|| {
+                self.external
+                    .iter()
+                    .find(|definition| {
+                        definition.namespace == namespace
+                            && definition.member.as_deref() == Some(member)
+                    })
+                    .map(DirectiveDefinition::External)
+            })
+    }
+
+    /// Returns directive namespaces known to this registry.
+    pub(crate) fn namespace_names(&self) -> Vec<&str> {
+        let mut namespaces = Vec::new();
+        for definition in &self.system {
+            if !namespaces.contains(&definition.namespace.as_str()) {
+                namespaces.push(definition.namespace.as_str());
+            }
+        }
+        for definition in &self.external {
+            if !namespaces.contains(&definition.namespace.as_str()) {
+                namespaces.push(definition.namespace.as_str());
+            }
+        }
+        namespaces
+    }
+
+    /// Returns system directive definitions for a namespace.
+    pub(crate) fn system_members(&self, namespace: &str) -> Vec<&SystemDirectiveDefinition> {
+        self.system
+            .iter()
+            .filter(|definition| definition.namespace == namespace)
+            .collect()
     }
 }
 
@@ -465,13 +505,15 @@ fn directive_context<'a>(
 }
 
 impl Completer<DirectiveAtom> for LanguageService {
+    type Params<'a> = (&'a LanguageContext<'a>, &'a DirectiveRegistry);
+
     /// Provides directive completions from already-classified syntax contexts.
     ///
     /// This method matches on generic [`SyntaxRule`] values and reads
     /// `construct_range`/`focus_range`. It should not parse directive names or
     /// arguments from scratch; if a rule is missing, the grammar or context
     /// provider should be made more structural.
-    fn completions(context: &LanguageContext<'_>) -> Vec<EditorCompletion> {
+    fn completions((context, registry): Self::Params<'_>) -> Vec<EditorCompletion> {
         if !is_directive_context(context) {
             return Vec::new();
         }
@@ -479,14 +521,14 @@ impl Completer<DirectiveAtom> for LanguageService {
         match context.rule {
             SyntaxRule::DirectiveNamespace => {
                 let prefix = context_text(context, context.focus_range);
-                namespace_completions(prefix.as_ref())
+                namespace_completions(registry, prefix.as_ref())
             }
             SyntaxRule::DirectiveMember => {
                 let Some(namespace) = directive_namespace_for_context(context) else {
                     return Vec::new();
                 };
                 let prefix = context_text(context, context.focus_range);
-                member_completions(namespace.as_ref(), prefix.as_ref())
+                member_completions(registry, namespace.as_ref(), prefix.as_ref())
             }
             SyntaxRule::DirectiveArgument => {
                 let directive = context_text(context, context.construct_range);
@@ -495,13 +537,27 @@ impl Completer<DirectiveAtom> for LanguageService {
                     let Some(argument) = directive_argument_name_for_context(context) else {
                         return Vec::new();
                     };
-                    value_completions(directive.as_ref(), argument.as_ref(), prefix.as_ref())
+                    value_completions(
+                        registry,
+                        directive.as_ref(),
+                        argument.as_ref(),
+                        prefix.as_ref(),
+                    )
                 } else {
-                    argument_completions(directive.as_ref(), prefix.as_ref())
+                    argument_completions(registry, directive.as_ref(), prefix.as_ref())
                 }
             }
             _ => Vec::new(),
         }
+    }
+}
+
+impl ProvidesProjectAssets<DirectiveAtom> for LanguageService {
+    type Params<'a> = &'a LanguageServiceRequest<'a>;
+
+    /// Provides the system directive registry for language-service features.
+    fn provide(assets: &mut ProjectAssets, _request: Self::Params<'_>) {
+        assets.insert(DirectiveRegistry::system());
     }
 }
 
@@ -853,9 +909,10 @@ fn clipped_node_range(input: &LanguageContextInput<'_>, node: usize) -> TextRang
     )
 }
 
-fn namespace_completions(prefix: &str) -> Vec<EditorCompletion> {
+fn namespace_completions(registry: &DirectiveRegistry, prefix: &str) -> Vec<EditorCompletion> {
     let mut completions = Vec::new();
-    if ".".starts_with(prefix) {
+    let namespaces = registry.namespace_names();
+    if namespaces.contains(&"dsql") && ".".starts_with(prefix) {
         completions.push(EditorCompletion {
             label: ".".to_string(),
             kind: EditorCompletionKind::Directive,
@@ -863,9 +920,12 @@ fn namespace_completions(prefix: &str) -> Vec<EditorCompletion> {
             insert_text: None,
         });
     }
-    if "dsql".starts_with(prefix) {
+    for namespace in namespaces
+        .into_iter()
+        .filter(|namespace| namespace.starts_with(prefix))
+    {
         completions.push(EditorCompletion {
-            label: "dsql".to_string(),
+            label: namespace.to_string(),
             kind: EditorCompletionKind::Directive,
             detail: Some("directive namespace".to_string()),
             insert_text: None,
@@ -874,9 +934,14 @@ fn namespace_completions(prefix: &str) -> Vec<EditorCompletion> {
     completions
 }
 
-fn member_completions(namespace: &str, prefix: &str) -> Vec<EditorCompletion> {
-    system_directive_definitions()
-        .iter()
+fn member_completions(
+    registry: &DirectiveRegistry,
+    namespace: &str,
+    prefix: &str,
+) -> Vec<EditorCompletion> {
+    registry
+        .system_members(namespace)
+        .into_iter()
         .filter(|definition| {
             definition.namespace == namespace && definition.member.starts_with(prefix)
         })
@@ -889,8 +954,13 @@ fn member_completions(namespace: &str, prefix: &str) -> Vec<EditorCompletion> {
         .collect()
 }
 
-fn argument_completions(directive: &str, prefix: &str) -> Vec<EditorCompletion> {
-    let Some(definition) = directive_definition_for_syntax_name(directive) else {
+fn argument_completions(
+    registry: &DirectiveRegistry,
+    directive: &str,
+    prefix: &str,
+) -> Vec<EditorCompletion> {
+    let Some(DirectiveDefinition::System(definition)) = registry.resolve_syntax_name(directive)
+    else {
         return Vec::new();
     };
     definition
@@ -906,8 +976,14 @@ fn argument_completions(directive: &str, prefix: &str) -> Vec<EditorCompletion> 
         .collect()
 }
 
-fn value_completions(directive: &str, argument: &str, prefix: &str) -> Vec<EditorCompletion> {
-    let Some(definition) = directive_definition_for_syntax_name(directive) else {
+fn value_completions(
+    registry: &DirectiveRegistry,
+    directive: &str,
+    argument: &str,
+    prefix: &str,
+) -> Vec<EditorCompletion> {
+    let Some(DirectiveDefinition::System(definition)) = registry.resolve_syntax_name(directive)
+    else {
         return Vec::new();
     };
     let Some(argument) = definition
@@ -937,15 +1013,6 @@ fn is_name_prefix(value: &str) -> bool {
     value
         .chars()
         .all(|character| character == '_' || character.is_ascii_alphanumeric())
-}
-
-fn directive_definition_for_syntax_name(name: &str) -> Option<&'static SystemDirectiveDefinition> {
-    let member = name
-        .strip_prefix('.')
-        .or_else(|| name.strip_prefix("dsql."))?;
-    system_directive_definitions()
-        .iter()
-        .find(|definition| definition.namespace == "dsql" && definition.member == member)
 }
 
 fn check_system_directive(
@@ -1016,7 +1083,7 @@ fn check_system_directive(
     {
         if !seen_arguments
             .iter()
-            .any(|argument| argument == required_argument.name)
+            .any(|argument| argument == &required_argument.name)
         {
             errors.push(CheckError {
                 range: directive.name.range,

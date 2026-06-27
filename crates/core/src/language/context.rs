@@ -1,4 +1,5 @@
 use crate::{
+    asset::AssetRegistry,
     language::grammar::{LanguageAtoms, RuleClassification},
     syntax::{CstKind, ParseResult, SyntaxRule, SyntaxToken, TextRange, expected_tokens_at},
 };
@@ -12,6 +13,30 @@ use crate::{
 pub struct LanguageServiceRequest<'a> {
     pub parse: &'a ParseResult,
     pub byte: usize,
+}
+
+/// Request-scoped context available while preparing language-service assets.
+///
+/// Project asset providers declare typed parameters extracted from this
+/// context. Frontend/query-owned project facts such as roots, config, and
+/// loaded directive schema inputs can be added here without passing broad
+/// project state into atoms.
+pub struct LanguageServiceAssetContext<'a> {
+    /// Source position and parse result for the language-service request.
+    pub request: LanguageServiceRequest<'a>,
+}
+
+/// Full language-service dispatch context used by erased atom descriptors.
+///
+/// Atom implementations should not accept this context directly. They declare
+/// typed parameters, and descriptors extract those parameters from this value.
+pub struct LanguageServiceContext<'a> {
+    /// Source position and parse result for the language-service request.
+    pub request: LanguageServiceRequest<'a>,
+    /// Ranked cursor context currently being consumed by a feature provider.
+    pub language_context: &'a LanguageContext<'a>,
+    /// Assets prepared for this language-service request.
+    pub assets: &'a AssetRegistry,
 }
 
 /// Confidence assigned to one normalized language-service context.

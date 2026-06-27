@@ -1,6 +1,10 @@
 use crate::{
+    asset::{AtomAssets, ProjectAssets},
     language::atom::LanguageAtom,
-    language::context::{LanguageContext, LanguageContextInput},
+    language::context::{
+        LanguageContext, LanguageContextInput, LanguageServiceAssetContext, LanguageServiceContext,
+    },
+    language::params::AtomParam,
     semantic::{Interner, NameIndex},
     syntax::grammar::parser::NodeRef,
 };
@@ -73,12 +77,15 @@ pub struct EditorCompletion {
 
 /// Completion support implemented by language atoms for the language service.
 ///
-/// Completion providers consume already-classified [`LanguageContext`] values.
-/// They should not rediscover the cursor's syntax role with broad source
-/// searches. If the context is too coarse, fix the atom's [`ProvidesContext`]
-/// implementation or the grammar rule structure that feeds it.
+/// Completion providers declare the narrow typed parameters they need from the
+/// full language-service dispatch context. They should not rediscover the
+/// cursor's syntax role with broad source searches. If the context is too
+/// coarse, fix the atom's [`ProvidesContext`] implementation or the grammar rule
+/// structure that feeds it.
 pub trait Completer<A: LanguageAtom> {
-    fn completions(context: &LanguageContext<'_>) -> Vec<EditorCompletion>;
+    type Params<'a>: AtomParam<'a, LanguageServiceContext<'a>>;
+
+    fn completions(params: Self::Params<'_>) -> Vec<EditorCompletion>;
 }
 
 /// Cursor-context support implemented by language atoms for the language service.
@@ -88,6 +95,36 @@ pub trait Completer<A: LanguageAtom> {
 /// and use bounded source-window recovery only for incomplete parser states.
 pub trait ProvidesContext<A: LanguageAtom> {
     fn contexts<'a>(input: &LanguageContextInput<'a>) -> Vec<LanguageContext<'a>>;
+}
+
+/// Project asset preparation implemented by language atoms for the language service.
+///
+/// Project asset providers run before feature dispatch and populate shared
+/// request/project assets. They receive narrow typed parameters extracted from
+/// [`LanguageServiceAssetContext`] instead of broad project state.
+pub trait ProvidesProjectAssets<A: LanguageAtom> {
+    /// Typed parameters this provider needs from the asset-building context.
+    type Params<'a>: AtomParam<'a, LanguageServiceAssetContext<'a>>;
+
+    /// Inserts any project assets this atom contributes for the request.
+    fn provide(assets: &mut ProjectAssets, params: Self::Params<'_>);
+}
+
+/// Per-pass atom asset preparation implemented by language atoms.
+///
+/// Atom asset providers are for fresh mutable pass-local assets that can be
+/// drained after dispatch. They intentionally target [`AtomAssets`] rather than
+/// shared project assets.
+#[expect(
+    dead_code,
+    reason = "atom asset providers will be wired when pass-local stage assets are introduced"
+)]
+pub trait ProvidesAtomAssets<A: LanguageAtom> {
+    /// Typed parameters this provider needs from the language-service context.
+    type Params<'a>: AtomParam<'a, LanguageServiceContext<'a>>;
+
+    /// Inserts any atom assets this atom contributes for the current pass.
+    fn provide(assets: &mut AtomAssets, params: Self::Params<'_>);
 }
 
 pub enum Lowerer {}

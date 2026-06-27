@@ -40,7 +40,7 @@ pub fn check_query_definition(
     catalog: &Catalog,
 ) -> CheckedFile {
     let mut errors = Vec::new();
-    let directive_registry = DirectiveRegistry::new();
+    let directive_registry = DirectiveRegistry::system();
     DirectiveAtom::check_all(
         &query.directives,
         &directive_registry,
@@ -141,7 +141,7 @@ fn check_root_selections(
     selections: &[Selection],
     errors: &mut Vec<CheckError>,
 ) {
-    let directive_registry = DirectiveRegistry::new();
+    let directive_registry = DirectiveRegistry::system();
     check_duplicate_output_keys(selections, errors);
     check_output_key_lengths(selections, errors);
     for selection in selections {
@@ -213,7 +213,7 @@ fn check_selection_set(
     errors: &mut Vec<CheckError>,
     visiting: &mut HashSet<String>,
 ) {
-    let directive_registry = DirectiveRegistry::new();
+    let directive_registry = DirectiveRegistry::system();
     check_duplicate_output_keys(selections, errors);
     check_output_key_lengths(selections, errors);
     for selection in selections {

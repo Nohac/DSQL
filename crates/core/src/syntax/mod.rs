@@ -6,7 +6,7 @@ mod text;
 
 pub use crate::language::atoms::directive::{
     Directive, DirectiveArgumentDefinition, DirectiveArgumentValueKind, DirectiveLocation,
-    SystemDirectiveDefinition, SystemDirectiveKind, system_directive_definitions,
+    SystemDirectiveDefinition, SystemDirectiveKind,
 };
 pub use ast::{
     Argument, BinaryOp, BinaryOperator, Clause, Definition, Document, Expr, FragmentDef,

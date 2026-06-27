@@ -1,5 +1,9 @@
+use crate::AssetRegistry;
 use crate::language::{
-    context::{ContextConfidence, LanguageContextProvider, LanguageServiceRequest},
+    context::{
+        ContextConfidence, LanguageContextProvider, LanguageServiceAssetContext,
+        LanguageServiceContext, LanguageServiceRequest,
+    },
     grammar::LanguageAtoms,
     stages::EditorCompletion,
 };
@@ -12,16 +16,27 @@ use crate::language::{
 /// contexts once, loop registered providers, and avoid branching on concrete
 /// atom names in the caller.
 pub fn editor_completions(request: LanguageServiceRequest<'_>) -> Vec<EditorCompletion> {
+    let mut assets = AssetRegistry::default();
+    let asset_context = LanguageServiceAssetContext { request };
+    for provider in LanguageAtoms::project_asset_providers() {
+        provider.provide(&mut assets.project, &asset_context);
+    }
+
     let contexts = LanguageContextProvider::contexts(request);
     let mut ranked = contexts
         .iter()
         .enumerate()
         .flat_map(|(context_index, context)| {
+            let service_context = LanguageServiceContext {
+                request,
+                language_context: context,
+                assets: &assets,
+            };
             LanguageAtoms::completers()
                 .iter()
                 .flat_map(move |completer| {
                     completer
-                        .completions(context)
+                        .completions(&service_context)
                         .into_iter()
                         .map(move |completion| RankedCompletion {
                             completion,

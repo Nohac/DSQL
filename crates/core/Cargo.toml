@@ -20,6 +20,7 @@ sqlformat = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+variadics_please = { workspace = true }
 
 [build-dependencies]
 lelwel = { workspace = true }

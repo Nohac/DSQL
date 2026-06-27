@@ -1,17 +1,50 @@
 use crate::{
+    asset::ProjectAssets,
     format::cst::CstFormatter,
-    language::context::{LanguageContext, LanguageContextInput},
+    language::context::{
+        LanguageContext, LanguageContextInput, LanguageServiceAssetContext, LanguageServiceContext,
+    },
+    language::params::AtomParam,
     language::{atom::AtomDescriptor, atoms::directive::DirectiveAtom},
     language::{
         atom::LanguageAtom,
-        stages::{Completer, EditorCompletion, Formats, LanguageService, ProvidesContext},
+        stages::{
+            Completer, EditorCompletion, Formats, LanguageService, ProvidesContext,
+            ProvidesProjectAssets,
+        },
     },
     syntax::{SyntaxRule, grammar::parser::Rule},
 };
 
+type ProjectAssetProviderHandler = for<'a> fn(&mut ProjectAssets, &LanguageServiceAssetContext<'a>);
 type ContextHandler = for<'a> fn(&LanguageContextInput<'a>) -> Vec<LanguageContext<'a>>;
-type CompletionHandler = for<'a> fn(&LanguageContext<'a>) -> Vec<EditorCompletion>;
+type CompletionHandler = for<'a> fn(&LanguageServiceContext<'a>) -> Vec<EditorCompletion>;
 type FormatHandler = for<'a> fn(&mut CstFormatter<'a>, usize);
+
+/// Runtime descriptor for a language atom that prepares project assets.
+///
+/// This is the erased registry form of [`ProvidesProjectAssets`]. Providers run
+/// once for the request before ranked contexts are consumed by feature
+/// descriptors.
+#[derive(Clone, Copy)]
+pub(crate) struct ProjectAssetProviderDescriptor {
+    provide: ProjectAssetProviderHandler,
+}
+
+impl ProjectAssetProviderDescriptor {
+    const fn new(provide: ProjectAssetProviderHandler) -> Self {
+        Self { provide }
+    }
+
+    /// Inserts any project assets this atom contributes for the language-service pass.
+    pub(crate) fn provide(
+        self,
+        assets: &mut ProjectAssets,
+        context: &LanguageServiceAssetContext<'_>,
+    ) {
+        (self.provide)(assets, context);
+    }
+}
 
 /// Runtime descriptor for a language atom that can refine cursor contexts.
 ///
@@ -51,7 +84,7 @@ impl CompleterDescriptor {
     }
 
     /// Runs this atom's completion provider for the given request.
-    pub fn completions(self, context: &LanguageContext<'_>) -> Vec<EditorCompletion> {
+    pub fn completions(self, context: &LanguageServiceContext<'_>) -> Vec<EditorCompletion> {
         (self.completions)(context)
     }
 }
@@ -115,6 +148,14 @@ impl LanguageAtoms {
         generated::COMPLETERS
     }
 
+    /// Returns all project asset providers registered for the language service.
+    ///
+    /// The completion dispatcher prepares request-level assets once, then
+    /// shares them across all ranked contexts consumed for that request.
+    pub(crate) fn project_asset_providers() -> &'static [ProjectAssetProviderDescriptor] {
+        generated::PROJECT_ASSET_PROVIDERS
+    }
+
     /// Returns all atom context providers registered for the language service.
     ///
     /// Context providers refine raw cursor evidence before any feature-specific
@@ -134,12 +175,31 @@ impl LanguageAtoms {
     }
 }
 
-fn complete<A>(context: &LanguageContext<'_>) -> Vec<EditorCompletion>
+fn provide_project_assets<'a, A>(
+    assets: &mut ProjectAssets,
+    context: &'a LanguageServiceAssetContext<'a>,
+) where
+    A: LanguageAtom,
+    LanguageService: ProvidesProjectAssets<A>,
+{
+    let Some(params) = <LanguageService as ProvidesProjectAssets<A>>::Params::extract(context)
+    else {
+        return;
+    };
+
+    <LanguageService as ProvidesProjectAssets<A>>::provide(assets, params);
+}
+
+fn complete<'a, A>(context: &'a LanguageServiceContext<'a>) -> Vec<EditorCompletion>
 where
     A: LanguageAtom,
     LanguageService: Completer<A>,
 {
-    <LanguageService as Completer<A>>::completions(context)
+    let Some(params) = <LanguageService as Completer<A>>::Params::extract(context) else {
+        return Vec::new();
+    };
+
+    <LanguageService as Completer<A>>::completions(params)
 }
 
 fn contexts<'a, A>(input: &LanguageContextInput<'a>) -> Vec<LanguageContext<'a>>
@@ -174,6 +234,12 @@ macro_rules! language_grammar {
     ) => {
         mod generated {
             use super::*;
+
+            pub(super) const PROJECT_ASSET_PROVIDERS: &[ProjectAssetProviderDescriptor] = &[
+                $(
+                    ProjectAssetProviderDescriptor::new(provide_project_assets::<$atom>),
+                )*
+            ];
 
             pub(super) const CONTEXT_PROVIDERS: &[ContextProviderDescriptor] = &[
                 $(

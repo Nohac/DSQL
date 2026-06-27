@@ -1,3 +1,4 @@
+pub mod asset;
 pub mod catalog;
 pub mod debug;
 pub mod definition;
@@ -11,6 +12,7 @@ pub mod sql;
 pub mod syntax;
 mod variable_path;
 
+pub use asset::{AssetRegistry, AtomAssets, ProjectAssets};
 pub use catalog::{
     Catalog, CatalogBuildError, Column, ColumnId, ColumnKey, ColumnMetadata, DataType,
     DatabaseMetadata, FieldCheckResult, ForeignKey, ForeignKeyConstraintMetadata, ForeignKeyId,
@@ -35,10 +37,12 @@ pub use language::{
     atom::AtomDescriptor,
     context::{
         ContextConfidence, ContextOrigin, LanguageContext, LanguageContextInput,
-        LanguageContextProvider, LanguageServiceRequest, RuleContext,
+        LanguageContextProvider, LanguageServiceAssetContext, LanguageServiceContext,
+        LanguageServiceRequest, RuleContext,
     },
     editor::editor_completions,
     grammar::{CompleterDescriptor, LanguageAtoms, RuleClassification},
+    params::AtomParam,
     stages::{EditorCompletion, EditorCompletionKind},
 };
 pub use lint::{
@@ -73,6 +77,5 @@ pub use syntax::{
     SortDirectionExpr, SourceDocument, SourceFile, SourceRegion, SourceSnapshot, SyntaxNode,
     SyntaxRule, SyntaxToken, SyntaxTree, SystemDirectiveDefinition, SystemDirectiveKind, TextRange,
     Token, ValueVariable, VariableScope, expected_tokens_at, parse_source,
-    system_directive_definitions,
 };
 pub use variable_path::{InputPathSegment, is_input_path, is_params_path};
