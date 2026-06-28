@@ -93,10 +93,10 @@ impl BuildsAst<DocumentAtom> for AstBuilder<'_> {
             .into_iter()
             .filter_map(|definition| {
                 self.build_node(definition).and_then(|built| match built {
-                    crate::language::grammar::AstBuildOutput::QueryDef(query) => {
+                    crate::language::grammar::AstNode::QueryDef(query) => {
                         Some(Definition::Query(query))
                     }
-                    crate::language::grammar::AstBuildOutput::FragmentDef(fragment) => {
+                    crate::language::grammar::AstNode::FragmentDef(fragment) => {
                         Some(Definition::Fragment(fragment))
                     }
                     _ => None,
@@ -131,10 +131,10 @@ impl Lowers<DocumentAtom> for Lowerer {
         for definition in &document.definitions {
             match definition {
                 Definition::Query(query) => {
-                    context.lower(LowerTarget::QueryDef(query));
+                    context.lower_ast_node(query.into());
                 }
                 Definition::Fragment(fragment) => {
-                    context.lower(LowerTarget::FragmentDef(fragment));
+                    context.lower_ast_node(fragment.into());
                 }
             }
         }

@@ -6,7 +6,7 @@ use super::{Directive, Document, SourceFile, SourceSnapshot, TextRange};
 use crate::diagnostics::{
     CompilerDiagnostic, CompilerDiagnosticSource, extend_compiler_diagnostics,
 };
-use crate::language::grammar::{AstBuildOutput, LanguageAtoms};
+use crate::language::grammar::{AstNode, LanguageAtoms};
 use facet::Facet;
 
 #[derive(Clone, Debug)]
@@ -31,7 +31,6 @@ pub struct SyntaxTree {
 
 #[derive(Clone, Debug, Facet)]
 pub struct SyntaxNode {
-    pub kind: AstNode,
     pub cst_kind: CstKind,
     pub range: TextRange,
     pub children: Vec<usize>,
@@ -133,18 +132,6 @@ pub enum SyntaxToken {
     Comment,
     Error,
     Eof,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
-#[repr(u8)]
-pub enum AstNode {
-    Document,
-    Query,
-    Fragment,
-    Selection,
-    Argument,
-    Expression,
-    Error,
 }
 
 pub fn parse_source(source: SourceSnapshot) -> ParseResult {
@@ -250,19 +237,7 @@ fn push_node(cst: &Cst<'_>, node_ref: NodeRef, tree: &mut SyntaxTree) -> usize {
         Node::Rule(rule, _) => CstKind::Rule(SyntaxRule::from(rule)),
         Node::Token(token, _) => CstKind::Token(map_token(token)),
     };
-    let kind = match cst_kind {
-        CstKind::Rule(SyntaxRule::Document) => AstNode::Document,
-        CstKind::Rule(SyntaxRule::QueryDef) => AstNode::Query,
-        CstKind::Rule(SyntaxRule::FragmentDef) => AstNode::Fragment,
-        CstKind::Rule(SyntaxRule::Selection | SyntaxRule::FieldSelection) => AstNode::Selection,
-        CstKind::Rule(SyntaxRule::Expr | SyntaxRule::BinaryExpr | SyntaxRule::Literal) => {
-            AstNode::Expression
-        }
-        CstKind::Rule(SyntaxRule::Error) => AstNode::Error,
-        CstKind::Rule(_) | CstKind::Token(_) => AstNode::Expression,
-    };
     tree.nodes.push(SyntaxNode {
-        kind,
         cst_kind,
         range: range(cst.span(node_ref)),
         children: Vec::new(),
@@ -275,88 +250,62 @@ fn push_node(cst: &Cst<'_>, node_ref: NodeRef, tree: &mut SyntaxTree) -> usize {
     idx
 }
 
-impl From<Rule> for SyntaxRule {
-    fn from(rule: Rule) -> Self {
-        match rule {
-            Rule::BinaryExpr => SyntaxRule::BinaryExpr,
-            Rule::BinaryOperator => SyntaxRule::BinaryOperator,
-            Rule::Clause => SyntaxRule::Clause,
-            Rule::ClauseList => SyntaxRule::ClauseList,
-            Rule::ComparisonOperator => SyntaxRule::ComparisonOperator,
-            Rule::Definition => SyntaxRule::Definition,
-            Rule::Directive => SyntaxRule::Directive,
-            Rule::DirectiveArgument => SyntaxRule::DirectiveArgument,
-            Rule::DirectiveMember => SyntaxRule::DirectiveMember,
-            Rule::DirectiveName => SyntaxRule::DirectiveName,
-            Rule::DirectiveNamespace => SyntaxRule::DirectiveNamespace,
-            Rule::Document => SyntaxRule::Document,
-            Rule::Error => SyntaxRule::Error,
-            Rule::Expr => SyntaxRule::Expr,
-            Rule::FieldSelection => SyntaxRule::FieldSelection,
-            Rule::FieldSelectionTail => SyntaxRule::FieldSelectionTail,
-            Rule::FieldSuffix => SyntaxRule::FieldSuffix,
-            Rule::FragmentDef => SyntaxRule::FragmentDef,
-            Rule::FragmentSpread => SyntaxRule::FragmentSpread,
-            Rule::Literal => SyntaxRule::Literal,
-            Rule::LimitClause => SyntaxRule::LimitClause,
-            Rule::OffsetClause => SyntaxRule::OffsetClause,
-            Rule::OperatorVariable => SyntaxRule::OperatorVariable,
-            Rule::OrderByClause => SyntaxRule::OrderByClause,
-            Rule::OrderItem => SyntaxRule::OrderItem,
-            Rule::QueryDef => SyntaxRule::QueryDef,
-            Rule::QualifiedName => SyntaxRule::QualifiedName,
-            Rule::RelationRef => SyntaxRule::RelationRef,
-            Rule::ScopedPath => SyntaxRule::ScopedPath,
-            Rule::ScopedPathSegment => SyntaxRule::ScopedPathSegment,
-            Rule::Selection => SyntaxRule::Selection,
-            Rule::SelectionSet => SyntaxRule::SelectionSet,
-            Rule::SortDirection => SyntaxRule::SortDirection,
-            Rule::ValueVariable => SyntaxRule::ValueVariable,
-            Rule::WhereClause => SyntaxRule::WhereClause,
+macro_rules! mirrored_rule_conversions {
+    ($($variant:ident),* $(,)?) => {
+        impl From<Rule> for SyntaxRule {
+            fn from(rule: Rule) -> Self {
+                match rule {
+                    $(Rule::$variant => SyntaxRule::$variant,)*
+                }
+            }
         }
-    }
+
+        impl From<SyntaxRule> for Rule {
+            fn from(rule: SyntaxRule) -> Self {
+                match rule {
+                    $(SyntaxRule::$variant => Rule::$variant,)*
+                }
+            }
+        }
+    };
 }
 
-impl From<SyntaxRule> for Rule {
-    fn from(rule: SyntaxRule) -> Self {
-        match rule {
-            SyntaxRule::BinaryExpr => Rule::BinaryExpr,
-            SyntaxRule::BinaryOperator => Rule::BinaryOperator,
-            SyntaxRule::Clause => Rule::Clause,
-            SyntaxRule::ClauseList => Rule::ClauseList,
-            SyntaxRule::ComparisonOperator => Rule::ComparisonOperator,
-            SyntaxRule::Definition => Rule::Definition,
-            SyntaxRule::Directive => Rule::Directive,
-            SyntaxRule::DirectiveArgument => Rule::DirectiveArgument,
-            SyntaxRule::DirectiveMember => Rule::DirectiveMember,
-            SyntaxRule::DirectiveName => Rule::DirectiveName,
-            SyntaxRule::DirectiveNamespace => Rule::DirectiveNamespace,
-            SyntaxRule::Document => Rule::Document,
-            SyntaxRule::Error => Rule::Error,
-            SyntaxRule::Expr => Rule::Expr,
-            SyntaxRule::FieldSelection => Rule::FieldSelection,
-            SyntaxRule::FieldSelectionTail => Rule::FieldSelectionTail,
-            SyntaxRule::FieldSuffix => Rule::FieldSuffix,
-            SyntaxRule::FragmentDef => Rule::FragmentDef,
-            SyntaxRule::FragmentSpread => Rule::FragmentSpread,
-            SyntaxRule::Literal => Rule::Literal,
-            SyntaxRule::LimitClause => Rule::LimitClause,
-            SyntaxRule::OffsetClause => Rule::OffsetClause,
-            SyntaxRule::OperatorVariable => Rule::OperatorVariable,
-            SyntaxRule::OrderByClause => Rule::OrderByClause,
-            SyntaxRule::OrderItem => Rule::OrderItem,
-            SyntaxRule::QueryDef => Rule::QueryDef,
-            SyntaxRule::QualifiedName => Rule::QualifiedName,
-            SyntaxRule::RelationRef => Rule::RelationRef,
-            SyntaxRule::ScopedPath => Rule::ScopedPath,
-            SyntaxRule::ScopedPathSegment => Rule::ScopedPathSegment,
-            SyntaxRule::Selection => Rule::Selection,
-            SyntaxRule::SelectionSet => Rule::SelectionSet,
-            SyntaxRule::SortDirection => Rule::SortDirection,
-            SyntaxRule::ValueVariable => Rule::ValueVariable,
-            SyntaxRule::WhereClause => Rule::WhereClause,
-        }
-    }
+mirrored_rule_conversions! {
+    BinaryExpr,
+    BinaryOperator,
+    Clause,
+    ClauseList,
+    ComparisonOperator,
+    Definition,
+    Directive,
+    DirectiveArgument,
+    DirectiveMember,
+    DirectiveName,
+    DirectiveNamespace,
+    Document,
+    Error,
+    Expr,
+    FieldSelection,
+    FieldSelectionTail,
+    FieldSuffix,
+    FragmentDef,
+    FragmentSpread,
+    Literal,
+    LimitClause,
+    OffsetClause,
+    OperatorVariable,
+    OrderByClause,
+    OrderItem,
+    QueryDef,
+    QualifiedName,
+    RelationRef,
+    ScopedPath,
+    ScopedPathSegment,
+    Selection,
+    SelectionSet,
+    SortDirection,
+    ValueVariable,
+    WhereClause,
 }
 
 fn map_token(token: Token) -> SyntaxToken {
@@ -421,7 +370,7 @@ impl<'a> AstBuilder<'a> {
 
     fn document(&self) -> Document {
         match self.build_node(NodeRef::ROOT) {
-            Some(AstBuildOutput::Document(document)) => document,
+            Some(AstNode::Document(document)) => document,
             _ => Document {
                 definitions: Vec::new(),
             },
@@ -434,15 +383,13 @@ impl<'a> AstBuilder<'a> {
             .filter_map(|selection| {
                 if let Some(field) = self.direct_rule(selection, Rule::FieldSelection) {
                     return match self.build_node(field) {
-                        Some(AstBuildOutput::FieldSelection(field)) => {
-                            Some(Selection::Field(field))
-                        }
+                        Some(AstNode::FieldSelection(field)) => Some(Selection::Field(field)),
                         _ => None,
                     };
                 }
                 if let Some(spread) = self.direct_rule(selection, Rule::FragmentSpread) {
                     return match self.build_node(spread) {
-                        Some(AstBuildOutput::FragmentSpread(spread)) => {
+                        Some(AstNode::FragmentSpread(spread)) => {
                             Some(Selection::FragmentSpread(spread))
                         }
                         _ => None,
@@ -478,7 +425,7 @@ impl<'a> AstBuilder<'a> {
         self.direct_rules(node, Rule::Directive)
             .into_iter()
             .filter_map(|directive| match self.build_node(directive) {
-                Some(AstBuildOutput::Directive(directive)) => Some(directive),
+                Some(AstNode::Directive(directive)) => Some(directive),
                 _ => None,
             })
             .collect()
@@ -927,7 +874,7 @@ impl<'a> AstBuilder<'a> {
     }
 
     /// Builds the atom-owned AST node for a CST node by grammar-rule lookup.
-    pub(crate) fn build_node(&self, node: NodeRef) -> Option<AstBuildOutput> {
+    pub(crate) fn build_node(&self, node: NodeRef) -> Option<AstNode> {
         let rule = rule(self.cst, node)?;
         LanguageAtoms::ast_builder_for_rule(rule).map(|builder| builder.build(self, node))
     }
@@ -937,7 +884,7 @@ impl<'a> AstBuilder<'a> {
         dead_code,
         reason = "available for atoms as more syntax constructs migrate into registry dispatch"
     )]
-    pub(crate) fn build_child(&self, node: NodeRef, target: Rule) -> Option<AstBuildOutput> {
+    pub(crate) fn build_child(&self, node: NodeRef, target: Rule) -> Option<AstNode> {
         self.direct_rule(node, target)
             .and_then(|child| self.build_node(child))
     }
@@ -947,7 +894,7 @@ impl<'a> AstBuilder<'a> {
         dead_code,
         reason = "available for atoms as more syntax constructs migrate into registry dispatch"
     )]
-    pub(crate) fn build_children(&self, node: NodeRef, target: Rule) -> Vec<AstBuildOutput> {
+    pub(crate) fn build_children(&self, node: NodeRef, target: Rule) -> Vec<AstNode> {
         self.direct_rules(node, target)
             .into_iter()
             .filter_map(|child| self.build_node(child))

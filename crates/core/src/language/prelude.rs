@@ -9,9 +9,9 @@ pub(crate) use crate::{
         },
         stages::{
             BuildsAst, Checker, Checks, Completer, EditorCompletion, EditorCompletionKind, Formats,
-            GeneratesMetadata, InfersVariables, LanguageService, LowerContext, LowerTarget,
-            Lowerer, Lowers, MetadataGenerator, Planner, Plans, ProvidesContext,
-            ProvidesProjectAssets, VariableInference,
+            GeneratesMetadata, InfersVariables, LanguageService, LowerContext, Lowerer, Lowers,
+            MetadataGenerator, Planner, Plans, ProvidesContext, ProvidesProjectAssets,
+            VariableInference,
         },
     },
     semantic::{CheckError, CheckErrorKind, NameId},

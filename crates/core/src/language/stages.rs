@@ -1,20 +1,13 @@
 use crate::{
     asset::{AtomAssets, ProjectAssets},
     language::atom::LanguageAtom,
-    language::atoms::{
-        directive::{Directive, DirectiveLocation, DirectiveRegistry},
-        document::Document,
-        field_selection::FieldSelection,
-        fragment_def::FragmentDef,
-        fragment_spread::FragmentSpread,
-        query_def::QueryDef,
-    },
+    language::atoms::directive::{Directive, DirectiveLocation, DirectiveRegistry},
     language::context::{
         LanguageContext, LanguageContextInput, LanguageServiceAssetContext, LanguageServiceContext,
     },
     language::params::AtomParam,
     semantic::{CheckError, Interner, LowerDiagnostic, NameIndex},
-    syntax::grammar::parser::NodeRef,
+    syntax::grammar::parser::{NodeRef, Rule},
 };
 
 /// Builds the typed AST node owned by one language atom.
@@ -67,41 +60,6 @@ pub trait NoSqlEffect<A: LanguageAtom> {
 
 pub trait GeneratesMetadata<A: LanguageAtom> {}
 
-/// Stable typed key used by semantic stages to request atom-owned behavior.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TypedConstructKey {
-    Document,
-    QueryDef,
-    FragmentDef,
-    Directive,
-    FieldSelection,
-    FragmentSpread,
-}
-
-/// Typed AST target passed to erased lower descriptors.
-pub(crate) enum LowerTarget<'a> {
-    Document(&'a Document),
-    QueryDef(&'a QueryDef),
-    FragmentDef(&'a FragmentDef),
-    Directive(&'a Directive),
-    FieldSelection(&'a FieldSelection),
-    FragmentSpread(&'a FragmentSpread),
-}
-
-impl LowerTarget<'_> {
-    /// Returns the atom construct key for descriptor lookup.
-    pub(crate) fn key(&self) -> TypedConstructKey {
-        match self {
-            Self::Document(_) => TypedConstructKey::Document,
-            Self::QueryDef(_) => TypedConstructKey::QueryDef,
-            Self::FragmentDef(_) => TypedConstructKey::FragmentDef,
-            Self::Directive(_) => TypedConstructKey::Directive,
-            Self::FieldSelection(_) => TypedConstructKey::FieldSelection,
-            Self::FragmentSpread(_) => TypedConstructKey::FragmentSpread,
-        }
-    }
-}
-
 /// Mutable context owned by one lowering pass.
 pub(crate) struct LowerContext<'a> {
     pub(crate) interner: &'a mut Interner,
@@ -133,10 +91,10 @@ pub(crate) enum CheckTarget<'a> {
 }
 
 impl CheckTarget<'_> {
-    /// Returns the atom construct key for descriptor lookup.
-    pub(crate) fn key(&self) -> TypedConstructKey {
+    /// Returns the owned grammar rule used to select this target's atom checker.
+    pub(crate) fn rule(&self) -> Rule {
         match self {
-            Self::Directive { .. } => TypedConstructKey::Directive,
+            Self::Directive { .. } => Rule::Directive,
         }
     }
 }

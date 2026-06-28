@@ -20,20 +20,21 @@ use crate::{
         atom::LanguageAtom,
         stages::{
             BuildsAst, CheckContext, CheckTarget, Checker, Checks, Completer, EditorCompletion,
-            Formats, LanguageService, LowerContext, LowerTarget, Lowerer, Lowers, ProvidesContext,
-            ProvidesProjectAssets, TypedConstructKey,
+            Formats, LanguageService, LowerContext, Lowerer, Lowers, ProvidesContext,
+            ProvidesProjectAssets,
         },
     },
     syntax::grammar::parser::Rule,
     syntax::{SyntaxRule, grammar::parser::NodeRef, parse::AstBuilder},
 };
+use derive_more::{From, TryInto};
 
 type ProjectAssetProviderHandler = for<'a> fn(&mut ProjectAssets, &LanguageServiceAssetContext<'a>);
 type ContextHandler = for<'a> fn(&LanguageContextInput<'a>) -> Vec<LanguageContext<'a>>;
 type CompletionHandler = for<'a> fn(&LanguageServiceContext<'a>) -> Vec<EditorCompletion>;
 type FormatHandler = for<'a> fn(&mut CstFormatter<'a>, usize);
-type AstBuildHandler = for<'a> fn(&AstBuilder<'a>, NodeRef) -> AstBuildOutput;
-type LowerHandler = for<'a, 'ctx> fn(LowerTarget<'a>, &mut LowerContext<'ctx>);
+type AstBuildHandler = for<'a> fn(&AstBuilder<'a>, NodeRef) -> AstNode;
+type LowerHandler = for<'a, 'ctx> fn(AstNodeRef<'a>, &mut LowerContext<'ctx>);
 type CheckHandler = for<'a, 'ctx, 'errors> fn(CheckTarget<'a>, &mut CheckContext<'ctx, 'errors>);
 
 /// Typed AST values produced by erased atom AST-build descriptors.
@@ -41,7 +42,8 @@ type CheckHandler = for<'a, 'ctx, 'errors> fn(CheckTarget<'a>, &mut CheckContext
 /// Parser orchestration uses this enum only at the registry boundary. Atom
 /// implementations keep their strongly typed [`BuildsAst`] impls, while parent
 /// atoms unwrap the child construct they requested by grammar rule.
-pub(crate) enum AstBuildOutput {
+#[derive(From)]
+pub(crate) enum AstNode {
     Document(Document),
     QueryDef(QueryDef),
     FragmentDef(FragmentDef),
@@ -50,39 +52,32 @@ pub(crate) enum AstBuildOutput {
     FragmentSpread(FragmentSpread),
 }
 
-impl From<Document> for AstBuildOutput {
-    fn from(document: Document) -> Self {
-        Self::Document(document)
-    }
+/// Borrowed typed AST node passed to semantic atom-stage descriptors.
+///
+/// This is the lowering counterpart to [`AstNode`]. It carries the typed AST
+/// payload while the registry derives atom ownership from the node's grammar
+/// rule.
+#[derive(From, TryInto)]
+pub(crate) enum AstNodeRef<'a> {
+    Document(&'a Document),
+    QueryDef(&'a QueryDef),
+    FragmentDef(&'a FragmentDef),
+    Directive(&'a Directive),
+    FieldSelection(&'a FieldSelection),
+    FragmentSpread(&'a FragmentSpread),
 }
 
-impl From<QueryDef> for AstBuildOutput {
-    fn from(query: QueryDef) -> Self {
-        Self::QueryDef(query)
-    }
-}
-
-impl From<FragmentDef> for AstBuildOutput {
-    fn from(fragment: FragmentDef) -> Self {
-        Self::FragmentDef(fragment)
-    }
-}
-
-impl From<Directive> for AstBuildOutput {
-    fn from(directive: Directive) -> Self {
-        Self::Directive(directive)
-    }
-}
-
-impl From<FieldSelection> for AstBuildOutput {
-    fn from(selection: FieldSelection) -> Self {
-        Self::FieldSelection(selection)
-    }
-}
-
-impl From<FragmentSpread> for AstBuildOutput {
-    fn from(spread: FragmentSpread) -> Self {
-        Self::FragmentSpread(spread)
+impl AstNodeRef<'_> {
+    /// Returns the parser rule for this typed AST node.
+    pub(crate) fn rule(&self) -> Rule {
+        match self {
+            Self::Document(_) => <DocumentAtom as LanguageAtom>::GRAMMAR_RULE,
+            Self::QueryDef(_) => <QueryDefAtom as LanguageAtom>::GRAMMAR_RULE,
+            Self::FragmentDef(_) => <FragmentDefAtom as LanguageAtom>::GRAMMAR_RULE,
+            Self::Directive(_) => <DirectiveAtom as LanguageAtom>::GRAMMAR_RULE,
+            Self::FieldSelection(_) => <FieldSelectionAtom as LanguageAtom>::GRAMMAR_RULE,
+            Self::FragmentSpread(_) => <FragmentSpreadAtom as LanguageAtom>::GRAMMAR_RULE,
+        }
     }
 }
 
@@ -98,12 +93,12 @@ impl AstBuilderDescriptor {
     }
 
     /// Builds the atom-owned AST node for the given CST node.
-    pub(crate) fn build(self, builder: &AstBuilder<'_>, node: NodeRef) -> AstBuildOutput {
+    pub(crate) fn build(self, builder: &AstBuilder<'_>, node: NodeRef) -> AstNode {
         (self.build)(builder, node)
     }
 }
 
-/// Runtime descriptor for a language atom that can lower a typed AST target.
+/// Runtime descriptor for a language atom selected by grammar rule to lower a typed AST target.
 #[derive(Clone, Copy)]
 pub(crate) struct LowerDescriptor {
     lower: LowerHandler,
@@ -114,13 +109,13 @@ impl LowerDescriptor {
         Self { lower }
     }
 
-    /// Runs this atom's lowerer for the given typed target.
-    pub(crate) fn lower(self, target: LowerTarget<'_>, context: &mut LowerContext<'_>) {
-        (self.lower)(target, context);
+    /// Runs this atom's lowerer for the given typed AST node.
+    pub(crate) fn lower(self, node: AstNodeRef<'_>, context: &mut LowerContext<'_>) {
+        (self.lower)(node, context);
     }
 }
 
-/// Runtime descriptor for a language atom that can check a typed semantic target.
+/// Runtime descriptor for a language atom selected by grammar rule to check a typed target.
 #[derive(Clone, Copy)]
 pub(crate) struct CheckDescriptor {
     check: CheckHandler,
@@ -242,8 +237,8 @@ pub enum RuleClassification {
 ///
 /// Stage consumers should use this registry as their dispatch boundary. A
 /// formatter, checker, language-service feature, or future stage should derive
-/// the relevant rule/typed key from its traversal and ask `LanguageAtoms` for
-/// the matching provider instead of explicitly invoking one atom by name.
+/// the relevant grammar rule from its traversal and ask `LanguageAtoms` for the
+/// matching provider instead of explicitly invoking one atom by name.
 pub struct LanguageAtoms;
 
 impl LanguageAtoms {
@@ -295,30 +290,35 @@ impl LanguageAtoms {
         generated::formatter_for_rule(rule.into())
     }
 
-    /// Returns the atom lowerer registered for a typed construct key, when any.
-    pub(crate) fn lowerer_for_construct(key: TypedConstructKey) -> Option<LowerDescriptor> {
-        generated::lowerer_for_construct(key)
+    /// Returns the atom lowerer registered for a grammar rule, when any.
+    pub(crate) fn lowerer_for_rule(rule: Rule) -> Option<LowerDescriptor> {
+        generated::lowerer_for_rule(rule)
     }
 
-    /// Returns the atom checker registered for a typed construct key, when any.
-    pub(crate) fn checker_for_construct(key: TypedConstructKey) -> Option<CheckDescriptor> {
-        generated::checker_for_construct(key)
+    /// Lowers a typed AST node through the atom that owns its grammar rule.
+    pub(crate) fn lower_ast_node(node: AstNodeRef<'_>, context: &mut LowerContext<'_>) {
+        if let Some(lowerer) = Self::lowerer_for_rule(node.rule()) {
+            lowerer.lower(node, context);
+        }
+    }
+
+    /// Returns the atom checker registered for a grammar rule, when any.
+    pub(crate) fn checker_for_rule(rule: Rule) -> Option<CheckDescriptor> {
+        generated::checker_for_rule(rule)
     }
 }
 
 impl LowerContext<'_> {
-    /// Lowers a typed target by looking up its atom descriptor.
-    pub(crate) fn lower(&mut self, target: LowerTarget<'_>) {
-        if let Some(lowerer) = LanguageAtoms::lowerer_for_construct(target.key()) {
-            lowerer.lower(target, self);
-        }
+    /// Lowers a typed AST node by looking up its atom descriptor.
+    pub(crate) fn lower_ast_node(&mut self, node: AstNodeRef<'_>) {
+        LanguageAtoms::lower_ast_node(node, self);
     }
 }
 
 impl CheckContext<'_, '_> {
     /// Checks a typed target by looking up its atom descriptor.
     pub(crate) fn check(&mut self, target: CheckTarget<'_>) {
-        if let Some(checker) = LanguageAtoms::checker_for_construct(target.key()) {
+        if let Some(checker) = LanguageAtoms::checker_for_rule(target.rule()) {
             checker.check(target, self);
         }
     }
@@ -367,80 +367,22 @@ where
     Formats::<A>::format(formatter, node);
 }
 
-fn build_ast<A>(builder: &AstBuilder<'_>, node: NodeRef) -> AstBuildOutput
+fn build_ast<A>(builder: &AstBuilder<'_>, node: NodeRef) -> AstNode
 where
     A: LanguageAtom,
     for<'a> AstBuilder<'a>: BuildsAst<A>,
-    A::Ast: Into<AstBuildOutput>,
+    A::Ast: Into<AstNode>,
 {
     BuildsAst::<A>::build(builder, node).into()
 }
 
-trait CastLowerTarget<'a, A: LanguageAtom> {
-    fn lower_ast(target: LowerTarget<'a>) -> Option<&'a A::Ast>;
-}
-
-impl<'a> CastLowerTarget<'a, DocumentAtom> for LowerTarget<'a> {
-    fn lower_ast(target: LowerTarget<'a>) -> Option<&'a Document> {
-        match target {
-            LowerTarget::Document(document) => Some(document),
-            _ => None,
-        }
-    }
-}
-
-impl<'a> CastLowerTarget<'a, QueryDefAtom> for LowerTarget<'a> {
-    fn lower_ast(target: LowerTarget<'a>) -> Option<&'a QueryDef> {
-        match target {
-            LowerTarget::QueryDef(query) => Some(query),
-            _ => None,
-        }
-    }
-}
-
-impl<'a> CastLowerTarget<'a, FragmentDefAtom> for LowerTarget<'a> {
-    fn lower_ast(target: LowerTarget<'a>) -> Option<&'a FragmentDef> {
-        match target {
-            LowerTarget::FragmentDef(fragment) => Some(fragment),
-            _ => None,
-        }
-    }
-}
-
-impl<'a> CastLowerTarget<'a, DirectiveAtom> for LowerTarget<'a> {
-    fn lower_ast(target: LowerTarget<'a>) -> Option<&'a Directive> {
-        match target {
-            LowerTarget::Directive(directive) => Some(directive),
-            _ => None,
-        }
-    }
-}
-
-impl<'a> CastLowerTarget<'a, FieldSelectionAtom> for LowerTarget<'a> {
-    fn lower_ast(target: LowerTarget<'a>) -> Option<&'a FieldSelection> {
-        match target {
-            LowerTarget::FieldSelection(selection) => Some(selection),
-            _ => None,
-        }
-    }
-}
-
-impl<'a> CastLowerTarget<'a, FragmentSpreadAtom> for LowerTarget<'a> {
-    fn lower_ast(target: LowerTarget<'a>) -> Option<&'a FragmentSpread> {
-        match target {
-            LowerTarget::FragmentSpread(spread) => Some(spread),
-            _ => None,
-        }
-    }
-}
-
-fn lower<A>(target: LowerTarget<'_>, context: &mut LowerContext<'_>)
+fn lower<A>(node: AstNodeRef<'_>, context: &mut LowerContext<'_>)
 where
     A: LanguageAtom,
     Lowerer: Lowers<A>,
-    for<'a> LowerTarget<'a>: CastLowerTarget<'a, A>,
+    for<'a> AstNodeRef<'a>: TryInto<&'a A::Ast>,
 {
-    let Some(ast) = <LowerTarget<'_> as CastLowerTarget<'_, A>>::lower_ast(target) else {
+    let Ok(ast) = node.try_into() else {
         return;
     };
     let _ = <Lowerer as Lowers<A>>::lower(ast, context);
@@ -466,8 +408,6 @@ macro_rules! language_grammar {
         atoms {
             $(
                 $atom:ident {
-                    typed: $typed:path,
-                    owns: $owned:path,
                     delegates: [$($delegated:path),* $(,)?] $(,)?
                 }
             ),* $(,)?
@@ -500,7 +440,9 @@ macro_rules! language_grammar {
             pub(super) fn formatter_for_rule(rule: Rule) -> Option<FormatterDescriptor> {
                 match rule {
                     $(
-                        $owned => Some(FormatterDescriptor::new(format::<$atom>)),
+                        <$atom as LanguageAtom>::GRAMMAR_RULE => {
+                            Some(FormatterDescriptor::new(format::<$atom>))
+                        }
                     )*
                     _ => None,
                 }
@@ -509,27 +451,28 @@ macro_rules! language_grammar {
             pub(super) fn ast_builder_for_rule(rule: Rule) -> Option<AstBuilderDescriptor> {
                 match rule {
                     $(
-                        $owned => Some(AstBuilderDescriptor::new(build_ast::<$atom>)),
+                        <$atom as LanguageAtom>::GRAMMAR_RULE => {
+                            Some(AstBuilderDescriptor::new(build_ast::<$atom>))
+                        }
                     )*
                     _ => None,
                 }
             }
 
-            pub(super) fn lowerer_for_construct(
-                key: TypedConstructKey,
-            ) -> Option<LowerDescriptor> {
-                match key {
+            pub(super) fn lowerer_for_rule(rule: Rule) -> Option<LowerDescriptor> {
+                match rule {
                     $(
-                        $typed => Some(LowerDescriptor::new(lower::<$atom>)),
+                        <$atom as LanguageAtom>::GRAMMAR_RULE => {
+                            Some(LowerDescriptor::new(lower::<$atom>))
+                        }
                     )*
+                    _ => None,
                 }
             }
 
-            pub(super) fn checker_for_construct(
-                key: TypedConstructKey,
-            ) -> Option<CheckDescriptor> {
-                match key {
-                    TypedConstructKey::Directive => Some(CheckDescriptor::new(check_directive)),
+            pub(super) fn checker_for_rule(rule: Rule) -> Option<CheckDescriptor> {
+                match rule {
+                    Rule::Directive => Some(CheckDescriptor::new(check_directive)),
                     _ => None,
                 }
             }
@@ -537,7 +480,9 @@ macro_rules! language_grammar {
             pub(super) const fn classify(rule: Rule) -> RuleClassification {
                 match rule {
                     $(
-                        $owned => RuleClassification::Owned($atom::DESCRIPTOR),
+                        <$atom as LanguageAtom>::GRAMMAR_RULE => {
+                            RuleClassification::Owned($atom::DESCRIPTOR)
+                        }
                         $(
                             $delegated => RuleClassification::Delegated($atom::DESCRIPTOR),
                         )*
@@ -558,25 +503,17 @@ macro_rules! language_grammar {
 language_grammar! {
     atoms {
         DocumentAtom {
-            typed: TypedConstructKey::Document,
-            owns: Rule::Document,
             delegates: [
                 Rule::Definition,
             ],
         },
         QueryDefAtom {
-            typed: TypedConstructKey::QueryDef,
-            owns: Rule::QueryDef,
             delegates: [],
         },
         FragmentDefAtom {
-            typed: TypedConstructKey::FragmentDef,
-            owns: Rule::FragmentDef,
             delegates: [],
         },
         DirectiveAtom {
-            typed: TypedConstructKey::Directive,
-            owns: Rule::Directive,
             delegates: [
                 Rule::DirectiveArgument,
                 Rule::DirectiveMember,
@@ -585,16 +522,12 @@ language_grammar! {
             ],
         },
         FieldSelectionAtom {
-            typed: TypedConstructKey::FieldSelection,
-            owns: Rule::FieldSelection,
             delegates: [
                 Rule::FieldSelectionTail,
                 Rule::FieldSuffix,
             ],
         },
         FragmentSpreadAtom {
-            typed: TypedConstructKey::FragmentSpread,
-            owns: Rule::FragmentSpread,
             delegates: [],
         },
     }

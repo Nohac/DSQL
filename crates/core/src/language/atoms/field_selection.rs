@@ -136,7 +136,7 @@ impl Lowers<FieldSelectionAtom> for Lowerer {
             crate::semantic::lower_argument(argument, context);
         }
         for directive in &selection.directives {
-            context.lower(LowerTarget::Directive(directive));
+            context.lower_ast_node(directive.into());
         }
         crate::semantic::lower_selection_clauses(&selection.clauses, context);
         crate::semantic::lower_selection_list(&selection.selections, context);

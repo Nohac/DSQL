@@ -23,7 +23,7 @@ pub(crate) use diagnostics::source_span;
 pub use diagnostics::{Diagnostic, DiagnosticCode, DiagnosticSource, Severity};
 pub use grammar::lexer::Token;
 pub use parse::{
-    AstNode, CstKind, ParseResult, SyntaxNode, SyntaxRule, SyntaxToken, SyntaxTree,
-    expected_tokens_at, parse_source,
+    CstKind, ParseResult, SyntaxNode, SyntaxRule, SyntaxToken, SyntaxTree, expected_tokens_at,
+    parse_source,
 };
 pub use text::{SourceDocument, SourceRegion, SourceSnapshot, TextRange};

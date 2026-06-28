@@ -2,7 +2,7 @@ use crate::{
     diagnostics::{
         CompilerDiagnostic, CompilerDiagnosticSource, DsqlDiagnostic, extend_compiler_diagnostics,
     },
-    language::stages::{LowerContext, LowerTarget},
+    language::stages::LowerContext,
     syntax::{
         Argument, DiagnosticCode, DiagnosticSource, Expr, Literal, NameRef, Selection, Severity,
         SourceFile, TextRange, source_span,
@@ -114,7 +114,7 @@ pub fn lower_file(source_file: &SourceFile, interner: &mut Interner) -> LoweredF
     let mut names = NameIndex::default();
     let mut diagnostics = Vec::new();
     let mut context = LowerContext::new(interner, &mut names, &mut diagnostics);
-    context.lower(LowerTarget::Document(source_file.document()));
+    context.lower_ast_node(source_file.document().into());
     diagnostics.sort_by_key(|diag| (diag.range.start, diag.range.end));
     LoweredFile { names, diagnostics }
 }
@@ -174,8 +174,8 @@ fn insert_name(names: &mut Vec<(String, NameId)>, text: &str, id: NameId) -> boo
 pub(crate) fn lower_selection_list(selections: &[Selection], context: &mut LowerContext<'_>) {
     for selection in selections {
         match selection {
-            Selection::Field(field) => context.lower(LowerTarget::FieldSelection(field)),
-            Selection::FragmentSpread(spread) => context.lower(LowerTarget::FragmentSpread(spread)),
+            Selection::Field(field) => context.lower_ast_node(field.into()),
+            Selection::FragmentSpread(spread) => context.lower_ast_node(spread.into()),
         }
     }
 }

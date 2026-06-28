@@ -87,7 +87,7 @@ impl Lowers<QueryDefAtom> for Lowerer {
             context.diagnostics.push(diagnostic);
         }
         for directive in &query.directives {
-            context.lower(LowerTarget::Directive(directive));
+            context.lower_ast_node(directive.into());
         }
         crate::semantic::lower_selection_list(&query.selections, context);
         LoweredQueryDef

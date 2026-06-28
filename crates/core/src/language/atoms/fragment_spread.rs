@@ -67,7 +67,7 @@ impl Lowers<FragmentSpreadAtom> for Lowerer {
             spread.name.range,
         ));
         for directive in &spread.directives {
-            context.lower(LowerTarget::Directive(directive));
+            context.lower_ast_node(directive.into());
         }
         LoweredFragmentSpread
     }
