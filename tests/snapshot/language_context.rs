@@ -103,7 +103,5 @@ fn format_classification(classification: RuleClassification) -> String {
     match classification {
         RuleClassification::Owned(atom) => format!("owned:{}", atom.ast),
         RuleClassification::Delegated(atom) => format!("delegated:{}", atom.ast),
-        RuleClassification::Legacy => "legacy".to_string(),
-        RuleClassification::Internal => "internal".to_string(),
     }
 }

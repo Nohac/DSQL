@@ -8,12 +8,22 @@ use crate::{
     language::{
         atom::AtomDescriptor,
         atoms::{
+            clause::{
+                ClauseAtom, LimitClauseAtom, OffsetClauseAtom, OrderByClauseAtom, OrderItemAtom,
+                SortDirectionAtom, WhereClauseAtom,
+            },
             directive::{Directive, DirectiveAtom, DirectiveCheckContext},
             document::{Document, DocumentAtom},
+            expression::{
+                BinaryExpr, BinaryExprAtom, BinaryOperatorAtom, ComparisonOperatorAtom, ExprAtom,
+                LiteralAtom, OperatorVariableAtom, ValueVariableAtom,
+            },
             field_selection::{FieldSelection, FieldSelectionAtom},
             fragment_def::{FragmentDef, FragmentDefAtom},
             fragment_spread::{FragmentSpread, FragmentSpreadAtom},
+            path::{QualifiedNameAtom, RelationRefAtom, ScopedPathAtom, ScopedPathSegmentAtom},
             query_def::{QueryDef, QueryDefAtom},
+            selection::SelectionAtom,
         },
     },
     language::{
@@ -25,7 +35,12 @@ use crate::{
         },
     },
     syntax::grammar::parser::Rule,
-    syntax::{SyntaxRule, grammar::parser::NodeRef, parse::AstBuilder},
+    syntax::{
+        BinaryOp, BinaryOperator, Clause, Expr, LimitClause, Literal, OffsetClause,
+        OperatorVariable, OrderByClause, OrderByItem, QualifiedNameRef, RelationRef, ScopedPath,
+        ScopedPathSegment, Selection, SortDirectionExpr, SyntaxRule, ValueVariable, WhereClause,
+        grammar::parser::NodeRef, parse::AstBuilder,
+    },
 };
 use derive_more::{From, TryInto};
 
@@ -39,10 +54,13 @@ type CheckHandler = for<'a, 'ctx, 'errors> fn(CheckTarget<'a>, &mut CheckContext
 
 /// Typed AST values produced by erased atom AST-build descriptors.
 ///
-/// Parser orchestration uses this enum only at the registry boundary. Atom
-/// implementations keep their strongly typed [`BuildsAst`] impls, while parent
-/// atoms unwrap the child construct they requested by grammar rule.
-#[derive(From)]
+/// Parser orchestration uses this enum only at the registry boundary. The
+/// grammar declaration wraps each strongly typed [`BuildsAst`] output in the
+/// `AstNode` variant declared for that atom.
+#[expect(
+    dead_code,
+    reason = "some atom-built nodes are exposed before every parent traversal consumes them"
+)]
 pub(crate) enum AstNode {
     Document(Document),
     QueryDef(QueryDef),
@@ -50,6 +68,25 @@ pub(crate) enum AstNode {
     Directive(Directive),
     FieldSelection(FieldSelection),
     FragmentSpread(FragmentSpread),
+    Selection(Selection),
+    Clause(Clause),
+    WhereClause(WhereClause),
+    OrderByClause(OrderByClause),
+    LimitClause(LimitClause),
+    OffsetClause(OffsetClause),
+    OrderItem(OrderByItem),
+    SortDirection(SortDirectionExpr),
+    Expr(Expr),
+    BinaryExpr(BinaryExpr),
+    BinaryOperator(BinaryOperator),
+    ComparisonOperator(BinaryOp),
+    Literal(Literal),
+    ValueVariable(ValueVariable),
+    OperatorVariable(OperatorVariable),
+    ScopedPath(ScopedPath),
+    ScopedPathSegment(ScopedPathSegment),
+    QualifiedName(QualifiedNameRef),
+    RelationRef(RelationRef),
 }
 
 /// Borrowed typed AST node passed to semantic atom-stage descriptors.
@@ -65,19 +102,31 @@ pub(crate) enum AstNodeRef<'a> {
     Directive(&'a Directive),
     FieldSelection(&'a FieldSelection),
     FragmentSpread(&'a FragmentSpread),
+    Selection(&'a Selection),
+    Clause(&'a Clause),
+    WhereClause(&'a WhereClause),
+    OrderByClause(&'a OrderByClause),
+    LimitClause(&'a LimitClause),
+    OffsetClause(&'a OffsetClause),
+    OrderItem(&'a OrderByItem),
+    SortDirection(&'a SortDirectionExpr),
+    Expr(&'a Expr),
+    BinaryExpr(&'a BinaryExpr),
+    BinaryOperator(&'a BinaryOperator),
+    ComparisonOperator(&'a BinaryOp),
+    Literal(&'a Literal),
+    ValueVariable(&'a ValueVariable),
+    OperatorVariable(&'a OperatorVariable),
+    ScopedPath(&'a ScopedPath),
+    ScopedPathSegment(&'a ScopedPathSegment),
+    QualifiedName(&'a QualifiedNameRef),
+    RelationRef(&'a RelationRef),
 }
 
 impl AstNodeRef<'_> {
     /// Returns the parser rule for this typed AST node.
     pub(crate) fn rule(&self) -> Rule {
-        match self {
-            Self::Document(_) => <DocumentAtom as LanguageAtom>::GRAMMAR_RULE,
-            Self::QueryDef(_) => <QueryDefAtom as LanguageAtom>::GRAMMAR_RULE,
-            Self::FragmentDef(_) => <FragmentDefAtom as LanguageAtom>::GRAMMAR_RULE,
-            Self::Directive(_) => <DirectiveAtom as LanguageAtom>::GRAMMAR_RULE,
-            Self::FieldSelection(_) => <FieldSelectionAtom as LanguageAtom>::GRAMMAR_RULE,
-            Self::FragmentSpread(_) => <FragmentSpreadAtom as LanguageAtom>::GRAMMAR_RULE,
-        }
+        generated::rule_for_ast_node(self)
     }
 }
 
@@ -225,14 +274,12 @@ impl FormatterDescriptor {
 pub enum RuleClassification {
     Owned(AtomDescriptor),
     Delegated(AtomDescriptor),
-    Legacy,
-    Internal,
 }
 
 /// Provider for generated language atom registries and grammar ownership.
 ///
 /// `LanguageAtoms` is the central source of atom coverage metadata. New grammar
-/// rules should be classified here as owned, delegated, legacy, or internal so
+/// rules should be classified here as owned or delegated so
 /// parser changes cannot silently miss compiler/editor stages.
 ///
 /// Stage consumers should use this registry as their dispatch boundary. A
@@ -285,7 +332,7 @@ impl LanguageAtoms {
     ///
     /// This is the model other rule-directed stages should follow: classify the
     /// current syntax, fetch the registered provider, and keep any direct
-    /// construct-specific branches as legacy migration code.
+    /// construct-specific branches as centralized migration code.
     pub(crate) fn formatter_for_syntax_rule(rule: SyntaxRule) -> Option<FormatterDescriptor> {
         generated::formatter_for_rule(rule.into())
     }
@@ -367,13 +414,12 @@ where
     Formats::<A>::format(formatter, node);
 }
 
-fn build_ast<A>(builder: &AstBuilder<'_>, node: NodeRef) -> AstNode
+fn build_atom_ast<A>(builder: &AstBuilder<'_>, node: NodeRef) -> A::Ast
 where
     A: LanguageAtom,
     for<'a> AstBuilder<'a>: BuildsAst<A>,
-    A::Ast: Into<AstNode>,
 {
-    BuildsAst::<A>::build(builder, node).into()
+    BuildsAst::<A>::build(builder, node)
 }
 
 fn lower<A>(node: AstNodeRef<'_>, context: &mut LowerContext<'_>)
@@ -405,19 +451,23 @@ fn check_directive(target: CheckTarget<'_>, context: &mut CheckContext<'_, '_>) 
 
 macro_rules! language_grammar {
     (
-        atoms {
-            $(
-                $atom:ident {
-                    delegates: [$($delegated:path),* $(,)?] $(,)?
-                }
-            ),* $(,)?
-        }
-
-        legacy: [$($legacy:path),* $(,)?]
-        internal: [$($internal:path),* $(,)?]
+        $(
+            $atom:ident {
+                rule: $rule:path,
+                ast: AstNode::$ast_variant:ident,
+                delegates: [$($delegated:path),* $(,)?] $(,)?
+            }
+        ),* $(,)?
     ) => {
         mod generated {
             use super::*;
+
+            #[cfg(test)]
+            pub(super) const ATOM_RULES: &[(Rule, Rule)] = &[
+                $(
+                    ($rule, <$atom as LanguageAtom>::GRAMMAR_RULE),
+                )*
+            ];
 
             pub(super) const PROJECT_ASSET_PROVIDERS: &[ProjectAssetProviderDescriptor] = &[
                 $(
@@ -440,7 +490,7 @@ macro_rules! language_grammar {
             pub(super) fn formatter_for_rule(rule: Rule) -> Option<FormatterDescriptor> {
                 match rule {
                     $(
-                        <$atom as LanguageAtom>::GRAMMAR_RULE => {
+                        $rule => {
                             Some(FormatterDescriptor::new(format::<$atom>))
                         }
                     )*
@@ -451,8 +501,10 @@ macro_rules! language_grammar {
             pub(super) fn ast_builder_for_rule(rule: Rule) -> Option<AstBuilderDescriptor> {
                 match rule {
                     $(
-                        <$atom as LanguageAtom>::GRAMMAR_RULE => {
-                            Some(AstBuilderDescriptor::new(build_ast::<$atom>))
+                        $rule => {
+                            Some(AstBuilderDescriptor::new(|builder, node| {
+                                AstNode::$ast_variant(build_atom_ast::<$atom>(builder, node))
+                            }))
                         }
                     )*
                     _ => None,
@@ -462,7 +514,7 @@ macro_rules! language_grammar {
             pub(super) fn lowerer_for_rule(rule: Rule) -> Option<LowerDescriptor> {
                 match rule {
                     $(
-                        <$atom as LanguageAtom>::GRAMMAR_RULE => {
+                        $rule => {
                             Some(LowerDescriptor::new(lower::<$atom>))
                         }
                     )*
@@ -480,18 +532,20 @@ macro_rules! language_grammar {
             pub(super) const fn classify(rule: Rule) -> RuleClassification {
                 match rule {
                     $(
-                        <$atom as LanguageAtom>::GRAMMAR_RULE => {
+                        $rule => {
                             RuleClassification::Owned($atom::DESCRIPTOR)
                         }
                         $(
                             $delegated => RuleClassification::Delegated($atom::DESCRIPTOR),
                         )*
                     )*
+                }
+            }
+
+            pub(super) fn rule_for_ast_node(node: &AstNodeRef<'_>) -> Rule {
+                match node {
                     $(
-                        $legacy => RuleClassification::Legacy,
-                    )*
-                    $(
-                        $internal => RuleClassification::Internal,
+                        AstNodeRef::$ast_variant(_) => $rule,
                     )*
                 }
             }
@@ -501,61 +555,246 @@ macro_rules! language_grammar {
 }
 
 language_grammar! {
-    atoms {
-        DocumentAtom {
-            delegates: [
-                Rule::Definition,
-            ],
-        },
-        QueryDefAtom {
-            delegates: [],
-        },
-        FragmentDefAtom {
-            delegates: [],
-        },
-        DirectiveAtom {
-            delegates: [
-                Rule::DirectiveArgument,
-                Rule::DirectiveMember,
-                Rule::DirectiveName,
-                Rule::DirectiveNamespace,
-            ],
-        },
-        FieldSelectionAtom {
-            delegates: [
-                Rule::FieldSelectionTail,
-                Rule::FieldSuffix,
-            ],
-        },
-        FragmentSpreadAtom {
-            delegates: [],
-        },
+    DocumentAtom {
+        rule: Rule::Document,
+        ast: AstNode::Document,
+        delegates: [
+            Rule::Definition,
+            Rule::Error,
+        ],
+    },
+    QueryDefAtom {
+        rule: Rule::QueryDef,
+        ast: AstNode::QueryDef,
+        delegates: [],
+    },
+    FragmentDefAtom {
+        rule: Rule::FragmentDef,
+        ast: AstNode::FragmentDef,
+        delegates: [],
+    },
+    DirectiveAtom {
+        rule: Rule::Directive,
+        ast: AstNode::Directive,
+        delegates: [
+            Rule::DirectiveArgument,
+            Rule::DirectiveMember,
+            Rule::DirectiveName,
+            Rule::DirectiveNamespace,
+        ],
+    },
+    FieldSelectionAtom {
+        rule: Rule::FieldSelection,
+        ast: AstNode::FieldSelection,
+        delegates: [
+            Rule::FieldSelectionTail,
+            Rule::FieldSuffix,
+        ],
+    },
+    FragmentSpreadAtom {
+        rule: Rule::FragmentSpread,
+        ast: AstNode::FragmentSpread,
+        delegates: [],
+    },
+    SelectionAtom {
+        rule: Rule::Selection,
+        ast: AstNode::Selection,
+        delegates: [
+            Rule::SelectionSet,
+        ],
+    },
+    ClauseAtom {
+        rule: Rule::Clause,
+        ast: AstNode::Clause,
+        delegates: [
+            Rule::ClauseList,
+        ],
+    },
+    WhereClauseAtom {
+        rule: Rule::WhereClause,
+        ast: AstNode::WhereClause,
+        delegates: [],
+    },
+    OrderByClauseAtom {
+        rule: Rule::OrderByClause,
+        ast: AstNode::OrderByClause,
+        delegates: [],
+    },
+    LimitClauseAtom {
+        rule: Rule::LimitClause,
+        ast: AstNode::LimitClause,
+        delegates: [],
+    },
+    OffsetClauseAtom {
+        rule: Rule::OffsetClause,
+        ast: AstNode::OffsetClause,
+        delegates: [],
+    },
+    OrderItemAtom {
+        rule: Rule::OrderItem,
+        ast: AstNode::OrderItem,
+        delegates: [],
+    },
+    SortDirectionAtom {
+        rule: Rule::SortDirection,
+        ast: AstNode::SortDirection,
+        delegates: [],
+    },
+    ExprAtom {
+        rule: Rule::Expr,
+        ast: AstNode::Expr,
+        delegates: [],
+    },
+    BinaryExprAtom {
+        rule: Rule::BinaryExpr,
+        ast: AstNode::BinaryExpr,
+        delegates: [],
+    },
+    BinaryOperatorAtom {
+        rule: Rule::BinaryOperator,
+        ast: AstNode::BinaryOperator,
+        delegates: [],
+    },
+    ComparisonOperatorAtom {
+        rule: Rule::ComparisonOperator,
+        ast: AstNode::ComparisonOperator,
+        delegates: [],
+    },
+    LiteralAtom {
+        rule: Rule::Literal,
+        ast: AstNode::Literal,
+        delegates: [],
+    },
+    ValueVariableAtom {
+        rule: Rule::ValueVariable,
+        ast: AstNode::ValueVariable,
+        delegates: [],
+    },
+    OperatorVariableAtom {
+        rule: Rule::OperatorVariable,
+        ast: AstNode::OperatorVariable,
+        delegates: [],
+    },
+    ScopedPathAtom {
+        rule: Rule::ScopedPath,
+        ast: AstNode::ScopedPath,
+        delegates: [],
+    },
+    ScopedPathSegmentAtom {
+        rule: Rule::ScopedPathSegment,
+        ast: AstNode::ScopedPathSegment,
+        delegates: [],
+    },
+    QualifiedNameAtom {
+        rule: Rule::QualifiedName,
+        ast: AstNode::QualifiedName,
+        delegates: [],
+    },
+    RelationRefAtom {
+        rule: Rule::RelationRef,
+        ast: AstNode::RelationRef,
+        delegates: [],
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grammar_rows_match_atom_rule_declarations() {
+        for (grammar_rule, atom_rule) in generated::ATOM_RULES {
+            assert_eq!(grammar_rule, atom_rule);
+        }
     }
 
-    legacy: [
-        Rule::BinaryExpr,
-        Rule::BinaryOperator,
-        Rule::Clause,
-        Rule::ComparisonOperator,
-        Rule::Expr,
-        Rule::LimitClause,
-        Rule::Literal,
-        Rule::OffsetClause,
-        Rule::OperatorVariable,
-        Rule::OrderByClause,
-        Rule::OrderItem,
-        Rule::QualifiedName,
-        Rule::RelationRef,
-        Rule::ScopedPath,
-        Rule::ScopedPathSegment,
-        Rule::SortDirection,
-        Rule::ValueVariable,
-        Rule::WhereClause,
-    ]
-    internal: [
-        Rule::ClauseList,
-        Rule::Error,
-        Rule::Selection,
-        Rule::SelectionSet,
-    ]
+    #[test]
+    fn migrated_rules_are_atom_owned() {
+        let cases = [
+            (Rule::BinaryExpr, "BinaryExpr"),
+            (Rule::BinaryOperator, "BinaryOperator"),
+            (Rule::ComparisonOperator, "BinaryOp"),
+            (Rule::Expr, "Expr"),
+            (Rule::LimitClause, "LimitClause"),
+            (Rule::Literal, "Literal"),
+            (Rule::OffsetClause, "OffsetClause"),
+            (Rule::OperatorVariable, "OperatorVariable"),
+            (Rule::OrderByClause, "OrderByClause"),
+            (Rule::OrderItem, "OrderByItem"),
+            (Rule::QualifiedName, "QualifiedNameRef"),
+            (Rule::RelationRef, "RelationRef"),
+            (Rule::ScopedPath, "ScopedPath"),
+            (Rule::ScopedPathSegment, "ScopedPathSegment"),
+            (Rule::SortDirection, "SortDirectionExpr"),
+            (Rule::ValueVariable, "ValueVariable"),
+            (Rule::WhereClause, "WhereClause"),
+        ];
+
+        for (rule, ast) in cases {
+            let RuleClassification::Owned(atom) = LanguageAtoms::classify(rule) else {
+                panic!("{rule:?} should be atom-owned");
+            };
+            assert_eq!(atom.ast, ast);
+        }
+    }
+
+    #[test]
+    fn owned_rules_register_stage_providers() {
+        for rule in [
+            Rule::Document,
+            Rule::QueryDef,
+            Rule::FragmentDef,
+            Rule::Directive,
+            Rule::FieldSelection,
+            Rule::FragmentSpread,
+            Rule::Selection,
+            Rule::Clause,
+            Rule::WhereClause,
+            Rule::OrderByClause,
+            Rule::LimitClause,
+            Rule::OffsetClause,
+            Rule::OrderItem,
+            Rule::SortDirection,
+            Rule::Expr,
+            Rule::BinaryExpr,
+            Rule::BinaryOperator,
+            Rule::ComparisonOperator,
+            Rule::Literal,
+            Rule::ValueVariable,
+            Rule::OperatorVariable,
+            Rule::ScopedPath,
+            Rule::ScopedPathSegment,
+            Rule::QualifiedName,
+            Rule::RelationRef,
+        ] {
+            assert!(
+                LanguageAtoms::ast_builder_for_rule(rule).is_some(),
+                "{rule:?} should register an AST builder"
+            );
+            assert!(
+                LanguageAtoms::lowerer_for_rule(rule).is_some(),
+                "{rule:?} should register a lowerer"
+            );
+        }
+    }
+
+    #[test]
+    fn structural_rules_are_delegated() {
+        assert!(matches!(
+            LanguageAtoms::classify(Rule::ClauseList),
+            RuleClassification::Delegated(atom) if atom.ast == "Clause"
+        ));
+        assert!(matches!(
+            LanguageAtoms::classify(Rule::SelectionSet),
+            RuleClassification::Delegated(atom) if atom.ast == "Selection"
+        ));
+        assert!(matches!(
+            LanguageAtoms::classify(Rule::Definition),
+            RuleClassification::Delegated(atom) if atom.ast == "Document"
+        ));
+        assert!(matches!(
+            LanguageAtoms::classify(Rule::Error),
+            RuleClassification::Delegated(atom) if atom.ast == "Document"
+        ));
+    }
 }

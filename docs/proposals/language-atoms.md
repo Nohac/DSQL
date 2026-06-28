@@ -50,8 +50,8 @@ explicit.
   variable, or expression form.
 - **Grammar rule**: the parser rule that anchors an atom in source syntax.
 - **Owned rule**: a grammar rule claimed by exactly one atom.
-- **Internal rule**: a grammar rule used only to structure syntax and not owned
-  directly by a language atom.
+- **Delegated rule**: a structural grammar rule routed to the atom that owns the
+  surrounding construct behavior.
 - **Stage coverage**: an implementation or explicit no-effect declaration for
   one atom at one stage.
 - **No-effect declaration**: an intentional statement that an atom does not
@@ -145,14 +145,14 @@ impl GrammarRuleOwner for grammar_rule::Directive {
     type Atom = DirectiveAtom;
 }
 
-impl InternalGrammarRule for grammar_rule::FieldSuffix {
-    const REASON: &'static str = "groups clauses, directives, and nested selections";
+impl DelegatedGrammarRule for grammar_rule::FieldSuffix {
+    type Atom = FieldSelectionAtom;
 }
 ```
 
-The grammar bridge should assert that every generated rule is either owned or
-internal. This prevents newly added grammar rules from drifting without a
-compiler ownership decision.
+The grammar bridge should assert that every generated rule is either owned by
+an atom or delegated to one. This prevents newly added grammar rules from
+drifting without a compiler ownership decision.
 
 ## Stage Coverage
 

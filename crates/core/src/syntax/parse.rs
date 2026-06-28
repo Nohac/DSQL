@@ -380,45 +380,53 @@ impl<'a> AstBuilder<'a> {
     pub(crate) fn selection_set(&self, node: NodeRef) -> Vec<Selection> {
         self.direct_rules(node, Rule::Selection)
             .into_iter()
-            .filter_map(|selection| {
-                if let Some(field) = self.direct_rule(selection, Rule::FieldSelection) {
-                    return match self.build_node(field) {
-                        Some(AstNode::FieldSelection(field)) => Some(Selection::Field(field)),
-                        _ => None,
-                    };
-                }
-                if let Some(spread) = self.direct_rule(selection, Rule::FragmentSpread) {
-                    return match self.build_node(spread) {
-                        Some(AstNode::FragmentSpread(spread)) => {
-                            Some(Selection::FragmentSpread(spread))
-                        }
-                        _ => None,
-                    };
-                }
-                None
+            .filter_map(|selection| match self.build_node(selection) {
+                Some(AstNode::Selection(selection)) => Some(selection),
+                _ => None,
             })
             .collect()
+    }
+
+    pub(crate) fn selection(&self, node: NodeRef) -> Option<Selection> {
+        if let Some(field) = self.direct_rule(node, Rule::FieldSelection) {
+            return match self.build_node(field) {
+                Some(AstNode::FieldSelection(field)) => Some(Selection::Field(field)),
+                _ => None,
+            };
+        }
+        if let Some(spread) = self.direct_rule(node, Rule::FragmentSpread) {
+            return match self.build_node(spread) {
+                Some(AstNode::FragmentSpread(spread)) => Some(Selection::FragmentSpread(spread)),
+                _ => None,
+            };
+        }
+        None
     }
 
     pub(crate) fn clauses(&self, node: NodeRef) -> Vec<Clause> {
         self.direct_rules(node, Rule::Clause)
             .into_iter()
-            .filter_map(|clause| {
-                if let Some(where_clause) = self.direct_rule(clause, Rule::WhereClause) {
-                    return Some(Clause::Where(self.where_clause(where_clause)));
-                }
-                if let Some(order_by_clause) = self.direct_rule(clause, Rule::OrderByClause) {
-                    return Some(Clause::OrderBy(self.order_by_clause(order_by_clause)));
-                }
-                if let Some(limit_clause) = self.direct_rule(clause, Rule::LimitClause) {
-                    return Some(Clause::Limit(self.limit_clause(limit_clause)));
-                }
-                if let Some(offset_clause) = self.direct_rule(clause, Rule::OffsetClause) {
-                    return Some(Clause::Offset(self.offset_clause(offset_clause)));
-                }
-                None
+            .filter_map(|clause| match self.build_node(clause) {
+                Some(AstNode::Clause(clause)) => Some(clause),
+                _ => None,
             })
             .collect()
+    }
+
+    pub(crate) fn clause(&self, node: NodeRef) -> Option<Clause> {
+        if let Some(where_clause) = self.direct_rule(node, Rule::WhereClause) {
+            return Some(Clause::Where(self.where_clause(where_clause)));
+        }
+        if let Some(order_by_clause) = self.direct_rule(node, Rule::OrderByClause) {
+            return Some(Clause::OrderBy(self.order_by_clause(order_by_clause)));
+        }
+        if let Some(limit_clause) = self.direct_rule(node, Rule::LimitClause) {
+            return Some(Clause::Limit(self.limit_clause(limit_clause)));
+        }
+        if let Some(offset_clause) = self.direct_rule(node, Rule::OffsetClause) {
+            return Some(Clause::Offset(self.offset_clause(offset_clause)));
+        }
+        None
     }
 
     pub(crate) fn directives(&self, node: NodeRef) -> Vec<Directive> {
@@ -431,7 +439,7 @@ impl<'a> AstBuilder<'a> {
             .collect()
     }
 
-    fn where_clause(&self, node: NodeRef) -> WhereClause {
+    pub(crate) fn where_clause(&self, node: NodeRef) -> WhereClause {
         WhereClause {
             range: range(self.cst.span(node)),
             predicate: self.direct_value_rule(node).map_or_else(
@@ -445,7 +453,7 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn order_by_clause(&self, node: NodeRef) -> OrderByClause {
+    pub(crate) fn order_by_clause(&self, node: NodeRef) -> OrderByClause {
         OrderByClause {
             range: range(self.cst.span(node)),
             items: self
@@ -456,7 +464,7 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn order_by_item(&self, node: NodeRef) -> OrderByItem {
+    pub(crate) fn order_by_item(&self, node: NodeRef) -> OrderByItem {
         let direction = self
             .direct_rule(node, Rule::SortDirection)
             .map(|direction| self.sort_direction(direction))
@@ -472,7 +480,7 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn sort_direction(&self, node: NodeRef) -> SortDirectionExpr {
+    pub(crate) fn sort_direction(&self, node: NodeRef) -> SortDirectionExpr {
         if let Some(variable) = self.direct_rule(node, Rule::ValueVariable) {
             return SortDirectionExpr::Variable(self.value_variable(variable));
         }
@@ -487,7 +495,7 @@ impl<'a> AstBuilder<'a> {
         SortDirectionExpr::Static(direction.unwrap_or(SortDirection::Asc))
     }
 
-    fn limit_clause(&self, node: NodeRef) -> LimitClause {
+    pub(crate) fn limit_clause(&self, node: NodeRef) -> LimitClause {
         LimitClause {
             range: range(self.cst.span(node)),
             value: self.direct_value_rule(node).map_or_else(
@@ -501,7 +509,7 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn offset_clause(&self, node: NodeRef) -> OffsetClause {
+    pub(crate) fn offset_clause(&self, node: NodeRef) -> OffsetClause {
         OffsetClause {
             range: range(self.cst.span(node)),
             value: self.direct_value_rule(node).map_or_else(
@@ -553,7 +561,7 @@ impl<'a> AstBuilder<'a> {
             )
     }
 
-    fn binary_expr(&self, node: NodeRef) -> Expr {
+    pub(crate) fn binary_expr(&self, node: NodeRef) -> Expr {
         let operands = self.direct_expr_operands(node);
         let left = operands.first().map_or_else(
             || {
@@ -588,10 +596,14 @@ impl<'a> AstBuilder<'a> {
             .collect()
     }
 
-    fn literal(&self, node: NodeRef) -> Expr {
+    pub(crate) fn literal(&self, node: NodeRef) -> Expr {
+        Expr::Literal(self.literal_value(node))
+    }
+
+    pub(crate) fn literal_value(&self, node: NodeRef) -> Literal {
         for child in self.cst.children(node) {
             if let Some((token, text, token_range)) = token_text(self.cst, child) {
-                return Expr::Literal(match token {
+                return match token {
                     Token::String => Literal::String {
                         range: token_range,
                         value: text.trim_matches('"').to_string(),
@@ -610,22 +622,22 @@ impl<'a> AstBuilder<'a> {
                     },
                     Token::Null => Literal::Null { range: token_range },
                     _ => continue,
-                });
+                };
             }
         }
-        Expr::Literal(Literal::Null {
+        Literal::Null {
             range: range(self.cst.span(node)),
-        })
+        }
     }
 
-    fn binary_operator(&self, node: NodeRef) -> Option<BinaryOperator> {
+    pub(crate) fn binary_operator(&self, node: NodeRef) -> Option<BinaryOperator> {
         if let Some(operator) = self.direct_rule(node, Rule::BinaryOperator) {
             return self.binary_operator_rule(operator);
         }
         self.static_binary_op(node).map(BinaryOperator::Static)
     }
 
-    fn binary_operator_rule(&self, node: NodeRef) -> Option<BinaryOperator> {
+    pub(crate) fn binary_operator_rule(&self, node: NodeRef) -> Option<BinaryOperator> {
         if let Some(variable) = self.direct_rule(node, Rule::OperatorVariable) {
             return Some(BinaryOperator::Variable(self.operator_variable(variable)));
         }
@@ -637,7 +649,7 @@ impl<'a> AstBuilder<'a> {
         self.static_binary_op(node).map(BinaryOperator::Static)
     }
 
-    fn static_binary_op(&self, node: NodeRef) -> Option<BinaryOp> {
+    pub(crate) fn static_binary_op(&self, node: NodeRef) -> Option<BinaryOp> {
         self.cst
             .children(node)
             .find_map(|child| self.static_binary_op_token(child))
@@ -659,7 +671,7 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn scoped_path(&self, node: NodeRef) -> ScopedPath {
+    pub(crate) fn scoped_path(&self, node: NodeRef) -> ScopedPath {
         let mut scope = PathScope::Current;
         for child in self.cst.children(node) {
             let Some((token, _, _)) = token_text(self.cst, child) else {
@@ -680,26 +692,28 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn direct_scoped_path_segments(&self, node: NodeRef) -> Vec<ScopedPathSegment> {
+    pub(crate) fn direct_scoped_path_segments(&self, node: NodeRef) -> Vec<ScopedPathSegment> {
         self.direct_rules(node, Rule::ScopedPathSegment)
             .into_iter()
-            .filter_map(|segment| {
-                let name = self.direct_qualified_names(segment).into_iter().next()?;
-                let selector = self.edge_selector(segment);
-                let end = selector
-                    .as_ref()
-                    .map_or(name.range.end, |selector| selector.range.end);
-                Some(ScopedPathSegment {
-                    range: TextRange {
-                        start: name.range.start,
-                        end,
-                    },
-                    schema: name.schema,
-                    name: name.name,
-                    selector,
-                })
-            })
+            .filter_map(|segment| self.scoped_path_segment(segment))
             .collect()
+    }
+
+    pub(crate) fn scoped_path_segment(&self, node: NodeRef) -> Option<ScopedPathSegment> {
+        let name = self.direct_qualified_names(node).into_iter().next()?;
+        let selector = self.edge_selector(node);
+        let end = selector
+            .as_ref()
+            .map_or(name.range.end, |selector| selector.range.end);
+        Some(ScopedPathSegment {
+            range: TextRange {
+                start: name.range.start,
+                end,
+            },
+            schema: name.schema,
+            name: name.name,
+            selector,
+        })
     }
 
     pub(crate) fn direct_names(&self, node: NodeRef) -> Vec<NameRef> {
@@ -726,17 +740,19 @@ impl<'a> AstBuilder<'a> {
     pub(crate) fn direct_qualified_names(&self, node: NodeRef) -> Vec<QualifiedNameRef> {
         self.direct_rules(node, Rule::QualifiedName)
             .into_iter()
-            .filter_map(|qualified| {
-                let names = self.direct_names(qualified);
-                let name = names.last()?.clone();
-                let schema = (names.len() > 1).then(|| names[0].clone());
-                Some(QualifiedNameRef {
-                    range: range(self.cst.span(qualified)),
-                    schema,
-                    name,
-                })
-            })
+            .filter_map(|qualified| self.qualified_name(qualified))
             .collect()
+    }
+
+    pub(crate) fn qualified_name(&self, node: NodeRef) -> Option<QualifiedNameRef> {
+        let names = self.direct_names(node);
+        let name = names.last()?.clone();
+        let schema = (names.len() > 1).then(|| names[0].clone());
+        Some(QualifiedNameRef {
+            range: range(self.cst.span(node)),
+            schema,
+            name,
+        })
     }
 
     pub(crate) fn direct_relation_refs(&self, node: NodeRef) -> Vec<RelationRef> {
@@ -746,7 +762,7 @@ impl<'a> AstBuilder<'a> {
             .collect()
     }
 
-    fn relation_ref(&self, relation: NodeRef) -> Option<RelationRef> {
+    pub(crate) fn relation_ref(&self, relation: NodeRef) -> Option<RelationRef> {
         let qualified = self.direct_qualified_names(relation).into_iter().next()?;
         let selector = self.edge_selector(relation);
         Some(RelationRef {
@@ -799,7 +815,7 @@ impl<'a> AstBuilder<'a> {
         })
     }
 
-    fn value_variable(&self, node: NodeRef) -> ValueVariable {
+    pub(crate) fn value_variable(&self, node: NodeRef) -> ValueVariable {
         let mut scope = VariableScope::Structured;
         for child in self.cst.children(node) {
             let Some((token, _, _)) = token_text(self.cst, child) else {
@@ -819,7 +835,7 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn operator_variable(&self, node: NodeRef) -> OperatorVariable {
+    pub(crate) fn operator_variable(&self, node: NodeRef) -> OperatorVariable {
         let mut scope = VariableScope::Structured;
         for child in self.cst.children(node) {
             let Some((token, _, _)) = token_text(self.cst, child) else {
@@ -908,7 +924,7 @@ impl<'a> AstBuilder<'a> {
         }
     }
 
-    fn missing_qualified_name(&self, node: NodeRef) -> QualifiedNameRef {
+    pub(crate) fn missing_qualified_name(&self, node: NodeRef) -> QualifiedNameRef {
         let name = self.missing_name(node);
         QualifiedNameRef {
             range: name.range,

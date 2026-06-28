@@ -202,7 +202,7 @@ pub(crate) fn lower_selection_clauses(clauses: &[crate::Clause], context: &mut L
     }
 }
 
-fn lower_expr(expr: &Expr, interner: &mut Interner) {
+pub(crate) fn lower_expr(expr: &Expr, interner: &mut Interner) {
     match expr {
         Expr::Name(name) => {
             interner.intern(&name.text);

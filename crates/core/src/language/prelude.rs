@@ -2,7 +2,7 @@ pub(crate) use crate::{
     asset::ProjectAssets,
     format::cst::CstFormatter,
     language::{
-        atom::language_atom,
+        atom::{deferred_atom_stage_impls, language_atom},
         context::{
             ContextConfidence, ContextOrigin, LanguageContext, LanguageContextInput,
             LanguageServiceRequest,

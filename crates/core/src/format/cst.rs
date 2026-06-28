@@ -92,7 +92,7 @@ impl<'a> CstFormatter<'a> {
         self.out.push('}');
     }
 
-    fn selection(&mut self, node: usize) {
+    pub(crate) fn selection(&mut self, node: usize) {
         if let Some(field) = self.direct_rule(node, SyntaxRule::FieldSelection) {
             self.format_child(field);
         } else if let Some(spread) = self.direct_rule(node, SyntaxRule::FragmentSpread) {
@@ -220,38 +220,19 @@ impl<'a> CstFormatter<'a> {
         self.direct_rule(node, SyntaxRule::WhereClause).is_some()
     }
 
-    fn clause(&mut self, node: usize) {
+    pub(crate) fn clause(&mut self, node: usize) {
         if let Some(where_clause) = self.direct_rule(node, SyntaxRule::WhereClause) {
-            self.out.push_str("where ");
-            if let Some(value) = self.direct_value_rule(where_clause) {
-                self.expr(value);
-            }
+            self.format_child(where_clause);
         } else if let Some(order_by) = self.direct_rule(node, SyntaxRule::OrderByClause) {
-            self.out.push_str("order by ");
-            for (idx, item) in self
-                .direct_rules(order_by, SyntaxRule::OrderItem)
-                .into_iter()
-                .enumerate()
-            {
-                if idx > 0 {
-                    self.out.push_str(", ");
-                }
-                self.order_item(item);
-            }
+            self.format_child(order_by);
         } else if let Some(limit) = self.direct_rule(node, SyntaxRule::LimitClause) {
-            self.out.push_str("limit ");
-            if let Some(value) = self.direct_value_rule(limit) {
-                self.expr(value);
-            }
+            self.format_child(limit);
         } else if let Some(offset) = self.direct_rule(node, SyntaxRule::OffsetClause) {
-            self.out.push_str("offset ");
-            if let Some(value) = self.direct_value_rule(offset) {
-                self.expr(value);
-            }
+            self.format_child(offset);
         }
     }
 
-    fn order_item(&mut self, node: usize) {
+    pub(crate) fn order_item(&mut self, node: usize) {
         if let Some(name) = self.direct_qualified_name_text(node) {
             self.out.push_str(&name);
         }
@@ -261,7 +242,7 @@ impl<'a> CstFormatter<'a> {
         }
     }
 
-    fn expr(&mut self, node: usize) {
+    pub(crate) fn expr(&mut self, node: usize) {
         match self.rule(node) {
             Some(SyntaxRule::BinaryExpr) => self.binary_expr(node),
             Some(SyntaxRule::Literal) => self.literal(node),
@@ -302,11 +283,11 @@ impl<'a> CstFormatter<'a> {
         }
     }
 
-    fn scoped_path(&mut self, node: usize) {
+    pub(crate) fn scoped_path(&mut self, node: usize) {
         self.out.push_str(&self.text(self.node(node).range));
     }
 
-    fn value_variable(&mut self, node: usize) {
+    pub(crate) fn value_variable(&mut self, node: usize) {
         self.out.push_str(&self.text(self.node(node).range));
     }
 
@@ -349,7 +330,7 @@ impl<'a> CstFormatter<'a> {
         self.expr(node);
     }
 
-    fn binary_expr(&mut self, node: usize) {
+    pub(crate) fn binary_expr(&mut self, node: usize) {
         let exprs = self.direct_expr_operands(node);
         if let Some(left) = exprs.first().copied() {
             self.expr(left);
@@ -395,7 +376,7 @@ impl<'a> CstFormatter<'a> {
                 .any(|child| self.token(*child) == Some(SyntaxToken::LPar))
     }
 
-    fn literal(&mut self, node: usize) {
+    pub(crate) fn literal(&mut self, node: usize) {
         if let Some(token) = self.token_children(node).into_iter().find(|token| {
             !matches!(
                 self.token(*token),
@@ -552,7 +533,7 @@ impl<'a> CstFormatter<'a> {
         })
     }
 
-    fn direct_value_rule(&self, node: usize) -> Option<usize> {
+    pub(crate) fn direct_value_rule(&self, node: usize) -> Option<usize> {
         self.node(node).children.iter().copied().find(|child| {
             matches!(
                 self.rule(*child),

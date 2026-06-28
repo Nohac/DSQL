@@ -46,19 +46,44 @@ pub trait Checks<A: LanguageAtom> {
     fn check(ast: &A::Ast, context: Self::Context<'_>);
 }
 
+/// Marker for an atom check stage that remains in a centralized migration path.
+pub trait DeferredCheck<A: LanguageAtom> {
+    const REASON: &'static str;
+}
+
 pub trait NoLintEffect<A: LanguageAtom> {
     const REASON: &'static str;
 }
 
 pub trait InfersVariables<A: LanguageAtom> {}
 
+/// Marker for an atom variable-inference stage that remains centralized.
+pub trait DeferredVariableInference<A: LanguageAtom> {
+    const REASON: &'static str;
+}
+
 pub trait Plans<A: LanguageAtom> {}
+
+/// Marker for an atom planning stage that remains centralized.
+pub trait DeferredPlan<A: LanguageAtom> {
+    const REASON: &'static str;
+}
 
 pub trait NoSqlEffect<A: LanguageAtom> {
     const REASON: &'static str;
 }
 
 pub trait GeneratesMetadata<A: LanguageAtom> {}
+
+/// Marker for an atom metadata-generation stage that remains centralized.
+pub trait DeferredMetadata<A: LanguageAtom> {
+    const REASON: &'static str;
+}
+
+/// Marker for atom language-service behavior that has not moved yet.
+pub trait DeferredEditor<A: LanguageAtom> {
+    const REASON: &'static str;
+}
 
 /// Mutable context owned by one lowering pass.
 pub(crate) struct LowerContext<'a> {

@@ -1,6 +1,10 @@
+pub mod clause;
 pub mod directive;
 pub mod document;
+pub mod expression;
 pub mod field_selection;
 pub mod fragment_def;
 pub mod fragment_spread;
+pub mod path;
 pub mod query_def;
+pub mod selection;

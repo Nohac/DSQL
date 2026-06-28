@@ -165,13 +165,12 @@ Grammar rules are classified as one of:
 
 - owned by an atom;
 - delegated to an atom because the rule is a structural child of the owned
-  construct;
-- legacy, meaning it has not moved into an atom yet;
-- internal, meaning it only groups syntax and has no direct feature owner.
+  construct.
 
 Adding a grammar rule should force a classification decision in
-`LanguageAtoms`. Rules that carry semantic or editor meaning should not be left
-internal merely because no current stage consumes them.
+`LanguageAtoms`. Rules that carry semantic or editor meaning should be owned by
+an atom; structural wrapper rules should be delegated to the atom that owns the
+surrounding behavior.
 
 Stage dispatch should follow this shape:
 
@@ -179,7 +178,7 @@ Stage dispatch should follow this shape:
    formatting or AST/lowered nodes for semantic stages;
 2. the consumer converts the current item to the parser rule or typed atom key;
 3. `LanguageAtoms` returns the registered provider for that stage, or reports
-   that the rule is still legacy/internal;
+   that the rule is delegated to another atom;
 4. the consumer invokes the provider with normalized stage context.
 
 Direct calls such as "run the directive checker here" are migration code unless
