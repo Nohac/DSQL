@@ -29,6 +29,48 @@ pub enum Severity {
     Error,
 }
 
+/// Machine-readable diagnostic identity, ported from dsql-poc. Editor
+/// integrations and tests key on these; messages are for humans only.
+/// Variants are added as the checks that emit them land.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(hash)]
+pub enum DiagnosticCode {
+    InvalidToken,
+    UnexpectedToken,
+    UnexpectedEof,
+    DuplicateDefinition,
+    UnknownFragment,
+}
+
+/// Which stage emitted a diagnostic, ported from dsql-poc.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(hash)]
+pub enum DiagnosticSource {
+    Parse,
+    Lower,
+    Check,
+    Lint,
+    Plan,
+    Generate,
+    Format,
+}
+
+/// Stable identity of one CST rule node within one parse of one file.
+/// Valid only for the lifetime of that parse: any text change re-lowers the
+/// whole file, retiring every fact that carries one.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[component(hash)]
+pub struct NodeKey {
+    pub file: Entity,
+    pub node: usize,
+}
+
+/// Link from a lowered fact to the [`NodeKey`] of its nearest enclosing
+/// selection or definition — the flat encoding of the selection tree.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[component(hash)]
+pub struct ParentKey(pub NodeKey);
+
 /// Human-readable diagnostic message. A diagnostic entity carries this plus
 /// [`Severity`], [`Span`], [`BelongsToFile`], and `DerivedFrom` (ownership,
 /// so stale diagnostics clean up when their source changes).
@@ -49,23 +91,29 @@ pub struct BelongsToFile(pub Entity);
 #[component(hash)]
 pub struct DiagnosticsDemand;
 
-/// Emits one diagnostic entity.
-///
-/// `derived_from` names the source facts whose change retires the
-/// diagnostic; `file` anchors it to the file whose text `span` indexes.
-pub fn emit_diagnostic(
-    commands: &mut Commands,
-    derived_from: DerivedFrom,
-    file: Entity,
-    span: Span,
-    severity: Severity,
-    message: impl Into<String>,
-) {
+/// Everything one diagnostic entity is made of. Every field is required so
+/// no emitter can silently drop a component the LSP or tests key on.
+pub struct DiagnosticFacts {
+    /// The source facts whose change retires the diagnostic.
+    pub derived_from: DerivedFrom,
+    /// The file whose text [`DiagnosticFacts::span`] indexes.
+    pub file: Entity,
+    pub span: Span,
+    pub severity: Severity,
+    pub source: DiagnosticSource,
+    pub code: DiagnosticCode,
+    pub message: String,
+}
+
+/// Emits one diagnostic entity carrying the full diagnostic component set.
+pub fn emit_diagnostic(commands: &mut Commands, facts: DiagnosticFacts) {
     commands.insert((
-        derived_from,
-        BelongsToFile(file),
-        span,
-        severity,
-        Diagnostic(message.into()),
+        facts.derived_from,
+        BelongsToFile(facts.file),
+        facts.span,
+        facts.severity,
+        facts.source,
+        facts.code,
+        Diagnostic(facts.message),
     ));
 }

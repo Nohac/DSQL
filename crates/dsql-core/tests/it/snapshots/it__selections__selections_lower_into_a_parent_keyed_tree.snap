@@ -1,0 +1,21 @@
+---
+source: crates/dsql-core/tests/it/selections.rs
+expression: render_selection_tree(&db).await
+---
+query MovieRelationPathSelector
+  movie_info {...}
+    id
+    title {...}
+      aliases: aka_title->movie_id {...}
+        id
+      episodes: aka_title->episode_of_id {...}
+        id
+fragment TitleFields
+  id
+  title
+  production_year
+query TitleWithFragment
+  title {...}
+    ...TitleFields
+    kind_type {...}
+      kind

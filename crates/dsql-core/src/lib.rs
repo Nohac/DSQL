@@ -13,6 +13,8 @@ use bowl::{Bowl, Phase, SystemExt, cleanup_stale_derived};
 
 use crate::entities::definition::Definition;
 use crate::entities::document::Document;
+use crate::entities::field_selection::FieldSelection;
+use crate::entities::fragment_spread::FragmentSpread;
 use crate::entity::register_entity;
 
 /// Assembles the language on a bowl: every entity, the shared lowering
@@ -20,6 +22,8 @@ use crate::entity::register_entity;
 pub async fn register_language(db: &Bowl) {
     register_entity::<Document>(db).await;
     register_entity::<Definition>(db).await;
+    register_entity::<FieldSelection>(db).await;
+    register_entity::<FragmentSpread>(db).await;
 
     db.add_system(entities::generate_ast).await;
 

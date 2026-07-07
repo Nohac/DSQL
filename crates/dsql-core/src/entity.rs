@@ -22,6 +22,7 @@
 
 use bowl::{Bowl, Commands, Entity};
 
+use crate::facts::NodeKey;
 use crate::grammar::parser::{CstData, NodeRef};
 
 /// Identity and system registration for one language concept.
@@ -42,6 +43,12 @@ pub struct LowerCtx<'a> {
     /// The file entity the tree was parsed from; fact components emitted by
     /// lowering anchor to it.
     pub file: Entity,
+    /// Key of the nearest enclosing selection or definition node, if any.
+    /// The walk in `entities` scopes it when descending into one, so nested
+    /// facts carry their tree position as a [`ParentKey`].
+    ///
+    /// [`ParentKey`]: crate::facts::ParentKey
+    pub parent: Option<NodeKey>,
 }
 
 /// Syntax stage: lower an owned CST rule node into fact components.

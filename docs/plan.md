@@ -185,10 +185,9 @@ match is the real source of truth once implemented):
 | Entity | Owns rules | Notes |
 |---|---|---|
 | `Document` | `document` | file root; parse system, parse diagnostics |
-| `QueryDef` | `query_def` | definition facts, duplicate-name check (via fingerprinted `DefIndex`) |
-| `FragmentDef` | `fragment_def` | fragment facts + fragment index |
-| `FieldSelection` | `field_selection`, `field_selection_tail`, `field_suffix` | selection facts, catalog field checks, relation selectors |
-| `FragmentSpread` | `fragment_spread` | spread facts; resolution via bound join on fragment name |
+| `Definition` | `query_def`, `fragment_def` | one entity: queries and fragments are the same concept (named def + selection set) everywhere except where `DefKind` branches; fingerprinted `DefIndex`, duplicate-fragment check |
+| `FieldSelection` | `field_selection`, `field_selection_tail`, `field_suffix` | selection facts (flat `NodeKey`/`ParentKey` tree encoding), catalog field checks, relation selectors |
+| `FragmentSpread` | `fragment_spread` | spread facts; resolution via bound join on `FragmentKey` + `BelongsToFile` |
 | `Clause` | `clause_list`, `clause`, `where_clause`, `order_by_clause`, `limit_clause`, `offset_clause`, `order_item`, `sort_direction` | one entity, kind enum (matches dsql-poc's clause atom) |
 | `Directive` | `directive`, `directive_name`, `directive_namespace`, `directive_member`, `directive_argument` | directive registry checks |
 | `Expression` | `expr` (`binary_expr`), `literal`, `binary_operator`, `comparison_operator` | typed expression facts |

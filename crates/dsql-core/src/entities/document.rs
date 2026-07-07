@@ -4,7 +4,9 @@
 use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query};
 
 use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
-use crate::facts::{Severity, Span, emit_diagnostic};
+use crate::facts::{
+    DiagnosticCode, DiagnosticFacts, DiagnosticSource, Severity, Span, emit_diagnostic,
+};
 use crate::grammar::parser::{CstData, NodeRef, Parser};
 use crate::source::SourceText;
 
@@ -34,6 +36,21 @@ impl LowerStage for Document {
     fn lower(_ctx: &LowerCtx<'_>, _node: NodeRef, _commands: &mut Commands) {}
 }
 
+/// Maps a parse diagnostic message onto its machine-readable code.
+///
+/// Lexer and parser diagnostics arrive through the generated parser as
+/// message + span only, so this keys on the messages our vendored lelwel
+/// emits — all three shapes are pinned by the parse snapshot tests.
+fn parse_diagnostic_code(message: &str) -> DiagnosticCode {
+    if message == "invalid token" {
+        DiagnosticCode::InvalidToken
+    } else if message.contains("<end of file>") {
+        DiagnosticCode::UnexpectedEof
+    } else {
+        DiagnosticCode::UnexpectedToken
+    }
+}
+
 /// Parses each file's text into a [`ParsedFile`] and emits parse errors as
 /// diagnostic entities owned by the file.
 pub async fn parse_file(query: Query<(Entity, &SourceText)>, mut commands: Commands) {
@@ -59,11 +76,15 @@ pub async fn parse_file(query: Query<(Entity, &SourceText)>, mut commands: Comma
             .unwrap_or(Span { start: 0, end: 0 });
         emit_diagnostic(
             &mut commands,
-            DerivedFrom::new(file),
-            file,
-            span,
-            Severity::Error,
-            diagnostic.message,
+            DiagnosticFacts {
+                derived_from: DerivedFrom::new(file),
+                file,
+                span,
+                severity: Severity::Error,
+                source: DiagnosticSource::Parse,
+                code: parse_diagnostic_code(&diagnostic.message),
+                message: diagnostic.message,
+            },
         );
     }
 }

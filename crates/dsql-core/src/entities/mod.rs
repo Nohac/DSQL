@@ -11,22 +11,29 @@ pub mod document;
 
 use bowl::{Commands, Entity, Query};
 
+pub mod field_selection;
+pub mod fragment_spread;
+
 use crate::entity::{LowerCtx, LowerStage};
-use crate::facts::Span;
+use crate::facts::{NodeKey, Span};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{CstData, Node, NodeRef, Rule};
 use definition::Definition;
 use document::{Document, ParsedFile};
+use field_selection::FieldSelection;
+use fragment_spread::FragmentSpread;
 
 fn lower_rule(ctx: &LowerCtx<'_>, rule: Rule, node: NodeRef, commands: &mut Commands) {
     match rule {
         Rule::Document => Document::lower(ctx, node, commands),
         Rule::QueryDef | Rule::FragmentDef => Definition::lower(ctx, node, commands),
+        Rule::FieldSelection => FieldSelection::lower(ctx, node, commands),
+        Rule::FragmentSpread => FragmentSpread::lower(ctx, node, commands),
+        // Consumed by FieldSelection lowering from the field_selection node.
+        Rule::FieldSelectionTail | Rule::FieldSuffix => {}
 
         // Unclaimed rules, owned by entities scheduled in docs/plan.md.
         // Move a rule up as its entity lands; do not lower it here.
-        Rule::FieldSelection | Rule::FieldSelectionTail | Rule::FieldSuffix => {} // phase 4
-        Rule::FragmentSpread => {} // phase 4
         Rule::Clause
         | Rule::ClauseList
         | Rule::WhereClause
@@ -64,6 +71,7 @@ pub async fn generate_ast(query: Query<(Entity, &ParsedFile)>, mut commands: Com
         cst: &parsed.cst,
         source: &parsed.source,
         file,
+        parent: None,
     };
     walk(&ctx, NodeRef::ROOT, &mut commands);
 }
@@ -71,6 +79,28 @@ pub async fn generate_ast(query: Query<(Entity, &ParsedFile)>, mut commands: Com
 fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
     if let Node::Rule(rule, _) = ctx.cst.get(node) {
         lower_rule(ctx, rule, node, commands);
+
+        // Definitions and field selections form the selection tree: descend
+        // with this node as the parent so nested facts carry their position
+        // as a `ParentKey`.
+        if matches!(
+            rule,
+            Rule::QueryDef | Rule::FragmentDef | Rule::FieldSelection
+        ) {
+            let scoped = LowerCtx {
+                cst: ctx.cst,
+                source: ctx.source,
+                file: ctx.file,
+                parent: Some(NodeKey {
+                    file: ctx.file,
+                    node: node.0,
+                }),
+            };
+            for child in ctx.cst.children(node) {
+                walk(&scoped, child, commands);
+            }
+            return;
+        }
     }
 
     for child in ctx.cst.children(node) {

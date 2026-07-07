@@ -3,6 +3,7 @@
 
 mod definitions;
 mod parse;
+mod selections;
 mod settle;
 
 use std::fmt::Write;

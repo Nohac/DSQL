@@ -15,7 +15,10 @@ use bowl::{
 use crate::entities::document::ParsedFile;
 use crate::entities::{direct_rule, direct_token, node_span, text};
 use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
-use crate::facts::{BelongsToFile, DiagnosticsDemand, Severity, Span, emit_diagnostic};
+use crate::facts::{
+    BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
+    Severity, Span, emit_diagnostic,
+};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 
@@ -55,6 +58,12 @@ pub struct FragmentTarget {
     pub name: String,
     pub span: Span,
 }
+
+/// Join key carried by fragment definitions and fragment spreads alike, so
+/// spread resolution is a bound join on the name (see `fragment_spread`).
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct FragmentKey(pub String);
 
 /// Fingerprint of the full definition set, maintained by [`index_defs`].
 /// Checks that must react to *other* definitions appearing or disappearing
@@ -107,14 +116,36 @@ impl LowerStage for Definition {
             }
         });
 
-        match target {
-            Some(target) => commands.insert((
+        let key = NodeKey {
+            file: ctx.file,
+            node: node.0,
+        };
+
+        match (kind, target) {
+            (DefKind::Fragment, Some(target)) => commands.insert((
                 DerivedFrom::new(ctx.file),
                 BelongsToFile(ctx.file),
+                key,
+                FragmentKey(decl.name.clone()),
                 decl,
                 target,
             )),
-            None => commands.insert((DerivedFrom::new(ctx.file), BelongsToFile(ctx.file), decl)),
+            // A fragment whose `on` target was lost to error recovery still
+            // lowers (spreads may resolve to it); the parse diagnostics
+            // already report the malformed target.
+            (DefKind::Fragment, None) => commands.insert((
+                DerivedFrom::new(ctx.file),
+                BelongsToFile(ctx.file),
+                key,
+                FragmentKey(decl.name.clone()),
+                decl,
+            )),
+            (DefKind::Query, _) => commands.insert((
+                DerivedFrom::new(ctx.file),
+                BelongsToFile(ctx.file),
+                key,
+                decl,
+            )),
         };
     }
 }
@@ -171,10 +202,14 @@ async fn check_duplicate_fragments(
 
     emit_diagnostic(
         &mut commands,
-        DerivedFrom::many([entity, previous]),
-        file.0,
-        decl.name_span,
-        Severity::Error,
-        format!("duplicate fragment `{}`", decl.name),
+        DiagnosticFacts {
+            derived_from: DerivedFrom::many([entity, previous]),
+            file: file.0,
+            span: decl.name_span,
+            severity: Severity::Error,
+            source: DiagnosticSource::Check,
+            code: DiagnosticCode::DuplicateDefinition,
+            message: format!("duplicate fragment `{}`", decl.name),
+        },
     );
 }
