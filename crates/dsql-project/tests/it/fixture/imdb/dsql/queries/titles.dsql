@@ -1,0 +1,9 @@
+query Titles {
+  title(where .id > 0 limit 2) {
+    id
+    title
+    kind_type {
+      kind
+    }
+  }
+}
