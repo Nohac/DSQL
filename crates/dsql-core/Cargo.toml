@@ -1,0 +1,15 @@
+[package]
+name = "dsql-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+codespan-reporting = { workspace = true }
+logos = { workspace = true }
+ropey = { workspace = true }
+
+[build-dependencies]
+lelwel = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

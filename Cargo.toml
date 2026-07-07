@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["vendor/lelwel", "vendor/logos"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+dsql-core = { path = "crates/dsql-core" }
+
+lelwel = { path = "vendor/lelwel" }
+logos = { path = "vendor/logos" }
+
+codespan-reporting = "0.13"
+insta = "1.48"
+ropey = "2.0.0-beta.1"
