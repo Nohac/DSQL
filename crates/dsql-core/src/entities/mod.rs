@@ -10,6 +10,7 @@ pub mod field_selection;
 pub mod fragment_spread;
 pub mod lowering;
 pub mod variable;
+pub mod variable_path;
 
 pub use lowering::generate_ast;
 pub(crate) use lowering::{direct_rule, direct_token, node_span, text};

@@ -1,0 +1,108 @@
+//! Variable inference: bindings match dsql-poc's shapes — structured (`$`)
+//! versus top-level (`$$`) paths, operator allowlists, sort directions, and
+//! fragment envelopes. Demand-gated on `VariablesDemand`.
+
+use bowl::{Bowl, Entity, Query, Singleton};
+use dsql_core::catalog::{Catalog, insert_catalog};
+use dsql_core::entities::variable::VariableBinding;
+use dsql_core::facts::VariablesDemand;
+use dsql_core::register_language;
+use dsql_core::source::insert_source;
+use futures::executor::block_on;
+
+async fn variables_bowl() -> Bowl {
+    let bowl = Bowl::new();
+    register_language(&bowl).await;
+    insert_catalog(&bowl, Catalog::hardcoded()).await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
+    bowl
+}
+
+/// Renders bindings in dsql-poc's `variables__variable_bindings.snap` shape.
+async fn render_bindings(bowl: &Bowl) -> String {
+    let rows = bowl.scoop::<Query<(Entity, &VariableBinding)>>().await;
+    let mut bindings: Vec<&VariableBinding> =
+        rows.collect().into_iter().map(|(_, binding)| binding).collect();
+    bindings.sort_by_key(|binding| (binding.span.start, binding.span.end));
+    bindings
+        .into_iter()
+        .map(|binding| {
+            let operators = binding
+                .operators
+                .iter()
+                .map(|operator| format!("{operator:?}"))
+                .collect::<Vec<_>>()
+                .join("|");
+            format!(
+                "{} {:?} {:?} {:?} {:?} operators=[{}] enum=[{}]",
+                binding.path,
+                binding.source,
+                binding.role,
+                binding.data_type,
+                binding.name,
+                operators,
+                binding.enum_values.join("|")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn case(name: &str, source: &str) -> String {
+    let bowl = variables_bowl().await;
+    insert_source(&bowl, format!("{name}.dsql"), source).await;
+    format!("{name}\n{}", render_bindings(&bowl).await)
+}
+
+/// The four dsql-poc inference cases, verbatim sources.
+#[test]
+fn variable_bindings_match_dsql_poc_shapes() {
+    block_on(async {
+        let scalar = case(
+            "scalar",
+            "\nquery VariableSearch {\n  users(where .id > $min_id and .posts.title like $$title limit $ offset $$) {\n    id\n    posts(limit $post_limit) {\n      title\n    }\n  }\n}\n",
+        )
+        .await;
+        let operator = case(
+            "operator",
+            "\nquery PostSearch {\n  posts(where .created_at $[>, >=] $min_created_at and .title $$title_op[==, !=, like] $title limit $) {\n    id\n  }\n}\n",
+        )
+        .await;
+        let order_by_direction = case(
+            "order_by_direction",
+            "\nquery PostOrdering {\n  posts(order by created_at $created_dir, title $$) {\n    id\n  }\n}\n",
+        )
+        .await;
+        let fragment = case(
+            "fragment",
+            "\nfragment UserPosts on users {\n  posts(where .title like $$search limit $post_limit) {\n    title\n  }\n}\n",
+        )
+        .await;
+
+        insta::assert_snapshot!(format!(
+            "{scalar}\n\n---\n\n{operator}\n\n---\n\n{order_by_direction}\n\n---\n\n{fragment}"
+        ));
+    });
+}
+
+/// Fragment spreads nested inside fragment bodies expand with an enveloped
+/// path scope (`input.<selection>.body.<Fragment>.params...`).
+#[test]
+fn fragment_spread_envelopes_nested_bindings() {
+    block_on(async {
+        let snapshot = case(
+            "envelope",
+            concat!(
+                "fragment UserFilter on users {\n",
+                "  ...UserPosts\n",
+                "}\n",
+                "fragment UserPosts on users {\n",
+                "  recent: posts(limit $count) {\n    id\n  }\n",
+                "}\n",
+            ),
+        )
+        .await;
+        insta::assert_snapshot!(snapshot);
+    });
+}

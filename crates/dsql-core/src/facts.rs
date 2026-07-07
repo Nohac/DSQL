@@ -104,6 +104,12 @@ pub struct BelongsToFile(pub Entity);
 #[component(hash)]
 pub struct DiagnosticsDemand;
 
+/// Demand marker for variable-binding inference (`variable` entity):
+/// generate/metadata consumers and tests insert it; idle bowls infer nothing.
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct VariablesDemand;
+
 /// Everything one diagnostic entity is made of. Every field is required so
 /// no emitter can silently drop a component the LSP or tests key on.
 pub struct DiagnosticFacts {

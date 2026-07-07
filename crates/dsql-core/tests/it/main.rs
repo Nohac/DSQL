@@ -7,6 +7,7 @@ mod lowering;
 mod parse;
 mod selections;
 mod settle;
+mod variables;
 mod support;
 
 pub use support::{fixture, imdb_catalog, queries_dir, render_diagnostic_facts, render_diagnostics};
