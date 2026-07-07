@@ -9,12 +9,13 @@ use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
 use crate::entities::fragment_spread::{SpreadDecl, check_spread_site};
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     ParentKey, Severity, Span, emit_diagnostic,
 };
+use crate::service::completion::{CompletionContext, CompletionRequest};
 use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
@@ -614,7 +615,7 @@ async fn hover_fields(
 
 /// The table a field's *own* reference resolves against: its parent's
 /// resolved relation table, or the root table for query roots.
-fn resolve_context_table(
+pub(crate) fn resolve_context_table(
     tree: &SelectionTree<'_>,
     catalog: &crate::catalog::Catalog,
     field_key: NodeKey,
@@ -703,5 +704,117 @@ fn describe_field(
             field.name, relation.table.schema, relation.table.name, relation.selector,
         )),
         _ => None,
+    }
+}
+
+
+/// The table a field selection *targets*: the table itself for query
+/// roots, or the relation's table for nested selections. This is the
+/// context for everything inside the field's braces and clauses.
+pub(crate) fn resolve_field_target(
+    tree: &SelectionTree<'_>,
+    catalog: &crate::catalog::Catalog,
+    field_key: NodeKey,
+) -> Option<crate::catalog::TableId> {
+    let (_, field, _, parent) = tree.fields.iter().find(|(_, _, key, _)| *key == field_key)?;
+    let is_query_root = !tree.fields.iter().any(|(_, _, key, _)| key == parent)
+        && !tree.fragments.iter().any(|(_, _, _, def_key)| def_key == parent);
+    if is_query_root {
+        return catalog
+            .table_ref_for(TableRef::parse(&field.name))
+            .map(|table| table.id);
+    }
+
+    // Nested and fragment-root fields alike: resolve the containing context
+    // (resolve_context_table handles fragment targets), then step through
+    // this field's own relation reference.
+    let context = resolve_context_table(tree, catalog, field_key)?;
+    let reference = FieldRef {
+        target: TableRef::parse(&field.name),
+        selector: field.relation_path.as_deref(),
+    };
+    match catalog.check_field_ref(context, reference) {
+        FieldCheckResult::Relation(relation) => Some(relation.table.id),
+        _ => None,
+    }
+}
+
+
+impl CompletionStage for FieldSelection {
+    async fn register_completions(bowl: &Bowl) {
+        bowl.add_system(complete_selections.run_during(bowl::Phase::Complete))
+            .await;
+    }
+}
+
+/// Contributes tables at query roots and columns/relations inside
+/// selection bodies, disambiguating multi-path relations with their
+/// `->selector`.
+async fn complete_selections(
+    requests: Query<(Entity, &CompletionContext), With<CompletionRequest>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands,
+) {
+    use crate::service::completion::{CompletionCandidate, CompletionItem, CompletionKind, CompletionSite};
+
+    let (request, context) = requests.item();
+    let (_, snapshot) = catalog.item();
+    let catalog = snapshot.catalog();
+
+    let mut push = |item: CompletionItem| {
+        commands.insert((
+            DerivedFrom::new(request),
+            CompletionCandidate { request, item },
+        ));
+    };
+
+    match (context.site, context.table) {
+        (CompletionSite::RootSelection, _) => {
+            for table in &catalog.tables {
+                let label = if table.schema == catalog.default_schema() {
+                    table.name.clone()
+                } else {
+                    format!("{}::{}", table.schema, table.name)
+                };
+                push(CompletionItem {
+                    label,
+                    kind: CompletionKind::Table,
+                    detail: Some(format!("table {}.{}", table.schema, table.name)),
+                    insert_text: None,
+                });
+            }
+        }
+        (CompletionSite::SelectionBody, Some(table)) => {
+            for column in catalog.columns_for_table(table) {
+                push(CompletionItem {
+                    label: column.name.clone(),
+                    kind: CompletionKind::Column,
+                    detail: Some(column.data_type.as_str().to_string()),
+                    insert_text: None,
+                });
+            }
+            let relations = catalog.relation_fields_for_table(table);
+            for relation in &relations {
+                let shared_paths = relations
+                    .iter()
+                    .filter(|candidate| candidate.name == relation.name)
+                    .count();
+                let label = if shared_paths > 1 {
+                    format!("{}->{}", relation.name, relation.selector)
+                } else {
+                    relation.name.to_string()
+                };
+                push(CompletionItem {
+                    label,
+                    kind: CompletionKind::Relation,
+                    detail: Some(format!(
+                        "relation to {}.{} via {}",
+                        relation.table.schema, relation.table.name, relation.selector
+                    )),
+                    insert_text: None,
+                });
+            }
+        }
+        _ => {}
     }
 }

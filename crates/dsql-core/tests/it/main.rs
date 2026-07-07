@@ -2,6 +2,7 @@
 //! area, mirroring the layout described in CONTRIBUTING.md.
 
 mod checks;
+mod completions;
 mod definitions;
 mod format;
 mod lowering;

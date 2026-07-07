@@ -8,7 +8,7 @@ use bowl::{
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
 use crate::entities::{direct_token, node_span, text};
-use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
@@ -295,4 +295,61 @@ async fn hover_spreads(
             text,
         },
     ));
+}
+
+
+impl CompletionStage for FragmentSpread {
+    async fn register_completions(bowl: &Bowl) {
+        bowl.add_system(complete_spreads.run_during(bowl::Phase::Complete))
+            .await;
+    }
+}
+
+/// Contributes fragments whose target matches the context table, both on a
+/// partial `...Name` and as `...Name` insertions inside selection bodies.
+async fn complete_spreads(
+    requests: Query<
+        (Entity, &crate::service::completion::CompletionContext),
+        With<crate::service::completion::CompletionRequest>,
+    >,
+    fragments: View<'_, (Entity, &DefDecl, &crate::entities::definition::FragmentTarget)>,
+    catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
+    mut commands: Commands,
+) {
+    use crate::catalog::TableRef;
+    use crate::service::completion::{CompletionCandidate, CompletionItem, CompletionKind, CompletionSite};
+
+    let (request, context) = requests.item();
+    let (_, snapshot) = catalog.item();
+
+    let Some(table) = context.table else {
+        return;
+    };
+    let spread_site = match context.site {
+        CompletionSite::SpreadName => true,
+        CompletionSite::SelectionBody => false,
+        _ => return,
+    };
+
+    for (_, decl, target) in fragments.iter() {
+        let Some(target_table) = snapshot.catalog().table_ref_for(TableRef::parse(&target.name))
+        else {
+            continue;
+        };
+        if target_table.id != table {
+            continue;
+        }
+        commands.insert((
+            DerivedFrom::new(request),
+            CompletionCandidate {
+                request,
+                item: CompletionItem {
+                    label: decl.name.clone(),
+                    kind: CompletionKind::Fragment,
+                    detail: Some(format!("fragment on {}", target.name)),
+                    insert_text: (!spread_site).then(|| format!("...{}", decl.name)),
+                },
+            },
+        ));
+    }
 }

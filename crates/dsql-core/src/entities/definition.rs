@@ -15,7 +15,7 @@ use bowl::{
 use crate::catalog::{CatalogSnapshot, TableRef, TableResolution};
 use crate::entities::document::ParsedFile;
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
@@ -347,4 +347,10 @@ async fn hover_definitions(
             text,
         },
     ));
+}
+
+
+impl CompletionStage for Definition {
+    /// Definition keywords come from the grammar layer.
+    async fn register_completions(_bowl: &Bowl) {}
 }

@@ -17,7 +17,7 @@ use crate::entities::field_selection::{SelectionTree, TreeViews};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
-use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span, VariablesDemand};
 use crate::grammar::parser::NodeRef;
@@ -617,4 +617,10 @@ async fn hover_variables(
             text,
         },
     ));
+}
+
+
+impl CompletionStage for Variable {
+    /// Variables are free-form names; nothing to suggest yet.
+    async fn register_completions(_bowl: &Bowl) {}
 }

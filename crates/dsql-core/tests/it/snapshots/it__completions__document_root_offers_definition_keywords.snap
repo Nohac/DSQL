@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+expression: "completions(\"|\").await"
+---
+Keyword fragment
+Keyword query

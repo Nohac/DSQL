@@ -74,12 +74,20 @@ pub trait HoverStage: LanguageEntity {
     fn register_hover(bowl: &Bowl) -> impl Future<Output = ()> + Send;
 }
 
+/// Service stage: register systems that contribute `CompletionCandidate`
+/// facts for enriched completion requests (see `service::completion`).
+/// Entities without completions register nothing (explicit empty impl).
+pub trait CompletionStage: LanguageEntity {
+    fn register_completions(bowl: &Bowl) -> impl Future<Output = ()> + Send;
+}
+
 /// The compile-time coverage contract: an entity only registers once it has
 /// declared every stage.
 pub async fn register_entity<E>(bowl: &Bowl)
 where
-    E: LanguageEntity + LowerStage + FormatStage + HoverStage,
+    E: LanguageEntity + LowerStage + FormatStage + HoverStage + CompletionStage,
 {
     E::register(bowl).await;
     E::register_hover(bowl).await;
+    E::register_completions(bowl).await;
 }

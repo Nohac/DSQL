@@ -8,6 +8,7 @@ use bowl::{Bowl, Entity, Mut, Query, Singleton};
 use ropey::Rope;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
@@ -24,7 +25,10 @@ use dsql_core::facts::{
 use dsql_core::format::{FormatConfidence, format_document};
 use dsql_core::grammar::parse;
 use dsql_core::register_language;
-use dsql_core::service::{DefinitionRequest, DefinitionTarget, HoverInfo, HoverRequest, Position};
+use dsql_core::service::{
+    CompletionKind, CompletionList, CompletionRequest, DefinitionRequest, DefinitionTarget,
+    HoverInfo, HoverRequest, Position,
+};
 use dsql_core::source::{FilePath, OpenBuffer, SourceText};
 use dsql_project::{Project, open_project_bowl};
 
@@ -156,6 +160,14 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![
+                        ".".to_string(),
+                        "$".to_string(),
+                        "@".to_string(),
+                    ]),
+                    ..CompletionOptions::default()
+                }),
                 definition_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
@@ -260,6 +272,50 @@ impl LanguageServer for Backend {
             }),
             range: None,
         }))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let Some(path) = uri_path(&uri) else {
+            return Ok(None);
+        };
+        let Some((_, rope)) = self.rope_of(&path).await else {
+            return Ok(None);
+        };
+        let offset = position_to_byte(&rope, params.text_document_position.position);
+
+        let Ok(list) = self
+            .bowl()
+            .insert((CompletionRequest, FilePath(path), Position { offset }))
+            .await
+            .bind()
+            .take::<CompletionList>()
+            .await
+        else {
+            return Ok(None);
+        };
+
+        let items: Vec<CompletionItem> = list
+            .0
+            .iter()
+            .map(|item| CompletionItem {
+                label: item.label.clone(),
+                kind: Some(match item.kind {
+                    CompletionKind::Column => CompletionItemKind::FIELD,
+                    CompletionKind::Relation => CompletionItemKind::REFERENCE,
+                    CompletionKind::Table => CompletionItemKind::CLASS,
+                    CompletionKind::Fragment => CompletionItemKind::SNIPPET,
+                    CompletionKind::Scope => CompletionItemKind::OPERATOR,
+                    CompletionKind::Operator => CompletionItemKind::OPERATOR,
+                    CompletionKind::Keyword => CompletionItemKind::KEYWORD,
+                }),
+                detail: item.detail.clone(),
+                insert_text: item.insert_text.clone(),
+                ..CompletionItem::default()
+            })
+            .collect();
+
+        Ok(Some(CompletionResponse::Array(items)))
     }
 
     async fn goto_definition(

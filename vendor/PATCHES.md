@@ -27,6 +27,15 @@ not listed here, it does not exist. See CONTRIBUTING.md for the rules.
    - Why: drives dsql error recovery and editor completions — knowing *which*
      tokens were viable at the error position, with spans, without parsing
      error-message strings.
+   - Extended for completion (same commit series):
+     `ExpectedToken` gained a `batch` index — 0 is the innermost (most
+     specific) expectation at a position, higher batches are recovery
+     bubbling outward — so consumers can take the precise set instead of
+     the noisy union. Loops and alternations that close on their follow set
+     *at end of input* now also record `predict ∪ follow` of the construct:
+     a clean prefix (the text before a completion cursor) then reports what
+     could legally continue it. Error messages are unchanged; recording is
+     additive.
 
 2. **Logos lexer generation from grammar token declarations.**
    - What: new `lelwel::build_lexer(path, &LexerSpec)` entry point generating
