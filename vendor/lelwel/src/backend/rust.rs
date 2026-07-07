@@ -60,6 +60,7 @@ impl Indent for String {
 trait Generator {
     fn pattern(&self, level: usize) -> String;
     fn error(&self, token_symbols: &FxHashMap<&str, &str>) -> String;
+    fn token_slice(&self) -> String;
 }
 
 impl Generator for std::collections::BTreeSet<TokenName<'_>> {
@@ -80,6 +81,15 @@ impl Generator for std::collections::BTreeSet<TokenName<'_>> {
             })
             .collect::<Vec<_>>();
         syntax_error_message(&expected)
+    }
+    fn token_slice(&self) -> String {
+        format!(
+            "&[{}]",
+            self.iter()
+                .map(|s| format!("Token::{}", s.0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
@@ -584,9 +594,11 @@ impl RustOutput {
             output.write_all(
                 format!(
                     "    {} => {{\
+                   \n        parser.record_expected_tokens({});\
                    \n        parser.advance_with_error(diags, err![parser, {}]);\
                    \n    }}\n",
                     advance_error_set.pattern(0),
+                    advance_error_set.token_slice(),
                     syntax_error_message(&[])
                 )
                 .indent(3)
@@ -596,9 +608,11 @@ impl RustOutput {
         output.write_all(
             format!(
                 "    _ => {{\
+               \n        parser.record_expected_tokens({});\
                \n        parser.error(diags, err![parser, {}]);\
                \n    }}\
                \n}}\n",
+                sema.predict_sets[&regex.syntax()].token_slice(),
                 sema.predict_sets[&regex.syntax()].error(token_symbols)
             )
             .indent(3)
@@ -883,21 +897,24 @@ impl RustOutput {
 
         let ordered_choice_return = ordered_choice_return.indent(3);
         let follow = sema.follow_sets[&regex.syntax()].pattern(2);
-        let expected = if is_loop {
-            sema.follow_sets[&op.syntax()].error(token_symbols)
+        let expected_tokens = if is_loop {
+            &sema.follow_sets[&op.syntax()]
         } else {
-            sema.predict_sets[&regex.syntax()].error(token_symbols)
+            &sema.predict_sets[&regex.syntax()]
         };
+        let expected = expected_tokens.error(token_symbols);
         let recovery = &sema.recovery_sets[&regex.syntax()];
         let recovery = if recovery.is_empty() {
             "".to_string()
         } else {
             format!(
                 "\n        | {} => {{{ordered_choice_return}\
+                 \n            {parser_name}.record_expected_tokens({});\
                  \n            {parser_name}.error(diags, err![{parser_name}, {expected}]);\
                  \n            break;\
                  \n        }}",
-                recovery.pattern(2)
+                recovery.pattern(2),
+                expected_tokens.token_slice()
             )
         };
         if !is_loop {
@@ -908,10 +925,12 @@ impl RustOutput {
                 "        }}\
                \n        {follow} => break,{recovery}\
                \n        _ => {{{ordered_choice_return}\
+               \n            {parser_name}.record_expected_tokens({});\
                \n            {parser_name}.advance_with_error(diags, err![{parser_name}, {expected}]);\
                \n        }}\
                \n    }}\
                \n}}\n",
+                expected_tokens.token_slice()
             )
             .indent(level)
             .as_bytes(),
@@ -1094,7 +1113,9 @@ impl RustOutput {
                 output.write_all("} else {\n".indent(level + 1).as_bytes())?;
                 output.write_all(
                     format!(
-                        "{parser_name}.advance_with_error(diags, err![{parser_name}, {}]);\n",
+                        "{parser_name}.record_expected_tokens({});\
+                       \n{parser_name}.advance_with_error(diags, err![{parser_name}, {}]);\n",
+                        predict.token_slice(),
                         syntax_error_message(&[])
                     )
                     .indent(level + 2)
@@ -1159,10 +1180,12 @@ impl RustOutput {
                     output.write_all(
                         format!(
                             "    {} => {{{}\
+                           \n        {parser_name}.record_expected_tokens({});\
                            \n        {parser_name}.advance_with_error(diags, err![{parser_name}, {}]);\
                            \n    }}\n",
                             advance_error_set.pattern(0),
                             ordered_choice_return.indent(2),
+                            advance_error_set.token_slice(),
                             syntax_error_message(&[])
                         )
                         .indent(level)
@@ -1172,10 +1195,12 @@ impl RustOutput {
                 output.write_all(
                     format!(
                         "    _ => {{{}\
+                       \n        {parser_name}.record_expected_tokens({});\
                        \n        {parser_name}.error(diags, err![{parser_name}, {}]);\
                        \n    }}\
                        \n}}\n",
                         ordered_choice_return.indent(2),
+                        sema.predict_sets[&regex.syntax()].token_slice(),
                         sema.predict_sets[&regex.syntax()].error(token_symbols),
                     )
                     .indent(level)

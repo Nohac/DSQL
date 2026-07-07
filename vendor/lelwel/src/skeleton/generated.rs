@@ -67,6 +67,12 @@ impl From<usize> for CstIndex {{
 /// On 64 bit platforms offsets and indices are stored as 48 bit integers.
 /// This allows the `Node` type to be 8 bytes in size as long as the `Rule`
 /// and `Token` enums are one byte in size.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpectedToken {{
+    pub token: Token,
+    pub span: Span,
+}}
+
 #[derive(Debug, Copy, Clone)]
 pub enum Node {{
     Rule(Rule, CstIndex),
@@ -261,6 +267,7 @@ impl CstData {{
 pub struct Cst<'a> {{
     source: &'a str,
     data: CstData,
+    expected_tokens: Vec<ExpectedToken>,
 }}
 #[allow(dead_code)]
 impl<'a> Cst<'a> {{
@@ -269,6 +276,10 @@ impl<'a> Cst<'a> {{
     }}
     pub fn into_data(self) -> CstData {{
         self.data
+    }}
+    /// Returns structured parser token expectations collected during parsing.
+    pub fn expected_tokens(&self) -> &[ExpectedToken] {{
+        &self.expected_tokens
     }}
     /// Returns an iterator over the children of the node referenced by `node_ref`.
     pub fn children(&self, node_ref: NodeRef) -> CstChildren<'_> {{
@@ -346,6 +357,7 @@ macro_rules! expect {{
         if let Token::$token = $self.current {{
             $self.advance(false, $diags);
         }} else {{
+            $self.record_expected_tokens(&[Token::$token]);
             $self.error($diags, err![$self, $msg]);
         }}
     }};
@@ -356,6 +368,7 @@ macro_rules! try_expect {{
         if let Token::$token = $self.current {{
             $self.advance(false, $diags);
         }} else {{
+            $self.record_expected_tokens(&[Token::$token]);
             if $self.in_ordered_choice {{
                 return None;
             }}
@@ -386,6 +399,19 @@ pub struct Parser<'a> {{
 }}
 #[allow(clippy::while_let_loop, dead_code, unused_parens)]
 impl<'a> Parser<'a> {{
+    fn record_expected_tokens(&mut self, tokens: &[Token]) {{
+        let span = self.span();
+        for token in tokens {{
+            let expected = ExpectedToken {{
+                token: *token,
+                span: span.clone(),
+            }};
+            if !self.cst.expected_tokens.contains(&expected) {{
+                self.cst.expected_tokens.push(expected);
+            }}
+        }}
+    }}
+
     fn active_error(&self) -> bool {{
         self.error_node.is_some() || self.error_since_advance
     }}
@@ -560,7 +586,7 @@ impl<'a> Parser<'a> {{
         Self {{
             current: Token::EOF,
             end_of_input: Token::EOF,
-            cst: Cst {{ data: CstData::new(spans), source }},
+            cst: Cst {{ data: CstData::new(spans), source, expected_tokens: Vec::new() }},
             tokens,
             pos: 0,
             max_offset,
@@ -594,6 +620,7 @@ impl<'a> Parser<'a> {{
 
         self.close_error_node(diags);
         if self.pos != token_count {{
+            self.record_expected_tokens(&[Token::EOF]);
             self.error(diags, err![self, "invalid syntax, expected: <end of file>"]);
             let error_tree = self.open(diags);
             while self.pos < token_count {{
