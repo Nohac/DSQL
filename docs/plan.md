@@ -1,0 +1,274 @@
+# DSQL on Porridge — Architecture and Port Plan
+
+This repository is a rewrite of `dsql-poc` with [porridge](https://github.com/Nohac/porridge)
+as the incremental evaluation engine. The language core is rebuilt as **language
+entities** (the porridge playground pattern) that carry over the **language atom
+principles** from `dsql-poc/docs/proposals/language-atoms.md`.
+
+Status: plan. Nothing below is implemented yet unless marked otherwise.
+
+## Goals
+
+1. **Porridge-native architecture.** The bowl is the compiler database: source
+   files, CSTs, language facts, diagnostics, plans, and SQL are all components
+   on entities. Compiler stages are systems. Incrementality, memoization, and
+   demand-driven evaluation come from porridge, not from a bespoke query layer
+   (dsql-poc used picante for this; it is replaced entirely).
+2. **Atom principles, entity shape.** Keep the guarantees of the language-atoms
+   proposal (single rule ownership, compile-time stage coverage, explicit
+   no-effect declarations) but implement them the playground way: plain traits,
+   one exhaustive `match` on the generated `Rule` enum, no registry or macro
+   machinery unless boilerplate forces it.
+3. **DRY: generated code is the source of truth.** The lelwel-generated parser
+   (`Rule` enum, CST) is the canonical definition of language constructs.
+   Nothing hand-mirrors it. Where dsql-poc duplicated grammar knowledge
+   (see "Known duplication" below), this repo generates or statically checks it.
+4. **Same general layout as dsql-poc**, trimmed to what each phase needs.
+
+## What we take from where
+
+| From | What |
+|------|------|
+| dsql-poc | The grammar (`dsql.llw`), the language itself (syntax, directives, variables, clauses), atom principles, stage list, catalog/plan/SQL design, formatter approach, insta-heavy integration testing, fixture queries |
+| porridge playground | Entity contract (`LanguageEntity` + stage traits + `register_entity`), exhaustive `lower_rule` dispatch, `LowerCtx` walk, candidate-fact service pipeline, demand markers, fingerprinted index singletons, bound joins, `DerivedFrom` diagnostics |
+| porridge (`bowl`) | The engine: components, entities, systems, queries, phases, hooks |
+
+## Dependencies
+
+- `bowl` (and `macros` transitively) as a **git dependency** on
+  `https://github.com/Nohac/porridge`, pinned to a `rev`. Bump deliberately.
+- `lelwel` **vendored in-repo** under `vendor/lelwel/`. dsql-poc already
+  depends on a locally patched checkout (`record_expected_tokens`, used for
+  error recovery and completions), so the patch must live in this repo to be
+  reproducible. Vendoring also unblocks the lexer-generation work below.
+- `logos` from crates.io (0.16) until/unless lexer generation requires patches;
+  then vendor the same way.
+- Rust edition 2024 (matches porridge).
+
+## Architecture
+
+### The bowl as the compiler database
+
+Everything is a component; there is no side database.
+
+- A **source file** is an entity with `FilePath` + `FileText`.
+- A **parse system** derives `ParsedFile` (CST) plus parse `Diagnostic`
+  entities (`DerivedFrom` the file, so they clean up when the file changes).
+- One generic **lowering walk** (`generate_ast` in playground terms) visits the
+  CST once per file and hands each rule node to the entity that owns it. Owners
+  emit **fact components** (typed, span-carrying) as new entities keyed to the
+  file.
+- **Check / lint / variable-inference / plan / SQL systems** are registered by
+  the entities that own the constructs, gated on demand markers
+  (`DiagnosticsDemand`, `PlanDemand`, `SqlDemand`, ...), and emit further facts
+  or diagnostics.
+- **Indexes** (fragment index, definition index, catalog snapshots) are
+  fingerprinted singleton components (`#[component(hash)]`), so an unchanged
+  set invalidates nothing.
+- **Cross-construct resolution** (fragment spread → fragment def, path → catalog
+  relation) uses bound joins (`Query<..., Where<Eq<Key>>>`) instead of manual
+  lookups.
+- **Services** (hover, completion, goto-definition, semantic tokens) use the
+  candidate-fact pipeline: enrichment (Phase::Complete) → per-entity candidate
+  systems → finalizer (Phase::Cleanup) picks by priority. External callers use
+  request entities + `bind().take::<Response>()`.
+
+### Language entities = language atoms
+
+One file per language concept under `crates/dsql-core/src/entities/`. Each file
+co-locates the concept's fact components, CST lowering, checks, and service
+contributions — the "vertical slice" both projects converged on.
+
+The stage traits are the compile-time coverage contract. Mapping the atom
+proposal's stage list onto entity traits:
+
+| Atom stage (dsql-poc) | Entity trait here | Coverage |
+|---|---|---|
+| build_ast + lower | `LowerStage` | required (merged — see decision 1) |
+| format | `FormatStage` | required |
+| check | `CheckStage` | required |
+| lint | `LintStage` | required trait, explicit no-effect impls allowed |
+| variables | `VariablesStage` | same |
+| plan | `PlanStage` | same |
+| sql | `SqlStage` | same |
+| metadata | `MetadataStage` | same |
+| editor (hover, completion, definition, tokens) | `HoverStage`, `CompletionStage`, ... added per service phase | same |
+
+`register_entity::<E>` bounds on every stage trait, so a new entity fails to
+compile until it declares each stage. A stage that does not apply is an
+explicit empty/no-effect impl with a doc comment stating why (the atom
+proposal's `no_effect("...")` rationale becomes the doc comment). If the
+no-effect boilerplate gets heavy across ~12 entities × ~9 stages, add a small
+declarative macro then — not before.
+
+Rule ownership lives in one exhaustive `match rule { ... }` in
+`entities/mod.rs`. Structural rules (consumed by their owning ancestors) are
+explicitly listed with a comment. Adding a rule to `dsql.llw` fails compilation
+until it is claimed. This gives the atom proposal's guarantees — single
+ownership, no orphan rules, drift breaks the build — with zero registry code.
+
+### Entity inventory and rule ownership
+
+Grammar rules from `dsql.llw` → owning entity (initial cut; the exhaustive
+match is the real source of truth once implemented):
+
+| Entity | Owns rules | Notes |
+|---|---|---|
+| `Document` | `document` | file root; parse system, parse diagnostics |
+| `QueryDef` | `query_def` | definition facts, duplicate-name check (via fingerprinted `DefIndex`) |
+| `FragmentDef` | `fragment_def` | fragment facts + fragment index |
+| `FieldSelection` | `field_selection`, `field_selection_tail`, `field_suffix` | selection facts, catalog field checks, relation selectors |
+| `FragmentSpread` | `fragment_spread` | spread facts; resolution via bound join on fragment name |
+| `Clause` | `clause_list`, `clause`, `where_clause`, `order_by_clause`, `limit_clause`, `offset_clause`, `order_item`, `sort_direction` | one entity, kind enum (matches dsql-poc's clause atom) |
+| `Directive` | `directive`, `directive_name`, `directive_namespace`, `directive_member`, `directive_argument` | directive registry checks |
+| `Expression` | `expr` (`binary_expr`), `literal`, `binary_operator`, `comparison_operator` | typed expression facts |
+| `Path` | `scoped_path`, `scoped_path_segment`, `qualified_name`, `relation_ref` | scope resolution against catalog |
+| `Variable` | `value_variable`, `operator_variable` | build-time vs query-time inference |
+| structural | `definition`, `selection`, `selection_set` | elided/consumed by owners |
+
+### Pipeline phases
+
+- **Startup**: load catalog (schema snapshot components; later: live
+  introspection), directive registry, project config.
+- **Evaluate**: parse, lowering walk, per-entity checks (gated on
+  `DiagnosticsDemand`), variable inference.
+- **Complete**: index aggregation (fingerprinted singletons), planning (gated
+  on `PlanDemand`), SQL generation (gated on `SqlDemand`), service enrichment +
+  candidates.
+- **Cleanup**: service finalizers, `cleanup_stale_derived`.
+
+### DRY: known duplication in dsql-poc and how this repo removes it
+
+1. **`SyntaxRule` hand-mirror of the generated `Rule` enum** — gone. All
+   dispatch, editor context classification, and formatting key directly off
+   the generated `Rule`.
+2. **Token strings defined twice** (`.llw` token declarations *and* logos
+   `#[token]` attributes on a hand-written `Token` enum). Plan: extend the
+   vendored lelwel so `lelwel::build` also emits the logos lexer from the
+   grammar's token section:
+   - literal tokens (`Query='query'`, `Eq='=='`) → `#[token("...")]`
+   - non-literal tokens (`Name='<name>'`) need a pattern lelwel doesn't carry
+     today → extend the `.llw` token declaration syntax (or a structured
+     comment/annotation) to attach the regex, e.g.
+     `token Name='<name>' /[A-Za-z_][A-Za-z0-9_]*/;`
+   - until that lands (phase 8), a hand-written lexer copied from dsql-poc plus
+     a build-time assertion that every `.llw` token has a matching `Token`
+     variant keeps drift loud instead of silent.
+3. **Loose sibling-path lelwel dep** — replaced by in-repo `vendor/lelwel/`
+   carrying the existing `record_expected_tokens` patch.
+
+### Workspace layout
+
+Mirrors dsql-poc, created as needed per phase:
+
+```
+Cargo.toml              # workspace
+CLAUDE.md               # agent rules (commits, code style)
+CONTRIBUTING.md         # how to run tools, testing conventions
+docs/                   # this plan, architecture notes, spec (ported/adapted from dsql-poc)
+vendor/lelwel/          # vendored parser generator (patched)
+crates/
+  dsql-core/            # the language: grammar, entities, facts, stages, services
+    build.rs            # lelwel::build("src/grammar/dsql.llw")
+    src/
+      grammar/          # dsql.llw, lexer (generated in phase 8), generated parser
+      entity.rs         # stage-trait contract + register_entity
+      entities/         # one file per language concept (vertical slices)
+      facts.rs          # cross-cutting components (Span, Diagnostic, demand markers)
+      catalog/          # schema catalog components + loading
+      service/          # candidate-fact pipelines (hover, completion, ...)
+      format/           # CST-based conservative formatter
+      sql/              # SQL rendering (sea-query)
+    tests/it/           # integration tests (insta snapshots) — single `it` harness
+  dsql-cli/             # phase 10+
+  dsql-lsp/             # phase 10+
+  dsql-project/         # phase 10+ (config, file discovery)
+  dsql-metadata/        # phase 10+ (serializable artifact schemas)
+  dsql-generate/        # later
+  dsql-introspection/   # later
+  dsql-embedding/       # later
+```
+
+Copy from dsql-poc where cheaper than rewriting: `dsql.llw`, the logos lexer,
+fixture queries (`tests/queries/valid|invalid`), schema fixtures, spec docs.
+
+### Testing
+
+- Integration tests over unit tests; one `tests/it/` harness per crate with
+  modules per area (parse, facts, diagnostics, variables, plan, sql, format,
+  services) — uv's `it` layout, dsql-poc's module split.
+- insta snapshots for everything user-visible: CST debug output, settled facts
+  (stable ordering!), diagnostics, plans, generated SQL, formatter output,
+  service responses.
+- Fixture `.dsql` files ported from dsql-poc; invalid fixtures drive
+  diagnostic snapshots.
+- Bowl-level determinism: snapshot only settled state, never mid-settle.
+
+## Phases
+
+Each phase lands as one or more atomic commits with tests.
+
+0. **Scaffolding** — workspace, docs, CLAUDE.md, CONTRIBUTING.md. *(this change)*
+1. **Grammar + parse** — vendor lelwel; copy `dsql.llw` + lexer; `dsql-core`
+   with build.rs; parse to CST; CST snapshot tests.
+2. **Entity skeleton** — bowl dep; entity contract traits; exhaustive
+   `lower_rule` dispatch (everything structural at first); `Document` entity:
+   file entities, parse system, parse diagnostics via `DerivedFrom`; first
+   settled-state snapshots.
+3. **Definitions** — `QueryDef`, `FragmentDef` entities; fingerprinted def
+   index; duplicate-name diagnostics (demand-gated).
+4. **Selections** — `FieldSelection`, `FragmentSpread`; fragment resolution via
+   bound join; unresolved-spread diagnostics.
+5. **Leaf constructs** — `Clause`, `Expression`, `Path`, `Variable`,
+   `Directive` entities; directive registry checks.
+6. **Catalog** — schema snapshot components (ported fixture format); path and
+   field checking against the catalog.
+7. **Variables** — build-time vs query-time inference; operator variables;
+   variable snapshots.
+8. **Lexer DRY** — extend vendored lelwel to emit the logos lexer from
+   `dsql.llw`; delete the hand-written lexer.
+9. **Plan + SQL** — plan facts; sea-query PostgreSQL rendering; SQL snapshots.
+10. **Formatting** — CST-based conservative formatter (trivia-preserving,
+    refuses on parse errors).
+11. **Services** — hover via candidate pipeline; then completion, definition,
+    semantic tokens; then `dsql-lsp` + `dsql-project` + `dsql-cli` crates.
+12. **The rest** — metadata, generate, introspection, embedding, TypeScript
+    integration, ported on demand.
+
+## Design decisions (with rationale)
+
+1. **No separate AST layer.** dsql-poc has CST → AST → lowered → checked;
+   the atom proposal gives each atom both an `Ast` and a `Lowered` type. Here
+   entities lower the CST **directly into fact components** — the facts *are*
+   the typed model. This deletes one full representation and its builder,
+   fits the playground pattern exactly, and formatting never needed the AST
+   (it is CST-based). Entities that want richer local structure keep private
+   helper types inside their own file.
+2. **Traits + exhaustive match instead of registries/macros.** The atom
+   proposal's registry indirection existed so stages don't call atoms by name;
+   the playground shows the same drift guarantees fall out of trait bounds and
+   one `match`. Less machinery, better jump-to-definition, same compile-time
+   coverage.
+3. **One `Clause` entity, not four.** where/order/limit/offset share shape,
+   checks, and planning surface; a kind enum keeps the exhaustive match small.
+   Split later if one clause grows real independent behavior.
+4. **Vendor lelwel from phase 1**, not when first patch is "needed" — the
+   patch is already needed (dsql-poc's checkout is already dirty), and an
+   unversioned sibling path dep is the reproducibility bug this repo fixes.
+5. **Porridge stays a git dep, pinned.** It is actively evolving (streaming
+   evaluation planned); pinning a rev keeps upgrades deliberate. Design only
+   against documented patterns (demand markers, phases, bound joins,
+   `DerivedFrom`), which are the stable surface per its spec/.
+
+## Open questions
+
+- **Editor stage granularity**: one `EditorStage` trait vs one trait per
+  service (`HoverStage`, `CompletionStage`, ...). Leaning per-service traits
+  added in the phase that introduces the service, so no-effect declarations
+  stay precise.
+- **Lexer regex syntax in `.llw`**: extend lelwel's grammar syntax vs sidecar
+  annotations. Decide in phase 8 with upstream (0x2a-42/lelwel) compatibility
+  in mind — keep the vendored fork rebasable.
+- **`dsql-frontend` equivalent**: possibly unnecessary — the bowl *is* the
+  frontend. Revisit when `dsql-lsp` lands; adapters may talk to the bowl
+  directly.
