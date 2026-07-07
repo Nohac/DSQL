@@ -1,0 +1,24 @@
+token A B C;
+
+start s;
+
+s:
+  c
+;
+
+a:
+  b
+;
+
+b:
+;
+
+c:
+  B d
+;
+
+d:
+;
+
+e:
+;

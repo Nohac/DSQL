@@ -1,0 +1,32 @@
+token A B C D E;
+
+start s;
+
+s:
+  (A | A)
+  (a | A)
+  (B)* B
+  (B)+ B
+  [B] B
+  c C
+  d
+  e
+;
+
+a:
+  A
+;
+
+c:
+  [C]
+;
+
+d:
+  ?1 D
+| D
+;
+
+e:
+  e
+| E
+;

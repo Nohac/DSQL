@@ -1,0 +1,6 @@
+token Error EOF;
+
+start s;
+
+s: error EOF;
+error: Error;

@@ -1,0 +1,4 @@
+token a b C D;
+
+start s;
+s:;
