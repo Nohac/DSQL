@@ -5,7 +5,7 @@
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::entities::variable::VariableBinding;
-use dsql_core::facts::VariablesDemand;
+use dsql_core::facts::{Span, VariablesDemand};
 use dsql_core::register_language;
 use dsql_core::source::insert_source;
 use futures::executor::block_on;
@@ -21,13 +21,16 @@ async fn variables_bowl() -> Bowl {
 
 /// Renders bindings in dsql-poc's `variables__variable_bindings.snap` shape.
 async fn render_bindings(bowl: &Bowl) -> String {
-    let rows = bowl.scoop::<Query<(Entity, &VariableBinding)>>().await;
-    let mut bindings: Vec<&VariableBinding> =
-        rows.collect().into_iter().map(|(_, binding)| binding).collect();
-    bindings.sort_by_key(|binding| (binding.span.start, binding.span.end));
+    let rows = bowl.scoop::<Query<(Entity, &Span, &VariableBinding)>>().await;
+    let mut bindings: Vec<(&Span, &VariableBinding)> = rows
+        .collect()
+        .into_iter()
+        .map(|(_, span, binding)| (span, binding))
+        .collect();
+    bindings.sort_by_key(|(span, _)| (span.start, span.end));
     bindings
         .into_iter()
-        .map(|binding| {
+        .map(|(_, binding)| {
             let operators = binding
                 .operators
                 .iter()

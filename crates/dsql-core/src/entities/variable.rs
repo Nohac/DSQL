@@ -102,11 +102,11 @@ pub enum VariableRole {
 
 /// One inferred variable binding: the parameter a query or fragment takes,
 /// with its structured path, binding time, and value type. Derived per
-/// definition by [`infer_variables`].
+/// definition by [`infer_variables`]; the occurrence's [`Span`] rides the
+/// same entity as its own component, like diagnostics do.
 #[derive(Component, Debug, Clone, Hash, PartialEq)]
 #[component(hash)]
 pub struct VariableBinding {
-    pub span: Span,
     pub path: String,
     pub source: VariableSource,
     pub name: Option<String>,
@@ -187,12 +187,11 @@ async fn infer_variables(
         }
     }
 
-    let mut bindings = inference.bindings;
-    bindings.sort_by_key(|binding| (binding.span.start, binding.span.end));
-    for binding in bindings {
+    for (span, binding) in inference.bindings {
         commands.insert((
             DerivedFrom::many([def_entity, catalog_entity]),
             BelongsToFile(file.0),
+            span,
             binding,
         ));
     }
@@ -201,7 +200,7 @@ async fn infer_variables(
 struct Inference<'a> {
     tree: &'a SelectionTree<'a>,
     catalog: &'a crate::catalog::Catalog,
-    bindings: Vec<VariableBinding>,
+    bindings: Vec<(Span, VariableBinding)>,
 }
 
 impl Inference<'_> {
@@ -502,8 +501,7 @@ impl Inference<'_> {
             operator.sigil,
             Some(&key),
         );
-        self.bindings.push(VariableBinding {
-            span: operator.span,
+        self.bindings.push((operator.span, VariableBinding {
             path,
             source: operator.sigil.into(),
             name,
@@ -511,7 +509,7 @@ impl Inference<'_> {
             role: VariableRole::ComparisonOperator,
             enum_values: allowed.iter().map(|op| op.as_str().to_string()).collect(),
             operators: allowed,
-        });
+        }));
     }
 
     fn push_binding(
@@ -532,8 +530,7 @@ impl Inference<'_> {
             variable.sigil,
             name.as_deref(),
         );
-        self.bindings.push(VariableBinding {
-            span: variable.span,
+        self.bindings.push((variable.span, VariableBinding {
             path,
             source: variable.sigil.into(),
             name,
@@ -541,7 +538,7 @@ impl Inference<'_> {
             role: context.role,
             operators: context.operators,
             enum_values: context.enum_values,
-        });
+        }));
     }
 }
 

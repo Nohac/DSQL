@@ -51,6 +51,10 @@
 - Keep entrypoint files (`lib.rs`, `mod.rs`, `main.rs`) slim: module
   declarations, re-exports, and pure composition only — function bodies live
   in named modules.
+- Prefer narrow components. When a value describes the entity as a whole and
+  a cross-cutting component already exists for it (`Span`, `BelongsToFile`,
+  `Severity`), attach that component to the entity instead of embedding the
+  field in a fact struct.
 - Pre-1.0: refactors are replacement changes — no compatibility bridges.
 
 ## Dependencies
