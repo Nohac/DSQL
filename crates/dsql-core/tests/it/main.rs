@@ -2,6 +2,7 @@
 //! area, mirroring the layout described in CONTRIBUTING.md.
 
 mod parse;
+mod settle;
 
 use std::fmt::Write;
 use std::path::{Path, PathBuf};

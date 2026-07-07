@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/settle.rs
+expression: "format!(\"parsed files:\\n{}\\ndiagnostics:\\n{diagnostics}\", paths.join(\"\\n\"),)"
+---
+parsed files:
+valid/imdb-movie-info-basic.dsql
+valid/imdb-title-basic.dsql
+diagnostics:

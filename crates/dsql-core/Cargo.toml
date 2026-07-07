@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+bowl = { workspace = true }
 codespan-reporting = { workspace = true }
 logos = { workspace = true }
 ropey = { workspace = true }
@@ -12,4 +13,5 @@ ropey = { workspace = true }
 lelwel = { workspace = true }
 
 [dev-dependencies]
+futures = { workspace = true }
 insta = { workspace = true }

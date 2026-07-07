@@ -32,6 +32,10 @@
   state.
 - Fixture queries live under `tests/it/queries/{valid,invalid}/`; copy the
   style of nearby fixtures when adding cases.
+- Never test external crate/library functionality — only our own behavior
+  (vendored patches we maintain count as ours). Trivial tests of the
+  "serialize a struct, check a string exists" kind are not useful; test
+  observable pipeline behavior instead.
 
 ## Style
 

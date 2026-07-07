@@ -10,9 +10,11 @@ edition = "2024"
 [workspace.dependencies]
 dsql-core = { path = "crates/dsql-core" }
 
+bowl = { git = "https://github.com/Nohac/porridge", rev = "e03d8ff59e3bc2c55dc0d3af5de1bcedaeb577e4" }
 lelwel = { path = "vendor/lelwel" }
 logos = { path = "vendor/logos" }
 
 codespan-reporting = "0.13"
+futures = "0.3"
 insta = "1.48"
 ropey = "2.0.0-beta.1"
