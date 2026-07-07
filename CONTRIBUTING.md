@@ -48,6 +48,9 @@
   single source of truth; never scatter literals across call sites.
 - Name `Bowl` variables and parameters `bowl`, not `db` (`bowl.scoop` reads
   the way the engine intends).
+- Keep entrypoint files (`lib.rs`, `mod.rs`, `main.rs`) slim: module
+  declarations, re-exports, and pure composition only — function bodies live
+  in named modules.
 - Pre-1.0: refactors are replacement changes — no compatibility bridges.
 
 ## Dependencies
