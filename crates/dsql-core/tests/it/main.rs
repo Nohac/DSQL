@@ -3,6 +3,7 @@
 
 mod checks;
 mod definitions;
+mod format;
 mod lowering;
 mod parse;
 mod selections;

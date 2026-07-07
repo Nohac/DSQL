@@ -74,8 +74,7 @@ pub fn render_diagnostics(source: &str, diagnostics: &[Diagnostic]) -> String {
 }
 
 /// Loads the imdb schema fixtures into a [`dsql_core::catalog::Catalog`].
-/// The directory loader lives here until `dsql-project` is ported; it
-/// mirrors dsql-poc's `load_metadata_dir`.
+/// The directory loader lives here until `dsql-project` exists.
 pub fn imdb_catalog() -> dsql_core::catalog::Catalog {
     use dsql_core::catalog::{Catalog, SchemaMetadata, TableMetadata, table_metadata_from_yaml};
 

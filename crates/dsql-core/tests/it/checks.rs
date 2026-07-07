@@ -1,6 +1,6 @@
 //! Catalog checks: valid fixtures produce no diagnostics against the imdb
-//! schema; invalid fixtures and inline sources produce the ported dsql-poc
-//! check diagnostics, demand-gated and catalog-reactive.
+//! schema; invalid fixtures and inline sources produce check diagnostics,
+//! demand-gated and catalog-reactive.
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};

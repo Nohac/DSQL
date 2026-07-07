@@ -1,4 +1,4 @@
-//! Variable inference: bindings match dsql-poc's shapes — structured (`$`)
+//! Variable inference: structured (`$`)
 //! versus top-level (`$$`) paths, operator allowlists, sort directions, and
 //! fragment envelopes. Demand-gated on `VariablesDemand`.
 
@@ -19,7 +19,7 @@ async fn variables_bowl() -> Bowl {
     bowl
 }
 
-/// Renders bindings in dsql-poc's `variables__variable_bindings.snap` shape.
+/// Renders bindings one per line for snapshots.
 async fn render_bindings(bowl: &Bowl) -> String {
     let rows = bowl.scoop::<Query<(Entity, &Span, &VariableBinding)>>().await;
     let mut bindings: Vec<(&Span, &VariableBinding)> = rows
@@ -58,9 +58,9 @@ async fn case(name: &str, source: &str) -> String {
     format!("{name}\n{}", render_bindings(&bowl).await)
 }
 
-/// The four dsql-poc inference cases, verbatim sources.
+/// The four reference inference cases.
 #[test]
-fn variable_bindings_match_dsql_poc_shapes() {
+fn variable_bindings_match_reference_shapes() {
     block_on(async {
         let scalar = case(
             "scalar",

@@ -144,3 +144,53 @@ pub(crate) fn node_span(cst: &CstData, node: NodeRef) -> Span {
 pub(crate) fn text(source: &str, span: Span) -> &str {
     &source[span.start..span.end]
 }
+
+
+/// Rule-ownership dispatch for the format stage, mirroring [`lower_rule`]:
+/// exhaustive over the rules the formatter hands to entities. Structural
+/// rules are laid out by the engine itself (selection sets, clause lists)
+/// or consumed by their owner's formatting.
+pub fn format_rule(
+    formatter: &mut crate::format::CstFormatter<'_>,
+    rule: Rule,
+    node: NodeRef,
+) -> bool {
+    use crate::entity::FormatStage;
+
+    match rule {
+        Rule::Document => Document::format(formatter, node),
+        Rule::QueryDef | Rule::FragmentDef => Definition::format(formatter, node),
+        Rule::FieldSelection => FieldSelection::format(formatter, node),
+        Rule::FragmentSpread => FragmentSpread::format(formatter, node),
+        Rule::WhereClause | Rule::OrderByClause | Rule::LimitClause | Rule::OffsetClause => {
+            Clause::format(formatter, node)
+        }
+        Rule::Directive => Directive::format(formatter, node),
+        Rule::ValueVariable | Rule::OperatorVariable => Variable::format(formatter, node),
+        Rule::Expr
+        | Rule::BinaryExpr
+        | Rule::Literal
+        | Rule::BinaryOperator
+        | Rule::ComparisonOperator
+        | Rule::ScopedPath
+        | Rule::ScopedPathSegment => Expression::format(formatter, node),
+        // Structural rules: laid out by the engine or their owner.
+        Rule::FieldSelectionTail
+        | Rule::FieldSuffix
+        | Rule::Clause
+        | Rule::ClauseList
+        | Rule::OrderItem
+        | Rule::SortDirection
+        | Rule::DirectiveName
+        | Rule::DirectiveNamespace
+        | Rule::DirectiveMember
+        | Rule::DirectiveArgument
+        | Rule::QualifiedName
+        | Rule::RelationRef
+        | Rule::Definition
+        | Rule::Selection
+        | Rule::SelectionSet
+        | Rule::Error => return false,
+    }
+    true
+}

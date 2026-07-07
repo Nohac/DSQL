@@ -3,7 +3,8 @@
 
 use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query};
 
-use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::format::CstFormatter;
 use crate::facts::{
     DiagnosticCode, DiagnosticFacts, DiagnosticSource, Severity, Span, emit_diagnostic,
 };
@@ -86,5 +87,29 @@ pub async fn parse_file(query: Query<(Entity, &SourceText)>, mut commands: Comma
                 message: diagnostic.message,
             },
         );
+    }
+}
+
+
+impl FormatStage for Document {
+    /// Top-level layout: definitions and comments separated by blank lines.
+    fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
+        use crate::grammar::lexer::Token;
+        use crate::grammar::parser::Rule;
+
+        let mut first = true;
+        for child in formatter.children(node) {
+            match (formatter.rule(child), formatter.token(child)) {
+                (_, Some(Token::Comment)) => {
+                    formatter.blank_between_definitions(&mut first);
+                    formatter.write_node_text(child);
+                }
+                (Some(Rule::QueryDef | Rule::FragmentDef), _) => {
+                    formatter.blank_between_definitions(&mut first);
+                    formatter.format_child(child);
+                }
+                _ => {}
+            }
+        }
     }
 }

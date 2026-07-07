@@ -9,7 +9,8 @@ use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
 use crate::entities::fragment_spread::{SpreadDecl, check_spread_site};
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     ParentKey, Severity, Span, emit_diagnostic,
@@ -523,6 +524,38 @@ impl CheckCtx<'_, '_> {
                     ),
                 );
             }
+        }
+    }
+}
+
+
+impl FormatStage for FieldSelection {
+    fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
+        let first = formatter.direct_relation_ref_text(node);
+        let tail = formatter.direct_rule(node, Rule::FieldSelectionTail);
+        let (alias, name, suffix) = if let Some(tail) = tail {
+            let tail_name = formatter.direct_relation_ref_text(tail);
+            if tail_name.is_some() {
+                (
+                    first,
+                    tail_name,
+                    formatter.direct_rule(tail, Rule::FieldSuffix),
+                )
+            } else {
+                (None, first, formatter.direct_rule(tail, Rule::FieldSuffix))
+            }
+        } else {
+            (None, first, None)
+        };
+        if let Some(alias) = alias {
+            formatter.write_str(&alias);
+            formatter.write_str(": ");
+        }
+        if let Some(name) = name {
+            formatter.write_str(&name);
+        }
+        if let Some(suffix) = suffix {
+            formatter.field_suffix(suffix);
         }
     }
 }

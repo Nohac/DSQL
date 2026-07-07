@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod entities;
 pub mod entity;
 pub mod facts;
+pub mod format;
 pub mod grammar;
 pub mod plan;
 pub mod source;

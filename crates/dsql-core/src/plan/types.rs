@@ -1,9 +1,4 @@
-//! Plan representation, ported from dsql-poc `plan/types.rs`.
-//!
-//! Identical shapes; the diagnostic plumbing became bowl diagnostic facts,
-//! `TextRange` became [`Span`], and the operator enum is the plan-local
-//! [`FilterOp`] (dsql-poc reused its AST `BinaryOp`, which included the
-//! boolean connectives).
+//! Plan representation.
 
 use bowl::Component;
 

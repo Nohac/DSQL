@@ -17,7 +17,8 @@ use crate::entities::field_selection::{SelectionTree, TreeViews};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
-use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span, VariablesDemand};
 use crate::grammar::parser::NodeRef;
 
@@ -74,7 +75,7 @@ impl LowerStage for Variable {
 
 
 /// Whether a binding surfaces as structured input (`$`, `input.*`) or a
-/// top-level parameter (`$$`, `params.*`). Ported from dsql-poc.
+/// top-level parameter (`$$`, `params.*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VariableSource {
     Structured,
@@ -90,7 +91,7 @@ impl From<Sigil> for VariableSource {
     }
 }
 
-/// What a variable occurrence parameterizes. Ported from dsql-poc.
+/// What a variable occurrence parameterizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VariableRole {
     WhereValue,
@@ -116,8 +117,8 @@ pub struct VariableBinding {
     pub enum_values: Vec<String>,
 }
 
-/// Infers the variable bindings of each definition, ported from dsql-poc's
-/// `infer_variable_bindings`: queries bind their own clauses (spreads are
+/// Infers the variable bindings of each definition: queries bind their own
+/// clauses (spreads are
 /// not expanded — a fragment's parameters belong to the fragment), while
 /// fragment bodies do expand nested spreads with an enveloped path scope.
 /// Gated on [`VariablesDemand`].
@@ -558,4 +559,12 @@ fn response_key(selection: &crate::entities::field_selection::FieldSel) -> Strin
         .alias
         .clone()
         .unwrap_or_else(|| TableRef::parse(&selection.name).name.to_string())
+}
+
+
+impl FormatStage for Variable {
+    /// Variables are preserved verbatim.
+    fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
+        formatter.write_node_text(node);
+    }
 }

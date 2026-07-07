@@ -94,7 +94,7 @@ fn duplicate_fragments_in_different_files_are_allowed() {
         let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
         assert_eq!(
             diagnostics, 0,
-            "fragment duplicate scope is per file (dsql-poc FragmentMap semantics)"
+            "fragment duplicate scope is per file"
         );
     });
 }

@@ -12,5 +12,5 @@ pub mod lowering;
 pub mod variable;
 pub mod variable_path;
 
-pub use lowering::generate_ast;
+pub use lowering::{format_rule, generate_ast};
 pub(crate) use lowering::{direct_rule, direct_token, node_span, text};

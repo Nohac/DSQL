@@ -8,7 +8,8 @@ use bowl::{Bowl, Commands, Component, DerivedFrom};
 
 use crate::entities::expression::{Expr, VariableRef, build_expr, build_variable_ref, expr_child};
 use crate::entities::{direct_rule, node_span, text};
-use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span};
 use crate::grammar::parser::{CstData, NodeRef, Rule};
 
@@ -191,8 +192,8 @@ fn table_name(
         .map_or("<unknown>".to_string(), |table| table.name.clone())
 }
 
-/// Ported from dsql-poc `check_predicate_expr`: paths must resolve, and
-/// path-vs-literal comparisons must agree with the column's type.
+/// Predicate checks: paths must resolve, and path-vs-literal comparisons
+/// must agree with the column's type.
 fn check_predicate_expr(
     ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
     root_table: crate::catalog::TableId,
@@ -327,8 +328,7 @@ fn check_binary_predicate_types(
 }
 
 /// Resolves a scoped path to the column it names, stepping through relation
-/// segments. Parent scope (`..`) is not resolvable at check time, matching
-/// dsql-poc.
+/// segments. Parent scope (`..`) is not resolvable at check time.
 fn resolve_predicate_path(
     ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
     root_table: crate::catalog::TableId,
@@ -393,5 +393,39 @@ fn check_non_negative_integer(
             DiagnosticCode::ClauseValueTypeMismatch,
             format!("clause `{clause}` expects a non-negative integer"),
         );
+    }
+}
+
+
+impl FormatStage for Clause {
+    fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
+        if formatter.rule(node) == Some(Rule::WhereClause) {
+            formatter.write_str("where ");
+            if let Some(value) = formatter.direct_value_rule(node) {
+                formatter.expr(value);
+            }
+        } else if formatter.rule(node) == Some(Rule::OrderByClause) {
+            formatter.write_str("order by ");
+            for (idx, item) in formatter
+                .direct_rules(node, Rule::OrderItem)
+                .into_iter()
+                .enumerate()
+            {
+                if idx > 0 {
+                    formatter.write_str(", ");
+                }
+                formatter.order_item(item);
+            }
+        } else if formatter.rule(node) == Some(Rule::LimitClause) {
+            formatter.write_str("limit ");
+            if let Some(value) = formatter.direct_value_rule(node) {
+                formatter.expr(value);
+            }
+        } else {
+            formatter.write_str("offset ");
+            if let Some(value) = formatter.direct_value_rule(node) {
+                formatter.expr(value);
+            }
+        }
     }
 }

@@ -107,11 +107,10 @@ fn operator_variables_lower_inside_expressions() {
     });
 }
 
-/// Pins a language wart carried over from dsql-poc: keywords (`limit`,
-/// `order`, ...) lex as keyword tokens even after a variable sigil, so
-/// `$$limit` parses as an anonymous `$$` followed by a spurious `limit`
-/// clause. dsql-poc's README uses `$$limit`, but its grammar and tests never
-/// support it. Candidate fix alongside the generated lexer (phase 8).
+/// Pins a language wart: keywords (`limit`, `order`, ...) lex as keyword
+/// tokens even after a variable sigil, so `$$limit` parses as an anonymous
+/// `$$` followed by a spurious `limit` clause. Candidate fix: contextual
+/// keyword handling in the generated lexer.
 #[test]
 fn keyword_named_variables_do_not_parse_as_names() {
     block_on(async {

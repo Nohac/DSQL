@@ -1,4 +1,4 @@
-//! The facts-to-plan builder, ported from dsql-poc `plan/build.rs`.
+//! The facts-to-plan builder.
 //!
 //! One plan per query-root selection: projections and nested relations from
 //! the checked fact tree, filters lowered from expression trees (multi-step
@@ -35,8 +35,8 @@ pub async fn register_planning(bowl: &Bowl) {
     bowl.add_system(plan_queries).await;
 }
 
-/// Plans every root selection of each query definition. Ported from
-/// dsql-poc `plan_file_with_catalog`: root spreads are skipped, unresolved
+/// Plans every root selection of each query definition. Root spreads are
+/// skipped, unresolved
 /// roots produce plan diagnostics, and fragment spreads below the root
 /// splice the fragment's items in with an enveloped variable scope.
 async fn plan_queries(
@@ -155,7 +155,7 @@ struct Planner<'a> {
 }
 
 impl Planner<'_> {
-    #[expect(clippy::too_many_arguments, reason = "ported recursion state from dsql-poc")]
+    #[expect(clippy::too_many_arguments, reason = "recursion threads the whole walk state")]
     fn plan_selection_set(
         &mut self,
         root_table: TableId,
@@ -169,9 +169,8 @@ impl Planner<'_> {
     ) -> Option<SelectionPlan> {
         let mut items = Vec::new();
 
-        // Interleaving of fields and spreads is not preserved (facts carry
-        // no sibling order between the two kinds beyond spans); dsql-poc
-        // walked the AST in source order. Match it by merging on span order.
+        // Facts carry no sibling order between fields and spreads beyond
+        // their spans, so source order is restored by merging on span order.
         enum Child<'a> {
             Field(&'a FieldSel, NodeKey),
             Spread(String),
@@ -198,9 +197,9 @@ impl Planner<'_> {
                     else {
                         continue;
                     };
-                    // dsql-poc had no cycle guard here (checks reject the
-                    // source first); planning is demand-driven and must not
-                    // hang on cyclic input, so guard explicitly.
+                    // Planning is demand-driven and runs regardless of check
+                    // status, so cyclic spreads must be guarded against here
+                    // rather than trusting checks to have rejected them.
                     if visiting.contains(&name) {
                         continue;
                     }
@@ -655,7 +654,7 @@ impl Planner<'_> {
 
     /// Multi-segment `Current`-scoped predicate paths become nested
     /// `EXISTS` subqueries stepping through each relation.
-    #[expect(clippy::too_many_arguments, reason = "ported recursion state from dsql-poc")]
+    #[expect(clippy::too_many_arguments, reason = "recursion threads the whole walk state")]
     fn relation_predicate_filter(
         &mut self,
         table: TableId,
@@ -688,7 +687,7 @@ impl Planner<'_> {
         )
     }
 
-    #[expect(clippy::too_many_arguments, reason = "ported recursion state from dsql-poc")]
+    #[expect(clippy::too_many_arguments, reason = "recursion threads the whole walk state")]
     fn relation_predicate_segments(
         &mut self,
         table: TableId,

@@ -1,5 +1,5 @@
-//! Plan and SQL generation: fixture queries plan and render to the same
-//! PostgreSQL dsql-poc generated, on demand.
+//! Plan and SQL generation: fixture queries plan and render to PostgreSQL
+//! on demand.
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
@@ -19,7 +19,7 @@ async fn sql_bowl(catalog: Catalog) -> Bowl {
         .await;
     bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))
         .await;
-    // Match dsql-poc's snapshot options: bound nested collections at 10.
+    // Bound nested collections at 10, the reference snapshot setting.
     bowl.insert((
         Singleton::<SqlOptions>::new(),
         SqlOptions {
@@ -30,7 +30,7 @@ async fn sql_bowl(catalog: Catalog) -> Bowl {
     bowl
 }
 
-/// Renders all generated SQL facts in dsql-poc's snapshot shape.
+/// Renders all generated SQL facts, one section per query.
 async fn render_sql(bowl: &Bowl) -> String {
     let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
     let mut generated: Vec<&GeneratedSqlFact> = rows
