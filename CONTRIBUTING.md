@@ -4,8 +4,9 @@
 
 - `docs/plan.md` — the architecture plan; read it before structural changes.
 - `crates/` — the workspace crates; `dsql-core` is the language itself.
-- `vendor/lelwel/` — vendored, patched parser generator (see docs/plan.md for
-  why it is vendored and what the patches are).
+- `vendor/` — vendored dependencies (`lelwel`, `logos`), added as git subtrees
+  (see docs/plan.md for the rationale). `vendor/PATCHES.md` is the ledger of
+  local changes.
 
 ## Building and checking
 
@@ -48,3 +49,16 @@
 - `bowl` (porridge) is a git dependency pinned to a rev; bump deliberately and
   in a dedicated commit.
 - Lockfile changes only via `cargo update --precise <pkg>@<version>`.
+
+## Vendored crates
+
+- Every local change to a crate under `vendor/` MUST be recorded in
+  `vendor/PATCHES.md` (what, where, why) in the same commit, with the commit
+  subject prefixed `vendor(<crate>):`. If it is not in the ledger, it does
+  not exist.
+- Keep vendor changes additive (new hooks, new emit passes) rather than
+  rewriting upstream code, so `git subtree pull` merges stay tractable and
+  patches remain upstreamable.
+- Update a subtree with
+  `git subtree pull --prefix vendor/<crate> <upstream-url> <tag> --squash`,
+  in a dedicated commit, and record the new upstream rev in the ledger.

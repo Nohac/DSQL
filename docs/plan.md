@@ -37,13 +37,42 @@ Status: plan. Nothing below is implemented yet unless marked otherwise.
 
 - `bowl` (and `macros` transitively) as a **git dependency** on
   `https://github.com/Nohac/porridge`, pinned to a `rev`. Bump deliberately.
-- `lelwel` **vendored in-repo** under `vendor/lelwel/`. dsql-poc already
-  depends on a locally patched checkout (`record_expected_tokens`, used for
-  error recovery and completions), so the patch must live in this repo to be
-  reproducible. Vendoring also unblocks the lexer-generation work below.
-- `logos` from crates.io (0.16) until/unless lexer generation requires patches;
-  then vendor the same way.
+- `lelwel` and `logos` **vendored in-repo** (see below). dsql-poc already
+  depends on a locally patched lelwel checkout (`record_expected_tokens`, used
+  for error recovery and completions), so the patch must live in this repo to
+  be reproducible. Vendoring both unblocks the lexer-generation work below and
+  any logos changes it turns out to need. They may move out to standalone
+  forks/crates later; the vendoring discipline is designed to keep that cheap.
 - Rust edition 2024 (matches porridge).
+
+### Vendoring: `git subtree`, not submodules
+
+Both dependencies are vendored with `git subtree --squash` into `vendor/`:
+
+```
+git subtree add --prefix vendor/lelwel https://github.com/0x2a-42/lelwel.git v0.10.4 --squash
+git subtree add --prefix vendor/logos  https://github.com/maciejhirsz/logos.git v0.16.0 --squash
+```
+
+Why subtree over submodules: local patches become ordinary commits in *this*
+repo (no fork hosting required, no detached-HEAD bookkeeping), a vendor change
+and the consumer change that needs it land in **one atomic commit**, fresh
+clones and CI need no `--recursive` step, and `git subtree pull` can still
+merge upstream releases later. Squashing keeps upstream history out of our log.
+
+Discipline (also in CONTRIBUTING.md):
+
+- `vendor/PATCHES.md` documents, per crate: upstream URL, the vendored
+  tag/rev, and **every local change** — what, where, and why. This file is the
+  DRY ledger; if a change is not listed there, it does not exist.
+- Each functional local change is its own commit, subject-prefixed
+  `vendor(lelwel):` / `vendor(logos):`, and updates `PATCHES.md` in the same
+  commit.
+- Keep changes rebasable: prefer additive hooks (new methods, new emit passes)
+  over rewrites of upstream code, so `git subtree pull` merges stay tractable
+  and upstreaming remains possible.
+- `logos` is a crate family (`logos`, `logos-codegen`, `logos-derive`); the
+  subtree carries the whole workspace and our crates take `path` deps into it.
 
 ## Architecture
 
@@ -72,6 +101,47 @@ Everything is a component; there is no side database.
   candidate-fact pipeline: enrichment (Phase::Complete) → per-entity candidate
   systems → finalizer (Phase::Cleanup) picks by priority. External callers use
   request entities + `bind().take::<Response>()`.
+
+### Source model: batch analysis vs live LSP buffers
+
+dsql-poc spent real design effort separating the two ways text enters the
+compiler: **analysis** just needs to open a file once and emit facts, while the
+**LSP** holds a document open and mutates it rapidly (ropey). That split is
+kept, but in porridge terms the difference collapses to *who writes the text
+component* — everything downstream is identical:
+
+- One text component, rope-backed:
+
+  ```rust
+  /// Source text of a file entity. Fingerprint is a revision counter bumped
+  /// on every edit, so unchanged text invalidates nothing and fingerprinting
+  /// never rehashes the rope.
+  #[derive(Component)]
+  #[component(hash)]        // fingerprint = revision
+  pub struct SourceText { rope: Rope, revision: u64 }
+  ```
+
+- **Analysis path (CLI, generate, tests):** a loader reads the file from disk
+  and inserts an entity with `FilePath` + `SourceText`, settle, read facts.
+  The file is never "held open"; the component simply is the fact.
+- **LSP path:** `didOpen` inserts the same components plus an `OpenBuffer`
+  marker (LSP owns the text; disk watchers must not overwrite it). `didChange`
+  applies incremental edits to the rope in place via porridge's external
+  mutation (`Mut<SourceText>` / `Cow<SourceText>`), bumping `revision`.
+  Porridge epochs freeze inputs per generation, so rapid edit bursts are safe
+  while a settle is in flight; the next generation sees the latest snapshot.
+  `didClose` removes `OpenBuffer` and reverts to disk state.
+- **Debounce is data, not timers:** diagnostics and other expensive stages are
+  gated on demand markers; the LSP inserts `DiagnosticsDemand` when the editor
+  goes idle, not on every keystroke.
+- **Rope discipline (carried over from dsql-poc):** spans are byte ranges
+  end-to-end; line/column (UTF-16) conversion happens only at the protocol
+  boundary using the rope's line index; full-text materialization happens only
+  where an API demands contiguous `&str` — today that is the parse boundary
+  (logos lexes `&str` only), which needs the whole text anyway.
+
+The parse system, lowering walk, checks, and services never know which path
+produced the text.
 
 ### Language entities = language atoms
 
@@ -166,13 +236,17 @@ Cargo.toml              # workspace
 CLAUDE.md               # agent rules (commits, code style)
 CONTRIBUTING.md         # how to run tools, testing conventions
 docs/                   # this plan, architecture notes, spec (ported/adapted from dsql-poc)
-vendor/lelwel/          # vendored parser generator (patched)
+vendor/
+  PATCHES.md            # the vendor change ledger: upstream revs + every local change
+  lelwel/               # vendored parser generator (subtree)
+  logos/                # vendored lexer generator (subtree, whole crate family)
 crates/
   dsql-core/            # the language: grammar, entities, facts, stages, services
     build.rs            # lelwel::build("src/grammar/dsql.llw")
     src/
       grammar/          # dsql.llw, lexer (generated in phase 8), generated parser
       entity.rs         # stage-trait contract + register_entity
+      source.rs         # SourceText (rope), FilePath, OpenBuffer, loaders
       entities/         # one file per language concept (vertical slices)
       facts.rs          # cross-cutting components (Span, Diagnostic, demand markers)
       catalog/          # schema catalog components + loading
@@ -209,12 +283,13 @@ fixture queries (`tests/queries/valid|invalid`), schema fixtures, spec docs.
 Each phase lands as one or more atomic commits with tests.
 
 0. **Scaffolding** — workspace, docs, CLAUDE.md, CONTRIBUTING.md. *(this change)*
-1. **Grammar + parse** — vendor lelwel; copy `dsql.llw` + lexer; `dsql-core`
-   with build.rs; parse to CST; CST snapshot tests.
-2. **Entity skeleton** — bowl dep; entity contract traits; exhaustive
-   `lower_rule` dispatch (everything structural at first); `Document` entity:
-   file entities, parse system, parse diagnostics via `DerivedFrom`; first
-   settled-state snapshots.
+1. **Grammar + parse** — vendor lelwel + logos as subtrees, apply the
+   `record_expected_tokens` patch, start `vendor/PATCHES.md`; copy `dsql.llw`
+   + lexer; `dsql-core` with build.rs; parse to CST; CST snapshot tests.
+2. **Entity skeleton** — bowl dep; rope-backed `SourceText` + disk loader
+   (analysis path); entity contract traits; exhaustive `lower_rule` dispatch
+   (everything structural at first); `Document` entity: file entities, parse
+   system, parse diagnostics via `DerivedFrom`; first settled-state snapshots.
 3. **Definitions** — `QueryDef`, `FragmentDef` entities; fingerprinted def
    index; duplicate-name diagnostics (demand-gated).
 4. **Selections** — `FieldSelection`, `FragmentSpread`; fragment resolution via
@@ -231,7 +306,9 @@ Each phase lands as one or more atomic commits with tests.
 10. **Formatting** — CST-based conservative formatter (trivia-preserving,
     refuses on parse errors).
 11. **Services** — hover via candidate pipeline; then completion, definition,
-    semantic tokens; then `dsql-lsp` + `dsql-project` + `dsql-cli` crates.
+    semantic tokens; then `dsql-lsp` (live-buffer path: `OpenBuffer`,
+    incremental rope edits via external mutation, demand-marker debounce) +
+    `dsql-project` + `dsql-cli` crates.
 12. **The rest** — metadata, generate, introspection, embedding, TypeScript
     integration, ported on demand.
 
@@ -259,6 +336,21 @@ Each phase lands as one or more atomic commits with tests.
    evaluation planned); pinning a rev keeps upgrades deliberate. Design only
    against documented patterns (demand markers, phases, bound joins,
    `DerivedFrom`), which are the stable surface per its spec/.
+6. **Subtree vendoring with a patch ledger.** Submodules were rejected: they
+   require hosting forks to carry patches, split a vendor change and its
+   consumer change across two repos, and add clone/CI friction. Subtrees keep
+   patches as atomic in-repo commits, `vendor/PATCHES.md` keeps them
+   documented and extractable into standalone forks later.
+7. **No frontend crate — the bowl is the frontend.** dsql-poc's frontend
+   (source DB, picante orchestration, resolution contexts) dissolves into
+   components and systems: `SourceText` is the source DB, memoized systems are
+   the query layer, demand markers are the scheduler. Adapters (LSP, CLI)
+   talk to the bowl directly.
+8. **One source model, two writers.** Analysis loads a file from disk and
+   inserts `SourceText` once; the LSP holds `OpenBuffer` entities and applies
+   incremental rope edits via external mutation. Downstream systems cannot
+   tell the difference — the analysis/LSP split from dsql-poc is preserved
+   without a `SourceDb` abstraction.
 
 ## Open questions
 
@@ -269,6 +361,7 @@ Each phase lands as one or more atomic commits with tests.
 - **Lexer regex syntax in `.llw`**: extend lelwel's grammar syntax vs sidecar
   annotations. Decide in phase 8 with upstream (0x2a-42/lelwel) compatibility
   in mind — keep the vendored fork rebasable.
-- **`dsql-frontend` equivalent**: possibly unnecessary — the bowl *is* the
-  frontend. Revisit when `dsql-lsp` lands; adapters may talk to the bowl
-  directly.
+- **Edit-burst mutation primitive**: `Mut<SourceText>` vs `Cow<SourceText>`
+  for LSP `didChange` under load (porridge's `Cow` semantics are still
+  evolving — see its TODO §8). Decide in phase 11 against the porridge rev
+  pinned at the time.
