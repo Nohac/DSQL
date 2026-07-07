@@ -2,7 +2,6 @@
 //! diagnostics published after every settle that follows a change.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use bowl::{Bowl, Entity, Mut, Query, Singleton};
 use ropey::Rope;
@@ -29,8 +28,8 @@ use dsql_core::service::{
     CompletionKind, CompletionList, CompletionRequest, DefinitionRequest, DefinitionTarget,
     HoverInfo, HoverRequest, Position,
 };
-use dsql_core::source::{FilePath, OpenBuffer, SourceText};
-use dsql_project::{Project, open_project_bowl};
+use dsql_core::source::{FilePath, OpenBuffer, ResolutionScope, SourceText};
+use dsql_project::{Project, populate_project_bowl};
 
 use crate::position::{byte_to_position, position_to_byte};
 
@@ -44,21 +43,22 @@ pub async fn run_stdio() {
 
 struct Backend {
     client: Client,
-    bowl: OnceLock<Bowl>,
+    /// The session bowl. Internally shared and locked by porridge; created
+    /// empty here and populated (language, catalog, project documents) in
+    /// `initialize`.
+    bowl: Bowl,
 }
 
 impl Backend {
     fn new(client: Client) -> Self {
         Self {
             client,
-            bowl: OnceLock::new(),
+            bowl: Bowl::new(),
         }
     }
 
     fn bowl(&self) -> &Bowl {
-        self.bowl
-            .get()
-            .expect("initialize runs before any other request")
+        &self.bowl
     }
 
     /// Reads the current rope of `path`'s file entity, if it exists.
@@ -124,18 +124,17 @@ impl LanguageServer for Backend {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        // A project bowl when a dsql.toml is in reach; a bare language bowl
-        // with an empty catalog otherwise, so single files still parse and
-        // hover.
-        let bowl = match Project::load_from(&start_dir) {
-            Ok(project) => open_project_bowl(&project)
-                .await
-                .unwrap_or_else(|_| Bowl::new()),
+        // Populate the session bowl: project contents when a dsql.toml is
+        // in reach, a bare language with an empty catalog otherwise, so
+        // single files still parse and hover.
+        register_language(&self.bowl).await;
+        match Project::load_from(&start_dir) {
+            Ok(project) => {
+                let _ = populate_project_bowl(&self.bowl, &project).await;
+            }
             Err(_) => {
-                let bowl = Bowl::new();
-                register_language(&bowl).await;
                 insert_catalog(
-                    &bowl,
+                    &self.bowl,
                     Catalog {
                         default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
                         schemas: Vec::new(),
@@ -145,14 +144,14 @@ impl LanguageServer for Backend {
                     },
                 )
                 .await;
-                bowl
             }
-        };
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        }
+        self.bowl
+            .insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
-        bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        self.bowl
+            .insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
             .await;
-        let _ = self.bowl.set(bowl);
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -201,7 +200,12 @@ impl LanguageServer for Backend {
             self.bowl().entity(entity).insert((OpenBuffer,)).await;
         } else {
             self.bowl()
-                .insert((FilePath(path.clone()), SourceText::from_text(&text), OpenBuffer))
+                .insert((
+                    FilePath(path.clone()),
+                    SourceText::from_text(&text),
+                    ResolutionScope::default_scope(),
+                    OpenBuffer,
+                ))
                 .await;
         }
 

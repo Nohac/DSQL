@@ -20,6 +20,7 @@ use crate::entities::variable_path::{
 use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span, VariablesDemand};
+use crate::source::{ResolutionScope, ScopeImports};
 use crate::grammar::parser::NodeRef;
 use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority, span_matches};
 
@@ -125,18 +126,23 @@ pub struct VariableBinding {
 /// Gated on [`VariablesDemand`].
 async fn infer_variables(
     _: Query<Entity, With<VariablesDemand>>,
-    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile)>,
+    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
+    _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
     mut commands: Commands,
 ) {
-    let (def_entity, decl, def_key, file) = defs.item();
+    let (def_entity, decl, def_key, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
+    let (_, imports) = imports.item();
 
-    let tree = SelectionTree::collect(&views, file.0);
+    let tree = SelectionTree::collect(&views);
     let mut inference = Inference {
         tree: &tree,
         catalog: snapshot.catalog(),
+        scope: &scope.0,
+        imports,
         bindings: Vec::new(),
     };
 
@@ -166,10 +172,10 @@ async fn infer_variables(
             }
         }
         DefKind::Fragment => {
-            let Some((_, _, target, _)) = tree
+            let Some((_, _, target, _, _)) = tree
                 .fragments
                 .iter()
-                .find(|(entity, _, _, _)| *entity == def_entity)
+                .find(|(entity, _, _, _, _)| *entity == def_entity)
             else {
                 return;
             };
@@ -202,6 +208,8 @@ async fn infer_variables(
 struct Inference<'a> {
     tree: &'a SelectionTree<'a>,
     catalog: &'a crate::catalog::Catalog,
+    scope: &'a str,
+    imports: &'a ScopeImports,
     bindings: Vec<(Span, VariableBinding)>,
 }
 
@@ -297,7 +305,8 @@ impl Inference<'_> {
                 .map(|(_, spread, _, _)| spread.name.clone())
                 .collect();
             for name in spreads {
-                let Some((_, _, _, fragment_key)) = self.tree.fragment_named(&name).copied()
+                let Some((_, _, _, fragment_key, _)) =
+                    self.tree.resolve_fragment(&name, self.scope, self.imports).copied()
                 else {
                     continue;
                 };

@@ -1,0 +1,9 @@
+database_url = "<database url>"
+default_schema = "public"
+
+[resolution.shared]
+documents = ["queries/shared"]
+
+[resolution.frontend]
+documents = ["queries/frontend"]
+imports = ["shared"]

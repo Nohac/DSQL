@@ -12,6 +12,7 @@
 //! two apart. Spans are byte ranges end to end; materialization to a
 //! contiguous `String` happens only at the parse boundary.
 
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::Path;
@@ -103,25 +104,71 @@ impl Hash for SourceText {
 #[component(hash)]
 pub struct OpenBuffer;
 
+/// The resolution scope a file belongs to (docs/spec/resolution-scopes.md).
+/// Queries and fragments resolve against the definitions visible to their
+/// file's scope: the scope's own plus its imports'. Projects without scope
+/// configuration put every file in [`ResolutionScope::DEFAULT`].
+#[derive(Component, Hash, Debug, Clone, PartialEq, Eq)]
+#[component(hash)]
+pub struct ResolutionScope(pub String);
+
+impl ResolutionScope {
+    pub const DEFAULT: &'static str = "default";
+
+    pub fn default_scope() -> Self {
+        Self(Self::DEFAULT.to_string())
+    }
+}
+
+/// The scope import graph as a fingerprinted singleton fact: scope name →
+/// directly imported scope names. Imports are not transitive: an importing
+/// scope sees the imported scopes' own definitions only. A default (empty)
+/// value is installed at language registration; project loading replaces it.
+#[derive(Component, Hash, Debug, Clone, Default, PartialEq, Eq)]
+#[component(hash)]
+pub struct ScopeImports(pub BTreeMap<String, Vec<String>>);
+
+impl ScopeImports {
+    /// The scopes visible from `scope`: itself plus its direct imports.
+    pub fn visible_from<'a>(&'a self, scope: &'a str) -> impl Iterator<Item = &'a str> {
+        std::iter::once(scope).chain(
+            self.0
+                .get(scope)
+                .into_iter()
+                .flatten()
+                .map(String::as_str),
+        )
+    }
+
+    /// The imports of `scope`, without the scope itself.
+    pub fn imports_of<'a>(&'a self, scope: &'a str) -> impl Iterator<Item = &'a str> {
+        self.0.get(scope).into_iter().flatten().map(String::as_str)
+    }
+}
+
 /// Analysis-path loader: reads `path` from disk and inserts it as a file
-/// entity. The returned [`Entity`] identifies the file for later scoops.
+/// entity in the default scope. The returned [`Entity`] identifies the
+/// file for later scoops.
 pub async fn load_file(bowl: &Bowl, path: impl AsRef<Path>) -> io::Result<Entity> {
     let path = path.as_ref();
     let text = std::fs::read_to_string(path)?;
-    let inserted = bowl
-        .insert((
-            FilePath(path.display().to_string()),
-            SourceText::from_text(&text),
-        ))
-        .await;
-    Ok(inserted.entity())
+    Ok(insert_source(bowl, path.display().to_string(), &text).await)
 }
 
-/// Test/tooling helper: inserts in-memory text as a file entity under a
-/// caller-chosen path identity.
+/// Inserts in-memory text as a file entity in the default scope.
 pub async fn insert_source(bowl: &Bowl, path: impl Into<String>, text: &str) -> Entity {
+    insert_source_scoped(bowl, path, text, ResolutionScope::default_scope()).await
+}
+
+/// Inserts in-memory text as a file entity in `scope`.
+pub async fn insert_source_scoped(
+    bowl: &Bowl,
+    path: impl Into<String>,
+    text: &str,
+    scope: ResolutionScope,
+) -> Entity {
     let inserted = bowl
-        .insert((FilePath(path.into()), SourceText::from_text(text)))
+        .insert((FilePath(path.into()), SourceText::from_text(text), scope))
         .await;
     inserted.entity()
 }

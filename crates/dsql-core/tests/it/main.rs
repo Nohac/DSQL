@@ -7,6 +7,7 @@ mod definitions;
 mod format;
 mod lowering;
 mod parse;
+mod scopes;
 mod selections;
 mod services;
 mod settle;

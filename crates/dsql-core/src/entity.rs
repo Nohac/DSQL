@@ -44,6 +44,9 @@ pub struct LowerCtx<'a> {
     /// The file entity the tree was parsed from; fact components emitted by
     /// lowering anchor to it.
     pub file: Entity,
+    /// The file's resolution scope; definition and spread facts carry it
+    /// as their resolution join key.
+    pub scope: &'a str,
     /// Key of the nearest enclosing selection or definition node, if any.
     /// The walk in `entities` scopes it when descending into one, so nested
     /// facts carry their tree position as a [`ParentKey`].

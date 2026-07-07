@@ -28,7 +28,7 @@ use crate::entities::document::ParsedFile;
 use crate::entities::field_selection::{SelectionTree, TreeViews, resolve_field_target};
 use crate::grammar::parser::{Node, NodeRef, Parser, Rule};
 use crate::service::hover::Position;
-use crate::source::{FilePath, SourceText};
+use crate::source::{FilePath, ResolutionScope, SourceText};
 
 /// Marks an entity as a completion request; pair with [`FilePath`] and
 /// [`Position`].
@@ -92,6 +92,8 @@ pub struct CompletionContext {
     pub site: CompletionSite,
     /// The context table for semantic completions, when one resolves.
     pub table: Option<TableId>,
+    /// The requesting file's resolution scope.
+    pub scope: String,
     /// Literal spellings of tokens the grammar accepts at the cursor.
     pub keywords: Vec<String>,
 }
@@ -116,13 +118,13 @@ pub(crate) async fn register_completion_pipeline(bowl: &Bowl) {
 /// the context table from the fact tree.
 async fn enrich_completion_requests(
     requests: Query<(Entity, &FilePath, &Position), With<CompletionRequest>>,
-    file: Query<(Entity, &SourceText, &ParsedFile), Where<BowlEq<FilePath>>>,
+    file: Query<(Entity, &SourceText, &ParsedFile, &ResolutionScope), Where<BowlEq<FilePath>>>,
     catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
     views: TreeViews<'_>,
     mut commands: Commands,
 ) {
     let (request, _path, position) = requests.item();
-    let (file_entity, source, parsed) = file.item();
+    let (file_entity, source, parsed, scope) = file.item();
     let (_, snapshot) = catalog.item();
 
     let offset = position.offset.min(parsed.source.len());
@@ -169,7 +171,7 @@ async fn enrich_completion_requests(
 
     // Semantic layer: the field whose braces or clauses hold the cursor,
     // from the full tree (facts are keyed to its nodes).
-    let tree = SelectionTree::collect(&views, file_entity);
+    let tree = SelectionTree::collect(&views);
     let table = context_field(&parsed.cst, offset).and_then(|field_node| {
         resolve_field_target(
             &tree,
@@ -184,6 +186,7 @@ async fn enrich_completion_requests(
     commands.entity(request).insert(CompletionContext {
         site,
         table,
+        scope: scope.0.clone(),
         keywords,
     });
 }

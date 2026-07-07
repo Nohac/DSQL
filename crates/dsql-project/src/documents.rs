@@ -3,37 +3,74 @@
 use std::fs::{read_dir, read_to_string};
 use std::path::{Path, PathBuf};
 
+use dsql_core::source::ResolutionScope;
+
 use super::config::{Project, ProjectError, Result};
 
-/// One discovered document, with its text already read.
+/// One discovered document, with its text already read and the resolution
+/// scope that owns it.
 #[derive(Clone, Debug)]
 pub struct ProjectDocument {
     pub path: PathBuf,
     pub text: String,
+    pub scope: String,
 }
 
-/// Reads every `.dsql` file under the configured document paths (or the
-/// project root when none are configured), sorted by path.
+/// Reads every `.dsql` document with its owning scope. Without resolution
+/// configuration, every document under the configured paths (or the
+/// project root) belongs to the implicit default scope. With scopes, each
+/// scope's paths are collected and a document matched by two scopes is a
+/// deterministic ownership error.
 pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>> {
-    let mut files = Vec::new();
-    if project.config.documents.is_empty() {
-        collect_dsql_files(&project.root, &mut files)?;
-    } else {
-        for configured in &project.config.documents {
-            collect_dsql_files(&project.root.join(configured), &mut files)?;
-        }
-    }
-    files.sort();
-    files.dedup();
+    let mut owned: Vec<(PathBuf, String)> = Vec::new();
 
-    files
+    if project.config.resolution.is_empty() {
+        let mut files = Vec::new();
+        if project.config.documents.is_empty() {
+            collect_dsql_files(&project.root, &mut files)?;
+        } else {
+            for configured in &project.config.documents {
+                collect_dsql_files(&project.root.join(configured), &mut files)?;
+            }
+        }
+        files.sort();
+        files.dedup();
+        owned.extend(
+            files
+                .into_iter()
+                .map(|path| (path, ResolutionScope::DEFAULT.to_string())),
+        );
+    } else {
+        for (scope, scope_config) in &project.config.resolution {
+            let mut files = Vec::new();
+            for configured in &scope_config.documents {
+                collect_dsql_files(&project.root.join(configured), &mut files)?;
+            }
+            files.sort();
+            files.dedup();
+            for path in files {
+                if let Some((_, first)) = owned.iter().find(|(owned_path, _)| *owned_path == path)
+                {
+                    return Err(ProjectError::DuplicateScopeDocument {
+                        path,
+                        first: first.clone(),
+                        second: scope.clone(),
+                    });
+                }
+                owned.push((path, scope.clone()));
+            }
+        }
+        owned.sort();
+    }
+
+    owned
         .into_iter()
-        .map(|path| {
+        .map(|(path, scope)| {
             let text = read_to_string(&path).map_err(|source| ProjectError::Read {
                 path: path.clone(),
                 source,
             })?;
-            Ok(ProjectDocument { path, text })
+            Ok(ProjectDocument { path, text, scope })
         })
         .collect()
 }

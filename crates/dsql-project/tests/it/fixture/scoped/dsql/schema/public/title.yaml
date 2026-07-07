@@ -1,0 +1,84 @@
+---
+schema: public
+name: title
+object_type: table
+columns:
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: title
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: imdb_index
+    database_type: varchar
+    data_type: text
+    not_null: false
+  - name: kind_id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: production_year
+    database_type: int4
+    data_type: int
+    not_null: false
+  - name: imdb_id
+    database_type: int4
+    data_type: int
+    not_null: false
+  - name: phonetic_code
+    database_type: varchar
+    data_type: text
+    not_null: false
+  - name: episode_of_id
+    database_type: int4
+    data_type: int
+    not_null: false
+  - name: season_nr
+    database_type: int4
+    data_type: int
+    not_null: false
+  - name: episode_nr
+    database_type: int4
+    data_type: int
+    not_null: false
+  - name: series_years
+    database_type: varchar
+    data_type: text
+    not_null: false
+  - name: md5sum
+    database_type: varchar
+    data_type: text
+    not_null: false
+constraints:
+  - name: title_pkey
+    kind: primary_key
+    columns:
+      - id
+foreign_keys:
+  - name: title_kind_id_fkey
+    columns:
+      - kind_id
+    references:
+      schema: public
+      table: kind_type
+      columns:
+        - id
+  - name: title_episode_of_id_fkey
+    columns:
+      - episode_of_id
+    references:
+      schema: public
+      table: title
+      columns:
+        - id
+indexes:
+  - name: title_pkey
+    columns:
+      - id
+    unique: true
+  - name: kind_id_title
+    columns:
+      - kind_id
+    unique: false

@@ -14,7 +14,7 @@ pub mod service;
 pub mod source;
 pub mod sql;
 
-use bowl::{Bowl, Phase, SystemExt, cleanup_stale_derived};
+use bowl::{Bowl, Phase, Singleton, SystemExt, cleanup_stale_derived};
 
 use crate::entities::clause::Clause;
 use crate::entities::definition::Definition;
@@ -29,6 +29,13 @@ use crate::entity::register_entity;
 /// Assembles the language on a bowl: every entity, the shared lowering
 /// walk, and the cleanup systems the derived-fact conventions rely on.
 pub async fn register_language(bowl: &Bowl) {
+    // Default scope configuration; project loading replaces it.
+    bowl.insert((
+        Singleton::<source::ScopeImports>::new(),
+        source::ScopeImports::default(),
+    ))
+    .await;
+
     register_entity::<Document>(bowl).await;
     register_entity::<Definition>(bowl).await;
     register_entity::<FieldSelection>(bowl).await;

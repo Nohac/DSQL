@@ -80,9 +80,16 @@ rule node to its owner. Facts carry:
 - `DerivedFrom` — ownership: any text change re-lowers the file and retires
   every fact derived from it.
 
-Cross-construct joins are porridge bound joins: fragment-spread resolution
-pairs `FragmentKey` + `BelongsToFile` on both sides, one invocation per
-(spread, fragment) pair.
+Definition and spread facts also carry their file's `ResolutionScope`
+(docs/spec/resolution-scopes.md): fragments resolve against the *effective
+resolver* of the spread's scope — the scope's own fragments plus its direct
+imports', configured per project as the fingerprinted `ScopeImports`
+singleton. Exactly one visible candidate resolves; duplicates (per scope),
+local-vs-import collisions, and import ambiguities are diagnostics. Pure
+bound joins cannot express "local or imported", so spread resolution is an
+index-tracked per-spread system: the fingerprinted `DefIndex` and
+`ScopeImports` are tracked inputs, so rows rerun exactly when the
+definition set or the scope graph changes.
 
 ## Stages and demand
 
