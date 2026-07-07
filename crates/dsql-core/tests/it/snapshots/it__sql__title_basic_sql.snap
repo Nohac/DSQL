@@ -1,0 +1,42 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: "fixture_sql(\"valid/imdb-title-basic.dsql\").await"
+---
+-- title
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'id',
+        "title_d4d9f554"."id",
+        'title',
+        "title_d4d9f554"."title",
+        'production_year',
+        "title_d4d9f554"."production_year",
+        'kind_type',
+        "kind_type_json_d78b0eec"."kind_type_result_d78b0eec"
+      )
+    ),
+    '[]'
+  ) as "title"
+from
+  (
+    select
+      *
+    from
+      "public"."title" as "title_d4d9f554"
+    where
+      "title_d4d9f554"."id" > 0
+    order by
+      "title_d4d9f554"."id" asc
+    limit
+      2
+  ) as "title_d4d9f554"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT('kind', "kind_type_d78b0eec"."kind") as "kind_type_result_d78b0eec"
+    from
+      "public"."kind_type" as "kind_type_d78b0eec"
+    where
+      "kind_type_d78b0eec"."id" = "title_d4d9f554"."kind_id"
+  ) as "kind_type_json_d78b0eec" on true

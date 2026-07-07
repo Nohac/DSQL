@@ -110,6 +110,17 @@ pub struct DiagnosticsDemand;
 #[component(hash)]
 pub struct VariablesDemand;
 
+/// Demand marker for query planning (`plan::build`).
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct PlanDemand;
+
+/// Demand marker for SQL generation (`sql::generate`). SQL needs plans:
+/// insert [`PlanDemand`] alongside.
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct SqlDemand;
+
 /// Everything one diagnostic entity is made of. Every field is required so
 /// no emitter can silently drop a component the LSP or tests key on.
 pub struct DiagnosticFacts {

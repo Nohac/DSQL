@@ -7,6 +7,7 @@ mod lowering;
 mod parse;
 mod selections;
 mod settle;
+mod sql;
 mod variables;
 mod support;
 
