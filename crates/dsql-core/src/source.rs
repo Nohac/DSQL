@@ -64,6 +64,15 @@ impl SourceText {
         self.revision = next_revision();
     }
 
+    /// Applies one incremental edit: replaces `byte_range` with
+    /// `replacement`. LSP `didChange` events apply their edits in order
+    /// through this, each against the rope the previous edit produced.
+    pub fn apply_edit(&mut self, byte_range: std::ops::Range<usize>, replacement: &str) {
+        self.rope.remove(byte_range.clone());
+        self.rope.insert(byte_range.start, replacement);
+        self.revision = next_revision();
+    }
+
     /// The rope, for span slicing and position mapping at protocol
     /// boundaries. Incremental edit helpers land with the LSP crate.
     pub fn rope(&self) -> &Rope {
