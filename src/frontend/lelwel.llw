@@ -1,0 +1,52 @@
+/// Keyword
+token Token='token' Start='start' Right='right' Skip='skip' Part='part';
+/// Punctuator
+token Colon=':' Semi=';' Equal='=' LPar='(' RPar=')' LBrak='[' RBrak=']' Or='|' Star='*' Plus='+'
+      Hat='^' Slash='/' Tilde='~' And='&';
+/// Identifier for rules and tokens
+token Id='<identifier>' Str='<string literal>';
+token Predicate='<semantic predicate>' Action='<semantic action>' Assertion='<semantic assertion>';
+token NodeRename='<node rename>' NodeMarker='<node marker>' NodeCreation='<node creation>';
+token LineComment BlockComment DocComment Whitespace;
+
+start file;
+skip LineComment BlockComment DocComment Whitespace;
+
+file: decl*;
+decl^:
+  token_list
+| ?1 rule_decl
+| start_decl
+| right_decl
+| skip_decl
+| part_decl
+;
+start_decl: 'start' Id ';';
+right_decl: 'right' (Id | Str)+ ';';
+skip_decl: 'skip' (Id | Str)+ ';';
+part_decl: 'part' Id+ ';';
+token_list: 'token' token_decl+ ';';
+token_decl: Id ['=' Str];
+rule_decl: Id ['^'] ':' [regex] ';';
+
+regex^: alternation;
+alternation^: ordered_choice [('|' ordered_choice)+ >];
+ordered_choice^: concat [('/' concat)+ >];
+concat^: postfix [postfix+ >];
+postfix:
+  postfix '*' @star
+| postfix '+' @plus
+| '(' [regex] ')' @paren
+| '[' regex ']' @optional
+| Id @name
+| Str @symbol
+| Predicate @predicate
+| Action @action
+| Assertion @assertion
+| NodeRename @node_rename
+| NodeMarker @node_marker
+| NodeCreation @node_creation
+| '^' @node_elision
+| '~' @commit
+| '&' @return
+;

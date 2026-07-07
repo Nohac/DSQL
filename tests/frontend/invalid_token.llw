@@ -1,0 +1,7 @@
+token A;
+
+start s;
+
+s:
+  A % ... ,
+;
