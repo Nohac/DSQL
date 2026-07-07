@@ -31,7 +31,7 @@ pub struct Variable;
 impl LanguageEntity for Variable {
     const NAME: &'static str = "variable";
 
-    async fn register(_db: &Bowl) {
+    async fn register(_bowl: &Bowl) {
         // Variable inference systems land in phase 7.
     }
 }

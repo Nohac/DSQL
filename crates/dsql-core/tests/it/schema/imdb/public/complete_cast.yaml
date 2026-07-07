@@ -1,0 +1,60 @@
+---
+schema: public
+name: complete_cast
+object_type: table
+columns:
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: movie_id
+    database_type: int4
+    data_type: int
+    not_null: false
+  - name: subject_id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: status_id
+    database_type: int4
+    data_type: int
+    not_null: true
+constraints:
+  - name: complete_cast_pkey
+    kind: primary_key
+    columns:
+      - id
+foreign_keys:
+  - name: complete_cast_movie_id_fkey
+    columns:
+      - movie_id
+    references:
+      schema: public
+      table: title
+      columns:
+        - id
+  - name: complete_cast_subject_id_fkey
+    columns:
+      - subject_id
+    references:
+      schema: public
+      table: comp_cast_type
+      columns:
+        - id
+  - name: complete_cast_status_id_fkey
+    columns:
+      - status_id
+    references:
+      schema: public
+      table: comp_cast_type
+      columns:
+        - id
+indexes:
+  - name: complete_cast_pkey
+    columns:
+      - id
+    unique: true
+  - name: movie_id_complete_cast
+    columns:
+      - movie_id
+    unique: false

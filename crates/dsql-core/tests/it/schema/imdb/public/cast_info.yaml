@@ -1,0 +1,92 @@
+---
+schema: public
+name: cast_info
+object_type: table
+columns:
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: person_id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: movie_id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: person_role_id
+    database_type: int4
+    data_type: int
+    not_null: false
+  - name: note
+    database_type: text
+    data_type: text
+    not_null: false
+  - name: nr_order
+    database_type: int4
+    data_type: int
+    not_null: false
+  - name: role_id
+    database_type: int4
+    data_type: int
+    not_null: true
+constraints:
+  - name: cast_info_pkey
+    kind: primary_key
+    columns:
+      - id
+foreign_keys:
+  - name: cast_info_person_id_fkey
+    columns:
+      - person_id
+    references:
+      schema: public
+      table: name
+      columns:
+        - id
+  - name: cast_info_movie_id_fkey
+    columns:
+      - movie_id
+    references:
+      schema: public
+      table: title
+      columns:
+        - id
+  - name: cast_info_person_role_id_fkey
+    columns:
+      - person_role_id
+    references:
+      schema: public
+      table: char_name
+      columns:
+        - id
+  - name: cast_info_role_id_fkey
+    columns:
+      - role_id
+    references:
+      schema: public
+      table: role_type
+      columns:
+        - id
+indexes:
+  - name: cast_info_pkey
+    columns:
+      - id
+    unique: true
+  - name: person_id_cast_info
+    columns:
+      - person_id
+    unique: false
+  - name: movie_id_cast_info
+    columns:
+      - movie_id
+    unique: false
+  - name: person_role_id_cast_info
+    columns:
+      - person_role_id
+    unique: false
+  - name: role_id_cast_info
+    columns:
+      - role_id
+    unique: false

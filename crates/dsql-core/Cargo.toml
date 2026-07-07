@@ -6,8 +6,12 @@ edition.workspace = true
 [dependencies]
 bowl = { workspace = true }
 codespan-reporting = { workspace = true }
+facet = { workspace = true }
+facet-yaml = { workspace = true }
 logos = { workspace = true }
 ropey = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
 
 [build-dependencies]
 lelwel = { workspace = true }

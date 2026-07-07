@@ -3,6 +3,7 @@
 //!
 //! See `docs/plan.md` at the repository root for the architecture.
 
+pub mod catalog;
 pub mod entities;
 pub mod entity;
 pub mod facts;

@@ -1,0 +1,23 @@
+---
+schema: public
+name: link_type
+object_type: table
+columns:
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: link
+    database_type: varchar
+    data_type: text
+    not_null: true
+constraints:
+  - name: link_type_pkey
+    kind: primary_key
+    columns:
+      - id
+indexes:
+  - name: link_type_pkey
+    columns:
+      - id
+    unique: true

@@ -12,6 +12,7 @@ use bowl::{
     With,
 };
 
+use crate::catalog::{CatalogSnapshot, TableRef, TableResolution};
 use crate::entities::document::ParsedFile;
 use crate::entities::{direct_rule, direct_token, node_span, text};
 use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
@@ -82,6 +83,61 @@ impl LanguageEntity for Definition {
     async fn register(bowl: &Bowl) {
         bowl.add_system(index_defs.run_during(Phase::Complete)).await;
         bowl.add_system(check_duplicate_fragments).await;
+        bowl.add_system(check_fragment_targets).await;
+    }
+}
+
+/// A fragment's `on` target must resolve to a catalog table; its body is
+/// only checked once it does (see `field_selection::check_selections`).
+async fn check_fragment_targets(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    query: Query<(Entity, &DefDecl, &FragmentTarget, &BelongsToFile)>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands,
+) {
+    let (fragment, _, target, file) = query.item();
+    let (catalog_entity, snapshot) = catalog.item();
+
+    match snapshot
+        .catalog()
+        .resolve_table_ref_for(TableRef::parse(&target.name))
+    {
+        TableResolution::Found(_) => {}
+        TableResolution::NotFound { reference } => {
+            emit_diagnostic(
+                &mut commands,
+                DiagnosticFacts {
+                    derived_from: DerivedFrom::many([fragment, catalog_entity]),
+                    file: file.0,
+                    span: target.span,
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Check,
+                    code: DiagnosticCode::TableNotFound,
+                    message: format!("table `{reference}` not found"),
+                },
+            );
+        }
+        TableResolution::Ambiguous { reference, candidates } => {
+            let candidates: Vec<String> = candidates
+                .iter()
+                .map(|key| format!("{}::{}", key.schema, key.table))
+                .collect();
+            emit_diagnostic(
+                &mut commands,
+                DiagnosticFacts {
+                    derived_from: DerivedFrom::many([fragment, catalog_entity]),
+                    file: file.0,
+                    span: target.span,
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Check,
+                    code: DiagnosticCode::AmbiguousTable,
+                    message: format!(
+                        "table `{reference}` is ambiguous; use an alias with a schema-qualified name ({})",
+                        candidates.join(", ")
+                    ),
+                },
+            );
+        }
     }
 }
 

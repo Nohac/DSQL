@@ -141,7 +141,7 @@ pub struct Expression;
 impl LanguageEntity for Expression {
     const NAME: &'static str = "expression";
 
-    async fn register(_db: &Bowl) {
+    async fn register(_bowl: &Bowl) {
         // Expression type checks against the catalog land in phase 6.
     }
 }

@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[107..116]: relation field `kind_type` must have a selection set
+Error[16..29]: table `missing_table` not found
+Error[73..75]: selection output key `id` is ambiguous; use an alias
+Error[80..85]: field `title` is a scalar (text) and cannot have a selection set

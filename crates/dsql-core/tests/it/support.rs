@@ -72,3 +72,46 @@ pub fn render_diagnostics(source: &str, diagnostics: &[Diagnostic]) -> String {
     }
     rendered
 }
+
+/// Loads the imdb schema fixtures into a [`dsql_core::catalog::Catalog`].
+/// The directory loader lives here until `dsql-project` is ported; it
+/// mirrors dsql-poc's `load_metadata_dir`.
+pub fn imdb_catalog() -> dsql_core::catalog::Catalog {
+    use dsql_core::catalog::{Catalog, SchemaMetadata, TableMetadata, table_metadata_from_yaml};
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/schema/imdb");
+    let mut schemas = Vec::new();
+    for entry in std::fs::read_dir(&root).expect("schema fixture dir must exist") {
+        let schema_path = entry.expect("schema dir entry").path();
+        if !schema_path.is_dir() {
+            continue;
+        }
+        let Some(schema_name) = schema_path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let mut tables = Vec::<TableMetadata>::new();
+        for table_entry in std::fs::read_dir(&schema_path).expect("table dir") {
+            let table_path = table_entry.expect("table dir entry").path();
+            if table_path.extension().and_then(|ext| ext.to_str()) != Some("yaml") {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&table_path).expect("table yaml readable");
+            let table = match table_metadata_from_yaml(&raw) {
+                Ok(table) => table,
+                Err(error) => panic!("parse {}: {error}", table_path.display()),
+            };
+            tables.push(table);
+        }
+        tables.sort_by(|left, right| left.name.cmp(&right.name));
+        schemas.push(SchemaMetadata {
+            name: schema_name.to_string(),
+            tables,
+        });
+    }
+    schemas.sort_by(|left, right| left.name.cmp(&right.name));
+
+    dsql_core::catalog::DatabaseMetadata { schemas, types: Vec::new() }
+        .into_catalog()
+        .expect("imdb fixture catalog must build")
+        .with_default_schema(Catalog::DEFAULT_SCHEMA)
+}

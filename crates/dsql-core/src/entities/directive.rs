@@ -44,7 +44,7 @@ pub struct Directive;
 impl LanguageEntity for Directive {
     const NAME: &'static str = "directive";
 
-    async fn register(_db: &Bowl) {
+    async fn register(_bowl: &Bowl) {
         // Directive registry checks land in phase 6.
     }
 }

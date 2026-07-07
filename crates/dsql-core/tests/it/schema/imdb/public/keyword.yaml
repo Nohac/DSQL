@@ -1,0 +1,27 @@
+---
+schema: public
+name: keyword
+object_type: table
+columns:
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: keyword
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: phonetic_code
+    database_type: varchar
+    data_type: text
+    not_null: false
+constraints:
+  - name: keyword_pkey
+    kind: primary_key
+    columns:
+      - id
+indexes:
+  - name: keyword_pkey
+    columns:
+      - id
+    unique: true

@@ -46,7 +46,7 @@ pub struct Clause;
 impl LanguageEntity for Clause {
     const NAME: &'static str = "clause";
 
-    async fn register(_db: &Bowl) {
+    async fn register(_bowl: &Bowl) {
         // Clause type checks against the catalog land in phase 6.
     }
 }
@@ -133,4 +133,265 @@ fn order_items(cst: &CstData, source: &str, node: NodeRef) -> Vec<OrderItem> {
             }
         })
         .collect()
+}
+
+/// Checks one clause against its field's context table during the selection
+/// check walk (`field_selection::check_selections`). Clause semantics live
+/// here with the entity that owns the rules.
+pub(crate) fn check_clause(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    root_table: crate::catalog::TableId,
+    table: crate::catalog::TableId,
+    entity: bowl::Entity,
+    clause: &ClauseFact,
+    span: Span,
+) {
+    use crate::catalog::{FieldCheckResult, FieldRef, TableRef};
+    use crate::facts::DiagnosticCode;
+
+    match clause {
+        ClauseFact::Where { expr } => {
+            check_predicate_expr(ctx, root_table, table, entity, expr);
+        }
+        ClauseFact::OrderBy { items } => {
+            for item in items {
+                let reference = FieldRef {
+                    target: TableRef::parse(&item.field),
+                    selector: None,
+                };
+                if !matches!(
+                    ctx.catalog.check_field_ref(table, reference),
+                    FieldCheckResult::Column(_)
+                ) {
+                    let table_name = table_name(ctx, table);
+                    ctx.error(
+                        entity,
+                        item.field_span,
+                        DiagnosticCode::FieldNotFound,
+                        format!("field `{}` not found on table `{table_name}`", item.field),
+                    );
+                }
+            }
+        }
+        ClauseFact::Limit { expr } => {
+            check_non_negative_integer(ctx, entity, "limit", expr, span);
+        }
+        ClauseFact::Offset { expr } => {
+            check_non_negative_integer(ctx, entity, "offset", expr, span);
+        }
+    }
+}
+
+fn table_name(
+    ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
+    table: crate::catalog::TableId,
+) -> String {
+    ctx.catalog
+        .table_by_id(table)
+        .map_or("<unknown>".to_string(), |table| table.name.clone())
+}
+
+/// Ported from dsql-poc `check_predicate_expr`: paths must resolve, and
+/// path-vs-literal comparisons must agree with the column's type.
+fn check_predicate_expr(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    root_table: crate::catalog::TableId,
+    table: crate::catalog::TableId,
+    entity: bowl::Entity,
+    expr: &Expr,
+) {
+    use crate::entities::expression::BinaryOp;
+    use crate::facts::DiagnosticCode;
+
+    match expr {
+        Expr::Path { .. } => {
+            if resolve_predicate_path(ctx, root_table, table, expr).is_none() {
+                let table_name = table_name(ctx, table);
+                ctx.error(
+                    entity,
+                    expr.span(),
+                    DiagnosticCode::FieldNotFound,
+                    format!(
+                        "field `{}` not found on table `{table_name}`",
+                        expr
+                    ),
+                );
+            }
+        }
+        Expr::Binary { op, lhs, rhs, .. } => {
+            match op {
+                BinaryOp::Comparison(op) => {
+                    check_binary_predicate_types(ctx, root_table, table, entity, lhs, *op, rhs);
+                }
+                BinaryOp::Variable(operator) => {
+                    check_operator_variable(ctx, root_table, table, entity, lhs, rhs, operator);
+                }
+                BinaryOp::And | BinaryOp::Or => {}
+            }
+            check_predicate_expr(ctx, root_table, table, entity, lhs);
+            check_predicate_expr(ctx, root_table, table, entity, rhs);
+        }
+        Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
+    }
+}
+
+fn check_operator_variable(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    root_table: crate::catalog::TableId,
+    table: crate::catalog::TableId,
+    entity: bowl::Entity,
+    lhs: &Expr,
+    rhs: &Expr,
+    operator: &VariableRef,
+) {
+    use crate::facts::DiagnosticCode;
+
+    let path = match (lhs, rhs) {
+        (path @ Expr::Path { .. }, _) | (_, path @ Expr::Path { .. }) => path,
+        _ => return,
+    };
+    let Some(data_type) = resolve_predicate_path(ctx, root_table, table, path) else {
+        return;
+    };
+    let Some(allowed) = &operator.operators else {
+        return;
+    };
+    for op in allowed {
+        if !data_type.operator_ops().contains(op) {
+            ctx.error(
+                entity,
+                operator.span,
+                DiagnosticCode::ClauseValueTypeMismatch,
+                format!(
+                    "clause `operator` expects an operator valid for {}",
+                    data_type.as_str()
+                ),
+            );
+        }
+    }
+}
+
+fn check_binary_predicate_types(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    root_table: crate::catalog::TableId,
+    table: crate::catalog::TableId,
+    entity: bowl::Entity,
+    lhs: &Expr,
+    op: crate::entities::expression::ComparisonOp,
+    rhs: &Expr,
+) {
+    use crate::catalog::{DataType, LiteralKind};
+    use crate::entities::expression::{ComparisonOp, LiteralValue};
+    use crate::facts::DiagnosticCode;
+
+    let (path, literal, literal_span) = match (lhs, rhs) {
+        (path @ Expr::Path { .. }, Expr::Literal { value, span }) => (path, value, *span),
+        (Expr::Literal { value, span }, path @ Expr::Path { .. }) => (path, value, *span),
+        _ => return,
+    };
+    let Some(data_type) = resolve_predicate_path(ctx, root_table, table, path) else {
+        return;
+    };
+    let (actual, raw_value) = match literal {
+        LiteralValue::String(value) => (LiteralKind::String, value.as_str()),
+        LiteralValue::Number(value) => (LiteralKind::Number, value.as_str()),
+        LiteralValue::Bool(true) => (LiteralKind::Boolean, "true"),
+        LiteralValue::Bool(false) => (LiteralKind::Boolean, "false"),
+        LiteralValue::Null => return,
+    };
+    if op == ComparisonOp::Like && data_type != DataType::Text {
+        ctx.error(
+            entity,
+            literal_span,
+            DiagnosticCode::PredicateTypeMismatch,
+            format!(
+                "field `{path}` expects {} but predicate uses {}",
+                DataType::Text.expected_literal_description(),
+                actual.as_str()
+            ),
+        );
+        return;
+    }
+    if !data_type.accepts_literal_value(actual, raw_value) {
+        ctx.error(
+            entity,
+            literal_span,
+            DiagnosticCode::PredicateTypeMismatch,
+            format!(
+                "field `{path}` expects {} but predicate uses {}",
+                data_type.expected_literal_description(),
+                actual.as_str()
+            ),
+        );
+    }
+}
+
+/// Resolves a scoped path to the column it names, stepping through relation
+/// segments. Parent scope (`..`) is not resolvable at check time, matching
+/// dsql-poc.
+fn resolve_predicate_path(
+    ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
+    root_table: crate::catalog::TableId,
+    table: crate::catalog::TableId,
+    path: &Expr,
+) -> Option<crate::catalog::DataType> {
+    use crate::catalog::{FieldCheckResult, FieldRef, TableRef};
+    use crate::entities::expression::PathAnchor;
+
+    let Expr::Path {
+        anchor, segments, ..
+    } = path
+    else {
+        return None;
+    };
+    let mut current_table = match anchor {
+        PathAnchor::Current => table,
+        PathAnchor::Root => root_table,
+        PathAnchor::Parent => return None,
+    };
+    let (last, relations) = segments.split_last()?;
+    for segment in relations {
+        let reference = FieldRef {
+            target: TableRef::parse(&segment.name),
+            selector: segment.relation_path.as_deref(),
+        };
+        let FieldCheckResult::Relation(relation) = ctx.catalog.check_field_ref(current_table, reference)
+        else {
+            return None;
+        };
+        current_table = relation.table.id;
+    }
+    let reference = FieldRef {
+        target: TableRef::parse(&last.name),
+        selector: last.relation_path.as_deref(),
+    };
+    let FieldCheckResult::Column(column) = ctx.catalog.check_field_ref(current_table, reference)
+    else {
+        return None;
+    };
+    Some(column.data_type)
+}
+
+fn check_non_negative_integer(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    entity: bowl::Entity,
+    clause: &str,
+    expr: &Expr,
+    span: Span,
+) {
+    use crate::entities::expression::LiteralValue;
+    use crate::facts::DiagnosticCode;
+
+    let valid = matches!(
+        expr,
+        Expr::Literal { value: LiteralValue::Number(value), .. } if value.parse::<u64>().is_ok()
+    ) || matches!(expr, Expr::Variable { .. });
+    if !valid {
+        ctx.error(
+            entity,
+            span,
+            DiagnosticCode::ClauseValueTypeMismatch,
+            format!("clause `{clause}` expects a non-negative integer"),
+        );
+    }
 }

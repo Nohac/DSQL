@@ -1,0 +1,60 @@
+---
+schema: public
+name: movie_info_idx
+object_type: table
+columns:
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: movie_id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: info_type_id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: info
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: note
+    database_type: text
+    data_type: text
+    not_null: false
+constraints:
+  - name: movie_info_idx_pkey
+    kind: primary_key
+    columns:
+      - id
+foreign_keys:
+  - name: movie_info_idx_movie_id_fkey
+    columns:
+      - movie_id
+    references:
+      schema: public
+      table: title
+      columns:
+        - id
+  - name: movie_info_idx_info_type_id_fkey
+    columns:
+      - info_type_id
+    references:
+      schema: public
+      table: info_type
+      columns:
+        - id
+indexes:
+  - name: movie_info_idx_pkey
+    columns:
+      - id
+    unique: true
+  - name: movie_id_movie_info_idx
+    columns:
+      - movie_id
+    unique: false
+  - name: info_type_id_movie_info_idx
+    columns:
+      - info_type_id
+    unique: false

@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[31..43]: field `not_a_column` not found on table `title`
+Error[51..57]: field `.id` expects number but predicate uses string
+Error[72..76]: field `note` is a scalar (text); only relations can have clauses

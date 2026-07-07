@@ -40,6 +40,19 @@ pub enum DiagnosticCode {
     UnexpectedEof,
     DuplicateDefinition,
     UnknownFragment,
+    TableNotFound,
+    AmbiguousTable,
+    FieldNotFound,
+    AmbiguousRelation,
+    DuplicateOutputKey,
+    OutputKeyTooLong,
+    ScalarSelectionSet,
+    ScalarClauses,
+    RelationSelectionSet,
+    FragmentTypeMismatch,
+    CircularFragmentSpread,
+    ClauseValueTypeMismatch,
+    PredicateTypeMismatch,
 }
 
 /// Which stage emitted a diagnostic, ported from dsql-poc.

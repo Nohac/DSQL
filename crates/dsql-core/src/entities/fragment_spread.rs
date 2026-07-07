@@ -106,6 +106,101 @@ async fn resolve_spreads(
     ));
 }
 
+/// Checks one spread site during the selection check walk (see
+/// `field_selection::check_selections`): the named fragment's target must
+/// match the context table, and following spreads through fragments must
+/// not cycle. Lives here because spread semantics belong to this entity;
+/// the walk only orchestrates.
+pub(crate) fn check_spread_site(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    spread_entity: Entity,
+    spread: &SpreadDecl,
+    context_table: crate::catalog::TableId,
+) {
+    use crate::catalog::TableRef;
+
+    // Unknown fragments are reported by check_unknown_fragments.
+    let Some((_, _, target, fragment_key)) = ctx.tree.fragment_named(&spread.name).copied() else {
+        return;
+    };
+
+    let Some(target_table) = ctx.catalog.table_ref_for(TableRef::parse(&target.name)) else {
+        // Unresolvable target is reported on the fragment definition.
+        return;
+    };
+    let target_table_id = target_table.id;
+    let target_table_name = target_table.name.clone();
+
+    if target_table_id != context_table {
+        let context_name = ctx
+            .catalog
+            .table_by_id(context_table)
+            .map(|table| table.name.clone())
+            .unwrap_or_default();
+        ctx.error(
+            spread_entity,
+            spread.name_span,
+            crate::facts::DiagnosticCode::FragmentTypeMismatch,
+            format!(
+                "fragment `{}` applies to `{target_table_name}` and cannot be spread in `{context_name}`",
+                spread.name
+            ),
+        );
+        return;
+    }
+
+    // Cycle detection: follow spreads through fragment bodies; a fragment
+    // already on the path spreading again is a cycle.
+    let mut path = vec![spread.name.clone()];
+    detect_cycles(ctx, fragment_key, &mut path);
+}
+
+fn detect_cycles(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    fragment_key: crate::facts::NodeKey,
+    path: &mut Vec<String>,
+) {
+    let inner_spreads = spreads_below(ctx, fragment_key);
+    for (entity, name, name_span) in inner_spreads {
+        if path.contains(&name) {
+            ctx.error(
+                entity,
+                name_span,
+                crate::facts::DiagnosticCode::CircularFragmentSpread,
+                format!("fragment `{name}` recursively spreads itself"),
+            );
+            continue;
+        }
+        let Some((_, _, _, next_key)) = ctx.tree.fragment_named(&name).copied() else {
+            continue;
+        };
+        path.push(name);
+        detect_cycles(ctx, next_key, path);
+        path.pop();
+    }
+}
+
+/// All spreads transitively below `parent` (through field selections, not
+/// through fragment definitions).
+fn spreads_below(
+    ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
+    parent: crate::facts::NodeKey,
+) -> Vec<(Entity, String, Span)> {
+    let mut found = Vec::new();
+    for (entity, spread, _, _) in ctx.tree.spreads_under(parent) {
+        found.push((*entity, spread.name.clone(), spread.name_span));
+    }
+    let children: Vec<crate::facts::NodeKey> = ctx
+        .tree
+        .fields_under(parent)
+        .map(|(_, _, key, _)| *key)
+        .collect();
+    for child in children {
+        found.extend(spreads_below(ctx, child));
+    }
+    found
+}
+
 /// Reports spreads that name no fragment in their file. The tracked
 /// [`DefIndex`] input reruns rows when the definition set changes; the
 /// ambient `View` alone would never wake this check for an unrelated edit
