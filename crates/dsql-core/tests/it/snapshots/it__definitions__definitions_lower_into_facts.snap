@@ -1,6 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/definitions.rs
-expression: render_def_facts(&db).await
+expression: render_def_facts(&bowl).await
 ---
 fragment TitleFields [0..64] name[9..20] on title [24..29]
 query TitleWithFragment [66..182] name[72..89]

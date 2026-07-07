@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/lowering.rs
+expression: "lines.join(\"\\n\")"
+---
+@.deprecated(reason: "old") shorthand=true
+@audit() shorthand=false
+@dsql.include_if(condition: $flag) shorthand=false

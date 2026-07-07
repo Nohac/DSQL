@@ -25,8 +25,8 @@ pub struct Document;
 impl LanguageEntity for Document {
     const NAME: &'static str = "document";
 
-    async fn register(db: &Bowl) {
-        db.add_system(parse_file).await;
+    async fn register(bowl: &Bowl) {
+        bowl.add_system(parse_file).await;
     }
 }
 

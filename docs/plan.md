@@ -188,12 +188,11 @@ match is the real source of truth once implemented):
 | `Definition` | `query_def`, `fragment_def` | one entity: queries and fragments are the same concept (named def + selection set) everywhere except where `DefKind` branches; fingerprinted `DefIndex`, duplicate-fragment check |
 | `FieldSelection` | `field_selection`, `field_selection_tail`, `field_suffix` | selection facts (flat `NodeKey`/`ParentKey` tree encoding), catalog field checks, relation selectors |
 | `FragmentSpread` | `fragment_spread` | spread facts; resolution via bound join on `FragmentKey` + `BelongsToFile` |
-| `Clause` | `clause_list`, `clause`, `where_clause`, `order_by_clause`, `limit_clause`, `offset_clause`, `order_item`, `sort_direction` | one entity, kind enum (matches dsql-poc's clause atom) |
-| `Directive` | `directive`, `directive_name`, `directive_namespace`, `directive_member`, `directive_argument` | directive registry checks |
-| `Expression` | `expr` (`binary_expr`), `literal`, `binary_operator`, `comparison_operator` | typed expression facts |
-| `Path` | `scoped_path`, `scoped_path_segment`, `qualified_name`, `relation_ref` | scope resolution against catalog |
-| `Variable` | `value_variable`, `operator_variable` | build-time vs query-time inference |
-| structural | `definition`, `selection`, `selection_set` | elided/consumed by owners |
+| `Clause` | `where_clause`, `order_by_clause`, `limit_clause`, `offset_clause` (consumes `clause_list`, `clause`, `order_item`, `sort_direction`) | one entity, `ClauseFact` enum carrying typed expression trees |
+| `Directive` | `directive` (consumes `directive_name`, `directive_namespace`, `directive_member`, `directive_argument`) | directive registry checks |
+| `Expression` | `expr`, `binary_expr`, `literal`, `binary_operator`, `comparison_operator`, `scoped_path`, `scoped_path_segment` | no facts of its own: the typed `Expr` tree is a plain value built by `build_expr` and carried inside clause/directive facts (paths folded in here) |
+| `Variable` | `value_variable`, `operator_variable` | per-occurrence `VariableUse` facts for set-oriented inference, in addition to their structural place in `Expr` trees |
+| structural | `definition`, `selection`, `selection_set`, `qualified_name`, `relation_ref` | elided/consumed by owners |
 
 ### Pipeline phases
 

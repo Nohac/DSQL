@@ -2,6 +2,7 @@
 //! area, mirroring the layout described in CONTRIBUTING.md.
 
 mod definitions;
+mod lowering;
 mod parse;
 mod selections;
 mod settle;
@@ -28,8 +29,8 @@ pub fn fixture(relative_path: &str) -> String {
 }
 
 /// Renders every diagnostic fact in a settled bowl, sorted for stability.
-pub async fn render_diagnostic_facts(db: &Bowl) -> String {
-    let rows = db
+pub async fn render_diagnostic_facts(bowl: &Bowl) -> String {
+    let rows = bowl
         .scoop::<Query<(
             Entity,
             &dsql_core::facts::Severity,

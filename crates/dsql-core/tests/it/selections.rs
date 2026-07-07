@@ -14,19 +14,19 @@ use futures::executor::block_on;
 use crate::{fixture, render_diagnostic_facts};
 
 async fn language_bowl() -> Bowl {
-    let db = Bowl::new();
-    register_language(&db).await;
-    db
+    let bowl = Bowl::new();
+    register_language(&bowl).await;
+    bowl
 }
 
 /// Reconstructs the selection tree from the flat parent-keyed facts — the
 /// same way planning and services consume them.
-async fn render_selection_tree(db: &Bowl) -> String {
-    let defs = db.scoop::<Query<(Entity, &DefDecl, &NodeKey)>>().await;
-    let fields = db
+async fn render_selection_tree(bowl: &Bowl) -> String {
+    let defs = bowl.scoop::<Query<(Entity, &DefDecl, &NodeKey)>>().await;
+    let fields = bowl
         .scoop::<Query<(Entity, &FieldSel, &NodeKey, &ParentKey)>>()
         .await;
-    let spreads = db
+    let spreads = bowl
         .scoop::<Query<(Entity, &SpreadDecl, &NodeKey, &ParentKey)>>()
         .await;
 
@@ -93,30 +93,30 @@ async fn render_selection_tree(db: &Bowl) -> String {
 #[test]
 fn selections_lower_into_a_parent_keyed_tree() {
     block_on(async {
-        let db = language_bowl().await;
+        let bowl = language_bowl().await;
 
         insert_source(
-            &db,
+            &bowl,
             "valid/imdb-relation-path-selector.dsql",
             &fixture("valid/imdb-relation-path-selector.dsql"),
         )
         .await;
         insert_source(
-            &db,
+            &bowl,
             "valid/imdb-fragment-spread.dsql",
             &fixture("valid/imdb-fragment-spread.dsql"),
         )
         .await;
 
-        insta::assert_snapshot!(render_selection_tree(&db).await);
+        insta::assert_snapshot!(render_selection_tree(&bowl).await);
     });
 }
 
 /// Renders spread resolutions by name, sorted for stability.
-async fn render_resolutions(db: &Bowl) -> Vec<String> {
-    let resolutions = db.scoop::<Query<(Entity, &SpreadResolution)>>().await;
-    let spreads = db.scoop::<Query<(Entity, &SpreadDecl)>>().await;
-    let defs = db.scoop::<Query<(Entity, &DefDecl)>>().await;
+async fn render_resolutions(bowl: &Bowl) -> Vec<String> {
+    let resolutions = bowl.scoop::<Query<(Entity, &SpreadResolution)>>().await;
+    let spreads = bowl.scoop::<Query<(Entity, &SpreadDecl)>>().await;
+    let defs = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
     let spread_rows = spreads.collect();
     let def_rows = defs.collect();
 
@@ -144,17 +144,17 @@ async fn render_resolutions(db: &Bowl) -> Vec<String> {
 #[test]
 fn spreads_resolve_to_fragments_in_the_same_file() {
     block_on(async {
-        let db = language_bowl().await;
+        let bowl = language_bowl().await;
 
         insert_source(
-            &db,
+            &bowl,
             "valid/imdb-fragment-spread.dsql",
             &fixture("valid/imdb-fragment-spread.dsql"),
         )
         .await;
 
         assert_eq!(
-            render_resolutions(&db).await,
+            render_resolutions(&bowl).await,
             vec!["...TitleFields -> fragment TitleFields"],
         );
     });
@@ -163,17 +163,17 @@ fn spreads_resolve_to_fragments_in_the_same_file() {
 #[test]
 fn renaming_a_fragment_retires_the_resolution() {
     block_on(async {
-        let db = language_bowl().await;
+        let bowl = language_bowl().await;
 
         insert_source(
-            &db,
+            &bowl,
             "rename.dsql",
             "fragment F on title {\n  id\n}\nquery Q {\n  title {\n    ...F\n  }\n}\n",
         )
         .await;
-        assert_eq!(render_resolutions(&db).await.len(), 1);
+        assert_eq!(render_resolutions(&bowl).await.len(), 1);
 
-        let sources = db.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+        let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
         for (_, source) in sources.collect() {
             source
                 .with_latest(|text| {
@@ -185,13 +185,13 @@ fn renaming_a_fragment_retires_the_resolution() {
         }
 
         assert_eq!(
-            render_resolutions(&db).await.len(),
+            render_resolutions(&bowl).await.len(),
             0,
             "resolution must retire with the renamed fragment"
         );
 
-        db.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
-        insta::assert_snapshot!(render_diagnostic_facts(&db).await);
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
     });
 }

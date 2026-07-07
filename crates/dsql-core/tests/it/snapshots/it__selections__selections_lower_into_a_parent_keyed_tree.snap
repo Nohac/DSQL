@@ -1,6 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/selections.rs
-expression: render_selection_tree(&db).await
+expression: render_selection_tree(&bowl).await
 ---
 query MovieRelationPathSelector
   movie_info {...}

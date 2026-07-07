@@ -1,5 +1,5 @@
 ---
 source: crates/dsql-core/tests/it/selections.rs
-expression: render_diagnostic_facts(&db).await
+expression: render_diagnostic_facts(&bowl).await
 ---
 Error[56..57]: fragment `F` not found

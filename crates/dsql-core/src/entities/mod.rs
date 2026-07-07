@@ -11,17 +11,25 @@ pub mod document;
 
 use bowl::{Commands, Entity, Query};
 
+pub mod clause;
+pub mod directive;
+pub mod expression;
 pub mod field_selection;
 pub mod fragment_spread;
+pub mod variable;
 
 use crate::entity::{LowerCtx, LowerStage};
 use crate::facts::{NodeKey, Span};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{CstData, Node, NodeRef, Rule};
+use clause::Clause;
 use definition::Definition;
+use directive::Directive;
 use document::{Document, ParsedFile};
+use expression::Expression;
 use field_selection::FieldSelection;
 use fragment_spread::FragmentSpread;
+use variable::Variable;
 
 fn lower_rule(ctx: &LowerCtx<'_>, rule: Rule, node: NodeRef, commands: &mut Commands) {
     match rule {
@@ -29,28 +37,33 @@ fn lower_rule(ctx: &LowerCtx<'_>, rule: Rule, node: NodeRef, commands: &mut Comm
         Rule::QueryDef | Rule::FragmentDef => Definition::lower(ctx, node, commands),
         Rule::FieldSelection => FieldSelection::lower(ctx, node, commands),
         Rule::FragmentSpread => FragmentSpread::lower(ctx, node, commands),
+        Rule::WhereClause | Rule::OrderByClause | Rule::LimitClause | Rule::OffsetClause => {
+            Clause::lower(ctx, node, commands)
+        }
+        Rule::Directive => Directive::lower(ctx, node, commands),
+        Rule::ValueVariable | Rule::OperatorVariable => Variable::lower(ctx, node, commands),
+        // Expression rules lower as part of the clause/directive facts that
+        // contain them (expression::build_expr); the claim is a no-op.
+        Rule::Expr
+        | Rule::BinaryExpr
+        | Rule::Literal
+        | Rule::BinaryOperator
+        | Rule::ComparisonOperator
+        | Rule::ScopedPath
+        | Rule::ScopedPathSegment => Expression::lower(ctx, node, commands),
+
         // Consumed by FieldSelection lowering from the field_selection node.
         Rule::FieldSelectionTail | Rule::FieldSuffix => {}
-
-        // Unclaimed rules, owned by entities scheduled in docs/plan.md.
-        // Move a rule up as its entity lands; do not lower it here.
-        Rule::Clause
-        | Rule::ClauseList
-        | Rule::WhereClause
-        | Rule::OrderByClause
-        | Rule::OrderItem
-        | Rule::SortDirection
-        | Rule::LimitClause
-        | Rule::OffsetClause => {} // phase 5: Clause
-        Rule::Directive
-        | Rule::DirectiveName
+        // Consumed by Clause lowering from the clause nodes.
+        Rule::Clause | Rule::ClauseList | Rule::OrderItem | Rule::SortDirection => {}
+        // Consumed by Directive lowering from the directive node.
+        Rule::DirectiveName
         | Rule::DirectiveNamespace
         | Rule::DirectiveMember
-        | Rule::DirectiveArgument => {} // phase 5: Directive
-        Rule::Expr | Rule::BinaryExpr | Rule::Literal => {} // phase 5: Expression
-        Rule::BinaryOperator | Rule::ComparisonOperator => {} // phase 5: Expression
-        Rule::ScopedPath | Rule::ScopedPathSegment | Rule::QualifiedName | Rule::RelationRef => {} // phase 5: Path
-        Rule::ValueVariable | Rule::OperatorVariable => {} // phase 5: Variable
+        | Rule::DirectiveArgument => {}
+        // Consumed by Definition (fragment targets), FieldSelection
+        // (relation refs), and Clause (order items) lowerings.
+        Rule::QualifiedName | Rule::RelationRef => {}
 
         // Structural rules: consumed by the entities owning their
         // ancestors, never owned themselves.
@@ -80,12 +93,22 @@ fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
     if let Node::Rule(rule, _) = ctx.cst.get(node) {
         lower_rule(ctx, rule, node, commands);
 
-        // Definitions and field selections form the selection tree: descend
+        // Definitions and field selections form the selection tree; spreads,
+        // clauses, and directives are attachment points for the facts nested
+        // inside them (directives on spreads, variables in clauses). Descend
         // with this node as the parent so nested facts carry their position
         // as a `ParentKey`.
         if matches!(
             rule,
-            Rule::QueryDef | Rule::FragmentDef | Rule::FieldSelection
+            Rule::QueryDef
+                | Rule::FragmentDef
+                | Rule::FieldSelection
+                | Rule::FragmentSpread
+                | Rule::WhereClause
+                | Rule::OrderByClause
+                | Rule::LimitClause
+                | Rule::OffsetClause
+                | Rule::Directive
         ) {
             let scoped = LowerCtx {
                 cst: ctx.cst,

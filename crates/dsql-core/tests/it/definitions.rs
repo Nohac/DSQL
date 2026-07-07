@@ -11,15 +11,15 @@ use futures::executor::block_on;
 use crate::{fixture, render_diagnostic_facts};
 
 async fn language_bowl() -> Bowl {
-    let db = Bowl::new();
-    register_language(&db).await;
-    db
+    let bowl = Bowl::new();
+    register_language(&bowl).await;
+    bowl
 }
 
 /// Renders every definition fact, sorted for stability.
-async fn render_def_facts(db: &Bowl) -> String {
-    let rows = db.scoop::<Query<(Entity, &DefDecl)>>().await;
-    let targets = db.scoop::<Query<(Entity, &FragmentTarget)>>().await;
+async fn render_def_facts(bowl: &Bowl) -> String {
+    let rows = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
+    let targets = bowl.scoop::<Query<(Entity, &FragmentTarget)>>().await;
     let targets = targets.collect();
 
     let mut lines: Vec<String> = rows
@@ -45,53 +45,53 @@ async fn render_def_facts(db: &Bowl) -> String {
 #[test]
 fn definitions_lower_into_facts() {
     block_on(async {
-        let db = language_bowl().await;
+        let bowl = language_bowl().await;
 
         insert_source(
-            &db,
+            &bowl,
             "valid/imdb-fragment-spread.dsql",
             &fixture("valid/imdb-fragment-spread.dsql"),
         )
         .await;
 
-        insta::assert_snapshot!(render_def_facts(&db).await);
+        insta::assert_snapshot!(render_def_facts(&bowl).await);
     });
 }
 
 #[test]
 fn duplicate_fragments_are_reported_on_demand() {
     block_on(async {
-        let db = language_bowl().await;
+        let bowl = language_bowl().await;
 
         insert_source(
-            &db,
+            &bowl,
             "dupes.dsql",
             "fragment F on title {\n  id\n}\nfragment F on title {\n  title\n}\nquery Q {\n  title {\n    ...F\n  }\n}\n",
         )
         .await;
 
-        let undemanded = db.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
+        let undemanded = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
         assert_eq!(undemanded, 0, "duplicate checks must not run undemanded");
 
-        db.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
 
-        insta::assert_snapshot!(render_diagnostic_facts(&db).await);
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
     });
 }
 
 #[test]
 fn duplicate_fragments_in_different_files_are_allowed() {
     block_on(async {
-        let db = language_bowl().await;
+        let bowl = language_bowl().await;
 
-        insert_source(&db, "a.dsql", "fragment F on title {\n  id\n}\n").await;
-        insert_source(&db, "b.dsql", "fragment F on title {\n  id\n}\n").await;
+        insert_source(&bowl, "a.dsql", "fragment F on title {\n  id\n}\n").await;
+        insert_source(&bowl, "b.dsql", "fragment F on title {\n  id\n}\n").await;
 
-        db.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
 
-        let diagnostics = db.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
+        let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
         assert_eq!(
             diagnostics, 0,
             "fragment duplicate scope is per file (dsql-poc FragmentMap semantics)"

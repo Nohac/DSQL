@@ -40,9 +40,9 @@ pub struct FragmentSpread;
 impl LanguageEntity for FragmentSpread {
     const NAME: &'static str = "fragment_spread";
 
-    async fn register(db: &Bowl) {
-        db.add_system(resolve_spreads).await;
-        db.add_system(check_unknown_fragments).await;
+    async fn register(bowl: &Bowl) {
+        bowl.add_system(resolve_spreads).await;
+        bowl.add_system(check_unknown_fragments).await;
     }
 }
 

@@ -30,7 +30,7 @@ pub trait LanguageEntity {
     const NAME: &'static str;
 
     /// Registers the entity's derivation and check systems on the bowl.
-    fn register(db: &Bowl) -> impl Future<Output = ()> + Send;
+    fn register(bowl: &Bowl) -> impl Future<Output = ()> + Send;
 }
 
 /// Context handed to [`LowerStage::lower`] for one owned CST rule node.
@@ -59,9 +59,9 @@ pub trait LowerStage: LanguageEntity {
 
 /// The compile-time coverage contract: an entity only registers once it has
 /// declared every stage.
-pub async fn register_entity<E>(db: &Bowl)
+pub async fn register_entity<E>(bowl: &Bowl)
 where
     E: LanguageEntity + LowerStage,
 {
-    E::register(db).await;
+    E::register(bowl).await;
 }

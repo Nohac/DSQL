@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/lowering.rs
+expression: "lines.join(\"\\n\")"
+---
+$$count in limit
+$$dir in order by
+$$min in where
+$tenant in where

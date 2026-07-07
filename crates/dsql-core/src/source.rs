@@ -96,10 +96,10 @@ pub struct OpenBuffer;
 
 /// Analysis-path loader: reads `path` from disk and inserts it as a file
 /// entity. The returned [`Entity`] identifies the file for later scoops.
-pub async fn load_file(db: &Bowl, path: impl AsRef<Path>) -> io::Result<Entity> {
+pub async fn load_file(bowl: &Bowl, path: impl AsRef<Path>) -> io::Result<Entity> {
     let path = path.as_ref();
     let text = std::fs::read_to_string(path)?;
-    let inserted = db
+    let inserted = bowl
         .insert((
             FilePath(path.display().to_string()),
             SourceText::from_text(&text),
@@ -110,8 +110,8 @@ pub async fn load_file(db: &Bowl, path: impl AsRef<Path>) -> io::Result<Entity> 
 
 /// Test/tooling helper: inserts in-memory text as a file entity under a
 /// caller-chosen path identity.
-pub async fn insert_source(db: &Bowl, path: impl Into<String>, text: &str) -> Entity {
-    let inserted = db
+pub async fn insert_source(bowl: &Bowl, path: impl Into<String>, text: &str) -> Entity {
+    let inserted = bowl
         .insert((FilePath(path.into()), SourceText::from_text(text)))
         .await;
     inserted.entity()

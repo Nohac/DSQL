@@ -46,6 +46,8 @@
   No stage orchestration or project-level logic inside an entity file.
 - Bind repeated strings (keywords, directive names, diagnostic codes) to a
   single source of truth; never scatter literals across call sites.
+- Name `Bowl` variables and parameters `bowl`, not `db` (`bowl.scoop` reads
+  the way the engine intends).
 - Pre-1.0: refactors are replacement changes — no compatibility bridges.
 
 ## Dependencies

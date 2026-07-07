@@ -79,9 +79,9 @@ pub struct Definition;
 impl LanguageEntity for Definition {
     const NAME: &'static str = "definition";
 
-    async fn register(db: &Bowl) {
-        db.add_system(index_defs.run_during(Phase::Complete)).await;
-        db.add_system(check_duplicate_fragments).await;
+    async fn register(bowl: &Bowl) {
+        bowl.add_system(index_defs.run_during(Phase::Complete)).await;
+        bowl.add_system(check_duplicate_fragments).await;
     }
 }
 
