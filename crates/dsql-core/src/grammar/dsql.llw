@@ -1,0 +1,74 @@
+token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or';
+token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' Arrow='->' Colon=':' At='@' Comma=',' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$';
+token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
+token Name='<name>' String='<string>' Number='<number>';
+token Whitespace Comment;
+
+skip Whitespace Comment;
+
+start document;
+
+document: definition*;
+definition^:
+  query_def
+| fragment_def
+;
+query_def: 'query' Name directive* selection_set;
+fragment_def: 'fragment' Name 'on' qualified_name selection_set;
+qualified_name: Name [?1 '::' Name];
+relation_ref: qualified_name ['->' Name];
+scoped_path_segment: qualified_name ['->' Name];
+scoped_path: ('.' | '..' | '~') scoped_path_segment ('.' scoped_path_segment)*;
+value_variable: ('$' | '$$') [Name];
+comparison_operator: '==' | '!=' | '>' | '>=' | '<' | '<=' | 'like';
+operator_variable: ('$' | '$$') [Name] '[' comparison_operator (?1 ',' comparison_operator)* [','] ']';
+binary_operator: comparison_operator | operator_variable;
+selection_set: '{' selection* '}';
+selection:
+  field_selection [',']
+| fragment_spread [',']
+;
+fragment_spread: '...' Name directive*;
+field_selection: relation_ref field_selection_tail;
+field_selection_tail:
+  ':' relation_ref field_suffix
+| field_suffix
+;
+field_suffix: [clause_list] directive* [selection_set];
+clause_list: '(' clause* ')';
+clause:
+  where_clause
+| order_by_clause
+| limit_clause
+| offset_clause
+;
+where_clause: 'where' expr;
+order_by_clause: 'order' 'by' order_item (?1 ',' order_item)* [','];
+sort_direction: 'asc' | 'desc' | value_variable;
+order_item: qualified_name [sort_direction];
+limit_clause: 'limit' expr;
+offset_clause: 'offset' expr;
+directive: '@' directive_name [?1 '(' directive_argument (?2 ',' directive_argument)* [','] ')'];
+directive_name:
+  '.' directive_member
+| directive_namespace ['.' directive_member]
+;
+directive_namespace: Name;
+directive_member: Name;
+directive_argument: Name ':' expr;
+expr:
+  expr binary_operator expr @binary_expr
+| expr 'and' expr @binary_expr
+| expr 'or' expr @binary_expr
+| literal
+| scoped_path
+| value_variable
+| '(' expr ')'
+;
+literal:
+  String
+| Number
+| 'true'
+| 'false'
+| 'null'
+;

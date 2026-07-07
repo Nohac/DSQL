@@ -1,0 +1,23 @@
+---
+source: crates/dsql-core/tests/it/parse.rs
+expression: "format!(\"diagnostics:\\n{}expected tokens:\\n{}\",\nrender_diagnostics(source, &diagnostics), expected_tokens.join(\"\\n\"),)"
+---
+diagnostics:
+error[36..37]: invalid syntax, expected one of: '$', '$$', '.', '..', 'false', '(', 'null', <number>, <string>, '~', 'true' ("}")
+expected tokens:
+Dollar@36..37
+DollarDollar@36..37
+Dot@36..37
+DotDot@36..37
+False@36..37
+LPar@36..37
+Limit@36..37
+Null@36..37
+Number@36..37
+Offset@36..37
+Order@36..37
+RPar@36..37
+String@36..37
+Tilde@36..37
+True@36..37
+Where@36..37

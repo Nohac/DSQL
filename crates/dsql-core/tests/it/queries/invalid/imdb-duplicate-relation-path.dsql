@@ -1,0 +1,10 @@
+query Movies {
+  movie_info {
+    id
+    title {
+      aka_title {
+        id
+      }
+    }
+  }
+}
