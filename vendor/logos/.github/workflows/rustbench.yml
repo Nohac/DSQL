@@ -1,0 +1,36 @@
+name: Benchmark
+
+on:
+  pull_request:
+    paths:
+    - '**.rs'
+    - .github/workflows/rustbench.yml
+    - '**/Cargo.toml'
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install toolchain
+      uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-codspeed
+
+    - name: Build the benchmark target(s)
+      run: cargo codspeed build --workspace
+
+    - name: Run the benchmarks
+      uses: CodSpeedHQ/action@v4
+      with:
+        run: cargo codspeed run --workspace
+        mode: instrumentation

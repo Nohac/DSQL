@@ -1,0 +1,36 @@
+[dependencies]
+anyhow = "1.0.57"
+clap = {version = "3.1.18", features = ["derive"]}
+fs-err = "2.7.0"
+logos-codegen = {version = "0.16.1", path = "../logos-codegen"}
+proc-macro2 = "1.0.39"
+
+[dev-dependencies]
+assert_cmd = "2.0.4"
+assert_fs = "1.0.7"
+insta = "1.43.1"
+predicates = "2.1.1"
+
+[features]
+# Enables debug messages
+debug = ["logos-codegen/debug"]
+# Use the state machine codegen instead of the tailcall codegen
+state_machine_codegen = ["logos-codegen/state_machine_codegen"]
+
+[package]
+name = "logos-cli"
+authors.workspace = true
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+include.workspace = true
+
+[package.metadata.release]
+shared-version = true

@@ -1,0 +1,13 @@
+[package]
+edition.workspace = true
+name = "logos-fuzz"
+publish = false
+rust-version.workspace = true
+
+[dependencies]
+afl = "0.15"
+arbitrary = "1.3"
+logos-codegen = { path = "../logos-codegen", features = ["fuzzing"] }
+
+[package.metadata.release]
+shared-version = true
