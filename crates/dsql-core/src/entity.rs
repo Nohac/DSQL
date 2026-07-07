@@ -65,11 +65,21 @@ pub trait FormatStage: LanguageEntity {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef);
 }
 
+/// Service stage: register systems that answer hover requests by inserting
+/// `HoverCandidate` facts (see `service::hover` for the pipeline). Each
+/// entity's systems read only the enriched request plus the entity's own
+/// facts, so param lists stay small no matter how many entities exist.
+/// Entities without hover content register nothing (explicit empty impl).
+pub trait HoverStage: LanguageEntity {
+    fn register_hover(bowl: &Bowl) -> impl Future<Output = ()> + Send;
+}
+
 /// The compile-time coverage contract: an entity only registers once it has
 /// declared every stage.
 pub async fn register_entity<E>(bowl: &Bowl)
 where
-    E: LanguageEntity + LowerStage + FormatStage,
+    E: LanguageEntity + LowerStage + FormatStage + HoverStage,
 {
     E::register(bowl).await;
+    E::register_hover(bowl).await;
 }

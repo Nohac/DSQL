@@ -5,7 +5,7 @@
 //! at which binding time, with which types" — so each occurrence also
 //! becomes its own fact, anchored into the tree by [`ParentKey`].
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, With};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, View, With};
 
 use crate::catalog::{
     CatalogSnapshot, DataType, FieldCheckResult, FieldRef, TableRef, TableResolution,
@@ -17,10 +17,11 @@ use crate::entities::field_selection::{SelectionTree, TreeViews};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
-use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span, VariablesDemand};
 use crate::grammar::parser::NodeRef;
+use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority, span_matches};
 
 /// One variable occurrence, lowered from `value_variable` or
 /// `operator_variable`. The inference stage (phase 7) groups these by name
@@ -567,4 +568,53 @@ impl FormatStage for Variable {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         formatter.write_node_text(node);
     }
+}
+
+
+impl HoverStage for Variable {
+    async fn register_hover(bowl: &Bowl) {
+        bowl.add_system(hover_variables.run_during(bowl::Phase::Complete))
+            .await;
+    }
+}
+
+/// Answers hover on a variable occurrence with its inferred binding.
+/// Bindings derive during Evaluate, so they are settled by Complete;
+/// without `VariablesDemand` there are no bindings and no candidates.
+async fn hover_variables(
+    query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
+    bindings: View<'_, (Entity, &Span, &VariableBinding, &BelongsToFile)>,
+    mut commands: Commands,
+) {
+    let (request, file, position) = query.item();
+
+    let Some((_, _, binding, _)) = bindings.iter().find(|(_, span, _, binding_file)| {
+        span_matches(**span, binding_file.0, file.0, position.offset)
+    }) else {
+        return;
+    };
+
+    let binding_time = match binding.source {
+        VariableSource::Structured => "build-time",
+        VariableSource::TopLevel => "query-time",
+    };
+    let text = format!(
+        "{} — `{}`: {} ({binding_time})",
+        binding
+            .name
+            .as_deref()
+            .map(|name| format!("`{name}`"))
+            .unwrap_or_else(|| "anonymous variable".to_string()),
+        binding.path,
+        binding.data_type.as_str(),
+    );
+
+    commands.insert((
+        DerivedFrom::new(request),
+        HoverCandidate {
+            request,
+            priority: priority::VARIABLE,
+            text,
+        },
+    ));
 }

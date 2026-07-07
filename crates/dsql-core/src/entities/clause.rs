@@ -8,7 +8,7 @@ use bowl::{Bowl, Commands, Component, DerivedFrom};
 
 use crate::entities::expression::{Expr, VariableRef, build_expr, build_variable_ref, expr_child};
 use crate::entities::{direct_rule, node_span, text};
-use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span};
 use crate::grammar::parser::{CstData, NodeRef, Rule};
@@ -428,4 +428,11 @@ impl FormatStage for Clause {
             }
         }
     }
+}
+
+
+impl HoverStage for Clause {
+    /// Clause keywords carry no hover content of their own; the paths and
+    /// variables inside them answer through their entities.
+    async fn register_hover(_bowl: &Bowl) {}
 }

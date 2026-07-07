@@ -3,7 +3,7 @@
 
 use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query};
 
-use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{
     DiagnosticCode, DiagnosticFacts, DiagnosticSource, Severity, Span, emit_diagnostic,
@@ -112,4 +112,10 @@ impl FormatStage for Document {
             }
         }
     }
+}
+
+
+impl HoverStage for Document {
+    /// Documents carry no hover content; the service supplies the fallback.
+    async fn register_hover(_bowl: &Bowl) {}
 }

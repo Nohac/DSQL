@@ -2,19 +2,20 @@
 //! selection set, with its alias and relation-path selector — plus the
 //! catalog check walk that validates every selection tree top-down.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemParam, View, With};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, SystemParam, View, With};
 
 use crate::catalog::{CatalogSnapshot, FieldCheckResult, FieldRef, TableRef, TableResolution};
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
 use crate::entities::fragment_spread::{SpreadDecl, check_spread_site};
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     ParentKey, Severity, Span, emit_diagnostic,
 };
+use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 
@@ -557,5 +558,150 @@ impl FormatStage for FieldSelection {
         if let Some(suffix) = suffix {
             formatter.field_suffix(suffix);
         }
+    }
+}
+
+
+impl HoverStage for FieldSelection {
+    async fn register_hover(bowl: &Bowl) {
+        bowl.add_system(hover_fields.run_during(bowl::Phase::Complete))
+            .await;
+    }
+}
+
+/// Answers hover on a field selection name with its resolved column or
+/// relation, walking the parent chain to establish the context table.
+async fn hover_fields(
+    query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    views: TreeViews<'_>,
+    mut commands: Commands,
+) {
+    let (request, file, position) = query.item();
+    let (_, snapshot) = catalog.item();
+    let catalog = snapshot.catalog();
+
+    let tree = SelectionTree::collect(&views, file.0);
+    let Some((_, field, key, _)) = tree
+        .fields
+        .iter()
+        .find(|(_, field, key, _)| {
+            key.file == file.0
+                && field.name_span.start <= position.offset
+                && position.offset < field.name_span.end
+        })
+        .copied()
+    else {
+        return;
+    };
+
+    let Some(table) = resolve_context_table(&tree, catalog, key) else {
+        return;
+    };
+
+    let text =
+        describe_field(catalog, table, field).unwrap_or_else(|| format!("`{}`", field.name));
+
+    commands.insert((
+        DerivedFrom::new(request),
+        HoverCandidate {
+            request,
+            priority: priority::FIELD,
+            text,
+        },
+    ));
+}
+
+/// The table a field's *own* reference resolves against: its parent's
+/// resolved relation table, or the root table for query roots.
+fn resolve_context_table(
+    tree: &SelectionTree<'_>,
+    catalog: &crate::catalog::Catalog,
+    field_key: NodeKey,
+) -> Option<crate::catalog::TableId> {
+    // Build the ancestor chain of field keys, root first.
+    let mut chain = Vec::new();
+    let mut current = field_key;
+    loop {
+        let (_, _, _, parent) = tree.fields.iter().find(|(_, _, key, _)| *key == current)?;
+        chain.push(current);
+        match tree.fields.iter().find(|(_, _, key, _)| key == parent) {
+            Some(_) => current = *parent,
+            // Parent is the definition node.
+            None => break,
+        }
+    }
+    let root_key = *chain.last()?;
+
+    // Query roots resolve as tables; fragment bodies against the target.
+    let (_, _, _, root_parent) = tree.fields.iter().find(|(_, _, key, _)| *key == root_key)?;
+    let fragment_target = tree
+        .fragments
+        .iter()
+        .find(|(_, _, _, def_key)| def_key == root_parent)
+        .map(|(_, _, target, _)| target.name.clone());
+
+    let (_, root_field, _, _) = tree.fields.iter().find(|(_, _, key, _)| *key == root_key)?;
+    let mut table = match &fragment_target {
+        Some(target) => catalog.table_ref_for(TableRef::parse(target))?.id,
+        None => {
+            let table = catalog.table_ref_for(TableRef::parse(&root_field.name))?.id;
+            if chain.len() == 1 {
+                // Hovering the root itself: its context is itself.
+                return Some(table);
+            }
+            table
+        }
+    };
+
+    // Descend from below the root to the hovered field's parent.
+    for key in chain.iter().rev().skip(if fragment_target.is_some() { 0 } else { 1 }) {
+        if *key == field_key {
+            return Some(table);
+        }
+        let (_, field, _, _) = tree.fields.iter().find(|(_, _, k, _)| k == key)?;
+        let reference = FieldRef {
+            target: TableRef::parse(&field.name),
+            selector: field.relation_path.as_deref(),
+        };
+        let FieldCheckResult::Relation(relation) = catalog.check_field_ref(table, reference)
+        else {
+            return None;
+        };
+        table = relation.table.id;
+    }
+    Some(table)
+}
+
+fn describe_field(
+    catalog: &crate::catalog::Catalog,
+    table: crate::catalog::TableId,
+    field: &FieldSel,
+) -> Option<String> {
+    // Root selections name tables directly.
+    if let Some(root_table) = catalog.table_ref_for(TableRef::parse(&field.name))
+        && root_table.id == table
+    {
+        return Some(format!(
+            "table `{}`.`{}`",
+            root_table.schema, root_table.name
+        ));
+    }
+    let reference = FieldRef {
+        target: TableRef::parse(&field.name),
+        selector: field.relation_path.as_deref(),
+    };
+    match catalog.check_field_ref(table, reference) {
+        FieldCheckResult::Column(column) => Some(format!(
+            "column `{}`: {}{}",
+            column.name,
+            column.data_type.as_str(),
+            if column.not_null { " (not null)" } else { "" },
+        )),
+        FieldCheckResult::Relation(relation) => Some(format!(
+            "relation `{}` → `{}`.`{}` via `{}`",
+            field.name, relation.table.schema, relation.table.name, relation.selector,
+        )),
+        _ => None,
     }
 }

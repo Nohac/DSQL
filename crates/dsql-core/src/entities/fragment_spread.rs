@@ -2,17 +2,19 @@
 //! fragment definitions, and the unknown-fragment check.
 
 use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, View, Where, With,
+    Bowl, Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, SystemExt, View, Where,
+    With,
 };
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
 use crate::entities::{direct_token, node_span, text};
-use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     ParentKey, Severity, Span, emit_diagnostic,
 };
+use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority, span_matches};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::NodeRef;
 
@@ -251,4 +253,46 @@ impl FormatStage for FragmentSpread {
             formatter.format_child(directive);
         }
     }
+}
+
+
+impl HoverStage for FragmentSpread {
+    async fn register_hover(bowl: &Bowl) {
+        bowl.add_system(hover_spreads.run_during(bowl::Phase::Complete))
+            .await;
+    }
+}
+
+/// Answers hover on a `...Name` spread with the fragment it resolves to.
+async fn hover_spreads(
+    query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
+    spreads: View<'_, (Entity, &SpreadDecl, &BelongsToFile)>,
+    targets: View<'_, (Entity, &crate::entities::definition::FragmentTarget, &BelongsToFile)>,
+    mut commands: Commands,
+) {
+    let (request, file, position) = query.item();
+
+    let Some((_, spread, _)) = spreads.iter().find(|(_, spread, spread_file)| {
+        span_matches(spread.name_span, spread_file.0, file.0, position.offset)
+    }) else {
+        return;
+    };
+
+    let target = targets
+        .iter()
+        .find(|(_, _, target_file)| target_file.0 == file.0)
+        .map(|(_, target, _)| target.name.clone());
+    let text = match target {
+        Some(target) => format!("fragment `{}` on `{target}`", spread.name),
+        None => format!("fragment `{}`", spread.name),
+    };
+
+    commands.insert((
+        DerivedFrom::new(request),
+        HoverCandidate {
+            request,
+            priority: priority::SPREAD,
+            text,
+        },
+    ));
 }

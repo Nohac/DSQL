@@ -1,0 +1,9 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+expression: "format!(\"fragment name: {}\\nroot field: {}\\ncolumn: {}\\nspread: {}\\nrelation: {}\",\nhover(&bowl, fragment_name).await, hover(&bowl, root_field).await,\nhover(&bowl, column).await, hover(&bowl, spread).await,\nhover(&bowl, relation).await,)"
+---
+fragment name: fragment `TitleFields` on `title`
+root field: table `public`.`title`
+column: column `production_year`: int
+spread: fragment `TitleFields` on `title`
+relation: relation `kind_type` → `public`.`kind_type` via `kind_id`

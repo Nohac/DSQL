@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+expression: info
+---
+`search` — `params.search`: text (query-time)
