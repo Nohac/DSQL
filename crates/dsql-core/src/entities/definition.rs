@@ -1,0 +1,180 @@
+//! Definition entity: named top-level definitions (queries and fragments),
+//! the definition index, and the duplicate-fragment check.
+//!
+//! Queries and fragments are one entity because they are structurally the
+//! same concept — a named definition with a selection set — and every stage
+//! treats them symmetrically except where [`DefKind`] branches.
+
+use std::fmt;
+
+use bowl::{
+    Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, Singleton, SystemExt, View,
+    With,
+};
+
+use crate::entities::document::ParsedFile;
+use crate::entities::{direct_rule, direct_token, node_span, text};
+use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
+use crate::facts::{BelongsToFile, DiagnosticsDemand, Severity, Span, emit_diagnostic};
+use crate::grammar::lexer::Token;
+use crate::grammar::parser::{NodeRef, Rule};
+
+/// What kind of definition a [`DefDecl`] fact describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DefKind {
+    Query,
+    Fragment,
+}
+
+impl fmt::Display for DefKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DefKind::Query => f.write_str("query"),
+            DefKind::Fragment => f.write_str("fragment"),
+        }
+    }
+}
+
+/// One named top-level definition, lowered from `query_def`/`fragment_def`.
+#[derive(Component, Debug, Hash)]
+#[component(hash)]
+pub struct DefDecl {
+    pub kind: DefKind,
+    pub name: String,
+    /// Span of the name token, for name-precision diagnostics.
+    pub name_span: Span,
+    /// Span of the whole definition.
+    pub span: Span,
+}
+
+/// The relation a fragment is declared `on`. Only fragment entities carry
+/// this; the catalog check (phase 6) validates it against the schema.
+#[derive(Component, Debug, Hash)]
+#[component(hash)]
+pub struct FragmentTarget {
+    pub name: String,
+    pub span: Span,
+}
+
+/// Fingerprint of the full definition set, maintained by [`index_defs`].
+/// Checks that must react to *other* definitions appearing or disappearing
+/// take this singleton as a tracked input: its revision moves only when the
+/// set actually changes, so idempotent reruns invalidate nothing.
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct DefIndex(Vec<(u64, DefKind, String)>);
+
+/// Owns `query_def` and `fragment_def`.
+pub struct Definition;
+
+impl LanguageEntity for Definition {
+    const NAME: &'static str = "definition";
+
+    async fn register(db: &Bowl) {
+        db.add_system(index_defs.run_during(Phase::Complete)).await;
+        db.add_system(check_duplicate_fragments).await;
+    }
+}
+
+impl LowerStage for Definition {
+    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
+        // The name is a direct child token; nested Names (inside the
+        // selection set) belong to other entities.
+        let Some(name_span) = direct_token(ctx.cst, node, Token::Name) else {
+            // Error recovery can leave a def without a name; the parse
+            // diagnostics already cover it.
+            return;
+        };
+
+        let kind = if ctx.cst.match_rule(node, Rule::QueryDef) {
+            DefKind::Query
+        } else {
+            DefKind::Fragment
+        };
+
+        let decl = DefDecl {
+            kind,
+            name: text(ctx.source, name_span).to_string(),
+            name_span,
+            span: node_span(ctx.cst, node),
+        };
+
+        let target = direct_rule(ctx.cst, node, Rule::QualifiedName).map(|target| {
+            let span = node_span(ctx.cst, target);
+            FragmentTarget {
+                name: text(ctx.source, span).to_string(),
+                span,
+            }
+        });
+
+        match target {
+            Some(target) => commands.insert((
+                DerivedFrom::new(ctx.file),
+                BelongsToFile(ctx.file),
+                decl,
+                target,
+            )),
+            None => commands.insert((DerivedFrom::new(ctx.file), BelongsToFile(ctx.file), decl)),
+        };
+    }
+}
+
+/// Aggregates the definition set into the [`DefIndex`] singleton. Runs in
+/// `Phase::Complete` (definitions settled for this generation's inputs),
+/// driven per parsed file so any text change recomputes it. Ungated: spread
+/// resolution and planning consume it, not just diagnostics.
+async fn index_defs(
+    query: Query<(Entity, &ParsedFile)>,
+    defs: View<'_, (Entity, &DefDecl, &BelongsToFile)>,
+    mut commands: Commands,
+) {
+    let _ = query.item();
+
+    let mut entries: Vec<(u64, DefKind, String)> = defs
+        .iter()
+        .map(|(_, decl, file)| (file.0.raw(), decl.kind, decl.name.clone()))
+        .collect();
+    entries.sort();
+
+    commands.insert((Singleton::<DefIndex>::new(), DefIndex(entries)));
+}
+
+/// Duplicate fragment names are ambiguous at spread-resolution time, so they
+/// are errors — scoped per file, matching dsql-poc's `FragmentMap` semantics.
+/// Query names are entry points and not checked here.
+///
+/// The [`DefIndex`] query keeps this check honest: the `View` of other
+/// definitions contributes no memo deps, so without a tracked input over the
+/// definition *set*, a row would never rerun when an unrelated definition is
+/// added or removed — a surviving duplicate could go unreported.
+async fn check_duplicate_fragments(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    query: Query<(Entity, &DefDecl, &BelongsToFile)>,
+    _index: Query<(Entity, &DefIndex)>,
+    defs: View<'_, (Entity, &DefDecl, &BelongsToFile)>,
+    mut commands: Commands,
+) {
+    let (entity, decl, file) = query.item();
+
+    if decl.kind != DefKind::Fragment {
+        return;
+    }
+
+    let Some((previous, _, _)) = defs.iter().find(|(other, other_decl, other_file)| {
+        *other < entity
+            && other_decl.kind == DefKind::Fragment
+            && other_decl.name == decl.name
+            && other_file.0 == file.0
+    }) else {
+        return;
+    };
+
+    emit_diagnostic(
+        &mut commands,
+        DerivedFrom::many([entity, previous]),
+        file.0,
+        decl.name_span,
+        Severity::Error,
+        format!("duplicate fragment `{}`", decl.name),
+    );
+}

@@ -1,0 +1,14 @@
+fragment TitleFields on title {
+  id
+  title
+  production_year
+}
+
+query TitleWithFragment {
+  title(where .id > 0 limit 2) {
+    ...TitleFields
+    kind_type {
+      kind
+    }
+  }
+}

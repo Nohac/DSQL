@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/definitions.rs
+expression: render_diagnostic_facts(&db).await
+---
+Error[38..39]: duplicate fragment `F`

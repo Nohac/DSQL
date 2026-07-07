@@ -3,36 +3,17 @@
 
 use bowl::{Bowl, Entity, Mut, Query, With};
 use dsql_core::entities::document::ParsedFile;
-use dsql_core::facts::{Diagnostic, Severity, Span};
+use dsql_core::facts::Diagnostic;
 use dsql_core::register_language;
 use dsql_core::source::{FilePath, SourceText, insert_source};
 use futures::executor::block_on;
 
-use crate::fixture;
+use crate::{fixture, render_diagnostic_facts};
 
 async fn language_bowl() -> Bowl {
     let db = Bowl::new();
     register_language(&db).await;
     db
-}
-
-/// Renders every diagnostic fact in the bowl, sorted for stability.
-async fn render_diagnostic_facts(db: &Bowl) -> String {
-    let rows = db
-        .scoop::<Query<(Entity, &Severity, &Span, &Diagnostic)>>()
-        .await;
-    let mut lines: Vec<String> = rows
-        .collect()
-        .into_iter()
-        .map(|(_, severity, span, diagnostic)| {
-            format!(
-                "{severity:?}[{}..{}]: {}",
-                span.start, span.end, diagnostic.0
-            )
-        })
-        .collect();
-    lines.sort();
-    lines.join("\n")
 }
 
 #[test]

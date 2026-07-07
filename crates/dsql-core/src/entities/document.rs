@@ -1,7 +1,7 @@
 //! Document entity: source files as they enter the bowl, and the parse that
 //! turns their text into a lossless CST.
 
-use bowl::{Bowl, Commands, Component, Entity, Query};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query};
 
 use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{Severity, Span, emit_diagnostic};
@@ -57,6 +57,13 @@ pub async fn parse_file(query: Query<(Entity, &SourceText)>, mut commands: Comma
             .first()
             .map(|label| Span::from(label.range.clone()))
             .unwrap_or(Span { start: 0, end: 0 });
-        emit_diagnostic(&mut commands, file, span, Severity::Error, diagnostic.message);
+        emit_diagnostic(
+            &mut commands,
+            DerivedFrom::new(file),
+            file,
+            span,
+            Severity::Error,
+            diagnostic.message,
+        );
     }
 }

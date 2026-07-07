@@ -6,21 +6,25 @@
 //! fails to compile here until an entity claims it or it is explicitly
 //! listed as structural.
 
+pub mod definition;
 pub mod document;
 
 use bowl::{Commands, Entity, Query};
 
 use crate::entity::{LowerCtx, LowerStage};
-use crate::grammar::parser::{Node, NodeRef, Rule};
+use crate::facts::Span;
+use crate::grammar::lexer::Token;
+use crate::grammar::parser::{CstData, Node, NodeRef, Rule};
+use definition::Definition;
 use document::{Document, ParsedFile};
 
 fn lower_rule(ctx: &LowerCtx<'_>, rule: Rule, node: NodeRef, commands: &mut Commands) {
     match rule {
         Rule::Document => Document::lower(ctx, node, commands),
+        Rule::QueryDef | Rule::FragmentDef => Definition::lower(ctx, node, commands),
 
         // Unclaimed rules, owned by entities scheduled in docs/plan.md.
         // Move a rule up as its entity lands; do not lower it here.
-        Rule::QueryDef | Rule::FragmentDef => {} // phase 3: QueryDef, FragmentDef
         Rule::FieldSelection | Rule::FieldSelectionTail | Rule::FieldSuffix => {} // phase 4
         Rule::FragmentSpread => {} // phase 4
         Rule::Clause
@@ -72,4 +76,28 @@ fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
     for child in ctx.cst.children(node) {
         walk(ctx, child, commands);
     }
+}
+
+// CST helpers shared by entity lowerings. All operate on direct children
+// only; recursive extraction belongs to the entity owning the nested rule.
+
+/// Span of the first direct child token of `node` matching `token`.
+pub(crate) fn direct_token(cst: &CstData, node: NodeRef, token: Token) -> Option<Span> {
+    cst.children(node)
+        .find_map(|child| cst.match_token(child, token).map(Span::from))
+}
+
+/// First direct child of `node` that is a `rule` node.
+pub(crate) fn direct_rule(cst: &CstData, node: NodeRef, rule: Rule) -> Option<NodeRef> {
+    cst.children(node).find(|child| cst.match_rule(*child, rule))
+}
+
+/// Full span of a CST node.
+pub(crate) fn node_span(cst: &CstData, node: NodeRef) -> Span {
+    Span::from(cst.span(node))
+}
+
+/// Slices `span` out of the lowered source snapshot.
+pub(crate) fn text(source: &str, span: Span) -> &str {
+    &source[span.start..span.end]
 }

@@ -49,16 +49,20 @@ pub struct BelongsToFile(pub Entity);
 #[component(hash)]
 pub struct DiagnosticsDemand;
 
-/// Emits one diagnostic entity owned by (and anchored to) `file`.
+/// Emits one diagnostic entity.
+///
+/// `derived_from` names the source facts whose change retires the
+/// diagnostic; `file` anchors it to the file whose text `span` indexes.
 pub fn emit_diagnostic(
     commands: &mut Commands,
+    derived_from: DerivedFrom,
     file: Entity,
     span: Span,
     severity: Severity,
     message: impl Into<String>,
 ) {
     commands.insert((
-        DerivedFrom::new(file),
+        derived_from,
         BelongsToFile(file),
         span,
         severity,
