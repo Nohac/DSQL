@@ -1,0 +1,31 @@
+[package]
+edition.workspace = true
+name = "tests"
+publish = false
+rust-version.workspace = true
+version = "0.0.0"
+
+[dependencies]
+logos = { path = ".." }
+
+[features]
+forbid_unsafe = [
+    "logos/forbid_unsafe"
+]
+debug = [
+    "logos/debug"
+]
+state_machine_codegen = [
+    "logos/state_machine_codegen"
+]
+
+[dev-dependencies]
+trybuild = { version = "1.0.114" }
+criterion = { version = "2.10.1", package = "codspeed-criterion-compat" }
+
+[package.metadata.release]
+release = false
+
+[[bench]]
+harness = false
+name = "bench"
