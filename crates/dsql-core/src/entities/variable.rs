@@ -105,6 +105,19 @@ pub enum VariableRole {
     Offset,
 }
 
+impl VariableRole {
+    /// The artifact label consumed by generated metadata.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VariableRole::WhereValue => "wherevalue",
+            VariableRole::ComparisonOperator => "comparisonoperator",
+            VariableRole::SortDirection => "sortdirection",
+            VariableRole::Limit => "limit",
+            VariableRole::Offset => "offset",
+        }
+    }
+}
+
 /// One inferred variable binding: the parameter a query or fragment takes,
 /// with its structured path, binding time, and value type. Derived per
 /// definition by [`infer_variables`]; the occurrence's [`Span`] rides the
@@ -201,6 +214,7 @@ async fn infer_variables(
         commands.insert((
             DerivedFrom::many([def_entity, catalog_entity]),
             BelongsToFile(file.0),
+            crate::facts::DefKey(def_entity),
             span,
             binding,
         ));

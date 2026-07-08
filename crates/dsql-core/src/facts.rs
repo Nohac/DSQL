@@ -78,6 +78,18 @@ pub struct NodeKey {
     pub node: usize,
 }
 
+/// The definition entity a derived fact belongs to, as a join/scoop key:
+/// plans and variable bindings carry the definition they derive from so
+/// artifact assembly can group them without entity-graph walks.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(hash)]
+pub struct DefKey(pub Entity);
+
+/// The plan entity a generated-SQL fact renders, as a join/scoop key.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(hash)]
+pub struct PlanKey(pub Entity);
+
 /// Link from a lowered fact to the [`NodeKey`] of its nearest enclosing
 /// selection or definition — the flat encoding of the selection tree.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

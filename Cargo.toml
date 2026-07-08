@@ -9,6 +9,7 @@ edition = "2024"
 
 [workspace.dependencies]
 dsql-core = { path = "crates/dsql-core" }
+dsql-metadata = { path = "crates/dsql-metadata" }
 dsql-project = { path = "crates/dsql-project" }
 
 bowl = { git = "https://github.com/Nohac/porridge", rev = "fb14619342267114def0e6e3d8d89d727ad082b7" }
@@ -18,7 +19,10 @@ logos = { path = "vendor/logos" }
 clap = { version = "4.5", features = ["derive"] }
 codespan-reporting = "0.13"
 facet = "0.50.0-rc.1"
+facet-json = "0.50.0-rc.1"
+facet-json-schema = "0.50.0-rc.1"
 facet-toml = "0.50.0-rc.1"
+facet-typescript = "0.50.0-rc.1"
 facet-yaml = "0.50.0-rc.1"
 futures = "0.3"
 insta = "1.48"

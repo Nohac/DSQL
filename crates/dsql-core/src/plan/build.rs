@@ -9,9 +9,9 @@
 use bowl::{Bowl, Commands, DerivedFrom, Entity, Query, SystemExt, With};
 
 use super::types::{
-    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, NestedRelation, OrderByPlan,
-    Projection, QueryPlan, QueryPlanFact, SelectionClauses, SelectionPlan, SelectionPlanItem,
-    SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation,
+    OperationSeed, OrderByPlan, Projection, QueryPlan, QueryPlanFact, SelectionClauses,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
@@ -26,8 +26,8 @@ use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
 use crate::facts::{
-    BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, NodeKey, PlanDemand,
-    Severity, emit_diagnostic,
+    BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, NodeKey, PlanDemand,
+    PlanKey, Severity, emit_diagnostic,
 };
 
 /// Registers the planning stage. A cross-entity stage system like
@@ -52,9 +52,6 @@ async fn plan_queries(
     mut commands: Commands,
 ) {
     let (def_entity, decl, def_key, file, scope) = defs.item();
-    if decl.kind != DefKind::Query {
-        return;
-    }
     let (catalog_entity, snapshot) = catalog.item();
     let (_, imports) = imports.item();
 
@@ -67,11 +64,28 @@ async fn plan_queries(
     };
     let mut diagnostics = Vec::new();
 
+    if decl.kind == DefKind::Fragment {
+        plan_fragment_body(
+            &mut planner,
+            def_entity,
+            decl,
+            *def_key,
+            file.0,
+            &scope.0,
+            catalog_entity,
+            &mut commands,
+            &mut diagnostics,
+        );
+        emit_plan_diagnostics(diagnostics, def_entity, catalog_entity, file.0, &mut commands);
+        return;
+    }
+
     let roots: Vec<_> = tree
         .fields_under(*def_key)
         .map(|(_, field, key, _)| (*field, *key))
         .collect();
-    for (field, key) in roots {
+    let root_count = roots.len();
+    for (root_index, (field, key)) in roots.into_iter().enumerate() {
         match planner
             .catalog
             .resolve_table_ref_for(TableRef::parse(&field.name))
@@ -107,11 +121,22 @@ async fn plan_queries(
                         clauses,
                         selections,
                     };
-                    commands.insert((
+                    let plan_entity = commands.insert((
                         DerivedFrom::many([def_entity, catalog_entity]),
                         BelongsToFile(file.0),
+                        DefKey(def_entity),
                         QueryPlanFact(plan),
+                        OperationSeed {
+                            query_name: decl.name.clone(),
+                            root_index,
+                            root_count,
+                            def_span: decl.span,
+                            scope: scope.0.clone(),
+                        },
                     ));
+                    // Self key: SQL facts carry the same key, so artifact
+                    // assembly pairs each plan with its rendering.
+                    commands.entity(plan_entity).insert(PlanKey(plan_entity));
                 }
             }
             TableResolution::NotFound { reference } => diagnostics.push((
@@ -139,12 +164,22 @@ async fn plan_queries(
         }
     }
 
+    emit_plan_diagnostics(diagnostics, def_entity, catalog_entity, file.0, &mut commands);
+}
+
+fn emit_plan_diagnostics(
+    diagnostics: PlanDiagnostics,
+    def_entity: Entity,
+    catalog_entity: Entity,
+    file: Entity,
+    commands: &mut Commands,
+) {
     for (span, code, message) in diagnostics {
         emit_diagnostic(
-            &mut commands,
+            commands,
             DiagnosticFacts {
                 derived_from: DerivedFrom::many([def_entity, catalog_entity]),
-                file: file.0,
+                file,
                 span,
                 severity: Severity::Error,
                 source: DiagnosticSource::Plan,
@@ -153,6 +188,60 @@ async fn plan_queries(
             },
         );
     }
+}
+
+/// Plans a fragment body against its declared table: no SQL renders from
+/// it, but generated artifacts derive the fragment's result shape from
+/// the plan.
+#[expect(clippy::too_many_arguments, reason = "one emission site, all context")]
+fn plan_fragment_body(
+    planner: &mut Planner<'_>,
+    def_entity: Entity,
+    decl: &DefDecl,
+    def_key: NodeKey,
+    file: Entity,
+    scope: &str,
+    catalog_entity: Entity,
+    commands: &mut Commands,
+    diagnostics: &mut PlanDiagnostics,
+) {
+    let Some((_, _, target, _, _)) = planner
+        .tree
+        .fragments
+        .iter()
+        .find(|(entity, _, _, _, _)| *entity == def_entity)
+    else {
+        return;
+    };
+    let Some(table) = planner.catalog.table_ref_for(TableRef::parse(&target.name)) else {
+        // Unresolvable targets are check diagnostics; nothing to plan.
+        return;
+    };
+    let table_id = table.id;
+    let Some(selections) = planner.plan_selection_set(
+        table_id,
+        table_id,
+        &SelectionClauses::default(),
+        SelectionPath::fragment_root(),
+        &VariablePathScope::fragment(),
+        def_key,
+        &mut Vec::new(),
+        diagnostics,
+    ) else {
+        return;
+    };
+    commands.insert((
+        DerivedFrom::many([def_entity, catalog_entity]),
+        BelongsToFile(file),
+        DefKey(def_entity),
+        FragmentPlanFact {
+            name: decl.name.clone(),
+            table: table_id,
+            selections,
+            def_span: decl.span,
+            scope: scope.to_string(),
+        },
+    ));
 }
 
 type PlanDiagnostics = Vec<(crate::facts::Span, DiagnosticCode, String)>;

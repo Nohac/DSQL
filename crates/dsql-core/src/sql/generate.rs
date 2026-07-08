@@ -36,12 +36,12 @@ pub async fn register_sql(bowl: &Bowl) {
 /// nothing rather than a broken artifact.
 async fn generate_sql_facts(
     _: Query<Entity, With<SqlDemand>>,
-    plans: Query<(Entity, &QueryPlanFact, &BelongsToFile)>,
+    plans: Query<(Entity, &QueryPlanFact, &BelongsToFile, &crate::facts::PlanKey)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     options: Query<(Entity, &SqlOptions)>,
     mut commands: Commands,
 ) {
-    let (plan_entity, plan, file) = plans.item();
+    let (plan_entity, plan, file, plan_key) = plans.item();
     let (catalog_entity, snapshot) = catalog.item();
     let (options_entity, options) = options.item();
 
@@ -58,6 +58,7 @@ async fn generate_sql_facts(
     commands.insert((
         DerivedFrom::many([plan_entity, catalog_entity, options_entity]),
         BelongsToFile(file.0),
+        *plan_key,
         GeneratedSqlFact(sql),
     ));
 }
