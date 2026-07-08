@@ -71,6 +71,9 @@ impl From<usize> for CstIndex {{
 pub struct ExpectedToken {{
     pub token: Token,
     pub span: Span,
+    /// Recording batch: 0 is the innermost (most specific) expectation at
+    /// an error; higher batches come from recovery bubbling outward.
+    pub batch: u32,
 }}
 
 #[derive(Debug, Copy, Clone)]
@@ -396,20 +399,28 @@ pub struct Parser<'a> {{
     #[allow(dead_code)]
     in_ordered_choice: bool,
     error_since_advance: bool,
+    expected_batches: u32,
 }}
 #[allow(clippy::while_let_loop, dead_code, unused_parens)]
 impl<'a> Parser<'a> {{
     fn record_expected_tokens(&mut self, tokens: &[Token]) {{
         let span = self.span();
+        let batch = self.expected_batches;
         for token in tokens {{
-            let expected = ExpectedToken {{
-                token: *token,
-                span: span.clone(),
-            }};
-            if !self.cst.expected_tokens.contains(&expected) {{
-                self.cst.expected_tokens.push(expected);
+            let already_recorded = self
+                .cst
+                .expected_tokens
+                .iter()
+                .any(|existing| existing.token == *token && existing.span == span);
+            if !already_recorded {{
+                self.cst.expected_tokens.push(ExpectedToken {{
+                    token: *token,
+                    span: span.clone(),
+                    batch,
+                }});
             }}
         }}
+        self.expected_batches += 1;
     }}
 
     fn active_error(&self) -> bool {{
@@ -594,6 +605,7 @@ impl<'a> Parser<'a> {{
             error_node: None,
             in_ordered_choice: false,
             error_since_advance: false,
+            expected_batches: 0,
         }}
     }}
     pub fn new(

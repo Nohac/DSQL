@@ -21,6 +21,7 @@ use crate::entities::definition::{DefDecl, DefKind};
 use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, PathSegment, VariableRef};
 use crate::entities::field_selection::{FieldSel, SelectionTree, TreeViews};
 use crate::entities::variable::VariableRole;
+use crate::source::{ResolutionScope, ScopeImports};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
@@ -41,21 +42,26 @@ pub async fn register_planning(bowl: &Bowl) {
 /// splice the fragment's items in with an enveloped variable scope.
 async fn plan_queries(
     _: Query<Entity, With<PlanDemand>>,
-    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile)>,
+    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
+    _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
     mut commands: Commands,
 ) {
-    let (def_entity, decl, def_key, file) = defs.item();
+    let (def_entity, decl, def_key, file, scope) = defs.item();
     if decl.kind != DefKind::Query {
         return;
     }
     let (catalog_entity, snapshot) = catalog.item();
+    let (_, imports) = imports.item();
 
-    let tree = SelectionTree::collect(&views, file.0);
+    let tree = SelectionTree::collect(&views);
     let mut planner = Planner {
         tree: &tree,
         catalog: snapshot.catalog(),
+        scope: &scope.0,
+        imports,
     };
     let mut diagnostics = Vec::new();
 
@@ -152,6 +158,8 @@ type PlanDiagnostics = Vec<(crate::facts::Span, DiagnosticCode, String)>;
 struct Planner<'a> {
     tree: &'a SelectionTree<'a>,
     catalog: &'a Catalog,
+    scope: &'a str,
+    imports: &'a ScopeImports,
 }
 
 impl Planner<'_> {
@@ -192,8 +200,10 @@ impl Planner<'_> {
         for (_, child) in children {
             match child {
                 Child::Spread(name) => {
-                    let Some((_, _, _, fragment_key)) =
-                        self.tree.fragment_named(&name).copied()
+                    let Some((_, _, _, fragment_key, _)) = self
+                        .tree
+                        .resolve_fragment(&name, self.scope, self.imports)
+                        .copied()
                     else {
                         continue;
                     };

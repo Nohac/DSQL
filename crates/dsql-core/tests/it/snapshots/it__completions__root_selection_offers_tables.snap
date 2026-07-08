@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+expression: "completions(\"query Q {\\n  |\\n}\\n\").await"
+---
+Table other_schema::users (table other_schema.users)
+Table posts (table public.posts)
+Table users (table public.users)

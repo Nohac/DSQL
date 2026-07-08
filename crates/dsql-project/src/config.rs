@@ -1,11 +1,13 @@
 //! `dsql.toml` discovery and parsing.
 //!
-//! Deliberately lean: lint, generate, embedding, and resolution-scope
-//! configuration return with the phases that consume them.
+//! Deliberately lean: lint, generate, and embedding configuration return
+//! with the phases that consume them.
 
 use std::env::current_dir;
 use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
+
+use std::collections::BTreeMap;
 
 use facet::Facet;
 
@@ -26,6 +28,14 @@ pub enum ProjectError {
     Parse { path: PathBuf, message: String },
     #[error("failed to build catalog: {0}")]
     CatalogBuild(CatalogBuildError),
+    #[error("document {path} is owned by both scope `{first}` and scope `{second}`")]
+    DuplicateScopeDocument {
+        path: PathBuf,
+        first: String,
+        second: String,
+    },
+    #[error("scope `{scope}` imports unknown scope `{import}`")]
+    UnknownScopeImport { scope: String, import: String },
 }
 
 pub type Result<T> = std::result::Result<T, ProjectError>;
@@ -37,9 +47,28 @@ pub struct Config {
     #[facet(default = default_schema())]
     pub default_schema: String,
     /// Paths (relative to the project root) holding `.dsql` documents.
-    /// Empty means the project root itself.
+    /// Empty means the project root itself. Only consulted when no
+    /// resolution scopes are configured — every document then belongs to
+    /// the implicit `default` scope.
     #[facet(default)]
     pub documents: Vec<String>,
+    /// Named resolution scopes (docs/spec/resolution-scopes.md). Each
+    /// document belongs to exactly one scope; imports make another scope's
+    /// definitions visible.
+    #[facet(default)]
+    pub resolution: BTreeMap<String, ScopeConfig>,
+}
+
+/// One `[resolution.<name>]` section.
+#[derive(Clone, Debug, Facet)]
+pub struct ScopeConfig {
+    /// Paths (relative to the project root) whose `.dsql` documents this
+    /// scope owns.
+    #[facet(default)]
+    pub documents: Vec<String>,
+    /// Scopes whose definitions this scope imports (not transitive).
+    #[facet(default)]
+    pub imports: Vec<String>,
 }
 
 fn default_schema() -> String {
@@ -73,6 +102,16 @@ impl Project {
                 path: config_path,
                 message: error.to_string(),
             })?;
+        for (scope, scope_config) in &config.resolution {
+            for import in &scope_config.imports {
+                if !config.resolution.contains_key(import) {
+                    return Err(ProjectError::UnknownScopeImport {
+                        scope: scope.clone(),
+                        import: import.clone(),
+                    });
+                }
+            }
+        }
         Ok(Self {
             schema: root.join("schema"),
             root,

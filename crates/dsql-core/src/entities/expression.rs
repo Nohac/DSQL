@@ -10,7 +10,7 @@
 use bowl::{Bowl, Commands};
 
 use crate::entities::{direct_rule, node_span, text};
-use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::Span;
 use crate::grammar::lexer::Token;
@@ -442,4 +442,10 @@ impl HoverStage for Expression {
     /// Expression internals answer through the variable entity; paths gain
     /// hover with the editor polish pass.
     async fn register_hover(_bowl: &Bowl) {}
+}
+
+
+impl CompletionStage for Expression {
+    /// Expression operators come from the grammar layer; typed operator filtering is a planned refinement.
+    async fn register_completions(_bowl: &Bowl) {}
 }

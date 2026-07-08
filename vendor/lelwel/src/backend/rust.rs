@@ -897,12 +897,20 @@ impl RustOutput {
 
         let ordered_choice_return = ordered_choice_return.indent(3);
         let follow = sema.follow_sets[&regex.syntax()].pattern(2);
-        let expected_tokens = if is_loop {
-            &sema.follow_sets[&op.syntax()]
+        // Errors *report* the upstream message sets unchanged, but *record*
+        // the union of the construct's predict and follow sets: at a loop
+        // or optional-alternation boundary both continuing and closing are
+        // valid continuations.
+        let record_union = sema.predict_sets[&regex.syntax()]
+            .union(&sema.follow_sets[&regex.syntax()])
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_tokens = &record_union;
+        let expected = if is_loop {
+            sema.follow_sets[&op.syntax()].error(token_symbols)
         } else {
-            &sema.predict_sets[&regex.syntax()]
+            sema.predict_sets[&regex.syntax()].error(token_symbols)
         };
-        let expected = expected_tokens.error(token_symbols);
         let recovery = &sema.recovery_sets[&regex.syntax()];
         let recovery = if recovery.is_empty() {
             "".to_string()
@@ -923,9 +931,14 @@ impl RustOutput {
         output.write_all(
             format!(
                 "        }}\
-               \n        {follow} => break,{recovery}\
+               \n        {follow} => {{\
+               \n            if {parser_name}.pos >= {parser_name}.tokens.len() {{\
+               \n                {parser_name}.record_expected_tokens({0});\
+               \n            }}\
+               \n            break;\
+               \n        }}{recovery}\
                \n        _ => {{{ordered_choice_return}\
-               \n            {parser_name}.record_expected_tokens({});\
+               \n            {parser_name}.record_expected_tokens({0});\
                \n            {parser_name}.advance_with_error(diags, err![{parser_name}, {expected}]);\
                \n        }}\
                \n    }}\

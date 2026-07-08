@@ -1,0 +1,4 @@
+fragment TitleBits on title {
+  id
+  title
+}

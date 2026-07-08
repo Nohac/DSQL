@@ -81,7 +81,7 @@ fn duplicate_fragments_are_reported_on_demand() {
 }
 
 #[test]
-fn duplicate_fragments_in_different_files_are_allowed() {
+fn duplicate_fragments_across_files_in_one_scope_are_reported() {
     block_on(async {
         let bowl = language_bowl().await;
 
@@ -93,8 +93,8 @@ fn duplicate_fragments_in_different_files_are_allowed() {
 
         let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
         assert_eq!(
-            diagnostics, 0,
-            "fragment duplicate scope is per file"
+            diagnostics, 1,
+            "one scope resolves fragments across files, so the names collide"
         );
     });
 }

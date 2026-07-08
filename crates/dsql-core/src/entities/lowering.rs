@@ -10,6 +10,7 @@ use bowl::{Commands, Entity, Query};
 
 use crate::entity::{LowerCtx, LowerStage};
 use crate::facts::{NodeKey, Span};
+use crate::source::ResolutionScope;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{CstData, Node, NodeRef, Rule};
 use super::clause::Clause;
@@ -67,13 +68,17 @@ fn lower_rule(ctx: &LowerCtx<'_>, rule: Rule, node: NodeRef, commands: &mut Comm
 
 /// The one generic lowering walk: one invocation per parsed file, visiting
 /// every CST rule node once and dispatching to the owning entity.
-pub async fn generate_ast(query: Query<(Entity, &ParsedFile)>, mut commands: Commands) {
-    let (file, parsed) = query.item();
+pub async fn generate_ast(
+    query: Query<(Entity, &ParsedFile, &ResolutionScope)>,
+    mut commands: Commands,
+) {
+    let (file, parsed, scope) = query.item();
 
     let ctx = LowerCtx {
         cst: &parsed.cst,
         source: &parsed.source,
         file,
+        scope: &scope.0,
         parent: None,
     };
     walk(&ctx, NodeRef::ROOT, &mut commands);
@@ -104,6 +109,7 @@ fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
                 cst: ctx.cst,
                 source: ctx.source,
                 file: ctx.file,
+                scope: ctx.scope,
                 parent: Some(NodeKey {
                     file: ctx.file,
                     node: node.0,

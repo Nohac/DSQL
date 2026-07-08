@@ -44,6 +44,9 @@ pub struct LowerCtx<'a> {
     /// The file entity the tree was parsed from; fact components emitted by
     /// lowering anchor to it.
     pub file: Entity,
+    /// The file's resolution scope; definition and spread facts carry it
+    /// as their resolution join key.
+    pub scope: &'a str,
     /// Key of the nearest enclosing selection or definition node, if any.
     /// The walk in `entities` scopes it when descending into one, so nested
     /// facts carry their tree position as a [`ParentKey`].
@@ -74,12 +77,20 @@ pub trait HoverStage: LanguageEntity {
     fn register_hover(bowl: &Bowl) -> impl Future<Output = ()> + Send;
 }
 
+/// Service stage: register systems that contribute `CompletionCandidate`
+/// facts for enriched completion requests (see `service::completion`).
+/// Entities without completions register nothing (explicit empty impl).
+pub trait CompletionStage: LanguageEntity {
+    fn register_completions(bowl: &Bowl) -> impl Future<Output = ()> + Send;
+}
+
 /// The compile-time coverage contract: an entity only registers once it has
 /// declared every stage.
 pub async fn register_entity<E>(bowl: &Bowl)
 where
-    E: LanguageEntity + LowerStage + FormatStage + HoverStage,
+    E: LanguageEntity + LowerStage + FormatStage + HoverStage + CompletionStage,
 {
     E::register(bowl).await;
     E::register_hover(bowl).await;
+    E::register_completions(bowl).await;
 }

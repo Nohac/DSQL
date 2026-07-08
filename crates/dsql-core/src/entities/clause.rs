@@ -4,11 +4,11 @@
 //! One entity covers all four clause kinds — they share shape, checks, and
 //! planning surface; [`ClauseFact`] branches where they differ.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, With};
 
 use crate::entities::expression::{Expr, VariableRef, build_expr, build_variable_ref, expr_child};
 use crate::entities::{direct_rule, node_span, text};
-use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span};
 use crate::grammar::parser::{CstData, NodeRef, Rule};
@@ -435,4 +435,69 @@ impl HoverStage for Clause {
     /// Clause keywords carry no hover content of their own; the paths and
     /// variables inside them answer through their entities.
     async fn register_hover(_bowl: &Bowl) {}
+}
+
+
+impl CompletionStage for Clause {
+    async fn register_completions(bowl: &Bowl) {
+        bowl.add_system(complete_clause_positions.run_during(bowl::Phase::Complete))
+            .await;
+    }
+}
+
+/// Contributes scope anchors and columns inside `where` predicates and
+/// columns inside `order by` items. Clause keywords and comparison
+/// operators come from the grammar layer.
+async fn complete_clause_positions(
+    requests: Query<
+        (Entity, &crate::service::completion::CompletionContext),
+        With<crate::service::completion::CompletionRequest>,
+    >,
+    catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
+    mut commands: Commands,
+) {
+    use crate::service::completion::{CompletionCandidate, CompletionItem, CompletionKind, CompletionSite};
+
+    let (request, context) = requests.item();
+    let (_, snapshot) = catalog.item();
+
+    let Some(table) = context.table else {
+        return;
+    };
+    let in_where = context.site == CompletionSite::WhereExpr;
+    let in_order_by = context.site == CompletionSite::OrderBy;
+    if !in_where && !in_order_by {
+        return;
+    }
+
+    let mut push = |item: CompletionItem| {
+        commands.insert((
+            DerivedFrom::new(request),
+            CompletionCandidate { request, item },
+        ));
+    };
+
+    if in_where {
+        for (anchor, detail) in [
+            (".", "current scope"),
+            ("..", "parent scope"),
+            ("~", "root scope"),
+        ] {
+            push(CompletionItem {
+                label: anchor.to_string(),
+                kind: CompletionKind::Scope,
+                detail: Some(detail.to_string()),
+                insert_text: None,
+            });
+        }
+    }
+
+    for column in snapshot.catalog().columns_for_table(table) {
+        push(CompletionItem {
+            label: column.name.clone(),
+            kind: CompletionKind::Column,
+            detail: Some(column.data_type.as_str().to_string()),
+            insert_text: None,
+        });
+    }
 }

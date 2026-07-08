@@ -1,14 +1,11 @@
 //! Fragment-spread entity: `...Name` selections, their resolution to
 //! fragment definitions, and the unknown-fragment check.
 
-use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, SystemExt, View, Where,
-    With,
-};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, View, With};
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
 use crate::entities::{direct_token, node_span, text};
-use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
@@ -17,6 +14,7 @@ use crate::facts::{
 use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority, span_matches};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::NodeRef;
+use crate::source::{ResolutionScope, ScopeImports};
 
 /// One `...Name` spread, lowered from `fragment_spread`.
 #[derive(Component, Debug, Hash)]
@@ -68,11 +66,13 @@ impl LowerStage for FragmentSpread {
             node: node.0,
         };
 
+        let scope = ResolutionScope(ctx.scope.to_string());
         match ctx.parent {
             Some(parent) => commands.insert((
                 DerivedFrom::new(ctx.file),
                 BelongsToFile(ctx.file),
                 key,
+                scope,
                 ParentKey(parent),
                 FragmentKey(name),
                 decl,
@@ -81,6 +81,7 @@ impl LowerStage for FragmentSpread {
                 DerivedFrom::new(ctx.file),
                 BelongsToFile(ctx.file),
                 key,
+                scope,
                 FragmentKey(name),
                 decl,
             )),
@@ -88,20 +89,72 @@ impl LowerStage for FragmentSpread {
     }
 }
 
-/// Same name, same file: the bound-join filter matching a spread to the
-/// fragment definitions it can refer to.
-type SameNameSameFile = Where<bowl::And<BowlEq<FragmentKey>, BowlEq<BelongsToFile>>>;
+/// The views spread services resolve against, bundled for reuse.
+#[derive(bowl::SystemParam)]
+pub(crate) struct SpreadResolver<'a> {
+    imports: View<'a, (Entity, &'a ScopeImports)>,
+    fragments: View<'a, (Entity, &'a DefDecl, &'a ResolutionScope)>,
+    targets: View<'a, (Entity, &'a crate::entities::definition::FragmentTarget)>,
+}
 
-/// Resolves each spread to the same-named fragment definition in the same
-/// file — a bound join: one invocation per (spread, fragment) pair whose
-/// `FragmentKey` and `BelongsToFile` both match.
+impl SpreadResolver<'_> {
+    /// The `on` target of the uniquely visible fragment `name` from
+    /// `scope`, if any.
+    pub(crate) fn target_of(&self, name: &str, scope: &str) -> Option<String> {
+        let (_, imports) = self.imports.iter().next()?;
+        let candidates = visible_fragments(name, scope, imports, self.fragments.iter());
+        let [(fragment, _, _)] = candidates.as_slice() else {
+            return None;
+        };
+        self.targets
+            .iter()
+            .find(|(entity, _)| entity == fragment)
+            .map(|(_, target)| target.name.clone())
+    }
+}
+
+/// The fragment definitions a spread in `scope` can see, per the effective
+/// resolver (docs/spec/resolution-scopes.md): the scope's own fragments
+/// plus its direct imports'. Shared by resolution, checks, planning,
+/// variables, and services.
+pub(crate) fn visible_fragments<'a>(
+    name: &'a str,
+    scope: &'a str,
+    imports: &'a ScopeImports,
+    fragments: impl IntoIterator<Item = (Entity, &'a DefDecl, &'a ResolutionScope)> + 'a,
+) -> Vec<(Entity, &'a DefDecl, &'a ResolutionScope)> {
+    fragments
+        .into_iter()
+        .filter(|(_, decl, fragment_scope)| {
+            decl.kind == DefKind::Fragment
+                && decl.name == name
+                && imports
+                    .visible_from(scope)
+                    .any(|visible| visible == fragment_scope.0)
+        })
+        .collect()
+}
+
+/// Resolves each spread to the fragment its scope sees. Exactly one
+/// visible candidate resolves; zero or several resolve nothing — the
+/// unknown/ambiguity checks report those. The tracked [`DefIndex`] and
+/// [`ScopeImports`] inputs rerun rows when the definition set or the scope
+/// graph changes.
 async fn resolve_spreads(
-    spreads: Query<(Entity, &SpreadDecl, &FragmentKey, &BelongsToFile)>,
-    fragments: Query<(Entity, &DefDecl), SameNameSameFile>,
+    spreads: Query<(Entity, &SpreadDecl, &ResolutionScope)>,
+    _index: Query<(Entity, &DefIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    fragments: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
     mut commands: Commands,
 ) {
-    let (spread, _, _, _) = spreads.item();
-    let (fragment, _) = fragments.item();
+    let (spread, decl, scope) = spreads.item();
+    let (_, imports) = imports.item();
+
+    let candidates = visible_fragments(&decl.name, &scope.0, imports, fragments.iter());
+    let [(fragment, _, _)] = candidates.as_slice() else {
+        return;
+    };
+    let fragment = *fragment;
 
     commands.insert((
         DerivedFrom::many([spread, fragment]),
@@ -122,8 +175,13 @@ pub(crate) fn check_spread_site(
 ) {
     use crate::catalog::TableRef;
 
-    // Unknown fragments are reported by check_unknown_fragments.
-    let Some((_, _, target, fragment_key)) = ctx.tree.fragment_named(&spread.name).copied() else {
+    // Unknown and ambiguous fragments are reported by
+    // check_unknown_fragments.
+    let Some((_, _, target, fragment_key, _)) = ctx
+        .tree
+        .resolve_fragment(&spread.name, ctx.scope, ctx.imports)
+        .copied()
+    else {
         return;
     };
 
@@ -174,7 +232,11 @@ fn detect_cycles(
             );
             continue;
         }
-        let Some((_, _, _, next_key)) = ctx.tree.fragment_named(&name).copied() else {
+        let Some((_, _, _, next_key, _)) = ctx
+            .tree
+            .resolve_fragment(&name, ctx.scope, ctx.imports)
+            .copied()
+        else {
             continue;
         };
         path.push(name);
@@ -204,27 +266,49 @@ fn spreads_below(
     found
 }
 
-/// Reports spreads that name no fragment in their file. The tracked
-/// [`DefIndex`] input reruns rows when the definition set changes; the
-/// ambient `View` alone would never wake this check for an unrelated edit
-/// that adds or removes the fragment being spread.
+/// Reports spreads that name no visible fragment, and spreads whose name
+/// is provided by more than one visible scope. The tracked [`DefIndex`]
+/// and [`ScopeImports`] inputs rerun rows when the definition set or the
+/// scope graph changes; the ambient `View` alone would never wake this
+/// check for an unrelated edit.
 async fn check_unknown_fragments(
     _: Query<Entity, With<DiagnosticsDemand>>,
-    query: Query<(Entity, &SpreadDecl, &BelongsToFile)>,
+    query: Query<(Entity, &SpreadDecl, &BelongsToFile, &ResolutionScope)>,
     _index: Query<(Entity, &DefIndex)>,
-    fragments: View<'_, (Entity, &DefDecl, &BelongsToFile)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    fragments: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
     mut commands: Commands,
 ) {
-    let (spread, decl, file) = query.item();
+    let (spread, decl, file, scope) = query.item();
+    let (_, imports) = imports.item();
 
-    let resolves = fragments.iter().any(|(_, fragment, fragment_file)| {
-        fragment.kind == DefKind::Fragment
-            && fragment.name == decl.name
-            && fragment_file.0 == file.0
-    });
-    if resolves {
-        return;
-    }
+    let candidates = visible_fragments(&decl.name, &scope.0, imports, fragments.iter());
+    let message = match candidates.as_slice() {
+        [_] => return,
+        [] => format!("fragment `{}` not found", decl.name),
+        several => {
+            let mut scopes: Vec<&str> = several
+                .iter()
+                .map(|(_, _, fragment_scope)| fragment_scope.0.as_str())
+                .collect();
+            scopes.sort();
+            scopes.dedup();
+            if scopes.len() == 1 {
+                // Same-scope duplicates are the duplicate-definition
+                // check's report; a second message here is noise.
+                return;
+            }
+            format!(
+                "fragment `{}` is ambiguous; provided by scopes {}",
+                decl.name,
+                scopes
+                    .iter()
+                    .map(|scope| format!("`{scope}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    };
 
     emit_diagnostic(
         &mut commands,
@@ -235,7 +319,7 @@ async fn check_unknown_fragments(
             severity: Severity::Error,
             source: DiagnosticSource::Check,
             code: DiagnosticCode::UnknownFragment,
-            message: format!("fragment `{}` not found", decl.name),
+            message,
         },
     );
 }
@@ -266,22 +350,19 @@ impl HoverStage for FragmentSpread {
 /// Answers hover on a `...Name` spread with the fragment it resolves to.
 async fn hover_spreads(
     query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
-    spreads: View<'_, (Entity, &SpreadDecl, &BelongsToFile)>,
-    targets: View<'_, (Entity, &crate::entities::definition::FragmentTarget, &BelongsToFile)>,
+    spreads: View<'_, (Entity, &SpreadDecl, &BelongsToFile, &ResolutionScope)>,
+    resolver: SpreadResolver<'_>,
     mut commands: Commands,
 ) {
     let (request, file, position) = query.item();
 
-    let Some((_, spread, _)) = spreads.iter().find(|(_, spread, spread_file)| {
+    let Some((_, spread, _, scope)) = spreads.iter().find(|(_, spread, spread_file, _)| {
         span_matches(spread.name_span, spread_file.0, file.0, position.offset)
     }) else {
         return;
     };
 
-    let target = targets
-        .iter()
-        .find(|(_, _, target_file)| target_file.0 == file.0)
-        .map(|(_, target, _)| target.name.clone());
+    let target = resolver.target_of(&spread.name, &scope.0);
     let text = match target {
         Some(target) => format!("fragment `{}` on `{target}`", spread.name),
         None => format!("fragment `{}`", spread.name),
@@ -295,4 +376,77 @@ async fn hover_spreads(
             text,
         },
     ));
+}
+
+
+impl CompletionStage for FragmentSpread {
+    async fn register_completions(bowl: &Bowl) {
+        bowl.add_system(complete_spreads.run_during(bowl::Phase::Complete))
+            .await;
+    }
+}
+
+/// Contributes fragments whose target matches the context table, both on a
+/// partial `...Name` and as `...Name` insertions inside selection bodies.
+async fn complete_spreads(
+    requests: Query<
+        (Entity, &crate::service::completion::CompletionContext),
+        With<crate::service::completion::CompletionRequest>,
+    >,
+    fragments: View<
+        '_,
+        (
+            Entity,
+            &DefDecl,
+            &crate::entities::definition::FragmentTarget,
+            &ResolutionScope,
+        ),
+    >,
+    imports: Query<(Entity, &ScopeImports)>,
+    catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
+    mut commands: Commands,
+) {
+    use crate::catalog::TableRef;
+    use crate::service::completion::{CompletionCandidate, CompletionItem, CompletionKind, CompletionSite};
+
+    let (request, context) = requests.item();
+    let (_, snapshot) = catalog.item();
+    let (_, imports) = imports.item();
+
+    let Some(table) = context.table else {
+        return;
+    };
+    let spread_site = match context.site {
+        CompletionSite::SpreadName => true,
+        CompletionSite::SelectionBody => false,
+        _ => return,
+    };
+
+    for (_, decl, target, fragment_scope) in fragments.iter() {
+        if !imports
+            .visible_from(&context.scope)
+            .any(|visible| visible == fragment_scope.0)
+        {
+            continue;
+        }
+        let Some(target_table) = snapshot.catalog().table_ref_for(TableRef::parse(&target.name))
+        else {
+            continue;
+        };
+        if target_table.id != table {
+            continue;
+        }
+        commands.insert((
+            DerivedFrom::new(request),
+            CompletionCandidate {
+                request,
+                item: CompletionItem {
+                    label: decl.name.clone(),
+                    kind: CompletionKind::Fragment,
+                    detail: Some(format!("fragment on {}", target.name)),
+                    insert_text: (!spread_site).then(|| format!("...{}", decl.name)),
+                },
+            },
+        ));
+    }
 }

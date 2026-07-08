@@ -7,14 +7,16 @@ use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, Sys
 use crate::catalog::{CatalogSnapshot, FieldCheckResult, FieldRef, TableRef, TableResolution};
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
+use crate::source::{ResolutionScope, ScopeImports};
 use crate::entities::fragment_spread::{SpreadDecl, check_spread_site};
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     ParentKey, Severity, Span, emit_diagnostic,
 };
+use crate::service::completion::{CompletionContext, CompletionRequest};
 use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
@@ -143,7 +145,7 @@ impl LowerStage for FieldSelection {
 pub(crate) struct SelectionTree<'a> {
     pub(crate) fields: Vec<(Entity, &'a FieldSel, NodeKey, NodeKey)>,
     pub(crate) spreads: Vec<(Entity, &'a SpreadDecl, NodeKey, NodeKey)>,
-    pub(crate) fragments: Vec<(Entity, &'a DefDecl, &'a FragmentTarget, NodeKey)>,
+    pub(crate) fragments: Vec<(Entity, &'a DefDecl, &'a FragmentTarget, NodeKey, &'a ResolutionScope)>,
     pub(crate) clauses: Vec<(Entity, &'a ClauseFact, Span, NodeKey)>,
 }
 
@@ -162,35 +164,25 @@ impl SelectionTree<'_> {
         self.spreads.iter().filter(move |(_, _, _, p)| *p == parent)
     }
 
-    pub(crate) fn fragment_named(
-        &self,
-        name: &str,
-    ) -> Option<&(Entity, &DefDecl, &FragmentTarget, NodeKey)> {
-        self.fragments
-            .iter()
-            .find(|(_, decl, _, _)| decl.name == name)
-    }
-
-    /// Gathers one file's lowered selection facts out of the ambient views.
-    pub(crate) fn collect<'a>(views: &'a TreeViews<'_>, file: Entity) -> SelectionTree<'a> {
+    /// Gathers the lowered selection facts out of the ambient views. The
+    /// tree spans every file: parent/child keys embed their file so links
+    /// never cross files, while fragments resolve across files by scope.
+    pub(crate) fn collect<'a>(views: &'a TreeViews<'_>) -> SelectionTree<'a> {
         SelectionTree {
             fields: views
                 .fields
                 .iter()
-                .filter(|(_, _, key, _)| key.file == file)
                 .map(|(entity, field, key, parent)| (entity, field, *key, parent.0))
                 .collect(),
             spreads: views
                 .spreads
                 .iter()
-                .filter(|(_, _, key, _)| key.file == file)
                 .map(|(entity, spread, key, parent)| (entity, spread, *key, parent.0))
                 .collect(),
             fragments: views
                 .fragments
                 .iter()
-                .filter(|(_, _, _, _, fragment_file)| fragment_file.0 == file)
-                .map(|(entity, decl, target, key, _)| (entity, decl, target, *key))
+                .map(|(entity, decl, target, key, scope)| (entity, decl, target, *key, scope))
                 .collect(),
             clauses: views
                 .clauses
@@ -198,6 +190,26 @@ impl SelectionTree<'_> {
                 .map(|(entity, clause, span, parent)| (entity, clause, *span, parent.0))
                 .collect(),
         }
+    }
+
+    /// The uniquely visible fragment `name` from `scope`, per the effective
+    /// resolver. Zero or several candidates resolve to `None`; the spread
+    /// checks report those cases.
+    pub(crate) fn resolve_fragment(
+        &self,
+        name: &str,
+        scope: &str,
+        imports: &ScopeImports,
+    ) -> Option<&(Entity, &DefDecl, &FragmentTarget, NodeKey, &ResolutionScope)> {
+        let mut candidates = self.fragments.iter().filter(|(_, decl, _, _, fragment_scope)| {
+            decl.kind == DefKind::Fragment
+                && decl.name == name
+                && imports
+                    .visible_from(scope)
+                    .any(|visible| visible == fragment_scope.0)
+        });
+        let first = candidates.next()?;
+        candidates.next().is_none().then_some(first)
     }
 
     pub(crate) fn clauses_under(
@@ -222,28 +234,33 @@ impl SelectionTree<'_> {
 pub(crate) struct TreeViews<'a> {
     fields: View<'a, (Entity, &'a FieldSel, &'a NodeKey, &'a ParentKey)>,
     spreads: View<'a, (Entity, &'a SpreadDecl, &'a NodeKey, &'a ParentKey)>,
-    fragments: View<'a, (Entity, &'a DefDecl, &'a FragmentTarget, &'a NodeKey, &'a BelongsToFile)>,
+    fragments: View<'a, (Entity, &'a DefDecl, &'a FragmentTarget, &'a NodeKey, &'a ResolutionScope)>,
     clauses: View<'a, (Entity, &'a ClauseFact, &'a Span, &'a ParentKey)>,
 }
 
 async fn check_selections(
     _: Query<Entity, With<DiagnosticsDemand>>,
-    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile)>,
+    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
+    _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
     mut commands: Commands,
 ) {
-    let (def_entity, decl, def_key, file) = defs.item();
+    let (def_entity, decl, def_key, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
+    let (_, imports) = imports.item();
     let catalog = snapshot.catalog();
 
-    let tree = SelectionTree::collect(&views, file.0);
+    let tree = SelectionTree::collect(&views);
 
     let mut ctx = CheckCtx {
         tree: &tree,
         catalog,
         catalog_entity,
         file: file.0,
+        scope: &scope.0,
+        imports,
         commands: &mut commands,
     };
 
@@ -259,6 +276,9 @@ pub(crate) struct CheckCtx<'a, 'view> {
     pub(crate) catalog: &'a crate::catalog::Catalog,
     pub(crate) catalog_entity: Entity,
     pub(crate) file: Entity,
+    /// Resolution scope of the definition being checked.
+    pub(crate) scope: &'a str,
+    pub(crate) imports: &'a ScopeImports,
     pub(crate) commands: &'a mut Commands,
 }
 
@@ -356,11 +376,11 @@ impl CheckCtx<'_, '_> {
     /// unresolvable target is reported by the definition entity's own
     /// check; the body is skipped rather than double-reported.
     fn check_fragment_body(&mut self, def_entity: Entity, def_key: NodeKey) {
-        let Some((_, _, target, _)) = self
+        let Some((_, _, target, _, _)) = self
             .tree
             .fragments
             .iter()
-            .find(|(entity, _, _, _)| *entity == def_entity)
+            .find(|(entity, _, _, _, _)| *entity == def_entity)
         else {
             return;
         };
@@ -581,7 +601,7 @@ async fn hover_fields(
     let (_, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
-    let tree = SelectionTree::collect(&views, file.0);
+    let tree = SelectionTree::collect(&views);
     let Some((_, field, key, _)) = tree
         .fields
         .iter()
@@ -614,7 +634,7 @@ async fn hover_fields(
 
 /// The table a field's *own* reference resolves against: its parent's
 /// resolved relation table, or the root table for query roots.
-fn resolve_context_table(
+pub(crate) fn resolve_context_table(
     tree: &SelectionTree<'_>,
     catalog: &crate::catalog::Catalog,
     field_key: NodeKey,
@@ -638,8 +658,8 @@ fn resolve_context_table(
     let fragment_target = tree
         .fragments
         .iter()
-        .find(|(_, _, _, def_key)| def_key == root_parent)
-        .map(|(_, _, target, _)| target.name.clone());
+        .find(|(_, _, _, def_key, _)| def_key == root_parent)
+        .map(|(_, _, target, _, _)| target.name.clone());
 
     let (_, root_field, _, _) = tree.fields.iter().find(|(_, _, key, _)| *key == root_key)?;
     let mut table = match &fragment_target {
@@ -703,5 +723,117 @@ fn describe_field(
             field.name, relation.table.schema, relation.table.name, relation.selector,
         )),
         _ => None,
+    }
+}
+
+
+/// The table a field selection *targets*: the table itself for query
+/// roots, or the relation's table for nested selections. This is the
+/// context for everything inside the field's braces and clauses.
+pub(crate) fn resolve_field_target(
+    tree: &SelectionTree<'_>,
+    catalog: &crate::catalog::Catalog,
+    field_key: NodeKey,
+) -> Option<crate::catalog::TableId> {
+    let (_, field, _, parent) = tree.fields.iter().find(|(_, _, key, _)| *key == field_key)?;
+    let is_query_root = !tree.fields.iter().any(|(_, _, key, _)| key == parent)
+        && !tree.fragments.iter().any(|(_, _, _, def_key, _)| def_key == parent);
+    if is_query_root {
+        return catalog
+            .table_ref_for(TableRef::parse(&field.name))
+            .map(|table| table.id);
+    }
+
+    // Nested and fragment-root fields alike: resolve the containing context
+    // (resolve_context_table handles fragment targets), then step through
+    // this field's own relation reference.
+    let context = resolve_context_table(tree, catalog, field_key)?;
+    let reference = FieldRef {
+        target: TableRef::parse(&field.name),
+        selector: field.relation_path.as_deref(),
+    };
+    match catalog.check_field_ref(context, reference) {
+        FieldCheckResult::Relation(relation) => Some(relation.table.id),
+        _ => None,
+    }
+}
+
+
+impl CompletionStage for FieldSelection {
+    async fn register_completions(bowl: &Bowl) {
+        bowl.add_system(complete_selections.run_during(bowl::Phase::Complete))
+            .await;
+    }
+}
+
+/// Contributes tables at query roots and columns/relations inside
+/// selection bodies, disambiguating multi-path relations with their
+/// `->selector`.
+async fn complete_selections(
+    requests: Query<(Entity, &CompletionContext), With<CompletionRequest>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands,
+) {
+    use crate::service::completion::{CompletionCandidate, CompletionItem, CompletionKind, CompletionSite};
+
+    let (request, context) = requests.item();
+    let (_, snapshot) = catalog.item();
+    let catalog = snapshot.catalog();
+
+    let mut push = |item: CompletionItem| {
+        commands.insert((
+            DerivedFrom::new(request),
+            CompletionCandidate { request, item },
+        ));
+    };
+
+    match (context.site, context.table) {
+        (CompletionSite::RootSelection, _) => {
+            for table in &catalog.tables {
+                let label = if table.schema == catalog.default_schema() {
+                    table.name.clone()
+                } else {
+                    format!("{}::{}", table.schema, table.name)
+                };
+                push(CompletionItem {
+                    label,
+                    kind: CompletionKind::Table,
+                    detail: Some(format!("table {}.{}", table.schema, table.name)),
+                    insert_text: None,
+                });
+            }
+        }
+        (CompletionSite::SelectionBody, Some(table)) => {
+            for column in catalog.columns_for_table(table) {
+                push(CompletionItem {
+                    label: column.name.clone(),
+                    kind: CompletionKind::Column,
+                    detail: Some(column.data_type.as_str().to_string()),
+                    insert_text: None,
+                });
+            }
+            let relations = catalog.relation_fields_for_table(table);
+            for relation in &relations {
+                let shared_paths = relations
+                    .iter()
+                    .filter(|candidate| candidate.name == relation.name)
+                    .count();
+                let label = if shared_paths > 1 {
+                    format!("{}->{}", relation.name, relation.selector)
+                } else {
+                    relation.name.to_string()
+                };
+                push(CompletionItem {
+                    label,
+                    kind: CompletionKind::Relation,
+                    detail: Some(format!(
+                        "relation to {}.{} via {}",
+                        relation.table.schema, relation.table.name, relation.selector
+                    )),
+                    insert_text: None,
+                });
+            }
+        }
+        _ => {}
     }
 }

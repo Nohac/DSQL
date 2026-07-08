@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/scopes.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[27..36]: fragment `TitleBits` is ambiguous; provided by scopes `a`, `b`

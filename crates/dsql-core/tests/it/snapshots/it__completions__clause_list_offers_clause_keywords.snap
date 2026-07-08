@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+expression: "completions(\"query Q {\\n  users(|) {\\n    id\\n  }\\n}\\n\").await"
+---
+Keyword limit
+Keyword offset
+Keyword order
+Keyword where

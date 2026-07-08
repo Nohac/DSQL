@@ -15,7 +15,7 @@ use bowl::{
 use crate::catalog::{CatalogSnapshot, TableRef, TableResolution};
 use crate::entities::document::ParsedFile;
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
@@ -24,6 +24,7 @@ use crate::facts::{
 use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority, span_matches};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
+use crate::source::{ResolutionScope, ScopeImports};
 
 /// What kind of definition a [`DefDecl`] fact describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -68,13 +69,14 @@ pub struct FragmentTarget {
 #[component(hash)]
 pub struct FragmentKey(pub String);
 
-/// Fingerprint of the full definition set, maintained by [`index_defs`].
-/// Checks that must react to *other* definitions appearing or disappearing
-/// take this singleton as a tracked input: its revision moves only when the
-/// set actually changes, so idempotent reruns invalidate nothing.
+/// Fingerprint of the full definition set (scope, kind, name), maintained
+/// by [`index_defs`]. Checks that must react to *other* definitions
+/// appearing, disappearing, or changing scope take this singleton as a
+/// tracked input: its revision moves only when the set actually changes,
+/// so idempotent reruns invalidate nothing.
 #[derive(Component, Hash)]
 #[component(hash)]
-pub struct DefIndex(Vec<(u64, DefKind, String)>);
+pub struct DefIndex(Vec<(String, DefKind, String)>);
 
 /// Owns `query_def` and `fragment_def`.
 pub struct Definition;
@@ -83,8 +85,9 @@ impl LanguageEntity for Definition {
     const NAME: &'static str = "definition";
 
     async fn register(bowl: &Bowl) {
-        bowl.add_system(index_defs.run_during(Phase::Complete)).await;
+        bowl.add_system(index_defs).await;
         bowl.add_system(check_duplicate_fragments).await;
+        bowl.add_system(check_import_collisions).await;
         bowl.add_system(check_fragment_targets).await;
     }
 }
@@ -179,11 +182,13 @@ impl LowerStage for Definition {
             node: node.0,
         };
 
+        let scope = ResolutionScope(ctx.scope.to_string());
         match (kind, target) {
             (DefKind::Fragment, Some(target)) => commands.insert((
                 DerivedFrom::new(ctx.file),
                 BelongsToFile(ctx.file),
                 key,
+                scope,
                 FragmentKey(decl.name.clone()),
                 decl,
                 target,
@@ -195,6 +200,7 @@ impl LowerStage for Definition {
                 DerivedFrom::new(ctx.file),
                 BelongsToFile(ctx.file),
                 key,
+                scope,
                 FragmentKey(decl.name.clone()),
                 decl,
             )),
@@ -202,34 +208,40 @@ impl LowerStage for Definition {
                 DerivedFrom::new(ctx.file),
                 BelongsToFile(ctx.file),
                 key,
+                scope,
                 decl,
             )),
         };
     }
 }
 
-/// Aggregates the definition set into the [`DefIndex`] singleton. Runs in
-/// `Phase::Complete` (definitions settled for this generation's inputs),
-/// driven per parsed file so any text change recomputes it. Ungated: spread
-/// resolution and planning consume it, not just diagnostics.
+/// Aggregates the definition set into the [`DefIndex`] singleton, driven
+/// per parsed file so any text change recomputes it. Ungated: spread
+/// resolution and planning consume it, not just diagnostics. Runs during
+/// Evaluate — the same phase as lowering — so index-tracked derivations
+/// (variables, plans) land in the same generation as the facts they read;
+/// at Complete they would lag one generation behind, and request/response
+/// finalizers would answer before them. Mid-generation recomputation is
+/// idempotent and the fingerprint absorbs it.
 async fn index_defs(
     query: Query<(Entity, &ParsedFile)>,
-    defs: View<'_, (Entity, &DefDecl, &BelongsToFile)>,
+    defs: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
     mut commands: Commands,
 ) {
     let _ = query.item();
 
-    let mut entries: Vec<(u64, DefKind, String)> = defs
+    let mut entries: Vec<(String, DefKind, String)> = defs
         .iter()
-        .map(|(_, decl, file)| (file.0.raw(), decl.kind, decl.name.clone()))
+        .map(|(_, decl, scope)| (scope.0.clone(), decl.kind, decl.name.clone()))
         .collect();
     entries.sort();
 
     commands.insert((Singleton::<DefIndex>::new(), DefIndex(entries)));
 }
 
-/// Duplicate fragment names are ambiguous at spread-resolution time, so they
-/// are errors — scoped per file.
+/// Duplicate fragment names are ambiguous at spread-resolution time, so
+/// they are errors — scoped per resolution scope (the same name in two
+/// independent scopes is fine, per docs/spec/resolution-scopes.md).
 /// Query names are entry points and not checked here.
 ///
 /// The [`DefIndex`] query keeps this check honest: the `View` of other
@@ -238,22 +250,22 @@ async fn index_defs(
 /// added or removed — a surviving duplicate could go unreported.
 async fn check_duplicate_fragments(
     _: Query<Entity, With<DiagnosticsDemand>>,
-    query: Query<(Entity, &DefDecl, &BelongsToFile)>,
+    query: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
     _index: Query<(Entity, &DefIndex)>,
-    defs: View<'_, (Entity, &DefDecl, &BelongsToFile)>,
+    defs: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
     mut commands: Commands,
 ) {
-    let (entity, decl, file) = query.item();
+    let (entity, decl, file, scope) = query.item();
 
     if decl.kind != DefKind::Fragment {
         return;
     }
 
-    let Some((previous, _, _)) = defs.iter().find(|(other, other_decl, other_file)| {
+    let Some((previous, _, _)) = defs.iter().find(|(other, other_decl, other_scope)| {
         *other < entity
             && other_decl.kind == DefKind::Fragment
             && other_decl.name == decl.name
-            && other_file.0 == file.0
+            && other_scope.0 == scope.0
     }) else {
         return;
     };
@@ -268,6 +280,50 @@ async fn check_duplicate_fragments(
             source: DiagnosticSource::Check,
             code: DiagnosticCode::DuplicateDefinition,
             message: format!("duplicate fragment `{}`", decl.name),
+        },
+    );
+}
+
+/// A local fragment whose name is also provided by an imported scope is a
+/// diagnostic at the local definition (docs/spec/resolution-scopes.md).
+async fn check_import_collisions(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    query: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
+    _index: Query<(Entity, &DefIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    defs: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
+    mut commands: Commands,
+) {
+    let (entity, decl, file, scope) = query.item();
+    let (_, imports) = imports.item();
+
+    if decl.kind != DefKind::Fragment {
+        return;
+    }
+
+    let Some((imported, _, imported_scope)) = defs.iter().find(|(_, other_decl, other_scope)| {
+        other_decl.kind == DefKind::Fragment
+            && other_decl.name == decl.name
+            && imports
+                .imports_of(&scope.0)
+                .any(|import| import == other_scope.0)
+    }) else {
+        return;
+    };
+
+    emit_diagnostic(
+        &mut commands,
+        DiagnosticFacts {
+            derived_from: DerivedFrom::many([entity, imported]),
+            file: file.0,
+            span: decl.name_span,
+            severity: Severity::Error,
+            source: DiagnosticSource::Check,
+            code: DiagnosticCode::DuplicateDefinition,
+            message: format!(
+                "fragment `{}` collides with a definition imported from scope `{}`",
+                decl.name, imported_scope.0
+            ),
         },
     );
 }
@@ -347,4 +403,10 @@ async fn hover_definitions(
             text,
         },
     ));
+}
+
+
+impl CompletionStage for Definition {
+    /// Definition keywords come from the grammar layer.
+    async fn register_completions(_bowl: &Bowl) {}
 }

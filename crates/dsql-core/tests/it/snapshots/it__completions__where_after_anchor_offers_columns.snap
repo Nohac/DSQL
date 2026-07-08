@@ -1,0 +1,11 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+expression: "completions(\"query Q {\\n  users(where .|) {\\n    id\\n  }\\n}\\n\").await"
+---
+Column created_at (timestamptz)
+Column email (text)
+Column id (uuid)
+Column name (text)
+Scope . (current scope)
+Scope .. (parent scope)
+Scope ~ (root scope)

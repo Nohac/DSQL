@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+expression: "completions(\"query Q {\\n  users(order by |) {\\n    id\\n  }\\n}\\n\").await"
+---
+Column created_at (timestamptz)
+Column email (text)
+Column id (uuid)
+Column name (text)

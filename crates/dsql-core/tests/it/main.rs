@@ -2,10 +2,12 @@
 //! area, mirroring the layout described in CONTRIBUTING.md.
 
 mod checks;
+mod completions;
 mod definitions;
 mod format;
 mod lowering;
 mod parse;
+mod scopes;
 mod selections;
 mod services;
 mod settle;
