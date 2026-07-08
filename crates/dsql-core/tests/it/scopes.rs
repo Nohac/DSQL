@@ -23,7 +23,10 @@ async fn scoped_bowl(imports: &[(&str, &[&str])]) -> Bowl {
         .map(|(scope, imported)| {
             (
                 (*scope).to_string(),
-                imported.iter().map(|import| (*import).to_string()).collect(),
+                imported
+                    .iter()
+                    .map(|import| (*import).to_string())
+                    .collect(),
             )
         })
         .collect();
@@ -39,7 +42,9 @@ async fn insert(bowl: &Bowl, path: &str, scope: &str, text: &str) {
 }
 
 async fn resolutions(bowl: &Bowl) -> usize {
-    bowl.scoop::<Query<(Entity, &SpreadResolution)>>().await.len()
+    bowl.scoop::<Query<(Entity, &SpreadResolution)>>()
+        .await
+        .len()
 }
 
 const FRAGMENT: &str = "fragment TitleBits on title {\n  id\n}\n";
@@ -109,12 +114,7 @@ fn local_fragment_colliding_with_import_is_reported() {
 #[test]
 fn fragment_provided_by_two_imports_is_ambiguous_at_the_spread() {
     block_on(async {
-        let bowl = scoped_bowl(&[
-            ("frontend", &["a", "b"]),
-            ("a", &[]),
-            ("b", &[]),
-        ])
-        .await;
+        let bowl = scoped_bowl(&[("frontend", &["a", "b"]), ("a", &[]), ("b", &[])]).await;
         insert(&bowl, "a.dsql", "a", FRAGMENT).await;
         insert(&bowl, "b.dsql", "b", FRAGMENT).await;
         insert(&bowl, "page.dsql", "frontend", SPREAD).await;

@@ -1,7 +1,7 @@
 //! `dsql.toml` discovery and parsing.
 //!
-//! Deliberately lean: lint, generate, and embedding configuration return
-//! with the phases that consume them.
+//! Deliberately lean: lint configuration returns with the phase that
+//! consumes it.
 
 use std::env::current_dir;
 use std::fs::read_to_string;
@@ -26,6 +26,11 @@ pub enum ProjectError {
     },
     #[error("failed to parse {path}: {message}")]
     Parse { path: PathBuf, message: String },
+    #[error("failed to write {path}: {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("failed to build catalog: {0}")]
     CatalogBuild(CatalogBuildError),
     #[error("document {path} is owned by both scope `{first}` and scope `{second}`")]
@@ -34,6 +39,8 @@ pub enum ProjectError {
         first: String,
         second: String,
     },
+    #[error("invalid embedding pattern for `{language}`: {message}")]
+    InvalidEmbeddingPattern { language: String, message: String },
     #[error("scope `{scope}` imports unknown scope `{import}`")]
     UnknownScopeImport { scope: String, import: String },
 }
@@ -57,6 +64,67 @@ pub struct Config {
     /// definitions visible.
     #[facet(default)]
     pub resolution: BTreeMap<String, ScopeConfig>,
+    /// Artifact generation configuration.
+    #[facet(default)]
+    pub generate: GenerateConfig,
+    /// Embedded-document extraction, per host language.
+    #[facet(default)]
+    pub embedding: EmbeddingConfig,
+    /// Lint severities.
+    #[facet(default)]
+    pub lint: LintSectionConfig,
+}
+
+/// The `[lint]` section.
+#[derive(Clone, Debug, Default, Facet)]
+pub struct LintSectionConfig {
+    /// Severity of the unindexed-scan lint family; unset means `info`,
+    /// `off` disables it.
+    #[facet(default)]
+    pub unindexed_scan_severity: Option<LintSeverity>,
+}
+
+#[derive(Clone, Copy, Debug, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(C)]
+pub enum LintSeverity {
+    Off,
+    Info,
+    Warning,
+    Error,
+}
+
+/// The `[embedding.*]` sections.
+#[derive(Clone, Debug, Default, Facet)]
+pub struct EmbeddingConfig {
+    #[facet(default)]
+    pub typescript: TypescriptEmbeddingConfig,
+}
+
+/// `[embedding.typescript]`: how dsql documents are found inside `.ts` and
+/// `.tsx` sources. The pattern is a regex with a named `content` capture;
+/// unset means the default `dsql`-tagged-template pattern.
+#[derive(Clone, Debug, Default, Facet)]
+pub struct TypescriptEmbeddingConfig {
+    #[facet(default)]
+    pub pattern: Option<String>,
+}
+
+/// The `[generate.*]` sections.
+#[derive(Clone, Debug, Default, Facet)]
+pub struct GenerateConfig {
+    #[facet(default)]
+    pub typescript: TypescriptGenerateConfig,
+}
+
+/// `[generate.typescript]`: a host command run after the `build/` tree is
+/// written, from the project base directory (the parent of `dsql/`).
+#[derive(Clone, Debug, Default, Facet)]
+pub struct TypescriptGenerateConfig {
+    #[facet(default)]
+    pub enabled: bool,
+    #[facet(default)]
+    pub cmd: Vec<String>,
 }
 
 /// One `[resolution.<name>]` section.
@@ -97,11 +165,10 @@ impl Project {
             path: config_path.clone(),
             source,
         })?;
-        let config: Config =
-            facet_toml::from_str(&raw).map_err(|error| ProjectError::Parse {
-                path: config_path,
-                message: error.to_string(),
-            })?;
+        let config: Config = facet_toml::from_str(&raw).map_err(|error| ProjectError::Parse {
+            path: config_path,
+            message: error.to_string(),
+        })?;
         for (scope, scope_config) in &config.resolution {
             for import in &scope_config.imports {
                 if !config.resolution.contains_key(import) {

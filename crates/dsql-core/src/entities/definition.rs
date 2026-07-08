@@ -8,22 +8,24 @@
 use std::fmt;
 
 use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, Singleton, SystemExt, View,
-    With,
+    Bowl, Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Singleton,
+    SystemExt, View, Where, With,
 };
 
 use crate::catalog::{CatalogSnapshot, TableRef, TableResolution};
 use crate::entities::document::ParsedFile;
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     Severity, Span, emit_diagnostic,
 };
-use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, RequestKey, priority, span_matches};
+use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
+use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// What kind of definition a [`DefDecl`] fact describes.
@@ -88,7 +90,8 @@ impl LanguageEntity for Definition {
         // Ambient readers of lowered facts sit behind the Complete phase
         // barrier (the engine's same-phase race flag enforces this);
         // check_fragment_targets reads only tracked inputs and needs none.
-        bowl.add_system(index_defs.run_during(Phase::Complete)).await;
+        bowl.add_system(index_defs.run_during(Phase::Complete))
+            .await;
         bowl.add_system(check_duplicate_fragments.run_during(Phase::Complete))
             .await;
         bowl.add_system(check_import_collisions.run_during(Phase::Complete))
@@ -127,7 +130,10 @@ async fn check_fragment_targets(
                 },
             );
         }
-        TableResolution::Ambiguous { reference, candidates } => {
+        TableResolution::Ambiguous {
+            reference,
+            candidates,
+        } => {
             let candidates: Vec<String> = candidates
                 .iter()
                 .map(|key| format!("{}::{}", key.schema, key.table))
@@ -332,7 +338,6 @@ async fn check_import_collisions(
     );
 }
 
-
 impl FormatStage for Definition {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         if formatter.rule(node) == Some(Rule::QueryDef) {
@@ -362,41 +367,41 @@ impl FormatStage for Definition {
     }
 }
 
-
 impl HoverStage for Definition {
     async fn register_hover(bowl: &Bowl) {
-        bowl.add_system(hover_definitions.run_during(Phase::Complete))
-            .await;
+        // Fully tracked (a per-file bound join, no views), so it needs no
+        // phase barrier: replanning orders it after enrichment and the
+        // lowered facts it joins.
+        bowl.add_system(hover_definitions).await;
     }
 }
 
-/// Answers hover on a definition name with its kind and target.
+/// Answers hover on a definition name with its kind and target: one
+/// invocation per (request, definition-in-file) pair via the
+/// `BelongsToFile` join, the fragment target riding the definition row as
+/// an optional part.
+/// One definition row in the hovered file: the declaration with its
+/// optional fragment target riding along.
+type DefInFile<'a> = (Entity, &'a DefDecl, Option<&'a FragmentTarget>);
+
 async fn hover_definitions(
-    query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
-    defs: View<'_, (Entity, &DefDecl, &BelongsToFile)>,
-    targets: View<'_, (Entity, &FragmentTarget)>,
+    query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
+    defs: Query<DefInFile<'_>, Where<BowlEq<BelongsToFile>>>,
     mut commands: Commands,
 ) {
-    let (request, file, position) = query.item();
+    let (request, _file, position) = query.item();
+    let (_def_entity, decl, target) = defs.item();
 
-    let Some((def_entity, decl, _)) = defs.iter().find(|(_, decl, def_file)| {
-        span_matches(decl.name_span, def_file.0, file.0, position.offset)
-    }) else {
+    if !(decl.name_span.start <= position.offset && position.offset < decl.name_span.end) {
         return;
-    };
+    }
 
-    let text = match decl.kind {
-        DefKind::Query => format!("query `{}`", decl.name),
-        DefKind::Fragment => {
-            let target = targets
-                .iter()
-                .find(|(entity, _)| *entity == def_entity)
-                .map(|(_, target)| target.name.clone());
-            match target {
-                Some(target) => format!("fragment `{}` on `{target}`", decl.name),
-                None => format!("fragment `{}`", decl.name),
-            }
+    let text = match (decl.kind, target) {
+        (DefKind::Query, _) => format!("query `{}`", decl.name),
+        (DefKind::Fragment, Some(target)) => {
+            format!("fragment `{}` on `{}`", decl.name, target.name)
         }
+        (DefKind::Fragment, None) => format!("fragment `{}`", decl.name),
     };
 
     commands.insert((
@@ -408,7 +413,6 @@ async fn hover_definitions(
         },
     ));
 }
-
 
 impl CompletionStage for Definition {
     /// Definition keywords come from the grammar layer.

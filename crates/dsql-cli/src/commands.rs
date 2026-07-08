@@ -66,8 +66,11 @@ pub fn sql(collection_limit: Option<u64>) -> Outcome {
         bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))
             .await;
         if collection_limit.is_some() {
-            bowl.insert((Singleton::<SqlOptions>::new(), SqlOptions { collection_limit }))
-                .await;
+            bowl.insert((
+                Singleton::<SqlOptions>::new(),
+                SqlOptions { collection_limit },
+            ))
+            .await;
         }
 
         let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
@@ -96,10 +99,7 @@ pub fn fmt(check_only: bool) -> Outcome {
         let (cst, diagnostics) = parse(&document.text);
         let formatted = format_document(&cst.into_data(), &document.text, !diagnostics.is_empty());
         if formatted.confidence == FormatConfidence::PreserveOriginal {
-            eprintln!(
-                "{}: skipped (parse errors)",
-                document.path.display()
-            );
+            eprintln!("{}: skipped (parse errors)", document.path.display());
             clean = false;
             continue;
         }
@@ -120,4 +120,50 @@ pub fn fmt(check_only: bool) -> Outcome {
         }
     }
     Ok(clean)
+}
+
+/// Writes the artifact tree and runs the configured host generator.
+pub fn generate(collection_limit: Option<u64>) -> Outcome {
+    let project = Project::load()?;
+    let output = dsql_generate::generate_project(
+        &project,
+        dsql_generate::GenerateOptions { collection_limit },
+    )
+    .map_err(|error| {
+        eprintln!("{error}");
+        ProjectError::MissingRoot(project.root.clone())
+    });
+    match output {
+        Ok(output) => {
+            for path in &output.written {
+                println!("{}: written", path.display());
+            }
+            println!("manifest: {}", output.manifest_path.display());
+            Ok(true)
+        }
+        Err(_) => Ok(false),
+    }
+}
+
+/// Introspects the configured database and writes the schema directory.
+pub fn introspect() -> Outcome {
+    let project = Project::load()?;
+    let runtime = tokio::runtime::Runtime::new().map_err(|source| ProjectError::Read {
+        path: project.root.clone(),
+        source,
+    })?;
+    let metadata = runtime.block_on(dsql_introspection::introspect_postgres(
+        &project.config.database_url,
+    ));
+    match metadata {
+        Ok(metadata) => {
+            dsql_project::store_metadata_dir(&metadata, &project.schema)?;
+            println!("schema written to {}", project.schema.display());
+            Ok(true)
+        }
+        Err(error) => {
+            eprintln!("introspection failed: {error}");
+            Ok(false)
+        }
+    }
 }

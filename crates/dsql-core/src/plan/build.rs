@@ -9,26 +9,29 @@
 use bowl::{Bowl, Commands, DerivedFrom, Entity, Query, SystemExt, With};
 
 use super::types::{
-    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, NestedRelation, OrderByPlan,
-    Projection, QueryPlan, QueryPlanFact, SelectionClauses, SelectionPlan, SelectionPlanItem,
-    SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation,
+    OperationSeed, OrderByPlan, Projection, QueryPlan, QueryPlanFact, SelectionClauses,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter, SqlValue,
+    SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
 };
 use crate::entities::clause::{ClauseFact, OrderDirection};
 use crate::entities::definition::{DefDecl, DefKind};
-use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, PathSegment, VariableRef};
+use crate::entities::expression::{
+    BinaryOp, Expr, LiteralValue, PathAnchor, PathSegment, VariableRef,
+};
 use crate::entities::field_selection::{FieldSel, SelectionTree, TreeViews};
 use crate::entities::variable::VariableRole;
-use crate::source::{ResolutionScope, ScopeImports};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
 use crate::facts::{
-    BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, NodeKey, PlanDemand,
-    Severity, emit_diagnostic,
+    BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, NodeKey, PlanDemand,
+    PlanKey, Severity, emit_diagnostic,
 };
+use crate::source::{ResolutionScope, ScopeImports};
 
 /// Registers the planning stage. A cross-entity stage system like
 /// `generate_ast`: it walks the whole checked fact tree per definition.
@@ -52,9 +55,6 @@ async fn plan_queries(
     mut commands: Commands,
 ) {
     let (def_entity, decl, def_key, file, scope) = defs.item();
-    if decl.kind != DefKind::Query {
-        return;
-    }
     let (catalog_entity, snapshot) = catalog.item();
     let (_, imports) = imports.item();
 
@@ -67,51 +67,83 @@ async fn plan_queries(
     };
     let mut diagnostics = Vec::new();
 
+    if decl.kind == DefKind::Fragment {
+        plan_fragment_body(
+            &mut planner,
+            def_entity,
+            decl,
+            *def_key,
+            file.0,
+            &scope.0,
+            catalog_entity,
+            &mut commands,
+            &mut diagnostics,
+        );
+        emit_plan_diagnostics(
+            diagnostics,
+            def_entity,
+            catalog_entity,
+            file.0,
+            &mut commands,
+        );
+        return;
+    }
+
     let roots: Vec<_> = tree
         .fields_under(*def_key)
         .map(|(_, field, key, _)| (*field, *key))
         .collect();
-    for (field, key) in roots {
+    let root_count = roots.len();
+    for (root_index, (field, key)) in roots.into_iter().enumerate() {
         match planner
             .catalog
             .resolve_table_ref_for(TableRef::parse(&field.name))
         {
             TableResolution::Found(table) => {
                 let table_id = table.id;
-                let table_name = table.name.clone();
+                let output_name = field.alias.clone().unwrap_or_else(|| table.name.clone());
                 let selection_path = vec![response_key(field)];
                 let variable_scope = VariablePathScope::operation();
-                let clauses = planner.plan_clauses(
-                    table_id,
-                    table_id,
-                    &selection_path,
-                    &variable_scope,
-                    key,
-                );
+                let clauses =
+                    planner.plan_clauses(table_id, table_id, &selection_path, &variable_scope, key);
+                let mut spreads = Vec::new();
                 if let Some(selections) = planner.plan_selection_set(
+                    &mut PlanWalk {
+                        result_path: vec![output_name.clone()],
+                        spreads: &mut spreads,
+                        visiting: &mut Vec::new(),
+                        diagnostics: &mut diagnostics,
+                    },
                     table_id,
                     table_id,
                     &clauses,
                     SelectionPath::body(selection_path),
                     &variable_scope,
                     key,
-                    &mut Vec::new(),
-                    &mut diagnostics,
                 ) {
                     let plan = QueryPlan {
                         root: table_id,
-                        output_name: field
-                            .alias
-                            .clone()
-                            .unwrap_or(table_name),
+                        output_name,
                         clauses,
                         selections,
                     };
-                    commands.insert((
+                    let plan_entity = commands.insert((
                         DerivedFrom::many([def_entity, catalog_entity]),
                         BelongsToFile(file.0),
+                        DefKey(def_entity),
                         QueryPlanFact(plan),
+                        OperationSeed {
+                            query_name: decl.name.clone(),
+                            root_index,
+                            root_count,
+                            def_span: decl.span,
+                            scope: scope.0.clone(),
+                            spreads,
+                        },
                     ));
+                    // Self key: SQL facts carry the same key, so artifact
+                    // assembly pairs each plan with its rendering.
+                    commands.entity(plan_entity).insert(PlanKey(plan_entity));
                 }
             }
             TableResolution::NotFound { reference } => diagnostics.push((
@@ -139,12 +171,28 @@ async fn plan_queries(
         }
     }
 
+    emit_plan_diagnostics(
+        diagnostics,
+        def_entity,
+        catalog_entity,
+        file.0,
+        &mut commands,
+    );
+}
+
+fn emit_plan_diagnostics(
+    diagnostics: PlanDiagnostics,
+    def_entity: Entity,
+    catalog_entity: Entity,
+    file: Entity,
+    commands: &mut Commands,
+) {
     for (span, code, message) in diagnostics {
         emit_diagnostic(
-            &mut commands,
+            commands,
             DiagnosticFacts {
                 derived_from: DerivedFrom::many([def_entity, catalog_entity]),
-                file: file.0,
+                file,
                 span,
                 severity: Severity::Error,
                 source: DiagnosticSource::Plan,
@@ -155,7 +203,77 @@ async fn plan_queries(
     }
 }
 
+/// Plans a fragment body against its declared table: no SQL renders from
+/// it, but generated artifacts derive the fragment's result shape from
+/// the plan.
+#[expect(clippy::too_many_arguments, reason = "one emission site, all context")]
+fn plan_fragment_body(
+    planner: &mut Planner<'_>,
+    def_entity: Entity,
+    decl: &DefDecl,
+    def_key: NodeKey,
+    file: Entity,
+    scope: &str,
+    catalog_entity: Entity,
+    commands: &mut Commands,
+    diagnostics: &mut PlanDiagnostics,
+) {
+    let Some((_, _, target, _, _)) = planner
+        .tree
+        .fragments
+        .iter()
+        .find(|(entity, _, _, _, _)| *entity == def_entity)
+    else {
+        return;
+    };
+    let Some(table) = planner.catalog.table_ref_for(TableRef::parse(&target.name)) else {
+        // Unresolvable targets are check diagnostics; nothing to plan.
+        return;
+    };
+    let table_id = table.id;
+    // Fragment artifacts carry no spread provenance of their own; the
+    // operations embedding them record it.
+    let Some(selections) = planner.plan_selection_set(
+        &mut PlanWalk {
+            result_path: Vec::new(),
+            spreads: &mut Vec::new(),
+            visiting: &mut Vec::new(),
+            diagnostics,
+        },
+        table_id,
+        table_id,
+        &SelectionClauses::default(),
+        SelectionPath::fragment_root(),
+        &VariablePathScope::fragment(),
+        def_key,
+    ) else {
+        return;
+    };
+    commands.insert((
+        DerivedFrom::many([def_entity, catalog_entity]),
+        BelongsToFile(file),
+        DefKey(def_entity),
+        FragmentPlanFact {
+            name: decl.name.clone(),
+            table: table_id,
+            selections,
+            def_span: decl.span,
+            scope: scope.to_string(),
+        },
+    ));
+}
+
 type PlanDiagnostics = Vec<(crate::facts::Span, DiagnosticCode, String)>;
+
+/// Mutable state threaded through one plan walk. `result_path` follows
+/// output keys (unchanged across spread expansion, extended per relation);
+/// `visiting` guards cyclic spreads.
+struct PlanWalk<'a> {
+    result_path: Vec<String>,
+    spreads: &'a mut Vec<SpreadUse>,
+    visiting: &'a mut Vec<String>,
+    diagnostics: &'a mut PlanDiagnostics,
+}
 
 struct Planner<'a> {
     tree: &'a SelectionTree<'a>,
@@ -165,17 +283,19 @@ struct Planner<'a> {
 }
 
 impl Planner<'_> {
-    #[expect(clippy::too_many_arguments, reason = "recursion threads the whole walk state")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "recursion threads the whole walk state"
+    )]
     fn plan_selection_set(
         &mut self,
+        walk: &mut PlanWalk<'_>,
         root_table: TableId,
         table: TableId,
         clauses: &SelectionClauses,
         selection_path: SelectionPath,
         variable_scope: &VariablePathScope,
         parent: NodeKey,
-        visiting: &mut Vec<String>,
-        diagnostics: &mut PlanDiagnostics,
     ) -> Option<SelectionPlan> {
         let mut items = Vec::new();
 
@@ -193,15 +313,17 @@ impl Planner<'_> {
         children.extend(
             self.tree
                 .spreads_under(parent)
-                .map(|(_, spread, _, _)| {
-                    (spread.span.start, Child::Spread(spread.name.clone()))
-                }),
+                .map(|(_, spread, _, _)| (spread.span.start, Child::Spread(spread.name.clone()))),
         );
         children.sort_by_key(|(start, _)| *start);
 
         for (_, child) in children {
             match child {
                 Child::Spread(name) => {
+                    walk.spreads.push(SpreadUse {
+                        path: walk.result_path.join("."),
+                        fragment: name.clone(),
+                    });
                     let Some((_, _, _, fragment_key, _)) = self
                         .tree
                         .resolve_fragment(&name, self.scope, self.imports)
@@ -212,23 +334,22 @@ impl Planner<'_> {
                     // Planning is demand-driven and runs regardless of check
                     // status, so cyclic spreads must be guarded against here
                     // rather than trusting checks to have rejected them.
-                    if visiting.contains(&name) {
+                    if walk.visiting.contains(&name) {
                         continue;
                     }
-                    visiting.push(name.clone());
+                    walk.visiting.push(name.clone());
                     if let Some(fragment_plan) = self.plan_selection_set(
+                        walk,
                         root_table,
                         table,
                         &SelectionClauses::default(),
                         SelectionPath::fragment_root(),
                         &variable_scope.for_fragment_spread(&selection_path, &name),
                         fragment_key,
-                        visiting,
-                        diagnostics,
                     ) {
                         items.extend(fragment_plan.items);
                     }
-                    visiting.pop();
+                    walk.visiting.pop();
                 }
                 Child::Field(field, key) => {
                     let reference = FieldRef {
@@ -261,16 +382,20 @@ impl Planner<'_> {
                                 variable_scope,
                                 key,
                             );
-                            if let Some(nested) = self.plan_selection_set(
+                            walk.result_path.push(
+                                field.alias.clone().unwrap_or_else(|| relation_name.clone()),
+                            );
+                            let nested = self.plan_selection_set(
+                                walk,
                                 root_table,
                                 relation_table,
                                 &child_clauses,
                                 SelectionPath::body(child_path),
                                 variable_scope,
                                 key,
-                                visiting,
-                                diagnostics,
-                            ) {
+                            );
+                            walk.result_path.pop();
+                            if let Some(nested) = nested {
                                 items.push(SelectionPlanItem::Relation(NestedRelation {
                                     relation_name: reference.display_text(),
                                     output_name: field
@@ -287,7 +412,7 @@ impl Planner<'_> {
                         FieldCheckResult::AmbiguousRelation {
                             reference,
                             candidates,
-                        } => diagnostics.push((
+                        } => walk.diagnostics.push((
                             field.name_span,
                             DiagnosticCode::AmbiguousRelation,
                             format!(
@@ -640,9 +765,7 @@ impl Planner<'_> {
             return None;
         }
         let scope = match anchor {
-            PathAnchor::Current if outer_current_table.is_some() => {
-                FilterColumnScope::OuterCurrent
-            }
+            PathAnchor::Current if outer_current_table.is_some() => FilterColumnScope::OuterCurrent,
             PathAnchor::Current => FilterColumnScope::Current,
             PathAnchor::Root => FilterColumnScope::Root,
             PathAnchor::Parent => return None,
@@ -666,7 +789,10 @@ impl Planner<'_> {
 
     /// Multi-segment `Current`-scoped predicate paths become nested
     /// `EXISTS` subqueries stepping through each relation.
-    #[expect(clippy::too_many_arguments, reason = "recursion threads the whole walk state")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "recursion threads the whole walk state"
+    )]
     fn relation_predicate_filter(
         &mut self,
         table: TableId,
@@ -699,7 +825,10 @@ impl Planner<'_> {
         )
     }
 
-    #[expect(clippy::too_many_arguments, reason = "recursion threads the whole walk state")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "recursion threads the whole walk state"
+    )]
     fn relation_predicate_segments(
         &mut self,
         table: TableId,

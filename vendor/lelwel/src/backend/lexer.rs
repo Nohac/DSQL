@@ -61,8 +61,11 @@ pub fn generate_lexer(grammar: &str, out_dir: &str, spec: &LexerSpec<'_>) -> std
             Some(literal) => {
                 writeln!(variants, "    #[token({literal:?})]\n    {name},")
                     .expect("writing to a String cannot fail");
-                writeln!(literal_arms, "            Self::{name} => Some({literal:?}),")
-                    .expect("writing to a String cannot fail");
+                writeln!(
+                    literal_arms,
+                    "            Self::{name} => Some({literal:?}),"
+                )
+                .expect("writing to a String cannot fail");
             }
             None => match spec.patterns.iter().find(|(pattern, _)| *pattern == name) {
                 Some((_, arguments)) => {

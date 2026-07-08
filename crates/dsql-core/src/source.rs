@@ -27,6 +27,14 @@ use ropey::Rope;
 #[component(hash)]
 pub struct FilePath(pub String);
 
+/// Byte offset of a document's text inside its host file: zero for plain
+/// `.dsql` files, the embedded region's start for documents extracted from
+/// another language's source. Spans stay document-relative everywhere;
+/// this shifts them back to host coordinates at reporting boundaries.
+#[derive(Component, Hash, PartialEq, Eq, Debug, Clone, Copy)]
+#[component(hash)]
+pub struct SourceOffset(pub usize);
+
 /// Source text of a file entity, rope-backed for cheap incremental edits.
 ///
 /// The fingerprint is the [`SourceText::revision`] verbatim, so
@@ -124,13 +132,7 @@ pub struct ScopeImports(pub BTreeMap<String, Vec<String>>);
 impl ScopeImports {
     /// The scopes visible from `scope`: itself plus its direct imports.
     pub fn visible_from<'a>(&'a self, scope: &'a str) -> impl Iterator<Item = &'a str> {
-        std::iter::once(scope).chain(
-            self.0
-                .get(scope)
-                .into_iter()
-                .flatten()
-                .map(String::as_str),
-        )
+        std::iter::once(scope).chain(self.0.get(scope).into_iter().flatten().map(String::as_str))
     }
 
     /// The imports of `scope`, without the scope itself.
@@ -160,8 +162,26 @@ pub async fn insert_source_scoped(
     text: &str,
     scope: ResolutionScope,
 ) -> Entity {
+    insert_source_at(bowl, path, text, scope, 0).await
+}
+
+/// Inserts in-memory text as a file entity in `scope`, recording the byte
+/// offset the text sits at inside its host file — non-zero for documents
+/// embedded in another language's source.
+pub async fn insert_source_at(
+    bowl: &Bowl,
+    path: impl Into<String>,
+    text: &str,
+    scope: ResolutionScope,
+    offset: usize,
+) -> Entity {
     let inserted = bowl
-        .insert((FilePath(path.into()), SourceText::from_text(text), scope))
+        .insert((
+            FilePath(path.into()),
+            SourceOffset(offset),
+            SourceText::from_text(text),
+            scope,
+        ))
         .await;
     inserted.entity()
 }

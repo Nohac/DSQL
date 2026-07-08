@@ -8,6 +8,8 @@ bowl = { workspace = true }
 dsql-core = { workspace = true }
 facet = { workspace = true }
 facet-toml = { workspace = true }
+glob = { workspace = true }
+regex = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

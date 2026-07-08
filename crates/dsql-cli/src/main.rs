@@ -28,6 +28,14 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Write the build/ artifact tree and run the host generator.
+    Generate {
+        /// Bound nested collection relations at this many rows.
+        #[arg(long)]
+        collection_limit: Option<u64>,
+    },
+    /// Introspect the project database into the schema/ directory.
+    Introspect,
 }
 
 fn main() -> std::process::ExitCode {
@@ -36,6 +44,8 @@ fn main() -> std::process::ExitCode {
         Command::Check => commands::check(),
         Command::Sql { collection_limit } => commands::sql(collection_limit),
         Command::Fmt { check } => commands::fmt(check),
+        Command::Generate { collection_limit } => commands::generate(collection_limit),
+        Command::Introspect => commands::introspect(),
     };
     match outcome {
         Ok(clean) if clean => std::process::ExitCode::SUCCESS,

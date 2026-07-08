@@ -8,11 +8,6 @@
 
 use bowl::{Commands, Entity, Query};
 
-use crate::entity::{LowerCtx, LowerStage};
-use crate::facts::{NodeKey, Span};
-use crate::source::ResolutionScope;
-use crate::grammar::lexer::Token;
-use crate::grammar::parser::{CstData, Node, NodeRef, Rule};
 use super::clause::Clause;
 use super::definition::Definition;
 use super::directive::Directive;
@@ -21,6 +16,11 @@ use super::expression::Expression;
 use super::field_selection::FieldSelection;
 use super::fragment_spread::FragmentSpread;
 use super::variable::Variable;
+use crate::entity::{LowerCtx, LowerStage};
+use crate::facts::{NodeKey, Span};
+use crate::grammar::lexer::Token;
+use crate::grammar::parser::{CstData, Node, NodeRef, Rule};
+use crate::source::ResolutionScope;
 
 fn lower_rule(ctx: &LowerCtx<'_>, rule: Rule, node: NodeRef, commands: &mut Commands) {
     match rule {
@@ -138,7 +138,8 @@ pub(crate) fn direct_token(cst: &CstData, node: NodeRef, token: Token) -> Option
 
 /// First direct child of `node` that is a `rule` node.
 pub(crate) fn direct_rule(cst: &CstData, node: NodeRef, rule: Rule) -> Option<NodeRef> {
-    cst.children(node).find(|child| cst.match_rule(*child, rule))
+    cst.children(node)
+        .find(|child| cst.match_rule(*child, rule))
 }
 
 /// Full span of a CST node.
@@ -150,7 +151,6 @@ pub(crate) fn node_span(cst: &CstData, node: NodeRef) -> Span {
 pub(crate) fn text(source: &str, span: Span) -> &str {
     &source[span.start..span.end]
 }
-
 
 /// Rule-ownership dispatch for the format stage, mirroring [`lower_rule`]:
 /// exhaustive over the rules the formatter hands to entities. Structural

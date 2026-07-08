@@ -109,8 +109,11 @@ pub fn imdb_catalog() -> dsql_core::catalog::Catalog {
     }
     schemas.sort_by(|left, right| left.name.cmp(&right.name));
 
-    dsql_core::catalog::DatabaseMetadata { schemas, types: Vec::new() }
-        .into_catalog()
-        .expect("imdb fixture catalog must build")
-        .with_default_schema(Catalog::DEFAULT_SCHEMA)
+    dsql_core::catalog::DatabaseMetadata {
+        schemas,
+        types: Vec::new(),
+    }
+    .into_catalog()
+    .expect("imdb fixture catalog must build")
+    .with_default_schema(Catalog::DEFAULT_SCHEMA)
 }

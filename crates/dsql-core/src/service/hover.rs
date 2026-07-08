@@ -31,7 +31,6 @@ use bowl::{
     Bowl, Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, SystemExt, Where, With,
 };
 
-use crate::facts::Span;
 use crate::source::{FilePath, SourceText};
 
 /// Marks an entity as a hover request; pair with [`FilePath`] and
@@ -69,11 +68,6 @@ pub struct HoverRank(pub u8);
 #[derive(Component, Hash)]
 #[component(hash)]
 pub struct HoverEnriched;
-
-/// The file entity a hover request resolved to, stamped by enrichment.
-#[derive(Component, Hash)]
-#[component(hash)]
-pub struct HoverFile(pub Entity);
 
 /// One entity's answer for one hover request, addressed by an equal
 /// [`RequestKey`]; see [`priority`] for the bands.
@@ -134,8 +128,12 @@ async fn resolve_hover_requests(
         return;
     };
 
+    // The resolved file lands as `BelongsToFile`: candidate systems join
+    // their per-file facts against it instead of scanning views.
     let (file_entity, _text) = file.item();
-    commands.entity(request).insert(HoverFile(file_entity));
+    commands
+        .entity(request)
+        .insert(crate::facts::BelongsToFile(file_entity));
     commands
         .entity(request)
         .insert(HoverRank(priority::RESOLVED));
@@ -166,10 +164,4 @@ async fn arbitrate_hover(
         rank.0 = candidate.priority;
         info.0 = candidate.text.clone();
     }
-}
-
-/// Whether `span` of a fact in `file` matches a request resolved to
-/// (`request_file`, `offset`). Shared by entity candidate systems.
-pub fn span_matches(span: Span, file: Entity, request_file: Entity, offset: usize) -> bool {
-    file == request_file && span.start <= offset && offset < span.end
 }

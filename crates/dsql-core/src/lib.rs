@@ -9,6 +9,7 @@ pub mod entity;
 pub mod facts;
 pub mod format;
 pub mod grammar;
+pub mod lint;
 pub mod plan;
 pub mod service;
 pub mod source;
@@ -47,6 +48,7 @@ pub async fn register_language(bowl: &Bowl) {
 
     bowl.add_system(entities::generate_ast).await;
 
+    lint::register_lints(bowl).await;
     plan::register_planning(bowl).await;
     sql::register_sql(bowl).await;
     service::register_services(bowl).await;

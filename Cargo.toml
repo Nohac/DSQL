@@ -9,6 +9,9 @@ edition = "2024"
 
 [workspace.dependencies]
 dsql-core = { path = "crates/dsql-core" }
+dsql-generate = { path = "crates/dsql-generate" }
+dsql-introspection = { path = "crates/dsql-introspection" }
+dsql-metadata = { path = "crates/dsql-metadata" }
 dsql-project = { path = "crates/dsql-project" }
 
 bowl = { git = "https://github.com/Nohac/porridge", rev = "fb14619342267114def0e6e3d8d89d727ad082b7" }
@@ -18,13 +21,19 @@ logos = { path = "vendor/logos" }
 clap = { version = "4.5", features = ["derive"] }
 codespan-reporting = "0.13"
 facet = "0.50.0-rc.1"
+facet-json = "0.50.0-rc.1"
+facet-json-schema = "0.50.0-rc.1"
 facet-toml = "0.50.0-rc.1"
+facet-typescript = "0.50.0-rc.1"
 facet-yaml = "0.50.0-rc.1"
 futures = "0.3"
+glob = "0.3"
+regex = "1"
 insta = "1.48"
 ropey = { version = "2.0.0-beta.1", features = ["metric_utf16"] }
 sea-query = { version = "1.0.1", default-features = false, features = ["backend-postgres"] }
 sqlformat = "0.5"
+sqlx = { version = "0.9", default-features = false }
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }

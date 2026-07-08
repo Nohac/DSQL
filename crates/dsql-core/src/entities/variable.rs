@@ -5,24 +5,28 @@
 //! at which binding time, with which types" — so each occurrence also
 //! becomes its own fact, anchored into the tree by [`ParentKey`].
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, With};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, Where, With};
 
 use crate::catalog::{
     CatalogSnapshot, DataType, FieldCheckResult, FieldRef, TableRef, TableResolution,
 };
 use crate::entities::clause::{ClauseFact, OrderDirection};
 use crate::entities::definition::{DefDecl, DefKind};
-use crate::entities::expression::{BinaryOp, ComparisonOp, Expr, Sigil, VariableRef, build_variable_ref};
+use crate::entities::expression::{
+    BinaryOp, ComparisonOp, Expr, Sigil, VariableRef, build_variable_ref,
+};
 use crate::entities::field_selection::{SelectionTree, TreeViews};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span, VariablesDemand};
-use crate::source::{ResolutionScope, ScopeImports};
+use crate::format::CstFormatter;
 use crate::grammar::parser::NodeRef;
-use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, RequestKey, priority, span_matches};
+use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::source::{ResolutionScope, ScopeImports};
 
 /// One variable occurrence, lowered from `value_variable` or
 /// `operator_variable`. The inference stage (phase 7) groups these by name
@@ -59,24 +63,17 @@ impl LowerStage for Variable {
             node: node.0,
         };
 
-        match ctx.parent {
-            Some(parent) => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                ParentKey(parent),
-                VariableUse(variable),
-            )),
-            None => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                VariableUse(variable),
-            )),
-        };
+        let entity = commands.insert((
+            DerivedFrom::new(ctx.file),
+            BelongsToFile(ctx.file),
+            key,
+            VariableUse(variable),
+        ));
+        if let Some(parent) = ctx.parent {
+            commands.entity(entity).insert(ParentKey(parent));
+        }
     }
 }
-
 
 /// Whether a binding surfaces as structured input (`$`, `input.*`) or a
 /// top-level parameter (`$$`, `params.*`).
@@ -103,6 +100,19 @@ pub enum VariableRole {
     SortDirection,
     Limit,
     Offset,
+}
+
+impl VariableRole {
+    /// The artifact label consumed by generated metadata.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VariableRole::WhereValue => "wherevalue",
+            VariableRole::ComparisonOperator => "comparisonoperator",
+            VariableRole::SortDirection => "sortdirection",
+            VariableRole::Limit => "limit",
+            VariableRole::Offset => "offset",
+        }
+    }
 }
 
 /// One inferred variable binding: the parameter a query or fragment takes,
@@ -181,7 +191,9 @@ async fn infer_variables(
             else {
                 return;
             };
-            let Some(table) = inference.catalog.table_ref_for(TableRef::parse(&target.name))
+            let Some(table) = inference
+                .catalog
+                .table_ref_for(TableRef::parse(&target.name))
             else {
                 return;
             };
@@ -201,6 +213,7 @@ async fn infer_variables(
         commands.insert((
             DerivedFrom::many([def_entity, catalog_entity]),
             BelongsToFile(file.0),
+            crate::facts::DefKey(def_entity),
             span,
             binding,
         ));
@@ -307,8 +320,10 @@ impl Inference<'_> {
                 .map(|(_, spread, _, _)| spread.name.clone())
                 .collect();
             for name in spreads {
-                let Some((_, _, _, fragment_key, _)) =
-                    self.tree.resolve_fragment(&name, self.scope, self.imports).copied()
+                let Some((_, _, _, fragment_key, _)) = self
+                    .tree
+                    .resolve_fragment(&name, self.scope, self.imports)
+                    .copied()
                 else {
                     continue;
                 };
@@ -339,7 +354,8 @@ impl Inference<'_> {
                 target: TableRef::parse(&field.name),
                 selector: field.relation_path.as_deref(),
             };
-            let FieldCheckResult::Relation(relation) = self.catalog.check_field_ref(table, reference)
+            let FieldCheckResult::Relation(relation) =
+                self.catalog.check_field_ref(table, reference)
             else {
                 continue;
             };
@@ -456,7 +472,8 @@ impl Inference<'_> {
             selector: last.relation_path.as_deref(),
         };
         let display = reference.display_text();
-        let FieldCheckResult::Column(column) = self.catalog.check_field_ref(current_table, reference)
+        let FieldCheckResult::Column(column) =
+            self.catalog.check_field_ref(current_table, reference)
         else {
             return None;
         };
@@ -514,15 +531,18 @@ impl Inference<'_> {
             operator.sigil,
             Some(&key),
         );
-        self.bindings.push((operator.span, VariableBinding {
-            path,
-            source: operator.sigil.into(),
-            name,
-            data_type,
-            role: VariableRole::ComparisonOperator,
-            enum_values: allowed.iter().map(|op| op.as_str().to_string()).collect(),
-            operators: allowed,
-        }));
+        self.bindings.push((
+            operator.span,
+            VariableBinding {
+                path,
+                source: operator.sigil.into(),
+                name,
+                data_type,
+                role: VariableRole::ComparisonOperator,
+                enum_values: allowed.iter().map(|op| op.as_str().to_string()).collect(),
+                operators: allowed,
+            },
+        ));
     }
 
     fn push_binding(
@@ -543,15 +563,18 @@ impl Inference<'_> {
             variable.sigil,
             name.as_deref(),
         );
-        self.bindings.push((variable.span, VariableBinding {
-            path,
-            source: variable.sigil.into(),
-            name,
-            data_type: context.data_type,
-            role: context.role,
-            operators: context.operators,
-            enum_values: context.enum_values,
-        }));
+        self.bindings.push((
+            variable.span,
+            VariableBinding {
+                path,
+                source: variable.sigil.into(),
+                name,
+                data_type: context.data_type,
+                role: context.role,
+                operators: context.operators,
+                enum_values: context.enum_values,
+            },
+        ));
     }
 }
 
@@ -573,7 +596,6 @@ fn response_key(selection: &crate::entities::field_selection::FieldSel) -> Strin
         .unwrap_or_else(|| TableRef::parse(&selection.name).name.to_string())
 }
 
-
 impl FormatStage for Variable {
     /// Variables are preserved verbatim.
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
@@ -581,30 +603,27 @@ impl FormatStage for Variable {
     }
 }
 
-
 impl HoverStage for Variable {
     async fn register_hover(bowl: &Bowl) {
-        bowl.add_system(hover_variables.run_during(bowl::Phase::Complete))
-            .await;
+        // Fully tracked (a per-file bound join, no views), so it needs no
+        // phase barrier: pairs replan as bindings commit at Complete.
+        bowl.add_system(hover_variables).await;
     }
 }
 
 /// Answers hover on a variable occurrence with its inferred binding: one
-/// tracked invocation per (request, binding) pair, answering when the
-/// binding's span holds the cursor. Bindings derive at Complete, the same
-/// phase as this system — tracked consumption is what makes that safe
-/// (pairs replan as bindings commit; an ambient `View` here raced them,
-/// and the engine's same-phase race flag caught exactly that). Without
+/// invocation per (request, binding-in-file) pair via the `BelongsToFile`
+/// join, answering when the binding's span holds the cursor. Without
 /// `VariablesDemand` there are no bindings, no pairs, and no candidates.
 async fn hover_variables(
-    query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
-    bindings: Query<(Entity, &Span, &VariableBinding, &BelongsToFile)>,
+    query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
+    bindings: Query<(Entity, &Span, &VariableBinding), Where<bowl::Eq<BelongsToFile>>>,
     mut commands: Commands,
 ) {
-    let (request, file, position) = query.item();
-    let (_, span, binding, binding_file) = bindings.item();
+    let (request, _file, position) = query.item();
+    let (_, span, binding) = bindings.item();
 
-    if !span_matches(*span, binding_file.0, file.0, position.offset) {
+    if !(span.start <= position.offset && position.offset < span.end) {
         return;
     }
 
@@ -632,7 +651,6 @@ async fn hover_variables(
         },
     ));
 }
-
 
 impl CompletionStage for Variable {
     /// Variables are free-form names; nothing to suggest yet.

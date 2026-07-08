@@ -1,19 +1,23 @@
 //! Fragment-spread entity: `...Name` selections, their resolution to
 //! fragment definitions, and the unknown-fragment check.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, SystemExt, View, With};
+use bowl::{
+    Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, SystemExt, View, Where, With,
+};
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
 use crate::entities::{direct_token, node_span, text};
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     ParentKey, Severity, Span, emit_diagnostic,
 };
-use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, RequestKey, priority, span_matches};
+use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::NodeRef;
+use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// One `...Name` spread, lowered from `fragment_spread`.
@@ -46,7 +50,8 @@ impl LanguageEntity for FragmentSpread {
         // behind the Complete phase barrier; their DefIndex/ScopeImports
         // inputs are tracked, which exempts them from the same-phase race
         // next to index_defs.
-        bowl.add_system(resolve_spreads.run_during(Phase::Complete)).await;
+        bowl.add_system(resolve_spreads.run_during(Phase::Complete))
+            .await;
         bowl.add_system(check_unknown_fragments.run_during(Phase::Complete))
             .await;
     }
@@ -72,25 +77,17 @@ impl LowerStage for FragmentSpread {
         };
 
         let scope = ResolutionScope(ctx.scope.to_string());
-        match ctx.parent {
-            Some(parent) => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                scope,
-                ParentKey(parent),
-                FragmentKey(name),
-                decl,
-            )),
-            None => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                scope,
-                FragmentKey(name),
-                decl,
-            )),
-        };
+        let entity = commands.insert((
+            DerivedFrom::new(ctx.file),
+            BelongsToFile(ctx.file),
+            key,
+            scope,
+            FragmentKey(name),
+            decl,
+        ));
+        if let Some(parent) = ctx.parent {
+            commands.entity(entity).insert(ParentKey(parent));
+        }
     }
 }
 
@@ -329,7 +326,6 @@ async fn check_unknown_fragments(
     );
 }
 
-
 impl FormatStage for FragmentSpread {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         use crate::grammar::parser::Rule;
@@ -344,7 +340,6 @@ impl FormatStage for FragmentSpread {
     }
 }
 
-
 impl HoverStage for FragmentSpread {
     async fn register_hover(bowl: &Bowl) {
         bowl.add_system(hover_spreads.run_during(bowl::Phase::Complete))
@@ -352,20 +347,23 @@ impl HoverStage for FragmentSpread {
     }
 }
 
-/// Answers hover on a `...Name` spread with the fragment it resolves to.
+/// Answers hover on a `...Name` spread with the fragment it resolves to:
+/// one invocation per (request, spread-in-file) pair via the
+/// `BelongsToFile` join. The fragment target still comes from the
+/// cross-scope resolver views (scope visibility is not an equal-key join),
+/// which is why this stays behind the Complete barrier.
 async fn hover_spreads(
-    query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
-    spreads: View<'_, (Entity, &SpreadDecl, &BelongsToFile, &ResolutionScope)>,
+    query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
+    spreads: Query<(Entity, &SpreadDecl, &ResolutionScope), Where<bowl::Eq<BelongsToFile>>>,
     resolver: SpreadResolver<'_>,
     mut commands: Commands,
 ) {
-    let (request, file, position) = query.item();
+    let (request, _file, position) = query.item();
+    let (_, spread, scope) = spreads.item();
 
-    let Some((_, spread, _, scope)) = spreads.iter().find(|(_, spread, spread_file, _)| {
-        span_matches(spread.name_span, spread_file.0, file.0, position.offset)
-    }) else {
+    if !(spread.name_span.start <= position.offset && position.offset < spread.name_span.end) {
         return;
-    };
+    }
 
     let target = resolver.target_of(&spread.name, &scope.0);
     let text = match target {
@@ -382,7 +380,6 @@ async fn hover_spreads(
         },
     ));
 }
-
 
 impl CompletionStage for FragmentSpread {
     async fn register_completions(bowl: &Bowl) {
@@ -412,7 +409,9 @@ async fn complete_spreads(
     mut commands: Commands,
 ) {
     use crate::catalog::TableRef;
-    use crate::service::completion::{CompletionCandidate, CompletionItem, CompletionKind, CompletionSite};
+    use crate::service::completion::{
+        CompletionCandidate, CompletionItem, CompletionKind, CompletionSite,
+    };
 
     let (request, context) = requests.item();
     let (_, snapshot) = catalog.item();
@@ -435,7 +434,9 @@ async fn complete_spreads(
         {
             continue;
         }
-        let Some(target_table) = snapshot.catalog().table_ref_for(TableRef::parse(&target.name))
+        let Some(target_table) = snapshot
+            .catalog()
+            .table_ref_for(TableRef::parse(&target.name))
         else {
             continue;
         };

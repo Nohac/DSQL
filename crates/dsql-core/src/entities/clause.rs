@@ -8,9 +8,11 @@ use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, Wit
 
 use crate::entities::expression::{Expr, VariableRef, build_expr, build_variable_ref, expr_child};
 use crate::entities::{direct_rule, node_span, text};
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span};
+use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef, Rule};
 
 /// One clause, lowered from `where_clause` / `order_by_clause` /
@@ -77,23 +79,16 @@ impl LowerStage for Clause {
             node: node.0,
         };
 
-        match ctx.parent {
-            Some(parent) => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                ParentKey(parent),
-                node_span(ctx.cst, node),
-                fact,
-            )),
-            None => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                node_span(ctx.cst, node),
-                fact,
-            )),
-        };
+        let entity = commands.insert((
+            DerivedFrom::new(ctx.file),
+            BelongsToFile(ctx.file),
+            key,
+            node_span(ctx.cst, node),
+            fact,
+        ));
+        if let Some(parent) = ctx.parent {
+            commands.entity(entity).insert(ParentKey(parent));
+        }
     }
 }
 
@@ -117,14 +112,15 @@ fn order_items(cst: &CstData, source: &str, node: NodeRef) -> Vec<OrderItem> {
             let direction = direct_rule(cst, item, Rule::SortDirection).and_then(|direction| {
                 use crate::grammar::lexer::Token;
                 use crate::grammar::parser::Node;
-                cst.children(direction).find_map(|child| match cst.get(child) {
-                    Node::Token(Token::Asc, _) => Some(OrderDirection::Asc),
-                    Node::Token(Token::Desc, _) => Some(OrderDirection::Desc),
-                    Node::Rule(Rule::ValueVariable, _) => Some(OrderDirection::Variable(
-                        build_variable_ref(cst, source, child),
-                    )),
-                    _ => None,
-                })
+                cst.children(direction)
+                    .find_map(|child| match cst.get(child) {
+                        Node::Token(Token::Asc, _) => Some(OrderDirection::Asc),
+                        Node::Token(Token::Desc, _) => Some(OrderDirection::Desc),
+                        Node::Rule(Rule::ValueVariable, _) => Some(OrderDirection::Variable(
+                            build_variable_ref(cst, source, child),
+                        )),
+                        _ => None,
+                    })
             });
 
             OrderItem {
@@ -212,10 +208,7 @@ fn check_predicate_expr(
                     entity,
                     expr.span(),
                     DiagnosticCode::FieldNotFound,
-                    format!(
-                        "field `{}` not found on table `{table_name}`",
-                        expr
-                    ),
+                    format!("field `{}` not found on table `{table_name}`", expr),
                 );
             }
         }
@@ -355,7 +348,8 @@ fn resolve_predicate_path(
             target: TableRef::parse(&segment.name),
             selector: segment.relation_path.as_deref(),
         };
-        let FieldCheckResult::Relation(relation) = ctx.catalog.check_field_ref(current_table, reference)
+        let FieldCheckResult::Relation(relation) =
+            ctx.catalog.check_field_ref(current_table, reference)
         else {
             return None;
         };
@@ -396,7 +390,6 @@ fn check_non_negative_integer(
     }
 }
 
-
 impl FormatStage for Clause {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         if formatter.rule(node) == Some(Rule::WhereClause) {
@@ -430,13 +423,11 @@ impl FormatStage for Clause {
     }
 }
 
-
 impl HoverStage for Clause {
     /// Clause keywords carry no hover content of their own; the paths and
     /// variables inside them answer through their entities.
     async fn register_hover(_bowl: &Bowl) {}
 }
-
 
 impl CompletionStage for Clause {
     async fn register_completions(bowl: &Bowl) {
@@ -456,7 +447,9 @@ async fn complete_clause_positions(
     catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
     mut commands: Commands,
 ) {
-    use crate::service::completion::{CompletionCandidate, CompletionItem, CompletionKind, CompletionSite};
+    use crate::service::completion::{
+        CompletionCandidate, CompletionItem, CompletionKind, CompletionSite,
+    };
 
     let (request, context) = requests.item();
     let (_, snapshot) = catalog.item();

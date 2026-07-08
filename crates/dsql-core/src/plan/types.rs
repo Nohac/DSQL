@@ -14,6 +14,52 @@ use crate::facts::Span;
 #[component(hash)]
 pub struct QueryPlanFact(pub QueryPlan);
 
+/// Artifact-assembly context riding each plan entity: which definition and
+/// root the plan came from, so generators can name and source-map the
+/// operation without re-walking facts.
+#[derive(Component, Debug, Clone, Hash, PartialEq)]
+#[component(hash)]
+pub struct OperationSeed {
+    /// The defining query's name.
+    pub query_name: String,
+    /// Index of this root selection within the query definition.
+    pub root_index: usize,
+    /// How many root selections the definition has.
+    pub root_count: usize,
+    /// Span of the whole definition in its file.
+    pub def_span: Span,
+    /// The definition's resolution scope.
+    pub scope: String,
+    /// Fragment spreads the plan expanded, with the result path each sat
+    /// at — provenance for generated artifacts, not consumed by SQL.
+    pub spreads: Vec<SpreadUse>,
+}
+
+/// One fragment spread occurrence under a plan root: `path` is the result
+/// path of the selection set the spread appeared in.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct SpreadUse {
+    pub path: String,
+    pub fragment: String,
+}
+
+/// One planned fragment body as a fact, derived per fragment definition by
+/// the planning system, gated on [`PlanDemand`]. Fragments render no SQL of
+/// their own; the plan exists for result-shape derivation in generated
+/// artifacts.
+///
+/// [`PlanDemand`]: crate::facts::PlanDemand
+#[derive(Component, Debug, Clone, Hash, PartialEq)]
+#[component(hash)]
+pub struct FragmentPlanFact {
+    pub name: String,
+    /// The catalog table the fragment is declared on.
+    pub table: TableId,
+    pub selections: SelectionPlan,
+    pub def_span: Span,
+    pub scope: String,
+}
+
 /// Binary operator inside a [`FilterExpr`]: comparisons plus the boolean
 /// connectives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -73,7 +119,6 @@ impl FilterOp {
         }
     }
 }
-
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PlannedFile {
@@ -231,7 +276,6 @@ pub struct NestedRelation {
     pub foreign_key: ForeignKeyId,
     pub selections: Box<SelectionPlan>,
 }
-
 
 fn format_table_candidates(candidates: &[TableKey]) -> String {
     candidates

@@ -1,0 +1,15 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+expression: "rendered.join(\"\\n\")"
+---
+Fragment 9..20 `TitleFields`
+Table 24..29 `title`
+Column 34..36 `id`
+Column 39..44 `title`
+Column 47..62 `production_year`
+Fragment 72..89 `TitleWithFragment`
+Table 94..99 `title`
+Column 107..109 `id`
+Fragment 132..143 `TitleFields`
+Relation 148..157 `kind_type`
+Column 166..170 `kind`

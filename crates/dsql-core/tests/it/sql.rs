@@ -33,11 +33,8 @@ async fn sql_bowl(catalog: Catalog) -> Bowl {
 /// Renders all generated SQL facts, one section per query.
 async fn render_sql(bowl: &Bowl) -> String {
     let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
-    let mut generated: Vec<&GeneratedSqlFact> = rows
-        .collect()
-        .into_iter()
-        .map(|(_, fact)| fact)
-        .collect();
+    let mut generated: Vec<&GeneratedSqlFact> =
+        rows.collect().into_iter().map(|(_, fact)| fact).collect();
     generated.sort_by(|left, right| left.0.output_name.cmp(&right.0.output_name));
     generated
         .into_iter()
@@ -134,7 +131,10 @@ fn plans_retire_when_demand_is_removed_sources_change() {
         let bowl = sql_bowl(imdb_catalog()).await;
         insert_source(&bowl, "q.dsql", "query Q {\n  title {\n    id\n  }\n}\n").await;
 
-        let generated = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await.len();
+        let generated = bowl
+            .scoop::<Query<(Entity, &GeneratedSqlFact)>>()
+            .await
+            .len();
         assert_eq!(generated, 1);
 
         let sources = bowl

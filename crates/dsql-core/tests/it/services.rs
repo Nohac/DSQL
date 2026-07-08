@@ -133,3 +133,53 @@ fn goto_definition_follows_spreads() {
         assert_eq!(target.span.end, name_start + "TitleFields".len());
     });
 }
+
+#[test]
+fn semantic_tokens_classify_by_resolution() {
+    use dsql_core::service::{SemanticTokens, SemanticTokensRequest};
+
+    block_on(async {
+        let bowl = service_bowl().await;
+        let source = fixture(FIXTURE);
+
+        let tokens = bowl
+            .insert((SemanticTokensRequest, FilePath(FIXTURE.to_string())))
+            .await
+            .bind()
+            .take::<SemanticTokens>()
+            .await
+            .expect("semantic tokens answered");
+
+        let rendered: Vec<String> = tokens
+            .0
+            .iter()
+            .map(|token| {
+                format!(
+                    "{:?} {}..{} `{}`",
+                    token.kind,
+                    token.span.start,
+                    token.span.end,
+                    &source[token.span.start..token.span.end],
+                )
+            })
+            .collect();
+        insta::assert_snapshot!(rendered.join("\n"));
+    });
+}
+
+#[test]
+fn semantic_tokens_for_unknown_file_are_empty() {
+    use dsql_core::service::{SemanticTokens, SemanticTokensRequest};
+
+    block_on(async {
+        let bowl = service_bowl().await;
+        let tokens = bowl
+            .insert((SemanticTokensRequest, FilePath("missing.dsql".to_string())))
+            .await
+            .bind()
+            .take::<SemanticTokens>()
+            .await
+            .expect("semantic tokens answered");
+        assert!(tokens.0.is_empty());
+    });
+}

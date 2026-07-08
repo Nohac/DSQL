@@ -252,7 +252,9 @@ fn merge_item(items: &mut Vec<CompletionItem>, item: CompletionItem) {
         items.remove(existing);
     }
     let position = items
-        .binary_search_by(|other| (other.kind, other.label.clone()).cmp(&(item.kind, item.label.clone())))
+        .binary_search_by(|other| {
+            (other.kind, other.label.clone()).cmp(&(item.kind, item.label.clone()))
+        })
         .unwrap_or_else(|position| position);
     items.insert(position, item);
 }

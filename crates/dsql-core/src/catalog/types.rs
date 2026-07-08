@@ -311,7 +311,10 @@ impl<'a> TableRef<'a> {
                 schema: Some(schema),
                 name,
             },
-            None => Self { schema: None, name: raw },
+            None => Self {
+                schema: None,
+                name: raw,
+            },
         }
     }
 

@@ -1,3 +1,3 @@
 database_url = "<database url>"
 default_schema = "public"
-documents = ["queries"]
+documents = ["dsql/queries"]

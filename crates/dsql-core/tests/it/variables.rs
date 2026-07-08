@@ -21,7 +21,9 @@ async fn variables_bowl() -> Bowl {
 
 /// Renders bindings one per line for snapshots.
 async fn render_bindings(bowl: &Bowl) -> String {
-    let rows = bowl.scoop::<Query<(Entity, &Span, &VariableBinding)>>().await;
+    let rows = bowl
+        .scoop::<Query<(Entity, &Span, &VariableBinding)>>()
+        .await;
     let mut bindings: Vec<(&Span, &VariableBinding)> = rows
         .collect()
         .into_iter()

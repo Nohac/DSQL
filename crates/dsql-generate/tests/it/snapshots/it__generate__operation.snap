@@ -1,0 +1,5 @@
+---
+source: crates/dsql-generate/tests/it/generate.rs
+expression: operation
+---
+{"name":"Titles","kind":"query","sql":{"dialect":"postgres","text":"select\n  COALESCE(\n    JSON_AGG(\n      JSON_BUILD_OBJECT(\n        'id',\n        \"title_d4d9f554\".\"id\",\n        'title',\n        \"title_d4d9f554\".\"title\"\n      )\n    ),\n    '[]'\n  ) as \"title\"\nfrom\n  (\n    select\n      *\n    from\n      \"public\".\"title\" as \"title_d4d9f554\"\n    limit\n      2\n  ) as \"title_d4d9f554\"","parameters":[],"variants":[]},"result":{"fields":[{"path":"title","name":"title","parent_path":"","kind":"array","data_type":"object","nullable":false},{"path":"title.id","name":"id","parent_path":"title","kind":"scalar","data_type":"int","nullable":false},{"path":"title.title","name":"title","parent_path":"title","kind":"scalar","data_type":"text","nullable":false}]},"params":[],"input":[],"context":[],"dynamic_inputs":[],"policies":[],"handoffs":[],"fragment_spreads":[{"path":"title","fragment":"TitleBits"}],"source_map":[{"id":"Titles","file":"queries/frontend/titles.dsql","range":{"start":0,"end":56}}]}
