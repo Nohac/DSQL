@@ -51,6 +51,6 @@ pub async fn register_language(bowl: &Bowl) {
     sql::register_sql(bowl).await;
     service::register_services(bowl).await;
 
-    bowl.add_system(cleanup_stale_derived.run_during(Phase::Cleanup))
+    bowl.add_system(cleanup_stale_derived.run_during(Phase::Settle))
         .await;
 }

@@ -17,7 +17,7 @@ use crate::facts::{
     ParentKey, Severity, Span, emit_diagnostic,
 };
 use crate::service::completion::{CompletionContext, CompletionRequest};
-use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority};
+use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, RequestKey, priority};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 
@@ -58,7 +58,9 @@ impl LanguageEntity for FieldSelection {
     const NAME: &'static str = "field_selection";
 
     async fn register(bowl: &Bowl) {
-        bowl.add_system(check_selections).await;
+        // Views lowered facts ambiently: behind the Complete barrier.
+        bowl.add_system(check_selections.run_during(bowl::Phase::Complete))
+            .await;
     }
 }
 
@@ -624,8 +626,8 @@ async fn hover_fields(
 
     commands.insert((
         DerivedFrom::new(request),
+        RequestKey(request),
         HoverCandidate {
-            request,
             priority: priority::FIELD,
             text,
         },
@@ -780,12 +782,8 @@ async fn complete_selections(
     let (_, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
-    let mut push = |item: CompletionItem| {
-        commands.insert((
-            DerivedFrom::new(request),
-            CompletionCandidate { request, item },
-        ));
-    };
+    let mut items = Vec::new();
+    let mut push = |item: CompletionItem| items.push(item);
 
     match (context.site, context.table) {
         (CompletionSite::RootSelection, _) => {
@@ -835,5 +833,13 @@ async fn complete_selections(
             }
         }
         _ => {}
+    }
+
+    if !items.is_empty() {
+        commands.insert((
+            DerivedFrom::new(request),
+            RequestKey(request),
+            CompletionCandidate { items },
+        ));
     }
 }

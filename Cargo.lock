@@ -103,7 +103,7 @@ checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 [[package]]
 name = "bowl"
 version = "0.1.0"
-source = "git+https://github.com/Nohac/porridge?rev=e03d8ff59e3bc2c55dc0d3af5de1bcedaeb577e4#e03d8ff59e3bc2c55dc0d3af5de1bcedaeb577e4"
+source = "git+https://github.com/Nohac/porridge?rev=fb14619342267114def0e6e3d8d89d727ad082b7#fb14619342267114def0e6e3d8d89d727ad082b7"
 dependencies = [
  "async_fn_traits",
  "futures",
@@ -777,7 +777,7 @@ dependencies = [
 [[package]]
 name = "macros"
 version = "0.1.0"
-source = "git+https://github.com/Nohac/porridge?rev=e03d8ff59e3bc2c55dc0d3af5de1bcedaeb577e4#e03d8ff59e3bc2c55dc0d3af5de1bcedaeb577e4"
+source = "git+https://github.com/Nohac/porridge?rev=fb14619342267114def0e6e3d8d89d727ad082b7#fb14619342267114def0e6e3d8d89d727ad082b7"
 
 [[package]]
 name = "memchr"

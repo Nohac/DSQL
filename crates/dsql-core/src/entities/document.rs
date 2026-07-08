@@ -63,10 +63,6 @@ pub async fn parse_file(query: Query<(Entity, &SourceText)>, mut commands: Comma
         .parse(&mut parse_diagnostics)
         .into_data();
 
-    // Insert ParsedFile BEFORE emitting diagnostics: DerivedFrom anchors
-    // capture the source entity's revision in command-application order, and
-    // this insert bumps the file's revision. Emitted the other way around,
-    // the diagnostics are stale on arrival and cleanup reaps them.
     commands.entity(file).insert(ParsedFile { cst, source });
 
     for diagnostic in parse_diagnostics {

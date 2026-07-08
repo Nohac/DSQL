@@ -5,7 +5,7 @@
 //! at which binding time, with which types" — so each occurrence also
 //! becomes its own fact, anchored into the tree by [`ParentKey`].
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, View, With};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, With};
 
 use crate::catalog::{
     CatalogSnapshot, DataType, FieldCheckResult, FieldRef, TableRef, TableResolution,
@@ -22,7 +22,7 @@ use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span, VariablesDemand};
 use crate::source::{ResolutionScope, ScopeImports};
 use crate::grammar::parser::NodeRef;
-use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority, span_matches};
+use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, RequestKey, priority, span_matches};
 
 /// One variable occurrence, lowered from `value_variable` or
 /// `operator_variable`. The inference stage (phase 7) groups these by name
@@ -44,7 +44,9 @@ impl LanguageEntity for Variable {
     const NAME: &'static str = "variable";
 
     async fn register(bowl: &Bowl) {
-        bowl.add_system(infer_variables).await;
+        // Views lowered facts ambiently: behind the Complete barrier.
+        bowl.add_system(infer_variables.run_during(bowl::Phase::Complete))
+            .await;
     }
 }
 
@@ -587,21 +589,24 @@ impl HoverStage for Variable {
     }
 }
 
-/// Answers hover on a variable occurrence with its inferred binding.
-/// Bindings derive during Evaluate, so they are settled by Complete;
-/// without `VariablesDemand` there are no bindings and no candidates.
+/// Answers hover on a variable occurrence with its inferred binding: one
+/// tracked invocation per (request, binding) pair, answering when the
+/// binding's span holds the cursor. Bindings derive at Complete, the same
+/// phase as this system — tracked consumption is what makes that safe
+/// (pairs replan as bindings commit; an ambient `View` here raced them,
+/// and the engine's same-phase race flag caught exactly that). Without
+/// `VariablesDemand` there are no bindings, no pairs, and no candidates.
 async fn hover_variables(
     query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
-    bindings: View<'_, (Entity, &Span, &VariableBinding, &BelongsToFile)>,
+    bindings: Query<(Entity, &Span, &VariableBinding, &BelongsToFile)>,
     mut commands: Commands,
 ) {
     let (request, file, position) = query.item();
+    let (_, span, binding, binding_file) = bindings.item();
 
-    let Some((_, _, binding, _)) = bindings.iter().find(|(_, span, _, binding_file)| {
-        span_matches(**span, binding_file.0, file.0, position.offset)
-    }) else {
+    if !span_matches(*span, binding_file.0, file.0, position.offset) {
         return;
-    };
+    }
 
     let binding_time = match binding.source {
         VariableSource::Structured => "build-time",
@@ -620,8 +625,8 @@ async fn hover_variables(
 
     commands.insert((
         DerivedFrom::new(request),
+        RequestKey(request),
         HoverCandidate {
-            request,
             priority: priority::VARIABLE,
             text,
         },

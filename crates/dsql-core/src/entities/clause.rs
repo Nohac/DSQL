@@ -470,12 +470,8 @@ async fn complete_clause_positions(
         return;
     }
 
-    let mut push = |item: CompletionItem| {
-        commands.insert((
-            DerivedFrom::new(request),
-            CompletionCandidate { request, item },
-        ));
-    };
+    let mut items = Vec::new();
+    let mut push = |item: CompletionItem| items.push(item);
 
     if in_where {
         for (anchor, detail) in [
@@ -499,5 +495,13 @@ async fn complete_clause_positions(
             detail: Some(column.data_type.as_str().to_string()),
             insert_text: None,
         });
+    }
+
+    if !items.is_empty() {
+        commands.insert((
+            DerivedFrom::new(request),
+            crate::service::hover::RequestKey(request),
+            CompletionCandidate { items },
+        ));
     }
 }

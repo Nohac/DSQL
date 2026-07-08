@@ -13,7 +13,6 @@
 //! contiguous `String` happens only at the parse boundary.
 
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,13 +29,13 @@ pub struct FilePath(pub String);
 
 /// Source text of a file entity, rope-backed for cheap incremental edits.
 ///
-/// The fingerprint is the [`SourceText::revision`], not a content hash, so
+/// The fingerprint is the [`SourceText::revision`] verbatim, so
 /// fingerprinting never rehashes the rope on an edit burst. Revisions come
 /// from a process-global counter: any newly constructed or mutated
 /// `SourceText` has a revision strictly greater than every earlier one, so
 /// wholesale replacement can never collide with the value it replaces.
 #[derive(Component)]
-#[component(hash)]
+#[component(revision)]
 pub struct SourceText {
     rope: Rope,
     revision: u64,
@@ -89,12 +88,6 @@ impl SourceText {
     /// everything else works on byte spans over the parsed snapshot.
     pub fn to_text(&self) -> String {
         self.rope.to_string()
-    }
-}
-
-impl Hash for SourceText {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.revision.hash(state);
     }
 }
 

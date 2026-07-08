@@ -21,7 +21,7 @@ use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     Severity, Span, emit_diagnostic,
 };
-use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority, span_matches};
+use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, RequestKey, priority, span_matches};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 use crate::source::{ResolutionScope, ScopeImports};
@@ -85,9 +85,14 @@ impl LanguageEntity for Definition {
     const NAME: &'static str = "definition";
 
     async fn register(bowl: &Bowl) {
-        bowl.add_system(index_defs).await;
-        bowl.add_system(check_duplicate_fragments).await;
-        bowl.add_system(check_import_collisions).await;
+        // Ambient readers of lowered facts sit behind the Complete phase
+        // barrier (the engine's same-phase race flag enforces this);
+        // check_fragment_targets reads only tracked inputs and needs none.
+        bowl.add_system(index_defs.run_during(Phase::Complete)).await;
+        bowl.add_system(check_duplicate_fragments.run_during(Phase::Complete))
+            .await;
+        bowl.add_system(check_import_collisions.run_during(Phase::Complete))
+            .await;
         bowl.add_system(check_fragment_targets).await;
     }
 }
@@ -217,12 +222,11 @@ impl LowerStage for Definition {
 
 /// Aggregates the definition set into the [`DefIndex`] singleton, driven
 /// per parsed file so any text change recomputes it. Ungated: spread
-/// resolution and planning consume it, not just diagnostics. Runs during
-/// Evaluate — the same phase as lowering — so index-tracked derivations
-/// (variables, plans) land in the same generation as the facts they read;
-/// at Complete they would lag one generation behind, and request/response
-/// finalizers would answer before them. Mid-generation recomputation is
-/// idempotent and the fingerprint absorbs it.
+/// resolution and planning consume it, not just diagnostics. Runs at
+/// Complete, behind the phase barrier its ambient view of lowered
+/// definitions needs; index-tracked consumers replan when it commits, and
+/// since services arbitrate through tracked joins (no settle-phase
+/// answering), the extra generation costs latency only, never answers.
 async fn index_defs(
     query: Query<(Entity, &ParsedFile)>,
     defs: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
@@ -397,8 +401,8 @@ async fn hover_definitions(
 
     commands.insert((
         DerivedFrom::new(request),
+        RequestKey(request),
         HoverCandidate {
-            request,
             priority: priority::DEFINITION,
             text,
         },

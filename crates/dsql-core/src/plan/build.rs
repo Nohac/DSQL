@@ -6,7 +6,7 @@
 //! parameters with the same structured paths the variables stage infers.
 //! Runs per definition, gated on [`PlanDemand`].
 
-use bowl::{Bowl, Commands, DerivedFrom, Entity, Query, With};
+use bowl::{Bowl, Commands, DerivedFrom, Entity, Query, SystemExt, With};
 
 use super::types::{
     FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, NestedRelation, OrderByPlan,
@@ -33,7 +33,9 @@ use crate::facts::{
 /// Registers the planning stage. A cross-entity stage system like
 /// `generate_ast`: it walks the whole checked fact tree per definition.
 pub async fn register_planning(bowl: &Bowl) {
-    bowl.add_system(plan_queries).await;
+    // Views lowered facts ambiently: behind the Complete barrier.
+    bowl.add_system(plan_queries.run_during(bowl::Phase::Complete))
+        .await;
 }
 
 /// Plans every root selection of each query definition. Root spreads are

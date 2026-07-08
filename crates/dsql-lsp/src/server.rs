@@ -244,11 +244,14 @@ impl LanguageServer for Backend {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        // The buffer's last text stays authoritative. Retracting the
-        // `OpenBuffer` marker needs an external component-removal API that
-        // porridge does not expose yet; nothing consumes the marker until
-        // disk watching lands, so closing is otherwise a no-op.
-        let _ = params;
+        // The buffer's last text stays authoritative until disk watching
+        // lands; the editor no longer owns it, so retract the marker.
+        let Some(path) = uri_path(&params.text_document.uri) else {
+            return;
+        };
+        if let Some((entity, _)) = self.rope_of(&path).await {
+            self.bowl().entity(entity).remove::<OpenBuffer>().await;
+        }
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {

@@ -1,20 +1,34 @@
-//! Hover service: request components, request enrichment, and finalization
+//! Hover service: request components, request enrichment, and arbitration
 //! of the candidate facts the language entities contribute.
 //!
-//! The pipeline is ordered by phases: enrichment (Complete) resolves the
-//! request's file through a bound join on `FilePath`; each entity's hover
-//! systems (Complete, registered through `HoverStage`) insert
-//! [`HoverCandidate`] facts for spans containing the cursor; the finalizer
-//! (Cleanup) picks the highest-priority candidate and writes [`HoverInfo`]
-//! onto the request. Arbitration is data, not call order.
+//! The pipeline needs exactly one phase barrier, and arbitration is a
+//! commutative fold, not call order:
+//!
+//! 1. `resolve_hover_requests` (Evaluate, tracked inputs only) is an
+//!    *outer* join: the request's `FilePath` pairs with the file carrying
+//!    the equal path, and a request matching no file still runs once with
+//!    `None` — so one system seeds the whole answer scaffold
+//!    ([`RequestKey`], [`HoverRank`], the fallback [`HoverInfo`]) for
+//!    matched and unmatched requests alike.
+//! 2. Each entity's hover systems (Complete, registered through
+//!    `HoverStage`) read the enriched request plus their own facts
+//!    *ambiently* and insert [`HoverCandidate`] facts addressed by an
+//!    equal [`RequestKey`]. The ambient reads of lowered facts are why
+//!    they sit behind the Complete barrier.
+//! 3. `arbitrate_hover` (also Complete) consumes candidates *tracked*: the
+//!    [`RequestKey`] join yields one invocation per (request, candidate)
+//!    pair, each monotonically upgrading the request's answer in place
+//!    when its candidate outranks the current one. A max-fold commutes, so
+//!    pair order is irrelevant, and tracked consumption replans pairs as
+//!    candidates commit — no barrier after the candidate systems, and no
+//!    settle-phase answering (settle inserts defer to the next run).
 //!
 //! External callers drive it request/response:
 //! `bowl.insert((HoverRequest, FilePath(...), Position { offset })).await
 //!     .bind().take::<HoverInfo>()`.
 
 use bowl::{
-    Bowl, Commands, Component, Entity, Eq as BowlEq, Phase, Query, SystemExt, SystemParam, View,
-    Where, With,
+    Bowl, Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, SystemExt, Where, With,
 };
 
 use crate::facts::Span;
@@ -33,13 +47,25 @@ pub struct Position {
     pub offset: usize,
 }
 
-/// The answer, written onto the request entity by the finalizer.
+/// The answer, upgraded in place on the request entity by arbitration.
 #[derive(Debug, Component, Hash, PartialEq, Eq)]
 #[component(hash)]
 pub struct HoverInfo(pub String);
 
-/// Marker stamped on every hover request, resolvable or not. Downstream
-/// systems key on enrichment outputs so phase ordering covers them all.
+/// The request's own id as a join key: candidates carry an equal key, so
+/// arbitration pairs each request with exactly its own candidates.
+#[derive(Component, Hash, Debug, Clone, Copy, PartialEq, Eq)]
+#[component(hash)]
+pub struct RequestKey(pub Entity);
+
+/// Priority of the request's current [`HoverInfo`]. Answers only ever
+/// upgrade (strictly greater), which makes arbitration order-independent.
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct HoverRank(pub u8);
+
+/// Marker stamped on every hover request, resolvable or not. Candidate
+/// systems key on enrichment outputs so the phase barrier covers them all.
 #[derive(Component, Hash)]
 #[component(hash)]
 pub struct HoverEnriched;
@@ -49,18 +75,18 @@ pub struct HoverEnriched;
 #[component(hash)]
 pub struct HoverFile(pub Entity);
 
-/// One entity's answer for one hover request. The finalizer picks the
-/// highest priority; see [`priority`] for the bands.
+/// One entity's answer for one hover request, addressed by an equal
+/// [`RequestKey`]; see [`priority`] for the bands.
 #[derive(Component, Hash)]
 #[component(hash)]
 pub struct HoverCandidate {
-    pub request: Entity,
     pub priority: u8,
     pub text: String,
 }
 
-/// Priority bands for hover candidates: the more specific the matched
-/// construct, the higher it ranks.
+/// Priority bands for hover answers: the more specific the matched
+/// construct, the higher. The zero and fallback bands are the enrichment
+/// scaffold every candidate outranks.
 pub mod priority {
     /// A variable occurrence under the cursor.
     pub const VARIABLE: u8 = 40;
@@ -70,71 +96,76 @@ pub mod priority {
     pub const FIELD: u8 = 20;
     /// A definition name under the cursor.
     pub const DEFINITION: u8 = 10;
+    /// The request resolved to a file but no candidate answered.
+    pub const RESOLVED: u8 = 1;
+    /// Initial scaffold: the request did not even resolve to a file.
+    pub const NONE: u8 = 0;
 }
 
-/// Registers enrichment and finalization; entity candidate systems register
+/// Registers enrichment and arbitration; entity candidate systems register
 /// themselves through `HoverStage`.
 pub(crate) async fn register_hover_pipeline(bowl: &Bowl) {
-    bowl.add_system(stamp_hover_requests.run_during(Phase::Complete))
-        .await;
-    bowl.add_system(resolve_hover_requests.run_during(Phase::Complete))
-        .await;
-    bowl.add_system(finalize_hover.run_during(Phase::Cleanup))
+    bowl.add_system(resolve_hover_requests).await;
+    bowl.add_system(arbitrate_hover.run_during(Phase::Complete))
         .await;
 }
 
-async fn stamp_hover_requests(
-    query: Query<(Entity, &Position), With<HoverRequest>>,
-    mut commands: Commands,
-) {
-    let (request, _position) = query.item();
-    commands.entity(request).insert(HoverEnriched);
-}
+/// The file side of the enrichment outer join: matched per equal path, or
+/// `None` exactly once for a request matching no file.
+type FileMatch<'a> = Option<Query<(Entity, &'a SourceText), Where<BowlEq<FilePath>>>>;
 
-/// The request's `FilePath` binds to the file entity carrying the equal
-/// path — one invocation per (request, matching file).
+/// Outer join: the request's `FilePath` pairs with the file carrying the
+/// equal path, or runs once with `None` — one system seeds the scaffold
+/// for matched and unmatched requests alike.
 async fn resolve_hover_requests(
     query: Query<(Entity, &FilePath, &Position), With<HoverRequest>>,
-    file: Query<(Entity, &SourceText), Where<BowlEq<FilePath>>>,
+    file: FileMatch<'_>,
     mut commands: Commands,
 ) {
     let (request, _path, _position) = query.item();
-    let (file_entity, _text) = file.item();
+    commands.entity(request).insert(RequestKey(request));
+    commands.entity(request).insert(HoverEnriched);
 
-    commands.entity(request).insert(HoverFile(file_entity));
-}
-
-/// Everything the finalizer reads, bundled so the signature stays flat as
-/// entities grow.
-#[derive(SystemParam)]
-struct HoverOutcome<'a> {
-    candidates: View<'a, (Entity, &'a HoverCandidate)>,
-    files: View<'a, (Entity, &'a HoverFile)>,
-}
-
-async fn finalize_hover(
-    query: Query<(Entity, &HoverEnriched), With<HoverRequest>>,
-    outcome: HoverOutcome<'_>,
-    mut commands: Commands,
-) {
-    let (request, _enriched) = query.item();
-
-    if !outcome.files.iter().any(|(entity, _)| entity == request) {
+    let Some(file) = file else {
+        commands.entity(request).insert(HoverRank(priority::NONE));
         commands
             .entity(request)
             .insert(HoverInfo("unknown file".to_string()));
         return;
+    };
+
+    let (file_entity, _text) = file.item();
+    commands.entity(request).insert(HoverFile(file_entity));
+    commands
+        .entity(request)
+        .insert(HoverRank(priority::RESOLVED));
+    commands
+        .entity(request)
+        .insert(HoverInfo("no information at position".to_string()));
+}
+
+/// One request row keyed for arbitration, with its upgradable answer.
+type ArbitrationRow<'a> = (
+    Entity,
+    &'a RequestKey,
+    MutRef<'a, HoverRank>,
+    MutRef<'a, HoverInfo>,
+);
+
+/// Arbitration: one invocation per (request, candidate) pair via the
+/// [`RequestKey`] join, each monotonically upgrading the request's answer
+/// when its candidate outranks the current one.
+async fn arbitrate_hover(
+    query: Query<ArbitrationRow<'_>, With<HoverRequest>>,
+    candidate: Query<(Entity, &HoverCandidate), Where<BowlEq<RequestKey>>>,
+) {
+    let (_request, _key, mut rank, mut info) = query.item();
+    let (_candidate_entity, candidate) = candidate.item();
+
+    if candidate.priority > rank.0 {
+        rank.0 = candidate.priority;
+        info.0 = candidate.text.clone();
     }
-
-    let best = outcome
-        .candidates
-        .iter()
-        .filter(|(_, candidate)| candidate.request == request)
-        .max_by_key(|(_, candidate)| candidate.priority)
-        .map(|(_, candidate)| candidate.text.clone());
-
-    let message = best.unwrap_or_else(|| "no information at position".to_string());
-    commands.entity(request).insert(HoverInfo(message));
 }
 
 /// Whether `span` of a fact in `file` matches a request resolved to

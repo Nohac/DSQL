@@ -1,7 +1,7 @@
 //! Fragment-spread entity: `...Name` selections, their resolution to
 //! fragment definitions, and the unknown-fragment check.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, View, With};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, SystemExt, View, With};
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
 use crate::entities::{direct_token, node_span, text};
@@ -11,7 +11,7 @@ use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     ParentKey, Severity, Span, emit_diagnostic,
 };
-use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority, span_matches};
+use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, RequestKey, priority, span_matches};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::NodeRef;
 use crate::source::{ResolutionScope, ScopeImports};
@@ -42,8 +42,13 @@ impl LanguageEntity for FragmentSpread {
     const NAME: &'static str = "fragment_spread";
 
     async fn register(bowl: &Bowl) {
-        bowl.add_system(resolve_spreads).await;
-        bowl.add_system(check_unknown_fragments).await;
+        // Both view lowered fragment definitions ambiently, so they sit
+        // behind the Complete phase barrier; their DefIndex/ScopeImports
+        // inputs are tracked, which exempts them from the same-phase race
+        // next to index_defs.
+        bowl.add_system(resolve_spreads.run_during(Phase::Complete)).await;
+        bowl.add_system(check_unknown_fragments.run_during(Phase::Complete))
+            .await;
     }
 }
 
@@ -370,8 +375,8 @@ async fn hover_spreads(
 
     commands.insert((
         DerivedFrom::new(request),
+        RequestKey(request),
         HoverCandidate {
-            request,
             priority: priority::SPREAD,
             text,
         },
@@ -422,6 +427,7 @@ async fn complete_spreads(
         _ => return,
     };
 
+    let mut items = Vec::new();
     for (_, decl, target, fragment_scope) in fragments.iter() {
         if !imports
             .visible_from(&context.scope)
@@ -436,17 +442,18 @@ async fn complete_spreads(
         if target_table.id != table {
             continue;
         }
+        items.push(CompletionItem {
+            label: decl.name.clone(),
+            kind: CompletionKind::Fragment,
+            detail: Some(format!("fragment on {}", target.name)),
+            insert_text: (!spread_site).then(|| format!("...{}", decl.name)),
+        });
+    }
+    if !items.is_empty() {
         commands.insert((
             DerivedFrom::new(request),
-            CompletionCandidate {
-                request,
-                item: CompletionItem {
-                    label: decl.name.clone(),
-                    kind: CompletionKind::Fragment,
-                    detail: Some(format!("fragment on {}", target.name)),
-                    insert_text: (!spread_site).then(|| format!("...{}", decl.name)),
-                },
-            },
+            RequestKey(request),
+            CompletionCandidate { items },
         ));
     }
 }

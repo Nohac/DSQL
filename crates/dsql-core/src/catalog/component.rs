@@ -1,6 +1,5 @@
 //! The catalog as a bowl fact: a fingerprinted singleton snapshot.
 
-use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bowl::{Bowl, Component, Entity, Singleton};
@@ -8,12 +7,13 @@ use bowl::{Bowl, Component, Entity, Singleton};
 use super::Catalog;
 
 /// The schema catalog every context-aware check resolves against, as a
-/// singleton component. The fingerprint is a revision from a process-global
-/// counter (the [`Catalog`] itself is large and hashing it per settle would
-/// defeat the point); replacing the snapshot always moves the revision, so
-/// checks that track it rerun exactly when the catalog actually changes.
+/// singleton component. The fingerprint is the revision verbatim, drawn
+/// from a process-global counter (the [`Catalog`] itself is large and
+/// hashing it per settle would defeat the point); replacing the snapshot
+/// always moves the revision, so checks that track it rerun exactly when
+/// the catalog actually changes.
 #[derive(Component)]
-#[component(hash)]
+#[component(revision)]
 pub struct CatalogSnapshot {
     catalog: Catalog,
     revision: u64,
@@ -31,12 +31,6 @@ impl CatalogSnapshot {
 
     pub fn catalog(&self) -> &Catalog {
         &self.catalog
-    }
-}
-
-impl Hash for CatalogSnapshot {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.revision.hash(state);
     }
 }
 

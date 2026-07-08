@@ -116,12 +116,17 @@ go stale.
 ## Services
 
 Request/response through bound entities: insert `(HoverRequest, FilePath,
-Position)`, `bind().take::<HoverInfo>()`. Enrichment (Phase::Complete)
-resolves the request's file via a bound join; entity hover systems insert
-`HoverCandidate` facts for spans containing the cursor; a finalizer
-(Phase::Cleanup) picks the highest-priority candidate. Arbitration is data,
-not call order. Go-to-definition follows `SpreadResolution` facts the same
-way.
+Position)`, `bind().take::<HoverInfo>()`. Enrichment is an *outer* join on
+the file path (one invocation per match, one `None` invocation otherwise),
+so a single system seeds the answer scaffold for resolved and unresolved
+requests alike. Entity candidate systems (Complete, behind the barrier
+their ambient reads of lowered facts need) insert candidates addressed by
+a `RequestKey`; arbitration consumes them *tracked* — one invocation per
+(request, candidate) pair, upgrading the answer in place through `MutRef`
+as a commutative fold (max for hover, sorted set-union for completion).
+Nothing answers at Settle: settle-phase inserts defer to the next run, and
+the engine's entity-granular same-phase race flag enforces the
+ambient-vs-tracked discipline throughout.
 
 ## Crates
 

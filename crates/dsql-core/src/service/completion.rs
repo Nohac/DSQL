@@ -14,13 +14,16 @@
 //!    [`CompletionCandidate`] facts (columns, relations, fragments) using
 //!    the same context-table resolution the checks and hover use.
 //!
-//! A finalizer merges candidates with the grammar layer's keywords and
-//! writes [`CompletionList`] onto the request. Requests without a
-//! resolvable file receive no list; adapters treat the missing response as
-//! "no completions".
+//! Arbitration merges candidates into the request's [`CompletionList`] in
+//! place through a tracked [`RequestKey`] join — one invocation per
+//! (request, candidate) pair, each folding its items in at their sorted
+//! position. A set-union fold commutes, so pair order is irrelevant and no
+//! phase barrier is needed after the candidate systems. Enrichment is an
+//! outer join on the file path: resolved requests seed the list with the
+//! grammar layer's keywords, unresolved ones keep an empty scaffold list.
 
 use bowl::{
-    Bowl, Commands, Component, Entity, Eq as BowlEq, Phase, Query, SystemExt, View, Where, With,
+    Bowl, Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, SystemExt, Where, With,
 };
 
 use crate::catalog::TableId;
@@ -98,32 +101,50 @@ pub struct CompletionContext {
     pub keywords: Vec<String>,
 }
 
-/// One entity's contribution to one request.
+/// One entity's contribution to one request, addressed by an equal
+/// [`RequestKey`].
+///
+/// [`RequestKey`]: crate::service::hover::RequestKey
 #[derive(Component, Hash)]
 #[component(hash)]
 pub struct CompletionCandidate {
-    pub request: Entity,
-    pub item: CompletionItem,
+    pub items: Vec<CompletionItem>,
 }
 
 pub(crate) async fn register_completion_pipeline(bowl: &Bowl) {
     bowl.add_system(enrich_completion_requests.run_during(Phase::Complete))
         .await;
-    bowl.add_system(finalize_completions.run_during(Phase::Cleanup))
+    bowl.add_system(arbitrate_completions.run_during(Phase::Complete))
         .await;
 }
 
 /// Resolves the request's file (bound join on the path), computes the
 /// grammar layer from a cursor-truncated parse, the site from the CST, and
 /// the context table from the fact tree.
+/// The file side of the enrichment outer join: matched per equal path, or
+/// `None` exactly once for a request matching no file.
+type FileMatch<'a> = Option<
+    Query<(Entity, &'a SourceText, &'a ParsedFile, &'a ResolutionScope), Where<BowlEq<FilePath>>>,
+>;
+
 async fn enrich_completion_requests(
     requests: Query<(Entity, &FilePath, &Position), With<CompletionRequest>>,
-    file: Query<(Entity, &SourceText, &ParsedFile, &ResolutionScope), Where<BowlEq<FilePath>>>,
+    file: FileMatch<'_>,
     catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
     views: TreeViews<'_>,
     mut commands: Commands,
 ) {
     let (request, _path, position) = requests.item();
+
+    // Outer join: an unresolvable file still answers, with an empty list.
+    let Some(file) = file else {
+        commands
+            .entity(request)
+            .insert(crate::service::hover::RequestKey(request));
+        commands.entity(request).insert(CompletionList(Vec::new()));
+        return;
+    };
+
     let (file_entity, source, parsed, scope) = file.item();
     let (_, snapshot) = catalog.item();
 
@@ -183,12 +204,57 @@ async fn enrich_completion_requests(
         )
     });
 
+    // Scaffold: the request key and the grammar layer's keyword items.
+    // Entity candidates union in through the tracked join; a request whose
+    // context yields nothing still answers with this list.
+    let mut items = Vec::new();
+    for keyword in &keywords {
+        let alphabetic = keyword.chars().all(|c| c.is_ascii_alphabetic());
+        let comparison = matches!(keyword.as_str(), "==" | "!=" | ">" | ">=" | "<" | "<=");
+        if !alphabetic && !comparison {
+            // An editor gains nothing from completing `{`.
+            continue;
+        }
+        merge_item(
+            &mut items,
+            CompletionItem {
+                label: keyword.clone(),
+                kind: if comparison {
+                    CompletionKind::Operator
+                } else {
+                    CompletionKind::Keyword
+                },
+                detail: None,
+                insert_text: None,
+            },
+        );
+    }
+    commands
+        .entity(request)
+        .insert(crate::service::hover::RequestKey(request));
+    commands.entity(request).insert(CompletionList(items));
     commands.entity(request).insert(CompletionContext {
         site,
         table,
         scope: scope.0.clone(),
         keywords,
     });
+}
+
+/// Inserts `item` at its sorted (kind, label) position unless the label is
+/// already present with an equal-or-lower kind order — an order-independent
+/// set union, so arbitration pairs can fold in any order.
+fn merge_item(items: &mut Vec<CompletionItem>, item: CompletionItem) {
+    if let Some(existing) = items.iter().position(|other| other.label == item.label) {
+        if (items[existing].kind, &items[existing].label) <= (item.kind, &item.label) {
+            return;
+        }
+        items.remove(existing);
+    }
+    let position = items
+        .binary_search_by(|other| (other.kind, other.label.clone()).cmp(&(item.kind, item.label.clone())))
+        .unwrap_or_else(|position| position);
+    items.insert(position, item);
 }
 
 /// The rightmost rule chain of the truncated tree: repeatedly descend into
@@ -264,41 +330,29 @@ fn context_field(cst: &crate::grammar::parser::CstData, offset: usize) -> Option
     found
 }
 
-/// Merges the grammar layer's keywords with the entities' candidates.
-/// Punctuation stays out — an editor gains nothing from completing `{`.
-async fn finalize_completions(
-    requests: Query<(Entity, &CompletionContext), With<CompletionRequest>>,
-    candidates: View<'_, (Entity, &CompletionCandidate)>,
-    mut commands: Commands,
+/// Arbitration: one invocation per (request, candidate) pair via the
+/// tracked [`RequestKey`] join, each folding the candidate's items into
+/// the request's list in place.
+///
+/// [`RequestKey`]: crate::service::hover::RequestKey
+async fn arbitrate_completions(
+    query: Query<
+        (
+            Entity,
+            &crate::service::hover::RequestKey,
+            MutRef<'_, CompletionList>,
+        ),
+        With<CompletionRequest>,
+    >,
+    candidate: Query<
+        (Entity, &CompletionCandidate),
+        Where<BowlEq<crate::service::hover::RequestKey>>,
+    >,
 ) {
-    let (request, context) = requests.item();
+    let (_request, _key, mut list) = query.item();
+    let (_candidate_entity, candidate) = candidate.item();
 
-    let mut items: Vec<CompletionItem> = candidates
-        .iter()
-        .filter(|(_, candidate)| candidate.request == request)
-        .map(|(_, candidate)| candidate.item.clone())
-        .collect();
-
-    for keyword in &context.keywords {
-        let alphabetic = keyword.chars().all(|c| c.is_ascii_alphabetic());
-        let comparison = matches!(keyword.as_str(), "==" | "!=" | ">" | ">=" | "<" | "<=");
-        if !alphabetic && !comparison {
-            continue;
-        }
-        items.push(CompletionItem {
-            label: keyword.clone(),
-            kind: if comparison {
-                CompletionKind::Operator
-            } else {
-                CompletionKind::Keyword
-            },
-            detail: None,
-            insert_text: None,
-        });
+    for item in &candidate.items {
+        merge_item(&mut list.0, item.clone());
     }
-
-    items.sort_by(|left, right| (left.kind, &left.label).cmp(&(right.kind, &right.label)));
-    items.dedup_by(|left, right| left.label == right.label);
-
-    commands.entity(request).insert(CompletionList(items));
 }
