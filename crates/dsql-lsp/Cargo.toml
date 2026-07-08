@@ -1,0 +1,16 @@
+[package]
+name = "dsql-lsp"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "dsql-lsp"
+path = "src/main.rs"
+
+[dependencies]
+bowl = { workspace = true }
+dsql-core = { workspace = true }
+dsql-project = { workspace = true }
+ropey = { workspace = true }
+tokio = { workspace = true }
+tower-lsp-server = { workspace = true }

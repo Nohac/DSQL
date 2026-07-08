@@ -15,12 +15,13 @@ use bowl::{
 use crate::catalog::{CatalogSnapshot, TableRef, TableResolution};
 use crate::entities::document::ParsedFile;
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     Severity, Span, emit_diagnostic,
 };
+use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, priority, span_matches};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 
@@ -299,4 +300,51 @@ impl FormatStage for Definition {
             formatter.selection_set(selection_set);
         }
     }
+}
+
+
+impl HoverStage for Definition {
+    async fn register_hover(bowl: &Bowl) {
+        bowl.add_system(hover_definitions.run_during(Phase::Complete))
+            .await;
+    }
+}
+
+/// Answers hover on a definition name with its kind and target.
+async fn hover_definitions(
+    query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
+    defs: View<'_, (Entity, &DefDecl, &BelongsToFile)>,
+    targets: View<'_, (Entity, &FragmentTarget)>,
+    mut commands: Commands,
+) {
+    let (request, file, position) = query.item();
+
+    let Some((def_entity, decl, _)) = defs.iter().find(|(_, decl, def_file)| {
+        span_matches(decl.name_span, def_file.0, file.0, position.offset)
+    }) else {
+        return;
+    };
+
+    let text = match decl.kind {
+        DefKind::Query => format!("query `{}`", decl.name),
+        DefKind::Fragment => {
+            let target = targets
+                .iter()
+                .find(|(entity, _)| *entity == def_entity)
+                .map(|(_, target)| target.name.clone());
+            match target {
+                Some(target) => format!("fragment `{}` on `{target}`", decl.name),
+                None => format!("fragment `{}`", decl.name),
+            }
+        }
+    };
+
+    commands.insert((
+        DerivedFrom::new(request),
+        HoverCandidate {
+            request,
+            priority: priority::DEFINITION,
+            text,
+        },
+    ));
 }

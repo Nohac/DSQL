@@ -5,7 +5,7 @@ use bowl::{Bowl, Commands, Component, DerivedFrom};
 
 use crate::entities::expression::{Expr, build_expr, expr_child};
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span};
 use crate::grammar::lexer::Token;
@@ -123,4 +123,10 @@ impl FormatStage for Directive {
         formatter.write_str(" ");
         formatter.write_node_text(node);
     }
+}
+
+
+impl HoverStage for Directive {
+    /// Directive hover lands with the directive registry.
+    async fn register_hover(_bowl: &Bowl) {}
 }

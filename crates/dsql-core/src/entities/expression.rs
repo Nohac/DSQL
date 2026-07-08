@@ -10,7 +10,7 @@
 use bowl::{Bowl, Commands};
 
 use crate::entities::{direct_rule, node_span, text};
-use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::format::CstFormatter;
 use crate::facts::Span;
 use crate::grammar::lexer::Token;
@@ -435,4 +435,11 @@ impl FormatStage for Expression {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         formatter.expr(node);
     }
+}
+
+
+impl HoverStage for Expression {
+    /// Expression internals answer through the variable entity; paths gain
+    /// hover with the editor polish pass.
+    async fn register_hover(_bowl: &Bowl) {}
 }

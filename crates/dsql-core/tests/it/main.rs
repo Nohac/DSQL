@@ -7,6 +7,7 @@ mod format;
 mod lowering;
 mod parse;
 mod selections;
+mod services;
 mod settle;
 mod sql;
 mod variables;

@@ -1,0 +1,15 @@
+[package]
+name = "dsql-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "dsql"
+path = "src/main.rs"
+
+[dependencies]
+bowl = { workspace = true }
+clap = { workspace = true }
+dsql-core = { workspace = true }
+dsql-project = { workspace = true }
+futures = { workspace = true }

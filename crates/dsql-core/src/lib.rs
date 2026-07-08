@@ -10,6 +10,7 @@ pub mod facts;
 pub mod format;
 pub mod grammar;
 pub mod plan;
+pub mod service;
 pub mod source;
 pub mod sql;
 
@@ -41,6 +42,7 @@ pub async fn register_language(bowl: &Bowl) {
 
     plan::register_planning(bowl).await;
     sql::register_sql(bowl).await;
+    service::register_services(bowl).await;
 
     bowl.add_system(cleanup_stale_derived.run_during(Phase::Cleanup))
         .await;
