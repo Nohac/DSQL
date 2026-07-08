@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+expression: snapshot
+---
+envelope
+input.UserPosts.input.recent.clause.limit.count Structured Limit Int Some("count") operators=[] enum=[]
+input.recent.clause.limit.count Structured Limit Int Some("count") operators=[] enum=[]

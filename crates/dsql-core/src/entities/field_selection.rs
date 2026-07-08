@@ -169,6 +169,35 @@ impl SelectionTree<'_> {
             .find(|(_, decl, _, _)| decl.name == name)
     }
 
+    /// Gathers one file's lowered selection facts out of the ambient views.
+    pub(crate) fn collect<'a>(views: &'a TreeViews<'_>, file: Entity) -> SelectionTree<'a> {
+        SelectionTree {
+            fields: views
+                .fields
+                .iter()
+                .filter(|(_, _, key, _)| key.file == file)
+                .map(|(entity, field, key, parent)| (entity, field, *key, parent.0))
+                .collect(),
+            spreads: views
+                .spreads
+                .iter()
+                .filter(|(_, _, key, _)| key.file == file)
+                .map(|(entity, spread, key, parent)| (entity, spread, *key, parent.0))
+                .collect(),
+            fragments: views
+                .fragments
+                .iter()
+                .filter(|(_, _, _, _, fragment_file)| fragment_file.0 == file)
+                .map(|(entity, decl, target, key, _)| (entity, decl, target, *key))
+                .collect(),
+            clauses: views
+                .clauses
+                .iter()
+                .map(|(entity, clause, span, parent)| (entity, clause, *span, parent.0))
+                .collect(),
+        }
+    }
+
     pub(crate) fn clauses_under(
         &self,
         parent: NodeKey,
@@ -185,10 +214,10 @@ impl SelectionTree<'_> {
 ///
 /// The per-construct logic stays with its owning entity: spread sites are
 /// checked by [`check_spread_site`] in `fragment_spread`.
-/// The ambient views the check walk reads, bundled to keep the system
-/// signature within porridge's parameter arity.
+/// The ambient views the check and inference walks read, bundled to keep
+/// system signatures within porridge's parameter arity.
 #[derive(SystemParam)]
-struct TreeViews<'a> {
+pub(crate) struct TreeViews<'a> {
     fields: View<'a, (Entity, &'a FieldSel, &'a NodeKey, &'a ParentKey)>,
     spreads: View<'a, (Entity, &'a SpreadDecl, &'a NodeKey, &'a ParentKey)>,
     fragments: View<'a, (Entity, &'a DefDecl, &'a FragmentTarget, &'a NodeKey, &'a BelongsToFile)>,
@@ -206,31 +235,7 @@ async fn check_selections(
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
-    let tree = SelectionTree {
-        fields: views
-            .fields
-            .iter()
-            .filter(|(_, _, key, _)| key.file == file.0)
-            .map(|(entity, field, key, parent)| (entity, field, *key, parent.0))
-            .collect(),
-        spreads: views
-            .spreads
-            .iter()
-            .filter(|(_, _, key, _)| key.file == file.0)
-            .map(|(entity, spread, key, parent)| (entity, spread, *key, parent.0))
-            .collect(),
-        fragments: views
-            .fragments
-            .iter()
-            .filter(|(_, _, _, _, fragment_file)| fragment_file.0 == file.0)
-            .map(|(entity, decl, target, key, _)| (entity, decl, target, *key))
-            .collect(),
-        clauses: views
-            .clauses
-            .iter()
-            .map(|(entity, clause, span, parent)| (entity, clause, *span, parent.0))
-            .collect(),
-    };
+    let tree = SelectionTree::collect(&views, file.0);
 
     let mut ctx = CheckCtx {
         tree: &tree,

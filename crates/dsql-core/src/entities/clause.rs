@@ -15,7 +15,7 @@ use crate::grammar::parser::{CstData, NodeRef, Rule};
 /// One clause, lowered from `where_clause` / `order_by_clause` /
 /// `limit_clause` / `offset_clause`. `ParentKey` links it to the field
 /// selection it constrains.
-#[derive(Component, Debug, Hash)]
+#[derive(Component, Debug, Clone, Hash)]
 #[component(hash)]
 pub enum ClauseFact {
     Where { expr: Expr },
