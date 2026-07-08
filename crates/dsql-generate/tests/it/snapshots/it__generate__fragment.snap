@@ -2,4 +2,4 @@
 source: crates/dsql-generate/tests/it/generate.rs
 expression: fragment
 ---
-{"name":"TitleBits","kind":"fragment","table":"title","result":{"fields":[{"path":"id","name":"id","parent_path":"","kind":"scalar","data_type":"int","nullable":false},{"path":"title","name":"title","parent_path":"","kind":"scalar","data_type":"text","nullable":false}]},"params":[],"input":[],"dynamic_inputs":[],"source_map":[{"id":"TitleBits","file":"dsql/queries/shared/fragments.dsql","range":{"start":0,"end":44}}]}
+{"name":"TitleBits","kind":"fragment","table":"title","result":{"fields":[{"path":"id","name":"id","parent_path":"","kind":"scalar","data_type":"int","nullable":false},{"path":"title","name":"title","parent_path":"","kind":"scalar","data_type":"text","nullable":false}]},"params":[],"input":[],"dynamic_inputs":[],"source_map":[{"id":"TitleBits","file":"queries/shared/fragments.dsql","range":{"start":0,"end":44}}]}

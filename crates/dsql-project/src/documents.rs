@@ -16,12 +16,19 @@ pub struct ProjectDocument {
     pub scope: String,
 }
 
-/// Reads every `.dsql` document with its owning scope. Without resolution
-/// configuration, every document under the configured paths (or the
-/// project root) belongs to the implicit default scope. With scopes, each
-/// scope's paths are collected and a document matched by two scopes is a
+/// Reads every `.dsql` document with its owning scope. Configured paths —
+/// plain files, directories, or globs like `queries/shared/**/*.dsql` —
+/// resolve from the project *base* (the parent of `dsql/`), matching how
+/// real projects lay documents out beside the `dsql/` directory. Without
+/// any configuration, everything under `dsql/` itself belongs to the
+/// implicit default scope. A document matched by two scopes is a
 /// deterministic ownership error.
 pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>> {
+    let base = project
+        .root
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| project.root.clone());
     let mut owned: Vec<(PathBuf, String)> = Vec::new();
 
     if project.config.resolution.is_empty() {
@@ -30,7 +37,7 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
             collect_dsql_files(&project.root, &mut files)?;
         } else {
             for configured in &project.config.documents {
-                collect_dsql_files(&project.root.join(configured), &mut files)?;
+                collect_configured_path(&base.join(configured), &mut files)?;
             }
         }
         files.sort();
@@ -44,7 +51,7 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
         for (scope, scope_config) in &project.config.resolution {
             let mut files = Vec::new();
             for configured in &scope_config.documents {
-                collect_dsql_files(&project.root.join(configured), &mut files)?;
+                collect_configured_path(&base.join(configured), &mut files)?;
             }
             files.sort();
             files.dedup();
@@ -73,6 +80,32 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
             Ok(ProjectDocument { path, text, scope })
         })
         .collect()
+}
+
+/// One configured document path: a glob pattern, a directory to walk, or
+/// a plain file.
+fn collect_configured_path(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let raw = path.to_string_lossy();
+    if raw.contains('*') || raw.contains('?') || raw.contains('[') {
+        let pattern = raw.to_string();
+        let matches = glob::glob(&pattern).map_err(|error| ProjectError::Parse {
+            path: path.to_path_buf(),
+            message: format!("invalid document pattern: {error}"),
+        })?;
+        for entry in matches {
+            let matched = entry.map_err(|error| ProjectError::Read {
+                path: path.to_path_buf(),
+                source: error.into_error(),
+            })?;
+            if matched.is_file()
+                && matched.extension().and_then(|ext| ext.to_str()) == Some("dsql")
+            {
+                files.push(matched);
+            }
+        }
+        return Ok(());
+    }
+    collect_dsql_files(path, files)
 }
 
 fn collect_dsql_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {

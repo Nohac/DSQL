@@ -2,4 +2,4 @@
 source: crates/dsql-generate/tests/it/generate.rs
 expression: manifest
 ---
-{"version":1,"operations":[{"name":"Titles","kind":"query","path":"operations/Titles.json","hash":"fdb16cf4dad46881","source":"dsql/queries/frontend/titles.dsql"}],"fragments":[{"name":"TitleBits","kind":"fragment","path":"fragments/TitleBits.json","hash":"68132c2152d6d79d","source":"dsql/queries/shared/fragments.dsql"}]}
+{"version":1,"operations":[{"name":"Titles","kind":"query","path":"operations/Titles.json","hash":"efb1feb61052cb7c","source":"queries/frontend/titles.dsql"}],"fragments":[{"name":"TitleBits","kind":"fragment","path":"fragments/TitleBits.json","hash":"7dce516fc7b3d4c6","source":"queries/shared/fragments.dsql"}]}

@@ -78,7 +78,7 @@ fn generates_manifest_and_artifacts() {
 fn error_diagnostics_fail_generation() {
     let (dir, project) = fixture_project("diagnostics");
     std::fs::write(
-        project.root.join("queries/frontend/broken.dsql"),
+        dir.join("queries/frontend/broken.dsql"),
         "query Broken {\n  missing_table {\n    id\n  }\n}\n",
     )
     .expect("write broken query");

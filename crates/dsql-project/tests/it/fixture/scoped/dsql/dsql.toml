@@ -2,8 +2,8 @@ database_url = "<database url>"
 default_schema = "public"
 
 [resolution.shared]
-documents = ["queries/shared"]
+documents = ["queries/shared/**/*.dsql"]
 
 [resolution.frontend]
-documents = ["queries/frontend"]
+documents = ["queries/frontend/**/*.dsql"]
 imports = ["shared"]

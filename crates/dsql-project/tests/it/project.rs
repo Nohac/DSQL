@@ -89,7 +89,8 @@ fn unknown_scope_imports_fail_project_loading() {
 fn documents_owned_by_two_scopes_fail_loading() {
     let dir = std::env::temp_dir().join("dsql-dup-ownership-fixture");
     let root = dir.join("dsql");
-    let queries = root.join("queries");
+    // Document paths resolve from the project base, beside dsql/.
+    let queries = dir.join("queries");
     std::fs::create_dir_all(&queries).expect("fixture dir");
     std::fs::write(
         root.join("dsql.toml"),
