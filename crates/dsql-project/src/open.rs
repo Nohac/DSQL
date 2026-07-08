@@ -6,7 +6,7 @@ use bowl::{Bowl, Singleton};
 
 use dsql_core::catalog::insert_catalog;
 use dsql_core::register_language;
-use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_scoped};
+use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_at};
 
 use super::config::{Project, Result};
 use super::documents::load_project_documents;
@@ -40,11 +40,12 @@ pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()>
         .await;
 
     for document in documents {
-        insert_source_scoped(
+        insert_source_at(
             bowl,
             document.path.display().to_string(),
             &document.text,
             ResolutionScope(document.scope),
+            document.source_offset,
         )
         .await;
     }

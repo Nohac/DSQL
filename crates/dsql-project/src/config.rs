@@ -1,7 +1,7 @@
 //! `dsql.toml` discovery and parsing.
 //!
-//! Deliberately lean: lint, generate, and embedding configuration return
-//! with the phases that consume them.
+//! Deliberately lean: lint configuration returns with the phase that
+//! consumes it.
 
 use std::env::current_dir;
 use std::fs::read_to_string;
@@ -34,6 +34,8 @@ pub enum ProjectError {
         first: String,
         second: String,
     },
+    #[error("invalid embedding pattern for `{language}`: {message}")]
+    InvalidEmbeddingPattern { language: String, message: String },
     #[error("scope `{scope}` imports unknown scope `{import}`")]
     UnknownScopeImport { scope: String, import: String },
 }
@@ -60,6 +62,25 @@ pub struct Config {
     /// Artifact generation configuration.
     #[facet(default)]
     pub generate: GenerateConfig,
+    /// Embedded-document extraction, per host language.
+    #[facet(default)]
+    pub embedding: EmbeddingConfig,
+}
+
+/// The `[embedding.*]` sections.
+#[derive(Clone, Debug, Default, Facet)]
+pub struct EmbeddingConfig {
+    #[facet(default)]
+    pub typescript: TypescriptEmbeddingConfig,
+}
+
+/// `[embedding.typescript]`: how dsql documents are found inside `.ts` and
+/// `.tsx` sources. The pattern is a regex with a named `content` capture;
+/// unset means the default `dsql`-tagged-template pattern.
+#[derive(Clone, Debug, Default, Facet)]
+pub struct TypescriptEmbeddingConfig {
+    #[facet(default)]
+    pub pattern: Option<String>,
 }
 
 /// The `[generate.*]` sections.

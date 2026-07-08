@@ -61,6 +61,14 @@ fn generates_manifest_and_artifacts() {
     .expect("fragment artifact written");
     insta::assert_snapshot!("fragment", fragment);
 
+    // The embedded operation source-maps into its host .ts file and
+    // records the fragments its result paths came from.
+    let embedded = std::fs::read_to_string(
+        project.root.join("build/operations/TitlePanel.json"),
+    )
+    .expect("embedded operation artifact written");
+    insta::assert_snapshot!("embedded_operation", embedded);
+
     // Second run: everything unchanged, nothing rewritten.
     let rerun = generate_project(
         &project,

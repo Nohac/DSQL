@@ -3,6 +3,7 @@
 
 mod config;
 mod documents;
+mod embedding;
 mod metadata;
 mod open;
 

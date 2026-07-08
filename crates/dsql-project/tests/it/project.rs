@@ -63,8 +63,32 @@ fn scoped_project_resolves_imports_end_to_end() {
         assert_eq!(diagnostics, 0, "the frontend scope must see shared fragments");
 
         let generated = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await.len();
-        assert_eq!(generated, 1, "the imported fragment must plan and render");
+        assert_eq!(generated, 2, "plain and embedded queries must plan and render");
     });
+}
+
+#[test]
+fn embedded_documents_load_with_host_offsets() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixture/scoped");
+    let project = Project::load_from(&fixture).expect("scoped fixture loads");
+
+    let documents = dsql_project::load_project_documents(&project).expect("documents load");
+    let embedded: Vec<_> = documents
+        .iter()
+        .filter(|document| document.path.extension().and_then(|ext| ext.to_str()) == Some("ts"))
+        .collect();
+    assert_eq!(embedded.len(), 1, "the fixture embeds one query");
+    let document = embedded[0];
+    assert_eq!(document.scope, "frontend");
+    assert!(document.text.contains("query TitlePanel"));
+
+    // The offset points at the region inside the host file.
+    let host = std::fs::read_to_string(&document.path).expect("host file readable");
+    assert_eq!(
+        &host[document.source_offset..document.source_offset + document.text.len()],
+        document.text
+    );
+    assert!(document.source_offset > 0);
 }
 
 #[test]

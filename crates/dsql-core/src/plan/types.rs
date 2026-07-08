@@ -30,6 +30,17 @@ pub struct OperationSeed {
     pub def_span: Span,
     /// The definition's resolution scope.
     pub scope: String,
+    /// Fragment spreads the plan expanded, with the result path each sat
+    /// at — provenance for generated artifacts, not consumed by SQL.
+    pub spreads: Vec<SpreadUse>,
+}
+
+/// One fragment spread occurrence under a plan root: `path` is the result
+/// path of the selection set the spread appeared in.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct SpreadUse {
+    pub path: String,
+    pub fragment: String,
 }
 
 /// One planned fragment body as a fact, derived per fragment definition by

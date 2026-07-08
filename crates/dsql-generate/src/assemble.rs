@@ -13,9 +13,10 @@ use dsql_core::plan::{
 };
 use dsql_core::sql::GeneratedSql;
 use dsql_metadata::{
-    DefinitionKind, DynamicInputMetadata, FragmentMetadata, InputField, OperationMetadata,
-    ResultDataType, ResultField, ResultFieldKind, ResultShape, SourceMapEntry, SourceRange,
-    SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
+    DefinitionKind, DynamicInputMetadata, FragmentMetadata, FragmentSpreadMetadata, InputField,
+    OperationMetadata, ResultDataType, ResultField, ResultFieldKind, ResultShape, SourceMapEntry,
+    SourceRange, SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata,
+    SqlVariantMetadata,
 };
 
 use crate::pipeline::{GenerateError, Result};
@@ -29,6 +30,8 @@ pub(crate) struct OperationInputs<'a> {
     pub bindings: &'a [VariableBinding],
     /// The definition's source file, absolute as loaded.
     pub file: &'a str,
+    /// Byte offset of the document inside its host file.
+    pub source_offset: usize,
 }
 
 /// One fragment's worth of scooped facts.
@@ -36,6 +39,8 @@ pub(crate) struct FragmentInputs<'a> {
     pub plan: &'a FragmentPlanFact,
     pub bindings: &'a [VariableBinding],
     pub file: &'a str,
+    /// Byte offset of the document inside its host file.
+    pub source_offset: usize,
 }
 
 pub(crate) fn operation_metadata(
@@ -86,13 +91,19 @@ pub(crate) fn operation_metadata(
         dynamic_inputs: dynamic_inputs(inputs.bindings),
         policies: Vec::new(),
         handoffs: Vec::new(),
-        // Result-path fragment provenance returns with the embedding pass;
-        // the field stays so consumers keep a stable shape.
-        fragment_spreads: Vec::new(),
+        fragment_spreads: inputs
+            .seed
+            .spreads
+            .iter()
+            .map(|spread| FragmentSpreadMetadata {
+                path: spread.path.clone(),
+                fragment: spread.fragment.clone(),
+            })
+            .collect(),
         source_map: vec![SourceMapEntry {
             id: inputs.seed.query_name.clone(),
             file: source_path(project_root, inputs.file),
-            range: source_range(inputs.seed.def_span),
+            range: source_range(inputs.seed.def_span, inputs.source_offset),
         }],
     })
 }
@@ -119,7 +130,7 @@ pub(crate) fn fragment_metadata(
         source_map: vec![SourceMapEntry {
             id: inputs.plan.name.clone(),
             file: source_path(project_root, inputs.file),
-            range: source_range(inputs.plan.def_span),
+            range: source_range(inputs.plan.def_span, inputs.source_offset),
         }],
     })
 }
@@ -304,10 +315,12 @@ fn join_path(parent: &str, name: &str) -> String {
     }
 }
 
-fn source_range(span: Span) -> SourceRange {
+/// Definition spans are document-relative; the offset shifts them back to
+/// host-file coordinates for embedded documents.
+fn source_range(span: Span, source_offset: usize) -> SourceRange {
     SourceRange {
-        start: span.start as u32,
-        end: span.end as u32,
+        start: (source_offset + span.start) as u32,
+        end: (source_offset + span.end) as u32,
     }
 }
 

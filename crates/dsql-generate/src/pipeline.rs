@@ -15,7 +15,7 @@ use dsql_core::facts::{
     SqlDemand, VariablesDemand,
 };
 use dsql_core::plan::{FragmentPlanFact, OperationSeed, QueryPlanFact};
-use dsql_core::source::FilePath;
+use dsql_core::source::{FilePath, SourceOffset};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use dsql_metadata::{
     BuildManifest, FragmentManifestEntry, FragmentMetadata, OperationManifestEntry,
@@ -106,6 +106,7 @@ pub fn generate_project(project: &Project, options: GenerateOptions) -> Result<G
                 sql: &operation.sql.0,
                 bindings,
                 file: &operation.file,
+                source_offset: operation.source_offset,
             },
         )
         .map_err(|error| error.named(&operation.seed.query_name))?;
@@ -127,6 +128,7 @@ pub fn generate_project(project: &Project, options: GenerateOptions) -> Result<G
                 plan: &fragment.plan,
                 bindings,
                 file: &fragment.file,
+                source_offset: fragment.source_offset,
             },
         )?;
         fragments.push(hashed(metadata, |metadata| &metadata.name, &project_root, &fragment.file)?);
@@ -274,12 +276,14 @@ struct CollectedOperation {
     plan: QueryPlanFact,
     sql: GeneratedSqlFact,
     file: String,
+    source_offset: usize,
 }
 
 struct CollectedFragment {
     def: u64,
     plan: FragmentPlanFact,
     file: String,
+    source_offset: usize,
 }
 
 async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<CollectedFacts> {
@@ -306,13 +310,20 @@ async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<Co
     let diagnostics = bowl
         .scoop::<Query<(Entity, &Severity, &Span, &Diagnostic, &BelongsToFile)>>()
         .await;
-    let paths = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
+    let paths = bowl.scoop::<Query<(Entity, &FilePath, &SourceOffset)>>().await;
     let path_rows = paths.collect();
     let path_of = |file: Entity| {
         path_rows
             .iter()
-            .find(|(entity, _)| *entity == file)
-            .map(|(_, path)| path.0.clone())
+            .find(|(entity, _, _)| *entity == file)
+            .map(|(_, path, _)| path.0.clone())
+            .unwrap_or_default()
+    };
+    let offset_of = |file: Entity| {
+        path_rows
+            .iter()
+            .find(|(entity, _, _)| *entity == file)
+            .map(|(_, _, offset)| offset.0)
             .unwrap_or_default()
     };
     let errors: Vec<String> = diagnostics
@@ -359,6 +370,7 @@ async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<Co
             plan: plan.clone(),
             sql: (*sql).clone(),
             file: path_of(file.0),
+            source_offset: offset_of(file.0),
         });
     }
 
@@ -371,6 +383,7 @@ async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<Co
             def: def.0.raw(),
             plan: plan.clone(),
             file: path_of(file.0),
+            source_offset: offset_of(file.0),
         });
     }
 

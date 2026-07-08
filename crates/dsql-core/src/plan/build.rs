@@ -11,7 +11,8 @@ use bowl::{Bowl, Commands, DerivedFrom, Entity, Query, SystemExt, With};
 use super::types::{
     FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation,
     OperationSeed, OrderByPlan, Projection, QueryPlan, QueryPlanFact, SelectionClauses,
-    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter, SqlValue,
+    SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
@@ -92,7 +93,7 @@ async fn plan_queries(
         {
             TableResolution::Found(table) => {
                 let table_id = table.id;
-                let table_name = table.name.clone();
+                let output_name = field.alias.clone().unwrap_or_else(|| table.name.clone());
                 let selection_path = vec![response_key(field)];
                 let variable_scope = VariablePathScope::operation();
                 let clauses = planner.plan_clauses(
@@ -102,22 +103,24 @@ async fn plan_queries(
                     &variable_scope,
                     key,
                 );
+                let mut spreads = Vec::new();
                 if let Some(selections) = planner.plan_selection_set(
+                    &mut PlanWalk {
+                        result_path: vec![output_name.clone()],
+                        spreads: &mut spreads,
+                        visiting: &mut Vec::new(),
+                        diagnostics: &mut diagnostics,
+                    },
                     table_id,
                     table_id,
                     &clauses,
                     SelectionPath::body(selection_path),
                     &variable_scope,
                     key,
-                    &mut Vec::new(),
-                    &mut diagnostics,
                 ) {
                     let plan = QueryPlan {
                         root: table_id,
-                        output_name: field
-                            .alias
-                            .clone()
-                            .unwrap_or(table_name),
+                        output_name,
                         clauses,
                         selections,
                     };
@@ -132,6 +135,7 @@ async fn plan_queries(
                             root_count,
                             def_span: decl.span,
                             scope: scope.0.clone(),
+                            spreads,
                         },
                     ));
                     // Self key: SQL facts carry the same key, so artifact
@@ -218,15 +222,21 @@ fn plan_fragment_body(
         return;
     };
     let table_id = table.id;
+    // Fragment artifacts carry no spread provenance of their own; the
+    // operations embedding them record it.
     let Some(selections) = planner.plan_selection_set(
+        &mut PlanWalk {
+            result_path: Vec::new(),
+            spreads: &mut Vec::new(),
+            visiting: &mut Vec::new(),
+            diagnostics,
+        },
         table_id,
         table_id,
         &SelectionClauses::default(),
         SelectionPath::fragment_root(),
         &VariablePathScope::fragment(),
         def_key,
-        &mut Vec::new(),
-        diagnostics,
     ) else {
         return;
     };
@@ -246,6 +256,16 @@ fn plan_fragment_body(
 
 type PlanDiagnostics = Vec<(crate::facts::Span, DiagnosticCode, String)>;
 
+/// Mutable state threaded through one plan walk. `result_path` follows
+/// output keys (unchanged across spread expansion, extended per relation);
+/// `visiting` guards cyclic spreads.
+struct PlanWalk<'a> {
+    result_path: Vec<String>,
+    spreads: &'a mut Vec<SpreadUse>,
+    visiting: &'a mut Vec<String>,
+    diagnostics: &'a mut PlanDiagnostics,
+}
+
 struct Planner<'a> {
     tree: &'a SelectionTree<'a>,
     catalog: &'a Catalog,
@@ -257,14 +277,13 @@ impl Planner<'_> {
     #[expect(clippy::too_many_arguments, reason = "recursion threads the whole walk state")]
     fn plan_selection_set(
         &mut self,
+        walk: &mut PlanWalk<'_>,
         root_table: TableId,
         table: TableId,
         clauses: &SelectionClauses,
         selection_path: SelectionPath,
         variable_scope: &VariablePathScope,
         parent: NodeKey,
-        visiting: &mut Vec<String>,
-        diagnostics: &mut PlanDiagnostics,
     ) -> Option<SelectionPlan> {
         let mut items = Vec::new();
 
@@ -291,6 +310,10 @@ impl Planner<'_> {
         for (_, child) in children {
             match child {
                 Child::Spread(name) => {
+                    walk.spreads.push(SpreadUse {
+                        path: walk.result_path.join("."),
+                        fragment: name.clone(),
+                    });
                     let Some((_, _, _, fragment_key, _)) = self
                         .tree
                         .resolve_fragment(&name, self.scope, self.imports)
@@ -301,23 +324,22 @@ impl Planner<'_> {
                     // Planning is demand-driven and runs regardless of check
                     // status, so cyclic spreads must be guarded against here
                     // rather than trusting checks to have rejected them.
-                    if visiting.contains(&name) {
+                    if walk.visiting.contains(&name) {
                         continue;
                     }
-                    visiting.push(name.clone());
+                    walk.visiting.push(name.clone());
                     if let Some(fragment_plan) = self.plan_selection_set(
+                        walk,
                         root_table,
                         table,
                         &SelectionClauses::default(),
                         SelectionPath::fragment_root(),
                         &variable_scope.for_fragment_spread(&selection_path, &name),
                         fragment_key,
-                        visiting,
-                        diagnostics,
                     ) {
                         items.extend(fragment_plan.items);
                     }
-                    visiting.pop();
+                    walk.visiting.pop();
                 }
                 Child::Field(field, key) => {
                     let reference = FieldRef {
@@ -350,16 +372,20 @@ impl Planner<'_> {
                                 variable_scope,
                                 key,
                             );
-                            if let Some(nested) = self.plan_selection_set(
+                            walk.result_path.push(
+                                field.alias.clone().unwrap_or_else(|| relation_name.clone()),
+                            );
+                            let nested = self.plan_selection_set(
+                                walk,
                                 root_table,
                                 relation_table,
                                 &child_clauses,
                                 SelectionPath::body(child_path),
                                 variable_scope,
                                 key,
-                                visiting,
-                                diagnostics,
-                            ) {
+                            );
+                            walk.result_path.pop();
+                            if let Some(nested) = nested {
                                 items.push(SelectionPlanItem::Relation(NestedRelation {
                                     relation_name: reference.display_text(),
                                     output_name: field
@@ -376,7 +402,7 @@ impl Planner<'_> {
                         FieldCheckResult::AmbiguousRelation {
                             reference,
                             candidates,
-                        } => diagnostics.push((
+                        } => walk.diagnostics.push((
                             field.name_span,
                             DiagnosticCode::AmbiguousRelation,
                             format!(

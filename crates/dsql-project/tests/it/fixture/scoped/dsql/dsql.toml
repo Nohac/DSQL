@@ -5,5 +5,5 @@ default_schema = "public"
 documents = ["queries/shared/**/*.dsql"]
 
 [resolution.frontend]
-documents = ["queries/frontend/**/*.dsql"]
+documents = ["queries/frontend/**/*.dsql", "src/**/*.ts", "src/**/*.tsx"]
 imports = ["shared"]
