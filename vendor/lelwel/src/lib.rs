@@ -20,6 +20,16 @@ pub mod ide;
 
 const VERSION: &str = "0.10.4";
 
+/// Local patch (see /vendor/PATCHES.md): also generate the logos lexer from
+/// the grammar's token declarations. Use together with [`build`].
+pub fn build_lexer(path: &str, spec: &backend::lexer::LexerSpec<'_>) {
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    if let Err(error) = backend::lexer::generate_lexer(path, &out_dir, spec) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
+
 pub fn build(path: &str) {
     let res = compile(
         path,

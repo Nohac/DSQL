@@ -28,6 +28,20 @@ not listed here, it does not exist. See CONTRIBUTING.md for the rules.
      tokens were viable at the error position, with spans, without parsing
      error-message strings.
 
+2. **Logos lexer generation from grammar token declarations.**
+   - What: new `lelwel::build_lexer(path, &LexerSpec)` entry point generating
+     `$OUT_DIR/lexer.rs` — a logos `Token` enum (literal tokens as
+     `#[token]`, non-literal tokens as `#[regex]` with attribute arguments
+     from the spec), `Token::literal_text()`, `LexerError`, and `tokenize`.
+     Generation fails the build when a token has neither a literal spelling
+     nor a spec pattern. Symbols wrapped in angle brackets (`'<name>'`) are
+     display names, not spellings.
+   - Where: `src/backend/lexer.rs` (new file), `src/backend/mod.rs` (module
+     registration), `src/lib.rs` (`build_lexer`). Purely additive.
+   - Why: makes the `.llw` grammar the single source of truth for token
+     spellings — dsql previously hand-maintained ~40 duplicated
+     `#[token("...")]` attributes plus a keyword list for completions.
+
 ## logos
 
 - Upstream: <https://github.com/maciejhirsz/logos>

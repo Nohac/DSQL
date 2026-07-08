@@ -211,17 +211,15 @@ match is the real source of truth once implemented):
    dispatch, editor context classification, and formatting key directly off
    the generated `Rule`.
 2. **Token strings defined twice** (`.llw` token declarations *and* logos
-   `#[token]` attributes on a hand-written `Token` enum). Plan: extend the
-   vendored lelwel so `lelwel::build` also emits the logos lexer from the
-   grammar's token section:
-   - literal tokens (`Query='query'`, `Eq='=='`) → `#[token("...")]`
-   - non-literal tokens (`Name='<name>'`) need a pattern lelwel doesn't carry
-     today → extend the `.llw` token declaration syntax (or a structured
-     comment/annotation) to attach the regex, e.g.
-     `token Name='<name>' /[A-Za-z_][A-Za-z0-9_]*/;`
-   - until that lands (phase 8), a hand-written lexer copied from dsql-poc plus
-     a build-time assertion that every `.llw` token has a matching `Token`
-     variant keeps drift loud instead of silent.
+   `#[token]` attributes on a hand-written `Token` enum) — *done (phase 8)*:
+   the vendored lelwel gained `build_lexer(path, &LexerSpec)`, which emits
+   the whole logos lexer from the grammar's token section. Literal tokens
+   (`Query='query'`, `Eq='=='`) become `#[token]` variants and
+   `Token::literal_text()`; only the five non-literal tokens (`Name`,
+   `String`, `Number`, `Whitespace`, `Comment`) carry regex patterns,
+   supplied by `build.rs`. A token with neither fails the build. This also
+   replaced dsql-poc's hand-listed `completion_label()` keyword table:
+   editor layers select from `literal_text()` instead.
 3. **Loose sibling-path lelwel dep** — replaced by in-repo `vendor/lelwel/`
    carrying the existing `record_expected_tokens` patch.
 
