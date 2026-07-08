@@ -120,24 +120,18 @@ impl LowerStage for FieldSelection {
             node: node.0,
         };
 
-        match ctx.parent {
-            Some(parent) => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                ParentKey(parent),
-                selection,
-            )),
-            // Grammar-wise unreachable (selections only appear inside
-            // definitions), but error recovery may orphan one; lower it
-            // without a tree position rather than dropping the fact.
-            None => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                selection,
-            )),
-        };
+        // A parentless selection is grammar-wise unreachable (selections
+        // only appear inside definitions), but error recovery may orphan
+        // one; it lowers without a tree position rather than dropping.
+        let entity = commands.insert((
+            DerivedFrom::new(ctx.file),
+            BelongsToFile(ctx.file),
+            key,
+            selection,
+        ));
+        if let Some(parent) = ctx.parent {
+            commands.entity(entity).insert(ParentKey(parent));
+        }
     }
 }
 

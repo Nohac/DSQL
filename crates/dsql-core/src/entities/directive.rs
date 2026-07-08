@@ -98,21 +98,15 @@ impl LowerStage for Directive {
             node: node.0,
         };
 
-        match ctx.parent {
-            Some(parent) => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                ParentKey(parent),
-                fact,
-            )),
-            None => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                fact,
-            )),
-        };
+        let entity = commands.insert((
+            DerivedFrom::new(ctx.file),
+            BelongsToFile(ctx.file),
+            key,
+            fact,
+        ));
+        if let Some(parent) = ctx.parent {
+            commands.entity(entity).insert(ParentKey(parent));
+        }
     }
 }
 

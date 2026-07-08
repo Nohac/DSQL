@@ -59,21 +59,15 @@ impl LowerStage for Variable {
             node: node.0,
         };
 
-        match ctx.parent {
-            Some(parent) => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                ParentKey(parent),
-                VariableUse(variable),
-            )),
-            None => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                VariableUse(variable),
-            )),
-        };
+        let entity = commands.insert((
+            DerivedFrom::new(ctx.file),
+            BelongsToFile(ctx.file),
+            key,
+            VariableUse(variable),
+        ));
+        if let Some(parent) = ctx.parent {
+            commands.entity(entity).insert(ParentKey(parent));
+        }
     }
 }
 

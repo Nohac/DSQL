@@ -77,23 +77,16 @@ impl LowerStage for Clause {
             node: node.0,
         };
 
-        match ctx.parent {
-            Some(parent) => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                ParentKey(parent),
-                node_span(ctx.cst, node),
-                fact,
-            )),
-            None => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                node_span(ctx.cst, node),
-                fact,
-            )),
-        };
+        let entity = commands.insert((
+            DerivedFrom::new(ctx.file),
+            BelongsToFile(ctx.file),
+            key,
+            node_span(ctx.cst, node),
+            fact,
+        ));
+        if let Some(parent) = ctx.parent {
+            commands.entity(entity).insert(ParentKey(parent));
+        }
     }
 }
 

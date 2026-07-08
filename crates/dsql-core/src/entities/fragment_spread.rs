@@ -72,25 +72,17 @@ impl LowerStage for FragmentSpread {
         };
 
         let scope = ResolutionScope(ctx.scope.to_string());
-        match ctx.parent {
-            Some(parent) => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                scope,
-                ParentKey(parent),
-                FragmentKey(name),
-                decl,
-            )),
-            None => commands.insert((
-                DerivedFrom::new(ctx.file),
-                BelongsToFile(ctx.file),
-                key,
-                scope,
-                FragmentKey(name),
-                decl,
-            )),
-        };
+        let entity = commands.insert((
+            DerivedFrom::new(ctx.file),
+            BelongsToFile(ctx.file),
+            key,
+            scope,
+            FragmentKey(name),
+            decl,
+        ));
+        if let Some(parent) = ctx.parent {
+            commands.entity(entity).insert(ParentKey(parent));
+        }
     }
 }
 
