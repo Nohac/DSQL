@@ -7,7 +7,8 @@ use bowl::{
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
 use crate::entities::{direct_token, node_span, text};
-use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     ParentKey, Severity, Span, emit_diagnostic,
@@ -235,4 +236,19 @@ async fn check_unknown_fragments(
             message: format!("fragment `{}` not found", decl.name),
         },
     );
+}
+
+
+impl FormatStage for FragmentSpread {
+    fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
+        use crate::grammar::parser::Rule;
+
+        if let Some(name) = formatter.direct_token_text(node, Token::Name) {
+            formatter.write_str("...");
+            formatter.write_str(&name);
+        }
+        for directive in formatter.direct_rules(node, Rule::Directive) {
+            formatter.format_child(directive);
+        }
+    }
 }

@@ -29,7 +29,7 @@ pub enum Severity {
     Error,
 }
 
-/// Machine-readable diagnostic identity, ported from dsql-poc. Editor
+/// Machine-readable diagnostic identity. Editor
 /// integrations and tests key on these; messages are for humans only.
 /// Variants are added as the checks that emit them land.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -55,7 +55,7 @@ pub enum DiagnosticCode {
     PredicateTypeMismatch,
 }
 
-/// Which stage emitted a diagnostic, ported from dsql-poc.
+/// Which stage emitted a diagnostic.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[component(hash)]
 pub enum DiagnosticSource {
@@ -109,6 +109,17 @@ pub struct DiagnosticsDemand;
 #[derive(Component, Hash)]
 #[component(hash)]
 pub struct VariablesDemand;
+
+/// Demand marker for query planning (`plan::build`).
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct PlanDemand;
+
+/// Demand marker for SQL generation (`sql::generate`). SQL needs plans:
+/// insert [`PlanDemand`] alongside.
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct SqlDemand;
 
 /// Everything one diagnostic entity is made of. Every field is required so
 /// no emitter can silently drop a component the LSP or tests key on.

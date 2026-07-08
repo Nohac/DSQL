@@ -1,4 +1,4 @@
-//! Variable path construction, ported from dsql-poc `variable_path.rs`.
+//! Variable path construction.
 //!
 //! Sigil mapping: `$` (build-time) variables are *structured* — they nest
 //! under `input.<selection path>.clause...`; `$$` (query-time) variables are

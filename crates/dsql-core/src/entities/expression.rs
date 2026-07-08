@@ -10,7 +10,8 @@
 use bowl::{Bowl, Commands};
 
 use crate::entities::{direct_rule, node_span, text};
-use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::format::CstFormatter;
 use crate::facts::Span;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{CstData, Node, NodeRef, Rule};
@@ -426,4 +427,12 @@ fn render_variable(variable: &VariableRef) -> String {
         rendered.push_str(&format!("[{}]", operators.join(", ")));
     }
     rendered
+}
+
+
+impl FormatStage for Expression {
+    /// Expressions format through the engine's layout machinery.
+    fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
+        formatter.expr(node);
+    }
 }

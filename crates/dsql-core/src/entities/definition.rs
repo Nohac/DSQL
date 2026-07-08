@@ -15,7 +15,8 @@ use bowl::{
 use crate::catalog::{CatalogSnapshot, TableRef, TableResolution};
 use crate::entities::document::ParsedFile;
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::format::CstFormatter;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     Severity, Span, emit_diagnostic,
@@ -227,7 +228,7 @@ async fn index_defs(
 }
 
 /// Duplicate fragment names are ambiguous at spread-resolution time, so they
-/// are errors — scoped per file, matching dsql-poc's `FragmentMap` semantics.
+/// are errors — scoped per file.
 /// Query names are entry points and not checked here.
 ///
 /// The [`DefIndex`] query keeps this check honest: the `View` of other
@@ -268,4 +269,34 @@ async fn check_duplicate_fragments(
             message: format!("duplicate fragment `{}`", decl.name),
         },
     );
+}
+
+
+impl FormatStage for Definition {
+    fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
+        if formatter.rule(node) == Some(Rule::QueryDef) {
+            formatter.write_str("query");
+            if let Some(name) = formatter.direct_token_text(node, Token::Name) {
+                formatter.write_str(" ");
+                formatter.write_str(&name);
+            }
+            for directive in formatter.direct_rules(node, Rule::Directive) {
+                formatter.format_child(directive);
+            }
+        } else {
+            formatter.write_str("fragment");
+            if let Some(name) = formatter.direct_token_text(node, Token::Name) {
+                formatter.write_str(" ");
+                formatter.write_str(&name);
+            }
+            formatter.write_str(" on");
+            if let Some(on) = formatter.direct_qualified_name_text(node) {
+                formatter.write_str(" ");
+                formatter.write_str(&on);
+            }
+        }
+        if let Some(selection_set) = formatter.direct_rule(node, Rule::SelectionSet) {
+            formatter.selection_set(selection_set);
+        }
+    }
 }

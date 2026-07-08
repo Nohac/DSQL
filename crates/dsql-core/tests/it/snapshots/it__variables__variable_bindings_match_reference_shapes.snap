@@ -1,5 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/variables.rs
+
 expression: "format!(\"{scalar}\\n\\n---\\n\\n{operator}\\n\\n---\\n\\n{order_by_direction}\\n\\n---\\n\\n{fragment}\")"
 ---
 scalar

@@ -3,10 +3,12 @@
 
 mod checks;
 mod definitions;
+mod format;
 mod lowering;
 mod parse;
 mod selections;
 mod settle;
+mod sql;
 mod variables;
 mod support;
 

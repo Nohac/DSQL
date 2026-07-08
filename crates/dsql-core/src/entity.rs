@@ -3,7 +3,7 @@
 //! A language entity is a vertical slice of one language concept: a single
 //! file co-locates the entity's fact components, how they lower from the
 //! CST, the checks that validate them, and how they present to services.
-//! This carries the dsql-poc "language atom" guarantees in the porridge
+//! This carries the language-atom guarantees in the porridge
 //! playground shape: plain traits and one exhaustive `match`, no registry.
 //!
 //! The stage traits below form the coverage contract. [`register_entity`]
@@ -23,6 +23,7 @@
 use bowl::{Bowl, Commands, Entity};
 
 use crate::facts::NodeKey;
+use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef};
 
 /// Identity and system registration for one language concept.
@@ -57,11 +58,18 @@ pub trait LowerStage: LanguageEntity {
     fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands);
 }
 
+/// Format stage: write the canonical text of an owned CST rule node.
+/// Ownership is assigned in `entities::format_rule`; the engine
+/// ([`CstFormatter`]) owns layout decisions the entities share.
+pub trait FormatStage: LanguageEntity {
+    fn format(formatter: &mut CstFormatter<'_>, node: NodeRef);
+}
+
 /// The compile-time coverage contract: an entity only registers once it has
 /// declared every stage.
 pub async fn register_entity<E>(bowl: &Bowl)
 where
-    E: LanguageEntity + LowerStage,
+    E: LanguageEntity + LowerStage + FormatStage,
 {
     E::register(bowl).await;
 }

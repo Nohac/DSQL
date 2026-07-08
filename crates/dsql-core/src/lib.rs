@@ -7,8 +7,11 @@ pub mod catalog;
 pub mod entities;
 pub mod entity;
 pub mod facts;
+pub mod format;
 pub mod grammar;
+pub mod plan;
 pub mod source;
+pub mod sql;
 
 use bowl::{Bowl, Phase, SystemExt, cleanup_stale_derived};
 
@@ -35,6 +38,9 @@ pub async fn register_language(bowl: &Bowl) {
     register_entity::<Variable>(bowl).await;
 
     bowl.add_system(entities::generate_ast).await;
+
+    plan::register_planning(bowl).await;
+    sql::register_sql(bowl).await;
 
     bowl.add_system(cleanup_stale_derived.run_during(Phase::Cleanup))
         .await;

@@ -5,7 +5,8 @@ use bowl::{Bowl, Commands, Component, DerivedFrom};
 
 use crate::entities::expression::{Expr, build_expr, expr_child};
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{LanguageEntity, LowerCtx, LowerStage};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
+use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
@@ -112,5 +113,14 @@ impl LowerStage for Directive {
                 fact,
             )),
         };
+    }
+}
+
+
+impl FormatStage for Directive {
+    /// Directives are preserved verbatim, preceded by one space.
+    fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
+        formatter.write_str(" ");
+        formatter.write_node_text(node);
     }
 }

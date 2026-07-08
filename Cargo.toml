@@ -20,5 +20,7 @@ facet-yaml = "0.50.0-rc.1"
 futures = "0.3"
 insta = "1.48"
 ropey = "2.0.0-beta.1"
+sea-query = { version = "1.0.1", default-features = false, features = ["backend-postgres"] }
+sqlformat = "0.5"
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2"
