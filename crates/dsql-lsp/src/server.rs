@@ -12,8 +12,9 @@ use tower_lsp_server::ls_types::{
     DidOpenTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    OneOf, Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    Uri,
+    OneOf, Range, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -26,12 +27,14 @@ use dsql_core::grammar::parse;
 use dsql_core::register_language;
 use dsql_core::service::{
     CompletionKind, CompletionList, CompletionRequest, DefinitionRequest, DefinitionTarget,
-    HoverInfo, HoverRequest, Position,
+    HoverInfo, HoverRequest, Position, SemanticTokens, SemanticTokensRequest,
 };
 use dsql_core::source::{FilePath, OpenBuffer, ResolutionScope, SourceText};
 use dsql_project::{Project, populate_project_bowl};
 
-use crate::position::{byte_to_position, position_to_byte};
+use crate::position::{
+    byte_to_position, encode_semantic_tokens, position_to_byte, semantic_tokens_legend,
+};
 
 /// Serves the language server over stdio until the client disconnects.
 pub async fn run_stdio() {
@@ -169,6 +172,15 @@ impl LanguageServer for Backend {
                 }),
                 definition_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: semantic_tokens_legend(),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            ..SemanticTokensOptions::default()
+                        },
+                    ),
+                ),
                 ..ServerCapabilities::default()
             },
             ..InitializeResult::default()
@@ -374,6 +386,36 @@ impl LanguageServer for Backend {
                 end: byte_to_position(&target_rope, target.span.end),
             },
         })))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let Some(path) = uri_path(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        let Some((_, rope)) = self.rope_of(&path).await else {
+            return Ok(None);
+        };
+
+        let Ok(tokens) = self
+            .bowl()
+            .insert((SemanticTokensRequest, FilePath(path)))
+            .await
+            .bind()
+            .take::<SemanticTokens>()
+            .await
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(SemanticTokensResult::Tokens(
+            tower_lsp_server::ls_types::SemanticTokens {
+                result_id: None,
+                data: encode_semantic_tokens(&rope, &tokens.0),
+            },
+        )))
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
