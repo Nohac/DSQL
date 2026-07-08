@@ -2,24 +2,28 @@
 //! selection set, with its alias and relation-path selector — plus the
 //! catalog check walk that validates every selection tree top-down.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, SystemParam, View, With};
+use bowl::{
+    Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, SystemParam, View, With,
+};
 
 use crate::catalog::{CatalogSnapshot, FieldCheckResult, FieldRef, TableRef, TableResolution};
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
-use crate::source::{ResolutionScope, ScopeImports};
 use crate::entities::fragment_spread::{SpreadDecl, check_spread_site};
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     ParentKey, Severity, Span, emit_diagnostic,
 };
-use crate::service::completion::{CompletionContext, CompletionRequest};
-use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
+use crate::service::completion::{CompletionContext, CompletionRequest};
+use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::source::{ResolutionScope, ScopeImports};
 
 /// PostgreSQL truncates result aliases beyond this many bytes
 /// (`NAMEDATALEN - 1`), which silently corrupts output keys.
@@ -93,8 +97,8 @@ impl LowerStage for FieldSelection {
         let name_span = node_span(ctx.cst, name_node);
         // The `->column` selector Name is a direct child of relation_ref;
         // the relation name's own tokens sit nested inside qualified_name.
-        let relation_path =
-            direct_token(ctx.cst, target, Token::Name).map(|span| text(ctx.source, span).to_string());
+        let relation_path = direct_token(ctx.cst, target, Token::Name)
+            .map(|span| text(ctx.source, span).to_string());
 
         let suffix = tail.and_then(|tail| direct_rule(ctx.cst, tail, Rule::FieldSuffix));
         let nested = suffix
@@ -135,13 +139,18 @@ impl LowerStage for FieldSelection {
     }
 }
 
-
 /// Everything the check walk sees of one definition's file, gathered from
 /// the ambient views and shared with the spread checks.
 pub(crate) struct SelectionTree<'a> {
     pub(crate) fields: Vec<(Entity, &'a FieldSel, NodeKey, NodeKey)>,
     pub(crate) spreads: Vec<(Entity, &'a SpreadDecl, NodeKey, NodeKey)>,
-    pub(crate) fragments: Vec<(Entity, &'a DefDecl, &'a FragmentTarget, NodeKey, &'a ResolutionScope)>,
+    pub(crate) fragments: Vec<(
+        Entity,
+        &'a DefDecl,
+        &'a FragmentTarget,
+        NodeKey,
+        &'a ResolutionScope,
+    )>,
     pub(crate) clauses: Vec<(Entity, &'a ClauseFact, Span, NodeKey)>,
 }
 
@@ -197,13 +206,16 @@ impl SelectionTree<'_> {
         scope: &str,
         imports: &ScopeImports,
     ) -> Option<&(Entity, &DefDecl, &FragmentTarget, NodeKey, &ResolutionScope)> {
-        let mut candidates = self.fragments.iter().filter(|(_, decl, _, _, fragment_scope)| {
-            decl.kind == DefKind::Fragment
-                && decl.name == name
-                && imports
-                    .visible_from(scope)
-                    .any(|visible| visible == fragment_scope.0)
-        });
+        let mut candidates = self
+            .fragments
+            .iter()
+            .filter(|(_, decl, _, _, fragment_scope)| {
+                decl.kind == DefKind::Fragment
+                    && decl.name == name
+                    && imports
+                        .visible_from(scope)
+                        .any(|visible| visible == fragment_scope.0)
+            });
         let first = candidates.next()?;
         candidates.next().is_none().then_some(first)
     }
@@ -230,7 +242,16 @@ impl SelectionTree<'_> {
 pub(crate) struct TreeViews<'a> {
     fields: View<'a, (Entity, &'a FieldSel, &'a NodeKey, &'a ParentKey)>,
     spreads: View<'a, (Entity, &'a SpreadDecl, &'a NodeKey, &'a ParentKey)>,
-    fragments: View<'a, (Entity, &'a DefDecl, &'a FragmentTarget, &'a NodeKey, &'a ResolutionScope)>,
+    fragments: View<
+        'a,
+        (
+            Entity,
+            &'a DefDecl,
+            &'a FragmentTarget,
+            &'a NodeKey,
+            &'a ResolutionScope,
+        ),
+    >,
     clauses: View<'a, (Entity, &'a ClauseFact, &'a Span, &'a ParentKey)>,
 }
 
@@ -349,7 +370,10 @@ impl CheckCtx<'_, '_> {
                         format!("table `{reference}` not found"),
                     );
                 }
-                TableResolution::Ambiguous { reference, candidates } => {
+                TableResolution::Ambiguous {
+                    reference,
+                    candidates,
+                } => {
                     let candidates: Vec<String> = candidates
                         .iter()
                         .map(|key| format!("{}::{}", key.schema, key.table))
@@ -545,7 +569,6 @@ impl CheckCtx<'_, '_> {
     }
 }
 
-
 impl FormatStage for FieldSelection {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         let first = formatter.direct_relation_ref_text(node);
@@ -576,7 +599,6 @@ impl FormatStage for FieldSelection {
         }
     }
 }
-
 
 impl HoverStage for FieldSelection {
     async fn register_hover(bowl: &Bowl) {
@@ -615,8 +637,7 @@ async fn hover_fields(
         return;
     };
 
-    let text =
-        describe_field(catalog, table, field).unwrap_or_else(|| format!("`{}`", field.name));
+    let text = describe_field(catalog, table, field).unwrap_or_else(|| format!("`{}`", field.name));
 
     commands.insert((
         DerivedFrom::new(request),
@@ -671,7 +692,11 @@ pub(crate) fn resolve_context_table(
     };
 
     // Descend from below the root to the hovered field's parent.
-    for key in chain.iter().rev().skip(if fragment_target.is_some() { 0 } else { 1 }) {
+    for key in chain
+        .iter()
+        .rev()
+        .skip(if fragment_target.is_some() { 0 } else { 1 })
+    {
         if *key == field_key {
             return Some(table);
         }
@@ -680,8 +705,7 @@ pub(crate) fn resolve_context_table(
             target: TableRef::parse(&field.name),
             selector: field.relation_path.as_deref(),
         };
-        let FieldCheckResult::Relation(relation) = catalog.check_field_ref(table, reference)
-        else {
+        let FieldCheckResult::Relation(relation) = catalog.check_field_ref(table, reference) else {
             return None;
         };
         table = relation.table.id;
@@ -722,7 +746,6 @@ fn describe_field(
     }
 }
 
-
 /// The table a field selection *targets*: the table itself for query
 /// roots, or the relation's table for nested selections. This is the
 /// context for everything inside the field's braces and clauses.
@@ -731,9 +754,15 @@ pub(crate) fn resolve_field_target(
     catalog: &crate::catalog::Catalog,
     field_key: NodeKey,
 ) -> Option<crate::catalog::TableId> {
-    let (_, field, _, parent) = tree.fields.iter().find(|(_, _, key, _)| *key == field_key)?;
+    let (_, field, _, parent) = tree
+        .fields
+        .iter()
+        .find(|(_, _, key, _)| *key == field_key)?;
     let is_query_root = !tree.fields.iter().any(|(_, _, key, _)| key == parent)
-        && !tree.fragments.iter().any(|(_, _, _, def_key, _)| def_key == parent);
+        && !tree
+            .fragments
+            .iter()
+            .any(|(_, _, _, def_key, _)| def_key == parent);
     if is_query_root {
         return catalog
             .table_ref_for(TableRef::parse(&field.name))
@@ -754,7 +783,6 @@ pub(crate) fn resolve_field_target(
     }
 }
 
-
 impl CompletionStage for FieldSelection {
     async fn register_completions(bowl: &Bowl) {
         bowl.add_system(complete_selections.run_during(bowl::Phase::Complete))
@@ -770,7 +798,9 @@ async fn complete_selections(
     catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands,
 ) {
-    use crate::service::completion::{CompletionCandidate, CompletionItem, CompletionKind, CompletionSite};
+    use crate::service::completion::{
+        CompletionCandidate, CompletionItem, CompletionKind, CompletionSite,
+    };
 
     let (request, context) = requests.item();
     let (_, snapshot) = catalog.item();

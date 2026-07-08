@@ -8,7 +8,9 @@
 //! that product is unkeyed (nothing equal joins a spread entity id), so
 //! each pair filters in its body. Requests are transient and few.
 
-use bowl::{Bowl, Commands, Component, Entity, Eq as BowlEq, Phase, Query, SystemExt, View, Where, With};
+use bowl::{
+    Bowl, Commands, Component, Entity, Eq as BowlEq, Phase, Query, SystemExt, View, Where, With,
+};
 
 use crate::entities::definition::DefDecl;
 use crate::entities::fragment_spread::{SpreadDecl, SpreadResolution};
@@ -31,7 +33,6 @@ pub struct DefinitionTarget {
     /// The definition's name span within that file.
     pub span: Span,
 }
-
 
 pub(crate) async fn register_definition_pipeline(bowl: &Bowl) {
     bowl.add_system(resolve_definition_requests).await;
@@ -67,8 +68,7 @@ async fn answer_spread_definitions(
     let (_, resolution) = resolutions.item();
 
     if resolution.spread != spread_entity
-        || !(spread.name_span.start <= position.offset
-            && position.offset < spread.name_span.end)
+        || !(spread.name_span.start <= position.offset && position.offset < spread.name_span.end)
     {
         return;
     }

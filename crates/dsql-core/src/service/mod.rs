@@ -13,7 +13,9 @@ pub use completion::{
 };
 pub use definition::{DefinitionRequest, DefinitionTarget};
 pub use hover::{HoverCandidate, HoverEnriched, HoverInfo, HoverRequest, Position, priority};
-pub use semantic_tokens::{SemanticToken, SemanticTokenKind, SemanticTokens, SemanticTokensRequest};
+pub use semantic_tokens::{
+    SemanticToken, SemanticTokenKind, SemanticTokens, SemanticTokensRequest,
+};
 
 /// Registers the service pipelines shared by all entities.
 pub async fn register_services(bowl: &Bowl) {

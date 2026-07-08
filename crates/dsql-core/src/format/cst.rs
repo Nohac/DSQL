@@ -79,14 +79,11 @@ impl<'a> CstFormatter<'a> {
                     self.selection(child);
                     let mut current = child;
                     while self.selection_has_comma(current) {
-                        let Some(next_idx) = children
-                            .iter()
-                            .enumerate()
-                            .skip(idx + 1)
-                            .find_map(|(next_idx, next)| {
+                        let Some(next_idx) = children.iter().enumerate().skip(idx + 1).find_map(
+                            |(next_idx, next)| {
                                 (self.rule(*next) == Some(Rule::Selection)).then_some(next_idx)
-                            })
-                        else {
+                            },
+                        ) else {
                             break;
                         };
                         let next = children[next_idx];
@@ -514,7 +511,9 @@ impl<'a> CstFormatter<'a> {
             .into_iter()
             .skip_while(|child| self.token(*child) != Some(Token::Arrow))
             .skip(1)
-            .find_map(|child| (self.token(child) == Some(Token::Name)).then(|| self.node_text(child)));
+            .find_map(|child| {
+                (self.token(child) == Some(Token::Name)).then(|| self.node_text(child))
+            });
         selector.map_or(Some(qualified.clone()), |selector| {
             Some(format!("{qualified}->{selector}"))
         })

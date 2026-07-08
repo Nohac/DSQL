@@ -67,10 +67,19 @@ fn scoped_project_resolves_imports_end_to_end() {
             .await;
 
         let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
-        assert_eq!(diagnostics, 0, "the frontend scope must see shared fragments");
+        assert_eq!(
+            diagnostics, 0,
+            "the frontend scope must see shared fragments"
+        );
 
-        let generated = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await.len();
-        assert_eq!(generated, 2, "plain and embedded queries must plan and render");
+        let generated = bowl
+            .scoop::<Query<(Entity, &GeneratedSqlFact)>>()
+            .await
+            .len();
+        assert_eq!(
+            generated, 2,
+            "plain and embedded queries must plan and render"
+        );
     });
 }
 
@@ -111,7 +120,9 @@ fn unknown_scope_imports_fail_project_loading() {
 
     let error = Project::load_from(&dir).expect_err("unknown import must fail");
     assert!(
-        error.to_string().contains("imports unknown scope `missing`"),
+        error
+            .to_string()
+            .contains("imports unknown scope `missing`"),
         "unexpected error: {error}"
     );
 }
@@ -128,8 +139,11 @@ fn documents_owned_by_two_scopes_fail_loading() {
         "database_url = \"x\"\n\n[resolution.a]\ndocuments = [\"queries\"]\n\n[resolution.b]\ndocuments = [\"queries\"]\n",
     )
     .expect("fixture config");
-    std::fs::write(queries.join("q.dsql"), "query Q {\n  title {\n    id\n  }\n}\n")
-        .expect("fixture doc");
+    std::fs::write(
+        queries.join("q.dsql"),
+        "query Q {\n  title {\n    id\n  }\n}\n",
+    )
+    .expect("fixture doc");
 
     let project = Project::load_from(&dir).expect("config parses");
     let error =
@@ -139,7 +153,6 @@ fn documents_owned_by_two_scopes_fail_loading() {
         "unexpected error: {error}"
     );
 }
-
 
 #[test]
 fn schema_directory_round_trips_and_drops_stale_tables() {

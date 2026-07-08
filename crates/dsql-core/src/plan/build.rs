@@ -19,10 +19,11 @@ use crate::catalog::{
 };
 use crate::entities::clause::{ClauseFact, OrderDirection};
 use crate::entities::definition::{DefDecl, DefKind};
-use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, PathSegment, VariableRef};
+use crate::entities::expression::{
+    BinaryOp, Expr, LiteralValue, PathAnchor, PathSegment, VariableRef,
+};
 use crate::entities::field_selection::{FieldSel, SelectionTree, TreeViews};
 use crate::entities::variable::VariableRole;
-use crate::source::{ResolutionScope, ScopeImports};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
@@ -30,6 +31,7 @@ use crate::facts::{
     BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, NodeKey, PlanDemand,
     PlanKey, Severity, emit_diagnostic,
 };
+use crate::source::{ResolutionScope, ScopeImports};
 
 /// Registers the planning stage. A cross-entity stage system like
 /// `generate_ast`: it walks the whole checked fact tree per definition.
@@ -77,7 +79,13 @@ async fn plan_queries(
             &mut commands,
             &mut diagnostics,
         );
-        emit_plan_diagnostics(diagnostics, def_entity, catalog_entity, file.0, &mut commands);
+        emit_plan_diagnostics(
+            diagnostics,
+            def_entity,
+            catalog_entity,
+            file.0,
+            &mut commands,
+        );
         return;
     }
 
@@ -96,13 +104,8 @@ async fn plan_queries(
                 let output_name = field.alias.clone().unwrap_or_else(|| table.name.clone());
                 let selection_path = vec![response_key(field)];
                 let variable_scope = VariablePathScope::operation();
-                let clauses = planner.plan_clauses(
-                    table_id,
-                    table_id,
-                    &selection_path,
-                    &variable_scope,
-                    key,
-                );
+                let clauses =
+                    planner.plan_clauses(table_id, table_id, &selection_path, &variable_scope, key);
                 let mut spreads = Vec::new();
                 if let Some(selections) = planner.plan_selection_set(
                     &mut PlanWalk {
@@ -168,7 +171,13 @@ async fn plan_queries(
         }
     }
 
-    emit_plan_diagnostics(diagnostics, def_entity, catalog_entity, file.0, &mut commands);
+    emit_plan_diagnostics(
+        diagnostics,
+        def_entity,
+        catalog_entity,
+        file.0,
+        &mut commands,
+    );
 }
 
 fn emit_plan_diagnostics(
@@ -274,7 +283,10 @@ struct Planner<'a> {
 }
 
 impl Planner<'_> {
-    #[expect(clippy::too_many_arguments, reason = "recursion threads the whole walk state")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "recursion threads the whole walk state"
+    )]
     fn plan_selection_set(
         &mut self,
         walk: &mut PlanWalk<'_>,
@@ -301,9 +313,7 @@ impl Planner<'_> {
         children.extend(
             self.tree
                 .spreads_under(parent)
-                .map(|(_, spread, _, _)| {
-                    (spread.span.start, Child::Spread(spread.name.clone()))
-                }),
+                .map(|(_, spread, _, _)| (spread.span.start, Child::Spread(spread.name.clone()))),
         );
         children.sort_by_key(|(start, _)| *start);
 
@@ -755,9 +765,7 @@ impl Planner<'_> {
             return None;
         }
         let scope = match anchor {
-            PathAnchor::Current if outer_current_table.is_some() => {
-                FilterColumnScope::OuterCurrent
-            }
+            PathAnchor::Current if outer_current_table.is_some() => FilterColumnScope::OuterCurrent,
             PathAnchor::Current => FilterColumnScope::Current,
             PathAnchor::Root => FilterColumnScope::Root,
             PathAnchor::Parent => return None,
@@ -781,7 +789,10 @@ impl Planner<'_> {
 
     /// Multi-segment `Current`-scoped predicate paths become nested
     /// `EXISTS` subqueries stepping through each relation.
-    #[expect(clippy::too_many_arguments, reason = "recursion threads the whole walk state")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "recursion threads the whole walk state"
+    )]
     fn relation_predicate_filter(
         &mut self,
         table: TableId,
@@ -814,7 +825,10 @@ impl Planner<'_> {
         )
     }
 
-    #[expect(clippy::too_many_arguments, reason = "recursion threads the whole walk state")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "recursion threads the whole walk state"
+    )]
     fn relation_predicate_segments(
         &mut self,
         table: TableId,

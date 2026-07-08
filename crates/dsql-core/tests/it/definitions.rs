@@ -29,12 +29,21 @@ async fn render_def_facts(bowl: &Bowl) -> String {
             let target = targets
                 .iter()
                 .find(|(target_entity, _)| *target_entity == entity)
-                .map(|(_, target)| format!(" on {} [{}..{}]", target.name, target.span.start, target.span.end))
+                .map(|(_, target)| {
+                    format!(
+                        " on {} [{}..{}]",
+                        target.name, target.span.start, target.span.end
+                    )
+                })
                 .unwrap_or_default();
             format!(
                 "{} {} [{}..{}] name[{}..{}]{target}",
-                decl.kind, decl.name, decl.span.start, decl.span.end,
-                decl.name_span.start, decl.name_span.end,
+                decl.kind,
+                decl.name,
+                decl.span.start,
+                decl.span.end,
+                decl.name_span.start,
+                decl.name_span.end,
             )
         })
         .collect();

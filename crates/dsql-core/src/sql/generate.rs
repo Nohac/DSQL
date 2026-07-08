@@ -36,7 +36,12 @@ pub async fn register_sql(bowl: &Bowl) {
 /// nothing rather than a broken artifact.
 async fn generate_sql_facts(
     _: Query<Entity, With<SqlDemand>>,
-    plans: Query<(Entity, &QueryPlanFact, &BelongsToFile, &crate::facts::PlanKey)>,
+    plans: Query<(
+        Entity,
+        &QueryPlanFact,
+        &BelongsToFile,
+        &crate::facts::PlanKey,
+    )>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     options: Query<(Entity, &SqlOptions)>,
     mut commands: Commands,

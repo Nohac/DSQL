@@ -3,11 +3,13 @@
 
 use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query};
 
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::{
     DiagnosticCode, DiagnosticFacts, DiagnosticSource, Severity, Span, emit_diagnostic,
 };
+use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef, Parser};
 use crate::source::SourceText;
 
@@ -86,7 +88,6 @@ pub async fn parse_file(query: Query<(Entity, &SourceText)>, mut commands: Comma
     }
 }
 
-
 impl FormatStage for Document {
     /// Top-level layout: definitions and comments separated by blank lines.
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
@@ -110,12 +111,10 @@ impl FormatStage for Document {
     }
 }
 
-
 impl HoverStage for Document {
     /// Documents carry no hover content; the service supplies the fallback.
     async fn register_hover(_bowl: &Bowl) {}
 }
-
 
 impl CompletionStage for Document {
     /// Documents contribute no completions; keywords come from the grammar layer.

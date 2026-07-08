@@ -1,19 +1,23 @@
 //! Fragment-spread entity: `...Name` selections, their resolution to
 //! fragment definitions, and the unknown-fragment check.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, SystemExt, View, Where, With};
+use bowl::{
+    Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, SystemExt, View, Where, With,
+};
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
 use crate::entities::{direct_token, node_span, text};
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     ParentKey, Severity, Span, emit_diagnostic,
 };
-use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::NodeRef;
+use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// One `...Name` spread, lowered from `fragment_spread`.
@@ -46,7 +50,8 @@ impl LanguageEntity for FragmentSpread {
         // behind the Complete phase barrier; their DefIndex/ScopeImports
         // inputs are tracked, which exempts them from the same-phase race
         // next to index_defs.
-        bowl.add_system(resolve_spreads.run_during(Phase::Complete)).await;
+        bowl.add_system(resolve_spreads.run_during(Phase::Complete))
+            .await;
         bowl.add_system(check_unknown_fragments.run_during(Phase::Complete))
             .await;
     }
@@ -321,7 +326,6 @@ async fn check_unknown_fragments(
     );
 }
 
-
 impl FormatStage for FragmentSpread {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         use crate::grammar::parser::Rule;
@@ -335,7 +339,6 @@ impl FormatStage for FragmentSpread {
         }
     }
 }
-
 
 impl HoverStage for FragmentSpread {
     async fn register_hover(bowl: &Bowl) {
@@ -378,7 +381,6 @@ async fn hover_spreads(
     ));
 }
 
-
 impl CompletionStage for FragmentSpread {
     async fn register_completions(bowl: &Bowl) {
         bowl.add_system(complete_spreads.run_during(bowl::Phase::Complete))
@@ -407,7 +409,9 @@ async fn complete_spreads(
     mut commands: Commands,
 ) {
     use crate::catalog::TableRef;
-    use crate::service::completion::{CompletionCandidate, CompletionItem, CompletionKind, CompletionSite};
+    use crate::service::completion::{
+        CompletionCandidate, CompletionItem, CompletionKind, CompletionSite,
+    };
 
     let (request, context) = requests.item();
     let (_, snapshot) = catalog.item();
@@ -430,7 +434,9 @@ async fn complete_spreads(
         {
             continue;
         }
-        let Some(target_table) = snapshot.catalog().table_ref_for(TableRef::parse(&target.name))
+        let Some(target_table) = snapshot
+            .catalog()
+            .table_ref_for(TableRef::parse(&target.name))
         else {
             continue;
         };

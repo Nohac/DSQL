@@ -165,11 +165,10 @@ impl Project {
             path: config_path.clone(),
             source,
         })?;
-        let config: Config =
-            facet_toml::from_str(&raw).map_err(|error| ProjectError::Parse {
-                path: config_path,
-                message: error.to_string(),
-            })?;
+        let config: Config = facet_toml::from_str(&raw).map_err(|error| ProjectError::Parse {
+            path: config_path,
+            message: error.to_string(),
+        })?;
         for (scope, scope_config) in &config.resolution {
             for import in &scope_config.imports {
                 if !config.resolution.contains_key(import) {

@@ -23,7 +23,9 @@ async fn language_bowl() -> Bowl {
 /// Renders clause facts as `field: kind payload`, resolving the parent
 /// field selection through the node keys.
 async fn render_clauses(bowl: &Bowl) -> String {
-    let clauses = bowl.scoop::<Query<(Entity, &ClauseFact, &ParentKey)>>().await;
+    let clauses = bowl
+        .scoop::<Query<(Entity, &ClauseFact, &ParentKey)>>()
+        .await;
     let fields = bowl.scoop::<Query<(Entity, &FieldSel, &NodeKey)>>().await;
     let field_rows = fields.collect();
 
@@ -183,7 +185,9 @@ fn variable_occurrences_become_facts() {
         let clauses = bowl.scoop::<Query<(Entity, &ClauseFact, &NodeKey)>>().await;
         let clause_rows = clauses.collect();
 
-        let parents = bowl.scoop::<Query<(Entity, &VariableUse, &ParentKey)>>().await;
+        let parents = bowl
+            .scoop::<Query<(Entity, &VariableUse, &ParentKey)>>()
+            .await;
         let mut lines: Vec<String> = parents
             .collect()
             .into_iter()

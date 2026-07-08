@@ -63,8 +63,7 @@ fn formatter_cases_match_expected_output() {
 
 #[test]
 fn formatting_is_idempotent() {
-    let source =
-        "query Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra } }\nfragment Extra on users {\n  email\n}\n";
+    let source = "query Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra } }\nfragment Extra on users {\n  email\n}\n";
     let once = format(source);
     let twice = format(&once.text);
     assert_eq!(once.text, twice.text, "formatting must be idempotent");

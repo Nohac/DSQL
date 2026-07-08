@@ -1,4 +1,6 @@
-use crate::catalog::{Catalog, Column, ColumnId, ForeignKey, ForeignKeyId, RelationCardinality, Table, TableId};
+use crate::catalog::{
+    Catalog, Column, ColumnId, ForeignKey, ForeignKeyId, RelationCardinality, Table, TableId,
+};
 use crate::plan::{
     FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, QueryPlan, SelectionClauses,
     SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
@@ -732,10 +734,7 @@ fn column(catalog: &Catalog, id: ColumnId) -> Result<&Column, SqlGenerationError
         .ok_or(SqlGenerationError::MissingColumn(id.0))
 }
 
-fn foreign_key(
-    catalog: &Catalog,
-    id: ForeignKeyId,
-) -> Result<&ForeignKey, SqlGenerationError> {
+fn foreign_key(catalog: &Catalog, id: ForeignKeyId) -> Result<&ForeignKey, SqlGenerationError> {
     catalog
         .foreign_key_by_id(id)
         .ok_or(SqlGenerationError::MissingForeignKey(id.0))
@@ -744,4 +743,3 @@ fn foreign_key(
 fn table_label(table: &Table) -> String {
     format!("{}.{}", table.schema, table.name)
 }
-

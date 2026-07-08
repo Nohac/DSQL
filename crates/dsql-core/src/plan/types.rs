@@ -120,7 +120,6 @@ impl FilterOp {
     }
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PlannedFile {
     pub queries: Vec<QueryPlan>,
@@ -277,7 +276,6 @@ pub struct NestedRelation {
     pub foreign_key: ForeignKeyId,
     pub selections: Box<SelectionPlan>,
 }
-
 
 fn format_table_candidates(candidates: &[TableKey]) -> String {
     candidates

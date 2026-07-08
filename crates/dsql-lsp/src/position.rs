@@ -1,9 +1,11 @@
 //! Byte-offset ↔ LSP position mapping. Spans are byte ranges end to end;
 //! UTF-16 line/character positions exist only at this protocol boundary.
 
-use dsql_core::service::{SemanticTokenKind, SemanticToken as CoreSemanticToken};
+use dsql_core::service::{SemanticToken as CoreSemanticToken, SemanticTokenKind};
 use ropey::{LineType, Rope};
-use tower_lsp_server::ls_types::{Position, SemanticToken, SemanticTokenType, SemanticTokensLegend};
+use tower_lsp_server::ls_types::{
+    Position, SemanticToken, SemanticTokenType, SemanticTokensLegend,
+};
 
 pub(crate) fn byte_to_position(rope: &Rope, byte: usize) -> Position {
     let byte = byte.min(rope.len());

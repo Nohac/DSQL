@@ -8,8 +8,8 @@ use dsql_core::entities::variable::VariableBinding;
 use dsql_core::entities::variable_path::{is_input_path, is_params_path};
 use dsql_core::facts::Span;
 use dsql_core::plan::{
-    FragmentPlanFact, OperationSeed, QueryPlan, SelectionClauses, SelectionPlan,
-    SelectionPlanItem, SqlValue,
+    FragmentPlanFact, OperationSeed, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
+    SqlValue,
 };
 use dsql_core::sql::GeneratedSql;
 use dsql_metadata::{
@@ -283,10 +283,14 @@ fn dynamic_inputs(bindings: &[VariableBinding]) -> Vec<DynamicInputMetadata> {
         .iter()
         .filter(|binding| !binding.enum_values.is_empty())
         .map(|binding| DynamicInputMetadata {
-            name: binding
-                .name
-                .clone()
-                .unwrap_or_else(|| binding.path.rsplit('.').next().unwrap_or("value").to_string()),
+            name: binding.name.clone().unwrap_or_else(|| {
+                binding
+                    .path
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or("value")
+                    .to_string()
+            }),
             kind: binding.role.as_str().to_string(),
             preset: String::new(),
             fields: Vec::new(),

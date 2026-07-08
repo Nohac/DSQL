@@ -5,9 +5,11 @@ use bowl::{Bowl, Commands, Component, DerivedFrom};
 
 use crate::entities::expression::{Expr, build_expr, expr_child};
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span};
+use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 
@@ -110,7 +112,6 @@ impl LowerStage for Directive {
     }
 }
 
-
 impl FormatStage for Directive {
     /// Directives are preserved verbatim, preceded by one space.
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
@@ -119,12 +120,10 @@ impl FormatStage for Directive {
     }
 }
 
-
 impl HoverStage for Directive {
     /// Directive hover lands with the directive registry.
     async fn register_hover(_bowl: &Bowl) {}
 }
-
 
 impl CompletionStage for Directive {
     /// Directive completions land with the directive registry.

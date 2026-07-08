@@ -10,9 +10,11 @@
 use bowl::{Bowl, Commands};
 
 use crate::entities::{direct_rule, node_span, text};
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::Span;
+use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{CstData, Node, NodeRef, Rule};
 
@@ -233,7 +235,9 @@ fn binary_operator(cst: &CstData, source: &str, node: NodeRef) -> Option<BinaryO
                     return comparison_op(cst, comparison).map(BinaryOp::Comparison);
                 }
                 if let Some(variable) = direct_rule(cst, child, Rule::OperatorVariable) {
-                    return Some(BinaryOp::Variable(build_variable_ref(cst, source, variable)));
+                    return Some(BinaryOp::Variable(build_variable_ref(
+                        cst, source, variable,
+                    )));
                 }
             }
             Node::Token(Token::And, _) => return Some(BinaryOp::And),
@@ -429,7 +433,6 @@ fn render_variable(variable: &VariableRef) -> String {
     rendered
 }
 
-
 impl FormatStage for Expression {
     /// Expressions format through the engine's layout machinery.
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
@@ -437,13 +440,11 @@ impl FormatStage for Expression {
     }
 }
 
-
 impl HoverStage for Expression {
     /// Expression internals answer through the variable entity; paths gain
     /// hover with the editor polish pass.
     async fn register_hover(_bowl: &Bowl) {}
 }
-
 
 impl CompletionStage for Expression {
     /// Expression operators come from the grammar layer; typed operator filtering is a planned refinement.

@@ -110,7 +110,12 @@ pub fn generate_project(project: &Project, options: GenerateOptions) -> Result<G
             },
         )
         .map_err(|error| error.named(&operation.seed.query_name))?;
-        operations.push(hashed(metadata, |metadata| &metadata.name, &project_root, &operation.file)?);
+        operations.push(hashed(
+            metadata,
+            |metadata| &metadata.name,
+            &project_root,
+            &operation.file,
+        )?);
     }
     operations.sort_by(|left, right| left.0.name.cmp(&right.0.name));
 
@@ -131,7 +136,12 @@ pub fn generate_project(project: &Project, options: GenerateOptions) -> Result<G
                 source_offset: fragment.source_offset,
             },
         )?;
-        fragments.push(hashed(metadata, |metadata| &metadata.name, &project_root, &fragment.file)?);
+        fragments.push(hashed(
+            metadata,
+            |metadata| &metadata.name,
+            &project_root,
+            &fragment.file,
+        )?);
     }
     fragments.sort_by(|left, right| left.0.name.cmp(&right.0.name));
 
@@ -310,7 +320,9 @@ async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<Co
     let diagnostics = bowl
         .scoop::<Query<(Entity, &Severity, &Span, &Diagnostic, &BelongsToFile)>>()
         .await;
-    let paths = bowl.scoop::<Query<(Entity, &FilePath, &SourceOffset)>>().await;
+    let paths = bowl
+        .scoop::<Query<(Entity, &FilePath, &SourceOffset)>>()
+        .await;
     let path_rows = paths.collect();
     let path_of = |file: Entity| {
         path_rows
@@ -331,7 +343,13 @@ async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<Co
         .into_iter()
         .filter(|(_, severity, _, _, _)| **severity == Severity::Error)
         .map(|(_, _, span, diagnostic, file)| {
-            format!("{}:{}..{}: {}", path_of(file.0), span.start, span.end, diagnostic.0)
+            format!(
+                "{}:{}..{}: {}",
+                path_of(file.0),
+                span.start,
+                span.end,
+                diagnostic.0
+            )
         })
         .collect();
     if !errors.is_empty() {

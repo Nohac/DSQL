@@ -420,7 +420,11 @@ mod tests {
         assert_eq!(metadata.schemas.len(), 1);
         let schema = &metadata.schemas[0];
         assert_eq!(schema.name, "public");
-        let names: Vec<&str> = schema.tables.iter().map(|table| table.name.as_str()).collect();
+        let names: Vec<&str> = schema
+            .tables
+            .iter()
+            .map(|table| table.name.as_str())
+            .collect();
         assert_eq!(names, ["kind_type", "title"], "tables sort by name");
 
         let title = &schema.tables[1];
@@ -431,8 +435,11 @@ mod tests {
         assert_eq!(title.indexes.len(), 1);
 
         assert_eq!(metadata.types.len(), 1, "type operations merge per type");
-        let operations: Vec<&str> =
-            metadata.types[0].operations.iter().map(String::as_str).collect();
+        let operations: Vec<&str> = metadata.types[0]
+            .operations
+            .iter()
+            .map(String::as_str)
+            .collect();
         assert_eq!(operations, ["<", "="]);
     }
 

@@ -69,8 +69,7 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
             files.sort();
             files.dedup();
             for path in files {
-                if let Some((_, first)) = owned.iter().find(|(owned_path, _)| *owned_path == path)
-                {
+                if let Some((_, first)) = owned.iter().find(|(owned_path, _)| *owned_path == path) {
                     return Err(ProjectError::DuplicateScopeDocument {
                         path,
                         first: first.clone(),
@@ -111,14 +110,16 @@ fn read_documents(
         });
         return Ok(());
     }
-    documents.extend(extract_regions(embedding, &text).into_iter().map(|region| {
-        ProjectDocument {
-            path: path.to_path_buf(),
-            text: region.text,
-            source_offset: region.offset,
-            scope: scope.to_string(),
-        }
-    }));
+    documents.extend(
+        extract_regions(embedding, &text)
+            .into_iter()
+            .map(|region| ProjectDocument {
+                path: path.to_path_buf(),
+                text: region.text,
+                source_offset: region.offset,
+                scope: scope.to_string(),
+            }),
+    );
     Ok(())
 }
 

@@ -15,15 +15,17 @@ use bowl::{
 use crate::catalog::{CatalogSnapshot, TableRef, TableResolution};
 use crate::entities::document::ParsedFile;
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     Severity, Span, emit_diagnostic,
 };
-use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
+use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// What kind of definition a [`DefDecl`] fact describes.
@@ -88,7 +90,8 @@ impl LanguageEntity for Definition {
         // Ambient readers of lowered facts sit behind the Complete phase
         // barrier (the engine's same-phase race flag enforces this);
         // check_fragment_targets reads only tracked inputs and needs none.
-        bowl.add_system(index_defs.run_during(Phase::Complete)).await;
+        bowl.add_system(index_defs.run_during(Phase::Complete))
+            .await;
         bowl.add_system(check_duplicate_fragments.run_during(Phase::Complete))
             .await;
         bowl.add_system(check_import_collisions.run_during(Phase::Complete))
@@ -127,7 +130,10 @@ async fn check_fragment_targets(
                 },
             );
         }
-        TableResolution::Ambiguous { reference, candidates } => {
+        TableResolution::Ambiguous {
+            reference,
+            candidates,
+        } => {
             let candidates: Vec<String> = candidates
                 .iter()
                 .map(|key| format!("{}::{}", key.schema, key.table))
@@ -332,7 +338,6 @@ async fn check_import_collisions(
     );
 }
 
-
 impl FormatStage for Definition {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         if formatter.rule(node) == Some(Rule::QueryDef) {
@@ -361,7 +366,6 @@ impl FormatStage for Definition {
         }
     }
 }
-
 
 impl HoverStage for Definition {
     async fn register_hover(bowl: &Bowl) {
@@ -409,7 +413,6 @@ async fn hover_definitions(
         },
     ));
 }
-
 
 impl CompletionStage for Definition {
     /// Definition keywords come from the grammar layer.

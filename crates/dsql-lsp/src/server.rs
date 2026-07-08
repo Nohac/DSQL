@@ -106,9 +106,16 @@ impl Backend {
                 ..Diagnostic::default()
             })
             .collect();
-        diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start.line, diagnostic.range.start.character));
+        diagnostics.sort_by_key(|diagnostic| {
+            (
+                diagnostic.range.start.line,
+                diagnostic.range.start.character,
+            )
+        });
 
-        self.client.publish_diagnostics(uri, diagnostics, None).await;
+        self.client
+            .publish_diagnostics(uri, diagnostics, None)
+            .await;
     }
 }
 
@@ -222,7 +229,8 @@ impl LanguageServer for Backend {
                 .await;
         }
 
-        self.publish_diagnostics(params.text_document.uri, &path).await;
+        self.publish_diagnostics(params.text_document.uri, &path)
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -253,7 +261,8 @@ impl LanguageServer for Backend {
                 .await;
         }
 
-        self.publish_diagnostics(params.text_document.uri, &path).await;
+        self.publish_diagnostics(params.text_document.uri, &path)
+            .await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {

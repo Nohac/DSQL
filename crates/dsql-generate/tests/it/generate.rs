@@ -6,12 +6,9 @@ use dsql_project::Project;
 /// Copies the dsql-project scoped fixture into a temp dir so generation
 /// can write its build/ tree without polluting the repository.
 fn fixture_project(test: &str) -> (PathBuf, Project) {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../dsql-project/tests/it/fixture/scoped");
-    let dir = std::env::temp_dir().join(format!(
-        "dsql-generate-{test}-{}",
-        std::process::id()
-    ));
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../dsql-project/tests/it/fixture/scoped");
+    let dir = std::env::temp_dir().join(format!("dsql-generate-{test}-{}", std::process::id()));
     if dir.exists() {
         std::fs::remove_dir_all(&dir).expect("clean stale fixture copy");
     }
@@ -49,24 +46,18 @@ fn generates_manifest_and_artifacts() {
     let manifest = std::fs::read_to_string(&output.manifest_path).expect("manifest readable");
     insta::assert_snapshot!("manifest", manifest);
 
-    let operation = std::fs::read_to_string(
-        project.root.join("build/operations/Titles.json"),
-    )
-    .expect("operation artifact written");
+    let operation = std::fs::read_to_string(project.root.join("build/operations/Titles.json"))
+        .expect("operation artifact written");
     insta::assert_snapshot!("operation", operation);
 
-    let fragment = std::fs::read_to_string(
-        project.root.join("build/fragments/TitleBits.json"),
-    )
-    .expect("fragment artifact written");
+    let fragment = std::fs::read_to_string(project.root.join("build/fragments/TitleBits.json"))
+        .expect("fragment artifact written");
     insta::assert_snapshot!("fragment", fragment);
 
     // The embedded operation source-maps into its host .ts file and
     // records the fragments its result paths came from.
-    let embedded = std::fs::read_to_string(
-        project.root.join("build/operations/TitlePanel.json"),
-    )
-    .expect("embedded operation artifact written");
+    let embedded = std::fs::read_to_string(project.root.join("build/operations/TitlePanel.json"))
+        .expect("embedded operation artifact written");
     insta::assert_snapshot!("embedded_operation", embedded);
 
     // Second run: everything unchanged, nothing rewritten.
@@ -77,7 +68,10 @@ fn generates_manifest_and_artifacts() {
         },
     )
     .expect("rerun succeeds");
-    assert!(rerun.written.is_empty(), "unchanged artifacts must be skipped");
+    assert!(
+        rerun.written.is_empty(),
+        "unchanged artifacts must be skipped"
+    );
 
     std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }

@@ -13,7 +13,9 @@ mod selections;
 mod services;
 mod settle;
 mod sql;
-mod variables;
 mod support;
+mod variables;
 
-pub use support::{fixture, imdb_catalog, queries_dir, render_diagnostic_facts, render_diagnostics};
+pub use support::{
+    fixture, imdb_catalog, queries_dir, render_diagnostic_facts, render_diagnostics,
+};

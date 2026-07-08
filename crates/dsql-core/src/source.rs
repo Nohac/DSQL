@@ -132,13 +132,7 @@ pub struct ScopeImports(pub BTreeMap<String, Vec<String>>);
 impl ScopeImports {
     /// The scopes visible from `scope`: itself plus its direct imports.
     pub fn visible_from<'a>(&'a self, scope: &'a str) -> impl Iterator<Item = &'a str> {
-        std::iter::once(scope).chain(
-            self.0
-                .get(scope)
-                .into_iter()
-                .flatten()
-                .map(String::as_str),
-        )
+        std::iter::once(scope).chain(self.0.get(scope).into_iter().flatten().map(String::as_str))
     }
 
     /// The imports of `scope`, without the scope itself.

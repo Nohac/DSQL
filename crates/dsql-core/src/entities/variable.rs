@@ -12,17 +12,21 @@ use crate::catalog::{
 };
 use crate::entities::clause::{ClauseFact, OrderDirection};
 use crate::entities::definition::{DefDecl, DefKind};
-use crate::entities::expression::{BinaryOp, ComparisonOp, Expr, Sigil, VariableRef, build_variable_ref};
+use crate::entities::expression::{
+    BinaryOp, ComparisonOp, Expr, Sigil, VariableRef, build_variable_ref,
+};
 use crate::entities::field_selection::{SelectionTree, TreeViews};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
-use crate::entity::{CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::format::CstFormatter;
+use crate::entity::{
+    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
+};
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span, VariablesDemand};
-use crate::source::{ResolutionScope, ScopeImports};
+use crate::format::CstFormatter;
 use crate::grammar::parser::NodeRef;
 use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::source::{ResolutionScope, ScopeImports};
 
 /// One variable occurrence, lowered from `value_variable` or
 /// `operator_variable`. The inference stage (phase 7) groups these by name
@@ -70,7 +74,6 @@ impl LowerStage for Variable {
         }
     }
 }
-
 
 /// Whether a binding surfaces as structured input (`$`, `input.*`) or a
 /// top-level parameter (`$$`, `params.*`).
@@ -188,7 +191,9 @@ async fn infer_variables(
             else {
                 return;
             };
-            let Some(table) = inference.catalog.table_ref_for(TableRef::parse(&target.name))
+            let Some(table) = inference
+                .catalog
+                .table_ref_for(TableRef::parse(&target.name))
             else {
                 return;
             };
@@ -315,8 +320,10 @@ impl Inference<'_> {
                 .map(|(_, spread, _, _)| spread.name.clone())
                 .collect();
             for name in spreads {
-                let Some((_, _, _, fragment_key, _)) =
-                    self.tree.resolve_fragment(&name, self.scope, self.imports).copied()
+                let Some((_, _, _, fragment_key, _)) = self
+                    .tree
+                    .resolve_fragment(&name, self.scope, self.imports)
+                    .copied()
                 else {
                     continue;
                 };
@@ -347,7 +354,8 @@ impl Inference<'_> {
                 target: TableRef::parse(&field.name),
                 selector: field.relation_path.as_deref(),
             };
-            let FieldCheckResult::Relation(relation) = self.catalog.check_field_ref(table, reference)
+            let FieldCheckResult::Relation(relation) =
+                self.catalog.check_field_ref(table, reference)
             else {
                 continue;
             };
@@ -464,7 +472,8 @@ impl Inference<'_> {
             selector: last.relation_path.as_deref(),
         };
         let display = reference.display_text();
-        let FieldCheckResult::Column(column) = self.catalog.check_field_ref(current_table, reference)
+        let FieldCheckResult::Column(column) =
+            self.catalog.check_field_ref(current_table, reference)
         else {
             return None;
         };
@@ -522,15 +531,18 @@ impl Inference<'_> {
             operator.sigil,
             Some(&key),
         );
-        self.bindings.push((operator.span, VariableBinding {
-            path,
-            source: operator.sigil.into(),
-            name,
-            data_type,
-            role: VariableRole::ComparisonOperator,
-            enum_values: allowed.iter().map(|op| op.as_str().to_string()).collect(),
-            operators: allowed,
-        }));
+        self.bindings.push((
+            operator.span,
+            VariableBinding {
+                path,
+                source: operator.sigil.into(),
+                name,
+                data_type,
+                role: VariableRole::ComparisonOperator,
+                enum_values: allowed.iter().map(|op| op.as_str().to_string()).collect(),
+                operators: allowed,
+            },
+        ));
     }
 
     fn push_binding(
@@ -551,15 +563,18 @@ impl Inference<'_> {
             variable.sigil,
             name.as_deref(),
         );
-        self.bindings.push((variable.span, VariableBinding {
-            path,
-            source: variable.sigil.into(),
-            name,
-            data_type: context.data_type,
-            role: context.role,
-            operators: context.operators,
-            enum_values: context.enum_values,
-        }));
+        self.bindings.push((
+            variable.span,
+            VariableBinding {
+                path,
+                source: variable.sigil.into(),
+                name,
+                data_type: context.data_type,
+                role: context.role,
+                operators: context.operators,
+                enum_values: context.enum_values,
+            },
+        ));
     }
 }
 
@@ -581,14 +596,12 @@ fn response_key(selection: &crate::entities::field_selection::FieldSel) -> Strin
         .unwrap_or_else(|| TableRef::parse(&selection.name).name.to_string())
 }
 
-
 impl FormatStage for Variable {
     /// Variables are preserved verbatim.
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         formatter.write_node_text(node);
     }
 }
-
 
 impl HoverStage for Variable {
     async fn register_hover(bowl: &Bowl) {
@@ -638,7 +651,6 @@ async fn hover_variables(
         },
     ));
 }
-
 
 impl CompletionStage for Variable {
     /// Variables are free-form names; nothing to suggest yet.

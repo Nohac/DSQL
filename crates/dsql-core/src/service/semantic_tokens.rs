@@ -16,9 +16,7 @@ use bowl::{
     Bowl, Commands, Component, Entity, Eq as BowlEq, Phase, Query, SystemExt, View, Where, With,
 };
 
-use crate::catalog::{
-    Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef,
-};
+use crate::catalog::{Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef};
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::DefDecl;
 use crate::entities::expression::{Expr, PathAnchor};
@@ -103,7 +101,12 @@ async fn answer_semantic_tokens(
             .iter()
             .find(|(entity, _, _, _, _)| *entity == def_entity)
         {
-            qualified_ref_tokens(&mut tokens, &target.name, target.span, SemanticTokenKind::Table);
+            qualified_ref_tokens(
+                &mut tokens,
+                &target.name,
+                target.span,
+                SemanticTokenKind::Table,
+            );
             if let Some(table) = catalog.table_ref_for(TableRef::parse(&target.name)) {
                 selection_tokens(&mut tokens, &tree, catalog, table.id, table.id, *def_key);
             }

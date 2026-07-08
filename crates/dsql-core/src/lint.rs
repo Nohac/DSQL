@@ -134,7 +134,8 @@ impl LintWalk<'_> {
                 target: TableRef::parse(&field.name),
                 selector: field.relation_path.as_deref(),
             };
-            let FieldCheckResult::Relation(relation) = self.catalog.check_field_ref(table, reference)
+            let FieldCheckResult::Relation(relation) =
+                self.catalog.check_field_ref(table, reference)
             else {
                 continue;
             };
@@ -173,7 +174,10 @@ impl LintWalk<'_> {
                 segments,
                 ..
             } if segments.len() >= 2 => self.lint_predicate_path(table, segments),
-            Expr::Path { .. } | Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
+            Expr::Path { .. }
+            | Expr::Literal { .. }
+            | Expr::Variable { .. }
+            | Expr::Error { .. } => {}
         }
     }
 
