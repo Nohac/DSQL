@@ -26,6 +26,11 @@ pub enum ProjectError {
     },
     #[error("failed to parse {path}: {message}")]
     Parse { path: PathBuf, message: String },
+    #[error("failed to write {path}: {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("failed to build catalog: {0}")]
     CatalogBuild(CatalogBuildError),
     #[error("document {path} is owned by both scope `{first}` and scope `{second}`")]

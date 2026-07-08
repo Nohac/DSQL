@@ -12,5 +12,7 @@ bowl = { workspace = true }
 clap = { workspace = true }
 dsql-core = { workspace = true }
 dsql-generate = { workspace = true }
+dsql-introspection = { workspace = true }
 dsql-project = { workspace = true }
 futures = { workspace = true }
+tokio = { workspace = true }

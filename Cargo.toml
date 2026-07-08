@@ -10,6 +10,7 @@ edition = "2024"
 [workspace.dependencies]
 dsql-core = { path = "crates/dsql-core" }
 dsql-generate = { path = "crates/dsql-generate" }
+dsql-introspection = { path = "crates/dsql-introspection" }
 dsql-metadata = { path = "crates/dsql-metadata" }
 dsql-project = { path = "crates/dsql-project" }
 
@@ -32,6 +33,7 @@ insta = "1.48"
 ropey = { version = "2.0.0-beta.1", features = ["metric_utf16"] }
 sea-query = { version = "1.0.1", default-features = false, features = ["backend-postgres"] }
 sqlformat = "0.5"
+sqlx = { version = "0.9", default-features = false }
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }

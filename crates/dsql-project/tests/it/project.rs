@@ -132,3 +132,29 @@ fn documents_owned_by_two_scopes_fail_loading() {
         "unexpected error: {error}"
     );
 }
+
+
+#[test]
+fn schema_directory_round_trips_and_drops_stale_tables() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixture/imdb");
+    let project = Project::load_from(&fixture).expect("imdb fixture loads");
+    let metadata = dsql_project::load_metadata_dir(&project.schema).expect("schema loads");
+
+    let dir = std::env::temp_dir().join(format!("dsql-schema-roundtrip-{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("clean stale dir");
+    }
+    dsql_project::store_metadata_dir(&metadata, &dir).expect("schema stores");
+    let reloaded = dsql_project::load_metadata_dir(&dir).expect("stored schema loads");
+    let mut canonical = metadata.clone();
+    canonical.canonicalize();
+    assert_eq!(reloaded, canonical);
+
+    // A table file for a dropped table disappears on the next store.
+    let stale = dir.join("public/dropped_table.yaml");
+    std::fs::write(&stale, "stale").expect("stale file writes");
+    dsql_project::store_metadata_dir(&metadata, &dir).expect("schema restores");
+    assert!(!stale.exists(), "stale table files are removed");
+
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}

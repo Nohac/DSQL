@@ -145,3 +145,26 @@ pub fn generate(collection_limit: Option<u64>) -> Outcome {
         Err(_) => Ok(false),
     }
 }
+
+
+/// Introspects the configured database and writes the schema directory.
+pub fn introspect() -> Outcome {
+    let project = Project::load()?;
+    let runtime = tokio::runtime::Runtime::new().map_err(|source| ProjectError::Read {
+        path: project.root.clone(),
+        source,
+    })?;
+    let metadata =
+        runtime.block_on(dsql_introspection::introspect_postgres(&project.config.database_url));
+    match metadata {
+        Ok(metadata) => {
+            dsql_project::store_metadata_dir(&metadata, &project.schema)?;
+            println!("schema written to {}", project.schema.display());
+            Ok(true)
+        }
+        Err(error) => {
+            eprintln!("introspection failed: {error}");
+            Ok(false)
+        }
+    }
+}
