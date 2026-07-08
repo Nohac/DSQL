@@ -17,7 +17,7 @@ use crate::facts::{
     ParentKey, Severity, Span, emit_diagnostic,
 };
 use crate::service::completion::{CompletionContext, CompletionRequest};
-use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, RequestKey, priority};
+use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 
@@ -594,7 +594,7 @@ impl HoverStage for FieldSelection {
 /// Answers hover on a field selection name with its resolved column or
 /// relation, walking the parent chain to establish the context table.
 async fn hover_fields(
-    query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
+    query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     views: TreeViews<'_>,
     mut commands: Commands,

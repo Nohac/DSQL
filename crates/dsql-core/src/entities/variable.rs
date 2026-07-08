@@ -5,7 +5,7 @@
 //! at which binding time, with which types" — so each occurrence also
 //! becomes its own fact, anchored into the tree by [`ParentKey`].
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, With};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, Where, With};
 
 use crate::catalog::{
     CatalogSnapshot, DataType, FieldCheckResult, FieldRef, TableRef, TableResolution,
@@ -22,7 +22,7 @@ use crate::format::CstFormatter;
 use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span, VariablesDemand};
 use crate::source::{ResolutionScope, ScopeImports};
 use crate::grammar::parser::NodeRef;
-use crate::service::hover::{HoverCandidate, HoverEnriched, HoverFile, Position, RequestKey, priority, span_matches};
+use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
 
 /// One variable occurrence, lowered from `value_variable` or
 /// `operator_variable`. The inference stage (phase 7) groups these by name
@@ -584,27 +584,25 @@ impl FormatStage for Variable {
 
 impl HoverStage for Variable {
     async fn register_hover(bowl: &Bowl) {
-        bowl.add_system(hover_variables.run_during(bowl::Phase::Complete))
-            .await;
+        // Fully tracked (a per-file bound join, no views), so it needs no
+        // phase barrier: pairs replan as bindings commit at Complete.
+        bowl.add_system(hover_variables).await;
     }
 }
 
 /// Answers hover on a variable occurrence with its inferred binding: one
-/// tracked invocation per (request, binding) pair, answering when the
-/// binding's span holds the cursor. Bindings derive at Complete, the same
-/// phase as this system — tracked consumption is what makes that safe
-/// (pairs replan as bindings commit; an ambient `View` here raced them,
-/// and the engine's same-phase race flag caught exactly that). Without
+/// invocation per (request, binding-in-file) pair via the `BelongsToFile`
+/// join, answering when the binding's span holds the cursor. Without
 /// `VariablesDemand` there are no bindings, no pairs, and no candidates.
 async fn hover_variables(
-    query: Query<(Entity, &HoverFile, &Position), With<HoverEnriched>>,
-    bindings: Query<(Entity, &Span, &VariableBinding, &BelongsToFile)>,
+    query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
+    bindings: Query<(Entity, &Span, &VariableBinding), Where<bowl::Eq<BelongsToFile>>>,
     mut commands: Commands,
 ) {
-    let (request, file, position) = query.item();
-    let (_, span, binding, binding_file) = bindings.item();
+    let (request, _file, position) = query.item();
+    let (_, span, binding) = bindings.item();
 
-    if !span_matches(*span, binding_file.0, file.0, position.offset) {
+    if !(span.start <= position.offset && position.offset < span.end) {
         return;
     }
 
