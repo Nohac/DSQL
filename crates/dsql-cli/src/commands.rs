@@ -121,3 +121,27 @@ pub fn fmt(check_only: bool) -> Outcome {
     }
     Ok(clean)
 }
+
+
+/// Writes the artifact tree and runs the configured host generator.
+pub fn generate(collection_limit: Option<u64>) -> Outcome {
+    let project = Project::load()?;
+    let output = dsql_generate::generate_project(
+        &project,
+        dsql_generate::GenerateOptions { collection_limit },
+    )
+    .map_err(|error| {
+        eprintln!("{error}");
+        ProjectError::MissingRoot(project.root.clone())
+    });
+    match output {
+        Ok(output) => {
+            for path in &output.written {
+                println!("{}: written", path.display());
+            }
+            println!("manifest: {}", output.manifest_path.display());
+            Ok(true)
+        }
+        Err(_) => Ok(false),
+    }
+}

@@ -57,6 +57,26 @@ pub struct Config {
     /// definitions visible.
     #[facet(default)]
     pub resolution: BTreeMap<String, ScopeConfig>,
+    /// Artifact generation configuration.
+    #[facet(default)]
+    pub generate: GenerateConfig,
+}
+
+/// The `[generate.*]` sections.
+#[derive(Clone, Debug, Default, Facet)]
+pub struct GenerateConfig {
+    #[facet(default)]
+    pub typescript: TypescriptGenerateConfig,
+}
+
+/// `[generate.typescript]`: a host command run after the `build/` tree is
+/// written, from the project base directory (the parent of `dsql/`).
+#[derive(Clone, Debug, Default, Facet)]
+pub struct TypescriptGenerateConfig {
+    #[facet(default)]
+    pub enabled: bool,
+    #[facet(default)]
+    pub cmd: Vec<String>,
 }
 
 /// One `[resolution.<name>]` section.

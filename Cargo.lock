@@ -224,6 +224,7 @@ dependencies = [
  "bowl",
  "clap",
  "dsql-core",
+ "dsql-generate",
  "dsql-project",
  "futures",
 ]
@@ -244,6 +245,21 @@ dependencies = [
  "sea-query",
  "sqlformat",
  "strum",
+ "thiserror",
+]
+
+[[package]]
+name = "dsql-generate"
+version = "0.1.0"
+dependencies = [
+ "bowl",
+ "dsql-core",
+ "dsql-metadata",
+ "dsql-project",
+ "facet",
+ "facet-json",
+ "futures",
+ "insta",
  "thiserror",
 ]
 

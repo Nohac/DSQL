@@ -1,0 +1,17 @@
+[package]
+name = "dsql-generate"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bowl = { workspace = true }
+dsql-core = { workspace = true }
+dsql-metadata = { workspace = true }
+dsql-project = { workspace = true }
+facet = { workspace = true }
+facet-json = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

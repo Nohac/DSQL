@@ -9,6 +9,7 @@ edition = "2024"
 
 [workspace.dependencies]
 dsql-core = { path = "crates/dsql-core" }
+dsql-generate = { path = "crates/dsql-generate" }
 dsql-metadata = { path = "crates/dsql-metadata" }
 dsql-project = { path = "crates/dsql-project" }
 
