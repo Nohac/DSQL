@@ -50,6 +50,13 @@ fn scoped_project_resolves_imports_end_to_end() {
     block_on(async {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixture/scoped");
         let project = Project::load_from(&fixture).expect("scoped fixture loads");
+        assert!(
+            matches!(
+                project.config.lint.unindexed_scan_severity,
+                Some(dsql_project::LintSeverity::Warning)
+            ),
+            "the [lint] section parses"
+        );
 
         let bowl = open_project_bowl(&project).await.expect("bowl assembles");
         bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))

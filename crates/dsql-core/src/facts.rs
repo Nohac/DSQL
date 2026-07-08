@@ -25,6 +25,7 @@ impl From<std::ops::Range<usize>> for Span {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[component(hash)]
 pub enum Severity {
+    Info,
     Warning,
     Error,
 }
@@ -53,6 +54,9 @@ pub enum DiagnosticCode {
     CircularFragmentSpread,
     ClauseValueTypeMismatch,
     PredicateTypeMismatch,
+    UnindexedJoinColumn,
+    UnindexedScanColumn,
+    UnindexedPredicateJoinColumn,
 }
 
 /// Which stage emitted a diagnostic.

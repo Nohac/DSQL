@@ -5,6 +5,7 @@ mod checks;
 mod completions;
 mod definitions;
 mod format;
+mod lints;
 mod lowering;
 mod parse;
 mod scopes;

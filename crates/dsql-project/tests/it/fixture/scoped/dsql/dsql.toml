@@ -7,3 +7,6 @@ documents = ["queries/shared/**/*.dsql"]
 [resolution.frontend]
 documents = ["queries/frontend/**/*.dsql", "src/**/*.ts", "src/**/*.tsx"]
 imports = ["shared"]
+
+[lint]
+unindexed_scan_severity = "warning"

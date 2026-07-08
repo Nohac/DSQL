@@ -70,6 +70,28 @@ pub struct Config {
     /// Embedded-document extraction, per host language.
     #[facet(default)]
     pub embedding: EmbeddingConfig,
+    /// Lint severities.
+    #[facet(default)]
+    pub lint: LintSectionConfig,
+}
+
+/// The `[lint]` section.
+#[derive(Clone, Debug, Default, Facet)]
+pub struct LintSectionConfig {
+    /// Severity of the unindexed-scan lint family; unset means `info`,
+    /// `off` disables it.
+    #[facet(default)]
+    pub unindexed_scan_severity: Option<LintSeverity>,
+}
+
+#[derive(Clone, Copy, Debug, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(C)]
+pub enum LintSeverity {
+    Off,
+    Info,
+    Warning,
+    Error,
 }
 
 /// The `[embedding.*]` sections.

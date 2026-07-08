@@ -5,10 +5,12 @@ use std::collections::BTreeMap;
 use bowl::{Bowl, Singleton};
 
 use dsql_core::catalog::insert_catalog;
+use dsql_core::facts::Severity;
+use dsql_core::lint::LintConfig;
 use dsql_core::register_language;
 use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_at};
 
-use super::config::{Project, Result};
+use super::config::{LintSeverity, Project, Result};
 use super::documents::load_project_documents;
 
 /// Registers the language and populates a fresh bowl with the project's
@@ -38,6 +40,23 @@ pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()>
         .collect();
     bowl.insert((Singleton::<ScopeImports>::new(), ScopeImports(imports)))
         .await;
+
+    let lint = match project.config.lint.unindexed_scan_severity {
+        None => LintConfig::default(),
+        Some(LintSeverity::Off) => LintConfig {
+            unindexed_scan_severity: None,
+        },
+        Some(LintSeverity::Info) => LintConfig {
+            unindexed_scan_severity: Some(Severity::Info),
+        },
+        Some(LintSeverity::Warning) => LintConfig {
+            unindexed_scan_severity: Some(Severity::Warning),
+        },
+        Some(LintSeverity::Error) => LintConfig {
+            unindexed_scan_severity: Some(Severity::Error),
+        },
+    };
+    bowl.insert((Singleton::<LintConfig>::new(), lint)).await;
 
     for document in documents {
         insert_source_at(

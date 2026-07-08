@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/lints.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Info[48..53]: predicate path `.aka_title->movie_id.title` filters on unindexed column `aka_title.title`; nested scans can be slow
+Info[89..98]: relation `aka_title->episode_of_id` joins on unindexed column `aka_title.episode_of_id`; this can be slow

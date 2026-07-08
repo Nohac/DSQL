@@ -99,6 +99,7 @@ impl Backend {
                 severity: Some(match severity {
                     Severity::Error => DiagnosticSeverity::ERROR,
                     Severity::Warning => DiagnosticSeverity::WARNING,
+                    Severity::Info => DiagnosticSeverity::INFORMATION,
                 }),
                 message: diagnostic.0.clone(),
                 source: Some("dsql".to_string()),
