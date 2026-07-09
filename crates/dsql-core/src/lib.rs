@@ -12,6 +12,7 @@ pub mod format;
 pub mod grammar;
 pub mod lint;
 pub mod plan;
+pub mod resolution;
 pub mod service;
 pub mod source;
 pub mod sql;
@@ -53,6 +54,7 @@ pub async fn register_language(bowl: &Bowl) {
 
     lint::register_lints(bowl).await;
     plan::register_planning(bowl).await;
+    resolution::register_resolution(bowl).await;
     sql::register_sql(bowl).await;
     service::register_services(bowl).await;
 

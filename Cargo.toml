@@ -14,7 +14,7 @@ dsql-introspection = { path = "crates/dsql-introspection" }
 dsql-metadata = { path = "crates/dsql-metadata" }
 dsql-project = { path = "crates/dsql-project" }
 
-bowl = { git = "https://github.com/Nohac/porridge", rev = "fb14619342267114def0e6e3d8d89d727ad082b7" }
+bowl = { git = "https://github.com/Nohac/porridge", rev = "5c99a71" }
 lelwel = { path = "vendor/lelwel" }
 miette = { version = "7", features = ["fancy"] }
 logos = { path = "vendor/logos" }
@@ -37,5 +37,5 @@ sqlformat = "0.5"
 sqlx = { version = "0.9", default-features = false }
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "fs", "process", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "fs", "process", "sync", "time"] }
 tower-lsp-server = "0.23"

@@ -27,7 +27,7 @@ use dsql_core::grammar::parse;
 use dsql_core::register_language;
 use dsql_core::service::{
     CompletionKind, CompletionList, CompletionRequest, DefinitionRequest, DefinitionTarget,
-    HoverInfo, HoverRequest, Position, SemanticTokens, SemanticTokensRequest,
+    HoverInfo, HoverRequest, Position, semantic_tokens,
 };
 use dsql_core::source::{
     BelongsToHost, FilePath, OpenBuffer, ResolutionScope, SourceOffset, SourceText,
@@ -283,6 +283,17 @@ impl LanguageServer for Backend {
         let Some(path) = uri_path(&params.text_document.uri) else {
             return;
         };
+        // Editors send didOpen for every restored tab; only dsql documents
+        // and embedding hosts belong in the bowl. Anything else would be
+        // parsed as dsql — error-recovering through a lockfile burns
+        // seconds and floods the session with junk diagnostics.
+        if !std::path::Path::new(&path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| matches!(ext, "dsql" | "ts" | "tsx"))
+        {
+            return;
+        }
         let text = params.text_document.text;
         let mut session = self.session.lock().await;
 
@@ -504,21 +515,12 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let Ok(tokens) = self
-            .bowl()
-            .insert((SemanticTokensRequest, FilePath(path)))
-            .await
-            .bind()
-            .take::<SemanticTokens>()
-            .await
-        else {
-            return Ok(None);
-        };
+        let tokens = semantic_tokens(self.bowl(), path).await;
 
         Ok(Some(SemanticTokensResult::Tokens(
             tower_lsp_server::ls_types::SemanticTokens {
                 result_id: None,
-                data: encode_semantic_tokens(&rope, &tokens.0),
+                data: encode_semantic_tokens(&rope, &tokens),
             },
         )))
     }

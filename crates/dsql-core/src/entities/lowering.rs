@@ -17,12 +17,17 @@ use super::field_selection::FieldSelection;
 use super::fragment_spread::FragmentSpread;
 use super::variable::Variable;
 use crate::entity::{LowerCtx, LowerStage};
-use crate::facts::{NodeKey, Span};
+use crate::facts::Span;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{CstData, Node, NodeRef, Rule};
 use crate::source::ResolutionScope;
 
-fn lower_rule(ctx: &LowerCtx<'_>, rule: Rule, node: NodeRef, commands: &mut Commands) {
+fn lower_rule(
+    ctx: &LowerCtx<'_>,
+    rule: Rule,
+    node: NodeRef,
+    commands: &mut Commands,
+) -> Option<Entity> {
     match rule {
         Rule::Document => Document::lower(ctx, node, commands),
         Rule::QueryDef | Rule::FragmentDef => Definition::lower(ctx, node, commands),
@@ -44,25 +49,25 @@ fn lower_rule(ctx: &LowerCtx<'_>, rule: Rule, node: NodeRef, commands: &mut Comm
         | Rule::ScopedPathSegment => Expression::lower(ctx, node, commands),
 
         // Consumed by FieldSelection lowering from the field_selection node.
-        Rule::FieldSelectionTail | Rule::FieldSuffix => {}
+        Rule::FieldSelectionTail | Rule::FieldSuffix => None,
         // Consumed by Clause lowering from the clause nodes.
-        Rule::Clause | Rule::ClauseList | Rule::OrderItem | Rule::SortDirection => {}
+        Rule::Clause | Rule::ClauseList | Rule::OrderItem | Rule::SortDirection => None,
         // Consumed by Directive lowering from the directive node.
         Rule::DirectiveName
         | Rule::DirectiveNamespace
         | Rule::DirectiveMember
-        | Rule::DirectiveArgument => {}
+        | Rule::DirectiveArgument => None,
         // Consumed by Definition (fragment targets), FieldSelection
         // (relation refs), and Clause (order items) lowerings.
-        Rule::QualifiedName | Rule::RelationRef => {}
+        Rule::QualifiedName | Rule::RelationRef => None,
 
         // Structural rules: consumed by the entities owning their
         // ancestors, never owned themselves.
-        Rule::Definition | Rule::Selection | Rule::SelectionSet => {}
+        Rule::Definition | Rule::Selection | Rule::SelectionSet => None,
 
         // Error recovery nodes surface through parse diagnostics, not
         // through lowering.
-        Rule::Error => {}
+        Rule::Error => None,
     }
 }
 
@@ -86,13 +91,15 @@ pub async fn generate_ast(
 
 fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
     if let Node::Rule(rule, _) = ctx.cst.get(node) {
-        lower_rule(ctx, rule, node, commands);
+        let created = lower_rule(ctx, rule, node, commands);
 
         // Definitions and field selections form the selection tree; spreads,
         // clauses, and directives are attachment points for the facts nested
         // inside them (directives on spreads, variables in clauses). Descend
-        // with this node as the parent so nested facts carry their position
-        // as a `ParentKey`.
+        // with this node's fact entity as the parent so nested facts carry
+        // their position as a `ChildOf` edge. A tree rule that lowered
+        // nothing (error recovery) orphans its descendants, matching the
+        // old dangling-key behavior.
         if matches!(
             rule,
             Rule::QueryDef
@@ -110,10 +117,7 @@ fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
                 source: ctx.source,
                 file: ctx.file,
                 scope: ctx.scope,
-                parent: Some(NodeKey {
-                    file: ctx.file,
-                    node: node.0,
-                }),
+                parent: created,
             };
             for child in ctx.cst.children(node) {
                 walk(&scoped, child, commands);

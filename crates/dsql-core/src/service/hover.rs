@@ -28,10 +28,11 @@
 //!     .bind().take::<HoverInfo>()`.
 
 use bowl::{
-    Bowl, Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, SystemExt, Where, With,
+    Bowl, Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, SystemExt, View, Where,
+    With,
 };
 
-use crate::source::{FilePath, SourceText};
+use crate::source::{BelongsToHost, FilePath, SourceOffset, SourceText};
 
 /// Marks an entity as a hover request; pair with [`FilePath`] and
 /// [`Position`].
@@ -39,12 +40,21 @@ use crate::source::{FilePath, SourceText};
 #[component(hash)]
 pub struct HoverRequest;
 
-/// Byte offset of the cursor inside the requested file.
+/// Byte offset of the cursor inside the requested file, as the caller
+/// sent it — host coordinates when the file is an embedding host.
 #[derive(Debug, Component, Hash)]
 #[component(hash)]
 pub struct Position {
     pub offset: usize,
 }
+
+/// The cursor rebased into the document the request actually targets:
+/// equal to [`Position`] for plain files, region-relative for a cursor
+/// inside an extracted region. Derived by enrichment; candidate systems
+/// read this, never [`Position`].
+#[derive(Debug, Component, Hash, Clone, Copy)]
+#[component(hash)]
+pub struct Cursor(pub usize);
 
 /// The answer, upgraded in place on the request entity by arbitration.
 /// `priority` tells callers whether anything actually answered: at or
@@ -99,24 +109,47 @@ pub mod priority {
 /// Registers enrichment and arbitration; entity candidate systems register
 /// themselves through `HoverStage`.
 pub(crate) async fn register_hover_pipeline(bowl: &Bowl) {
-    bowl.add_system(resolve_hover_requests).await;
+    // Enrichment reads the region view ambiently (Evaluate-derived):
+    // behind the Complete barrier.
+    bowl.add_system(resolve_hover_requests.run_during(Phase::Complete))
+        .await;
     bowl.add_system(arbitrate_hover.run_during(Phase::Complete))
         .await;
 }
 
 /// The file side of the enrichment outer join: matched per equal path, or
 /// `None` exactly once for a request matching no file.
-type FileMatch<'a> = Option<Query<(Entity, &'a SourceText), Where<BowlEq<FilePath>>>>;
+pub(crate) type FileMatch<'a> = Option<Query<(Entity, &'a SourceText), Where<BowlEq<FilePath>>>>;
+
+/// The document a host-coordinate cursor lands in: the containing region
+/// (with the cursor rebased) when `file` is an embedding host, otherwise
+/// the file itself.
+pub(crate) fn map_cursor(
+    regions: &View<'_, (Entity, &BelongsToHost, &SourceOffset, &SourceText)>,
+    file: Entity,
+    offset: usize,
+) -> (Entity, usize) {
+    regions
+        .iter()
+        .find(|(_, host, start, text)| {
+            host.0 == file && offset >= start.0 && offset < start.0 + text.rope().len()
+        })
+        .map(|(region, _, start, _)| (region, offset - start.0))
+        .unwrap_or((file, offset))
+}
 
 /// Outer join: the request's `FilePath` pairs with the file carrying the
 /// equal path, or runs once with `None` — one system seeds the scaffold
-/// for matched and unmatched requests alike.
+/// for matched and unmatched requests alike. Cursors into embedding hosts
+/// rebase onto the containing region, which is why this reads the region
+/// view ambiently and sits at Complete.
 async fn resolve_hover_requests(
     query: Query<(Entity, &FilePath, &Position), With<HoverRequest>>,
     file: FileMatch<'_>,
+    regions: View<'_, (Entity, &BelongsToHost, &SourceOffset, &SourceText)>,
     mut commands: Commands,
 ) {
-    let (request, _path, _position) = query.item();
+    let (request, _path, position) = query.item();
     commands.entity(request).insert(RequestKey(request));
     commands.entity(request).insert(HoverEnriched);
 
@@ -128,12 +161,15 @@ async fn resolve_hover_requests(
         return;
     };
 
-    // The resolved file lands as `BelongsToFile`: candidate systems join
-    // their per-file facts against it instead of scanning views.
+    // The resolved document lands as `BelongsToFile` with the rebased
+    // cursor: candidate systems join their per-file facts against it
+    // instead of scanning views.
     let (file_entity, _text) = file.item();
+    let (target, cursor) = map_cursor(&regions, file_entity, position.offset);
     commands
         .entity(request)
-        .insert(crate::facts::BelongsToFile(file_entity));
+        .insert(crate::facts::BelongsToFile(target));
+    commands.entity(request).insert(Cursor(cursor));
     commands.entity(request).insert(HoverInfo {
         text: "no information at position".to_string(),
         priority: priority::RESOLVED,

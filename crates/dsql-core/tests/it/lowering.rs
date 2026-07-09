@@ -7,7 +7,7 @@ use dsql_core::entities::clause::{ClauseFact, OrderDirection};
 use dsql_core::entities::directive::DirectiveFact;
 use dsql_core::entities::field_selection::FieldSel;
 use dsql_core::entities::variable::VariableUse;
-use dsql_core::facts::{NodeKey, ParentKey};
+use dsql_core::facts::{ChildOf, NodeKey};
 use dsql_core::register_language;
 use dsql_core::source::insert_source;
 use futures::executor::block_on;
@@ -23,9 +23,7 @@ async fn language_bowl() -> Bowl {
 /// Renders clause facts as `field: kind payload`, resolving the parent
 /// field selection through the node keys.
 async fn render_clauses(bowl: &Bowl) -> String {
-    let clauses = bowl
-        .scoop::<Query<(Entity, &ClauseFact, &ParentKey)>>()
-        .await;
+    let clauses = bowl.scoop::<Query<(Entity, &ClauseFact, &ChildOf)>>().await;
     let fields = bowl.scoop::<Query<(Entity, &FieldSel, &NodeKey)>>().await;
     let field_rows = fields.collect();
 
@@ -35,7 +33,7 @@ async fn render_clauses(bowl: &Bowl) -> String {
         .map(|(_, clause, parent)| {
             let field = field_rows
                 .iter()
-                .find(|(_, _, key)| **key == parent.0)
+                .find(|(entity, _, _)| *entity == parent.0)
                 .map(|(_, field, _)| field.name.as_str())
                 .unwrap_or("<no field>");
             let payload = match clause {
@@ -186,7 +184,7 @@ fn variable_occurrences_become_facts() {
         let clause_rows = clauses.collect();
 
         let parents = bowl
-            .scoop::<Query<(Entity, &VariableUse, &ParentKey)>>()
+            .scoop::<Query<(Entity, &VariableUse, &ChildOf)>>()
             .await;
         let mut lines: Vec<String> = parents
             .collect()
@@ -194,7 +192,7 @@ fn variable_occurrences_become_facts() {
             .map(|(_, variable, parent)| {
                 let clause = clause_rows
                     .iter()
-                    .find(|(_, _, key)| **key == parent.0)
+                    .find(|(entity, _, _)| *entity == parent.0)
                     .map(|(_, clause, _)| match clause {
                         ClauseFact::Where { .. } => "where",
                         ClauseFact::OrderBy { .. } => "order by",

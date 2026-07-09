@@ -95,11 +95,22 @@ pub struct DefKey(pub Entity);
 #[component(hash)]
 pub struct PlanKey(pub Entity);
 
-/// Link from a lowered fact to the [`NodeKey`] of its nearest enclosing
-/// selection or definition — the flat encoding of the selection tree.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Relationship edge from a lowered fact to the entity of its nearest
+/// enclosing selection or definition — the selection tree as maintained
+/// relationships. The engine keeps the [`Children`] inverse current on
+/// the parent.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[component(hash)]
-pub struct ParentKey(pub NodeKey);
+#[relationship(target = Children)]
+pub struct ChildOf(pub Entity);
+
+/// Engine-maintained inverse of [`ChildOf`]: every child of this entity,
+/// ordered by entity id, fingerprinted over the ordered set — membership
+/// is a revision-level fact. Sibling *source* order is still span order;
+/// entity-id order only matches it on first derivation.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = ChildOf)]
+pub struct Children(pub Vec<Entity>);
 
 /// Human-readable diagnostic message. A diagnostic entity carries this plus
 /// [`Severity`], [`Span`], [`BelongsToFile`], and `DerivedFrom` (ownership,

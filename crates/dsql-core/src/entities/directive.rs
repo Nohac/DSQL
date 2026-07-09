@@ -1,14 +1,14 @@
 //! Directive entity: `@namespace.member(arg: value)` annotations on
 //! definitions, selections, and spreads.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity};
 
 use crate::entities::expression::{Expr, build_expr, expr_child};
 use crate::entities::{direct_rule, direct_token, node_span, text};
 use crate::entity::{
     CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
 };
-use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span};
+use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span};
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
@@ -53,10 +53,8 @@ impl LanguageEntity for Directive {
 }
 
 impl LowerStage for Directive {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
-        let Some(name_node) = direct_rule(ctx.cst, node, Rule::DirectiveName) else {
-            return;
-        };
+    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
+        let name_node = direct_rule(ctx.cst, node, Rule::DirectiveName)?;
 
         let namespace = direct_rule(ctx.cst, name_node, Rule::DirectiveNamespace)
             .and_then(|namespace| direct_token(ctx.cst, namespace, Token::Name))
@@ -107,8 +105,9 @@ impl LowerStage for Directive {
             fact,
         ));
         if let Some(parent) = ctx.parent {
-            commands.entity(entity).insert(ParentKey(parent));
+            commands.entity(entity).insert(ChildOf(parent));
         }
+        Some(entity)
     }
 }
 

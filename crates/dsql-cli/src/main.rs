@@ -56,6 +56,8 @@ enum DebugCommand {
     Tokens { file: String },
     /// Dump file-to-scope ownership, derived regions, and scope imports.
     Resolution,
+    /// Print the engine's explain report for a system.
+    Explain { system: String },
 }
 
 #[tokio::main]
@@ -76,6 +78,7 @@ async fn main() -> std::process::ExitCode {
             }
             DebugCommand::Tokens { file } => dsql_cli::debug::tokens(&file).await,
             DebugCommand::Resolution => dsql_cli::debug::resolution().await,
+            DebugCommand::Explain { system } => dsql_cli::debug::explain(&system).await,
         },
     };
     match outcome {

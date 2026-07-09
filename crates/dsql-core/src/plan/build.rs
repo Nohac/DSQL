@@ -28,8 +28,8 @@ use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
 use crate::facts::{
-    BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, NodeKey, PlanDemand,
-    PlanKey, Severity, emit_diagnostic,
+    BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, PlanDemand, PlanKey,
+    Severity, emit_diagnostic,
 };
 use crate::source::{ResolutionScope, ScopeImports};
 
@@ -47,14 +47,14 @@ pub async fn register_planning(bowl: &Bowl) {
 /// splice the fragment's items in with an enveloped variable scope.
 async fn plan_queries(
     _: Query<Entity, With<PlanDemand>>,
-    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile, &ResolutionScope)>,
+    defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
     mut commands: Commands,
 ) {
-    let (def_entity, decl, def_key, file, scope) = defs.item();
+    let (def_entity, decl, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
     let (_, imports) = imports.item();
 
@@ -72,7 +72,6 @@ async fn plan_queries(
             &mut planner,
             def_entity,
             decl,
-            *def_key,
             file.0,
             &scope.0,
             catalog_entity,
@@ -90,11 +89,11 @@ async fn plan_queries(
     }
 
     let roots: Vec<_> = tree
-        .fields_under(*def_key)
-        .map(|(_, field, key, _)| (*field, *key))
+        .fields_under(def_entity)
+        .map(|(entity, field, _, _)| (*entity, *field))
         .collect();
     let root_count = roots.len();
-    for (root_index, (field, key)) in roots.into_iter().enumerate() {
+    for (root_index, (root_entity, field)) in roots.into_iter().enumerate() {
         match planner
             .catalog
             .resolve_table_ref_for(TableRef::parse(&field.name))
@@ -104,8 +103,13 @@ async fn plan_queries(
                 let output_name = field.alias.clone().unwrap_or_else(|| table.name.clone());
                 let selection_path = vec![response_key(field)];
                 let variable_scope = VariablePathScope::operation();
-                let clauses =
-                    planner.plan_clauses(table_id, table_id, &selection_path, &variable_scope, key);
+                let clauses = planner.plan_clauses(
+                    table_id,
+                    table_id,
+                    &selection_path,
+                    &variable_scope,
+                    root_entity,
+                );
                 let mut spreads = Vec::new();
                 if let Some(selections) = planner.plan_selection_set(
                     &mut PlanWalk {
@@ -119,7 +123,7 @@ async fn plan_queries(
                     &clauses,
                     SelectionPath::body(selection_path),
                     &variable_scope,
-                    key,
+                    root_entity,
                 ) {
                     let plan = QueryPlan {
                         root: table_id,
@@ -211,18 +215,17 @@ fn plan_fragment_body(
     planner: &mut Planner<'_>,
     def_entity: Entity,
     decl: &DefDecl,
-    def_key: NodeKey,
     file: Entity,
     scope: &str,
     catalog_entity: Entity,
     commands: &mut Commands,
     diagnostics: &mut PlanDiagnostics,
 ) {
-    let Some((_, _, target, _, _)) = planner
+    let Some((_, _, target, _)) = planner
         .tree
         .fragments
         .iter()
-        .find(|(entity, _, _, _, _)| *entity == def_entity)
+        .find(|(entity, _, _, _)| *entity == def_entity)
     else {
         return;
     };
@@ -245,7 +248,7 @@ fn plan_fragment_body(
         &SelectionClauses::default(),
         SelectionPath::fragment_root(),
         &VariablePathScope::fragment(),
-        def_key,
+        def_entity,
     ) else {
         return;
     };
@@ -295,25 +298,25 @@ impl Planner<'_> {
         clauses: &SelectionClauses,
         selection_path: SelectionPath,
         variable_scope: &VariablePathScope,
-        parent: NodeKey,
+        parent: Entity,
     ) -> Option<SelectionPlan> {
         let mut items = Vec::new();
 
         // Facts carry no sibling order between fields and spreads beyond
         // their spans, so source order is restored by merging on span order.
         enum Child<'a> {
-            Field(&'a FieldSel, NodeKey),
+            Field(&'a FieldSel, Entity),
             Spread(String),
         }
         let mut children: Vec<(usize, Child<'_>)> = self
             .tree
             .fields_under(parent)
-            .map(|(_, field, key, _)| (field.span.start, Child::Field(field, *key)))
+            .map(|(entity, field, _, _)| (field.span.start, Child::Field(field, *entity)))
             .collect();
         children.extend(
             self.tree
                 .spreads_under(parent)
-                .map(|(_, spread, _, _)| (spread.span.start, Child::Spread(spread.name.clone()))),
+                .map(|(_, spread, _)| (spread.span.start, Child::Spread(spread.name.clone()))),
         );
         children.sort_by_key(|(start, _)| *start);
 
@@ -324,7 +327,7 @@ impl Planner<'_> {
                         path: walk.result_path.join("."),
                         fragment: name.clone(),
                     });
-                    let Some((_, _, _, fragment_key, _)) = self
+                    let Some((fragment_entity, _, _, _)) = self
                         .tree
                         .resolve_fragment(&name, self.scope, self.imports)
                         .copied()
@@ -345,13 +348,13 @@ impl Planner<'_> {
                         &SelectionClauses::default(),
                         SelectionPath::fragment_root(),
                         &variable_scope.for_fragment_spread(&selection_path, &name),
-                        fragment_key,
+                        fragment_entity,
                     ) {
                         items.extend(fragment_plan.items);
                     }
                     walk.visiting.pop();
                 }
-                Child::Field(field, key) => {
+                Child::Field(field, field_entity) => {
                     let reference = FieldRef {
                         target: TableRef::parse(&field.name),
                         selector: field.relation_path.as_deref(),
@@ -380,7 +383,7 @@ impl Planner<'_> {
                                 relation_table,
                                 &child_path,
                                 variable_scope,
-                                key,
+                                field_entity,
                             );
                             walk.result_path.push(
                                 field.alias.clone().unwrap_or_else(|| relation_name.clone()),
@@ -392,7 +395,7 @@ impl Planner<'_> {
                                 &child_clauses,
                                 SelectionPath::body(child_path),
                                 variable_scope,
-                                key,
+                                field_entity,
                             );
                             walk.result_path.pop();
                             if let Some(nested) = nested {
@@ -438,12 +441,12 @@ impl Planner<'_> {
         table: TableId,
         selection_path: &[String],
         variable_scope: &VariablePathScope,
-        field_key: NodeKey,
+        field_entity: Entity,
     ) -> SelectionClauses {
         let mut clauses = SelectionClauses::default();
         let field_clauses: Vec<ClauseFact> = self
             .tree
-            .clauses_under(field_key)
+            .clauses_under(field_entity)
             .map(|(_, clause, _, _)| (*clause).clone())
             .collect();
         for clause in field_clauses {

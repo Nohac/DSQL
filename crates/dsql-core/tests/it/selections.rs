@@ -5,8 +5,8 @@
 use bowl::{Bowl, Entity, Mut, Query, Singleton};
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::field_selection::FieldSel;
-use dsql_core::entities::fragment_spread::{SpreadDecl, SpreadResolution};
-use dsql_core::facts::{DiagnosticsDemand, NodeKey, ParentKey};
+use dsql_core::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
+use dsql_core::facts::{ChildOf, DiagnosticsDemand, NodeKey};
 use dsql_core::register_language;
 use dsql_core::source::{SourceText, insert_source};
 use futures::executor::block_on;
@@ -24,10 +24,10 @@ async fn language_bowl() -> Bowl {
 async fn render_selection_tree(bowl: &Bowl) -> String {
     let defs = bowl.scoop::<Query<(Entity, &DefDecl, &NodeKey)>>().await;
     let fields = bowl
-        .scoop::<Query<(Entity, &FieldSel, &NodeKey, &ParentKey)>>()
+        .scoop::<Query<(Entity, &FieldSel, &NodeKey, &ChildOf)>>()
         .await;
     let spreads = bowl
-        .scoop::<Query<(Entity, &SpreadDecl, &NodeKey, &ParentKey)>>()
+        .scoop::<Query<(Entity, &SpreadDecl, &NodeKey, &ChildOf)>>()
         .await;
 
     enum Node<'a> {
@@ -35,20 +35,20 @@ async fn render_selection_tree(bowl: &Bowl) -> String {
         Spread(&'a SpreadDecl),
     }
 
-    let mut children: Vec<(NodeKey, NodeKey, usize, Node<'_>)> = Vec::new();
+    let mut children: Vec<(Entity, Entity, usize, Node<'_>)> = Vec::new();
     let field_rows = fields.collect();
-    for (_, field, key, parent) in &field_rows {
-        children.push((parent.0, **key, field.span.start, Node::Field(field)));
+    for (entity, field, _, parent) in &field_rows {
+        children.push((parent.0, *entity, field.span.start, Node::Field(field)));
     }
     let spread_rows = spreads.collect();
-    for (_, spread, key, parent) in &spread_rows {
-        children.push((parent.0, **key, spread.span.start, Node::Spread(spread)));
+    for (entity, spread, _, parent) in &spread_rows {
+        children.push((parent.0, *entity, spread.span.start, Node::Spread(spread)));
     }
     children.sort_by_key(|(_, _, start, _)| *start);
 
     fn render(
-        parent: NodeKey,
-        children: &[(NodeKey, NodeKey, usize, Node<'_>)],
+        parent: Entity,
+        children: &[(Entity, Entity, usize, Node<'_>)],
         depth: usize,
         out: &mut String,
     ) {
@@ -83,9 +83,9 @@ async fn render_selection_tree(bowl: &Bowl) -> String {
     let mut def_rows = defs.collect();
     def_rows.sort_by_key(|(_, decl, _)| decl.span.start);
     let mut out = String::new();
-    for (_, decl, key) in def_rows {
+    for (def_entity, decl, _) in def_rows {
         out.push_str(&format!("{} {}\n", decl.kind, decl.name));
-        render(*key, &children, 1, &mut out);
+        render(def_entity, &children, 1, &mut out);
     }
     out
 }
@@ -114,27 +114,21 @@ fn selections_lower_into_a_parent_keyed_tree() {
 
 /// Renders spread resolutions by name, sorted for stability.
 async fn render_resolutions(bowl: &Bowl) -> Vec<String> {
-    let resolutions = bowl.scoop::<Query<(Entity, &SpreadResolution)>>().await;
-    let spreads = bowl.scoop::<Query<(Entity, &SpreadDecl)>>().await;
+    let spreads = bowl.scoop::<Query<(Entity, &ResolvedSpread)>>().await;
     let defs = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
-    let spread_rows = spreads.collect();
     let def_rows = defs.collect();
 
-    let mut lines: Vec<String> = resolutions
+    let mut lines: Vec<String> = spreads
         .collect()
         .into_iter()
-        .map(|(_, resolution)| {
-            let spread = spread_rows
-                .iter()
-                .find(|(entity, _)| *entity == resolution.spread)
-                .map(|(_, decl)| decl.name.as_str())
-                .unwrap_or("<missing spread>");
+        .filter_map(|(_, resolved)| {
+            let target = resolved.target.as_ref()?;
             let fragment = def_rows
                 .iter()
-                .find(|(entity, _)| *entity == resolution.fragment)
+                .find(|(entity, _)| *entity == target.fragment)
                 .map(|(_, decl)| decl.name.as_str())
                 .unwrap_or("<missing fragment>");
-            format!("...{spread} -> fragment {fragment}")
+            Some(format!("...{} -> fragment {fragment}", resolved.name))
         })
         .collect();
     lines.sort();

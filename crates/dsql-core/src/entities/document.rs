@@ -36,7 +36,9 @@ impl LanguageEntity for Document {
 impl LowerStage for Document {
     // The document owns the file root, but everything under it is lowered
     // by the entities owning the definition rules — nothing to emit here.
-    fn lower(_ctx: &LowerCtx<'_>, _node: NodeRef, _commands: &mut Commands) {}
+    fn lower(_ctx: &LowerCtx<'_>, _node: NodeRef, _commands: &mut Commands) -> Option<Entity> {
+        None
+    }
 }
 
 /// Maps a parse diagnostic message onto its machine-readable code.

@@ -25,7 +25,7 @@ use crate::facts::{
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
-use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// What kind of definition a [`DefDecl`] fact describes.
@@ -158,13 +158,13 @@ async fn check_fragment_targets(
 }
 
 impl LowerStage for Definition {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
+    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
         // The name is a direct child token; nested Names (inside the
         // selection set) belong to other entities.
         let Some(name_span) = direct_token(ctx.cst, node, Token::Name) else {
             // Error recovery can leave a def without a name; the parse
             // diagnostics already cover it.
-            return;
+            return None;
         };
 
         let kind = if ctx.cst.match_rule(node, Rule::QueryDef) {
@@ -194,7 +194,7 @@ impl LowerStage for Definition {
         };
 
         let scope = ResolutionScope(ctx.scope.to_string());
-        match (kind, target) {
+        let entity = match (kind, target) {
             (DefKind::Fragment, Some(target)) => commands.insert((
                 DerivedFrom::new(ctx.file),
                 BelongsToFile(ctx.file),
@@ -223,6 +223,7 @@ impl LowerStage for Definition {
                 decl,
             )),
         };
+        Some(entity)
     }
 }
 
@@ -385,14 +386,14 @@ impl HoverStage for Definition {
 type DefInFile<'a> = (Entity, &'a DefDecl, Option<&'a FragmentTarget>);
 
 async fn hover_definitions(
-    query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
+    query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     defs: Query<DefInFile<'_>, Where<BowlEq<BelongsToFile>>>,
     mut commands: Commands,
 ) {
-    let (request, _file, position) = query.item();
+    let (request, _file, cursor) = query.item();
     let (_def_entity, decl, target) = defs.item();
 
-    if !(decl.name_span.start <= position.offset && position.offset < decl.name_span.end) {
+    if !(decl.name_span.start <= cursor.0 && cursor.0 < decl.name_span.end) {
         return;
     }
 
