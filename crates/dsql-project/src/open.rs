@@ -9,10 +9,9 @@ use dsql_core::embedding::EmbeddedPattern;
 use dsql_core::facts::Severity;
 use dsql_core::lint::LintConfig;
 use dsql_core::register_language;
-use dsql_core::source::{ResolutionScope, ScopeImports, insert_host_source, insert_source_scoped};
+use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_scoped};
 
 use super::config::{LintSeverity, Project, Result};
-use super::documents::DocumentKind;
 use super::documents::load_project_documents;
 use super::embedding::typescript_pattern;
 
@@ -68,16 +67,13 @@ pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()>
     .await;
 
     for document in documents {
-        let path = document.path.display().to_string();
-        let scope = ResolutionScope(document.scope);
-        match document.kind {
-            DocumentKind::Dsql => {
-                insert_source_scoped(bowl, path, &document.text, scope).await;
-            }
-            DocumentKind::EmbeddingHost => {
-                insert_host_source(bowl, path, &document.text, scope).await;
-            }
-        }
+        insert_source_scoped(
+            bowl,
+            document.path.display().to_string(),
+            &document.text,
+            ResolutionScope(document.scope),
+        )
+        .await;
     }
     Ok(())
 }

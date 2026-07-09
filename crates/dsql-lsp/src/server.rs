@@ -31,6 +31,7 @@ use dsql_core::service::{
 };
 use dsql_core::source::{
     BelongsToHost, FilePath, OpenBuffer, ResolutionScope, SourceOffset, SourceText,
+    insert_source_scoped,
 };
 use dsql_project::{Project, populate_project_bowl};
 
@@ -149,15 +150,6 @@ fn uri_path(uri: &Uri) -> Option<String> {
         .map(|path| path.into_owned().display().to_string())
 }
 
-/// Whether a path is a host source (dsql embedded in another language)
-/// rather than a plain dsql document.
-fn is_host_path(path: &str) -> bool {
-    std::path::Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| matches!(ext, "ts" | "tsx"))
-}
-
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         let start_dir = params
@@ -252,27 +244,15 @@ impl LanguageServer for Backend {
                 }
             }
             self.bowl().entity(entity).insert((OpenBuffer,)).await;
-        } else if is_host_path(&path) {
-            self.bowl()
-                .insert((
-                    FilePath(path.clone()),
-                    SourceText::from_text(&text),
-                    ResolutionScope::default_scope(),
-                    dsql_core::source::EmbeddingHost,
-                    OpenBuffer,
-                ))
-                .await;
         } else {
-            self.bowl()
-                .insert((
-                    FilePath(path.clone()),
-                    SourceText::from_text(&text),
-                    ResolutionScope::default_scope(),
-                    dsql_core::source::DsqlDocument,
-                    SourceOffset(0),
-                    OpenBuffer,
-                ))
-                .await;
+            let entity = insert_source_scoped(
+                self.bowl(),
+                path.clone(),
+                &text,
+                ResolutionScope::default_scope(),
+            )
+            .await;
+            self.bowl().entity(entity).insert((OpenBuffer,)).await;
         }
 
         self.publish_diagnostics(params.text_document.uri, &path)

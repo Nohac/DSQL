@@ -166,40 +166,41 @@ pub async fn insert_source(bowl: &Bowl, path: impl Into<String>, text: &str) -> 
     insert_source_scoped(bowl, path, text, ResolutionScope::default_scope()).await
 }
 
-/// Inserts in-memory text as a dsql file entity in `scope`.
+/// Extensions whose files are host sources rather than dsql documents.
+fn is_host_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "ts" | "tsx"))
+}
+
+/// Inserts in-memory text as a file entity in `scope`. The one entry point
+/// for every writer: the path's extension decides whether the text is a
+/// dsql document or a host source whose regions extraction derives.
 pub async fn insert_source_scoped(
     bowl: &Bowl,
     path: impl Into<String>,
     text: &str,
     scope: ResolutionScope,
 ) -> Entity {
-    let inserted = bowl
-        .insert((
-            FilePath(path.into()),
+    let path = path.into();
+    let inserted = if is_host_path(&path) {
+        bowl.insert((
+            FilePath(path),
+            EmbeddingHost,
+            SourceText::from_text(text),
+            scope,
+        ))
+        .await
+    } else {
+        bowl.insert((
+            FilePath(path),
             SourceOffset(0),
             DsqlDocument,
             SourceText::from_text(text),
             scope,
         ))
-        .await;
-    inserted.entity()
-}
-
-/// Inserts in-memory text as a host source entity in `scope`: the text is
-/// another language's; extraction derives its dsql documents.
-pub async fn insert_host_source(
-    bowl: &Bowl,
-    path: impl Into<String>,
-    text: &str,
-    scope: ResolutionScope,
-) -> Entity {
-    let inserted = bowl
-        .insert((
-            FilePath(path.into()),
-            EmbeddingHost,
-            SourceText::from_text(text),
-            scope,
-        ))
-        .await;
+        .await
+    };
     inserted.entity()
 }

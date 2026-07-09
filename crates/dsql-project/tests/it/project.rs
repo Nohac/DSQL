@@ -84,29 +84,22 @@ fn scoped_project_resolves_imports_end_to_end() {
 }
 
 #[test]
-fn host_documents_load_whole_with_their_kind() {
+fn host_documents_load_whole() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixture/scoped");
     let project = Project::load_from(&fixture).expect("scoped fixture loads");
 
-    // The loader does not extract: hosts arrive whole and are classified;
-    // region derivation is the bowl's job.
+    // The loader does not extract or classify: hosts arrive whole; the
+    // source model routes them at insert and the bowl derives regions.
     let documents = dsql_project::load_project_documents(&project).expect("documents load");
     let hosts: Vec<_> = documents
         .iter()
-        .filter(|document| document.kind == dsql_project::DocumentKind::EmbeddingHost)
+        .filter(|document| document.path.extension().and_then(|ext| ext.to_str()) == Some("ts"))
         .collect();
     assert_eq!(hosts.len(), 1, "the fixture has one host source");
     let host = hosts[0];
     assert_eq!(host.scope, "frontend");
     assert!(host.text.contains("import"), "hosts carry their full text");
     assert!(host.text.contains("query TitlePanel"));
-    assert!(
-        documents
-            .iter()
-            .filter(|document| document.kind == dsql_project::DocumentKind::Dsql)
-            .all(|document| document.text.starts_with("query")
-                || document.text.starts_with("fragment"))
-    );
 }
 
 #[test]

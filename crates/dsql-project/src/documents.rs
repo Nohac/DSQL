@@ -14,21 +14,13 @@ use super::config::{Project, ProjectError, Result};
 /// as host sources with embedded regions.
 const DOCUMENT_EXTENSIONS: &[&str] = &["dsql", "ts", "tsx"];
 
-/// What a document file contains: dsql text, or another language's text
-/// with dsql regions embedded in it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DocumentKind {
-    Dsql,
-    EmbeddingHost,
-}
-
 /// One discovered document file, with its text already read and the
-/// resolution scope that owns it.
+/// resolution scope that owns it. Whether a file is a dsql document or an
+/// embedding host is the source model's call, made at insert time.
 #[derive(Clone, Debug)]
 pub struct ProjectDocument {
     pub path: PathBuf,
     pub text: String,
-    pub kind: DocumentKind,
     pub scope: String,
 }
 
@@ -93,17 +85,7 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
                 path: path.clone(),
                 source,
             })?;
-            let kind = if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
-                DocumentKind::Dsql
-            } else {
-                DocumentKind::EmbeddingHost
-            };
-            Ok(ProjectDocument {
-                path,
-                text,
-                kind,
-                scope,
-            })
+            Ok(ProjectDocument { path, text, scope })
         })
         .collect()
 }

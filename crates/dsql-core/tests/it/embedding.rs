@@ -7,9 +7,7 @@ use bowl::{Bowl, Entity, Mut, Query, Singleton};
 use dsql_core::catalog::insert_catalog;
 use dsql_core::facts::{PlanDemand, SqlDemand};
 use dsql_core::register_language;
-use dsql_core::source::{
-    BelongsToHost, ResolutionScope, SourceOffset, SourceText, insert_host_source,
-};
+use dsql_core::source::{BelongsToHost, SourceOffset, SourceText, insert_source};
 use dsql_core::sql::GeneratedSqlFact;
 use futures::executor::block_on;
 
@@ -38,13 +36,7 @@ async fn host_bowl() -> (Bowl, Entity) {
     let bowl = Bowl::new();
     register_language(&bowl).await;
     insert_catalog(&bowl, imdb_catalog()).await;
-    let host = insert_host_source(
-        &bowl,
-        "src/queries.ts",
-        HOST,
-        ResolutionScope::default_scope(),
-    )
-    .await;
+    let host = insert_source(&bowl, "src/queries.ts", HOST).await;
     (bowl, host)
 }
 
