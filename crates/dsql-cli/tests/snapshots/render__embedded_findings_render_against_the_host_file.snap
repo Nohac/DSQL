@@ -1,0 +1,13 @@
+---
+source: crates/dsql-cli/tests/render.rs
+expression: "rendered.join(\"\\n\")"
+---
+dsql::Check::FieldNotFound
+
+  × field `nonexistent` not found on table `users`
+   ╭─[src/users.ts:7:5]
+ 6 │     id
+ 7 │     nonexistent
+   ·     ───────────
+ 8 │   }
+   ╰────

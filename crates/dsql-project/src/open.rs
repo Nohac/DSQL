@@ -5,13 +5,15 @@ use std::collections::BTreeMap;
 use bowl::{Bowl, Singleton};
 
 use dsql_core::catalog::insert_catalog;
+use dsql_core::embedding::EmbeddedPattern;
 use dsql_core::facts::Severity;
 use dsql_core::lint::LintConfig;
 use dsql_core::register_language;
-use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_at};
+use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_scoped};
 
 use super::config::{LintSeverity, Project, Result};
 use super::documents::load_project_documents;
+use super::embedding::typescript_pattern;
 
 /// Registers the language and populates a fresh bowl with the project's
 /// contents. Demand markers are the caller's choice — a CLI check inserts
@@ -29,6 +31,7 @@ pub async fn open_project_bowl(project: &Project) -> Result<Bowl> {
 pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()> {
     let catalog = project.load_catalog()?;
     let documents = load_project_documents(project)?;
+    let pattern = typescript_pattern(project)?;
 
     insert_catalog(bowl, catalog).await;
 
@@ -57,14 +60,18 @@ pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()>
         },
     };
     bowl.insert((Singleton::<LintConfig>::new(), lint)).await;
+    bowl.insert((
+        Singleton::<EmbeddedPattern>::new(),
+        EmbeddedPattern(pattern),
+    ))
+    .await;
 
     for document in documents {
-        insert_source_at(
+        insert_source_scoped(
             bowl,
             document.path.display().to_string(),
             &document.text,
             ResolutionScope(document.scope),
-            document.source_offset,
         )
         .await;
     }

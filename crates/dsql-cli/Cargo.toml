@@ -15,4 +15,9 @@ dsql-generate = { workspace = true }
 dsql-introspection = { workspace = true }
 dsql-project = { workspace = true }
 futures = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

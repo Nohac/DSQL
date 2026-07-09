@@ -4,6 +4,7 @@
 mod checks;
 mod completions;
 mod definitions;
+mod embedding;
 mod format;
 mod lints;
 mod lowering;

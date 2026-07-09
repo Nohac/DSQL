@@ -11,11 +11,18 @@
 //! Downstream systems (parse, lowering, checks, services) cannot tell the
 //! two apart. Spans are byte ranges end to end; materialization to a
 //! contiguous `String` happens only at the parse boundary.
+//!
+//! Not every file entity is a dsql document. TypeScript sources carry
+//! [`EmbeddingHost`]; the extraction system (`embedding`) derives one
+//! *region* entity per embedded query, and those regions — not the host —
+//! are the dsql documents. [`DsqlDocument`] marks what the parse consumes:
+//! plain `.dsql` files get it from the insert helpers, regions from
+//! extraction. Both writers above write *host* text the same way they
+//! write plain files; regions re-derive from it either way.
 
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use bowl::{Bowl, Component, Entity};
 use ropey::Rope;
@@ -35,41 +42,51 @@ pub struct FilePath(pub String);
 #[component(hash)]
 pub struct SourceOffset(pub usize);
 
+/// Marks a file entity whose [`SourceText`] is a dsql document — the
+/// parse's input filter. Host sources carry text too, but in another
+/// language; only their extracted regions are documents.
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct DsqlDocument;
+
+/// Marks a file entity as a host source: text in another language with
+/// dsql documents embedded in it. The extraction system derives one
+/// region entity per embedded document.
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct EmbeddingHost;
+
+/// Join key from an extracted region back to its host file entity, the
+/// counterpart of [`crate::facts::BelongsToFile`] one level up.
+#[derive(Component, Hash, PartialEq, Eq, Debug, Clone, Copy)]
+#[component(hash)]
+pub struct BelongsToHost(pub Entity);
+
 /// Source text of a file entity, rope-backed for cheap incremental edits.
 ///
-/// The fingerprint is the [`SourceText::revision`] verbatim, so
-/// fingerprinting never rehashes the rope on an edit burst. Revisions come
-/// from a process-global counter: any newly constructed or mutated
-/// `SourceText` has a revision strictly greater than every earlier one, so
-/// wholesale replacement can never collide with the value it replaces.
-#[derive(Component)]
-#[component(revision)]
+/// The fingerprint is a hash of the rope's content, so equal text always
+/// means an equal fingerprint no matter who produced it: an edit burst
+/// that lands back on the previous text, a disk reload of unchanged
+/// content, or a derivation (embedded-region extraction) re-emitting an
+/// untouched region all leave downstream facts valid.
+#[derive(Component, Hash)]
+#[component(hash)]
 pub struct SourceText {
     rope: Rope,
-    revision: u64,
-}
-
-/// Process-global revision source backing the [`SourceText`] fingerprint
-/// monotonicity guarantee.
-static NEXT_REVISION: AtomicU64 = AtomicU64::new(0);
-
-fn next_revision() -> u64 {
-    NEXT_REVISION.fetch_add(1, Ordering::Relaxed)
 }
 
 impl SourceText {
-    /// Creates source text from a contiguous string (disk load, `didOpen`).
+    /// Creates source text from a contiguous string (disk load, `didOpen`,
+    /// region extraction).
     pub fn from_text(text: &str) -> Self {
         Self {
             rope: Rope::from_str(text),
-            revision: next_revision(),
         }
     }
 
     /// Replaces the entire text (LSP full-document sync, `didClose` revert).
     pub fn set_text(&mut self, text: &str) {
         self.rope = Rope::from_str(text);
-        self.revision = next_revision();
     }
 
     /// Applies one incremental edit: replaces `byte_range` with
@@ -78,18 +95,12 @@ impl SourceText {
     pub fn apply_edit(&mut self, byte_range: std::ops::Range<usize>, replacement: &str) {
         self.rope.remove(byte_range.clone());
         self.rope.insert(byte_range.start, replacement);
-        self.revision = next_revision();
     }
 
     /// The rope, for span slicing and position mapping at protocol
     /// boundaries. Incremental edit helpers land with the LSP crate.
     pub fn rope(&self) -> &Rope {
         &self.rope
-    }
-
-    /// Revision of the current content; bumped on every mutation.
-    pub fn revision(&self) -> u64 {
-        self.revision
     }
 
     /// Materializes the full text. Only the parse boundary should need this;
@@ -101,8 +112,15 @@ impl SourceText {
 
 /// Marks a file entity whose text is owned by a live editor buffer. Disk
 /// watchers and loaders must not overwrite the text while this is present.
+///
+/// Untracked: this is bookkeeping for text *writers*, not an input any
+/// derivation reads. A tracked marker would lift the file's entity
+/// revision when the editor stamps it, retiring every `DerivedFrom`-
+/// anchored fact of the file without anything re-deriving them (the
+/// text's own fingerprint is unchanged) — externally inserted markers on
+/// fact-bearing entities must stay out of change tracking.
 #[derive(Component, Hash)]
-#[component(hash)]
+#[component(hash, untracked)]
 pub struct OpenBuffer;
 
 /// The resolution scope a file belongs to (docs/spec/resolution-scopes.md).
@@ -155,33 +173,41 @@ pub async fn insert_source(bowl: &Bowl, path: impl Into<String>, text: &str) -> 
     insert_source_scoped(bowl, path, text, ResolutionScope::default_scope()).await
 }
 
-/// Inserts in-memory text as a file entity in `scope`.
+/// Extensions whose files are host sources rather than dsql documents.
+fn is_host_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "ts" | "tsx"))
+}
+
+/// Inserts in-memory text as a file entity in `scope`. The one entry point
+/// for every writer: the path's extension decides whether the text is a
+/// dsql document or a host source whose regions extraction derives.
 pub async fn insert_source_scoped(
     bowl: &Bowl,
     path: impl Into<String>,
     text: &str,
     scope: ResolutionScope,
 ) -> Entity {
-    insert_source_at(bowl, path, text, scope, 0).await
-}
-
-/// Inserts in-memory text as a file entity in `scope`, recording the byte
-/// offset the text sits at inside its host file — non-zero for documents
-/// embedded in another language's source.
-pub async fn insert_source_at(
-    bowl: &Bowl,
-    path: impl Into<String>,
-    text: &str,
-    scope: ResolutionScope,
-    offset: usize,
-) -> Entity {
-    let inserted = bowl
-        .insert((
-            FilePath(path.into()),
-            SourceOffset(offset),
+    let path = path.into();
+    let inserted = if is_host_path(&path) {
+        bowl.insert((
+            FilePath(path),
+            EmbeddingHost,
             SourceText::from_text(text),
             scope,
         ))
-        .await;
+        .await
+    } else {
+        bowl.insert((
+            FilePath(path),
+            SourceOffset(0),
+            DsqlDocument,
+            SourceText::from_text(text),
+            scope,
+        ))
+        .await
+    };
     inserted.entity()
 }

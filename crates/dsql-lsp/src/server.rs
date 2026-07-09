@@ -29,7 +29,10 @@ use dsql_core::service::{
     CompletionKind, CompletionList, CompletionRequest, DefinitionRequest, DefinitionTarget,
     HoverInfo, HoverRequest, Position, SemanticTokens, SemanticTokensRequest,
 };
-use dsql_core::source::{FilePath, OpenBuffer, ResolutionScope, SourceText};
+use dsql_core::source::{
+    BelongsToHost, FilePath, OpenBuffer, ResolutionScope, SourceOffset, SourceText,
+    insert_source_scoped,
+};
 use dsql_project::{Project, populate_project_bowl};
 
 use crate::position::{
@@ -87,14 +90,37 @@ impl Backend {
             .bowl()
             .scoop::<Query<(Entity, &Severity, &Span, &DiagnosticFact, &BelongsToFile)>>()
             .await;
+        // A host file's diagnostics live on its extracted regions; they
+        // publish under the host, shifted into host coordinates.
+        let regions = self
+            .bowl()
+            .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
+            .await;
+        let region_offsets: Vec<(Entity, usize)> = regions
+            .collect()
+            .into_iter()
+            .filter(|(_, host, _)| host.0 == file_entity)
+            .map(|(region, _, offset)| (region, offset.0))
+            .collect();
+        let offset_of = |file: Entity| -> Option<usize> {
+            if file == file_entity {
+                return Some(0);
+            }
+            region_offsets
+                .iter()
+                .find(|(region, _)| *region == file)
+                .map(|(_, offset)| *offset)
+        };
         let mut diagnostics: Vec<Diagnostic> = rows
             .collect()
             .into_iter()
-            .filter(|(_, _, _, _, file)| file.0 == file_entity)
-            .map(|(_, severity, span, diagnostic, _)| Diagnostic {
+            .filter_map(|(entity, severity, span, diagnostic, file)| {
+                offset_of(file.0).map(|offset| (entity, severity, span, diagnostic, offset))
+            })
+            .map(|(_, severity, span, diagnostic, offset)| Diagnostic {
                 range: Range {
-                    start: byte_to_position(&rope, span.start),
-                    end: byte_to_position(&rope, span.end),
+                    start: byte_to_position(&rope, offset + span.start),
+                    end: byte_to_position(&rope, offset + span.end),
                 },
                 severity: Some(match severity {
                     Severity::Error => DiagnosticSeverity::ERROR,
@@ -219,14 +245,14 @@ impl LanguageServer for Backend {
             }
             self.bowl().entity(entity).insert((OpenBuffer,)).await;
         } else {
-            self.bowl()
-                .insert((
-                    FilePath(path.clone()),
-                    SourceText::from_text(&text),
-                    ResolutionScope::default_scope(),
-                    OpenBuffer,
-                ))
-                .await;
+            let entity = insert_source_scoped(
+                self.bowl(),
+                path.clone(),
+                &text,
+                ResolutionScope::default_scope(),
+            )
+            .await;
+            self.bowl().entity(entity).insert((OpenBuffer,)).await;
         }
 
         self.publish_diagnostics(params.text_document.uri, &path)

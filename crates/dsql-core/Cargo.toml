@@ -9,6 +9,7 @@ codespan-reporting = { workspace = true }
 facet = { workspace = true }
 facet-yaml = { workspace = true }
 logos = { workspace = true }
+regex = { workspace = true }
 ropey = { workspace = true }
 sea-query = { workspace = true }
 sqlformat = { workspace = true }

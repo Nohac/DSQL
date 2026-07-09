@@ -1,9 +1,8 @@
 //! The dsql command line: check, SQL generation, and formatting over the
 //! project's bowl.
 
-mod commands;
-
 use clap::{Parser, Subcommand};
+use dsql_cli::commands;
 
 #[derive(Parser)]
 #[command(name = "dsql", about = "The dsql compiler")]
@@ -36,6 +35,27 @@ enum Command {
     },
     /// Introspect the project database into the schema/ directory.
     Introspect,
+    /// Debug introspection over the project bowl (debug builds only).
+    #[cfg(debug_assertions)]
+    Debug {
+        #[command(subcommand)]
+        command: DebugCommand,
+    },
+}
+
+#[cfg(debug_assertions)]
+#[derive(Subcommand)]
+enum DebugCommand {
+    /// Answer a hover request and dump the facts at the offset.
+    Hover { file: String, offset: usize },
+    /// Answer a go-to-definition request.
+    Goto { file: String, offset: usize },
+    /// Answer a completion request.
+    Complete { file: String, offset: usize },
+    /// Dump a file's semantic tokens.
+    Tokens { file: String },
+    /// Dump file-to-scope ownership, derived regions, and scope imports.
+    Resolution,
 }
 
 fn main() -> std::process::ExitCode {
@@ -46,6 +66,14 @@ fn main() -> std::process::ExitCode {
         Command::Fmt { check } => commands::fmt(check),
         Command::Generate { collection_limit } => commands::generate(collection_limit),
         Command::Introspect => commands::introspect(),
+        #[cfg(debug_assertions)]
+        Command::Debug { command } => match command {
+            DebugCommand::Hover { file, offset } => dsql_cli::debug::hover(&file, offset),
+            DebugCommand::Goto { file, offset } => dsql_cli::debug::goto(&file, offset),
+            DebugCommand::Complete { file, offset } => dsql_cli::debug::complete(&file, offset),
+            DebugCommand::Tokens { file } => dsql_cli::debug::tokens(&file),
+            DebugCommand::Resolution => dsql_cli::debug::resolution(),
+        },
     };
     match outcome {
         Ok(clean) if clean => std::process::ExitCode::SUCCESS,

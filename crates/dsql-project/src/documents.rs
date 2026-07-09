@@ -1,29 +1,26 @@
-//! Discovery of the project's documents: plain `.dsql` files and dsql
-//! regions embedded in TypeScript sources.
+//! Discovery of the project's document files: plain `.dsql` files and
+//! TypeScript host sources. Embedded regions are *not* extracted here —
+//! that is a dsql-core system over host text — so the disk loader and the
+//! LSP feed the bowl through the same mechanism.
 
 use std::fs::{read_dir, read_to_string};
 use std::path::{Path, PathBuf};
 
-use regex::Regex;
-
 use dsql_core::source::ResolutionScope;
 
 use super::config::{Project, ProjectError, Result};
-use super::embedding::{extract_regions, typescript_embedding};
 
 /// File extensions that carry dsql documents: `.dsql` wholesale, the rest
-/// through embedded-region extraction.
+/// as host sources with embedded regions.
 const DOCUMENT_EXTENSIONS: &[&str] = &["dsql", "ts", "tsx"];
 
-/// One discovered document, with its text already read and the resolution
-/// scope that owns it.
+/// One discovered document file, with its text already read and the
+/// resolution scope that owns it. Whether a file is a dsql document or an
+/// embedding host is the source model's call, made at insert time.
 #[derive(Clone, Debug)]
 pub struct ProjectDocument {
     pub path: PathBuf,
     pub text: String,
-    /// Byte offset of the text inside its host file: zero for `.dsql`
-    /// files, the region start for embedded documents.
-    pub source_offset: usize,
     pub scope: String,
 }
 
@@ -41,7 +38,6 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
         .map(Path::to_path_buf)
         .unwrap_or_else(|| project.root.clone());
     let build_dir = project.root.join("build");
-    let embedding = typescript_embedding(project)?;
     let mut owned: Vec<(PathBuf, String)> = Vec::new();
 
     if project.config.resolution.is_empty() {
@@ -82,45 +78,16 @@ pub fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>>
         owned.sort();
     }
 
-    let mut documents = Vec::new();
-    for (path, scope) in owned {
-        read_documents(&path, &scope, &embedding, &mut documents)?;
-    }
-    Ok(documents)
-}
-
-/// Reads one file's documents: a `.dsql` file wholesale, anything else
-/// through embedded-region extraction.
-fn read_documents(
-    path: &Path,
-    scope: &str,
-    embedding: &Regex,
-    documents: &mut Vec<ProjectDocument>,
-) -> Result<()> {
-    let text = read_to_string(path).map_err(|source| ProjectError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    if path.extension().and_then(|ext| ext.to_str()) == Some("dsql") {
-        documents.push(ProjectDocument {
-            path: path.to_path_buf(),
-            text,
-            source_offset: 0,
-            scope: scope.to_string(),
-        });
-        return Ok(());
-    }
-    documents.extend(
-        extract_regions(embedding, &text)
-            .into_iter()
-            .map(|region| ProjectDocument {
-                path: path.to_path_buf(),
-                text: region.text,
-                source_offset: region.offset,
-                scope: scope.to_string(),
-            }),
-    );
-    Ok(())
+    owned
+        .into_iter()
+        .map(|(path, scope)| {
+            let text = read_to_string(&path).map_err(|source| ProjectError::Read {
+                path: path.clone(),
+                source,
+            })?;
+            Ok(ProjectDocument { path, text, scope })
+        })
+        .collect()
 }
 
 /// One configured document path: a glob pattern, a directory to walk, or

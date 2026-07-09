@@ -15,7 +15,7 @@ use dsql_core::facts::{
     SqlDemand, VariablesDemand,
 };
 use dsql_core::plan::{FragmentPlanFact, OperationSeed, QueryPlanFact};
-use dsql_core::source::{FilePath, SourceOffset};
+use dsql_core::source::{BelongsToHost, FilePath, SourceOffset};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use dsql_metadata::{
     BuildManifest, FragmentManifestEntry, FragmentMetadata, OperationManifestEntry,
@@ -320,19 +320,28 @@ async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<Co
     let diagnostics = bowl
         .scoop::<Query<(Entity, &Severity, &Span, &Diagnostic, &BelongsToFile)>>()
         .await;
-    let paths = bowl
-        .scoop::<Query<(Entity, &FilePath, &SourceOffset)>>()
-        .await;
+    // Documents are plain files (their own `FilePath`) or extracted
+    // regions: those resolve to their host's path, and spans shift by
+    // their offset into host coordinates.
+    let paths = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
     let path_rows = paths.collect();
+    let regions = bowl
+        .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
+        .await;
+    let region_rows = regions.collect();
     let path_of = |file: Entity| {
-        path_rows
+        let target = region_rows
             .iter()
             .find(|(entity, _, _)| *entity == file)
-            .map(|(_, path, _)| path.0.clone())
+            .map_or(file, |(_, host, _)| host.0);
+        path_rows
+            .iter()
+            .find(|(entity, _)| *entity == target)
+            .map(|(_, path)| path.0.clone())
             .unwrap_or_default()
     };
     let offset_of = |file: Entity| {
-        path_rows
+        region_rows
             .iter()
             .find(|(entity, _, _)| *entity == file)
             .map(|(_, _, offset)| offset.0)
@@ -343,11 +352,12 @@ async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<Co
         .into_iter()
         .filter(|(_, severity, _, _, _)| **severity == Severity::Error)
         .map(|(_, _, span, diagnostic, file)| {
+            let offset = offset_of(file.0);
             format!(
                 "{}:{}..{}: {}",
                 path_of(file.0),
-                span.start,
-                span.end,
+                offset + span.start,
+                offset + span.end,
                 diagnostic.0
             )
         })
