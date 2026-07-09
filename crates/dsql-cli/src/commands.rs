@@ -3,19 +3,17 @@
 use bowl::{Entity, Query, Singleton};
 use futures::executor::block_on;
 
-use dsql_core::facts::{
-    BelongsToFile, Diagnostic, DiagnosticsDemand, PlanDemand, Severity, Span, SqlDemand,
-};
+use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand};
 use dsql_core::format::{FormatConfidence, format_document};
 use dsql_core::grammar::parse;
-use dsql_core::source::{BelongsToHost, FilePath, SourceOffset};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use dsql_project::{Project, ProjectError, load_project_documents, open_project_bowl};
 
 type Outcome = Result<bool, ProjectError>;
 
-/// Prints every diagnostic in the project, sorted by file and span.
-/// Returns true when the project is clean.
+/// Prints every diagnostic in the project as a miette report with its
+/// source excerpt, sorted by file and span. Returns true when the project
+/// is clean.
 pub fn check() -> Outcome {
     let project = Project::load()?;
     block_on(async {
@@ -23,52 +21,14 @@ pub fn check() -> Outcome {
         bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
 
-        let rows = bowl
-            .scoop::<Query<(Entity, &Severity, &Span, &Diagnostic, &BelongsToFile)>>()
-            .await;
-        let paths = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
-        let paths = paths.collect();
-        let regions = bowl
-            .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
-            .await;
-        let regions = regions.collect();
-
-        // A diagnostic's file is a plain document or an extracted region;
-        // regions report under their host path in host coordinates.
-        let locate = |file: Entity| -> (&str, usize) {
-            let (target, offset) = regions
-                .iter()
-                .find(|(entity, _, _)| *entity == file)
-                .map_or((file, 0), |(_, host, offset)| (host.0, offset.0));
-            let path = paths
-                .iter()
-                .find(|(entity, _)| *entity == target)
-                .map(|(_, path)| path.0.as_str())
-                .unwrap_or("<unknown>");
-            (path, offset)
-        };
-        let mut lines: Vec<String> = rows
-            .collect()
-            .into_iter()
-            .map(|(_, severity, span, diagnostic, file)| {
-                let (path, offset) = locate(file.0);
-                format!(
-                    "{path}:{}..{}: {severity:?}: {}",
-                    offset + span.start,
-                    offset + span.end,
-                    diagnostic.0
-                )
-            })
-            .collect();
-        lines.sort();
-
-        for line in &lines {
-            println!("{line}");
+        let diagnostics = crate::render::collect_diagnostics(&bowl).await;
+        for diagnostic in &diagnostics {
+            print!("{}", crate::render::render(diagnostic));
         }
-        if lines.is_empty() {
+        if diagnostics.is_empty() {
             println!("no diagnostics");
         }
-        Ok(lines.is_empty())
+        Ok(diagnostics.is_empty())
     })
 }
 

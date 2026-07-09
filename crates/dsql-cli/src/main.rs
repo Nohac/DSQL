@@ -1,9 +1,8 @@
 //! The dsql command line: check, SQL generation, and formatting over the
 //! project's bowl.
 
-mod commands;
-
 use clap::{Parser, Subcommand};
+use dsql_cli::commands;
 
 #[derive(Parser)]
 #[command(name = "dsql", about = "The dsql compiler")]
