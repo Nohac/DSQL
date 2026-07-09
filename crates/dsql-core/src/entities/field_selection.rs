@@ -21,6 +21,7 @@ use crate::facts::{
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
+use crate::resolution::ResolvedSelection;
 use crate::service::completion::{CompletionContext, CompletionRequest};
 use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
@@ -602,42 +603,30 @@ impl FormatStage for FieldSelection {
 
 impl HoverStage for FieldSelection {
     async fn register_hover(bowl: &Bowl) {
-        bowl.add_system(hover_fields.run_during(bowl::Phase::Complete))
-            .await;
+        bowl.add_system(hover_fields).await;
     }
 }
 
 /// Answers hover on a field selection name with its resolved column or
-/// relation, walking the parent chain to establish the context table.
+/// relation: one tracked invocation per (request, field-in-file) pair via
+/// the `BelongsToFile` join, the meaning read off the field's
+/// [`ResolvedSelection`] stamp — no views, no walk, no phase barrier.
 async fn hover_fields(
     query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
+    fields: Query<(Entity, &ResolvedSelection), bowl::Where<bowl::Eq<BelongsToFile>>>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    views: TreeViews<'_>,
     mut commands: Commands,
 ) {
-    let (request, file, position) = query.item();
+    let (request, _file, position) = query.item();
+    let (_, resolved) = fields.item();
     let (_, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
-    let tree = SelectionTree::collect(&views);
-    let Some((_, field, key, _)) = tree
-        .fields
-        .iter()
-        .find(|(_, field, key, _)| {
-            key.file == file.0
-                && field.name_span.start <= position.offset
-                && position.offset < field.name_span.end
-        })
-        .copied()
-    else {
+    if !(resolved.name_span.start <= position.offset && position.offset < resolved.name_span.end) {
         return;
-    };
+    }
 
-    let Some(table) = resolve_context_table(&tree, catalog, key) else {
-        return;
-    };
-
-    let text = describe_field(catalog, table, field).unwrap_or_else(|| format!("`{}`", field.name));
+    let text = describe_target(catalog, resolved).unwrap_or_else(|| format!("`{}`", resolved.name));
 
     commands.insert((
         DerivedFrom::new(request),
@@ -713,36 +702,36 @@ pub(crate) fn resolve_context_table(
     Some(table)
 }
 
-fn describe_field(
+/// Renders a resolved selection for hover.
+fn describe_target(
     catalog: &crate::catalog::Catalog,
-    table: crate::catalog::TableId,
-    field: &FieldSel,
+    resolved: &ResolvedSelection,
 ) -> Option<String> {
-    // Root selections name tables directly.
-    if let Some(root_table) = catalog.table_ref_for(TableRef::parse(&field.name))
-        && root_table.id == table
-    {
-        return Some(format!(
-            "table `{}`.`{}`",
-            root_table.schema, root_table.name
-        ));
-    }
-    let reference = FieldRef {
-        target: TableRef::parse(&field.name),
-        selector: field.relation_path.as_deref(),
-    };
-    match catalog.check_field_ref(table, reference) {
-        FieldCheckResult::Column(column) => Some(format!(
-            "column `{}`: {}{}",
-            column.name,
-            column.data_type.as_str(),
-            if column.not_null { " (not null)" } else { "" },
-        )),
-        FieldCheckResult::Relation(relation) => Some(format!(
-            "relation `{}` → `{}`.`{}` via `{}`",
-            field.name, relation.table.schema, relation.table.name, relation.selector,
-        )),
-        _ => None,
+    use crate::resolution::SelectionTarget;
+    match &resolved.target {
+        SelectionTarget::Table(table) => {
+            let table = catalog.table_by_id(*table)?;
+            Some(format!("table `{}`.`{}`", table.schema, table.name))
+        }
+        SelectionTarget::Column(column) => {
+            let column = catalog.column_by_id(*column)?;
+            Some(format!(
+                "column `{}`: {}{}",
+                column.name,
+                column.data_type.as_str(),
+                if column.not_null { " (not null)" } else { "" },
+            ))
+        }
+        SelectionTarget::Relation {
+            table, selector, ..
+        } => {
+            let table = catalog.table_by_id(*table)?;
+            Some(format!(
+                "relation `{}` → `{}`.`{}` via `{selector}`",
+                resolved.name, table.schema, table.name,
+            ))
+        }
+        SelectionTarget::Unresolved => None,
     }
 }
 

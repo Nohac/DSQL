@@ -2,18 +2,13 @@
 //! with the fragment definition's name span.
 //!
 //! Enrichment stamps the resolved file as `BelongsToFile`, so the spread
-//! lookup is a per-file bound join. The `SpreadResolution` facts are
-//! consumed *tracked* so pairs replan as resolutions commit — resolutions
-//! derive at Complete, and a same-phase ambient view of them would race;
-//! that product is unkeyed (nothing equal joins a spread entity id), so
-//! each pair filters in its body. Requests are transient and few.
+//! lookup is a per-file bound join, and the [`ResolvedSpread`] stamp on
+//! the spread row carries the target — a fully tracked pipeline, no
+//! phase barrier.
 
-use bowl::{
-    Bowl, Commands, Component, Entity, Eq as BowlEq, Phase, Query, SystemExt, View, Where, With,
-};
+use bowl::{Bowl, Commands, Component, Entity, Eq as BowlEq, Query, Where, With};
 
-use crate::entities::definition::DefDecl;
-use crate::entities::fragment_spread::{SpreadDecl, SpreadResolution};
+use crate::entities::fragment_spread::ResolvedSpread;
 use crate::facts::{BelongsToFile, Span};
 use crate::service::hover::Position;
 use crate::source::{FilePath, SourceText};
@@ -36,8 +31,7 @@ pub struct DefinitionTarget {
 
 pub(crate) async fn register_definition_pipeline(bowl: &Bowl) {
     bowl.add_system(resolve_definition_requests).await;
-    bowl.add_system(answer_spread_definitions.run_during(Phase::Complete))
-        .await;
+    bowl.add_system(answer_spread_definitions).await;
 }
 
 async fn resolve_definition_requests(
@@ -56,32 +50,26 @@ async fn resolve_definition_requests(
 /// definition facts are viewed ambiently (Evaluate output, safe behind
 /// the Complete barrier); the Complete-derived resolutions are the tracked
 /// input.
+/// Follows the spread under the cursor to its fragment definition: one
+/// tracked invocation per (request, spread-in-file) pair, the target read
+/// off the spread's [`ResolvedSpread`] stamp.
 async fn answer_spread_definitions(
     query: Query<(Entity, &BelongsToFile, &Position), With<DefinitionRequest>>,
-    spreads: Query<(Entity, &SpreadDecl), Where<BowlEq<BelongsToFile>>>,
-    resolutions: Query<(Entity, &SpreadResolution)>,
-    defs: View<'_, (Entity, &DefDecl, &BelongsToFile)>,
+    spreads: Query<(Entity, &ResolvedSpread), Where<BowlEq<BelongsToFile>>>,
     mut commands: Commands,
 ) {
     let (request, _file, position) = query.item();
-    let (spread_entity, spread) = spreads.item();
-    let (_, resolution) = resolutions.item();
+    let (_, resolved) = spreads.item();
 
-    if resolution.spread != spread_entity
-        || !(spread.name_span.start <= position.offset && position.offset < spread.name_span.end)
-    {
+    if !(resolved.name_span.start <= position.offset && position.offset < resolved.name_span.end) {
         return;
     }
-
-    let Some((_, decl, def_file)) = defs
-        .iter()
-        .find(|(entity, _, _)| *entity == resolution.fragment)
-    else {
+    let Some(target) = &resolved.target else {
         return;
     };
 
     commands.entity(request).insert(DefinitionTarget {
-        file: def_file.0,
-        span: decl.name_span,
+        file: target.file,
+        span: target.name_span,
     });
 }

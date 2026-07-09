@@ -5,7 +5,7 @@
 use bowl::{Bowl, Entity, Mut, Query, Singleton};
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::field_selection::FieldSel;
-use dsql_core::entities::fragment_spread::{SpreadDecl, SpreadResolution};
+use dsql_core::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use dsql_core::facts::{DiagnosticsDemand, NodeKey, ParentKey};
 use dsql_core::register_language;
 use dsql_core::source::{SourceText, insert_source};
@@ -114,27 +114,21 @@ fn selections_lower_into_a_parent_keyed_tree() {
 
 /// Renders spread resolutions by name, sorted for stability.
 async fn render_resolutions(bowl: &Bowl) -> Vec<String> {
-    let resolutions = bowl.scoop::<Query<(Entity, &SpreadResolution)>>().await;
-    let spreads = bowl.scoop::<Query<(Entity, &SpreadDecl)>>().await;
+    let spreads = bowl.scoop::<Query<(Entity, &ResolvedSpread)>>().await;
     let defs = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
-    let spread_rows = spreads.collect();
     let def_rows = defs.collect();
 
-    let mut lines: Vec<String> = resolutions
+    let mut lines: Vec<String> = spreads
         .collect()
         .into_iter()
-        .map(|(_, resolution)| {
-            let spread = spread_rows
-                .iter()
-                .find(|(entity, _)| *entity == resolution.spread)
-                .map(|(_, decl)| decl.name.as_str())
-                .unwrap_or("<missing spread>");
+        .filter_map(|(_, resolved)| {
+            let target = resolved.target.as_ref()?;
             let fragment = def_rows
                 .iter()
-                .find(|(entity, _)| *entity == resolution.fragment)
+                .find(|(entity, _)| *entity == target.fragment)
                 .map(|(_, decl)| decl.name.as_str())
                 .unwrap_or("<missing fragment>");
-            format!("...{spread} -> fragment {fragment}")
+            Some(format!("...{} -> fragment {fragment}", resolved.name))
         })
         .collect();
     lines.sort();

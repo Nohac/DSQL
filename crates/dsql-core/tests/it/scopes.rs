@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::insert_catalog;
-use dsql_core::entities::fragment_spread::SpreadResolution;
+use dsql_core::entities::fragment_spread::ResolvedSpread;
 use dsql_core::facts::DiagnosticsDemand;
 use dsql_core::register_language;
 use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_scoped};
@@ -42,9 +42,12 @@ async fn insert(bowl: &Bowl, path: &str, scope: &str, text: &str) {
 }
 
 async fn resolutions(bowl: &Bowl) -> usize {
-    bowl.scoop::<Query<(Entity, &SpreadResolution)>>()
-        .await
-        .len()
+    let spreads = bowl.scoop::<Query<(Entity, &ResolvedSpread)>>().await;
+    spreads
+        .collect()
+        .into_iter()
+        .filter(|(_, resolved)| resolved.target.is_some())
+        .count()
 }
 
 const FRAGMENT: &str = "fragment TitleBits on title {\n  id\n}\n";

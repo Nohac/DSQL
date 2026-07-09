@@ -29,14 +29,34 @@ pub struct SpreadDecl {
     pub span: Span,
 }
 
-/// Derived resolution fact: `spread` refers to fragment definition
-/// `fragment` in the same file. Planning expands through these; editor
-/// go-to-definition follows them.
-#[derive(Component, Debug, Hash)]
+/// Derived resolution fact for one spread: the fragment its scope
+/// uniquely sees, with everything hover and go-to-definition need
+/// denormalized in, so both stay tracked joins on [`BelongsToFile`]. A
+/// separate entity, not a component on the spread — stamping syntax
+/// entities would retire the diagnostics anchored to them.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
 #[component(hash)]
-pub struct SpreadResolution {
+pub struct ResolvedSpread {
+    /// The spread entity this resolution is about.
     pub spread: Entity,
+    /// The spread name (`...Name`).
+    pub name: String,
+    /// Span of the spread name in its document.
+    pub name_span: crate::facts::Span,
+    /// The uniquely visible fragment, when exactly one resolves.
+    pub target: Option<SpreadTarget>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct SpreadTarget {
+    /// The fragment definition entity.
     pub fragment: Entity,
+    /// The file holding the definition.
+    pub file: Entity,
+    /// The definition's name span within that file.
+    pub name_span: crate::facts::Span,
+    /// The fragment's `on` target name, when it has one.
+    pub on: Option<String>,
 }
 
 /// Owns `fragment_spread`.
@@ -91,30 +111,6 @@ impl LowerStage for FragmentSpread {
     }
 }
 
-/// The views spread services resolve against, bundled for reuse.
-#[derive(bowl::SystemParam)]
-pub(crate) struct SpreadResolver<'a> {
-    imports: View<'a, (Entity, &'a ScopeImports)>,
-    fragments: View<'a, (Entity, &'a DefDecl, &'a ResolutionScope)>,
-    targets: View<'a, (Entity, &'a crate::entities::definition::FragmentTarget)>,
-}
-
-impl SpreadResolver<'_> {
-    /// The `on` target of the uniquely visible fragment `name` from
-    /// `scope`, if any.
-    pub(crate) fn target_of(&self, name: &str, scope: &str) -> Option<String> {
-        let (_, imports) = self.imports.iter().next()?;
-        let candidates = visible_fragments(name, scope, imports, self.fragments.iter());
-        let [(fragment, _, _)] = candidates.as_slice() else {
-            return None;
-        };
-        self.targets
-            .iter()
-            .find(|(entity, _)| entity == fragment)
-            .map(|(_, target)| target.name.clone())
-    }
-}
-
 /// The fragment definitions a spread in `scope` can see, per the effective
 /// resolver (docs/spec/resolution-scopes.md): the scope's own fragments
 /// plus its direct imports'. Shared by resolution, checks, planning,
@@ -143,24 +139,50 @@ pub(crate) fn visible_fragments<'a>(
 /// [`ScopeImports`] inputs rerun rows when the definition set or the scope
 /// graph changes.
 async fn resolve_spreads(
-    spreads: Query<(Entity, &SpreadDecl, &ResolutionScope)>,
+    spreads: Query<(
+        Entity,
+        &SpreadDecl,
+        &ResolutionScope,
+        &crate::facts::BelongsToFile,
+    )>,
     _index: Query<(Entity, &DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     fragments: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
+    files: View<'_, (Entity, &DefDecl, &crate::facts::BelongsToFile)>,
+    targets: View<'_, (Entity, &crate::entities::definition::FragmentTarget)>,
     mut commands: Commands,
 ) {
-    let (spread, decl, scope) = spreads.item();
+    let (spread, decl, scope, file) = spreads.item();
     let (_, imports) = imports.item();
 
     let candidates = visible_fragments(&decl.name, &scope.0, imports, fragments.iter());
-    let [(fragment, _, _)] = candidates.as_slice() else {
-        return;
+    let target = if let [(fragment, fragment_decl, _)] = candidates.as_slice() {
+        let fragment = *fragment;
+        files
+            .iter()
+            .find(|(entity, _, _)| *entity == fragment)
+            .map(|(_, _, fragment_file)| SpreadTarget {
+                fragment,
+                file: fragment_file.0,
+                name_span: fragment_decl.name_span,
+                on: targets
+                    .iter()
+                    .find(|(entity, _)| *entity == fragment)
+                    .map(|(_, target)| target.name.clone()),
+            })
+    } else {
+        None
     };
-    let fragment = *fragment;
 
     commands.insert((
-        DerivedFrom::many([spread, fragment]),
-        SpreadResolution { spread, fragment },
+        DerivedFrom::new(spread),
+        crate::facts::BelongsToFile(file.0),
+        ResolvedSpread {
+            spread,
+            name: decl.name.clone(),
+            name_span: decl.name_span,
+            target,
+        },
     ));
 }
 
@@ -342,33 +364,33 @@ impl FormatStage for FragmentSpread {
 
 impl HoverStage for FragmentSpread {
     async fn register_hover(bowl: &Bowl) {
-        bowl.add_system(hover_spreads.run_during(bowl::Phase::Complete))
-            .await;
+        bowl.add_system(hover_spreads).await;
     }
 }
 
 /// Answers hover on a `...Name` spread with the fragment it resolves to:
-/// one invocation per (request, spread-in-file) pair via the
-/// `BelongsToFile` join. The fragment target still comes from the
-/// cross-scope resolver views (scope visibility is not an equal-key join),
-/// which is why this stays behind the Complete barrier.
+/// one tracked invocation per (request, spread-in-file) pair via the
+/// `BelongsToFile` join, the target read off the [`ResolvedSpread`]
+/// stamp — no views, no phase barrier.
 async fn hover_spreads(
     query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
-    spreads: Query<(Entity, &SpreadDecl, &ResolutionScope), Where<bowl::Eq<BelongsToFile>>>,
-    resolver: SpreadResolver<'_>,
+    spreads: Query<(Entity, &ResolvedSpread), Where<bowl::Eq<BelongsToFile>>>,
     mut commands: Commands,
 ) {
     let (request, _file, position) = query.item();
-    let (_, spread, scope) = spreads.item();
+    let (_, resolved) = spreads.item();
 
-    if !(spread.name_span.start <= position.offset && position.offset < spread.name_span.end) {
+    if !(resolved.name_span.start <= position.offset && position.offset < resolved.name_span.end) {
         return;
     }
 
-    let target = resolver.target_of(&spread.name, &scope.0);
-    let text = match target {
-        Some(target) => format!("fragment `{}` on `{target}`", spread.name),
-        None => format!("fragment `{}`", spread.name),
+    let text = match resolved
+        .target
+        .as_ref()
+        .and_then(|target| target.on.as_ref())
+    {
+        Some(target) => format!("fragment `{}` on `{target}`", resolved.name),
+        None => format!("fragment `{}`", resolved.name),
     };
 
     commands.insert((
