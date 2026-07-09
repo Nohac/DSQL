@@ -296,3 +296,16 @@ pub async fn resolution() -> Outcome {
         Ok(true)
     }
 }
+
+/// Prints the engine's explain report for a system, after a settle with
+/// the usual demand markers — how many invocations its joins currently
+/// plan, and how many are memo-current.
+pub async fn explain(system: &str) -> Outcome {
+    let project = Project::load().await?;
+    let bowl = session_bowl(&project).await?;
+    // Force a settle so the report reflects steady state.
+    let _ = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
+    let report = bowl.explain(system).await;
+    println!("{report:#?}");
+    Ok(true)
+}
