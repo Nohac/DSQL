@@ -192,7 +192,7 @@ impl LanguageServer for Backend {
         // silently dropping the catalog and documents is indistinguishable
         // from "everything is broken" in the editor.
         register_language(&self.bowl).await;
-        let populated = match Project::load_from(&start_dir) {
+        let populated = match Project::load_from(&start_dir).await {
             Ok(project) => match populate_project_bowl(&self.bowl, &project).await {
                 Ok(()) => true,
                 Err(error) => {

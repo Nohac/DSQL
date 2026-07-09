@@ -29,8 +29,8 @@ pub async fn open_project_bowl(project: &Project) -> Result<Bowl> {
 /// Populates an already-registered bowl with the project's catalog, scope
 /// configuration, and documents.
 pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()> {
-    let catalog = project.load_catalog()?;
-    let documents = load_project_documents(project)?;
+    let catalog = project.load_catalog().await?;
+    let documents = load_project_documents(project).await?;
     let pattern = typescript_pattern(project)?;
 
     insert_catalog(bowl, catalog).await;

@@ -4,10 +4,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use bowl::{Entity, Query, Singleton};
-use futures::executor::block_on;
+use tokio::process::Command;
 
 use dsql_core::entities::variable::VariableBinding;
 use dsql_core::facts::{
@@ -86,9 +85,12 @@ pub struct GenerateOutput {
 
 /// Generates the project's `build/` tree and runs the configured host
 /// generator command.
-pub fn generate_project(project: &Project, options: GenerateOptions) -> Result<GenerateOutput> {
-    let facts = block_on(collect_facts(project, options))?;
-    let catalog = project.load_catalog()?;
+pub async fn generate_project(
+    project: &Project,
+    options: GenerateOptions,
+) -> Result<GenerateOutput> {
+    let facts = collect_facts(project, options).await?;
+    let catalog = project.load_catalog().await?;
     let project_root = project
         .root
         .parent()
@@ -150,7 +152,7 @@ pub fn generate_project(project: &Project, options: GenerateOptions) -> Result<G
     }
     fragments.sort_by(|left, right| left.0.name.cmp(&right.0.name));
 
-    write_build_tree(project, &project_root, operations, fragments)
+    write_build_tree(project, &project_root, operations, fragments).await
 }
 
 /// One assembled artifact with its serialized form, content hash, and
@@ -173,7 +175,7 @@ fn hashed<M: facet::Facet<'static>>(
     Ok(Hashed(metadata, serialized, hash, source))
 }
 
-fn write_build_tree(
+async fn write_build_tree(
     project: &Project,
     project_root: &Path,
     operations: Vec<Hashed<OperationMetadata>>,
@@ -185,7 +187,7 @@ fn write_build_tree(
     let mut operation_entries = Vec::new();
     for Hashed(metadata, serialized, hash, source) in &operations {
         let path = operation_artifact_path(&build_dir, &metadata.name);
-        if write_if_changed(&path, serialized)? {
+        if write_if_changed(&path, serialized).await? {
             written.push(path);
         }
         operation_entries.push(OperationManifestEntry {
@@ -200,7 +202,7 @@ fn write_build_tree(
     let mut fragment_entries = Vec::new();
     for Hashed(metadata, serialized, hash, source) in &fragments {
         let path = fragment_artifact_path(&build_dir, &metadata.name);
-        if write_if_changed(&path, serialized)? {
+        if write_if_changed(&path, serialized).await? {
             written.push(path);
         }
         fragment_entries.push(FragmentManifestEntry {
@@ -223,11 +225,11 @@ fn write_build_tree(
             name: MANIFEST_FILE.to_string(),
             message: error.to_string(),
         })?;
-    if write_if_changed(&manifest_path, &serialized)? {
+    if write_if_changed(&manifest_path, &serialized).await? {
         written.push(manifest_path.clone());
     }
 
-    run_host_generator(project, project_root)?;
+    run_host_generator(project, project_root).await?;
 
     Ok(GenerateOutput {
         manifest_path,
@@ -237,26 +239,30 @@ fn write_build_tree(
 
 /// Writes only when content changed: unchanged artifacts keep their mtime,
 /// so downstream watchers and the host generator see per-operation deltas.
-fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
-    if let Ok(existing) = std::fs::read_to_string(path)
+async fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
+    if let Ok(existing) = tokio::fs::read_to_string(path).await
         && existing == content
     {
         return Ok(false);
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| GenerateError::Write {
-            path: parent.to_path_buf(),
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|source| GenerateError::Write {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+    }
+    tokio::fs::write(path, content)
+        .await
+        .map_err(|source| GenerateError::Write {
+            path: path.to_path_buf(),
             source,
         })?;
-    }
-    std::fs::write(path, content).map_err(|source| GenerateError::Write {
-        path: path.to_path_buf(),
-        source,
-    })?;
     Ok(true)
 }
 
-fn run_host_generator(project: &Project, project_root: &Path) -> Result<()> {
+async fn run_host_generator(project: &Project, project_root: &Path) -> Result<()> {
     let typescript = &project.config.generate.typescript;
     if !typescript.enabled || typescript.cmd.is_empty() {
         return Ok(());
@@ -265,6 +271,7 @@ fn run_host_generator(project: &Project, project_root: &Path) -> Result<()> {
         .args(&typescript.cmd[1..])
         .current_dir(project_root)
         .status()
+        .await
         .map_err(|source| GenerateError::Spawn {
             cmd: typescript.cmd.clone(),
             source,

@@ -1,7 +1,7 @@
-//! Command implementations over the project bowl.
+//! Command implementations over the project bowl. All async: the binary
+//! owns the runtime, libraries and commands only do async work.
 
 use bowl::{Entity, Query, Singleton};
-use futures::executor::block_on;
 
 use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand};
 use dsql_core::format::{FormatConfidence, format_document};
@@ -9,14 +9,26 @@ use dsql_core::grammar::parse;
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use dsql_project::{Project, ProjectError, load_project_documents, open_project_bowl};
 
-type Outcome = Result<bool, ProjectError>;
+/// The command layer's error: each failure keeps its own type instead of
+/// being coerced into an unrelated project variant.
+#[derive(Debug, thiserror::Error)]
+pub enum CliError {
+    #[error(transparent)]
+    Project(#[from] ProjectError),
+    #[error(transparent)]
+    Generate(#[from] dsql_generate::GenerateError),
+    #[error(transparent)]
+    Introspection(#[from] dsql_introspection::IntrospectionError),
+}
+
+pub(crate) type Outcome = Result<bool, CliError>;
 
 /// Prints every diagnostic in the project as a miette report with its
 /// source excerpt, sorted by file and span. Returns true when the project
 /// is clean.
-pub fn check() -> Outcome {
-    let project = Project::load()?;
-    block_on(async {
+pub async fn check() -> Outcome {
+    let project = Project::load().await?;
+    {
         let bowl = open_project_bowl(&project).await?;
         bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
@@ -29,13 +41,13 @@ pub fn check() -> Outcome {
             println!("no diagnostics");
         }
         Ok(diagnostics.is_empty())
-    })
+    }
 }
 
 /// Prints the generated PostgreSQL for every query plan in the project.
-pub fn sql(collection_limit: Option<u64>) -> Outcome {
-    let project = Project::load()?;
-    block_on(async {
+pub async fn sql(collection_limit: Option<u64>) -> Outcome {
+    let project = Project::load().await?;
+    {
         let bowl = open_project_bowl(&project).await?;
         bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
@@ -76,14 +88,14 @@ pub fn sql(collection_limit: Option<u64>) -> Outcome {
             println!("-- {name}\n{sql}\n");
         }
         Ok(true)
-    })
+    }
 }
 
 /// Formats project documents in place; with `check`, reports instead.
 /// Returns true when nothing needed changing.
-pub fn fmt(check_only: bool) -> Outcome {
-    let project = Project::load()?;
-    let documents = load_project_documents(&project)?;
+pub async fn fmt(check_only: bool) -> Outcome {
+    let project = Project::load().await?;
+    let documents = load_project_documents(&project).await?;
 
     let mut clean = true;
     for document in documents {
@@ -101,12 +113,12 @@ pub fn fmt(check_only: bool) -> Outcome {
             println!("{}: would reformat", document.path.display());
             clean = false;
         } else {
-            std::fs::write(&document.path, formatted.text).map_err(|source| {
-                ProjectError::Read {
+            tokio::fs::write(&document.path, formatted.text)
+                .await
+                .map_err(|source| ProjectError::Write {
                     path: document.path.clone(),
                     source,
-                }
-            })?;
+                })?;
             println!("{}: reformatted", document.path.display());
         }
     }
@@ -114,47 +126,25 @@ pub fn fmt(check_only: bool) -> Outcome {
 }
 
 /// Writes the artifact tree and runs the configured host generator.
-pub fn generate(collection_limit: Option<u64>) -> Outcome {
-    let project = Project::load()?;
+pub async fn generate(collection_limit: Option<u64>) -> Outcome {
+    let project = Project::load().await?;
     let output = dsql_generate::generate_project(
         &project,
         dsql_generate::GenerateOptions { collection_limit },
     )
-    .map_err(|error| {
-        eprintln!("{error}");
-        ProjectError::MissingRoot(project.root.clone())
-    });
-    match output {
-        Ok(output) => {
-            for path in &output.written {
-                println!("{}: written", path.display());
-            }
-            println!("manifest: {}", output.manifest_path.display());
-            Ok(true)
-        }
-        Err(_) => Ok(false),
+    .await?;
+    for path in &output.written {
+        println!("{}: written", path.display());
     }
+    println!("manifest: {}", output.manifest_path.display());
+    Ok(true)
 }
 
 /// Introspects the configured database and writes the schema directory.
-pub fn introspect() -> Outcome {
-    let project = Project::load()?;
-    let runtime = tokio::runtime::Runtime::new().map_err(|source| ProjectError::Read {
-        path: project.root.clone(),
-        source,
-    })?;
-    let metadata = runtime.block_on(dsql_introspection::introspect_postgres(
-        &project.config.database_url,
-    ));
-    match metadata {
-        Ok(metadata) => {
-            dsql_project::store_metadata_dir(&metadata, &project.schema)?;
-            println!("schema written to {}", project.schema.display());
-            Ok(true)
-        }
-        Err(error) => {
-            eprintln!("introspection failed: {error}");
-            Ok(false)
-        }
-    }
+pub async fn introspect() -> Outcome {
+    let project = Project::load().await?;
+    let metadata = dsql_introspection::introspect_postgres(&project.config.database_url).await?;
+    dsql_project::store_metadata_dir(&metadata, &project.schema).await?;
+    println!("schema written to {}", project.schema.display());
+    Ok(true)
 }

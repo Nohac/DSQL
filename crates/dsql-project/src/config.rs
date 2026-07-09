@@ -4,8 +4,9 @@
 //! consumes it.
 
 use std::env::current_dir;
-use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
+
+use tokio::fs::read_to_string;
 
 use std::collections::BTreeMap;
 
@@ -152,19 +153,22 @@ pub struct Project {
 }
 
 impl Project {
-    pub fn load() -> Result<Self> {
+    pub async fn load() -> Result<Self> {
         let start = current_dir().map_err(ProjectError::CurrentDir)?;
-        Self::load_from(&start)
+        Self::load_from(&start).await
     }
 
-    pub fn load_from(start_dir: &Path) -> Result<Self> {
+    pub async fn load_from(start_dir: &Path) -> Result<Self> {
         let root = find_root(start_dir)
+            .await
             .ok_or_else(|| ProjectError::MissingRoot(start_dir.to_path_buf()))?;
         let config_path = root.join("dsql.toml");
-        let raw = read_to_string(&config_path).map_err(|source| ProjectError::Read {
-            path: config_path.clone(),
-            source,
-        })?;
+        let raw = read_to_string(&config_path)
+            .await
+            .map_err(|source| ProjectError::Read {
+                path: config_path.clone(),
+                source,
+            })?;
         let config: Config = facet_toml::from_str(&raw).map_err(|error| ProjectError::Parse {
             path: config_path,
             message: error.to_string(),
@@ -187,8 +191,8 @@ impl Project {
     }
 
     /// Loads the schema catalog from the project's schema directory.
-    pub fn load_catalog(&self) -> Result<Catalog> {
-        let metadata = super::metadata::load_metadata_dir(&self.schema)?;
+    pub async fn load_catalog(&self) -> Result<Catalog> {
+        let metadata = super::metadata::load_metadata_dir(&self.schema).await?;
         metadata
             .into_catalog()
             .map(|catalog| catalog.with_default_schema(self.config.default_schema.clone()))
@@ -197,11 +201,14 @@ impl Project {
 }
 
 /// Walks up from `start_dir` looking for a `dsql/dsql.toml` root.
-pub fn find_root(start_dir: &Path) -> Option<PathBuf> {
+pub async fn find_root(start_dir: &Path) -> Option<PathBuf> {
     let mut current_dir = start_dir;
     loop {
         let candidate = current_dir.join("dsql");
-        if candidate.join("dsql.toml").exists() {
+        if tokio::fs::try_exists(candidate.join("dsql.toml"))
+            .await
+            .unwrap_or(false)
+        {
             return Some(candidate);
         }
         current_dir = current_dir.parent()?;

@@ -10,8 +10,8 @@ dsql-metadata = { workspace = true }
 dsql-project = { workspace = true }
 facet = { workspace = true }
 facet-json = { workspace = true }
-futures = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

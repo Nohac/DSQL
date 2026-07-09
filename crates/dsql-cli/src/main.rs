@@ -58,21 +58,24 @@ enum DebugCommand {
     Resolution,
 }
 
-fn main() -> std::process::ExitCode {
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let outcome = match cli.command {
-        Command::Check => commands::check(),
-        Command::Sql { collection_limit } => commands::sql(collection_limit),
-        Command::Fmt { check } => commands::fmt(check),
-        Command::Generate { collection_limit } => commands::generate(collection_limit),
-        Command::Introspect => commands::introspect(),
+        Command::Check => commands::check().await,
+        Command::Sql { collection_limit } => commands::sql(collection_limit).await,
+        Command::Fmt { check } => commands::fmt(check).await,
+        Command::Generate { collection_limit } => commands::generate(collection_limit).await,
+        Command::Introspect => commands::introspect().await,
         #[cfg(debug_assertions)]
         Command::Debug { command } => match command {
-            DebugCommand::Hover { file, offset } => dsql_cli::debug::hover(&file, offset),
-            DebugCommand::Goto { file, offset } => dsql_cli::debug::goto(&file, offset),
-            DebugCommand::Complete { file, offset } => dsql_cli::debug::complete(&file, offset),
-            DebugCommand::Tokens { file } => dsql_cli::debug::tokens(&file),
-            DebugCommand::Resolution => dsql_cli::debug::resolution(),
+            DebugCommand::Hover { file, offset } => dsql_cli::debug::hover(&file, offset).await,
+            DebugCommand::Goto { file, offset } => dsql_cli::debug::goto(&file, offset).await,
+            DebugCommand::Complete { file, offset } => {
+                dsql_cli::debug::complete(&file, offset).await
+            }
+            DebugCommand::Tokens { file } => dsql_cli::debug::tokens(&file).await,
+            DebugCommand::Resolution => dsql_cli::debug::resolution().await,
         },
     };
     match outcome {
