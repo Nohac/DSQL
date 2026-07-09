@@ -14,7 +14,7 @@ pub use completion::{
 pub use definition::{DefinitionRequest, DefinitionTarget};
 pub use hover::{HoverCandidate, HoverEnriched, HoverInfo, HoverRequest, Position, priority};
 pub use semantic_tokens::{
-    SemanticToken, SemanticTokenKind, SemanticTokens, SemanticTokensRequest,
+    SemanticToken, SemanticTokenKind, SemanticTokensRequest, TokenChunk, semantic_tokens,
 };
 
 /// Registers the service pipelines shared by all entities.

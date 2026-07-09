@@ -136,22 +136,15 @@ fn goto_definition_follows_spreads() {
 
 #[test]
 fn semantic_tokens_classify_by_resolution() {
-    use dsql_core::service::{SemanticTokens, SemanticTokensRequest};
+    use dsql_core::service::semantic_tokens;
 
     block_on(async {
         let bowl = service_bowl().await;
         let source = fixture(FIXTURE);
 
-        let tokens = bowl
-            .insert((SemanticTokensRequest, FilePath(FIXTURE.to_string())))
-            .await
-            .bind()
-            .take::<SemanticTokens>()
-            .await
-            .expect("semantic tokens answered");
+        let tokens = semantic_tokens(&bowl, FIXTURE).await;
 
         let rendered: Vec<String> = tokens
-            .0
             .iter()
             .map(|token| {
                 format!(
@@ -169,18 +162,12 @@ fn semantic_tokens_classify_by_resolution() {
 
 #[test]
 fn semantic_tokens_for_unknown_file_are_empty() {
-    use dsql_core::service::{SemanticTokens, SemanticTokensRequest};
+    use dsql_core::service::semantic_tokens;
 
     block_on(async {
         let bowl = service_bowl().await;
-        let tokens = bowl
-            .insert((SemanticTokensRequest, FilePath("missing.dsql".to_string())))
-            .await
-            .bind()
-            .take::<SemanticTokens>()
-            .await
-            .expect("semantic tokens answered");
-        assert!(tokens.0.is_empty());
+        let tokens = semantic_tokens(&bowl, "missing.dsql").await;
+        assert!(tokens.is_empty());
     });
 }
 

@@ -3,17 +3,17 @@
 //!
 //! Classification reads the resolver's facts, so it needs no walk: each
 //! candidate system is a tracked join contributing the tokens of one fact
-//! kind, and arbitration set-unions the chunks into the answer — the same
-//! commutative-fold shape as completion. Only names that actually resolve
+//! kind as a [`TokenChunk`] fact. The chunks are *scooped*, not folded:
+//! a whole-file answer has hundreds of contributors, and a MutRef fold
+//! into one component makes every write invalidate every other pair's
+//! memo — O(N) settle generations for N chunks (a minute of CPU on a
+//! large file). Bulk aggregation belongs at the read boundary; requests
+//! are answered by [`semantic_tokens`]. Only names that actually resolve
 //! are classified; broken references stay unstyled and the diagnostics
 //! point at them instead.
-//!
-//! External callers drive it request/response:
-//! `bowl.insert((SemanticTokensRequest, FilePath(...))).await
-//!     .bind().take::<SemanticTokens>()`.
 
 use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Eq as BowlEq, MutRef, Query, View, Where, With,
+    Bowl, Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, View, Where, With,
 };
 
 use crate::catalog::{Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableRef};
@@ -50,18 +50,33 @@ pub struct SemanticToken {
     pub kind: SemanticTokenKind,
 }
 
-/// The answer: every classified span of the file, span-sorted, merged in
-/// place by arbitration. A request for an unknown file answers with no
-/// tokens.
-#[derive(Debug, Component, Hash, PartialEq, Eq)]
-#[component(hash)]
-pub struct SemanticTokens(pub Vec<SemanticToken>);
-
 /// One fact's contribution to one request, addressed by an equal
 /// [`RequestKey`].
 #[derive(Component, Hash)]
 #[component(hash)]
 pub struct TokenChunk(pub Vec<SemanticToken>);
+
+/// Answers one semantic-tokens request: inserts it, lets the bowl settle,
+/// and gathers the chunk facts into one span-sorted, deduplicated list.
+/// A request for an unknown file answers with no tokens.
+pub async fn semantic_tokens(bowl: &Bowl, path: impl Into<String>) -> Vec<SemanticToken> {
+    let request = bowl
+        .insert((SemanticTokensRequest, crate::source::FilePath(path.into())))
+        .await
+        .entity();
+    let rows = bowl
+        .scoop::<Query<(Entity, &TokenChunk, &RequestKey)>>()
+        .await;
+    let mut tokens: Vec<SemanticToken> = rows
+        .collect()
+        .into_iter()
+        .filter(|(_, _, key)| key.0 == request)
+        .flat_map(|(_, chunk, _)| chunk.0.iter().copied())
+        .collect();
+    tokens.sort_by_key(|token| (token.span.start, token.span.end, token.kind));
+    tokens.dedup();
+    tokens
+}
 
 pub(crate) async fn register_semantic_tokens_pipeline(bowl: &Bowl) {
     bowl.add_system(resolve_token_requests).await;
@@ -69,7 +84,6 @@ pub(crate) async fn register_semantic_tokens_pipeline(bowl: &Bowl) {
     bowl.add_system(selection_tokens).await;
     bowl.add_system(spread_tokens).await;
     bowl.add_system(clause_tokens).await;
-    bowl.add_system(arbitrate_tokens).await;
 }
 
 /// The file side of the request outer join: matched per equal path, or
@@ -80,9 +94,8 @@ type FileMatch<'a> = Option<Query<(Entity, &'a SourceText), Where<BowlEq<FilePat
 type DefRows<'a> =
     Query<(Entity, &'a DefDecl, Option<&'a FragmentTarget>), Where<BowlEq<BelongsToFile>>>;
 
-/// Outer join: seeds the empty answer for matched and unmatched requests
-/// alike; the resolved file lands as `BelongsToFile` for the candidate
-/// joins.
+/// Outer join: stamps the request key, and the resolved file as
+/// `BelongsToFile` for the candidate joins.
 async fn resolve_token_requests(
     requests: Query<(Entity, &FilePath), With<SemanticTokensRequest>>,
     file: FileMatch<'_>,
@@ -90,7 +103,6 @@ async fn resolve_token_requests(
 ) {
     let (request, _path) = requests.item();
     commands.entity(request).insert(RequestKey(request));
-    commands.entity(request).insert(SemanticTokens(Vec::new()));
     if let Some(file) = file {
         let (file_entity, _text) = file.item();
         commands.entity(request).insert(BelongsToFile(file_entity));
@@ -234,25 +246,6 @@ async fn clause_tokens(
         ClauseFact::Limit { .. } | ClauseFact::Offset { .. } => {}
     }
     emit_chunk(&mut commands, request, tokens);
-}
-
-/// Arbitration: one invocation per (request, chunk) pair via the
-/// [`RequestKey`] join, set-unioning each chunk into the sorted answer —
-/// a commutative fold, so pair order is irrelevant.
-async fn arbitrate_tokens(
-    requests: Query<(Entity, &RequestKey, MutRef<'_, SemanticTokens>), With<SemanticTokensRequest>>,
-    chunks: Query<(Entity, &TokenChunk), Where<BowlEq<RequestKey>>>,
-) {
-    let (_request, _key, mut answer) = requests.item();
-    let (_, chunk) = chunks.item();
-
-    for token in &chunk.0 {
-        let key = |token: &SemanticToken| (token.span.start, token.span.end, token.kind);
-        match answer.0.binary_search_by_key(&key(token), key) {
-            Ok(_) => {}
-            Err(position) => answer.0.insert(position, *token),
-        }
-    }
 }
 
 fn emit_chunk(commands: &mut Commands, request: Entity, tokens: Vec<SemanticToken>) {

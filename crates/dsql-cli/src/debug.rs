@@ -12,7 +12,7 @@ use dsql_core::entities::variable::VariableUse;
 use dsql_core::facts::{BelongsToFile, DiagnosticsDemand, NodeKey, VariablesDemand};
 use dsql_core::service::{
     CompletionList, CompletionRequest, DefinitionRequest, DefinitionTarget, HoverInfo,
-    HoverRequest, Position, SemanticTokens, SemanticTokensRequest,
+    HoverRequest, Position, semantic_tokens,
 };
 use dsql_core::source::{
     BelongsToHost, DsqlDocument, EmbeddingHost, FilePath, ResolutionScope, ScopeImports,
@@ -216,22 +216,12 @@ pub async fn tokens(file: &str) -> Outcome {
         let Some((_, path)) = resolve_file(&bowl, file).await else {
             return Ok(false);
         };
-        let tokens = bowl
-            .insert((SemanticTokensRequest, FilePath(path)))
-            .await
-            .bind()
-            .take::<SemanticTokens>()
-            .await;
-        match tokens {
-            Ok(tokens) => {
-                for token in &tokens.0 {
-                    println!("{:?} {}..{}", token.kind, token.span.start, token.span.end);
-                }
-                if tokens.0.is_empty() {
-                    println!("no tokens");
-                }
-            }
-            Err(error) => println!("tokens: <no answer: {error:?}>"),
+        let tokens = semantic_tokens(&bowl, path).await;
+        for token in &tokens {
+            println!("{:?} {}..{}", token.kind, token.span.start, token.span.end);
+        }
+        if tokens.is_empty() {
+            println!("no tokens");
         }
         Ok(true)
     }
