@@ -80,10 +80,7 @@ async fn generate_sql_facts(
                 severity: Severity::Error,
                 source: DiagnosticSource::Generate,
                 code: DiagnosticCode::SqlGeneration,
-                message: format!(
-                    "query `{}` failed to render SQL: {error}",
-                    seed.query_name
-                ),
+                message: format!("query `{}` failed to render SQL: {error}", seed.query_name),
             },
         ),
     }

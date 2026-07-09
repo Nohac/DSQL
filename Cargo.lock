@@ -452,6 +452,7 @@ dependencies = [
  "futures",
  "insta",
  "miette",
+ "ropey",
  "thiserror",
  "tokio",
 ]

@@ -558,7 +558,9 @@ fn filter_expr_fragment(
         FilterExpr::Literal(FilterLiteral::Number(value)) => value.clone(),
         FilterExpr::Literal(FilterLiteral::Bool(value)) => value.to_string(),
         FilterExpr::Literal(FilterLiteral::Null) => "null".to_string(),
-        FilterExpr::Binary { .. } | FilterExpr::VariantBinary { .. } | FilterExpr::Exists { .. } => {
+        FilterExpr::Binary { .. }
+        | FilterExpr::VariantBinary { .. }
+        | FilterExpr::Exists { .. } => {
             return Err(SqlGenerationError::UnsupportedFilterFragment);
         }
     })

@@ -8,8 +8,8 @@
 //!    *outer* join: the request's `FilePath` pairs with the file carrying
 //!    the equal path, and a request matching no file still runs once with
 //!    `None` — so one system seeds the whole answer scaffold
-//!    ([`RequestKey`], [`HoverRank`], the fallback [`HoverInfo`]) for
-//!    matched and unmatched requests alike.
+//!    ([`RequestKey`] and the fallback [`HoverInfo`]) for matched and
+//!    unmatched requests alike.
 //! 2. Each entity's hover systems (Complete, registered through
 //!    `HoverStage`) read the enriched request plus their own facts
 //!    *ambiently* and insert [`HoverCandidate`] facts addressed by an
@@ -47,21 +47,21 @@ pub struct Position {
 }
 
 /// The answer, upgraded in place on the request entity by arbitration.
+/// `priority` tells callers whether anything actually answered: at or
+/// below [`priority::RESOLVED`] the text is scaffold fallback, and editor
+/// integrations should show nothing.
 #[derive(Debug, Component, Hash, PartialEq, Eq)]
 #[component(hash)]
-pub struct HoverInfo(pub String);
+pub struct HoverInfo {
+    pub text: String,
+    pub priority: u8,
+}
 
 /// The request's own id as a join key: candidates carry an equal key, so
 /// arbitration pairs each request with exactly its own candidates.
 #[derive(Component, Hash, Debug, Clone, Copy, PartialEq, Eq)]
 #[component(hash)]
 pub struct RequestKey(pub Entity);
-
-/// Priority of the request's current [`HoverInfo`]. Answers only ever
-/// upgrade (strictly greater), which makes arbitration order-independent.
-#[derive(Component, Hash)]
-#[component(hash)]
-pub struct HoverRank(pub u8);
 
 /// Marker stamped on every hover request, resolvable or not. Candidate
 /// systems key on enrichment outputs so the phase barrier covers them all.
@@ -121,10 +121,10 @@ async fn resolve_hover_requests(
     commands.entity(request).insert(HoverEnriched);
 
     let Some(file) = file else {
-        commands.entity(request).insert(HoverRank(priority::NONE));
-        commands
-            .entity(request)
-            .insert(HoverInfo("unknown file".to_string()));
+        commands.entity(request).insert(HoverInfo {
+            text: "unknown file".to_string(),
+            priority: priority::NONE,
+        });
         return;
     };
 
@@ -134,21 +134,14 @@ async fn resolve_hover_requests(
     commands
         .entity(request)
         .insert(crate::facts::BelongsToFile(file_entity));
-    commands
-        .entity(request)
-        .insert(HoverRank(priority::RESOLVED));
-    commands
-        .entity(request)
-        .insert(HoverInfo("no information at position".to_string()));
+    commands.entity(request).insert(HoverInfo {
+        text: "no information at position".to_string(),
+        priority: priority::RESOLVED,
+    });
 }
 
 /// One request row keyed for arbitration, with its upgradable answer.
-type ArbitrationRow<'a> = (
-    Entity,
-    &'a RequestKey,
-    MutRef<'a, HoverRank>,
-    MutRef<'a, HoverInfo>,
-);
+type ArbitrationRow<'a> = (Entity, &'a RequestKey, MutRef<'a, HoverInfo>);
 
 /// Arbitration: one invocation per (request, candidate) pair via the
 /// [`RequestKey`] join, each monotonically upgrading the request's answer
@@ -157,11 +150,11 @@ async fn arbitrate_hover(
     query: Query<ArbitrationRow<'_>, With<HoverRequest>>,
     candidate: Query<(Entity, &HoverCandidate), Where<BowlEq<RequestKey>>>,
 ) {
-    let (_request, _key, mut rank, mut info) = query.item();
+    let (_request, _key, mut info) = query.item();
     let (_candidate_entity, candidate) = candidate.item();
 
-    if candidate.priority > rank.0 {
-        rank.0 = candidate.priority;
-        info.0 = candidate.text.clone();
+    if candidate.priority > info.priority {
+        info.priority = candidate.priority;
+        info.text = candidate.text.clone();
     }
 }

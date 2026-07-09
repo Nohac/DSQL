@@ -14,6 +14,8 @@
 //! not change re-inserts with an equal fingerprint and invalidates
 //! nothing. Regions that vanish are reaped by the stale-derived cleanup.
 
+use std::sync::Mutex;
+
 use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, Singleton, With};
 use regex::Regex;
 
@@ -75,7 +77,7 @@ async fn extract_embedded_documents(
 
     // Loaders validate configured patterns up front; the default is
     // statically valid. A bad pattern reaching this point derives nothing.
-    let Ok(regex) = compile_embedding_pattern(&pattern.0) else {
+    let Some(regex) = cached_embedding_pattern(&pattern.0) else {
         return;
     };
 
@@ -93,4 +95,24 @@ async fn extract_embedded_documents(
             SourceText::from_text(content.as_str()),
         ));
     }
+}
+
+/// Compiled-pattern cache: extraction reruns per keystroke on open host
+/// buffers, and NFA construction is far too expensive for that. One slot
+/// suffices — a bowl has one pattern, and pattern changes are config
+/// events.
+static COMPILED_PATTERN: Mutex<Option<(String, Regex)>> = Mutex::new(None);
+
+fn cached_embedding_pattern(pattern: &str) -> Option<Regex> {
+    let mut cached = COMPILED_PATTERN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((key, regex)) = cached.as_ref()
+        && key == pattern
+    {
+        return Some(regex.clone());
+    }
+    let regex = compile_embedding_pattern(pattern).ok()?;
+    *cached = Some((pattern.to_string(), regex.clone()));
+    Some(regex)
 }

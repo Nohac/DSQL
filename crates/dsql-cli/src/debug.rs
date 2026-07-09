@@ -134,7 +134,7 @@ pub fn hover(file: &str, offset: usize) -> Outcome {
             .take::<HoverInfo>()
             .await;
         match info {
-            Ok(info) => println!("hover: {}", info.0),
+            Ok(info) => println!("hover ({}): {}", info.priority, info.text),
             Err(error) => println!("hover: <no answer: {error:?}>"),
         }
         Ok(true)
