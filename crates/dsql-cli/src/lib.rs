@@ -2,4 +2,6 @@
 //! `main` is pure argument dispatch.
 
 pub mod commands;
+#[cfg(debug_assertions)]
+pub mod debug;
 pub mod render;

@@ -112,8 +112,15 @@ impl SourceText {
 
 /// Marks a file entity whose text is owned by a live editor buffer. Disk
 /// watchers and loaders must not overwrite the text while this is present.
+///
+/// Untracked: this is bookkeeping for text *writers*, not an input any
+/// derivation reads. A tracked marker would lift the file's entity
+/// revision when the editor stamps it, retiring every `DerivedFrom`-
+/// anchored fact of the file without anything re-deriving them (the
+/// text's own fingerprint is unchanged) — externally inserted markers on
+/// fact-bearing entities must stay out of change tracking.
 #[derive(Component, Hash)]
-#[component(hash)]
+#[component(hash, untracked)]
 pub struct OpenBuffer;
 
 /// The resolution scope a file belongs to (docs/spec/resolution-scopes.md).

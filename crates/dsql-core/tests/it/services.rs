@@ -183,3 +183,40 @@ fn semantic_tokens_for_unknown_file_are_empty() {
         assert!(tokens.0.is_empty());
     });
 }
+
+/// The editor stamps `OpenBuffer` on a file it opens; that must not
+/// disturb the file's derived facts (the marker is untracked — a tracked
+/// insert would retire every fact anchored to the file with nothing
+/// re-deriving them).
+#[test]
+fn hover_survives_opening_the_buffer() {
+    use dsql_core::source::{OpenBuffer, SourceText, insert_source};
+
+    block_on(async {
+        let bowl = Bowl::new();
+        register_language(&bowl).await;
+        insert_catalog(&bowl, imdb_catalog()).await;
+        let source = fixture(FIXTURE);
+        let file = insert_source(&bowl, FIXTURE, &source).await;
+
+        let offset = source.find("production_year").expect("fixture text");
+        let before = hover(&bowl, offset).await;
+        assert!(before.contains("column"), "hover answers before: {before}");
+
+        // The LSP `didOpen` flow: replace the text wholesale (identical
+        // content) and stamp the open-buffer marker.
+        let sources = bowl
+            .scoop::<bowl::Query<(bowl::Entity, bowl::Mut<SourceText>)>>()
+            .await;
+        for (entity, text) in sources.collect() {
+            if entity == file {
+                let content = source.clone();
+                text.with_latest(move |text| text.set_text(&content)).await;
+            }
+        }
+        bowl.entity(file).insert((OpenBuffer,)).await;
+
+        let after = hover(&bowl, offset).await;
+        assert_eq!(after, before, "opening the buffer must not lose facts");
+    });
+}
