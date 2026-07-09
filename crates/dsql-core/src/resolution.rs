@@ -44,6 +44,8 @@ pub struct ResolvedSelection {
     pub written: String,
     /// Span of the selected name in its document.
     pub name_span: Span,
+    /// Span of the output alias, when written as `alias: field`.
+    pub alias_span: Option<Span>,
     /// The table the name resolved against — `None` for query roots
     /// (which name tables directly) and for selections whose context
     /// never resolved.
@@ -162,6 +164,7 @@ impl ResolveWalk<'_, '_> {
                 name: selection.name.clone(),
                 written,
                 name_span: selection.name_span,
+                alias_span: selection.alias_span,
                 context,
                 target,
             },
