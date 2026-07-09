@@ -9,7 +9,5 @@ dsql-core = { workspace = true }
 facet = { workspace = true }
 facet-toml = { workspace = true }
 glob = { workspace = true }
+tokio = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-futures = { workspace = true }

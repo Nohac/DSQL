@@ -12,9 +12,9 @@ use tower_lsp_server::ls_types::{
     DidOpenTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    OneOf, Range, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    MessageType, OneOf, Range, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -33,7 +33,7 @@ use dsql_core::source::{
     BelongsToHost, FilePath, OpenBuffer, ResolutionScope, SourceOffset, SourceText,
     insert_source_scoped,
 };
-use dsql_project::{Project, populate_project_bowl};
+use dsql_project::{Project, ProjectError, populate_project_bowl};
 
 use crate::position::{
     byte_to_position, encode_semantic_tokens, position_to_byte, semantic_tokens_legend,
@@ -53,6 +53,20 @@ struct Backend {
     /// empty here and populated (language, catalog, project documents) in
     /// `initialize`.
     bowl: Bowl,
+    /// Serializes buffer mutations and diagnostic publishing. tower-lsp
+    /// runs handlers concurrently; a tokio mutex is FIFO-fair, so locking
+    /// at handler entry preserves the client's notification order — the
+    /// property incremental `didChange` ranges depend on.
+    session: tokio::sync::Mutex<SessionState>,
+}
+
+/// Editor-session bookkeeping guarded by the session lock.
+#[derive(Default)]
+struct SessionState {
+    /// URIs of currently open documents, for cross-file diagnostic
+    /// republishing: an edit in one file can change diagnostics anchored
+    /// in any other (fragments resolve across files).
+    open: std::collections::HashMap<String, Uri>,
 }
 
 impl Backend {
@@ -60,6 +74,16 @@ impl Backend {
         Self {
             client,
             bowl: Bowl::new(),
+            session: tokio::sync::Mutex::new(SessionState::default()),
+        }
+    }
+
+    /// Publishes diagnostics for every open document. Cheap when nothing
+    /// changed (the bowl is already settled); needed because an edit in
+    /// one file can move diagnostics in another.
+    async fn publish_open_documents(&self, state: &SessionState) {
+        for (path, uri) in &state.open {
+            self.publish_diagnostics(uri.clone(), path).await;
         }
     }
 
@@ -163,25 +187,53 @@ impl LanguageServer for Backend {
 
         // Populate the session bowl: project contents when a dsql.toml is
         // in reach, a bare language with an empty catalog otherwise, so
-        // single files still parse and hover.
+        // single files still parse and hover. A project that exists but
+        // fails to load degrades the same way — but says so, loudly:
+        // silently dropping the catalog and documents is indistinguishable
+        // from "everything is broken" in the editor.
         register_language(&self.bowl).await;
-        match Project::load_from(&start_dir) {
-            Ok(project) => {
-                let _ = populate_project_bowl(&self.bowl, &project).await;
+        let populated = match Project::load_from(&start_dir).await {
+            Ok(project) => match populate_project_bowl(&self.bowl, &project).await {
+                Ok(()) => true,
+                Err(error) => {
+                    self.client
+                        .show_message(
+                            MessageType::ERROR,
+                            format!("dsql project failed to load: {error}"),
+                        )
+                        .await;
+                    false
+                }
+            },
+            Err(error @ ProjectError::MissingRoot(_)) => {
+                // Legitimately projectless: single-file mode.
+                self.client
+                    .log_message(MessageType::INFO, format!("dsql: {error}"))
+                    .await;
+                false
             }
-            Err(_) => {
-                insert_catalog(
-                    &self.bowl,
-                    Catalog {
-                        default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
-                        schemas: Vec::new(),
-                        tables: Vec::new(),
-                        columns: Vec::new(),
-                        foreign_keys: Vec::new(),
-                    },
-                )
-                .await;
+            Err(error) => {
+                self.client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!("dsql project failed to load: {error}"),
+                    )
+                    .await;
+                false
             }
+        };
+        if !populated {
+            insert_catalog(
+                &self.bowl,
+                Catalog {
+                    default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
+                    schemas: Vec::new(),
+                    tables: Vec::new(),
+                    columns: Vec::new(),
+                    foreign_keys: Vec::new(),
+                },
+            )
+            .await;
         }
         self.bowl
             .insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
@@ -232,6 +284,7 @@ impl LanguageServer for Backend {
             return;
         };
         let text = params.text_document.text;
+        let mut session = self.session.lock().await;
 
         if let Some((entity, _)) = self.rope_of(&path).await {
             let sources = self
@@ -255,14 +308,15 @@ impl LanguageServer for Backend {
             self.bowl().entity(entity).insert((OpenBuffer,)).await;
         }
 
-        self.publish_diagnostics(params.text_document.uri, &path)
-            .await;
+        session.open.insert(path, params.text_document.uri);
+        self.publish_open_documents(&session).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let Some(path) = uri_path(&params.text_document.uri) else {
             return;
         };
+        let session = self.session.lock().await;
 
         let sources = self
             .bowl()
@@ -287,8 +341,7 @@ impl LanguageServer for Backend {
                 .await;
         }
 
-        self.publish_diagnostics(params.text_document.uri, &path)
-            .await;
+        self.publish_open_documents(&session).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -297,6 +350,8 @@ impl LanguageServer for Backend {
         let Some(path) = uri_path(&params.text_document.uri) else {
             return;
         };
+        let mut session = self.session.lock().await;
+        session.open.remove(&path);
         if let Some((entity, _)) = self.rope_of(&path).await {
             self.bowl().entity(entity).remove::<OpenBuffer>().await;
         }
@@ -320,13 +375,17 @@ impl LanguageServer for Backend {
             .take::<HoverInfo>()
             .await;
 
-        Ok(info.ok().map(|info| Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: info.0.clone(),
-            }),
-            range: None,
-        }))
+        // Scaffold-priority answers mean nothing answered: no popup.
+        Ok(info
+            .ok()
+            .filter(|info| info.priority > dsql_core::service::priority::RESOLVED)
+            .map(|info| Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: info.text.clone(),
+                }),
+                range: None,
+            }))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -397,12 +456,23 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        // Resolve the target file entity back to its path and rope.
+        // Resolve the target file entity back to its path and rope. A
+        // target inside an extracted region resolves to its host file,
+        // with the span shifted into host coordinates.
+        let regions = self
+            .bowl()
+            .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
+            .await;
+        let (target_file, offset) = regions
+            .collect()
+            .into_iter()
+            .find(|(entity, _, _)| *entity == target.file)
+            .map_or((target.file, 0), |(_, host, offset)| (host.0, offset.0));
         let paths = self.bowl().scoop::<Query<(Entity, &FilePath)>>().await;
         let Some(target_path) = paths
             .collect()
             .into_iter()
-            .find(|(entity, _)| *entity == target.file)
+            .find(|(entity, _)| *entity == target_file)
             .map(|(_, path)| path.0.clone())
         else {
             return Ok(None);
@@ -410,16 +480,15 @@ impl LanguageServer for Backend {
         let Some((_, target_rope)) = self.rope_of(&target_path).await else {
             return Ok(None);
         };
-        let target_uri = format!("file://{target_path}").parse::<Uri>().ok();
-        let Some(target_uri) = target_uri else {
+        let Some(target_uri) = Uri::from_file_path(&target_path) else {
             return Ok(None);
         };
 
         Ok(Some(GotoDefinitionResponse::Scalar(Location {
             uri: target_uri,
             range: Range {
-                start: byte_to_position(&target_rope, target.span.start),
-                end: byte_to_position(&target_rope, target.span.end),
+                start: byte_to_position(&target_rope, offset + target.span.start),
+                end: byte_to_position(&target_rope, offset + target.span.end),
             },
         })))
     }
@@ -458,6 +527,14 @@ impl LanguageServer for Backend {
         let Some(path) = uri_path(&params.text_document.uri) else {
             return Ok(None);
         };
+        // Only dsql documents format; host sources are another language's.
+        if std::path::Path::new(&path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            != Some("dsql")
+        {
+            return Ok(None);
+        }
         let Some((_, rope)) = self.rope_of(&path).await else {
             return Ok(None);
         };

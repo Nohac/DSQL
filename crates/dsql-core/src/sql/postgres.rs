@@ -44,6 +44,8 @@ pub enum SqlGenerationError {
     MissingColumn(usize),
     #[error("foreign key id `{0}` was not found in catalog")]
     MissingForeignKey(usize),
+    #[error("filter shape is not supported in a text fragment position")]
+    UnsupportedFilterFragment,
     #[error(
         "foreign key `{foreign_key}` does not connect parent table `{parent}` to child table `{child}`"
     )]
@@ -471,7 +473,10 @@ fn filter_expr(
                 FilterOp::Ge => left.gte(right),
                 FilterOp::Lt => left.lt(right),
                 FilterOp::Le => left.lte(right),
-                FilterOp::Like => unreachable!("handled before generic binary expression lowering"),
+                // Handled before generic binary lowering above; kept as an
+                // error rather than a panic so drift cannot take down the
+                // generator.
+                FilterOp::Like => return Err(SqlGenerationError::UnsupportedFilterFragment),
                 FilterOp::And => left.and(right),
                 FilterOp::Or => left.or(right),
             }
@@ -553,9 +558,10 @@ fn filter_expr_fragment(
         FilterExpr::Literal(FilterLiteral::Number(value)) => value.clone(),
         FilterExpr::Literal(FilterLiteral::Bool(value)) => value.to_string(),
         FilterExpr::Literal(FilterLiteral::Null) => "null".to_string(),
-        other => {
-            let _ = filter_expr(catalog, context, root, outer_current, other, template)?;
-            "<unsupported>".to_string()
+        FilterExpr::Binary { .. }
+        | FilterExpr::VariantBinary { .. }
+        | FilterExpr::Exists { .. } => {
+            return Err(SqlGenerationError::UnsupportedFilterFragment);
         }
     })
 }

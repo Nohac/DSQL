@@ -19,11 +19,22 @@ pub(crate) fn position_to_byte(rope: &Rope, position: Position) -> usize {
     let line_count = rope.len_lines(LineType::LF_CR);
     let line = (position.line as usize).min(line_count.saturating_sub(1));
     let line_start = rope.line_to_byte_idx(line, LineType::LF_CR);
-    let line_end = if line + 1 < line_count {
+    let mut line_end = if line + 1 < line_count {
         rope.line_to_byte_idx(line + 1, LineType::LF_CR)
     } else {
         rope.len()
     };
+    // Per the LSP spec, a character past the end of the line clamps to the
+    // line length *before* the break — the slice must exclude the
+    // terminator or past-EOL positions map onto the next line.
+    let tail_start = line_start.max(line_end.saturating_sub(2));
+    let tail = rope.slice(tail_start..line_end).to_string();
+    if tail.ends_with('\n') {
+        line_end -= 1;
+        if tail.ends_with("\r\n") {
+            line_end -= 1;
+        }
+    }
     let line_slice = rope.slice(line_start..line_end);
     let utf16 = (position.character as usize).min(line_slice.len_utf16());
     line_start + line_slice.utf16_to_byte_idx(utf16)

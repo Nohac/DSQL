@@ -57,6 +57,7 @@ pub enum DiagnosticCode {
     UnindexedJoinColumn,
     UnindexedScanColumn,
     UnindexedPredicateJoinColumn,
+    SqlGeneration,
 }
 
 /// Which stage emitted a diagnostic.

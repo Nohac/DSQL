@@ -4,8 +4,11 @@ use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, Singleton, Wit
 
 use super::postgres::{GeneratedSql, PostgresSqlOptions, generate_postgres_sql_with_options};
 use crate::catalog::CatalogSnapshot;
-use crate::facts::{BelongsToFile, SqlDemand};
-use crate::plan::QueryPlanFact;
+use crate::facts::{
+    BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, Severity, SqlDemand,
+    emit_diagnostic,
+};
+use crate::plan::{OperationSeed, QueryPlanFact};
 
 /// SQL generation options as a fingerprinted singleton fact. A default is
 /// installed at registration; projects overwrite it by inserting a new
@@ -31,14 +34,17 @@ pub async fn register_sql(bowl: &Bowl) {
     bowl.add_system(generate_sql_facts).await;
 }
 
-/// Renders each plan against the catalog. Plans that fail to render (a
-/// stale plan racing a catalog change; the next settle retires it) emit
-/// nothing rather than a broken artifact.
+/// Renders each plan against the catalog. A plan that fails to render
+/// emits an error diagnostic instead of an artifact: a stale plan racing a
+/// catalog change retires with its diagnostic at the next settle, while a
+/// persistent failure surfaces loudly rather than silently thinning the
+/// build tree.
 async fn generate_sql_facts(
     _: Query<Entity, With<SqlDemand>>,
     plans: Query<(
         Entity,
         &QueryPlanFact,
+        &OperationSeed,
         &BelongsToFile,
         &crate::facts::PlanKey,
     )>,
@@ -46,24 +52,36 @@ async fn generate_sql_facts(
     options: Query<(Entity, &SqlOptions)>,
     mut commands: Commands,
 ) {
-    let (plan_entity, plan, file, plan_key) = plans.item();
+    let (plan_entity, plan, seed, file, plan_key) = plans.item();
     let (catalog_entity, snapshot) = catalog.item();
     let (options_entity, options) = options.item();
 
-    let Ok(sql) = generate_postgres_sql_with_options(
+    match generate_postgres_sql_with_options(
         &plan.0,
         snapshot.catalog(),
         PostgresSqlOptions {
             collection_limit: options.collection_limit,
         },
-    ) else {
-        return;
-    };
-
-    commands.insert((
-        DerivedFrom::many([plan_entity, catalog_entity, options_entity]),
-        BelongsToFile(file.0),
-        *plan_key,
-        GeneratedSqlFact(sql),
-    ));
+    ) {
+        Ok(sql) => {
+            commands.insert((
+                DerivedFrom::many([plan_entity, catalog_entity, options_entity]),
+                BelongsToFile(file.0),
+                *plan_key,
+                GeneratedSqlFact(sql),
+            ));
+        }
+        Err(error) => emit_diagnostic(
+            &mut commands,
+            DiagnosticFacts {
+                derived_from: DerivedFrom::many([plan_entity, catalog_entity, options_entity]),
+                file: file.0,
+                span: seed.def_span,
+                severity: Severity::Error,
+                source: DiagnosticSource::Generate,
+                code: DiagnosticCode::SqlGeneration,
+                message: format!("query `{}` failed to render SQL: {error}", seed.query_name),
+            },
+        ),
+    }
 }

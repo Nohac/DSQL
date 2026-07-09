@@ -3,8 +3,9 @@
 //! Loading and storing round-trip so introspection output is diffable.
 
 use std::collections::BTreeSet;
-use std::fs::{create_dir_all, read_dir, read_to_string, remove_file, write};
 use std::path::Path;
+
+use tokio::fs::{create_dir_all, read_dir, read_to_string, remove_file, write};
 
 use dsql_core::catalog::{
     DatabaseMetadata, SchemaMetadata, TableMetadata, TypeMetadataFile, table_metadata_from_yaml,
@@ -13,41 +14,49 @@ use dsql_core::catalog::{
 
 use super::config::{ProjectError, Result};
 
-pub fn load_metadata_dir(path: &Path) -> Result<DatabaseMetadata> {
-    let mut schemas = Vec::new();
-    for entry in read_dir(path).map_err(|source| ProjectError::Read {
-        path: path.to_path_buf(),
+/// Collects a directory's entry paths, mapping errors onto `dir`.
+async fn entry_paths(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut entries = read_dir(dir).await.map_err(|source| ProjectError::Read {
+        path: dir.to_path_buf(),
         source,
-    })? {
-        let entry = entry.map_err(|source| ProjectError::Read {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let schema_path = entry.path();
+    })?;
+    let mut paths = Vec::new();
+    loop {
+        let entry = entries
+            .next_entry()
+            .await
+            .map_err(|source| ProjectError::Read {
+                path: dir.to_path_buf(),
+                source,
+            })?;
+        let Some(entry) = entry else {
+            return Ok(paths);
+        };
+        paths.push(entry.path());
+    }
+}
+
+pub async fn load_metadata_dir(path: &Path) -> Result<DatabaseMetadata> {
+    let mut schemas = Vec::new();
+    for schema_path in entry_paths(path).await? {
         if !schema_path.is_dir() {
             continue;
         }
         let Some(schema_name) = schema_path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
+        let schema_name = schema_name.to_string();
         let mut tables = Vec::<TableMetadata>::new();
-        for table_entry in read_dir(&schema_path).map_err(|source| ProjectError::Read {
-            path: schema_path.clone(),
-            source,
-        })? {
-            let table_path = table_entry
-                .map_err(|source| ProjectError::Read {
-                    path: schema_path.clone(),
-                    source,
-                })?
-                .path();
+        for table_path in entry_paths(&schema_path).await? {
             if table_path.extension().and_then(|ext| ext.to_str()) != Some("yaml") {
                 continue;
             }
-            let raw = read_to_string(&table_path).map_err(|source| ProjectError::Read {
-                path: table_path.clone(),
-                source,
-            })?;
+            let raw = read_to_string(&table_path)
+                .await
+                .map_err(|source| ProjectError::Read {
+                    path: table_path.clone(),
+                    source,
+                })?;
             let table = table_metadata_from_yaml(&raw).map_err(|error| ProjectError::Parse {
                 path: table_path.clone(),
                 message: error.to_string(),
@@ -56,26 +65,29 @@ pub fn load_metadata_dir(path: &Path) -> Result<DatabaseMetadata> {
         }
         tables.sort_by(|left, right| left.name.cmp(&right.name));
         schemas.push(SchemaMetadata {
-            name: schema_name.to_string(),
+            name: schema_name,
             tables,
         });
     }
     schemas.sort_by(|left, right| left.name.cmp(&right.name));
 
     let types_path = path.join("type_map.yaml");
-    let types = if types_path.exists() {
-        let raw = read_to_string(&types_path).map_err(|source| ProjectError::Read {
-            path: types_path.clone(),
-            source,
-        })?;
-        type_metadata_file_from_yaml(&raw)
-            .map_err(|error| ProjectError::Parse {
+    let types = match read_to_string(&types_path).await {
+        Ok(raw) => {
+            type_metadata_file_from_yaml(&raw)
+                .map_err(|error| ProjectError::Parse {
+                    path: types_path,
+                    message: error.to_string(),
+                })?
+                .types
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(source) => {
+            return Err(ProjectError::Read {
                 path: types_path,
-                message: error.to_string(),
-            })?
-            .types
-    } else {
-        Vec::new()
+                source,
+            });
+        }
     };
 
     Ok(DatabaseMetadata { schemas, types })
@@ -83,13 +95,13 @@ pub fn load_metadata_dir(path: &Path) -> Result<DatabaseMetadata> {
 
 /// Writes `metadata` as the schema directory's contents, removing table
 /// files for tables that no longer exist.
-pub fn store_metadata_dir(metadata: &DatabaseMetadata, path: &Path) -> Result<()> {
+pub async fn store_metadata_dir(metadata: &DatabaseMetadata, path: &Path) -> Result<()> {
     let mut metadata = metadata.clone();
     metadata.canonicalize();
-    create_dir(path)?;
+    create_dir(path).await?;
     for schema in &metadata.schemas {
         let schema_path = path.join(&schema.name);
-        create_dir(&schema_path)?;
+        create_dir(&schema_path).await?;
         let mut expected_tables = BTreeSet::new();
         for table in &schema.tables {
             let table_file = format!("{}.yaml", table.name);
@@ -99,9 +111,9 @@ pub fn store_metadata_dir(metadata: &DatabaseMetadata, path: &Path) -> Result<()
                     path: schema_path.join(&table_file),
                     message,
                 })?;
-            write_file(&schema_path.join(table_file), &table_yaml)?;
+            write_file(&schema_path.join(table_file), &table_yaml).await?;
         }
-        remove_stale_table_files(&schema_path, &expected_tables)?;
+        remove_stale_table_files(&schema_path, &expected_tables).await?;
     }
     let types_path = path.join("type_map.yaml");
     let types_yaml = type_metadata_file_to_yaml(&TypeMetadataFile {
@@ -111,44 +123,44 @@ pub fn store_metadata_dir(metadata: &DatabaseMetadata, path: &Path) -> Result<()
         path: types_path.clone(),
         message,
     })?;
-    write_file(&types_path, &types_yaml)
+    write_file(&types_path, &types_yaml).await
 }
 
-fn create_dir(path: &Path) -> Result<()> {
-    create_dir_all(path).map_err(|source| ProjectError::Write {
-        path: path.to_path_buf(),
-        source,
-    })
+async fn create_dir(path: &Path) -> Result<()> {
+    create_dir_all(path)
+        .await
+        .map_err(|source| ProjectError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
-fn write_file(path: &Path, content: &str) -> Result<()> {
-    write(path, content).map_err(|source| ProjectError::Write {
-        path: path.to_path_buf(),
-        source,
-    })
+async fn write_file(path: &Path, content: &str) -> Result<()> {
+    write(path, content)
+        .await
+        .map_err(|source| ProjectError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
-fn remove_stale_table_files(schema_path: &Path, expected_tables: &BTreeSet<String>) -> Result<()> {
-    for entry in read_dir(schema_path).map_err(|source| ProjectError::Read {
-        path: schema_path.to_path_buf(),
-        source,
-    })? {
-        let path = entry
-            .map_err(|source| ProjectError::Read {
-                path: schema_path.to_path_buf(),
-                source,
-            })?
-            .path();
+async fn remove_stale_table_files(
+    schema_path: &Path,
+    expected_tables: &BTreeSet<String>,
+) -> Result<()> {
+    for path in entry_paths(schema_path).await? {
         let is_stale_yaml = path.extension().and_then(|ext| ext.to_str()) == Some("yaml")
             && path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_none_or(|name| !expected_tables.contains(name));
         if is_stale_yaml {
-            remove_file(&path).map_err(|source| ProjectError::Write {
-                path: path.clone(),
-                source,
-            })?;
+            remove_file(&path)
+                .await
+                .map_err(|source| ProjectError::Write {
+                    path: path.clone(),
+                    source,
+                })?;
         }
     }
     Ok(())

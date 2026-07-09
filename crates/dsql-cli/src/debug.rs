@@ -4,7 +4,6 @@
 //! reproduce without an editor in the loop.
 
 use bowl::{Bowl, Entity, Query, Singleton};
-use futures::executor::block_on;
 
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::field_selection::FieldSel;
@@ -21,7 +20,7 @@ use dsql_core::source::{
 };
 use dsql_project::{Project, ProjectError, open_project_bowl};
 
-type Outcome = Result<bool, ProjectError>;
+use crate::commands::Outcome;
 
 /// A session bowl configured like an LSP session: language, project
 /// contents, and the demand markers the editor path inserts.
@@ -117,9 +116,9 @@ async fn print_facts_at(bowl: &Bowl, file: Entity, offset: usize) {
     }
 }
 
-pub fn hover(file: &str, offset: usize) -> Outcome {
-    let project = Project::load()?;
-    block_on(async {
+pub async fn hover(file: &str, offset: usize) -> Outcome {
+    let project = Project::load().await?;
+    {
         let bowl = session_bowl(&project).await?;
         let Some((entity, path)) = resolve_file(&bowl, file).await else {
             return Ok(false);
@@ -134,16 +133,16 @@ pub fn hover(file: &str, offset: usize) -> Outcome {
             .take::<HoverInfo>()
             .await;
         match info {
-            Ok(info) => println!("hover: {}", info.0),
+            Ok(info) => println!("hover ({}): {}", info.priority, info.text),
             Err(error) => println!("hover: <no answer: {error:?}>"),
         }
         Ok(true)
-    })
+    }
 }
 
-pub fn goto(file: &str, offset: usize) -> Outcome {
-    let project = Project::load()?;
-    block_on(async {
+pub async fn goto(file: &str, offset: usize) -> Outcome {
+    let project = Project::load().await?;
+    {
         let bowl = session_bowl(&project).await?;
         let Some((_, path)) = resolve_file(&bowl, file).await else {
             return Ok(false);
@@ -171,12 +170,12 @@ pub fn goto(file: &str, offset: usize) -> Outcome {
             Err(error) => println!("definition: <no answer: {error:?}>"),
         }
         Ok(true)
-    })
+    }
 }
 
-pub fn complete(file: &str, offset: usize) -> Outcome {
-    let project = Project::load()?;
-    block_on(async {
+pub async fn complete(file: &str, offset: usize) -> Outcome {
+    let project = Project::load().await?;
+    {
         let bowl = session_bowl(&project).await?;
         let Some((_, path)) = resolve_file(&bowl, file).await else {
             return Ok(false);
@@ -207,12 +206,12 @@ pub fn complete(file: &str, offset: usize) -> Outcome {
             Err(error) => println!("completions: <no answer: {error:?}>"),
         }
         Ok(true)
-    })
+    }
 }
 
-pub fn tokens(file: &str) -> Outcome {
-    let project = Project::load()?;
-    block_on(async {
+pub async fn tokens(file: &str) -> Outcome {
+    let project = Project::load().await?;
+    {
         let bowl = session_bowl(&project).await?;
         let Some((_, path)) = resolve_file(&bowl, file).await else {
             return Ok(false);
@@ -235,14 +234,14 @@ pub fn tokens(file: &str) -> Outcome {
             Err(error) => println!("tokens: <no answer: {error:?}>"),
         }
         Ok(true)
-    })
+    }
 }
 
 /// Which files (and derived regions) belong to which resolution scope,
 /// plus the scope import graph.
-pub fn resolution() -> Outcome {
-    let project = Project::load()?;
-    block_on(async {
+pub async fn resolution() -> Outcome {
+    let project = Project::load().await?;
+    {
         let bowl = session_bowl(&project).await?;
 
         let files = bowl
@@ -295,5 +294,5 @@ pub fn resolution() -> Outcome {
             }
         }
         Ok(true)
-    })
+    }
 }

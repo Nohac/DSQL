@@ -33,7 +33,7 @@ async fn hover(bowl: &Bowl, offset: usize) -> String {
     .take::<HoverInfo>()
     .await
     .expect("hover requests are always answered")
-    .0
+    .text
     .clone()
 }
 
@@ -83,7 +83,7 @@ fn hover_on_variables_reports_bindings() {
             .take::<HoverInfo>()
             .await
             .expect("hover answered")
-            .0
+            .text
             .clone();
 
         insta::assert_snapshot!(info);
@@ -105,7 +105,7 @@ fn hover_on_unknown_file_reports_it() {
             .take::<HoverInfo>()
             .await
             .expect("hover answered");
-        assert_eq!(info.0, "unknown file");
+        assert_eq!(info.text, "unknown file");
     });
 }
 

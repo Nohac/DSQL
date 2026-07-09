@@ -145,7 +145,7 @@ async fn enrich_completion_requests(
         return;
     };
 
-    let (file_entity, source, parsed, scope) = file.item();
+    let (file_entity, _source, parsed, scope) = file.item();
     let (_, snapshot) = catalog.item();
 
     let offset = position.offset.min(parsed.source.len());
@@ -155,8 +155,9 @@ async fn enrich_completion_requests(
     // at parse errors and at constructs that close on end of input; only
     // the innermost batch at the cursor position counts — later batches are
     // recovery bubbling outward.
-    let prefix = source.to_text();
-    let prefix = &prefix[..offset.min(prefix.len())];
+    // The parse snapshot is the settle-consistent text the offset was
+    // clamped against; no need to re-materialize the rope.
+    let prefix = &parsed.source[..offset];
     let mut parse_diagnostics = Vec::new();
     let truncated = Parser::new(prefix, &mut parse_diagnostics).parse(&mut parse_diagnostics);
     let cursor_error_start = truncated

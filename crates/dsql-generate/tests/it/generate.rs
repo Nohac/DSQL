@@ -5,7 +5,7 @@ use dsql_project::Project;
 
 /// Copies the dsql-project scoped fixture into a temp dir so generation
 /// can write its build/ tree without polluting the repository.
-fn fixture_project(test: &str) -> (PathBuf, Project) {
+async fn fixture_project(test: &str) -> (PathBuf, Project) {
     let source =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../dsql-project/tests/it/fixture/scoped");
     let dir = std::env::temp_dir().join(format!("dsql-generate-{test}-{}", std::process::id()));
@@ -13,7 +13,9 @@ fn fixture_project(test: &str) -> (PathBuf, Project) {
         std::fs::remove_dir_all(&dir).expect("clean stale fixture copy");
     }
     copy_tree(&source, &dir);
-    let project = Project::load_from(&dir).expect("fixture project loads");
+    let project = Project::load_from(&dir)
+        .await
+        .expect("fixture project loads");
     (dir, project)
 }
 
@@ -31,15 +33,16 @@ fn copy_tree(source: &Path, target: &Path) {
     }
 }
 
-#[test]
-fn generates_manifest_and_artifacts() {
-    let (dir, project) = fixture_project("artifacts");
+#[tokio::test]
+async fn generates_manifest_and_artifacts() {
+    let (dir, project) = fixture_project("artifacts").await;
     let output = generate_project(
         &project,
         GenerateOptions {
             collection_limit: Some(10),
         },
     )
+    .await
     .expect("generation succeeds");
 
     assert!(output.manifest_path.exists());
@@ -67,6 +70,7 @@ fn generates_manifest_and_artifacts() {
             collection_limit: Some(10),
         },
     )
+    .await
     .expect("rerun succeeds");
     assert!(
         rerun.written.is_empty(),
@@ -76,9 +80,9 @@ fn generates_manifest_and_artifacts() {
     std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }
 
-#[test]
-fn error_diagnostics_fail_generation() {
-    let (dir, project) = fixture_project("diagnostics");
+#[tokio::test]
+async fn error_diagnostics_fail_generation() {
+    let (dir, project) = fixture_project("diagnostics").await;
     std::fs::write(
         dir.join("queries/frontend/broken.dsql"),
         "query Broken {\n  missing_table {\n    id\n  }\n}\n",
@@ -86,6 +90,7 @@ fn error_diagnostics_fail_generation() {
     .expect("write broken query");
 
     let error = generate_project(&project, GenerateOptions::default())
+        .await
         .expect_err("diagnostics must fail generation");
     assert!(
         error.to_string().contains("missing_table"),
