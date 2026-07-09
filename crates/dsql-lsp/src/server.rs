@@ -283,6 +283,17 @@ impl LanguageServer for Backend {
         let Some(path) = uri_path(&params.text_document.uri) else {
             return;
         };
+        // Editors send didOpen for every restored tab; only dsql documents
+        // and embedding hosts belong in the bowl. Anything else would be
+        // parsed as dsql — error-recovering through a lockfile burns
+        // seconds and floods the session with junk diagnostics.
+        if !std::path::Path::new(&path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| matches!(ext, "dsql" | "ts" | "tsx"))
+        {
+            return;
+        }
         let text = params.text_document.text;
         let mut session = self.session.lock().await;
 
