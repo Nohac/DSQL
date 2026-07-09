@@ -1,35 +1,34 @@
-//! Name resolution as a derivation: the one cross-cutting walk.
+//! Name resolution as a tracked fixed point over the selection tree's
+//! maintained relationships.
 //!
 //! A selection's meaning — which table its set resolves against, whether
-//! its name is a column, a relation, or nothing — depends on its ancestor
-//! chain and the catalog. Before this stage existed, every consumer
-//! (hover, tokens, lint, checks, planning) re-derived that meaning with
-//! its own tree walk, which made all of them cross-cutting and pinned
-//! them behind the Complete barrier. The resolver walks once and derives
-//! semantic facts; consumers become tracked joins over those facts,
-//! narrow and phase-free.
+//! its name is a column, a relation, or nothing — depends on its parent's
+//! meaning and the catalog. That recursion is expressed as joins, not a
+//! walk: roots pair definitions with their [`Children`], and each nested
+//! step pairs a field's own resolution fact (through the maintained
+//! [`FieldResolutions`] inverse) with its children. Every input is
+//! tracked, so the whole stage runs at Evaluate and re-derives only the
+//! chains below a change — no ambient views, no phase barrier, no
+//! whole-project gather.
 //!
 //! Resolutions are *separate* derived entities, never components stamped
 //! onto the syntax entities: stamping would bump the syntax entities'
 //! revisions and retire every diagnostic anchored to them without
 //! anything re-deriving those. Each fact carries [`BelongsToFile`] as its
-//! join key and denormalizes the spans consumers need, so most never
-//! touch the syntax facts at all.
-//!
-//! The resolver itself reads the lowered tree ambiently, so it lives at
-//! Complete — the last system that must. When porridge grows relation
-//! joins, the walk becomes a tracked fixed point over parent links and
-//! moves to Evaluate.
+//! join key and denormalizes the spans consumers need, plus a
+//! [`ResolutionOf`] edge back to its field so the nested step can join
+//! through the engine-maintained inverse.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, SystemExt};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, In, Query, Where};
 
 use crate::catalog::{
-    Catalog, CatalogSnapshot, ColumnId, FieldCheckResult, FieldRef, ForeignKeyId, TableId,
-    TableRef, TableResolution,
+    CatalogSnapshot, ColumnId, FieldCheckResult, FieldRef, ForeignKeyId, TableId, TableRef,
+    TableResolution,
 };
-use crate::entities::definition::{DefDecl, DefKind};
-use crate::entities::field_selection::{SelectionTree, TreeViews};
-use crate::facts::{BelongsToFile, Span};
+use crate::entities::clause::ClauseFact;
+use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
+use crate::entities::field_selection::FieldSel;
+use crate::facts::{BelongsToFile, Children, Span};
 
 /// What one selection's name means in its context: a derived fact entity
 /// carrying everything span-addressed consumers need.
@@ -46,6 +45,8 @@ pub struct ResolvedSelection {
     pub name_span: Span,
     /// Span of the output alias, when written as `alias: field`.
     pub alias_span: Option<Span>,
+    /// The query root's table, threaded down for `~` path anchors.
+    pub root: Option<TableId>,
     /// The table the name resolved against — `None` for query roots
     /// (which name tables directly) and for selections whose context
     /// never resolved.
@@ -71,6 +72,31 @@ pub enum SelectionTarget {
     Unresolved,
 }
 
+impl SelectionTarget {
+    /// The table this selection's own children and clauses resolve
+    /// against, if any.
+    fn child_context(&self) -> Option<TableId> {
+        match self {
+            SelectionTarget::Table(table) => Some(*table),
+            SelectionTarget::Relation { table, .. } => Some(*table),
+            SelectionTarget::Column(_) | SelectionTarget::Unresolved => None,
+        }
+    }
+}
+
+/// Relationship edge from a resolution fact to the field it resolves; the
+/// engine maintains [`FieldResolutions`] on the field, which is what lets
+/// the nested step join a field row with its own resolution.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(hash)]
+#[relationship(target = FieldResolutions)]
+pub struct ResolutionOf(pub Entity);
+
+/// Engine-maintained inverse of [`ResolutionOf`] on each resolved field.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = ResolutionOf)]
+pub struct FieldResolutions(pub Vec<Entity>);
+
 /// The tables one clause's expressions resolve against: `None` when the
 /// owning selection never resolved.
 #[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
@@ -90,185 +116,202 @@ pub struct ClauseContext {
 }
 
 pub async fn register_resolution(bowl: &Bowl) {
-    // The walk reads lowered facts ambiently: behind the Complete barrier.
-    bowl.add_system(resolve_selections.run_during(Phase::Complete))
-        .await;
+    bowl.add_system(resolve_roots).await;
+    bowl.add_system(resolve_nested).await;
+    bowl.add_system(resolve_clauses).await;
 }
 
-/// Walks one definition's selection tree, deriving a resolution fact for
-/// every field and clause. Tracked per (definition, catalog): a schema
-/// change re-resolves every definition, a text change only its file's.
-async fn resolve_selections(
-    defs: Query<(Entity, &DefDecl, &BelongsToFile)>,
+/// Emits one resolution fact.
+#[expect(clippy::too_many_arguments, reason = "one emission site, all context")]
+fn emit(
+    commands: &mut Commands,
+    catalog_entity: Entity,
+    file: Entity,
+    field: Entity,
+    selection: &FieldSel,
+    root: Option<TableId>,
+    context: Option<TableId>,
+    target: SelectionTarget,
+) {
+    let written = match &selection.relation_path {
+        Some(path) => format!("{}->{path}", selection.name),
+        None => selection.name.clone(),
+    };
+    commands.insert((
+        DerivedFrom::many([field, catalog_entity]),
+        BelongsToFile(file),
+        ResolutionOf(field),
+        ResolvedSelection {
+            field,
+            name: selection.name.clone(),
+            written,
+            name_span: selection.name_span,
+            alias_span: selection.alias_span,
+            root,
+            context,
+            target,
+        },
+    ));
+}
+
+/// Resolves the direct children of each definition: query roots name
+/// tables; fragment-body roots resolve against the declared target. One
+/// tracked invocation per (definition, child-field) pair.
+async fn resolve_roots(
+    defs: Query<(
+        Entity,
+        &DefDecl,
+        Option<&FragmentTarget>,
+        &BelongsToFile,
+        &Children,
+    )>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    views: TreeViews<'_>,
+    roots: Query<(Entity, &FieldSel), Where<In<Children>>>,
     mut commands: Commands,
 ) {
-    let (def_entity, decl, file) = defs.item();
+    let (_, decl, target, file, _children) = defs.item();
+    let (catalog_entity, snapshot) = catalog.item();
+    let catalog = snapshot.catalog();
+    let (field_entity, field) = roots.item();
+
+    match decl.kind {
+        DefKind::Query => {
+            let (root, resolved) = match catalog.resolve_table_ref_for(TableRef::parse(&field.name))
+            {
+                TableResolution::Found(table) => (Some(table.id), SelectionTarget::Table(table.id)),
+                TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => {
+                    (None, SelectionTarget::Unresolved)
+                }
+            };
+            emit(
+                &mut commands,
+                catalog_entity,
+                file.0,
+                field_entity,
+                field,
+                root,
+                None,
+                resolved,
+            );
+        }
+        DefKind::Fragment => {
+            let table = target
+                .and_then(|target| catalog.table_ref_for(TableRef::parse(&target.name)))
+                .map(|table| table.id);
+            let (root, context, resolved) = match table {
+                Some(table) => (
+                    Some(table),
+                    Some(table),
+                    resolve_reference(catalog, table, field),
+                ),
+                // Unresolvable target: the whole body is unresolved.
+                None => (None, None, SelectionTarget::Unresolved),
+            };
+            emit(
+                &mut commands,
+                catalog_entity,
+                file.0,
+                field_entity,
+                field,
+                root,
+                context,
+                resolved,
+            );
+        }
+    }
+}
+
+/// Resolves each field against its parent's resolution: one tracked
+/// invocation per (parent, parent-resolution, child) triple, joined
+/// through the maintained inverses — the recursive walk as a fixed point.
+async fn resolve_nested(
+    parents: Query<(
+        Entity,
+        &FieldSel,
+        &Children,
+        &FieldResolutions,
+        &BelongsToFile,
+    )>,
+    resolution: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
+    children: Query<(Entity, &FieldSel), Where<In<Children>>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands,
+) {
+    let (_, _, _, _, file) = parents.item();
+    let (_, parent_resolved) = resolution.item();
+    let (field_entity, field) = children.item();
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
-    let tree = SelectionTree::collect(&views);
-    let mut walk = ResolveWalk {
-        tree: &tree,
-        catalog,
-        catalog_entity,
-        file: file.0,
-        commands: &mut commands,
+    let (context, resolved) = match parent_resolved.target.child_context() {
+        Some(table) => (Some(table), resolve_reference(catalog, table, field)),
+        // Under a scalar or unresolved parent nothing resolves.
+        None => (None, SelectionTarget::Unresolved),
     };
-
-    match decl.kind {
-        DefKind::Query => walk.resolve_roots(def_entity),
-        DefKind::Fragment => {
-            let target = tree
-                .fragments
-                .iter()
-                .find(|(entity, _, _, _)| *entity == def_entity)
-                .and_then(|(_, _, target, _)| catalog.table_ref_for(TableRef::parse(&target.name)));
-            match target {
-                Some(table) => walk.resolve_set(table.id, table.id, def_entity),
-                // Unresolvable target: the whole body is unresolved.
-                None => walk.emit_unresolved(def_entity),
-            }
-        }
-    }
+    let root = parent_resolved.root.filter(|_| context.is_some());
+    emit(
+        &mut commands,
+        catalog_entity,
+        file.0,
+        field_entity,
+        field,
+        root,
+        context,
+        resolved,
+    );
 }
 
-struct ResolveWalk<'a, 'view> {
-    tree: &'a SelectionTree<'view>,
-    catalog: &'a Catalog,
-    catalog_entity: Entity,
-    file: Entity,
-    commands: &'a mut Commands,
+/// Resolves each clause against its owning selection's target table: one
+/// tracked invocation per (field, field-resolution, clause) triple.
+async fn resolve_clauses(
+    parents: Query<(
+        Entity,
+        &FieldSel,
+        &Children,
+        &FieldResolutions,
+        &BelongsToFile,
+    )>,
+    resolution: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
+    clauses: Query<(Entity, &ClauseFact), Where<In<Children>>>,
+    mut commands: Commands,
+) {
+    let (field_entity, _, _, _, file) = parents.item();
+    let (_, parent_resolved) = resolution.item();
+    let (clause_entity, _clause) = clauses.item();
+
+    let context = match (parent_resolved.root, parent_resolved.target.child_context()) {
+        (Some(root), Some(table)) => Some(ClauseContext { root, table }),
+        _ => None,
+    };
+    commands.insert((
+        DerivedFrom::many([field_entity, clause_entity]),
+        BelongsToFile(file.0),
+        ResolvedClause {
+            clause: clause_entity,
+            context,
+        },
+    ));
 }
 
-impl ResolveWalk<'_, '_> {
-    fn emit(
-        &mut self,
-        field: Entity,
-        selection: &crate::entities::field_selection::FieldSel,
-        context: Option<TableId>,
-        target: SelectionTarget,
-    ) {
-        let written = match &selection.relation_path {
-            Some(path) => format!("{}->{path}", selection.name),
-            None => selection.name.clone(),
-        };
-        self.commands.insert((
-            DerivedFrom::many([field, self.catalog_entity]),
-            BelongsToFile(self.file),
-            ResolvedSelection {
-                field,
-                name: selection.name.clone(),
-                written,
-                name_span: selection.name_span,
-                alias_span: selection.alias_span,
-                context,
-                target,
-            },
-        ));
-    }
-
-    fn resolve_roots(&mut self, def_entity: Entity) {
-        let roots: Vec<_> = self
-            .tree
-            .fields_under(def_entity)
-            .map(|(entity, field, _, _)| (*entity, *field))
-            .collect();
-        for (entity, field) in roots {
-            match self
-                .catalog
-                .resolve_table_ref_for(TableRef::parse(&field.name))
-            {
-                TableResolution::Found(table) => {
-                    let table_id = table.id;
-                    self.emit(entity, field, None, SelectionTarget::Table(table_id));
-                    self.resolve_clauses(table_id, table_id, entity);
-                    self.resolve_set(table_id, table_id, entity);
-                }
-                TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => {
-                    self.emit(entity, field, None, SelectionTarget::Unresolved);
-                    self.emit_unresolved(entity);
-                }
-            }
+/// One name against one context table.
+fn resolve_reference(
+    catalog: &crate::catalog::Catalog,
+    table: TableId,
+    field: &FieldSel,
+) -> SelectionTarget {
+    let reference = FieldRef {
+        target: TableRef::parse(&field.name),
+        selector: field.relation_path.as_deref(),
+    };
+    match catalog.check_field_ref(table, reference) {
+        FieldCheckResult::Column(column) => SelectionTarget::Column(column.id),
+        FieldCheckResult::Relation(relation) => SelectionTarget::Relation {
+            table: relation.table.id,
+            foreign_key: relation.foreign_key.id,
+            selector: relation.selector.clone(),
+        },
+        FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {
+            SelectionTarget::Unresolved
         }
-    }
-
-    /// Resolves the children of `parent` against `table`, recursing into
-    /// relations.
-    fn resolve_set(&mut self, root: TableId, table: TableId, parent: Entity) {
-        let fields: Vec<_> = self
-            .tree
-            .fields_under(parent)
-            .map(|(entity, field, _, _)| (*entity, *field))
-            .collect();
-        for (entity, field) in fields {
-            let reference = FieldRef {
-                target: TableRef::parse(&field.name),
-                selector: field.relation_path.as_deref(),
-            };
-            match self.catalog.check_field_ref(table, reference) {
-                FieldCheckResult::Column(column) => {
-                    let column_id = column.id;
-                    self.emit(
-                        entity,
-                        field,
-                        Some(table),
-                        SelectionTarget::Column(column_id),
-                    );
-                    // Scalars have no legal clauses or children, but error
-                    // recovery can produce them; they resolve to nothing.
-                    self.emit_unresolved(entity);
-                }
-                FieldCheckResult::Relation(relation) => {
-                    let relation_table = relation.table.id;
-                    let target = SelectionTarget::Relation {
-                        table: relation_table,
-                        foreign_key: relation.foreign_key.id,
-                        selector: relation.selector.clone(),
-                    };
-                    self.emit(entity, field, Some(table), target);
-                    self.resolve_clauses(root, relation_table, entity);
-                    self.resolve_set(root, relation_table, entity);
-                }
-                FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {
-                    self.emit(entity, field, Some(table), SelectionTarget::Unresolved);
-                    self.emit_unresolved(entity);
-                }
-            }
-        }
-    }
-
-    fn resolve_clauses(&mut self, root: TableId, table: TableId, parent: Entity) {
-        self.emit_clauses(parent, Some(ClauseContext { root, table }));
-    }
-
-    fn emit_clauses(&mut self, parent: Entity, context: Option<ClauseContext>) {
-        let clauses: Vec<Entity> = self
-            .tree
-            .clauses_under(parent)
-            .map(|(entity, _, _, _)| *entity)
-            .collect();
-        for clause in clauses {
-            self.commands.insert((
-                DerivedFrom::many([clause, self.catalog_entity]),
-                BelongsToFile(self.file),
-                ResolvedClause { clause, context },
-            ));
-        }
-    }
-
-    /// Emits unresolved facts for everything under an unresolvable parent.
-    fn emit_unresolved(&mut self, parent: Entity) {
-        let fields: Vec<_> = self
-            .tree
-            .fields_under(parent)
-            .map(|(entity, field, _, _)| (*entity, *field))
-            .collect();
-        for (entity, field) in fields {
-            self.emit(entity, field, None, SelectionTarget::Unresolved);
-            self.emit_unresolved(entity);
-        }
-        self.emit_clauses(parent, None);
     }
 }
