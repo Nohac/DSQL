@@ -12,7 +12,9 @@ pub use completion::{
     CompletionRequest, CompletionSite,
 };
 pub use definition::{DefinitionRequest, DefinitionTarget};
-pub use hover::{HoverCandidate, HoverEnriched, HoverInfo, HoverRequest, Position, priority};
+pub use hover::{
+    Cursor, HoverCandidate, HoverEnriched, HoverInfo, HoverRequest, Position, priority,
+};
 pub use semantic_tokens::{
     SemanticToken, SemanticTokenKind, SemanticTokensRequest, TokenChunk, semantic_tokens,
 };

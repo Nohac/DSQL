@@ -25,7 +25,7 @@ use crate::facts::{
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
-use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// What kind of definition a [`DefDecl`] fact describes.
@@ -386,14 +386,14 @@ impl HoverStage for Definition {
 type DefInFile<'a> = (Entity, &'a DefDecl, Option<&'a FragmentTarget>);
 
 async fn hover_definitions(
-    query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
+    query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     defs: Query<DefInFile<'_>, Where<BowlEq<BelongsToFile>>>,
     mut commands: Commands,
 ) {
-    let (request, _file, position) = query.item();
+    let (request, _file, cursor) = query.item();
     let (_def_entity, decl, target) = defs.item();
 
-    if !(decl.name_span.start <= position.offset && position.offset < decl.name_span.end) {
+    if !(decl.name_span.start <= cursor.0 && cursor.0 < decl.name_span.end) {
         return;
     }
 

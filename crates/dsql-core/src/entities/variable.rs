@@ -25,7 +25,7 @@ use crate::entity::{
 use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span, VariablesDemand};
 use crate::format::CstFormatter;
 use crate::grammar::parser::NodeRef;
-use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// One variable occurrence, lowered from `value_variable` or
@@ -617,14 +617,14 @@ impl HoverStage for Variable {
 /// join, answering when the binding's span holds the cursor. Without
 /// `VariablesDemand` there are no bindings, no pairs, and no candidates.
 async fn hover_variables(
-    query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
+    query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     bindings: Query<(Entity, &Span, &VariableBinding), Where<bowl::Eq<BelongsToFile>>>,
     mut commands: Commands,
 ) {
-    let (request, _file, position) = query.item();
+    let (request, _file, cursor) = query.item();
     let (_, span, binding) = bindings.item();
 
-    if !(span.start <= position.offset && position.offset < span.end) {
+    if !(span.start <= cursor.0 && cursor.0 < span.end) {
         return;
     }
 

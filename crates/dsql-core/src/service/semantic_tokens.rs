@@ -31,6 +31,12 @@ use crate::source::{FilePath, SourceText};
 #[component(hash)]
 pub struct SemanticTokensRequest;
 
+/// Addresses a request at a specific document entity instead of a path —
+/// how [`semantic_tokens`] asks for one extracted region of a host file.
+#[derive(Component, Hash, Debug, Clone, Copy)]
+#[component(hash)]
+pub struct TargetFile(pub Entity);
+
 /// What a classified span highlights as. Ordered so equal-span tokens
 /// merge deterministically.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -56,23 +62,76 @@ pub struct SemanticToken {
 #[component(hash)]
 pub struct TokenChunk(pub Vec<SemanticToken>);
 
-/// Answers one semantic-tokens request: inserts it, lets the bowl settle,
-/// and gathers the chunk facts into one span-sorted, deduplicated list.
-/// A request for an unknown file answers with no tokens.
+/// Answers semantic tokens for one file path: inserts a request per
+/// document the path holds — the file itself, or each extracted region of
+/// an embedding host with spans shifted back into host coordinates — and
+/// gathers the chunk facts into one span-sorted, deduplicated list. An
+/// unknown path answers with no tokens.
 pub async fn semantic_tokens(bowl: &Bowl, path: impl Into<String>) -> Vec<SemanticToken> {
-    let request = bowl
-        .insert((SemanticTokensRequest, crate::source::FilePath(path.into())))
-        .await
-        .entity();
+    use crate::source::{BelongsToHost, FilePath, SourceOffset};
+
+    let path = path.into();
+    let files = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
+    let file = files
+        .collect()
+        .into_iter()
+        .find(|(_, candidate)| candidate.0 == path)
+        .map(|(entity, _)| entity);
+    let regions: Vec<(Entity, usize)> = match file {
+        Some(host) => {
+            let rows = bowl
+                .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
+                .await;
+            rows.collect()
+                .into_iter()
+                .filter(|(_, of, _)| of.0 == host)
+                .map(|(region, _, offset)| (region, offset.0))
+                .collect()
+        }
+        None => Vec::new(),
+    };
+
+    // One request per document; plain files are their own document.
+    let mut requests: Vec<(Entity, usize)> = Vec::new();
+    if regions.is_empty() {
+        let request = bowl
+            .insert((SemanticTokensRequest, FilePath(path)))
+            .await
+            .entity();
+        requests.push((request, 0));
+    } else {
+        for (region, offset) in regions {
+            let request = bowl
+                .insert((
+                    SemanticTokensRequest,
+                    FilePath(path.clone()),
+                    TargetFile(region),
+                ))
+                .await
+                .entity();
+            requests.push((request, offset));
+        }
+    }
+
     let rows = bowl
         .scoop::<Query<(Entity, &TokenChunk, &RequestKey)>>()
         .await;
-    let mut tokens: Vec<SemanticToken> = rows
-        .collect()
-        .into_iter()
-        .filter(|(_, _, key)| key.0 == request)
-        .flat_map(|(_, chunk, _)| chunk.0.iter().copied())
-        .collect();
+    let rows = rows.collect();
+    let mut tokens: Vec<SemanticToken> = Vec::new();
+    for (request, offset) in requests {
+        tokens.extend(
+            rows.iter()
+                .filter(|(_, _, key)| key.0 == request)
+                .flat_map(|(_, chunk, _)| chunk.0.iter())
+                .map(|token| SemanticToken {
+                    span: Span {
+                        start: offset + token.span.start,
+                        end: offset + token.span.end,
+                    },
+                    kind: token.kind,
+                }),
+        );
+    }
     tokens.sort_by_key(|token| (token.span.start, token.span.end, token.kind));
     tokens.dedup();
     tokens
@@ -94,16 +153,20 @@ type FileMatch<'a> = Option<Query<(Entity, &'a SourceText), Where<BowlEq<FilePat
 type DefRows<'a> =
     Query<(Entity, &'a DefDecl, Option<&'a FragmentTarget>), Where<BowlEq<BelongsToFile>>>;
 
-/// Outer join: stamps the request key, and the resolved file as
-/// `BelongsToFile` for the candidate joins.
+/// Outer join: stamps the request key, and the target document as
+/// `BelongsToFile` for the candidate joins — an explicit [`TargetFile`]
+/// wins over the path join, which is how region requests are addressed
+/// (regions carry no [`FilePath`]).
 async fn resolve_token_requests(
-    requests: Query<(Entity, &FilePath), With<SemanticTokensRequest>>,
+    requests: Query<(Entity, &FilePath, Option<&TargetFile>), With<SemanticTokensRequest>>,
     file: FileMatch<'_>,
     mut commands: Commands,
 ) {
-    let (request, _path) = requests.item();
+    let (request, _path, target) = requests.item();
     commands.entity(request).insert(RequestKey(request));
-    if let Some(file) = file {
+    if let Some(target) = target {
+        commands.entity(request).insert(BelongsToFile(target.0));
+    } else if let Some(file) = file {
         let (file_entity, _text) = file.item();
         commands.entity(request).insert(BelongsToFile(file_entity));
     }

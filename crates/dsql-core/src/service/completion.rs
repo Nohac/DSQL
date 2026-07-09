@@ -23,7 +23,8 @@
 //! grammar layer's keywords, unresolved ones keep an empty scaffold list.
 
 use bowl::{
-    Bowl, Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, SystemExt, Where, With,
+    Bowl, Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, SystemExt, View, Where,
+    With,
 };
 
 use crate::catalog::TableId;
@@ -121,15 +122,19 @@ pub(crate) async fn register_completion_pipeline(bowl: &Bowl) {
 /// Resolves the request's file (bound join on the path), computes the
 /// grammar layer from a cursor-truncated parse, the site from the CST, and
 /// the context table from the fact tree.
-/// The file side of the enrichment outer join: matched per equal path, or
-/// `None` exactly once for a request matching no file.
-type FileMatch<'a> = Option<
-    Query<(Entity, &'a SourceText, &'a ParsedFile, &'a ResolutionScope), Where<BowlEq<FilePath>>>,
->;
-
 async fn enrich_completion_requests(
     requests: Query<(Entity, &FilePath, &Position), With<CompletionRequest>>,
-    file: FileMatch<'_>,
+    file: crate::service::hover::FileMatch<'_>,
+    regions: View<
+        '_,
+        (
+            Entity,
+            &crate::source::BelongsToHost,
+            &crate::source::SourceOffset,
+            &SourceText,
+        ),
+    >,
+    documents: View<'_, (Entity, &ParsedFile, &ResolutionScope)>,
     catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
     views: TreeViews<'_>,
     mut commands: Commands,
@@ -137,18 +142,28 @@ async fn enrich_completion_requests(
     let (request, _path, position) = requests.item();
 
     // Outer join: an unresolvable file still answers, with an empty list.
-    let Some(file) = file else {
+    // A cursor into an embedding host rebases onto the containing region;
+    // a host position outside every region has no document either.
+    let document = file.map(|file| {
+        let (file_entity, _text) = file.item();
+        crate::service::hover::map_cursor(&regions, file_entity, position.offset)
+    });
+    let resolved = document.and_then(|(target, cursor)| {
+        documents
+            .iter()
+            .find(|(entity, _, _)| *entity == target)
+            .map(|(_, parsed, scope)| (target, cursor, parsed, scope))
+    });
+    let Some((file_entity, cursor, parsed, scope)) = resolved else {
         commands
             .entity(request)
             .insert(crate::service::hover::RequestKey(request));
         commands.entity(request).insert(CompletionList(Vec::new()));
         return;
     };
-
-    let (file_entity, _source, parsed, scope) = file.item();
     let (_, snapshot) = catalog.item();
 
-    let offset = position.offset.min(parsed.source.len());
+    let offset = cursor.min(parsed.source.len());
 
     // Grammar layer: parse the text before the cursor. The vendored
     // expected-token recording captures what could legally come next, both

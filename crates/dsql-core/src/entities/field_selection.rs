@@ -23,7 +23,7 @@ use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 use crate::resolution::ResolvedSelection;
 use crate::service::completion::{CompletionContext, CompletionRequest};
-use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// PostgreSQL truncates result aliases beyond this many bytes
@@ -595,17 +595,17 @@ impl HoverStage for FieldSelection {
 /// the `BelongsToFile` join, the meaning read off the field's
 /// [`ResolvedSelection`] stamp — no views, no walk, no phase barrier.
 async fn hover_fields(
-    query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
+    query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     fields: Query<(Entity, &ResolvedSelection), bowl::Where<bowl::Eq<BelongsToFile>>>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands,
 ) {
-    let (request, _file, position) = query.item();
+    let (request, _file, cursor) = query.item();
     let (_, resolved) = fields.item();
     let (_, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
-    if !(resolved.name_span.start <= position.offset && position.offset < resolved.name_span.end) {
+    if !(resolved.name_span.start <= cursor.0 && cursor.0 < resolved.name_span.end) {
         return;
     }
 

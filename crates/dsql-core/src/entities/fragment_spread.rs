@@ -17,7 +17,7 @@ use crate::facts::{
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::NodeRef;
-use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
+use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// One `...Name` spread, lowered from `fragment_spread`.
@@ -374,14 +374,14 @@ impl HoverStage for FragmentSpread {
 /// `BelongsToFile` join, the target read off the [`ResolvedSpread`]
 /// stamp — no views, no phase barrier.
 async fn hover_spreads(
-    query: Query<(Entity, &BelongsToFile, &Position), With<HoverEnriched>>,
+    query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     spreads: Query<(Entity, &ResolvedSpread), Where<bowl::Eq<BelongsToFile>>>,
     mut commands: Commands,
 ) {
-    let (request, _file, position) = query.item();
+    let (request, _file, cursor) = query.item();
     let (_, resolved) = spreads.item();
 
-    if !(resolved.name_span.start <= position.offset && position.offset < resolved.name_span.end) {
+    if !(resolved.name_span.start <= cursor.0 && cursor.0 < resolved.name_span.end) {
         return;
     }
 
