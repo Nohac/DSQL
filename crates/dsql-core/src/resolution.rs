@@ -29,7 +29,7 @@ use crate::catalog::{
 };
 use crate::entities::definition::{DefDecl, DefKind};
 use crate::entities::field_selection::{SelectionTree, TreeViews};
-use crate::facts::{BelongsToFile, NodeKey, Span};
+use crate::facts::{BelongsToFile, Span};
 
 /// What one selection's name means in its context: a derived fact entity
 /// carrying everything span-addressed consumers need.
@@ -99,12 +99,12 @@ pub async fn register_resolution(bowl: &Bowl) {
 /// every field and clause. Tracked per (definition, catalog): a schema
 /// change re-resolves every definition, a text change only its file's.
 async fn resolve_selections(
-    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile)>,
+    defs: Query<(Entity, &DefDecl, &BelongsToFile)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     views: TreeViews<'_>,
     mut commands: Commands,
 ) {
-    let (def_entity, decl, def_key, file) = defs.item();
+    let (def_entity, decl, file) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
@@ -118,19 +118,17 @@ async fn resolve_selections(
     };
 
     match decl.kind {
-        DefKind::Query => walk.resolve_roots(*def_key),
+        DefKind::Query => walk.resolve_roots(def_entity),
         DefKind::Fragment => {
             let target = tree
                 .fragments
                 .iter()
-                .find(|(entity, _, _, _, _)| *entity == def_entity)
-                .and_then(|(_, _, target, _, _)| {
-                    catalog.table_ref_for(TableRef::parse(&target.name))
-                });
+                .find(|(entity, _, _, _)| *entity == def_entity)
+                .and_then(|(_, _, target, _)| catalog.table_ref_for(TableRef::parse(&target.name)));
             match target {
-                Some(table) => walk.resolve_set(table.id, table.id, *def_key),
+                Some(table) => walk.resolve_set(table.id, table.id, def_entity),
                 // Unresolvable target: the whole body is unresolved.
-                None => walk.emit_unresolved(*def_key),
+                None => walk.emit_unresolved(def_entity),
             }
         }
     }
@@ -171,13 +169,13 @@ impl ResolveWalk<'_, '_> {
         ));
     }
 
-    fn resolve_roots(&mut self, def_key: NodeKey) {
+    fn resolve_roots(&mut self, def_entity: Entity) {
         let roots: Vec<_> = self
             .tree
-            .fields_under(def_key)
-            .map(|(entity, field, key, _)| (*entity, *field, *key))
+            .fields_under(def_entity)
+            .map(|(entity, field, _, _)| (*entity, *field))
             .collect();
-        for (entity, field, key) in roots {
+        for (entity, field) in roots {
             match self
                 .catalog
                 .resolve_table_ref_for(TableRef::parse(&field.name))
@@ -185,12 +183,12 @@ impl ResolveWalk<'_, '_> {
                 TableResolution::Found(table) => {
                     let table_id = table.id;
                     self.emit(entity, field, None, SelectionTarget::Table(table_id));
-                    self.resolve_clauses(table_id, table_id, key);
-                    self.resolve_set(table_id, table_id, key);
+                    self.resolve_clauses(table_id, table_id, entity);
+                    self.resolve_set(table_id, table_id, entity);
                 }
                 TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => {
                     self.emit(entity, field, None, SelectionTarget::Unresolved);
-                    self.emit_unresolved(key);
+                    self.emit_unresolved(entity);
                 }
             }
         }
@@ -198,13 +196,13 @@ impl ResolveWalk<'_, '_> {
 
     /// Resolves the children of `parent` against `table`, recursing into
     /// relations.
-    fn resolve_set(&mut self, root: TableId, table: TableId, parent: NodeKey) {
+    fn resolve_set(&mut self, root: TableId, table: TableId, parent: Entity) {
         let fields: Vec<_> = self
             .tree
             .fields_under(parent)
-            .map(|(entity, field, key, _)| (*entity, *field, *key))
+            .map(|(entity, field, _, _)| (*entity, *field))
             .collect();
-        for (entity, field, key) in fields {
+        for (entity, field) in fields {
             let reference = FieldRef {
                 target: TableRef::parse(&field.name),
                 selector: field.relation_path.as_deref(),
@@ -220,7 +218,7 @@ impl ResolveWalk<'_, '_> {
                     );
                     // Scalars have no legal clauses or children, but error
                     // recovery can produce them; they resolve to nothing.
-                    self.emit_unresolved(key);
+                    self.emit_unresolved(entity);
                 }
                 FieldCheckResult::Relation(relation) => {
                     let relation_table = relation.table.id;
@@ -230,22 +228,22 @@ impl ResolveWalk<'_, '_> {
                         selector: relation.selector.clone(),
                     };
                     self.emit(entity, field, Some(table), target);
-                    self.resolve_clauses(root, relation_table, key);
-                    self.resolve_set(root, relation_table, key);
+                    self.resolve_clauses(root, relation_table, entity);
+                    self.resolve_set(root, relation_table, entity);
                 }
                 FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {
                     self.emit(entity, field, Some(table), SelectionTarget::Unresolved);
-                    self.emit_unresolved(key);
+                    self.emit_unresolved(entity);
                 }
             }
         }
     }
 
-    fn resolve_clauses(&mut self, root: TableId, table: TableId, parent: NodeKey) {
+    fn resolve_clauses(&mut self, root: TableId, table: TableId, parent: Entity) {
         self.emit_clauses(parent, Some(ClauseContext { root, table }));
     }
 
-    fn emit_clauses(&mut self, parent: NodeKey, context: Option<ClauseContext>) {
+    fn emit_clauses(&mut self, parent: Entity, context: Option<ClauseContext>) {
         let clauses: Vec<Entity> = self
             .tree
             .clauses_under(parent)
@@ -261,15 +259,15 @@ impl ResolveWalk<'_, '_> {
     }
 
     /// Emits unresolved facts for everything under an unresolvable parent.
-    fn emit_unresolved(&mut self, parent: NodeKey) {
+    fn emit_unresolved(&mut self, parent: Entity) {
         let fields: Vec<_> = self
             .tree
             .fields_under(parent)
-            .map(|(entity, field, key, _)| (*entity, *field, *key))
+            .map(|(entity, field, _, _)| (*entity, *field))
             .collect();
-        for (entity, field, key) in fields {
+        for (entity, field) in fields {
             self.emit(entity, field, None, SelectionTarget::Unresolved);
-            self.emit_unresolved(key);
+            self.emit_unresolved(entity);
         }
         self.emit_clauses(parent, None);
     }

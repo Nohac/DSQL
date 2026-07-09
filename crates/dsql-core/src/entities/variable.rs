@@ -22,7 +22,7 @@ use crate::entities::variable_path::{
 use crate::entity::{
     CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
 };
-use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span, VariablesDemand};
+use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span, VariablesDemand};
 use crate::format::CstFormatter;
 use crate::grammar::parser::NodeRef;
 use crate::service::hover::{HoverCandidate, HoverEnriched, Position, RequestKey, priority};
@@ -55,7 +55,7 @@ impl LanguageEntity for Variable {
 }
 
 impl LowerStage for Variable {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
+    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
         let variable = build_variable_ref(ctx.cst, ctx.source, node);
 
         let key = NodeKey {
@@ -70,8 +70,9 @@ impl LowerStage for Variable {
             VariableUse(variable),
         ));
         if let Some(parent) = ctx.parent {
-            commands.entity(entity).insert(ParentKey(parent));
+            commands.entity(entity).insert(ChildOf(parent));
         }
+        Some(entity)
     }
 }
 
@@ -138,14 +139,14 @@ pub struct VariableBinding {
 /// Gated on [`VariablesDemand`].
 async fn infer_variables(
     _: Query<Entity, With<VariablesDemand>>,
-    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile, &ResolutionScope)>,
+    defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
     mut commands: Commands,
 ) {
-    let (def_entity, decl, def_key, file, scope) = defs.item();
+    let (def_entity, decl, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
     let (_, imports) = imports.item();
 
@@ -161,10 +162,10 @@ async fn infer_variables(
     match decl.kind {
         DefKind::Query => {
             let roots: Vec<_> = tree
-                .fields_under(*def_key)
-                .map(|(_, field, key, _)| (*field, *key))
+                .fields_under(def_entity)
+                .map(|(entity, field, _, _)| (*entity, *field))
                 .collect();
-            for (field, key) in roots {
+            for (entity, field) in roots {
                 let TableResolution::Found(table) = inference
                     .catalog
                     .resolve_table_ref_for(TableRef::parse(&field.name))
@@ -176,7 +177,7 @@ async fn infer_variables(
                 inference.collect_selection(
                     table_id,
                     table_id,
-                    key,
+                    entity,
                     path,
                     &VariablePathScope::operation(),
                     None,
@@ -184,10 +185,10 @@ async fn infer_variables(
             }
         }
         DefKind::Fragment => {
-            let Some((_, _, target, _, _)) = tree
+            let Some((_, _, target, _)) = tree
                 .fragments
                 .iter()
-                .find(|(entity, _, _, _, _)| *entity == def_entity)
+                .find(|(entity, _, _, _)| *entity == def_entity)
             else {
                 return;
             };
@@ -201,7 +202,7 @@ async fn infer_variables(
             inference.collect_selection_set(
                 table_id,
                 table_id,
-                *def_key,
+                def_entity,
                 SelectionPath::fragment_root(),
                 &VariablePathScope::fragment(),
                 Some(&mut Vec::new()),
@@ -236,7 +237,7 @@ impl Inference<'_> {
         &mut self,
         root_table: crate::catalog::TableId,
         table: crate::catalog::TableId,
-        key: NodeKey,
+        key: Entity,
         path: SelectionPath,
         scope: &VariablePathScope,
         visiting: Option<&mut Vec<String>>,
@@ -308,7 +309,7 @@ impl Inference<'_> {
         &mut self,
         root_table: crate::catalog::TableId,
         table: crate::catalog::TableId,
-        parent: NodeKey,
+        parent: Entity,
         path: SelectionPath,
         scope: &VariablePathScope,
         mut visiting: Option<&mut Vec<String>>,
@@ -317,10 +318,10 @@ impl Inference<'_> {
             let spreads: Vec<_> = self
                 .tree
                 .spreads_under(parent)
-                .map(|(_, spread, _, _)| spread.name.clone())
+                .map(|(_, spread, _)| spread.name.clone())
                 .collect();
             for name in spreads {
-                let Some((_, _, _, fragment_key, _)) = self
+                let Some((fragment_entity, _, _, _)) = self
                     .tree
                     .resolve_fragment(&name, self.scope, self.imports)
                     .copied()
@@ -335,7 +336,7 @@ impl Inference<'_> {
                 self.collect_selection_set(
                     root_table,
                     table,
-                    fragment_key,
+                    fragment_entity,
                     SelectionPath::fragment_root(),
                     &spread_scope,
                     Some(visiting),
@@ -347,9 +348,9 @@ impl Inference<'_> {
         let children: Vec<_> = self
             .tree
             .fields_under(parent)
-            .map(|(_, field, key, _)| (*field, *key))
+            .map(|(entity, field, _, _)| (*entity, *field))
             .collect();
-        for (field, key) in children {
+        for (entity, field) in children {
             let reference = FieldRef {
                 target: TableRef::parse(&field.name),
                 selector: field.relation_path.as_deref(),
@@ -368,7 +369,7 @@ impl Inference<'_> {
             self.collect_selection(
                 root_table,
                 relation_table,
-                key,
+                entity,
                 SelectionPath::body(child_path),
                 scope,
                 visiting.as_deref_mut(),

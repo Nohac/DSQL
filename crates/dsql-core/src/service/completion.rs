@@ -195,14 +195,12 @@ async fn enrich_completion_requests(
     // from the full tree (facts are keyed to its nodes).
     let tree = SelectionTree::collect(&views);
     let table = context_field(&parsed.cst, offset).and_then(|field_node| {
-        resolve_field_target(
-            &tree,
-            snapshot.catalog(),
-            crate::facts::NodeKey {
-                file: file_entity,
-                node: field_node.0,
-            },
-        )
+        let key = crate::facts::NodeKey {
+            file: file_entity,
+            node: field_node.0,
+        };
+        let (field_entity, _, _, _) = tree.fields.iter().find(|(_, _, k, _)| *k == key)?;
+        resolve_field_target(&tree, snapshot.catalog(), *field_entity)
     });
 
     // Scaffold: the request key and the grammar layer's keyword items.

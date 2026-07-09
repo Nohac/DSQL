@@ -7,7 +7,7 @@
 //! exception: inference is set-oriented, so each variable occurrence also
 //! becomes a fact (see `variable`).
 
-use bowl::{Bowl, Commands};
+use bowl::{Bowl, Commands, Entity};
 
 use crate::entities::{direct_rule, node_span, text};
 use crate::entity::{
@@ -151,7 +151,9 @@ impl LanguageEntity for Expression {
 
 impl LowerStage for Expression {
     // Consumed by the containing clause/directive lowering via `build_expr`.
-    fn lower(_ctx: &LowerCtx<'_>, _node: NodeRef, _commands: &mut Commands) {}
+    fn lower(_ctx: &LowerCtx<'_>, _node: NodeRef, _commands: &mut Commands) -> Option<Entity> {
+        None
+    }
 }
 
 /// First direct child of `node` that starts an expression.

@@ -11,7 +11,7 @@ use crate::entities::{direct_rule, node_span, text};
 use crate::entity::{
     CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
 };
-use crate::facts::{BelongsToFile, NodeKey, ParentKey, Span};
+use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span};
 use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef, Rule};
 
@@ -55,7 +55,7 @@ impl LanguageEntity for Clause {
 }
 
 impl LowerStage for Clause {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
+    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
         let fact = if ctx.cst.match_rule(node, Rule::WhereClause) {
             ClauseFact::Where {
                 expr: clause_expr(ctx, node),
@@ -87,8 +87,9 @@ impl LowerStage for Clause {
             fact,
         ));
         if let Some(parent) = ctx.parent {
-            commands.entity(entity).insert(ParentKey(parent));
+            commands.entity(entity).insert(ChildOf(parent));
         }
+        Some(entity)
     }
 }
 

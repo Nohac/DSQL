@@ -22,7 +22,6 @@
 
 use bowl::{Bowl, Commands, Entity};
 
-use crate::facts::NodeKey;
 use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef};
 
@@ -47,18 +46,22 @@ pub struct LowerCtx<'a> {
     /// The file's resolution scope; definition and spread facts carry it
     /// as their resolution join key.
     pub scope: &'a str,
-    /// Key of the nearest enclosing selection or definition node, if any.
-    /// The walk in `entities` scopes it when descending into one, so nested
-    /// facts carry their tree position as a [`ParentKey`].
+    /// Entity of the nearest enclosing selection or definition fact, if
+    /// any. The walk in `entities` scopes it when descending into one, so
+    /// nested facts carry their tree position as a [`ChildOf`] edge and
+    /// the engine maintains the parent's [`Children`] inverse.
     ///
-    /// [`ParentKey`]: crate::facts::ParentKey
-    pub parent: Option<NodeKey>,
+    /// [`ChildOf`]: crate::facts::ChildOf
+    /// [`Children`]: crate::facts::Children
+    pub parent: Option<Entity>,
 }
 
-/// Syntax stage: lower an owned CST rule node into fact components.
-/// Rule ownership is assigned in `entities::lower_rule`.
+/// Syntax stage: lower an owned CST rule node into fact components,
+/// returning the created fact entity when the node forms a tree position
+/// descendants attach to. Rule ownership is assigned in
+/// `entities::lower_rule`.
 pub trait LowerStage: LanguageEntity {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands);
+    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity>;
 }
 
 /// Format stage: write the canonical text of an owned CST rule node.

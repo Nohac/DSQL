@@ -158,13 +158,13 @@ async fn check_fragment_targets(
 }
 
 impl LowerStage for Definition {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
+    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
         // The name is a direct child token; nested Names (inside the
         // selection set) belong to other entities.
         let Some(name_span) = direct_token(ctx.cst, node, Token::Name) else {
             // Error recovery can leave a def without a name; the parse
             // diagnostics already cover it.
-            return;
+            return None;
         };
 
         let kind = if ctx.cst.match_rule(node, Rule::QueryDef) {
@@ -194,7 +194,7 @@ impl LowerStage for Definition {
         };
 
         let scope = ResolutionScope(ctx.scope.to_string());
-        match (kind, target) {
+        let entity = match (kind, target) {
             (DefKind::Fragment, Some(target)) => commands.insert((
                 DerivedFrom::new(ctx.file),
                 BelongsToFile(ctx.file),
@@ -223,6 +223,7 @@ impl LowerStage for Definition {
                 decl,
             )),
         };
+        Some(entity)
     }
 }
 

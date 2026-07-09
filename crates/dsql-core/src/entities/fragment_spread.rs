@@ -11,8 +11,8 @@ use crate::entity::{
     CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
 };
 use crate::facts::{
-    BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
-    ParentKey, Severity, Span, emit_diagnostic,
+    BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
+    NodeKey, Severity, Span, emit_diagnostic,
 };
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
@@ -78,10 +78,10 @@ impl LanguageEntity for FragmentSpread {
 }
 
 impl LowerStage for FragmentSpread {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
+    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
         let Some(name_span) = direct_token(ctx.cst, node, Token::Name) else {
             // `...` without a name; parse diagnostics cover it.
-            return;
+            return None;
         };
 
         let name = text(ctx.source, name_span).to_string();
@@ -106,8 +106,9 @@ impl LowerStage for FragmentSpread {
             decl,
         ));
         if let Some(parent) = ctx.parent {
-            commands.entity(entity).insert(ParentKey(parent));
+            commands.entity(entity).insert(ChildOf(parent));
         }
+        Some(entity)
     }
 }
 
@@ -201,7 +202,7 @@ pub(crate) fn check_spread_site(
 
     // Unknown and ambiguous fragments are reported by
     // check_unknown_fragments.
-    let Some((_, _, target, fragment_key, _)) = ctx
+    let Some((fragment_entity, _, target, _)) = ctx
         .tree
         .resolve_fragment(&spread.name, ctx.scope, ctx.imports)
         .copied()
@@ -237,15 +238,15 @@ pub(crate) fn check_spread_site(
     // Cycle detection: follow spreads through fragment bodies; a fragment
     // already on the path spreading again is a cycle.
     let mut path = vec![spread.name.clone()];
-    detect_cycles(ctx, fragment_key, &mut path);
+    detect_cycles(ctx, fragment_entity, &mut path);
 }
 
 fn detect_cycles(
     ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
-    fragment_key: crate::facts::NodeKey,
+    fragment_entity: Entity,
     path: &mut Vec<String>,
 ) {
-    let inner_spreads = spreads_below(ctx, fragment_key);
+    let inner_spreads = spreads_below(ctx, fragment_entity);
     for (entity, name, name_span) in inner_spreads {
         if path.contains(&name) {
             ctx.error(
@@ -256,7 +257,7 @@ fn detect_cycles(
             );
             continue;
         }
-        let Some((_, _, _, next_key, _)) = ctx
+        let Some((next_entity, _, _, _)) = ctx
             .tree
             .resolve_fragment(&name, ctx.scope, ctx.imports)
             .copied()
@@ -264,7 +265,7 @@ fn detect_cycles(
             continue;
         };
         path.push(name);
-        detect_cycles(ctx, next_key, path);
+        detect_cycles(ctx, next_entity, path);
         path.pop();
     }
 }
@@ -273,16 +274,16 @@ fn detect_cycles(
 /// through fragment definitions).
 fn spreads_below(
     ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
-    parent: crate::facts::NodeKey,
+    parent: Entity,
 ) -> Vec<(Entity, String, Span)> {
     let mut found = Vec::new();
-    for (entity, spread, _, _) in ctx.tree.spreads_under(parent) {
+    for (entity, spread, _) in ctx.tree.spreads_under(parent) {
         found.push((*entity, spread.name.clone(), spread.name_span));
     }
-    let children: Vec<crate::facts::NodeKey> = ctx
+    let children: Vec<Entity> = ctx
         .tree
         .fields_under(parent)
-        .map(|(_, _, key, _)| *key)
+        .map(|(entity, _, _, _)| *entity)
         .collect();
     for child in children {
         found.extend(spreads_below(ctx, child));
