@@ -51,6 +51,11 @@ pub enum GenerateError {
     },
     #[error("host generator {cmd:?} failed with {status}")]
     Generator { cmd: Vec<String>, status: String },
+    #[error("failed to spawn host generator {cmd:?}: {source}")]
+    Spawn {
+        cmd: Vec<String>,
+        source: std::io::Error,
+    },
 }
 
 impl GenerateError {
@@ -260,8 +265,8 @@ fn run_host_generator(project: &Project, project_root: &Path) -> Result<()> {
         .args(&typescript.cmd[1..])
         .current_dir(project_root)
         .status()
-        .map_err(|source| GenerateError::Write {
-            path: PathBuf::from(&typescript.cmd[0]),
+        .map_err(|source| GenerateError::Spawn {
+            cmd: typescript.cmd.clone(),
             source,
         })?;
     if !status.success() {
@@ -386,11 +391,17 @@ async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<Co
         .await;
     let mut operations = Vec::new();
     for (_, plan, seed, plan_key, def, file) in plan_rows.collect() {
+        // SQL failures surface as error diagnostics and fail generation
+        // above; a missing pairing past that point is a bug, not a plan
+        // to silently drop.
         let Some((_, sql, _)) = sql_rows
             .iter()
             .find(|(_, _, sql_key)| sql_key.0 == plan_key.0)
         else {
-            continue;
+            return Err(GenerateError::Assembly {
+                name: seed.query_name.clone(),
+                message: "plan has no generated SQL".to_string(),
+            });
         };
         operations.push(CollectedOperation {
             def: def.0.raw(),

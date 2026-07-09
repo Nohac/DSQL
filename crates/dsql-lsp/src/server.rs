@@ -12,6 +12,7 @@ use tower_lsp_server::ls_types::{
     DidOpenTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
+    MessageType,
     OneOf, Range, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
@@ -33,7 +34,7 @@ use dsql_core::source::{
     BelongsToHost, FilePath, OpenBuffer, ResolutionScope, SourceOffset, SourceText,
     insert_source_scoped,
 };
-use dsql_project::{Project, populate_project_bowl};
+use dsql_project::{Project, ProjectError, populate_project_bowl};
 
 use crate::position::{
     byte_to_position, encode_semantic_tokens, position_to_byte, semantic_tokens_legend,
@@ -163,25 +164,53 @@ impl LanguageServer for Backend {
 
         // Populate the session bowl: project contents when a dsql.toml is
         // in reach, a bare language with an empty catalog otherwise, so
-        // single files still parse and hover.
+        // single files still parse and hover. A project that exists but
+        // fails to load degrades the same way — but says so, loudly:
+        // silently dropping the catalog and documents is indistinguishable
+        // from "everything is broken" in the editor.
         register_language(&self.bowl).await;
-        match Project::load_from(&start_dir) {
-            Ok(project) => {
-                let _ = populate_project_bowl(&self.bowl, &project).await;
+        let populated = match Project::load_from(&start_dir) {
+            Ok(project) => match populate_project_bowl(&self.bowl, &project).await {
+                Ok(()) => true,
+                Err(error) => {
+                    self.client
+                        .show_message(
+                            MessageType::ERROR,
+                            format!("dsql project failed to load: {error}"),
+                        )
+                        .await;
+                    false
+                }
+            },
+            Err(error @ ProjectError::MissingRoot(_)) => {
+                // Legitimately projectless: single-file mode.
+                self.client
+                    .log_message(MessageType::INFO, format!("dsql: {error}"))
+                    .await;
+                false
             }
-            Err(_) => {
-                insert_catalog(
-                    &self.bowl,
-                    Catalog {
-                        default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
-                        schemas: Vec::new(),
-                        tables: Vec::new(),
-                        columns: Vec::new(),
-                        foreign_keys: Vec::new(),
-                    },
-                )
-                .await;
+            Err(error) => {
+                self.client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!("dsql project failed to load: {error}"),
+                    )
+                    .await;
+                false
             }
+        };
+        if !populated {
+            insert_catalog(
+                &self.bowl,
+                Catalog {
+                    default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
+                    schemas: Vec::new(),
+                    tables: Vec::new(),
+                    columns: Vec::new(),
+                    foreign_keys: Vec::new(),
+                },
+            )
+            .await;
         }
         self.bowl
             .insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))

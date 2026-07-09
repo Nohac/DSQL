@@ -205,14 +205,14 @@ pub struct SourceRange {
     pub end: u32,
 }
 
-pub fn build_manifest_json_schema() -> String {
+pub fn build_manifest_json_schema() -> Result<String, String> {
     let mut generated_schema = facet_json_schema::schema_for::<BuildManifest>();
     generated_schema.schema = Some(JSON_SCHEMA_DRAFT_2020_12.to_string());
     let schema = BuildManifestJsonSchema {
         id: BUILD_MANIFEST_SCHEMA_ID,
         schema: generated_schema,
     };
-    facet_json::to_string_pretty(&schema).expect("JSON Schema serialization should not fail")
+    facet_json::to_string_pretty(&schema).map_err(|error| error.to_string())
 }
 
 pub fn build_manifest_typescript() -> String {

@@ -37,6 +37,8 @@ pub fn sql(collection_limit: Option<u64>) -> Outcome {
     let project = Project::load()?;
     block_on(async {
         let bowl = open_project_bowl(&project).await?;
+        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+            .await;
         bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
             .await;
         bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))
@@ -47,6 +49,19 @@ pub fn sql(collection_limit: Option<u64>) -> Outcome {
                 SqlOptions { collection_limit },
             ))
             .await;
+        }
+
+        // SQL for a project with errors is silently wrong; refuse it.
+        let diagnostics = crate::render::collect_diagnostics(&bowl).await;
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.is_error())
+            .collect();
+        if !errors.is_empty() {
+            for diagnostic in errors {
+                print!("{}", crate::render::render(diagnostic));
+            }
+            return Ok(false);
         }
 
         let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
