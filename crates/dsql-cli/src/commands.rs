@@ -8,7 +8,7 @@ use dsql_core::facts::{
 };
 use dsql_core::format::{FormatConfidence, format_document};
 use dsql_core::grammar::parse;
-use dsql_core::source::FilePath;
+use dsql_core::source::{BelongsToHost, FilePath, SourceOffset};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use dsql_project::{Project, ProjectError, load_project_documents, open_project_bowl};
 
@@ -28,19 +28,35 @@ pub fn check() -> Outcome {
             .await;
         let paths = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
         let paths = paths.collect();
+        let regions = bowl
+            .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
+            .await;
+        let regions = regions.collect();
 
+        // A diagnostic's file is a plain document or an extracted region;
+        // regions report under their host path in host coordinates.
+        let locate = |file: Entity| -> (&str, usize) {
+            let (target, offset) = regions
+                .iter()
+                .find(|(entity, _, _)| *entity == file)
+                .map_or((file, 0), |(_, host, offset)| (host.0, offset.0));
+            let path = paths
+                .iter()
+                .find(|(entity, _)| *entity == target)
+                .map(|(_, path)| path.0.as_str())
+                .unwrap_or("<unknown>");
+            (path, offset)
+        };
         let mut lines: Vec<String> = rows
             .collect()
             .into_iter()
             .map(|(_, severity, span, diagnostic, file)| {
-                let path = paths
-                    .iter()
-                    .find(|(entity, _)| *entity == file.0)
-                    .map(|(_, path)| path.0.as_str())
-                    .unwrap_or("<unknown>");
+                let (path, offset) = locate(file.0);
                 format!(
                     "{path}:{}..{}: {severity:?}: {}",
-                    span.start, span.end, diagnostic.0
+                    offset + span.start,
+                    offset + span.end,
+                    diagnostic.0
                 )
             })
             .collect();

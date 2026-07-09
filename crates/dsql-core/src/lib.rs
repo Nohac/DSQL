@@ -4,6 +4,7 @@
 //! See `docs/plan.md` at the repository root for the architecture.
 
 pub mod catalog;
+pub mod embedding;
 pub mod entities;
 pub mod entity;
 pub mod facts;
@@ -47,6 +48,8 @@ pub async fn register_language(bowl: &Bowl) {
     register_entity::<Variable>(bowl).await;
 
     bowl.add_system(entities::generate_ast).await;
+
+    embedding::register_embedding(bowl).await;
 
     lint::register_lints(bowl).await;
     plan::register_planning(bowl).await;

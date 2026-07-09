@@ -426,6 +426,7 @@ dependencies = [
  "insta",
  "lelwel",
  "logos 0.16.1",
+ "regex",
  "ropey",
  "sea-query",
  "sqlformat",
@@ -491,7 +492,6 @@ dependencies = [
  "facet-toml",
  "futures",
  "glob",
- "regex",
  "thiserror",
 ]
 

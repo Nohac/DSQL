@@ -11,6 +11,14 @@
 //! Downstream systems (parse, lowering, checks, services) cannot tell the
 //! two apart. Spans are byte ranges end to end; materialization to a
 //! contiguous `String` happens only at the parse boundary.
+//!
+//! Not every file entity is a dsql document. TypeScript sources carry
+//! [`EmbeddingHost`]; the extraction system (`embedding`) derives one
+//! *region* entity per embedded query, and those regions — not the host —
+//! are the dsql documents. [`DsqlDocument`] marks what the parse consumes:
+//! plain `.dsql` files get it from the insert helpers, regions from
+//! extraction. Both writers above write *host* text the same way they
+//! write plain files; regions re-derive from it either way.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -34,6 +42,26 @@ pub struct FilePath(pub String);
 #[derive(Component, Hash, PartialEq, Eq, Debug, Clone, Copy)]
 #[component(hash)]
 pub struct SourceOffset(pub usize);
+
+/// Marks a file entity whose [`SourceText`] is a dsql document — the
+/// parse's input filter. Host sources carry text too, but in another
+/// language; only their extracted regions are documents.
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct DsqlDocument;
+
+/// Marks a file entity as a host source: text in another language with
+/// dsql documents embedded in it. The extraction system derives one
+/// region entity per embedded document.
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct EmbeddingHost;
+
+/// Join key from an extracted region back to its host file entity, the
+/// counterpart of [`crate::facts::BelongsToFile`] one level up.
+#[derive(Component, Hash, PartialEq, Eq, Debug, Clone, Copy)]
+#[component(hash)]
+pub struct BelongsToHost(pub Entity);
 
 /// Source text of a file entity, rope-backed for cheap incremental edits.
 ///
@@ -63,6 +91,25 @@ impl SourceText {
         Self {
             rope: Rope::from_str(text),
             revision: next_revision(),
+        }
+    }
+
+    /// Creates *derived* source text whose revision is a content hash
+    /// rather than a counter tick. Systems that re-derive text from other
+    /// facts (embedded-region extraction) use this so re-deriving
+    /// unchanged text keeps the fingerprint — and everything downstream —
+    /// untouched. An entity only ever sees one revision regime: buffers
+    /// mutate counter-revisioned text in place, derived text is always
+    /// wholesale re-inserted through this.
+    pub fn derived_from_text(text: &str) -> Self {
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in text.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        Self {
+            rope: Rope::from_str(text),
+            revision: hash,
         }
     }
 
@@ -155,30 +202,37 @@ pub async fn insert_source(bowl: &Bowl, path: impl Into<String>, text: &str) -> 
     insert_source_scoped(bowl, path, text, ResolutionScope::default_scope()).await
 }
 
-/// Inserts in-memory text as a file entity in `scope`.
+/// Inserts in-memory text as a dsql file entity in `scope`.
 pub async fn insert_source_scoped(
     bowl: &Bowl,
     path: impl Into<String>,
     text: &str,
     scope: ResolutionScope,
 ) -> Entity {
-    insert_source_at(bowl, path, text, scope, 0).await
+    let inserted = bowl
+        .insert((
+            FilePath(path.into()),
+            SourceOffset(0),
+            DsqlDocument,
+            SourceText::from_text(text),
+            scope,
+        ))
+        .await;
+    inserted.entity()
 }
 
-/// Inserts in-memory text as a file entity in `scope`, recording the byte
-/// offset the text sits at inside its host file — non-zero for documents
-/// embedded in another language's source.
-pub async fn insert_source_at(
+/// Inserts in-memory text as a host source entity in `scope`: the text is
+/// another language's; extraction derives its dsql documents.
+pub async fn insert_host_source(
     bowl: &Bowl,
     path: impl Into<String>,
     text: &str,
     scope: ResolutionScope,
-    offset: usize,
 ) -> Entity {
     let inserted = bowl
         .insert((
             FilePath(path.into()),
-            SourceOffset(offset),
+            EmbeddingHost,
             SourceText::from_text(text),
             scope,
         ))

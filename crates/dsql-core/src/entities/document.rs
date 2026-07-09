@@ -1,7 +1,7 @@
 //! Document entity: source files as they enter the bowl, and the parse that
 //! turns their text into a lossless CST.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, With};
 
 use crate::entity::{
     CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
@@ -11,7 +11,7 @@ use crate::facts::{
 };
 use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef, Parser};
-use crate::source::SourceText;
+use crate::source::{DsqlDocument, SourceText};
 
 /// The parsed form of one file: the CST plus the exact source snapshot it
 /// was parsed from, so byte spans extracted during lowering are always
@@ -54,9 +54,14 @@ fn parse_diagnostic_code(message: &str) -> DiagnosticCode {
     }
 }
 
-/// Parses each file's text into a [`ParsedFile`] and emits parse errors as
-/// diagnostic entities owned by the file.
-pub async fn parse_file(query: Query<(Entity, &SourceText)>, mut commands: Commands) {
+/// Parses each document's text into a [`ParsedFile`] and emits parse
+/// errors as diagnostic entities owned by the file. Gated on
+/// [`DsqlDocument`]: host sources carry text too, but only their
+/// extracted regions parse.
+pub async fn parse_file(
+    query: Query<(Entity, &SourceText), With<DsqlDocument>>,
+    mut commands: Commands,
+) {
     let (file, text) = query.item();
 
     let source = text.to_text();
