@@ -23,7 +23,6 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use bowl::{Bowl, Component, Entity};
 use ropey::Rope;
@@ -65,58 +64,29 @@ pub struct BelongsToHost(pub Entity);
 
 /// Source text of a file entity, rope-backed for cheap incremental edits.
 ///
-/// The fingerprint is the [`SourceText::revision`] verbatim, so
-/// fingerprinting never rehashes the rope on an edit burst. Revisions come
-/// from a process-global counter: any newly constructed or mutated
-/// `SourceText` has a revision strictly greater than every earlier one, so
-/// wholesale replacement can never collide with the value it replaces.
-#[derive(Component)]
-#[component(revision)]
+/// The fingerprint is a hash of the rope's content, so equal text always
+/// means an equal fingerprint no matter who produced it: an edit burst
+/// that lands back on the previous text, a disk reload of unchanged
+/// content, or a derivation (embedded-region extraction) re-emitting an
+/// untouched region all leave downstream facts valid.
+#[derive(Component, Hash)]
+#[component(hash)]
 pub struct SourceText {
     rope: Rope,
-    revision: u64,
-}
-
-/// Process-global revision source backing the [`SourceText`] fingerprint
-/// monotonicity guarantee.
-static NEXT_REVISION: AtomicU64 = AtomicU64::new(0);
-
-fn next_revision() -> u64 {
-    NEXT_REVISION.fetch_add(1, Ordering::Relaxed)
 }
 
 impl SourceText {
-    /// Creates source text from a contiguous string (disk load, `didOpen`).
+    /// Creates source text from a contiguous string (disk load, `didOpen`,
+    /// region extraction).
     pub fn from_text(text: &str) -> Self {
         Self {
             rope: Rope::from_str(text),
-            revision: next_revision(),
-        }
-    }
-
-    /// Creates *derived* source text whose revision is a content hash
-    /// rather than a counter tick. Systems that re-derive text from other
-    /// facts (embedded-region extraction) use this so re-deriving
-    /// unchanged text keeps the fingerprint — and everything downstream —
-    /// untouched. An entity only ever sees one revision regime: buffers
-    /// mutate counter-revisioned text in place, derived text is always
-    /// wholesale re-inserted through this.
-    pub fn derived_from_text(text: &str) -> Self {
-        let mut hash = 0xcbf29ce484222325u64;
-        for byte in text.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        Self {
-            rope: Rope::from_str(text),
-            revision: hash,
         }
     }
 
     /// Replaces the entire text (LSP full-document sync, `didClose` revert).
     pub fn set_text(&mut self, text: &str) {
         self.rope = Rope::from_str(text);
-        self.revision = next_revision();
     }
 
     /// Applies one incremental edit: replaces `byte_range` with
@@ -125,18 +95,12 @@ impl SourceText {
     pub fn apply_edit(&mut self, byte_range: std::ops::Range<usize>, replacement: &str) {
         self.rope.remove(byte_range.clone());
         self.rope.insert(byte_range.start, replacement);
-        self.revision = next_revision();
     }
 
     /// The rope, for span slicing and position mapping at protocol
     /// boundaries. Incremental edit helpers land with the LSP crate.
     pub fn rope(&self) -> &Rope {
         &self.rope
-    }
-
-    /// Revision of the current content; bumped on every mutation.
-    pub fn revision(&self) -> u64 {
-        self.revision
     }
 
     /// Materializes the full text. Only the parse boundary should need this;

@@ -9,11 +9,10 @@
 //!
 //! Incrementality comes from two engine properties: derived spawn slots
 //! reuse the previous run's entity ids in spawn order, so a region keeps
-//! its identity across host edits by ordinal; and region text uses
-//! content-hash revisions ([`SourceText::derived_from_text`]), so a
-//! re-derived region whose text did not change re-inserts with an equal
-//! fingerprint and invalidates nothing. Regions that vanish are reaped by
-//! the stale-derived cleanup.
+//! its identity across host edits by ordinal; and [`SourceText`]
+//! fingerprints are content hashes, so a re-derived region whose text did
+//! not change re-inserts with an equal fingerprint and invalidates
+//! nothing. Regions that vanish are reaped by the stale-derived cleanup.
 
 use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, Singleton, With};
 use regex::Regex;
@@ -91,7 +90,7 @@ async fn extract_embedded_documents(
             DsqlDocument,
             SourceOffset(content.start()),
             scope.clone(),
-            SourceText::derived_from_text(content.as_str()),
+            SourceText::from_text(content.as_str()),
         ));
     }
 }
