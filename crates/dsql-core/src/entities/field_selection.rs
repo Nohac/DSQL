@@ -3,7 +3,7 @@
 //! catalog check walk that validates every selection tree top-down.
 
 use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, SystemParam, View, With,
+    Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View, With,
 };
 
 use crate::catalog::{CatalogSnapshot, FieldCheckResult, FieldRef, TableRef, TableResolution};
@@ -22,6 +22,7 @@ use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 use crate::resolution::ResolvedSelection;
+use crate::schema::{AstFacts, dsql_schema};
 use crate::service::completion::{CompletionContext, CompletionRequest};
 use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
@@ -62,15 +63,18 @@ pub struct FieldSelection;
 impl LanguageEntity for FieldSelection {
     const NAME: &'static str = "field_selection";
 
-    async fn register(bowl: &Bowl) {
+    fn register(reg: &mut Registrar<'_>) {
         // Views lowered facts ambiently: behind the Complete barrier.
-        bowl.add_system(check_selections.run_during(bowl::Phase::Complete))
-            .await;
+        reg.system(check_selections.run_during(bowl::Phase::Complete));
     }
 }
 
 impl LowerStage for FieldSelection {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
+    fn lower(
+        ctx: &LowerCtx<'_>,
+        node: NodeRef,
+        commands: &mut Commands<AstFacts>,
+    ) -> Option<Entity> {
         let Some(first_ref) = direct_rule(ctx.cst, node, Rule::RelationRef) else {
             // Error recovery consumed the name; parse diagnostics cover it.
             return None;
@@ -126,15 +130,25 @@ impl LowerStage for FieldSelection {
         // A parentless selection is grammar-wise unreachable (selections
         // only appear inside definitions), but error recovery may orphan
         // one; it lowers without a tree position rather than dropping.
-        let entity = commands.insert((
-            DerivedFrom::new(ctx.file),
-            BelongsToFile(ctx.file),
-            key,
-            selection,
-        ));
-        if let Some(parent) = ctx.parent {
-            commands.entity(entity).insert(ChildOf(parent));
-        }
+        let entity = match ctx.parent {
+            Some(parent) => commands
+                .insert((
+                    DerivedFrom::new(ctx.file),
+                    BelongsToFile(ctx.file),
+                    key,
+                    selection,
+                    ChildOf(parent),
+                ))
+                .untyped(),
+            None => commands
+                .insert((
+                    DerivedFrom::new(ctx.file),
+                    BelongsToFile(ctx.file),
+                    key,
+                    selection,
+                ))
+                .untyped(),
+        };
         Some(entity)
     }
 }
@@ -246,7 +260,7 @@ async fn check_selections(
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
     let (def_entity, decl, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
@@ -280,7 +294,7 @@ pub(crate) struct CheckCtx<'a, 'view> {
     /// Resolution scope of the definition being checked.
     pub(crate) scope: &'a str,
     pub(crate) imports: &'a ScopeImports,
-    pub(crate) commands: &'a mut Commands,
+    pub(crate) commands: &'a mut Commands<(dsql_schema::Diagnostic,)>,
 }
 
 impl CheckCtx<'_, '_> {
@@ -585,8 +599,8 @@ impl FormatStage for FieldSelection {
 }
 
 impl HoverStage for FieldSelection {
-    async fn register_hover(bowl: &Bowl) {
-        bowl.add_system(hover_fields).await;
+    fn register_hover(reg: &mut Registrar<'_>) {
+        reg.system(hover_fields);
     }
 }
 
@@ -598,7 +612,7 @@ async fn hover_fields(
     query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     fields: Query<(Entity, &ResolvedSelection), bowl::Where<bowl::Eq<BelongsToFile>>>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::HoverCandidate,)>,
 ) {
     let (request, _file, cursor) = query.item();
     let (_, resolved) = fields.item();
@@ -772,9 +786,8 @@ pub(crate) fn resolve_field_target(
 }
 
 impl CompletionStage for FieldSelection {
-    async fn register_completions(bowl: &Bowl) {
-        bowl.add_system(complete_selections.run_during(bowl::Phase::Complete))
-            .await;
+    fn register_completions(reg: &mut Registrar<'_>) {
+        reg.system(complete_selections.run_during(bowl::Phase::Complete));
     }
 }
 
@@ -784,7 +797,7 @@ impl CompletionStage for FieldSelection {
 async fn complete_selections(
     requests: Query<(Entity, &CompletionContext), With<CompletionRequest>>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
 ) {
     use crate::service::completion::{
         CompletionCandidate, CompletionItem, CompletionKind, CompletionSite,

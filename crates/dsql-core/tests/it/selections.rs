@@ -7,16 +7,13 @@ use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::field_selection::FieldSel;
 use dsql_core::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use dsql_core::facts::{ChildOf, DiagnosticsDemand, NodeKey};
-use dsql_core::register_language;
 use dsql_core::source::{SourceText, insert_source};
 use futures::executor::block_on;
 
 use crate::{fixture, render_diagnostic_facts};
 
 async fn language_bowl() -> Bowl {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
-    bowl
+    dsql_core::language_bowl().await
 }
 
 /// Reconstructs the selection tree from the flat parent-keyed facts — the

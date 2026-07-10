@@ -1,6 +1,7 @@
 //! The SQL generation stage: renders each query plan to PostgreSQL.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, Singleton, With};
+use crate::schema::dsql_schema;
+use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, With};
 
 use super::postgres::{GeneratedSql, PostgresSqlOptions, generate_postgres_sql_with_options};
 use crate::catalog::CatalogSnapshot;
@@ -27,11 +28,10 @@ pub struct SqlOptions {
 #[component(hash)]
 pub struct GeneratedSqlFact(pub GeneratedSql);
 
-/// Registers the SQL generation stage and installs default [`SqlOptions`].
-pub async fn register_sql(bowl: &Bowl) {
-    bowl.insert((Singleton::<SqlOptions>::new(), SqlOptions::default()))
-        .await;
-    bowl.add_system(generate_sql_facts).await;
+/// Registers the SQL generation stage; [`crate::language_bowl`] installs
+/// the default [`SqlOptions`].
+pub fn register_sql(reg: &mut Registrar<'_>) {
+    reg.system(generate_sql_facts);
 }
 
 /// Renders each plan against the catalog. A plan that fails to render
@@ -50,7 +50,7 @@ async fn generate_sql_facts(
     )>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     options: Query<(Entity, &SqlOptions)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::GeneratedSql, dsql_schema::Diagnostic)>,
 ) {
     let (plan_entity, plan, seed, file, plan_key) = plans.item();
     let (catalog_entity, snapshot) = catalog.item();

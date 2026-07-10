@@ -1,7 +1,8 @@
 //! Document entity: source files as they enter the bowl, and the parse that
 //! turns their text into a lossless CST.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, With};
+use crate::schema::{AstFacts, dsql_schema};
+use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, With};
 
 use crate::entity::{
     CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
@@ -28,15 +29,19 @@ pub struct Document;
 impl LanguageEntity for Document {
     const NAME: &'static str = "document";
 
-    async fn register(bowl: &Bowl) {
-        bowl.add_system(parse_file).await;
+    fn register(reg: &mut Registrar<'_>) {
+        reg.system(parse_file);
     }
 }
 
 impl LowerStage for Document {
     // The document owns the file root, but everything under it is lowered
     // by the entities owning the definition rules — nothing to emit here.
-    fn lower(_ctx: &LowerCtx<'_>, _node: NodeRef, _commands: &mut Commands) -> Option<Entity> {
+    fn lower(
+        _ctx: &LowerCtx<'_>,
+        _node: NodeRef,
+        _commands: &mut Commands<AstFacts>,
+    ) -> Option<Entity> {
         None
     }
 }
@@ -62,7 +67,7 @@ fn parse_diagnostic_code(message: &str) -> DiagnosticCode {
 /// extracted regions parse.
 pub async fn parse_file(
     query: Query<(Entity, &SourceText), With<DsqlDocument>>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::ParsedFile, dsql_schema::Diagnostic)>,
 ) {
     let (file, text) = query.item();
 
@@ -120,10 +125,10 @@ impl FormatStage for Document {
 
 impl HoverStage for Document {
     /// Documents carry no hover content; the service supplies the fallback.
-    async fn register_hover(_bowl: &Bowl) {}
+    fn register_hover(_reg: &mut Registrar<'_>) {}
 }
 
 impl CompletionStage for Document {
     /// Documents contribute no completions; keywords come from the grammar layer.
-    async fn register_completions(_bowl: &Bowl) {}
+    fn register_completions(_reg: &mut Registrar<'_>) {}
 }

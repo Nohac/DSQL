@@ -6,13 +6,12 @@ use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::entities::variable::VariableBinding;
 use dsql_core::facts::{Span, VariablesDemand};
-use dsql_core::register_language;
+use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 use futures::executor::block_on;
 
 async fn variables_bowl() -> Bowl {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
+    let bowl = language_bowl().await;
     insert_catalog(&bowl, Catalog::hardcoded()).await;
     bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
         .await;

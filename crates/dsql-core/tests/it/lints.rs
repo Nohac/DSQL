@@ -3,16 +3,15 @@
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::facts::{DiagnosticsDemand, Severity};
+use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
-use dsql_core::register_language;
 use dsql_core::source::insert_source;
 use futures::executor::block_on;
 
 use crate::{imdb_catalog, render_diagnostic_facts};
 
 async fn linted_bowl(config: Option<LintConfig>) -> Bowl {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
+    let bowl = language_bowl().await;
     dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
     bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
         .await;
@@ -70,8 +69,7 @@ fn lints_are_off_without_configuration() {
 #[test]
 fn lints_wait_for_diagnostics_demand() {
     block_on(async {
-        let bowl = Bowl::new();
-        register_language(&bowl).await;
+        let bowl = language_bowl().await;
         dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
         bowl.insert((Singleton::<LintConfig>::new(), LintConfig::default()))
             .await;

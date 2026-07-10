@@ -19,7 +19,8 @@
 //! [`ResolutionOf`] edge back to its field so the nested step can join
 //! through the engine-maintained inverse.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, In, Query, Where};
+use crate::schema::dsql_schema;
+use bowl::{Commands, Component, DerivedFrom, Entity, In, Query, Registrar, Where};
 
 use crate::catalog::{
     CatalogSnapshot, ColumnId, FieldCheckResult, FieldRef, ForeignKeyId, TableId, TableRef,
@@ -115,16 +116,16 @@ pub struct ClauseContext {
     pub table: TableId,
 }
 
-pub async fn register_resolution(bowl: &Bowl) {
-    bowl.add_system(resolve_roots).await;
-    bowl.add_system(resolve_nested).await;
-    bowl.add_system(resolve_clauses).await;
+pub fn register_resolution(reg: &mut Registrar<'_>) {
+    reg.system(resolve_roots);
+    reg.system(resolve_nested);
+    reg.system(resolve_clauses);
 }
 
 /// Emits one resolution fact.
 #[expect(clippy::too_many_arguments, reason = "one emission site, all context")]
 fn emit(
-    commands: &mut Commands,
+    commands: &mut Commands<(dsql_schema::ResolvedSelection,)>,
     catalog_entity: Entity,
     file: Entity,
     field: Entity,
@@ -167,7 +168,7 @@ async fn resolve_roots(
     )>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     roots: Query<(Entity, &FieldSel), Where<In<Children>>>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::ResolvedSelection,)>,
 ) {
     let (_, decl, target, file, _children) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
@@ -235,7 +236,7 @@ async fn resolve_nested(
     resolution: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
     children: Query<(Entity, &FieldSel), Where<In<Children>>>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::ResolvedSelection,)>,
 ) {
     let (_, _, _, _, file) = parents.item();
     let (_, parent_resolved) = resolution.item();
@@ -273,7 +274,7 @@ async fn resolve_clauses(
     )>,
     resolution: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
     clauses: Query<(Entity, &ClauseFact), Where<In<Children>>>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::ResolvedClause,)>,
 ) {
     let (field_entity, _, _, _, file) = parents.item();
     let (_, parent_resolved) = resolution.item();

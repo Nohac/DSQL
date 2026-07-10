@@ -1,7 +1,8 @@
 //! Directive entity: `@namespace.member(arg: value)` annotations on
 //! definitions, selections, and spreads.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity};
+use crate::schema::AstFacts;
+use bowl::{Commands, Component, DerivedFrom, Entity, Registrar};
 
 use crate::entities::expression::{Expr, build_expr, expr_child};
 use crate::entities::{direct_rule, direct_token, node_span, text};
@@ -47,13 +48,17 @@ pub struct Directive;
 impl LanguageEntity for Directive {
     const NAME: &'static str = "directive";
 
-    async fn register(_bowl: &Bowl) {
+    fn register(_reg: &mut Registrar<'_>) {
         // Directive registry checks land in phase 6.
     }
 }
 
 impl LowerStage for Directive {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
+    fn lower(
+        ctx: &LowerCtx<'_>,
+        node: NodeRef,
+        commands: &mut Commands<AstFacts>,
+    ) -> Option<Entity> {
         let name_node = direct_rule(ctx.cst, node, Rule::DirectiveName)?;
 
         let namespace = direct_rule(ctx.cst, name_node, Rule::DirectiveNamespace)
@@ -98,15 +103,25 @@ impl LowerStage for Directive {
             node: node.0,
         };
 
-        let entity = commands.insert((
-            DerivedFrom::new(ctx.file),
-            BelongsToFile(ctx.file),
-            key,
-            fact,
-        ));
-        if let Some(parent) = ctx.parent {
-            commands.entity(entity).insert(ChildOf(parent));
-        }
+        let entity = match ctx.parent {
+            Some(parent) => commands
+                .insert((
+                    DerivedFrom::new(ctx.file),
+                    BelongsToFile(ctx.file),
+                    key,
+                    fact,
+                    ChildOf(parent),
+                ))
+                .untyped(),
+            None => commands
+                .insert((
+                    DerivedFrom::new(ctx.file),
+                    BelongsToFile(ctx.file),
+                    key,
+                    fact,
+                ))
+                .untyped(),
+        };
         Some(entity)
     }
 }
@@ -121,10 +136,10 @@ impl FormatStage for Directive {
 
 impl HoverStage for Directive {
     /// Directive hover lands with the directive registry.
-    async fn register_hover(_bowl: &Bowl) {}
+    fn register_hover(_reg: &mut Registrar<'_>) {}
 }
 
 impl CompletionStage for Directive {
     /// Directive completions land with the directive registry.
-    async fn register_completions(_bowl: &Bowl) {}
+    fn register_completions(_reg: &mut Registrar<'_>) {}
 }

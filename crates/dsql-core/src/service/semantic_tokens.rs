@@ -16,7 +16,8 @@
 //! diagnostics point at them instead.
 
 use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Query, Singleton, SystemExt, View, With,
+    Bowl, Commands, Component, DerivedFrom, Entity, Query, Registrar, Singleton, SystemExt, View,
+    With,
 };
 
 use crate::catalog::{Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableRef};
@@ -26,6 +27,7 @@ use crate::entities::expression::{Expr, PathAnchor};
 use crate::entities::fragment_spread::ResolvedSpread;
 use crate::facts::{BelongsToFile, Span};
 use crate::resolution::{ClauseContext, ResolvedClause, ResolvedSelection, SelectionTarget};
+use crate::schema::dsql_schema;
 use crate::source::FilePath;
 
 /// Arms token classification: chunks derive for every resolved fact while
@@ -123,13 +125,12 @@ pub async fn semantic_tokens(bowl: &Bowl, path: impl Into<String>) -> Vec<Semant
     tokens
 }
 
-pub(crate) async fn register_semantic_tokens_pipeline(bowl: &Bowl) {
-    bowl.add_system(definition_tokens).await;
-    bowl.add_system(selection_tokens).await;
-    bowl.add_system(spread_tokens).await;
+pub(crate) fn register_semantic_tokens_pipeline(reg: &mut Registrar<'_>) {
+    reg.system(definition_tokens);
+    reg.system(selection_tokens);
+    reg.system(spread_tokens);
     // Reads lowered clause facts ambiently: behind the Complete barrier.
-    bowl.add_system(clause_tokens.run_during(bowl::Phase::Complete))
-        .await;
+    reg.system(clause_tokens.run_during(bowl::Phase::Complete));
 }
 
 /// Definition names highlight as fragments; a fragment's resolvable `on`
@@ -138,7 +139,7 @@ async fn definition_tokens(
     demand: Query<Entity, With<TokensDemand>>,
     defs: Query<(Entity, &DefDecl, Option<&FragmentTarget>, &BelongsToFile)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::TokenChunk,)>,
 ) {
     let demand_entity = demand.item();
     let (def_entity, decl, target, file) = defs.item();
@@ -173,7 +174,7 @@ async fn definition_tokens(
 async fn selection_tokens(
     demand: Query<Entity, With<TokensDemand>>,
     resolutions: Query<(Entity, &ResolvedSelection, &BelongsToFile)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::TokenChunk,)>,
 ) {
     let demand_entity = demand.item();
     let (resolution_entity, resolved, file) = resolutions.item();
@@ -216,7 +217,7 @@ async fn selection_tokens(
 async fn spread_tokens(
     demand: Query<Entity, With<TokensDemand>>,
     spreads: Query<(Entity, &ResolvedSpread, &BelongsToFile)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::TokenChunk,)>,
 ) {
     let demand_entity = demand.item();
     let (spread_entity, resolved, file) = spreads.item();
@@ -238,7 +239,7 @@ async fn clause_tokens(
     resolutions: Query<(Entity, &ResolvedClause, &BelongsToFile)>,
     clauses: View<'_, (Entity, &ClauseFact)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::TokenChunk,)>,
 ) {
     let demand_entity = demand.item();
     let (resolution_entity, resolved, file) = resolutions.item();
@@ -289,7 +290,7 @@ async fn clause_tokens(
 }
 
 fn emit_chunk(
-    commands: &mut Commands,
+    commands: &mut Commands<(dsql_schema::TokenChunk,)>,
     anchor: DerivedFrom,
     file: Entity,
     tokens: Vec<SemanticToken>,

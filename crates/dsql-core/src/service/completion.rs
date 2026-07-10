@@ -23,14 +23,15 @@
 //! grammar layer's keywords, unresolved ones keep an empty scaffold list.
 
 use bowl::{
-    Bowl, Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, SystemExt, View, Where,
-    With,
+    Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, Registrar, SystemExt, View,
+    Where, With,
 };
 
 use crate::catalog::TableId;
 use crate::entities::document::ParsedFile;
 use crate::entities::field_selection::{SelectionTree, TreeViews, resolve_field_target};
 use crate::grammar::parser::{Node, NodeRef, Parser, Rule};
+use crate::schema::dsql_schema;
 use crate::service::hover::Position;
 use crate::source::{FilePath, ResolutionScope, SourceText};
 
@@ -112,11 +113,9 @@ pub struct CompletionCandidate {
     pub items: Vec<CompletionItem>,
 }
 
-pub(crate) async fn register_completion_pipeline(bowl: &Bowl) {
-    bowl.add_system(enrich_completion_requests.run_during(Phase::Complete))
-        .await;
-    bowl.add_system(arbitrate_completions.run_during(Phase::Complete))
-        .await;
+pub(crate) fn register_completion_pipeline(reg: &mut Registrar<'_>) {
+    reg.system(enrich_completion_requests.run_during(Phase::Complete));
+    reg.system(arbitrate_completions.run_during(Phase::Complete));
 }
 
 /// Resolves the request's file (bound join on the path), computes the
@@ -137,7 +136,7 @@ async fn enrich_completion_requests(
     documents: View<'_, (Entity, &ParsedFile, &ResolutionScope)>,
     catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
     views: TreeViews<'_>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::CompletionAnswer,)>,
 ) {
     let (request, _path, position) = requests.item();
 

@@ -20,7 +20,9 @@
 //!
 //! [`Rule`]: crate::grammar::parser::Rule
 
-use bowl::{Bowl, Commands, Entity};
+use bowl::{Commands, Entity, Registrar};
+
+use crate::schema::AstFacts;
 
 use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef};
@@ -29,8 +31,8 @@ use crate::grammar::parser::{CstData, NodeRef};
 pub trait LanguageEntity {
     const NAME: &'static str;
 
-    /// Registers the entity's derivation and check systems on the bowl.
-    fn register(bowl: &Bowl) -> impl Future<Output = ()> + Send;
+    /// Registers the entity's derivation and check systems.
+    fn register(reg: &mut Registrar<'_>);
 }
 
 /// Context handed to [`LowerStage::lower`] for one owned CST rule node.
@@ -61,7 +63,11 @@ pub struct LowerCtx<'a> {
 /// descendants attach to. Rule ownership is assigned in
 /// `entities::lower_rule`.
 pub trait LowerStage: LanguageEntity {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity>;
+    fn lower(
+        ctx: &LowerCtx<'_>,
+        node: NodeRef,
+        commands: &mut Commands<AstFacts>,
+    ) -> Option<Entity>;
 }
 
 /// Format stage: write the canonical text of an owned CST rule node.
@@ -77,23 +83,23 @@ pub trait FormatStage: LanguageEntity {
 /// facts, so param lists stay small no matter how many entities exist.
 /// Entities without hover content register nothing (explicit empty impl).
 pub trait HoverStage: LanguageEntity {
-    fn register_hover(bowl: &Bowl) -> impl Future<Output = ()> + Send;
+    fn register_hover(reg: &mut Registrar<'_>);
 }
 
 /// Service stage: register systems that contribute `CompletionCandidate`
 /// facts for enriched completion requests (see `service::completion`).
 /// Entities without completions register nothing (explicit empty impl).
 pub trait CompletionStage: LanguageEntity {
-    fn register_completions(bowl: &Bowl) -> impl Future<Output = ()> + Send;
+    fn register_completions(reg: &mut Registrar<'_>);
 }
 
 /// The compile-time coverage contract: an entity only registers once it has
 /// declared every stage.
-pub async fn register_entity<E>(bowl: &Bowl)
+pub fn register_entity<E>(reg: &mut Registrar<'_>)
 where
     E: LanguageEntity + LowerStage + FormatStage + HoverStage + CompletionStage,
 {
-    E::register(bowl).await;
-    E::register_hover(bowl).await;
-    E::register_completions(bowl).await;
+    E::register(reg);
+    E::register_hover(reg);
+    E::register_completions(reg);
 }

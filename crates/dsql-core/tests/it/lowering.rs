@@ -8,16 +8,13 @@ use dsql_core::entities::directive::DirectiveFact;
 use dsql_core::entities::field_selection::FieldSel;
 use dsql_core::entities::variable::VariableUse;
 use dsql_core::facts::{ChildOf, NodeKey};
-use dsql_core::register_language;
 use dsql_core::source::insert_source;
 use futures::executor::block_on;
 
 use crate::fixture;
 
 async fn language_bowl() -> Bowl {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
-    bowl
+    dsql_core::language_bowl().await
 }
 
 /// Renders clause facts as `field: kind payload`, resolving the parent

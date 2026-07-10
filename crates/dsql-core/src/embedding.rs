@@ -14,9 +14,10 @@
 //! not change re-inserts with an equal fingerprint and invalidates
 //! nothing. Regions that vanish are reaped by the stale-derived cleanup.
 
+use crate::schema::dsql_schema;
 use std::sync::Mutex;
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, Singleton, With};
+use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, With};
 use regex::Regex;
 
 use crate::source::{
@@ -54,14 +55,10 @@ pub fn compile_embedding_pattern(pattern: &str) -> Result<Regex, String> {
     Ok(regex)
 }
 
-/// Installs the default pattern and the extraction system.
-pub(crate) async fn register_embedding(bowl: &Bowl) {
-    bowl.insert((
-        Singleton::<EmbeddedPattern>::new(),
-        EmbeddedPattern::default(),
-    ))
-    .await;
-    bowl.add_system(extract_embedded_documents).await;
+/// Installs the extraction system; [`crate::language_bowl`] and project
+/// loading install the pattern singleton.
+pub(crate) fn register_embedding(reg: &mut Registrar<'_>) {
+    reg.system(extract_embedded_documents);
 }
 
 /// Derives the region entities of one host source: per match, a dsql
@@ -70,7 +67,7 @@ pub(crate) async fn register_embedding(bowl: &Bowl) {
 async fn extract_embedded_documents(
     hosts: Query<(Entity, &SourceText, &ResolutionScope), With<EmbeddingHost>>,
     pattern: Query<(Entity, &EmbeddedPattern)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::Region,)>,
 ) {
     let (host, text, scope) = hosts.item();
     let (pattern_entity, pattern) = pattern.item();
