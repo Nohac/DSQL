@@ -92,4 +92,21 @@ async fn edit_settle_cost() {
         let _ = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
         println!("edit {round}: {:?}", started.elapsed());
     }
+
+    // Per-system planning/run attribution for the whole session; the
+    // per-edit share is what to optimize.
+    if std::env::var("EDIT_COST_PROFILE").is_ok() {
+        let mut profile = bowl.profile_all().await;
+        profile.sort_by_key(|entry| std::cmp::Reverse(entry.plan_nanos));
+        println!("system, runs, plan_ms, run_ms");
+        for entry in profile.iter().take(25) {
+            println!(
+                "{}, {}, {:.1}, {:.1}",
+                entry.name,
+                entry.runs,
+                entry.plan_nanos as f64 / 1e6,
+                entry.run_nanos as f64 / 1e6
+            );
+        }
+    }
 }
