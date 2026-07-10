@@ -13,7 +13,8 @@
 //! point at them instead.
 
 use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, View, Where, With,
+    Bowl, Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, SystemExt, View, Where,
+    With,
 };
 
 use crate::catalog::{Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableRef};
@@ -142,7 +143,9 @@ pub(crate) async fn register_semantic_tokens_pipeline(bowl: &Bowl) {
     bowl.add_system(definition_tokens).await;
     bowl.add_system(selection_tokens).await;
     bowl.add_system(spread_tokens).await;
-    bowl.add_system(clause_tokens).await;
+    // Reads lowered clause facts ambiently: behind the Complete barrier.
+    bowl.add_system(clause_tokens.run_during(bowl::Phase::Complete))
+        .await;
 }
 
 /// The file side of the request outer join: matched per equal path, or
@@ -278,7 +281,8 @@ async fn clause_tokens(
         return;
     };
     // Evaluate-lowered fact referenced by entity id off the tracked
-    // resolution row; derived strictly after it, so race-free.
+    // resolution row; the ambient lookup is why this system sits at
+    // Complete.
     let Some((_, clause)) = clauses
         .iter()
         .find(|(entity, _)| *entity == resolved.clause)
