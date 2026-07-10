@@ -5,7 +5,7 @@ pub mod definition;
 pub mod hover;
 pub mod semantic_tokens;
 
-use bowl::Bowl;
+use bowl::Registrar;
 
 pub use completion::{
     CompletionCandidate, CompletionContext, CompletionItem, CompletionKind, CompletionList,
@@ -20,9 +20,9 @@ pub use semantic_tokens::{
 };
 
 /// Registers the service pipelines shared by all entities.
-pub async fn register_services(bowl: &Bowl) {
-    completion::register_completion_pipeline(bowl).await;
-    hover::register_hover_pipeline(bowl).await;
-    definition::register_definition_pipeline(bowl).await;
-    semantic_tokens::register_semantic_tokens_pipeline(bowl).await;
+pub fn register_services(reg: &mut Registrar<'_>) {
+    completion::register_completion_pipeline(reg);
+    hover::register_hover_pipeline(reg);
+    definition::register_definition_pipeline(reg);
+    semantic_tokens::register_semantic_tokens_pipeline(reg);
 }

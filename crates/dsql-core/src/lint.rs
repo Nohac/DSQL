@@ -10,7 +10,8 @@
 //! predicate lint reads the clause fact ambiently by entity reference,
 //! which puts it behind the Complete barrier.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, SystemExt, With};
+use crate::schema::dsql_schema;
+use bowl::{Commands, Component, DerivedFrom, Entity, Phase, Query, Registrar, SystemExt, With};
 
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, ForeignKey, TableId, TableRef,
@@ -42,11 +43,10 @@ impl Default for LintConfig {
     }
 }
 
-pub async fn register_lints(bowl: &Bowl) {
-    bowl.add_system(lint_relations).await;
+pub fn register_lints(reg: &mut Registrar<'_>) {
+    reg.system(lint_relations);
     // Reads lowered clause facts ambiently: behind the Complete barrier.
-    bowl.add_system(lint_predicates.run_during(Phase::Complete))
-        .await;
+    reg.system(lint_predicates.run_during(Phase::Complete));
 }
 
 /// Flags relation selections joining over unindexed foreign-key columns:
@@ -56,7 +56,7 @@ async fn lint_relations(
     config: Query<(Entity, &LintConfig)>,
     resolutions: Query<(Entity, &ResolvedSelection, &BelongsToFile)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
     let (config_entity, config) = config.item();
     let Some(severity) = config.unindexed_scan_severity else {
@@ -100,7 +100,7 @@ async fn lint_predicates(
     resolutions: Query<(Entity, &ResolvedClause, &BelongsToFile)>,
     clauses: bowl::View<'_, (Entity, &ClauseFact)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
     let (config_entity, config) = config.item();
     let Some(severity) = config.unindexed_scan_severity else {

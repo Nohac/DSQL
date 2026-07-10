@@ -8,15 +8,14 @@ use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::insert_catalog;
 use dsql_core::entities::fragment_spread::ResolvedSpread;
 use dsql_core::facts::DiagnosticsDemand;
-use dsql_core::register_language;
+use dsql_core::language_bowl;
 use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_scoped};
 use futures::executor::block_on;
 
 use crate::{imdb_catalog, render_diagnostic_facts};
 
 async fn scoped_bowl(imports: &[(&str, &[&str])]) -> Bowl {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
+    let bowl = language_bowl().await;
     insert_catalog(&bowl, imdb_catalog()).await;
     let imports: BTreeMap<String, Vec<String>> = imports
         .iter()

@@ -6,8 +6,8 @@
 use bowl::{Bowl, Entity, Mut, Query, Singleton};
 use dsql_core::catalog::insert_catalog;
 use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand};
+use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
-use dsql_core::register_language;
 use dsql_core::source::{BelongsToHost, SourceOffset, SourceText, insert_source};
 use dsql_core::sql::GeneratedSqlFact;
 use futures::executor::block_on;
@@ -52,8 +52,7 @@ query Panel {
 "#;
 
 async fn host_bowl() -> (Bowl, Entity) {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
+    let bowl = language_bowl().await;
     insert_catalog(&bowl, imdb_catalog()).await;
     let host = insert_source(&bowl, "src/queries.ts", HOST).await;
     (bowl, host)

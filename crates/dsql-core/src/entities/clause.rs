@@ -4,7 +4,8 @@
 //! One entity covers all four clause kinds — they share shape, checks, and
 //! planning surface; [`ClauseFact`] branches where they differ.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, With};
+use crate::schema::{AstFacts, dsql_schema};
+use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, With};
 
 use crate::entities::expression::{Expr, VariableRef, build_expr, build_variable_ref, expr_child};
 use crate::entities::{direct_rule, node_span, text};
@@ -49,13 +50,17 @@ pub struct Clause;
 impl LanguageEntity for Clause {
     const NAME: &'static str = "clause";
 
-    async fn register(_bowl: &Bowl) {
+    fn register(_reg: &mut Registrar<'_>) {
         // Clause type checks against the catalog land in phase 6.
     }
 }
 
 impl LowerStage for Clause {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
+    fn lower(
+        ctx: &LowerCtx<'_>,
+        node: NodeRef,
+        commands: &mut Commands<AstFacts>,
+    ) -> Option<Entity> {
         let fact = if ctx.cst.match_rule(node, Rule::WhereClause) {
             ClauseFact::Where {
                 expr: clause_expr(ctx, node),
@@ -79,16 +84,27 @@ impl LowerStage for Clause {
             node: node.0,
         };
 
-        let entity = commands.insert((
-            DerivedFrom::new(ctx.file),
-            BelongsToFile(ctx.file),
-            key,
-            node_span(ctx.cst, node),
-            fact,
-        ));
-        if let Some(parent) = ctx.parent {
-            commands.entity(entity).insert(ChildOf(parent));
-        }
+        let entity = match ctx.parent {
+            Some(parent) => commands
+                .insert((
+                    DerivedFrom::new(ctx.file),
+                    BelongsToFile(ctx.file),
+                    key,
+                    node_span(ctx.cst, node),
+                    fact,
+                    ChildOf(parent),
+                ))
+                .untyped(),
+            None => commands
+                .insert((
+                    DerivedFrom::new(ctx.file),
+                    BelongsToFile(ctx.file),
+                    key,
+                    node_span(ctx.cst, node),
+                    fact,
+                ))
+                .untyped(),
+        };
         Some(entity)
     }
 }
@@ -427,13 +443,12 @@ impl FormatStage for Clause {
 impl HoverStage for Clause {
     /// Clause keywords carry no hover content of their own; the paths and
     /// variables inside them answer through their entities.
-    async fn register_hover(_bowl: &Bowl) {}
+    fn register_hover(_reg: &mut Registrar<'_>) {}
 }
 
 impl CompletionStage for Clause {
-    async fn register_completions(bowl: &Bowl) {
-        bowl.add_system(complete_clause_positions.run_during(bowl::Phase::Complete))
-            .await;
+    fn register_completions(reg: &mut Registrar<'_>) {
+        reg.system(complete_clause_positions.run_during(bowl::Phase::Complete));
     }
 }
 
@@ -446,7 +461,7 @@ async fn complete_clause_positions(
         With<crate::service::completion::CompletionRequest>,
     >,
     catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
 ) {
     use crate::service::completion::{
         CompletionCandidate, CompletionItem, CompletionKind, CompletionSite,

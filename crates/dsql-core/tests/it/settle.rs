@@ -4,16 +4,13 @@
 use bowl::{Bowl, Entity, Mut, Query, With};
 use dsql_core::entities::document::ParsedFile;
 use dsql_core::facts::Diagnostic;
-use dsql_core::register_language;
 use dsql_core::source::{FilePath, SourceText, insert_source};
 use futures::executor::block_on;
 
 use crate::{fixture, render_diagnostic_facts};
 
 async fn language_bowl() -> Bowl {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
-    bowl
+    dsql_core::language_bowl().await
 }
 
 #[test]

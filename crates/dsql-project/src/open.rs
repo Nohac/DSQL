@@ -7,8 +7,8 @@ use bowl::{Bowl, Singleton};
 use dsql_core::catalog::insert_catalog;
 use dsql_core::embedding::EmbeddedPattern;
 use dsql_core::facts::Severity;
+use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
-use dsql_core::register_language;
 use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_scoped};
 
 use super::config::{LintSeverity, Project, Result};
@@ -20,8 +20,7 @@ use super::embedding::typescript_pattern;
 /// `DiagnosticsDemand`, SQL generation `PlanDemand` + `SqlDemand`, an LSP
 /// whatever its editor session needs.
 pub async fn open_project_bowl(project: &Project) -> Result<Bowl> {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
+    let bowl = language_bowl().await;
     populate_project_bowl(&bowl, project).await?;
     Ok(bowl)
 }

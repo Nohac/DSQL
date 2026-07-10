@@ -4,7 +4,7 @@
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::facts::{PlanDemand, SqlDemand};
-use dsql_core::register_language;
+use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use futures::executor::block_on;
@@ -12,8 +12,7 @@ use futures::executor::block_on;
 use crate::{fixture, imdb_catalog};
 
 async fn sql_bowl(catalog: Catalog) -> Bowl {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
+    let bowl = language_bowl().await;
     insert_catalog(&bowl, catalog).await;
     bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
         .await;

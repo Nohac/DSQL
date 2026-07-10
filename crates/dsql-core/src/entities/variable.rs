@@ -5,7 +5,8 @@
 //! at which binding time, with which types" — so each occurrence also
 //! becomes its own fact, anchored into the tree by [`ParentKey`].
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, SystemExt, Where, With};
+use crate::schema::{AstFacts, dsql_schema};
+use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, Where, With};
 
 use crate::catalog::{
     CatalogSnapshot, DataType, FieldCheckResult, FieldRef, TableRef, TableResolution,
@@ -47,15 +48,18 @@ pub struct Variable;
 impl LanguageEntity for Variable {
     const NAME: &'static str = "variable";
 
-    async fn register(bowl: &Bowl) {
+    fn register(reg: &mut Registrar<'_>) {
         // Views lowered facts ambiently: behind the Complete barrier.
-        bowl.add_system(infer_variables.run_during(bowl::Phase::Complete))
-            .await;
+        reg.system(infer_variables.run_during(bowl::Phase::Complete));
     }
 }
 
 impl LowerStage for Variable {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
+    fn lower(
+        ctx: &LowerCtx<'_>,
+        node: NodeRef,
+        commands: &mut Commands<AstFacts>,
+    ) -> Option<Entity> {
         let variable = build_variable_ref(ctx.cst, ctx.source, node);
 
         let key = NodeKey {
@@ -63,15 +67,25 @@ impl LowerStage for Variable {
             node: node.0,
         };
 
-        let entity = commands.insert((
-            DerivedFrom::new(ctx.file),
-            BelongsToFile(ctx.file),
-            key,
-            VariableUse(variable),
-        ));
-        if let Some(parent) = ctx.parent {
-            commands.entity(entity).insert(ChildOf(parent));
-        }
+        let entity = match ctx.parent {
+            Some(parent) => commands
+                .insert((
+                    DerivedFrom::new(ctx.file),
+                    BelongsToFile(ctx.file),
+                    key,
+                    VariableUse(variable),
+                    ChildOf(parent),
+                ))
+                .untyped(),
+            None => commands
+                .insert((
+                    DerivedFrom::new(ctx.file),
+                    BelongsToFile(ctx.file),
+                    key,
+                    VariableUse(variable),
+                ))
+                .untyped(),
+        };
         Some(entity)
     }
 }
@@ -144,7 +158,7 @@ async fn infer_variables(
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::VariableBinding,)>,
 ) {
     let (def_entity, decl, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
@@ -605,10 +619,10 @@ impl FormatStage for Variable {
 }
 
 impl HoverStage for Variable {
-    async fn register_hover(bowl: &Bowl) {
+    fn register_hover(reg: &mut Registrar<'_>) {
         // Fully tracked (a per-file bound join, no views), so it needs no
         // phase barrier: pairs replan as bindings commit at Complete.
-        bowl.add_system(hover_variables).await;
+        reg.system(hover_variables);
     }
 }
 
@@ -619,7 +633,7 @@ impl HoverStage for Variable {
 async fn hover_variables(
     query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     bindings: Query<(Entity, &Span, &VariableBinding), Where<bowl::Eq<BelongsToFile>>>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::HoverCandidate,)>,
 ) {
     let (request, _file, cursor) = query.item();
     let (_, span, binding) = bindings.item();
@@ -655,5 +669,5 @@ async fn hover_variables(
 
 impl CompletionStage for Variable {
     /// Variables are free-form names; nothing to suggest yet.
-    async fn register_completions(_bowl: &Bowl) {}
+    fn register_completions(_reg: &mut Registrar<'_>) {}
 }

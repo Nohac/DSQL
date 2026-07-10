@@ -1,7 +1,7 @@
 //! Cross-cutting facts shared by every language entity: spans, diagnostics,
 //! file anchoring, and demand markers.
 
-use bowl::{Commands, Component, DerivedFrom, Entity};
+use bowl::{Commands, Component, DerivedFrom, Entity, SpawnsAs};
 
 /// Byte range into the source text of one file. Positions (line/column)
 /// are computed at protocol boundaries only.
@@ -164,7 +164,18 @@ pub struct DiagnosticFacts {
 }
 
 /// Emits one diagnostic entity carrying the full diagnostic component set.
-pub fn emit_diagnostic(commands: &mut Commands, facts: DiagnosticFacts) {
+pub fn emit_diagnostic<S, M>(commands: &mut Commands<S>, facts: DiagnosticFacts)
+where
+    (
+        DerivedFrom,
+        BelongsToFile,
+        Span,
+        Severity,
+        DiagnosticSource,
+        DiagnosticCode,
+        Diagnostic,
+    ): SpawnsAs<S, M>,
+{
     commands.insert((
         facts.derived_from,
         BelongsToFile(facts.file),

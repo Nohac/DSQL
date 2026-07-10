@@ -7,7 +7,8 @@
 //! exception: inference is set-oriented, so each variable occurrence also
 //! becomes a fact (see `variable`).
 
-use bowl::{Bowl, Commands, Entity};
+use crate::schema::AstFacts;
+use bowl::{Commands, Entity, Registrar};
 
 use crate::entities::{direct_rule, node_span, text};
 use crate::entity::{
@@ -144,14 +145,18 @@ pub struct Expression;
 impl LanguageEntity for Expression {
     const NAME: &'static str = "expression";
 
-    async fn register(_bowl: &Bowl) {
+    fn register(_reg: &mut Registrar<'_>) {
         // Expression type checks against the catalog land in phase 6.
     }
 }
 
 impl LowerStage for Expression {
     // Consumed by the containing clause/directive lowering via `build_expr`.
-    fn lower(_ctx: &LowerCtx<'_>, _node: NodeRef, _commands: &mut Commands) -> Option<Entity> {
+    fn lower(
+        _ctx: &LowerCtx<'_>,
+        _node: NodeRef,
+        _commands: &mut Commands<AstFacts>,
+    ) -> Option<Entity> {
         None
     }
 }
@@ -445,10 +450,10 @@ impl FormatStage for Expression {
 impl HoverStage for Expression {
     /// Expression internals answer through the variable entity; paths gain
     /// hover with the editor polish pass.
-    async fn register_hover(_bowl: &Bowl) {}
+    fn register_hover(_reg: &mut Registrar<'_>) {}
 }
 
 impl CompletionStage for Expression {
     /// Expression operators come from the grammar layer; typed operator filtering is a planned refinement.
-    async fn register_completions(_bowl: &Bowl) {}
+    fn register_completions(_reg: &mut Registrar<'_>) {}
 }

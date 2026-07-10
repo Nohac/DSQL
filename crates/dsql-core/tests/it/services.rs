@@ -5,7 +5,7 @@
 use bowl::{Bowl, Singleton};
 use dsql_core::catalog::insert_catalog;
 use dsql_core::facts::VariablesDemand;
-use dsql_core::register_language;
+use dsql_core::language_bowl;
 use dsql_core::service::{DefinitionRequest, DefinitionTarget, HoverInfo, HoverRequest, Position};
 use dsql_core::source::{FilePath, insert_source};
 use futures::executor::block_on;
@@ -15,8 +15,7 @@ use crate::{fixture, imdb_catalog};
 const FIXTURE: &str = "valid/imdb-fragment-spread.dsql";
 
 async fn service_bowl() -> Bowl {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
+    let bowl = language_bowl().await;
     insert_catalog(&bowl, imdb_catalog()).await;
     insert_source(&bowl, FIXTURE, &fixture(FIXTURE)).await;
     bowl
@@ -63,8 +62,7 @@ fn hover_answers_by_construct() {
 #[test]
 fn hover_on_variables_reports_bindings() {
     block_on(async {
-        let bowl = Bowl::new();
-        register_language(&bowl).await;
+        let bowl = language_bowl().await;
         insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
         bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
             .await;
@@ -180,8 +178,7 @@ fn hover_survives_opening_the_buffer() {
     use dsql_core::source::{OpenBuffer, SourceText, insert_source};
 
     block_on(async {
-        let bowl = Bowl::new();
-        register_language(&bowl).await;
+        let bowl = language_bowl().await;
         insert_catalog(&bowl, imdb_catalog()).await;
         let source = fixture(FIXTURE);
         let file = insert_source(&bowl, FIXTURE, &source).await;

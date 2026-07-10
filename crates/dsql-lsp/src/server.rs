@@ -24,7 +24,6 @@ use dsql_core::facts::{
 };
 use dsql_core::format::{FormatConfidence, format_document};
 use dsql_core::grammar::parse;
-use dsql_core::register_language;
 use dsql_core::service::{
     CompletionKind, CompletionList, CompletionRequest, DefinitionRequest, DefinitionTarget,
     HoverInfo, HoverRequest, Position, semantic_tokens,
@@ -73,7 +72,7 @@ impl Backend {
     fn new(client: Client) -> Self {
         Self {
             client,
-            bowl: Bowl::new(),
+            bowl: Bowl::builder().plugin(dsql_core::DsqlPlugin).build(),
             session: tokio::sync::Mutex::new(SessionState::default()),
         }
     }
@@ -191,7 +190,7 @@ impl LanguageServer for Backend {
         // fails to load degrades the same way — but says so, loudly:
         // silently dropping the catalog and documents is indistinguishable
         // from "everything is broken" in the editor.
-        register_language(&self.bowl).await;
+        dsql_core::install_default_singletons(&self.bowl).await;
         let populated = match Project::load_from(&start_dir).await {
             Ok(project) => match populate_project_bowl(&self.bowl, &project).await {
                 Ok(()) => true,

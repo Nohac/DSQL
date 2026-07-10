@@ -6,6 +6,7 @@
 //! fails to compile here until an entity claims it or it is explicitly
 //! listed as structural.
 
+use crate::schema::AstFacts;
 use bowl::{Commands, Entity, Query};
 
 use super::clause::Clause;
@@ -26,7 +27,7 @@ fn lower_rule(
     ctx: &LowerCtx<'_>,
     rule: Rule,
     node: NodeRef,
-    commands: &mut Commands,
+    commands: &mut Commands<AstFacts>,
 ) -> Option<Entity> {
     match rule {
         Rule::Document => Document::lower(ctx, node, commands),
@@ -75,7 +76,7 @@ fn lower_rule(
 /// every CST rule node once and dispatching to the owning entity.
 pub async fn generate_ast(
     query: Query<(Entity, &ParsedFile, &ResolutionScope)>,
-    mut commands: Commands,
+    mut commands: Commands<AstFacts>,
 ) {
     let (file, parsed, scope) = query.item();
 
@@ -89,7 +90,7 @@ pub async fn generate_ast(
     walk(&ctx, NodeRef::ROOT, &mut commands);
 }
 
-fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) {
+fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands<AstFacts>) {
     if let Node::Rule(rule, _) = ctx.cst.get(node) {
         let created = lower_rule(ctx, rule, node, commands);
 

@@ -4,16 +4,13 @@
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::entities::definition::{DefDecl, FragmentTarget};
 use dsql_core::facts::{Diagnostic, DiagnosticsDemand};
-use dsql_core::register_language;
 use dsql_core::source::insert_source;
 use futures::executor::block_on;
 
 use crate::{fixture, render_diagnostic_facts};
 
 async fn language_bowl() -> Bowl {
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
-    bowl
+    dsql_core::language_bowl().await
 }
 
 /// Renders every definition fact, sorted for stability.

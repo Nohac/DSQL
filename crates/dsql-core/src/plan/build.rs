@@ -6,7 +6,8 @@
 //! parameters with the same structured paths the variables stage infers.
 //! Runs per definition, gated on [`PlanDemand`].
 
-use bowl::{Bowl, Commands, DerivedFrom, Entity, Query, SystemExt, With};
+use crate::schema::dsql_schema;
+use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, With};
 
 use super::types::{
     FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation,
@@ -35,10 +36,9 @@ use crate::source::{ResolutionScope, ScopeImports};
 
 /// Registers the planning stage. A cross-entity stage system like
 /// `generate_ast`: it walks the whole checked fact tree per definition.
-pub async fn register_planning(bowl: &Bowl) {
+pub fn register_planning(reg: &mut Registrar<'_>) {
     // Views lowered facts ambiently: behind the Complete barrier.
-    bowl.add_system(plan_queries.run_during(bowl::Phase::Complete))
-        .await;
+    reg.system(plan_queries.run_during(bowl::Phase::Complete));
 }
 
 /// Plans every root selection of each query definition. Root spreads are
@@ -52,7 +52,11 @@ async fn plan_queries(
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
-    mut commands: Commands,
+    mut commands: Commands<(
+        dsql_schema::QueryPlan,
+        dsql_schema::FragmentPlan,
+        dsql_schema::Diagnostic,
+    )>,
 ) {
     let (def_entity, decl, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
@@ -147,7 +151,9 @@ async fn plan_queries(
                     ));
                     // Self key: SQL facts carry the same key, so artifact
                     // assembly pairs each plan with its rendering.
-                    commands.entity(plan_entity).insert(PlanKey(plan_entity));
+                    commands
+                        .entity(plan_entity)
+                        .insert(PlanKey(plan_entity.untyped()));
                 }
             }
             TableResolution::NotFound { reference } => diagnostics.push((
@@ -189,7 +195,11 @@ fn emit_plan_diagnostics(
     def_entity: Entity,
     catalog_entity: Entity,
     file: Entity,
-    commands: &mut Commands,
+    commands: &mut Commands<(
+        dsql_schema::QueryPlan,
+        dsql_schema::FragmentPlan,
+        dsql_schema::Diagnostic,
+    )>,
 ) {
     for (span, code, message) in diagnostics {
         emit_diagnostic(
@@ -218,7 +228,11 @@ fn plan_fragment_body(
     file: Entity,
     scope: &str,
     catalog_entity: Entity,
-    commands: &mut Commands,
+    commands: &mut Commands<(
+        dsql_schema::QueryPlan,
+        dsql_schema::FragmentPlan,
+        dsql_schema::Diagnostic,
+    )>,
     diagnostics: &mut PlanDiagnostics,
 ) {
     let Some((_, _, target, _)) = planner

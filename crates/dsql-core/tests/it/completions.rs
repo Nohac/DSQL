@@ -3,9 +3,8 @@
 //! contribute tables, columns, relations, and fragments for the resolved
 //! context table.
 
-use bowl::Bowl;
 use dsql_core::catalog::{Catalog, insert_catalog};
-use dsql_core::register_language;
+use dsql_core::language_bowl;
 use dsql_core::service::{CompletionList, CompletionRequest, Position};
 use dsql_core::source::{FilePath, insert_source};
 use futures::executor::block_on;
@@ -16,8 +15,7 @@ async fn completions(source_with_cursor: &str) -> String {
         .expect("test source marks the cursor with |");
     let source = source_with_cursor.replace('|', "");
 
-    let bowl = Bowl::new();
-    register_language(&bowl).await;
+    let bowl = language_bowl().await;
     insert_catalog(&bowl, Catalog::hardcoded()).await;
     insert_source(&bowl, "test.dsql", &source).await;
 

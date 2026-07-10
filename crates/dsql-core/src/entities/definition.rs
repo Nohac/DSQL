@@ -5,10 +5,11 @@
 //! same concept — a named definition with a selection set — and every stage
 //! treats them symmetrically except where [`DefKind`] branches.
 
+use crate::schema::{AstFacts, dsql_schema};
 use std::fmt;
 
 use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Singleton,
+    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Registrar, Singleton,
     SystemExt, View, Where, With,
 };
 
@@ -86,17 +87,14 @@ pub struct Definition;
 impl LanguageEntity for Definition {
     const NAME: &'static str = "definition";
 
-    async fn register(bowl: &Bowl) {
+    fn register(reg: &mut Registrar<'_>) {
         // Ambient readers of lowered facts sit behind the Complete phase
         // barrier (the engine's same-phase race flag enforces this);
         // check_fragment_targets reads only tracked inputs and needs none.
-        bowl.add_system(index_defs.run_during(Phase::Complete))
-            .await;
-        bowl.add_system(check_duplicate_fragments.run_during(Phase::Complete))
-            .await;
-        bowl.add_system(check_import_collisions.run_during(Phase::Complete))
-            .await;
-        bowl.add_system(check_fragment_targets).await;
+        reg.system(index_defs.run_during(Phase::Complete));
+        reg.system(check_duplicate_fragments.run_during(Phase::Complete));
+        reg.system(check_import_collisions.run_during(Phase::Complete));
+        reg.system(check_fragment_targets);
     }
 }
 
@@ -106,7 +104,7 @@ async fn check_fragment_targets(
     _: Query<Entity, With<DiagnosticsDemand>>,
     query: Query<(Entity, &DefDecl, &FragmentTarget, &BelongsToFile)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
     let (fragment, _, target, file) = query.item();
     let (catalog_entity, snapshot) = catalog.item();
@@ -158,7 +156,11 @@ async fn check_fragment_targets(
 }
 
 impl LowerStage for Definition {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
+    fn lower(
+        ctx: &LowerCtx<'_>,
+        node: NodeRef,
+        commands: &mut Commands<AstFacts>,
+    ) -> Option<Entity> {
         // The name is a direct child token; nested Names (inside the
         // selection set) belong to other entities.
         let Some(name_span) = direct_token(ctx.cst, node, Token::Name) else {
@@ -223,7 +225,7 @@ impl LowerStage for Definition {
                 decl,
             )),
         };
-        Some(entity)
+        Some(entity.untyped())
     }
 }
 
@@ -237,7 +239,7 @@ impl LowerStage for Definition {
 async fn index_defs(
     query: Query<(Entity, &ParsedFile)>,
     defs: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::DefIndex,)>,
 ) {
     let _ = query.item();
 
@@ -264,7 +266,7 @@ async fn check_duplicate_fragments(
     query: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
     _index: Query<(Entity, &DefIndex)>,
     defs: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
     let (entity, decl, file, scope) = query.item();
 
@@ -303,7 +305,7 @@ async fn check_import_collisions(
     _index: Query<(Entity, &DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     defs: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
     let (entity, decl, file, scope) = query.item();
     let (_, imports) = imports.item();
@@ -369,11 +371,11 @@ impl FormatStage for Definition {
 }
 
 impl HoverStage for Definition {
-    async fn register_hover(bowl: &Bowl) {
+    fn register_hover(reg: &mut Registrar<'_>) {
         // Fully tracked (a per-file bound join, no views), so it needs no
         // phase barrier: replanning orders it after enrichment and the
         // lowered facts it joins.
-        bowl.add_system(hover_definitions).await;
+        reg.system(hover_definitions);
     }
 }
 
@@ -388,7 +390,7 @@ type DefInFile<'a> = (Entity, &'a DefDecl, Option<&'a FragmentTarget>);
 async fn hover_definitions(
     query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     defs: Query<DefInFile<'_>, Where<BowlEq<BelongsToFile>>>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::HoverCandidate,)>,
 ) {
     let (request, _file, cursor) = query.item();
     let (_def_entity, decl, target) = defs.item();
@@ -417,5 +419,5 @@ async fn hover_definitions(
 
 impl CompletionStage for Definition {
     /// Definition keywords come from the grammar layer.
-    async fn register_completions(_bowl: &Bowl) {}
+    fn register_completions(_reg: &mut Registrar<'_>) {}
 }

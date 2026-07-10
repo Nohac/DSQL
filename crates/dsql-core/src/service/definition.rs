@@ -6,7 +6,10 @@
 //! the spread row carries the target — a fully tracked pipeline, no
 //! phase barrier.
 
-use bowl::{Bowl, Commands, Component, Entity, Eq as BowlEq, Phase, Query, SystemExt, Where, With};
+use crate::schema::dsql_schema;
+use bowl::{
+    Commands, Component, Entity, Eq as BowlEq, Phase, Query, Registrar, SystemExt, Where, With,
+};
 
 use crate::entities::fragment_spread::ResolvedSpread;
 use crate::facts::{BelongsToFile, Span};
@@ -29,11 +32,10 @@ pub struct DefinitionTarget {
     pub span: Span,
 }
 
-pub(crate) async fn register_definition_pipeline(bowl: &Bowl) {
+pub(crate) fn register_definition_pipeline(reg: &mut Registrar<'_>) {
     // Enrichment reads the region view ambiently: behind Complete.
-    bowl.add_system(resolve_definition_requests.run_during(Phase::Complete))
-        .await;
-    bowl.add_system(answer_spread_definitions).await;
+    reg.system(resolve_definition_requests.run_during(Phase::Complete));
+    reg.system(answer_spread_definitions);
 }
 
 async fn resolve_definition_requests(
@@ -48,7 +50,7 @@ async fn resolve_definition_requests(
             &crate::source::SourceText,
         ),
     >,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::DefinitionEnriched,)>,
 ) {
     let (request, _path, position) = query.item();
     let Some(file) = file else {
@@ -72,7 +74,7 @@ async fn resolve_definition_requests(
 async fn answer_spread_definitions(
     query: Query<(Entity, &BelongsToFile, &Cursor), With<DefinitionRequest>>,
     spreads: Query<(Entity, &ResolvedSpread), Where<BowlEq<BelongsToFile>>>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::DefinitionAnswer,)>,
 ) {
     let (request, _file, cursor) = query.item();
     let (_, resolved) = spreads.item();

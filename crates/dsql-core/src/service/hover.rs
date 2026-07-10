@@ -28,10 +28,11 @@
 //!     .bind().take::<HoverInfo>()`.
 
 use bowl::{
-    Bowl, Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, SystemExt, View, Where,
-    With,
+    Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, Registrar, SystemExt, View,
+    Where, With,
 };
 
+use crate::schema::dsql_schema;
 use crate::source::{BelongsToHost, FilePath, SourceOffset, SourceText};
 
 /// Marks an entity as a hover request; pair with [`FilePath`] and
@@ -108,13 +109,11 @@ pub mod priority {
 
 /// Registers enrichment and arbitration; entity candidate systems register
 /// themselves through `HoverStage`.
-pub(crate) async fn register_hover_pipeline(bowl: &Bowl) {
+pub(crate) fn register_hover_pipeline(reg: &mut Registrar<'_>) {
     // Enrichment reads the region view ambiently (Evaluate-derived):
     // behind the Complete barrier.
-    bowl.add_system(resolve_hover_requests.run_during(Phase::Complete))
-        .await;
-    bowl.add_system(arbitrate_hover.run_during(Phase::Complete))
-        .await;
+    reg.system(resolve_hover_requests.run_during(Phase::Complete));
+    reg.system(arbitrate_hover.run_during(Phase::Complete));
 }
 
 /// The file side of the enrichment outer join: matched per equal path, or
@@ -147,7 +146,7 @@ async fn resolve_hover_requests(
     query: Query<(Entity, &FilePath, &Position), With<HoverRequest>>,
     file: FileMatch<'_>,
     regions: View<'_, (Entity, &BelongsToHost, &SourceOffset, &SourceText)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::HoverAnswer,)>,
 ) {
     let (request, _path, position) = query.item();
     commands.entity(request).insert(RequestKey(request));

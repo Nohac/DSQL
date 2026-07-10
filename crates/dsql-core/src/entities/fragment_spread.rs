@@ -2,7 +2,7 @@
 //! fragment definitions, and the unknown-fragment check.
 
 use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, SystemExt, View, Where, With,
+    Commands, Component, DerivedFrom, Entity, Phase, Query, Registrar, SystemExt, View, Where, With,
 };
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
@@ -17,6 +17,7 @@ use crate::facts::{
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::NodeRef;
+use crate::schema::{AstFacts, dsql_schema};
 use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
@@ -65,20 +66,22 @@ pub struct FragmentSpread;
 impl LanguageEntity for FragmentSpread {
     const NAME: &'static str = "fragment_spread";
 
-    async fn register(bowl: &Bowl) {
+    fn register(reg: &mut Registrar<'_>) {
         // Both view lowered fragment definitions ambiently, so they sit
         // behind the Complete phase barrier; their DefIndex/ScopeImports
         // inputs are tracked, which exempts them from the same-phase race
         // next to index_defs.
-        bowl.add_system(resolve_spreads.run_during(Phase::Complete))
-            .await;
-        bowl.add_system(check_unknown_fragments.run_during(Phase::Complete))
-            .await;
+        reg.system(resolve_spreads.run_during(Phase::Complete));
+        reg.system(check_unknown_fragments.run_during(Phase::Complete));
     }
 }
 
 impl LowerStage for FragmentSpread {
-    fn lower(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands) -> Option<Entity> {
+    fn lower(
+        ctx: &LowerCtx<'_>,
+        node: NodeRef,
+        commands: &mut Commands<AstFacts>,
+    ) -> Option<Entity> {
         let Some(name_span) = direct_token(ctx.cst, node, Token::Name) else {
             // `...` without a name; parse diagnostics cover it.
             return None;
@@ -97,17 +100,29 @@ impl LowerStage for FragmentSpread {
         };
 
         let scope = ResolutionScope(ctx.scope.to_string());
-        let entity = commands.insert((
-            DerivedFrom::new(ctx.file),
-            BelongsToFile(ctx.file),
-            key,
-            scope,
-            FragmentKey(name),
-            decl,
-        ));
-        if let Some(parent) = ctx.parent {
-            commands.entity(entity).insert(ChildOf(parent));
-        }
+        let entity = match ctx.parent {
+            Some(parent) => commands
+                .insert((
+                    DerivedFrom::new(ctx.file),
+                    BelongsToFile(ctx.file),
+                    key,
+                    scope,
+                    FragmentKey(name),
+                    decl,
+                    ChildOf(parent),
+                ))
+                .untyped(),
+            None => commands
+                .insert((
+                    DerivedFrom::new(ctx.file),
+                    BelongsToFile(ctx.file),
+                    key,
+                    scope,
+                    FragmentKey(name),
+                    decl,
+                ))
+                .untyped(),
+        };
         Some(entity)
     }
 }
@@ -151,7 +166,7 @@ async fn resolve_spreads(
     fragments: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
     files: View<'_, (Entity, &DefDecl, &crate::facts::BelongsToFile)>,
     targets: View<'_, (Entity, &crate::entities::definition::FragmentTarget)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::ResolvedSpread,)>,
 ) {
     let (spread, decl, scope, file) = spreads.item();
     let (_, imports) = imports.item();
@@ -302,7 +317,7 @@ async fn check_unknown_fragments(
     _index: Query<(Entity, &DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     fragments: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
     let (spread, decl, file, scope) = query.item();
     let (_, imports) = imports.item();
@@ -364,8 +379,8 @@ impl FormatStage for FragmentSpread {
 }
 
 impl HoverStage for FragmentSpread {
-    async fn register_hover(bowl: &Bowl) {
-        bowl.add_system(hover_spreads).await;
+    fn register_hover(reg: &mut Registrar<'_>) {
+        reg.system(hover_spreads);
     }
 }
 
@@ -376,7 +391,7 @@ impl HoverStage for FragmentSpread {
 async fn hover_spreads(
     query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     spreads: Query<(Entity, &ResolvedSpread), Where<bowl::Eq<BelongsToFile>>>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::HoverCandidate,)>,
 ) {
     let (request, _file, cursor) = query.item();
     let (_, resolved) = spreads.item();
@@ -405,9 +420,8 @@ async fn hover_spreads(
 }
 
 impl CompletionStage for FragmentSpread {
-    async fn register_completions(bowl: &Bowl) {
-        bowl.add_system(complete_spreads.run_during(bowl::Phase::Complete))
-            .await;
+    fn register_completions(reg: &mut Registrar<'_>) {
+        reg.system(complete_spreads.run_during(bowl::Phase::Complete));
     }
 }
 
@@ -429,7 +443,7 @@ async fn complete_spreads(
     >,
     imports: Query<(Entity, &ScopeImports)>,
     catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
-    mut commands: Commands,
+    mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
 ) {
     use crate::catalog::TableRef;
     use crate::service::completion::{
