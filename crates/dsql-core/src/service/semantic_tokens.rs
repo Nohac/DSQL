@@ -3,17 +3,20 @@
 //!
 //! Classification reads the resolver's facts, so it needs no walk: each
 //! candidate system is a tracked join contributing the tokens of one fact
-//! kind as a [`TokenChunk`] fact. The chunks are *scooped*, not folded:
-//! a whole-file answer has hundreds of contributors, and a MutRef fold
-//! into one component makes every write invalidate every other pair's
-//! memo — O(N) settle generations for N chunks (a minute of CPU on a
-//! large file). Bulk aggregation belongs at the read boundary; requests
-//! are answered by [`semantic_tokens`]. Only names that actually resolve
-//! are classified; broken references stay unstyled and the diagnostics
-//! point at them instead.
+//! kind as a [`TokenChunk`] fact keyed by the document it belongs to.
+//! Chunks derive while a [`TokensDemand`] singleton is armed and settle
+//! maintains them incrementally — an edit re-derives only the changed
+//! rows' chunks. Requests are answered by [`semantic_tokens`], which is a
+//! pure scoop: no request entities, no per-request re-derivation. The
+//! chunks are *scooped*, not folded: a whole-file answer has hundreds of
+//! contributors, and a MutRef fold into one component makes every write
+//! invalidate every other pair's memo — O(N) settle generations for N
+//! chunks (a minute of CPU on a large file). Only names that actually
+//! resolve are classified; broken references stay unstyled and the
+//! diagnostics point at them instead.
 
 use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, View, Where, With,
+    Bowl, Commands, Component, DerivedFrom, Entity, Query, Singleton, SystemExt, View, With,
 };
 
 use crate::catalog::{Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableRef};
@@ -23,19 +26,14 @@ use crate::entities::expression::{Expr, PathAnchor};
 use crate::entities::fragment_spread::ResolvedSpread;
 use crate::facts::{BelongsToFile, Span};
 use crate::resolution::{ClauseContext, ResolvedClause, ResolvedSelection, SelectionTarget};
-use crate::service::hover::RequestKey;
-use crate::source::{FilePath, SourceText};
+use crate::source::FilePath;
 
-/// Marks an entity as a semantic-tokens request; pair with [`FilePath`].
+/// Arms token classification: chunks derive for every resolved fact while
+/// this singleton exists — no demand, no tokens. [`semantic_tokens`] arms
+/// it on first use.
 #[derive(Component, Hash)]
 #[component(hash)]
-pub struct SemanticTokensRequest;
-
-/// Addresses a request at a specific document entity instead of a path —
-/// how [`semantic_tokens`] asks for one extracted region of a host file.
-#[derive(Component, Hash, Debug, Clone, Copy)]
-#[component(hash)]
-pub struct TargetFile(pub Entity);
+pub struct TokensDemand;
 
 /// What a classified span highlights as. Ordered so equal-span tokens
 /// merge deterministically.
@@ -56,19 +54,24 @@ pub struct SemanticToken {
     pub kind: SemanticTokenKind,
 }
 
-/// One fact's contribution to one request, addressed by an equal
-/// [`RequestKey`].
+/// One fact's tokens, addressed at its document by [`BelongsToFile`].
 #[derive(Component, Hash)]
 #[component(hash)]
 pub struct TokenChunk(pub Vec<SemanticToken>);
 
-/// Answers semantic tokens for one file path: inserts a request per
-/// document the path holds — the file itself, or each extracted region of
-/// an embedding host with spans shifted back into host coordinates — and
-/// gathers the chunk facts into one span-sorted, deduplicated list. An
-/// unknown path answers with no tokens.
+/// Answers semantic tokens for one file path by scooping the chunk facts
+/// of every document the path holds — the file itself, or each extracted
+/// region of an embedding host with spans shifted back into host
+/// coordinates — into one span-sorted, deduplicated list. Arms
+/// [`TokensDemand`] on first use; an unknown path answers with no tokens.
 pub async fn semantic_tokens(bowl: &Bowl, path: impl Into<String>) -> Vec<SemanticToken> {
-    use crate::source::{BelongsToHost, FilePath, SourceOffset};
+    use crate::source::{BelongsToHost, SourceOffset};
+
+    let armed = bowl.scoop::<Query<(Entity, &TokensDemand)>>().await;
+    if armed.is_empty() {
+        bowl.insert((Singleton::<TokensDemand>::new(), TokensDemand))
+            .await;
+    }
 
     let path = path.into();
     let files = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
@@ -77,51 +80,34 @@ pub async fn semantic_tokens(bowl: &Bowl, path: impl Into<String>) -> Vec<Semant
         .into_iter()
         .find(|(_, candidate)| candidate.0 == path)
         .map(|(entity, _)| entity);
-    let regions: Vec<(Entity, usize)> = match file {
-        Some(host) => {
-            let rows = bowl
-                .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
-                .await;
-            rows.collect()
-                .into_iter()
-                .filter(|(_, of, _)| of.0 == host)
-                .map(|(region, _, offset)| (region, offset.0))
-                .collect()
-        }
-        None => Vec::new(),
-    };
 
-    // One request per document; plain files are their own document.
-    let mut requests: Vec<(Entity, usize)> = Vec::new();
-    if regions.is_empty() {
-        let request = bowl
-            .insert((SemanticTokensRequest, FilePath(path)))
-            .await
-            .entity();
-        requests.push((request, 0));
-    } else {
-        for (region, offset) in regions {
-            let request = bowl
-                .insert((
-                    SemanticTokensRequest,
-                    FilePath(path.clone()),
-                    TargetFile(region),
-                ))
-                .await
-                .entity();
-            requests.push((request, offset));
+    // The documents the path answers for: its regions if it is an
+    // embedding host, otherwise the file itself.
+    let mut documents: Vec<(Entity, usize)> = Vec::new();
+    if let Some(host) = file {
+        let rows = bowl
+            .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
+            .await;
+        documents = rows
+            .collect()
+            .into_iter()
+            .filter(|(_, of, _)| of.0 == host)
+            .map(|(region, _, offset)| (region, offset.0))
+            .collect();
+        if documents.is_empty() {
+            documents.push((host, 0));
         }
     }
 
     let rows = bowl
-        .scoop::<Query<(Entity, &TokenChunk, &RequestKey)>>()
+        .scoop::<Query<(Entity, &TokenChunk, &BelongsToFile)>>()
         .await;
     let rows = rows.collect();
     let mut tokens: Vec<SemanticToken> = Vec::new();
-    for (request, offset) in requests {
+    for (document, offset) in documents {
         tokens.extend(
             rows.iter()
-                .filter(|(_, _, key)| key.0 == request)
+                .filter(|(_, _, file)| file.0 == document)
                 .flat_map(|(_, chunk, _)| chunk.0.iter())
                 .map(|token| SemanticToken {
                     span: Span {
@@ -138,51 +124,25 @@ pub async fn semantic_tokens(bowl: &Bowl, path: impl Into<String>) -> Vec<Semant
 }
 
 pub(crate) async fn register_semantic_tokens_pipeline(bowl: &Bowl) {
-    bowl.add_system(resolve_token_requests).await;
     bowl.add_system(definition_tokens).await;
     bowl.add_system(selection_tokens).await;
     bowl.add_system(spread_tokens).await;
-    bowl.add_system(clause_tokens).await;
-}
-
-/// The file side of the request outer join: matched per equal path, or
-/// `None` exactly once for a request matching no file.
-type FileMatch<'a> = Option<Query<(Entity, &'a SourceText), Where<BowlEq<FilePath>>>>;
-
-/// Definition rows of the request's file, targets riding along.
-type DefRows<'a> =
-    Query<(Entity, &'a DefDecl, Option<&'a FragmentTarget>), Where<BowlEq<BelongsToFile>>>;
-
-/// Outer join: stamps the request key, and the target document as
-/// `BelongsToFile` for the candidate joins — an explicit [`TargetFile`]
-/// wins over the path join, which is how region requests are addressed
-/// (regions carry no [`FilePath`]).
-async fn resolve_token_requests(
-    requests: Query<(Entity, &FilePath, Option<&TargetFile>), With<SemanticTokensRequest>>,
-    file: FileMatch<'_>,
-    mut commands: Commands,
-) {
-    let (request, _path, target) = requests.item();
-    commands.entity(request).insert(RequestKey(request));
-    if let Some(target) = target {
-        commands.entity(request).insert(BelongsToFile(target.0));
-    } else if let Some(file) = file {
-        let (file_entity, _text) = file.item();
-        commands.entity(request).insert(BelongsToFile(file_entity));
-    }
+    // Reads lowered clause facts ambiently: behind the Complete barrier.
+    bowl.add_system(clause_tokens.run_during(bowl::Phase::Complete))
+        .await;
 }
 
 /// Definition names highlight as fragments; a fragment's resolvable `on`
 /// target as a table.
 async fn definition_tokens(
-    requests: Query<(Entity, &BelongsToFile), With<SemanticTokensRequest>>,
-    defs: DefRows<'_>,
+    demand: Query<Entity, With<TokensDemand>>,
+    defs: Query<(Entity, &DefDecl, Option<&FragmentTarget>, &BelongsToFile)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands,
 ) {
-    let (request, _file) = requests.item();
-    let (_, decl, target) = defs.item();
-    let (_, snapshot) = catalog.item();
+    let demand_entity = demand.item();
+    let (def_entity, decl, target, file) = defs.item();
+    let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
     let mut tokens = vec![SemanticToken {
@@ -201,17 +161,22 @@ async fn definition_tokens(
             SemanticTokenKind::Table,
         );
     }
-    emit_chunk(&mut commands, request, tokens);
+    emit_chunk(
+        &mut commands,
+        DerivedFrom::many([def_entity, catalog_entity, demand_entity]),
+        file.0,
+        tokens,
+    );
 }
 
 /// Selections classify by what they resolved to; aliases as aliases.
 async fn selection_tokens(
-    requests: Query<(Entity, &BelongsToFile), With<SemanticTokensRequest>>,
-    resolutions: Query<(Entity, &ResolvedSelection), Where<BowlEq<BelongsToFile>>>,
+    demand: Query<Entity, With<TokensDemand>>,
+    resolutions: Query<(Entity, &ResolvedSelection, &BelongsToFile)>,
     mut commands: Commands,
 ) {
-    let (request, _file) = requests.item();
-    let (_, resolved) = resolutions.item();
+    let demand_entity = demand.item();
+    let (resolution_entity, resolved, file) = resolutions.item();
 
     let mut tokens = Vec::new();
     if let Some(alias_span) = resolved.alias_span {
@@ -239,20 +204,26 @@ async fn selection_tokens(
         ),
         SelectionTarget::Unresolved => {}
     }
-    emit_chunk(&mut commands, request, tokens);
+    emit_chunk(
+        &mut commands,
+        DerivedFrom::many([resolution_entity, demand_entity]),
+        file.0,
+        tokens,
+    );
 }
 
 /// Spread names highlight as fragments.
 async fn spread_tokens(
-    requests: Query<(Entity, &BelongsToFile), With<SemanticTokensRequest>>,
-    spreads: Query<(Entity, &ResolvedSpread), Where<BowlEq<BelongsToFile>>>,
+    demand: Query<Entity, With<TokensDemand>>,
+    spreads: Query<(Entity, &ResolvedSpread, &BelongsToFile)>,
     mut commands: Commands,
 ) {
-    let (request, _file) = requests.item();
-    let (_, resolved) = spreads.item();
+    let demand_entity = demand.item();
+    let (spread_entity, resolved, file) = spreads.item();
     emit_chunk(
         &mut commands,
-        request,
+        DerivedFrom::many([spread_entity, demand_entity]),
+        file.0,
         vec![SemanticToken {
             span: resolved.name_span,
             kind: SemanticTokenKind::Fragment,
@@ -263,22 +234,23 @@ async fn spread_tokens(
 /// Order-by columns and predicate paths of one clause, against its
 /// resolved context.
 async fn clause_tokens(
-    requests: Query<(Entity, &BelongsToFile), With<SemanticTokensRequest>>,
-    resolutions: Query<(Entity, &ResolvedClause), Where<BowlEq<BelongsToFile>>>,
+    demand: Query<Entity, With<TokensDemand>>,
+    resolutions: Query<(Entity, &ResolvedClause, &BelongsToFile)>,
     clauses: View<'_, (Entity, &ClauseFact)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands,
 ) {
-    let (request, _file) = requests.item();
-    let (_, resolved) = resolutions.item();
-    let (_, snapshot) = catalog.item();
+    let demand_entity = demand.item();
+    let (resolution_entity, resolved, file) = resolutions.item();
+    let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
     let Some(context) = resolved.context else {
         return;
     };
     // Evaluate-lowered fact referenced by entity id off the tracked
-    // resolution row; derived strictly after it, so race-free.
+    // resolution row; the ambient lookup is why this system sits at
+    // Complete.
     let Some((_, clause)) = clauses
         .iter()
         .find(|(entity, _)| *entity == resolved.clause)
@@ -308,18 +280,24 @@ async fn clause_tokens(
         }
         ClauseFact::Limit { .. } | ClauseFact::Offset { .. } => {}
     }
-    emit_chunk(&mut commands, request, tokens);
+    emit_chunk(
+        &mut commands,
+        DerivedFrom::many([resolution_entity, catalog_entity, demand_entity]),
+        file.0,
+        tokens,
+    );
 }
 
-fn emit_chunk(commands: &mut Commands, request: Entity, tokens: Vec<SemanticToken>) {
+fn emit_chunk(
+    commands: &mut Commands,
+    anchor: DerivedFrom,
+    file: Entity,
+    tokens: Vec<SemanticToken>,
+) {
     if tokens.is_empty() {
         return;
     }
-    commands.insert((
-        DerivedFrom::new(request),
-        RequestKey(request),
-        TokenChunk(tokens),
-    ));
+    commands.insert((anchor, BelongsToFile(file), TokenChunk(tokens)));
 }
 
 /// Predicate paths classify segment by segment: relation steps, then the

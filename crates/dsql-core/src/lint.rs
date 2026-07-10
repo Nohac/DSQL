@@ -6,10 +6,11 @@
 //! index: relation selections joining over unindexed foreign-key columns,
 //! and multi-step predicate paths scanning or joining on unindexed
 //! columns. Both lints are tracked per resolution fact — the resolver
-//! already established each name's meaning, so no walk happens here and
-//! no phase barrier is needed.
+//! already established each name's meaning, so no walk happens here. The
+//! predicate lint reads the clause fact ambiently by entity reference,
+//! which puts it behind the Complete barrier.
 
-use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, With};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Phase, Query, SystemExt, With};
 
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, ForeignKey, TableId, TableRef,
@@ -43,7 +44,9 @@ impl Default for LintConfig {
 
 pub async fn register_lints(bowl: &Bowl) {
     bowl.add_system(lint_relations).await;
-    bowl.add_system(lint_predicates).await;
+    // Reads lowered clause facts ambiently: behind the Complete barrier.
+    bowl.add_system(lint_predicates.run_during(Phase::Complete))
+        .await;
 }
 
 /// Flags relation selections joining over unindexed foreign-key columns:
@@ -111,9 +114,8 @@ async fn lint_predicates(
         return;
     };
     // The clause fact is Evaluate-lowered and referenced by entity id off
-    // the tracked resolution row; the ambient lookup can never observe a
-    // partially-derived generation because the resolution derives strictly
-    // after the clause it points at.
+    // the tracked resolution row; the ambient lookup is why this system
+    // sits at Complete.
     let Some((_, ClauseFact::Where { expr })) = clauses
         .iter()
         .find(|(entity, _)| *entity == resolved.clause)

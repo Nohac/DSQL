@@ -5,7 +5,8 @@
 
 use bowl::{Bowl, Entity, Mut, Query, Singleton};
 use dsql_core::catalog::insert_catalog;
-use dsql_core::facts::{PlanDemand, SqlDemand};
+use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand};
+use dsql_core::lint::LintConfig;
 use dsql_core::register_language;
 use dsql_core::source::{BelongsToHost, SourceOffset, SourceText, insert_source};
 use dsql_core::sql::GeneratedSqlFact;
@@ -119,6 +120,42 @@ fn untouched_regions_keep_their_entities_across_host_edits() {
 
         let after = regions_of(&bowl, host).await;
         assert_eq!(after, before, "regions keep entities, offsets, and text");
+    });
+}
+
+/// Editing a host while diagnostics and lints are armed re-lowers clause
+/// facts mid-settle; the ambient clause readers must sit behind the
+/// Complete barrier or the same-phase race flag kills the process (the
+/// "LSP crashes the second I edit" regression).
+#[test]
+fn host_edits_with_armed_lints_do_not_race() {
+    block_on(async {
+        let (bowl, host) = host_bowl().await;
+        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+            .await;
+        bowl.insert((Singleton::<LintConfig>::new(), LintConfig::default()))
+            .await;
+        // Arm: settle once so lint rows exist before the edit.
+        let _ = regions_of(&bowl, host).await;
+
+        for round in 0..3 {
+            let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+            for (entity, source) in sources.collect() {
+                if entity == host {
+                    source
+                        .with_latest(move |text| {
+                            let edited = text.to_text().replace(
+                                "limit 1",
+                                if round % 2 == 0 { "limit 3" } else { "limit 1" },
+                            );
+                            text.set_text(&edited);
+                        })
+                        .await;
+                }
+            }
+            let regions = regions_of(&bowl, host).await;
+            assert_eq!(regions.len(), 4, "regions survive armed edits");
+        }
     });
 }
 

@@ -16,7 +16,7 @@ pub use hover::{
     Cursor, HoverCandidate, HoverEnriched, HoverInfo, HoverRequest, Position, priority,
 };
 pub use semantic_tokens::{
-    SemanticToken, SemanticTokenKind, SemanticTokensRequest, TokenChunk, semantic_tokens,
+    SemanticToken, SemanticTokenKind, TokenChunk, TokensDemand, semantic_tokens,
 };
 
 /// Registers the service pipelines shared by all entities.
