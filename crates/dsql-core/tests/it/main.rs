@@ -10,6 +10,7 @@ mod lints;
 mod lowering;
 mod parse;
 mod scale;
+mod scenarios;
 mod scopes;
 mod selections;
 mod services;

@@ -21,7 +21,7 @@ use ropey::{LineType, Rope};
 use dsql_core::facts::{
     BelongsToFile, Diagnostic, DiagnosticCode, DiagnosticSource, Severity, Span,
 };
-use dsql_core::source::{BelongsToHost, FilePath, SourceOffset, SourceText};
+use dsql_core::source::{BelongsToHost, FilePath, HostProjection, SourceOffset, SourceText};
 
 /// A miette [`SourceCode`] reading straight from a rope: `read_span`
 /// materializes only the requested context lines, so rendering never
@@ -193,12 +193,14 @@ pub async fn collect_diagnostics(bowl: &Bowl) -> Vec<SourceDiagnostic> {
 
     // A finding's file is a plain document or a region; regions render
     // against their host. One shared rope per file across its findings.
+    let projection = HostProjection::new(
+        regions
+            .iter()
+            .map(|(region, host, offset)| (*region, host.0, offset.0)),
+    );
     let mut ropes: HashMap<Entity, Arc<Rope>> = HashMap::new();
     let mut locate = |file: Entity| -> Option<(String, Arc<Rope>, usize)> {
-        let (target, offset) = regions
-            .iter()
-            .find(|(entity, _, _)| *entity == file)
-            .map_or((file, 0), |(_, host, offset)| (host.0, offset.0));
+        let (target, offset) = projection.target_of(file);
         let (_, path, text) = paths.iter().find(|(entity, _, _)| *entity == target)?;
         let rope = ropes
             .entry(target)

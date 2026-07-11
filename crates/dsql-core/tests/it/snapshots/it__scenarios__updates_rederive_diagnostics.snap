@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 332
+expression: scenario.diagnostics().await
+---
+Error[33..38]: field `bogus` not found on table `title`

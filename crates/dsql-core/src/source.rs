@@ -139,6 +139,44 @@ impl ResolutionScope {
     }
 }
 
+/// Region-to-host projection: where a document's facts render or
+/// publish. Regions project onto their host at their extraction offset;
+/// plain files project onto themselves at offset zero. One scoop of the
+/// region rows feeds every consumer (CLI rendering, LSP publishing,
+/// token aggregation), so the projection rule exists once.
+pub struct HostProjection(std::collections::HashMap<Entity, (Entity, usize)>);
+
+impl HostProjection {
+    /// Builds the projection from `(region, host, offset)` rows.
+    pub fn new(regions: impl IntoIterator<Item = (Entity, Entity, usize)>) -> Self {
+        Self(
+            regions
+                .into_iter()
+                .map(|(region, host, offset)| (region, (host, offset)))
+                .collect(),
+        )
+    }
+
+    /// The file a document's spans render against, with the byte offset
+    /// to add.
+    pub fn target_of(&self, file: Entity) -> (Entity, usize) {
+        self.0.get(&file).copied().unwrap_or((file, 0))
+    }
+
+    /// The inverse: every document projecting onto `host`, with its
+    /// offset, in ascending offset order.
+    pub fn documents_of(&self, host: Entity) -> Vec<(Entity, usize)> {
+        let mut documents: Vec<(Entity, usize)> = self
+            .0
+            .iter()
+            .filter(|(_, (target, _))| *target == host)
+            .map(|(region, (_, offset))| (*region, *offset))
+            .collect();
+        documents.sort_by_key(|(_, offset)| *offset);
+        documents
+    }
+}
+
 /// The configured document paths per resolution scope (absolute, already
 /// joined against the project base): the bowl-carried source of scope
 /// *placement*, so an editor opening a brand-new file can ask which scope

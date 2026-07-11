@@ -91,7 +91,7 @@ pub enum CompletionSite {
 
 /// Enrichment output stamped on the request; entity candidate systems and
 /// the finalizer key on it.
-#[derive(Debug, Component, Hash)]
+#[derive(Debug, Clone, Component, Hash)]
 #[component(hash)]
 pub struct CompletionContext {
     pub site: CompletionSite,

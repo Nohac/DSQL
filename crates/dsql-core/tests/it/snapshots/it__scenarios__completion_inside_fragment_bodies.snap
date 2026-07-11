@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 272
+expression: "scenario.complete(\"f.dsql\", markers[0]).await"
+---
+context: SelectionBody table=<unresolved> scope=default

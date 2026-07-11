@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 311
+expression: hover
+---
+`year` — `input.title.clause.where.production_year.year`: int (build-time)

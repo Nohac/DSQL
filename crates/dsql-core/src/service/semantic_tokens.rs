@@ -79,18 +79,19 @@ pub async fn semantic_tokens(bowl: &Bowl, path: impl Into<String>) -> Vec<Semant
         .map(|(entity, _)| entity);
 
     // The documents the path answers for: its regions if it is an
-    // embedding host, otherwise the file itself.
+    // embedding host, otherwise the file itself — the shared
+    // [`HostProjection`] rule, inverted to enumerate a host's documents.
     let mut documents: Vec<(Entity, usize)> = Vec::new();
     if let Some(host) = file {
         let rows = bowl
             .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
             .await;
-        documents = rows
-            .collect()
-            .into_iter()
-            .filter(|(_, of, _)| of.0 == host)
-            .map(|(region, _, offset)| (region, offset.0))
-            .collect();
+        let projection = crate::source::HostProjection::new(
+            rows.collect()
+                .into_iter()
+                .map(|(region, of, offset)| (region, of.0, offset.0)),
+        );
+        documents = projection.documents_of(host);
         if documents.is_empty() {
             documents.push((host, 0));
         }

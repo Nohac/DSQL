@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 291
+expression: "scenario.definition(\"q.dsql\", markers[0]).await"
+---
+frags.dsql[9..13] -> `Bits`

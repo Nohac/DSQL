@@ -1,0 +1,30 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 220
+expression: "scenario.complete(\"s.dsql\", markers[0]).await"
+---
+context: SelectionBody table=title scope=default
+Column episode_nr — int
+Column episode_of_id — int
+Column id — int
+Column imdb_id — int
+Column imdb_index — text
+Column kind_id — int
+Column md5sum — text
+Column phonetic_code — text
+Column production_year — int
+Column season_nr — int
+Column series_years — text
+Column title — text
+Relation aka_title->episode_of_id — relation to public.aka_title via episode_of_id
+Relation aka_title->movie_id — relation to public.aka_title via movie_id
+Relation cast_info — relation to public.cast_info via movie_id
+Relation complete_cast — relation to public.complete_cast via movie_id
+Relation kind_type — relation to public.kind_type via kind_id
+Relation movie_companies — relation to public.movie_companies via movie_id
+Relation movie_info — relation to public.movie_info via movie_id
+Relation movie_info_idx — relation to public.movie_info_idx via movie_id
+Relation movie_keyword — relation to public.movie_keyword via movie_id
+Relation movie_link->linked_movie_id — relation to public.movie_link via linked_movie_id
+Relation movie_link->movie_id — relation to public.movie_link via movie_id
+Relation title->episode_of_id — relation to public.title via episode_of_id

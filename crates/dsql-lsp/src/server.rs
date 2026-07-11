@@ -29,7 +29,7 @@ use dsql_core::service::{
     HoverInfo, HoverRequest, Position, semantic_tokens,
 };
 use dsql_core::source::{
-    BelongsToHost, FilePath, OpenBuffer, ResolutionScope, SourceOffset, SourceText,
+    BelongsToHost, FilePath, HostProjection, OpenBuffer, ResolutionScope, SourceOffset, SourceText,
     insert_source_scoped,
 };
 use dsql_project::{Project, ProjectError, populate_project_bowl};
@@ -144,20 +144,15 @@ impl Backend {
             .bowl()
             .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
             .await;
-        let region_offsets: Vec<(Entity, usize)> = regions
-            .collect()
-            .into_iter()
-            .filter(|(_, host, _)| host.0 == file_entity)
-            .map(|(region, _, offset)| (region, offset.0))
-            .collect();
+        let projection = HostProjection::new(
+            regions
+                .collect()
+                .into_iter()
+                .map(|(region, host, offset)| (region, host.0, offset.0)),
+        );
         let offset_of = |file: Entity| -> Option<usize> {
-            if file == file_entity {
-                return Some(0);
-            }
-            region_offsets
-                .iter()
-                .find(|(region, _)| *region == file)
-                .map(|(_, offset)| *offset)
+            let (target, offset) = projection.target_of(file);
+            (target == file_entity).then_some(offset)
         };
         let mut diagnostics: Vec<Diagnostic> = rows
             .collect()
@@ -549,11 +544,13 @@ impl LanguageServer for Backend {
             .bowl()
             .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
             .await;
-        let (target_file, offset) = regions
-            .collect()
-            .into_iter()
-            .find(|(entity, _, _)| *entity == target.file)
-            .map_or((target.file, 0), |(_, host, offset)| (host.0, offset.0));
+        let projection = HostProjection::new(
+            regions
+                .collect()
+                .into_iter()
+                .map(|(region, host, offset)| (region, host.0, offset.0)),
+        );
+        let (target_file, offset) = projection.target_of(target.file);
         let paths = self.bowl().scoop::<Query<(Entity, &FilePath)>>().await;
         let Some(target_path) = paths
             .collect()

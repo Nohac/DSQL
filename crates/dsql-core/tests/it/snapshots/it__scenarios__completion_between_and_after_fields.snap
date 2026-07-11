@@ -1,0 +1,40 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 240
+expression: "format!(\"between:\\n{between}\\n\\nafter:\\n{after}\")"
+---
+between:
+context: SelectionBody table=<unresolved> scope=default
+Operator !=
+Operator <
+Operator <=
+Operator ==
+Operator >
+Operator >=
+Keyword and
+Keyword asc
+Keyword desc
+Keyword like
+Keyword limit
+Keyword offset
+Keyword or
+Keyword order
+Keyword where
+
+after:
+context: SelectionBody table=<unresolved> scope=default
+Operator !=
+Operator <
+Operator <=
+Operator ==
+Operator >
+Operator >=
+Keyword and
+Keyword asc
+Keyword desc
+Keyword like
+Keyword limit
+Keyword offset
+Keyword or
+Keyword order
+Keyword where
