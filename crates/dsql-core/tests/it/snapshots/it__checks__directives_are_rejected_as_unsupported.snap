@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+assertion_line: 229
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[17..32]: directive `@dsql.include_if` is not supported yet
+Error[80..91]: directive `@.deprecated` is not supported yet

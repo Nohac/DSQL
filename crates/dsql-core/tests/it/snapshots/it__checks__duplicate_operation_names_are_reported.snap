@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+assertion_line: 211
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[6..12]: duplicate operation `Movies`

@@ -188,3 +188,44 @@ fn member_value_edits_rederive_resolution() {
         }
     });
 }
+
+/// Two operations with one name in one scope collide at the artifact
+/// boundary, so they are language errors like duplicate fragments.
+#[test]
+fn duplicate_operation_names_are_reported() {
+    block_on(async {
+        let bowl = checked_bowl(imdb_catalog()).await;
+        insert_source(
+            &bowl,
+            "one.dsql",
+            "query Movies {\n  title(limit 1) {\n    id\n  }\n}\n",
+        )
+        .await;
+        insert_source(
+            &bowl,
+            "two.dsql",
+            "query Movies {\n  title(limit 2) {\n    id\n  }\n}\n",
+        )
+        .await;
+
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
+}
+
+/// Directives parse and lower, but no directive semantics are ported yet:
+/// accepting them as silent no-ops would drop the behavior the directive
+/// spec promises, so every use is an error until the registry lands.
+#[test]
+fn directives_are_rejected_as_unsupported() {
+    block_on(async {
+        let bowl = checked_bowl(imdb_catalog()).await;
+        insert_source(
+            &bowl,
+            "annotated.dsql",
+            "query Annotated @dsql.include_if(condition: $flag) {\n  title(limit 1) {\n    id @.deprecated(reason: \"old\")\n  }\n}\n",
+        )
+        .await;
+
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
+}

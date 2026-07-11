@@ -93,6 +93,7 @@ impl LanguageEntity for Definition {
         // check_fragment_targets reads only tracked inputs and needs none.
         reg.system(index_defs.run_during(Phase::Complete));
         reg.system(check_duplicate_fragments.run_during(Phase::Complete));
+        reg.system(check_duplicate_queries.run_during(Phase::Complete));
         reg.system(check_import_collisions.run_during(Phase::Complete));
         reg.system(check_fragment_targets);
     }
@@ -255,7 +256,6 @@ async fn index_defs(
 /// Duplicate fragment names are ambiguous at spread-resolution time, so
 /// they are errors — scoped per resolution scope (the same name in two
 /// independent scopes is fine, per docs/spec/resolution-scopes.md).
-/// Query names are entry points and not checked here.
 ///
 /// The [`DefIndex`] query keeps this check honest: the `View` of other
 /// definitions contributes no memo deps, so without a tracked input over the
@@ -293,6 +293,48 @@ async fn check_duplicate_fragments(
             source: DiagnosticSource::Check,
             code: DiagnosticCode::DuplicateDefinition,
             message: format!("duplicate fragment `{}`", decl.name),
+        },
+    );
+}
+
+/// Duplicate *local* query names collide at generation time — every
+/// operation becomes one artifact keyed by its public name — so they are
+/// errors at the language level, scoped per resolution scope like
+/// fragments. Cross-scope artifact collisions surface at the generate
+/// boundary; local-vs-imported query collisions are not diagnosed yet
+/// (tracked in docs/issues.md).
+async fn check_duplicate_queries(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    query: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
+    _index: Query<(Entity, &DefIndex)>,
+    defs: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (entity, decl, file, scope) = query.item();
+
+    if decl.kind != DefKind::Query {
+        return;
+    }
+
+    let Some((previous, _, _)) = defs.iter().find(|(other, other_decl, other_scope)| {
+        *other < entity
+            && other_decl.kind == DefKind::Query
+            && other_decl.name == decl.name
+            && other_scope.0 == scope.0
+    }) else {
+        return;
+    };
+
+    emit_diagnostic(
+        &mut commands,
+        DiagnosticFacts {
+            derived_from: DerivedFrom::many([entity, previous]),
+            file: file.0,
+            span: decl.name_span,
+            severity: Severity::Error,
+            source: DiagnosticSource::Check,
+            code: DiagnosticCode::DuplicateDefinition,
+            message: format!("duplicate operation `{}`", decl.name),
         },
     );
 }

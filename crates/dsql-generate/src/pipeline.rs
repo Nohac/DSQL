@@ -3,6 +3,7 @@
 //! configured host generator.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use bowl::{Entity, Query, Singleton};
@@ -43,6 +44,8 @@ pub enum GenerateError {
     Assembly { name: String, message: String },
     #[error("failed to serialize `{name}`: {message}")]
     Serialize { name: String, message: String },
+    #[error(transparent)]
+    ArtifactCollision(Box<ArtifactCollision>),
     #[error("failed to write {path}: {source}")]
     Write {
         path: PathBuf,
@@ -55,6 +58,19 @@ pub enum GenerateError {
         cmd: Vec<String>,
         source: std::io::Error,
     },
+}
+
+/// Two artifacts of one kind normalize to the same build path: writing
+/// both would silently overwrite one and duplicate manifest entries.
+#[derive(Debug, thiserror::Error)]
+#[error("{kind} `{first}` ({first_source}) and `{second}` ({second_source}) both write `{path}`")]
+pub struct ArtifactCollision {
+    pub kind: &'static str,
+    pub first: String,
+    pub first_source: String,
+    pub second: String,
+    pub second_source: String,
+    pub path: String,
 }
 
 impl GenerateError {
@@ -124,7 +140,7 @@ pub async fn generate_project(
             &operation.file,
         )?);
     }
-    operations.sort_by(|left, right| left.0.name.cmp(&right.0.name));
+    operations.sort_by(|left, right| left.name.cmp(&right.name));
 
     let mut fragments = Vec::new();
     for fragment in &facts.fragments {
@@ -150,14 +166,57 @@ pub async fn generate_project(
             &fragment.file,
         )?);
     }
-    fragments.sort_by(|left, right| left.0.name.cmp(&right.0.name));
+    fragments.sort_by(|left, right| left.name.cmp(&right.name));
+
+    validate_artifact_paths("operation", &operations, operation_manifest_path)?;
+    validate_artifact_paths("fragment", &fragments, fragment_manifest_path)?;
 
     write_build_tree(project, &project_root, operations, fragments).await
 }
 
-/// One assembled artifact with its serialized form, content hash, and
-/// project-relative source path.
-struct Hashed<M>(M, String, String, String);
+/// Rejects artifact path collisions before anything touches the build
+/// tree: two artifacts of one kind whose names normalize to the same file
+/// stem would silently overwrite each other and duplicate manifest
+/// entries. Same-scope duplicates are language diagnostics; this guards
+/// the build tree's namespace (cross-scope duplicates, normalization
+/// collisions, and derived multi-root names). The flat-per-kind layout is
+/// a current limitation — docs/spec/resolution-scopes.md calls for
+/// scope-qualified artifact groups, which will relax cross-scope
+/// collisions to genuine path collisions only. Keys fold ASCII case so
+/// case-insensitive filesystems cannot alias two artifacts either.
+fn validate_artifact_paths<M>(
+    kind: &'static str,
+    artifacts: &[Hashed<M>],
+    manifest_path: impl Fn(&str) -> String,
+) -> Result<()> {
+    let mut seen: HashMap<String, &Hashed<M>> = HashMap::new();
+    for artifact in artifacts {
+        let path = manifest_path(&artifact.name);
+        if let Some(first) = seen.insert(path.to_ascii_lowercase(), artifact) {
+            return Err(GenerateError::ArtifactCollision(Box::new(
+                ArtifactCollision {
+                    kind,
+                    first: first.name.clone(),
+                    first_source: first.source.clone(),
+                    second: artifact.name.clone(),
+                    second_source: artifact.source.clone(),
+                    path,
+                },
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// One assembled artifact: its metadata, public name, serialized form,
+/// content hash, and project-relative source path.
+struct Hashed<M> {
+    metadata: M,
+    name: String,
+    serialized: String,
+    hash: String,
+    source: String,
+}
 
 fn hashed<M: facet::Facet<'static>>(
     metadata: M,
@@ -172,7 +231,14 @@ fn hashed<M: facet::Facet<'static>>(
         })?;
     let hash = stable_hash(&serialized);
     let source = source_path(project_root, file);
-    Ok(Hashed(metadata, serialized, hash, source))
+    let name = name(&metadata).to_string();
+    Ok(Hashed {
+        metadata,
+        name,
+        serialized,
+        hash,
+        source,
+    })
 }
 
 async fn write_build_tree(
@@ -185,7 +251,14 @@ async fn write_build_tree(
     let mut written = Vec::new();
 
     let mut operation_entries = Vec::new();
-    for Hashed(metadata, serialized, hash, source) in &operations {
+    for Hashed {
+        metadata,
+        serialized,
+        hash,
+        source,
+        ..
+    } in &operations
+    {
         let path = operation_artifact_path(&build_dir, &metadata.name);
         if write_if_changed(&path, serialized).await? {
             written.push(path);
@@ -200,7 +273,14 @@ async fn write_build_tree(
     }
 
     let mut fragment_entries = Vec::new();
-    for Hashed(metadata, serialized, hash, source) in &fragments {
+    for Hashed {
+        metadata,
+        serialized,
+        hash,
+        source,
+        ..
+    } in &fragments
+    {
         let path = fragment_artifact_path(&build_dir, &metadata.name);
         if write_if_changed(&path, serialized).await? {
             written.push(path);

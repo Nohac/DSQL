@@ -2,17 +2,21 @@
 //! definitions, selections, and spreads.
 
 use crate::schema::AstFacts;
-use bowl::{Commands, Component, DerivedFrom, Entity, Registrar};
+use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, With};
 
 use crate::entities::expression::{Expr, build_expr, expr_child};
 use crate::entities::{direct_rule, direct_token, node_span, text};
 use crate::entity::{
     CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
 };
-use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span};
+use crate::facts::{
+    BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
+    NodeKey, Severity, Span, emit_diagnostic,
+};
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
+use crate::schema::dsql_schema;
 
 /// One directive occurrence, lowered from `directive`. `ParentKey` links it
 /// to the definition, selection, or spread it annotates.
@@ -45,12 +49,52 @@ pub struct DirectiveArgument {
 /// `directive_member`, and `directive_argument` from it).
 pub struct Directive;
 
+impl DirectiveFact {
+    /// The written name after `@`, for diagnostics and services.
+    pub fn display_name(&self) -> String {
+        match (&self.namespace, &self.member) {
+            (Some(namespace), Some(member)) => format!("{namespace}.{member}"),
+            (Some(namespace), None) => namespace.clone(),
+            (None, Some(member)) => format!(".{member}"),
+            (None, None) => String::new(),
+        }
+    }
+}
+
 impl LanguageEntity for Directive {
     const NAME: &'static str = "directive";
 
-    fn register(_reg: &mut Registrar<'_>) {
-        // Directive registry checks land in phase 6.
+    fn register(reg: &mut Registrar<'_>) {
+        // Until the checked directive registry is ported, every directive
+        // is rejected: parsing-but-ignoring would silently drop semantics
+        // the directive spec promises (docs/spec/directives.md).
+        reg.system(check_directives_unsupported);
     }
+}
+
+/// Every directive is an error until directive semantics are ported —
+/// accepted-but-ignored annotations are worse than rejected ones.
+async fn check_directives_unsupported(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    query: Query<(Entity, &DirectiveFact, &BelongsToFile)>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (entity, directive, file) = query.item();
+    emit_diagnostic(
+        &mut commands,
+        DiagnosticFacts {
+            derived_from: DerivedFrom::new(entity),
+            file: file.0,
+            span: directive.name_span,
+            severity: Severity::Error,
+            source: DiagnosticSource::Check,
+            code: DiagnosticCode::UnsupportedDirective,
+            message: format!(
+                "directive `@{}` is not supported yet",
+                directive.display_name()
+            ),
+        },
+    );
 }
 
 impl LowerStage for Directive {
