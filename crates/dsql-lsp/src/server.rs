@@ -40,10 +40,16 @@ use crate::position::{
 
 /// Serves the language server over stdio until the client disconnects.
 pub async fn run_stdio() {
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
+    serve(tokio::io::stdin(), tokio::io::stdout()).await;
+}
+
+pub(crate) async fn serve<I, O>(input: I, output: O)
+where
+    I: tokio::io::AsyncRead + Unpin,
+    O: tokio::io::AsyncWrite,
+{
     let (service, socket) = LspService::new(Backend::new);
-    Server::new(stdin, stdout, socket).serve(service).await;
+    Server::new(input, output, socket).serve(service).await;
 }
 
 struct Backend {

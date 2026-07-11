@@ -253,3 +253,42 @@ fn duplicate_output_keys_through_spreads_are_reported() {
         insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
     });
 }
+
+/// A same-length body edit moves no span, so nothing about the
+/// definition's header changes — `DefDecl::source_hash` is what re-runs
+/// the walks. Before it existed, this exact edit left diagnostics stale.
+#[test]
+fn same_length_body_edits_rederive_diagnostics() {
+    use bowl::Mut;
+    use dsql_core::source::SourceText;
+
+    block_on(async {
+        let bowl = checked_bowl(imdb_catalog()).await;
+        let file = insert_source(
+            &bowl,
+            "same-length.dsql",
+            "query Same {\n  title(limit 1) {\n    title\n  }\n}\n",
+        )
+        .await;
+        assert_eq!(render_diagnostic_facts(&bowl).await, "");
+
+        let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+        for (entity, source) in sources.collect() {
+            if entity == file {
+                source
+                    .with_latest(|text| {
+                        // Same byte length: `title` -> `titlx`.
+                        let edited = text.to_text().replace("    title\n", "    titlx\n");
+                        text.set_text(&edited);
+                    })
+                    .await;
+            }
+        }
+
+        let diagnostics = render_diagnostic_facts(&bowl).await;
+        assert!(
+            diagnostics.contains("titlx"),
+            "same-length body edits must re-run checks, got: {diagnostics:?}"
+        );
+    });
+}

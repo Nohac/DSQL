@@ -512,6 +512,7 @@ dependencies = [
  "dsql-core",
  "dsql-project",
  "ropey",
+ "serde_json",
  "tokio",
  "tower-lsp-server",
 ]
