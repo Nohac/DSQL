@@ -1,0 +1,24 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 308
+expression: "sections.join(\"\\n\\n\")"
+---
+one dot:
+context: SpreadName table=title scope=default replace=<none>
+Fragment Bits — fragment on title (inserts `..Bits`)
+
+two dots:
+context: SpreadName table=title scope=default replace=<none>
+Fragment Bits — fragment on title (inserts `.Bits`)
+
+one dot partial name:
+context: SpreadName table=title scope=default replace=[93..95]
+Fragment Bits — fragment on title (inserts `..Bits`)
+
+two dots partial name:
+context: SpreadName table=title scope=default replace=[125..127]
+Fragment Bits — fragment on title (inserts `.Bits`)
+
+three dots partial name:
+context: SpreadName table=title scope=default replace=[158..160]
+Fragment Bits — fragment on title

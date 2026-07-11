@@ -109,6 +109,10 @@ pub struct CompletionContext {
     pub scope: String,
     /// Literal spellings of tokens the grammar accepts at the cursor.
     pub keywords: Vec<String>,
+    /// `.` characters immediately before the replaced word, capped at 3:
+    /// fragment completions insert only the dots still missing from a
+    /// partial `...` spread.
+    pub spread_dots: usize,
 }
 
 /// One entity's contribution to one request, addressed by an equal
@@ -223,8 +227,19 @@ async fn enrich_completion_requests(
     // full-source tree bails frontier text out to the document, so it
     // works identically for well-formed and mid-edit sources.
     let truncated_cst = truncated.into_data();
-    let spine = open_spine(&truncated_cst);
-    let site = classify_site(&spine);
+    let (spine, stop) = open_spine(&truncated_cst);
+    let spread_dots = prefix
+        .bytes()
+        .rev()
+        .take_while(|byte| *byte == b'.')
+        .count()
+        .min(3);
+    let site = match classify_site(&spine, stop) {
+        // Dots before the word mean a spread is being typed: only
+        // fragments (and the missing dots) make sense, not columns.
+        CompletionSite::SelectionBody if spread_dots > 0 => CompletionSite::SpreadName,
+        site => site,
+    };
 
     // Semantic layer: the innermost open set or clause decides the context
     // table via its owning construct — a field resolves through its own
@@ -313,6 +328,7 @@ async fn enrich_completion_requests(
         table,
         scope: scope.0.clone(),
         keywords,
+        spread_dots,
     });
 }
 
@@ -363,28 +379,51 @@ fn merge_item(items: &mut Vec<CompletionItem>, item: CompletionItem) {
 /// The rightmost rule chain of the truncated tree: repeatedly descend into
 /// the last rule child. The chain ends at the construct still open at the
 /// cursor.
-/// Whether the rightmost construct already has the token that finishes
-/// it — a set its `}`, a clause list its `)`, a spread its name. The
-/// cursor sits *after* a finished construct, never inside it.
-fn is_finished(cst: &crate::grammar::parser::CstData, node: NodeRef, rule: Rule) -> bool {
-    let closer = match rule {
-        Rule::SelectionSet => Token::RBrace,
-        Rule::ClauseList => Token::RPar,
-        Rule::FragmentSpread => Token::Name,
-        _ => return false,
+/// Why the open-spine walk stopped before a construct the cursor is not
+/// inside of.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpineStop {
+    /// The construct already has the token that finishes it — a set its
+    /// `}`, a clause list its `)`, a spread its name. The cursor sits
+    /// *after* it.
+    Finished(Rule),
+    /// The construct has no tokens yet (recovery opened it for a `{` or
+    /// `(` still to be typed). The cursor sits *before* it.
+    Unstarted(Rule),
+}
+
+/// Whether the walk must stop before `node` instead of entering it.
+fn spine_stop(cst: &crate::grammar::parser::CstData, node: NodeRef, rule: Rule) -> Option<SpineStop> {
+    let (opener, closer) = match rule {
+        Rule::SelectionSet => (Token::LBrace, Token::RBrace),
+        Rule::ClauseList => (Token::LPar, Token::RPar),
+        Rule::FragmentSpread => (Token::Ellipsis, Token::Name),
+        _ => return None,
     };
-    cst.children(node)
-        .any(|child| matches!(cst.get(child), Node::Token(token, _) if token == closer))
+    let has = |token: Token| {
+        cst.children(node)
+            .any(|child| matches!(cst.get(child), Node::Token(t, _) if t == token))
+    };
+    if has(closer) {
+        Some(SpineStop::Finished(rule))
+    } else if !has(opener) {
+        Some(SpineStop::Unstarted(rule))
+    } else {
+        None
+    }
 }
 
 /// The chain of constructs still open at the end of the truncated parse:
-/// the rightmost spine, stopping before any construct that already closed.
-/// This is the cursor's true containment even mid-edit — error recovery in
-/// a full-source parse bails frontier text out to the document, but the
-/// truncated parse ends exactly at the cursor, so its open constructs are
-/// the ones being typed into.
-fn open_spine(cst: &crate::grammar::parser::CstData) -> Vec<(Rule, NodeRef)> {
+/// the rightmost spine, stopping before any construct that already closed
+/// or has not begun. This is the cursor's true containment even mid-edit —
+/// error recovery in a full-source parse bails frontier text out to the
+/// document, but the truncated parse ends exactly at the cursor, so its
+/// open constructs are the ones being typed into.
+fn open_spine(
+    cst: &crate::grammar::parser::CstData,
+) -> (Vec<(Rule, NodeRef)>, Option<SpineStop>) {
     let mut spine = Vec::new();
+    let mut stop = None;
     let mut current = NodeRef::ROOT;
     while let Node::Rule(rule, _) = cst.get(current) {
         spine.push((rule, current));
@@ -392,19 +431,27 @@ fn open_spine(cst: &crate::grammar::parser::CstData) -> Vec<(Rule, NodeRef)> {
             .children(current)
             .filter(|child| matches!(cst.get(*child), Node::Rule(..)))
             .last();
-        match next {
-            Some(child) if !matches!(cst.get(child), Node::Rule(rule, _)
-                if is_finished(cst, child, rule)) =>
-            {
-                current = child;
+        let Some(child) = next else { break };
+        if let Node::Rule(rule, _) = cst.get(child) {
+            stop = spine_stop(cst, child, rule);
+            if stop.is_some() {
+                break;
             }
-            _ => break,
         }
+        current = child;
     }
-    spine
+    (spine, stop)
 }
 
-fn classify_site(spine: &[(Rule, NodeRef)]) -> CompletionSite {
+fn classify_site(spine: &[(Rule, NodeRef)], stop: Option<SpineStop>) -> CompletionSite {
+    // A cursor in the gap after a field's `(...)` or in a definition
+    // header (before its `{`) has no meaningful completions of its own:
+    // the next token is structural.
+    if stop == Some(SpineStop::Finished(Rule::ClauseList))
+        || stop == Some(SpineStop::Unstarted(Rule::SelectionSet))
+    {
+        return CompletionSite::Other;
+    }
     for (index, (rule, _)) in spine.iter().enumerate().rev() {
         match rule {
             Rule::WhereClause => return CompletionSite::WhereExpr,
@@ -426,7 +473,7 @@ fn classify_site(spine: &[(Rule, NodeRef)]) -> CompletionSite {
             _ => {}
         }
     }
-    // No construct open: between definitions (the spine stops before a
+    // No construct open: between definitions (the spine stops after a
     // definition's closed body, or the document is empty).
     match spine.last() {
         Some((Rule::Document | Rule::QueryDef | Rule::FragmentDef | Rule::Definition, _)) => {

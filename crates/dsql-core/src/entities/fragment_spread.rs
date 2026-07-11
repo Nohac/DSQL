@@ -453,11 +453,12 @@ async fn complete_spreads(
     let Some(table) = context.table else {
         return;
     };
-    let spread_site = match context.site {
-        CompletionSite::SpreadName => true,
-        CompletionSite::SelectionBody => false,
-        _ => return,
-    };
+    if !matches!(
+        context.site,
+        CompletionSite::SpreadName | CompletionSite::SelectionBody
+    ) {
+        return;
+    }
 
     let mut items = Vec::new();
     for (_, decl, target, fragment_scope) in fragments.iter() {
@@ -476,11 +477,15 @@ async fn complete_spreads(
         if target_table.id != table {
             continue;
         }
+        // A partial spread keeps the dots already typed: only the missing
+        // ones are inserted before the name (none after a full `...`).
+        let missing_dots = 3 - context.spread_dots;
         items.push(CompletionItem {
             label: decl.name.clone(),
             kind: CompletionKind::Fragment,
             detail: Some(format!("fragment on {}", target.name)),
-            insert_text: (!spread_site).then(|| format!("...{}", decl.name)),
+            insert_text: (missing_dots > 0)
+                .then(|| format!("{}{}", ".".repeat(missing_dots), decl.name)),
         });
     }
     if !items.is_empty() {

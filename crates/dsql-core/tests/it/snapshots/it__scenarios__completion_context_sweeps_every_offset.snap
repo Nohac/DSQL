@@ -1,0 +1,26 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 509
+expression: "rendered.join(\"\\n\")"
+---
+[ 0.. 5] "query" context: DocumentRoot table=<unresolved> scope=default replace=[0..5]
+[ 6.. 7] "Q" context: Other table=<unresolved> scope=default replace=[6..7]
+[ 8.. 8] "" context: Other table=<unresolved> scope=default replace=<none>
+[ 9..11] "\n " context: RootSelection table=<unresolved> scope=default replace=<none>
+[12..17] "title" context: RootSelection table=<unresolved> scope=default replace=[12..17]
+[18..23] "where" context: ClauseList table=title scope=default replace=[18..23]
+[24..24] "" context: WhereExpr table=title scope=default replace=<none>
+[25..40] "production_year" context: WhereExpr table=title scope=default replace=[25..40]
+[41..43] ">=" context: WhereExpr table=title scope=default replace=<none>
+[44..48] "2000" context: WhereExpr table=title scope=default replace=[44..48]
+[49..54] "limit" context: WhereExpr table=title scope=default replace=[49..54]
+[55..56] "1" context: ClauseList table=title scope=default replace=[55..56]
+[57..58] " " context: Other table=<unresolved> scope=default replace=<none>
+[59..63] "\n   " context: SelectionBody table=title scope=default replace=<none>
+[64..66] "id" context: SelectionBody table=title scope=default replace=[64..66]
+[67..71] "    " context: SelectionBody table=title scope=default replace=<none>
+[72..73] "." context: SpreadName table=title scope=default replace=<none>
+[74..78] "Bits" context: SpreadName table=title scope=default replace=[74..78]
+[79..81] "  " context: SelectionBody table=title scope=default replace=<none>
+[82..83] "\n" context: RootSelection table=<unresolved> scope=default replace=<none>
+[84..85] "\n" context: DocumentRoot table=<unresolved> scope=default replace=<none>

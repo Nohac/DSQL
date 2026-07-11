@@ -273,6 +273,42 @@ fn completion_inside_fragment_bodies() {
     });
 }
 
+/// Partially typed spreads keep the dots already written: fragment items
+/// insert only the missing dots, so accepting after `.`, `..`, or a
+/// half-typed `...Bi` always lands on a single `...Bits`.
+#[test]
+fn completion_of_partial_spreads_inserts_missing_dots() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        scenario
+            .open("frags.dsql", "fragment Bits on title {\n  id\n}\n")
+            .await;
+        let markers = scenario
+            .open(
+                "q.dsql",
+                "query Q {\n  title(limit 1) {\n    .<|>\n  }\n  title(limit 1) {\n    ..<|>\n  }\n  title(limit 1) {\n    .Bi<|>\n  }\n  title(limit 1) {\n    ..Bi<|>\n  }\n  title(limit 1) {\n    ...Bi<|>\n  }\n}\n",
+            )
+            .await;
+        let mut sections = Vec::new();
+        for (label, offset) in [
+            "one dot",
+            "two dots",
+            "one dot partial name",
+            "two dots partial name",
+            "three dots partial name",
+        ]
+        .iter()
+        .zip(&markers)
+        {
+            sections.push(format!(
+                "{label}:\n{}",
+                scenario.complete("q.dsql", *offset).await
+            ));
+        }
+        insta::assert_snapshot!(sections.join("\n\n"));
+    });
+}
+
 /// Definitions resolve across open documents: the spread's target lands
 /// in the other file.
 #[test]
@@ -438,6 +474,39 @@ fn completion_at_end_of_file() {
         let scenario = Scenario::new().await;
         let markers = scenario.open("s.dsql", "query Q {\n  title\n}\n<|>").await;
         insta::assert_snapshot!(scenario.complete("s.dsql", markers[0]).await);
+    });
+}
+
+/// Every byte offset of a representative document classifies to a sane
+/// context — the sweep pins the exact site/table/replace boundaries and
+/// catches positions that would panic or misclassify.
+#[test]
+fn completion_context_sweeps_every_offset() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        scenario
+            .open("frags.dsql", "fragment Bits on title {\n  id\n}\n")
+            .await;
+        let source = "query Q {\n  title(where .production_year >= 2000 limit 1) {\n    id\n    ...Bits\n  }\n}\n";
+        scenario.open("s.dsql", source).await;
+
+        // Dedup consecutive offsets sharing a context into ranges.
+        let mut runs: Vec<(usize, usize, String)> = Vec::new();
+        for offset in 0..=source.len() {
+            let answer = scenario.complete("s.dsql", offset).await;
+            let context = answer.lines().next().unwrap_or_default().to_string();
+            match runs.last_mut() {
+                Some((_, end, line)) if *line == context && *end + 1 == offset => *end = offset,
+                _ => runs.push((offset, offset, context)),
+            }
+        }
+        let rendered: Vec<String> = runs
+            .into_iter()
+            .map(|(start, end, line)| {
+                format!("[{start:>2}..{end:>2}] {:?} {line}", &source[start..end.min(source.len())])
+            })
+            .collect();
+        insta::assert_snapshot!(rendered.join("\n"));
     });
 }
 
