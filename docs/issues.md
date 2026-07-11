@@ -27,6 +27,17 @@
   fingerprints) — recovers per-fragment granularity and belongs with the
   walk decomposition work.
 
+- **Directive semantics dispositions (2026-07-12, codex-flagged, owner
+  sign-off wanted)**: the registry validates both system directives
+  fully, but `@dsql.include_if` additionally errors ("recognized but its
+  semantics are not implemented yet") because accepting it while the
+  planner ignores it would generate silently-unconditional SQL — the POC
+  accepted it with empty planner/metadata impls, which we judged a
+  correctness bug rather than parity to preserve. `@dsql.deprecated` is
+  accepted without any metadata flow (exactly the POC's behavior; the
+  annotation changes no output). Lifting the include_if error requires
+  planner support for conditional selections.
+
 # Deferred designs (owner input wanted)
 
 - **Source residency & representation** (review High 5, and the eviction
