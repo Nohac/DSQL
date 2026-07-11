@@ -35,7 +35,7 @@ use crate::service::hover::{
 use crate::service::semantic_tokens::{TokenChunk, TokensDemand};
 use crate::source::{
     BelongsToHost, DsqlDocument, EmbeddingHost, FilePath, OpenBuffer, ResolutionScope,
-    ScopeImports, SourceOffset, SourceText,
+    ScopeDocuments, ScopeImports, SourceOffset, SourceText,
 };
 use crate::sql::{GeneratedSqlFact, SqlOptions};
 
@@ -57,6 +57,7 @@ pub struct DsqlSchema {
     open_buffer: (OpenBuffer,),
     catalog: (Singleton<CatalogSnapshot>, CatalogSnapshot),
     scope_imports: (Singleton<ScopeImports>, ScopeImports),
+    scope_documents: (Singleton<ScopeDocuments>, ScopeDocuments),
     lint_config: (Singleton<LintConfig>, LintConfig),
     embedded_pattern: (Singleton<EmbeddedPattern>, EmbeddedPattern),
     sql_options: (Singleton<SqlOptions>, SqlOptions),
@@ -176,8 +177,11 @@ pub struct DsqlSchema {
     definition_answer: (DefinitionTarget,),
 }
 
-/// Everything the shared lowering walk may spawn: the group every
-/// [`LowerStage`] implementation declares through its `Commands`.
+/// Everything the shared lowering walk may spawn — the *normalized AST*:
+/// there is no owned tree value, the fact graph (these shapes plus the
+/// `ChildOf`/`Children` relationships) is the syntax representation
+/// consumers join against. The group every [`LowerStage`] implementation
+/// declares through its `Commands`.
 ///
 /// [`LowerStage`]: crate::entity::LowerStage
 pub type AstFacts = (

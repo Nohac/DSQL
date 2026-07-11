@@ -33,7 +33,7 @@ use crate::source::{ResolutionScope, ScopeImports};
 const POSTGRES_RESULT_ALIAS_MAX_BYTES: usize = 63;
 
 /// One field selection, lowered from `field_selection`. Together with
-/// [`ParentKey`] these facts are the flat encoding of the selection tree;
+/// [`ChildOf`] these facts are the flat encoding of the selection tree;
 /// sibling order is byte order of [`FieldSel::span`].
 #[derive(Component, Debug, Hash)]
 #[component(hash)]

@@ -53,6 +53,11 @@ pub struct DefDecl {
     pub name_span: Span,
     /// Span of the whole definition.
     pub span: Span,
+    /// Fingerprint of the definition's source slice. The check, variable,
+    /// and plan walks read the definition *body* through ambient views;
+    /// this hash is the tracked dependency that re-runs them on any body
+    /// edit — including same-length edits that move no span.
+    pub source_hash: u64,
 }
 
 /// The relation a fragment is declared `on`. Only fragment entities carry
@@ -183,11 +188,19 @@ impl LowerStage for Definition {
             DefKind::Fragment
         };
 
+        let span = node_span(ctx.cst, node);
+        let source_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::hash::DefaultHasher::new();
+            text(ctx.source, span).hash(&mut hasher);
+            hasher.finish()
+        };
         let decl = DefDecl {
             kind,
             name: text(ctx.source, name_span).to_string(),
             name_span,
-            span: node_span(ctx.cst, node),
+            span,
+            source_hash,
         };
 
         let target = direct_rule(ctx.cst, node, Rule::QualifiedName).map(|target| {

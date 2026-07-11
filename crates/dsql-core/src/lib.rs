@@ -53,7 +53,7 @@ impl Plugin for DsqlPlugin {
         register_entity::<Expression>(reg);
         register_entity::<Variable>(reg);
 
-        reg.system(entities::generate_ast);
+        reg.system(entities::lower_syntax_facts);
 
         embedding::register_embedding(reg);
 
@@ -82,6 +82,11 @@ pub async fn install_default_singletons(bowl: &Bowl) {
     bowl.insert((
         Singleton::<source::ScopeImports>::new(),
         source::ScopeImports::default(),
+    ))
+    .await;
+    bowl.insert((
+        Singleton::<source::ScopeDocuments>::new(),
+        source::ScopeDocuments::default(),
     ))
     .await;
     bowl.insert((

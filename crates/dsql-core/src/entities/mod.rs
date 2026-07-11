@@ -14,4 +14,4 @@ pub mod variable;
 pub mod variable_path;
 
 pub(crate) use lowering::{direct_rule, direct_token, node_span, text};
-pub use lowering::{format_rule, generate_ast};
+pub use lowering::{format_rule, lower_syntax_facts};

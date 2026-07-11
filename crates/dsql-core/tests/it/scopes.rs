@@ -125,3 +125,42 @@ fn fragment_provided_by_two_imports_is_ambiguous_at_the_spread() {
         insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
     });
 }
+
+/// Scope ownership preserves its outcomes: unmatched and overlapping
+/// paths must not silently collapse into the default scope.
+#[test]
+fn scope_ownership_distinguishes_outcomes() {
+    use dsql_core::source::{ScopeDocuments, ScopeOwnership};
+
+    let empty = ScopeDocuments::default();
+    assert_eq!(
+        empty.ownership_of("/p/queries/a.dsql"),
+        ScopeOwnership::ImplicitDefault
+    );
+
+    let configured = ScopeDocuments(vec![
+        (
+            "shared".to_string(),
+            vec!["/p/queries/shared/**/*.dsql".to_string()],
+        ),
+        (
+            "frontend".to_string(),
+            vec![
+                "/p/queries/frontend/**/*.dsql".to_string(),
+                "/p/queries/shared/both.dsql".to_string(),
+            ],
+        ),
+    ]);
+    assert_eq!(
+        configured.ownership_of("/p/queries/frontend/new.dsql"),
+        ScopeOwnership::Unique("frontend".to_string())
+    );
+    assert_eq!(
+        configured.ownership_of("/p/other/loose.dsql"),
+        ScopeOwnership::Unmatched
+    );
+    assert_eq!(
+        configured.ownership_of("/p/queries/shared/both.dsql"),
+        ScopeOwnership::Ambiguous(vec!["frontend".to_string(), "shared".to_string()])
+    );
+}

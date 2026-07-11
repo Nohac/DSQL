@@ -1,6 +1,6 @@
 //! The shared lowering walk and rule-ownership dispatch.
 //!
-//! [`generate_ast`] is the one generic CST walk: it visits every rule node
+//! [`lower_syntax_facts`] is the one generic CST walk: it visits every rule node
 //! once and hands it to the entity that owns the rule. Ownership lives in
 //! `lower_rule` — an exhaustive `match`, so adding a rule to `dsql.llw`
 //! fails to compile here until an entity claims it or it is explicitly
@@ -74,7 +74,7 @@ fn lower_rule(
 
 /// The one generic lowering walk: one invocation per parsed file, visiting
 /// every CST rule node once and dispatching to the owning entity.
-pub async fn generate_ast(
+pub async fn lower_syntax_facts(
     query: Query<(Entity, &ParsedFile, &ResolutionScope)>,
     mut commands: Commands<AstFacts>,
 ) {

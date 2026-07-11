@@ -468,6 +468,7 @@ dependencies = [
  "facet",
  "facet-yaml",
  "futures",
+ "glob",
  "insta",
  "lelwel",
  "logos 0.16.1",
@@ -512,6 +513,7 @@ dependencies = [
  "dsql-core",
  "dsql-project",
  "ropey",
+ "serde_json",
  "tokio",
  "tower-lsp-server",
 ]

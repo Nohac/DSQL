@@ -16,7 +16,7 @@ use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 use crate::schema::dsql_schema;
 
-/// One directive occurrence, lowered from `directive`. `ParentKey` links it
+/// One directive occurrence, lowered from `directive`. [`ChildOf`] links it
 /// to the definition, selection, or spread it annotates.
 #[derive(Component, Debug, Hash)]
 #[component(hash)]

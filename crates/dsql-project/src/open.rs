@@ -9,7 +9,7 @@ use dsql_core::embedding::EmbeddedPattern;
 use dsql_core::facts::Severity;
 use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
-use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_scoped};
+use dsql_core::source::{ResolutionScope, ScopeDocuments, ScopeImports, insert_source_scoped};
 
 use super::config::{LintSeverity, Project, Result};
 use super::documents::load_project_documents;
@@ -43,6 +43,31 @@ pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()>
         .collect();
     bowl.insert((Singleton::<ScopeImports>::new(), ScopeImports(imports)))
         .await;
+    let base = project
+        .root
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| project.root.clone());
+    let scope_documents: Vec<(String, Vec<String>)> = project
+        .config
+        .resolution
+        .iter()
+        .map(|(scope, config)| {
+            (
+                scope.clone(),
+                config
+                    .documents
+                    .iter()
+                    .map(|entry| base.join(entry).display().to_string())
+                    .collect(),
+            )
+        })
+        .collect();
+    bowl.insert((
+        Singleton::<ScopeDocuments>::new(),
+        ScopeDocuments(scope_documents),
+    ))
+    .await;
 
     let lint = match project.config.lint.unindexed_scan_severity {
         None => LintConfig::default(),

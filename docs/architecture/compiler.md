@@ -14,9 +14,14 @@ durable description of how the compiler works.
 One text component, two writers (`dsql-core/src/source.rs`):
 
 - `FilePath` — path identity, fingerprinted.
-- `SourceText { rope, revision }` — rope-backed text. The fingerprint is a
-  process-global monotonic revision, bumped by every mutation, so edit
-  bursts never rehash content and wholesale replacement can never collide.
+- `SourceText { rope }` — rope-backed text whose fingerprint is a hash of
+  the rope's content. Identical re-loads and A→B→A edit sequences converge
+  to no-ops, and derived embedded regions with unchanged text keep their
+  revision (the equality cutoff extraction relies on). The earlier
+  monotonic-revision design was replaced when embedding landed; a cheap
+  revision fingerprint for editor roots (hashing a multi-megabyte rope per
+  keystroke is wasted work) is part of the tracked source-residency design
+  in `docs/issues.md`.
 - **Analysis path**: `load_file`/`insert_source` reads a file once; the
   component simply is the fact.
 - **LSP path**: the same entity plus an `OpenBuffer` marker; `didChange`
@@ -59,8 +64,8 @@ form a compile-time coverage contract:
 in two exhaustive `match`es in `entities/lowering.rs` (`lower_rule`,
 `format_rule`): every grammar rule is either claimed by an entity or
 explicitly listed as structural. Semantic and service systems register in
-`LanguageEntity::register`; a stage trait is only worth adding when it
-declare it.
+`LanguageEntity::register`; a stage trait is only worth adding when it can
+participate in exhaustive rule ownership.
 
 The entities: `Document` (files, parse), `Definition` (queries and
 fragments — one concept, `DefKind` branches), `FieldSelection`,
@@ -70,12 +75,13 @@ fragments — one concept, `DefKind` branches), `FieldSelection`,
 
 ## The fact tree
 
-Lowering (`generate_ast`) walks the CST once per file and dispatches each
+Lowering (`lower_syntax_facts`) walks the CST once per file and dispatches each
 rule node to its owner. Facts carry:
 
 - `NodeKey { file, node }` — stable identity within one parse;
-- `ParentKey` — the nearest enclosing selection/definition, the flat
-  encoding of the selection tree (sibling order is span order);
+- `ChildOf` — relationship edge to the nearest enclosing
+  selection/definition; the engine maintains the `Children` inverse
+  (sibling *source* order is span order — the inverse is entity-ordered);
 - `BelongsToFile` — join key for per-file filtering;
 - `DerivedFrom` — ownership: any text change re-lowers the file and retires
   every fact derived from it.
@@ -119,9 +125,9 @@ Request/response through bound entities: insert `(HoverRequest, FilePath,
 Position)`, `bind().take::<HoverInfo>()`. Enrichment is an *outer* join on
 the file path (one invocation per match, one `None` invocation otherwise),
 so a single system seeds the answer scaffold for resolved and unresolved
-requests alike. Entity candidate systems (Complete, behind the barrier
-their ambient reads of lowered facts need) insert candidates addressed by
-a `RequestKey`; arbitration consumes them *tracked* — one invocation per
+requests alike. Entity candidate systems insert candidates addressed by a
+`RequestKey` — fully tracked ones run phase-free, and only those still
+reading lowered facts ambiently sit behind the Complete barrier; arbitration consumes them *tracked* — one invocation per
 (request, candidate) pair, upgrading the answer in place through `MutRef`
 as a commutative fold (max for hover, sorted set-union for completion).
 Nothing answers at Settle: settle-phase inserts defer to the next run, and

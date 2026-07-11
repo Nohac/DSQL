@@ -36,7 +36,7 @@ use crate::facts::{
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// Registers the planning stage. A cross-entity stage system like
-/// `generate_ast`: it walks the whole checked fact tree per definition.
+/// `lower_syntax_facts`: it walks the whole checked fact tree per definition.
 pub fn register_planning(reg: &mut Registrar<'_>) {
     // Views lowered facts ambiently: behind the Complete barrier.
     reg.system(plan_queries.run_during(bowl::Phase::Complete));
