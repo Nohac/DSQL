@@ -1,0 +1,22 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+assertion_line: 214
+expression: after
+---
+-- title
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT('title', "title_d4d9f554"."title")
+    ),
+    '[]'
+  ) as "title"
+from
+  (
+    select
+      *
+    from
+      "public"."title" as "title_d4d9f554"
+    limit
+      1
+  ) as "title_d4d9f554"

@@ -27,7 +27,7 @@ use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
-use crate::source::{ResolutionScope, ScopeImports};
+use crate::source::{ResolutionScope, ScopeImports, SourceText};
 
 /// What kind of definition a [`DefDecl`] fact describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -76,10 +76,15 @@ pub struct FragmentKey(pub String);
 /// by [`index_defs`]. Checks that must react to *other* definitions
 /// appearing, disappearing, or changing scope take this singleton as a
 /// tracked input: its revision moves only when the set actually changes,
-/// so idempotent reruns invalidate nothing.
+/// so idempotent reruns invalidate nothing. Fragment entries carry their
+/// defining file's content fingerprint: fragment *bodies* are expanded
+/// ambiently by the check/variable/plan walks, and this fingerprint is
+/// the tracked dependency that re-runs dependents when a fragment's
+/// content — not just its name — changes. Query entries stay name-only,
+/// so ordinary query edits never invalidate unrelated definitions.
 #[derive(Component, Hash)]
 #[component(hash)]
-pub struct DefIndex(Vec<(String, DefKind, String)>);
+pub struct DefIndex(Vec<(String, DefKind, String, Option<u64>)>);
 
 /// Owns `query_def` and `fragment_def`.
 pub struct Definition;
@@ -239,14 +244,31 @@ impl LowerStage for Definition {
 /// answering), the extra generation costs latency only, never answers.
 async fn index_defs(
     query: Query<(Entity, &ParsedFile)>,
-    defs: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
+    defs: View<'_, (Entity, &DefDecl, &ResolutionScope, &BelongsToFile)>,
+    files: View<'_, (Entity, &SourceText)>,
     mut commands: Commands<(dsql_schema::DefIndex,)>,
 ) {
+    use std::hash::{Hash, Hasher};
+
     let _ = query.item();
 
-    let mut entries: Vec<(String, DefKind, String)> = defs
+    let file_hashes: std::collections::HashMap<Entity, u64> = files
         .iter()
-        .map(|(_, decl, scope)| (scope.0.clone(), decl.kind, decl.name.clone()))
+        .map(|(entity, text)| {
+            let mut hasher = std::hash::DefaultHasher::new();
+            text.hash(&mut hasher);
+            (entity, hasher.finish())
+        })
+        .collect();
+    let mut entries: Vec<(String, DefKind, String, Option<u64>)> = defs
+        .iter()
+        .map(|(_, decl, scope, file)| {
+            // Fragment bodies are walk-expanded across files; their file
+            // fingerprint is the dependency that keeps dependents fresh.
+            let body = (decl.kind == DefKind::Fragment)
+                .then(|| file_hashes.get(&file.0).copied().unwrap_or_default());
+            (scope.0.clone(), decl.kind, decl.name.clone(), body)
+        })
         .collect();
     entries.sort();
 

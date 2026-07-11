@@ -15,3 +15,14 @@
 - Artifact paths are flat per kind; docs/spec/resolution-scopes.md calls
   for scope-qualified artifact groups, which will let independent scopes
   keep identical operation names without generate-boundary collisions.
+- **Cross-file fragment invalidation is file-fingerprint-coarse** (the
+  staleness bug found 2026-07-11 is FIXED: `DefIndex` fragment entries
+  now carry their defining file's content fingerprint, pinned by
+  `sql::cross_file_fragment_body_edits_rederive_sql`): any fragment-file
+  edit re-runs every definition's check/variable/plan walks (~50ms per
+  keystroke in fragment files on the reference project, vs ~32ms
+  elsewhere). The finer-grained design — per-(definition,
+  expanded-fragment) tracked pairs following `resolution.rs`, or an
+  engine feature fingerprinting relationship members' content (subtree
+  fingerprints) — recovers per-fragment granularity and belongs with the
+  walk decomposition work.
