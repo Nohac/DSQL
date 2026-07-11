@@ -15,18 +15,13 @@
 //! resolve are classified; broken references stay unstyled and the
 //! diagnostics point at them instead.
 
-use bowl::{
-    Bowl, Commands, Component, DerivedFrom, Entity, Query, Registrar, Singleton, SystemExt, View,
-    With,
-};
+use bowl::{Bowl, Commands, Component, DerivedFrom, Entity, Query, Registrar, Singleton, With};
 
-use crate::catalog::{Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableRef};
-use crate::entities::clause::ClauseFact;
+use crate::catalog::{CatalogSnapshot, TableRef};
 use crate::entities::definition::{DefDecl, FragmentTarget};
-use crate::entities::expression::{Expr, PathAnchor};
 use crate::entities::fragment_spread::ResolvedSpread;
 use crate::facts::{BelongsToFile, Span};
-use crate::resolution::{ClauseContext, ResolvedClause, ResolvedSelection, SelectionTarget};
+use crate::resolution::{PathTerminal, ResolvedClause, ResolvedSelection, SelectionTarget};
 use crate::schema::dsql_schema;
 use crate::source::FilePath;
 
@@ -129,8 +124,7 @@ pub(crate) fn register_semantic_tokens_pipeline(reg: &mut Registrar<'_>) {
     reg.system(definition_tokens);
     reg.system(selection_tokens);
     reg.system(spread_tokens);
-    // Reads lowered clause facts ambiently: behind the Complete barrier.
-    reg.system(clause_tokens.run_during(bowl::Phase::Complete));
+    reg.system(clause_tokens);
 }
 
 /// Definition names highlight as fragments; a fragment's resolvable `on`
@@ -232,58 +226,44 @@ async fn spread_tokens(
     );
 }
 
-/// Order-by columns and predicate paths of one clause, against its
-/// resolved context.
+/// Order-by columns and predicate paths of one clause, read from the
+/// clause's resolution fact — classification never re-resolves.
 async fn clause_tokens(
     demand: Query<Entity, With<TokensDemand>>,
     resolutions: Query<(Entity, &ResolvedClause, &BelongsToFile)>,
-    clauses: View<'_, (Entity, &ClauseFact)>,
-    catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands<(dsql_schema::TokenChunk,)>,
 ) {
     let demand_entity = demand.item();
     let (resolution_entity, resolved, file) = resolutions.item();
-    let (catalog_entity, snapshot) = catalog.item();
-    let catalog = snapshot.catalog();
-
-    let Some(context) = resolved.context else {
-        return;
-    };
-    // Evaluate-lowered fact referenced by entity id off the tracked
-    // resolution row; the ambient lookup is why this system sits at
-    // Complete.
-    let Some((_, clause)) = clauses
-        .iter()
-        .find(|(entity, _)| *entity == resolved.clause)
-    else {
-        return;
-    };
 
     let mut tokens = Vec::new();
-    match clause {
-        ClauseFact::Where { expr } => expr_tokens(&mut tokens, catalog, context, expr),
-        ClauseFact::OrderBy { items } => {
-            for item in items {
-                let reference = FieldRef {
-                    target: TableRef::parse(&item.field),
-                    selector: None,
-                };
-                if matches!(
-                    catalog.check_field_ref(context.table, reference),
-                    FieldCheckResult::Column(_)
-                ) {
-                    tokens.push(SemanticToken {
-                        span: item.field_span,
-                        kind: SemanticTokenKind::Column,
-                    });
-                }
-            }
+    for item in &resolved.order_items {
+        if item.column.is_some() {
+            tokens.push(SemanticToken {
+                span: item.span,
+                kind: SemanticTokenKind::Column,
+            });
         }
-        ClauseFact::Limit { .. } | ClauseFact::Offset { .. } => {}
+    }
+    for path in &resolved.paths {
+        for step in &path.relations {
+            qualified_ref_tokens(
+                &mut tokens,
+                &step.written,
+                step.span,
+                SemanticTokenKind::Relation,
+            );
+        }
+        if let PathTerminal::Column { span, .. } = &path.terminal {
+            tokens.push(SemanticToken {
+                span: *span,
+                kind: SemanticTokenKind::Column,
+            });
+        }
     }
     emit_chunk(
         &mut commands,
-        DerivedFrom::many([resolution_entity, catalog_entity, demand_entity]),
+        DerivedFrom::many([resolution_entity, demand_entity]),
         file.0,
         tokens,
     );
@@ -299,67 +279,6 @@ fn emit_chunk(
         return;
     }
     commands.insert((anchor, BelongsToFile(file), TokenChunk(tokens)));
-}
-
-/// Predicate paths classify segment by segment: relation steps, then the
-/// terminal column — stopping silently where resolution does.
-fn expr_tokens(
-    tokens: &mut Vec<SemanticToken>,
-    catalog: &Catalog,
-    context: ClauseContext,
-    expr: &Expr,
-) {
-    match expr {
-        Expr::Binary { lhs, rhs, .. } => {
-            expr_tokens(tokens, catalog, context, lhs);
-            expr_tokens(tokens, catalog, context, rhs);
-        }
-        Expr::Path {
-            anchor, segments, ..
-        } => {
-            let mut current = match anchor {
-                PathAnchor::Current => context.table,
-                PathAnchor::Root => context.root,
-                // Parent scope is not resolvable at check time.
-                PathAnchor::Parent => return,
-            };
-            let Some((last, relations)) = segments.split_last() else {
-                return;
-            };
-            for segment in relations {
-                let reference = FieldRef {
-                    target: TableRef::parse(&segment.name),
-                    selector: segment.relation_path.as_deref(),
-                };
-                let FieldCheckResult::Relation(relation) =
-                    catalog.check_field_ref(current, reference)
-                else {
-                    return;
-                };
-                qualified_ref_tokens(
-                    tokens,
-                    &segment.name,
-                    segment.span,
-                    SemanticTokenKind::Relation,
-                );
-                current = relation.table.id;
-            }
-            let reference = FieldRef {
-                target: TableRef::parse(&last.name),
-                selector: last.relation_path.as_deref(),
-            };
-            if matches!(
-                catalog.check_field_ref(current, reference),
-                FieldCheckResult::Column(_)
-            ) {
-                tokens.push(SemanticToken {
-                    span: last.span,
-                    kind: SemanticTokenKind::Column,
-                });
-            }
-        }
-        Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
-    }
 }
 
 /// Splits a qualified reference's span into its parts: `schema::name`

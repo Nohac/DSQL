@@ -5,8 +5,11 @@
 //! at which binding time, with which types" — so each occurrence also
 //! becomes its own fact, anchored into the tree by [`ParentKey`].
 
+use crate::resolution::{ResolvedClause, ResolvedPath};
 use crate::schema::{AstFacts, dsql_schema};
-use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, Where, With};
+use bowl::{
+    Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, View, Where, With,
+};
 
 use crate::catalog::{
     CatalogSnapshot, DataType, FieldCheckResult, FieldRef, TableRef, TableResolution,
@@ -151,6 +154,10 @@ pub struct VariableBinding {
 /// not expanded — a fragment's parameters belong to the fragment), while
 /// fragment bodies do expand nested spreads with an enveloped path scope.
 /// Gated on [`VariablesDemand`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "system parameters are the tracked join, not an API surface"
+)]
 async fn infer_variables(
     _: Query<Entity, With<VariablesDemand>>,
     defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
@@ -158,6 +165,7 @@ async fn infer_variables(
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
+    resolutions: View<'_, (Entity, &ResolvedClause, &BelongsToFile)>,
     mut commands: Commands<(dsql_schema::VariableBinding,)>,
 ) {
     let (def_entity, decl, file, scope) = defs.item();
@@ -165,8 +173,29 @@ async fn infer_variables(
     let (_, imports) = imports.item();
 
     let tree = SelectionTree::collect(&views);
+    // Spans are file-unique, so the definition's resolved paths key by
+    // span; inference reads terminal columns instead of re-resolving.
+    let mut resolved_paths: std::collections::HashMap<Span, &ResolvedPath> =
+        std::collections::HashMap::new();
+    let mut resolved_order: std::collections::HashMap<Span, crate::catalog::ColumnId> =
+        std::collections::HashMap::new();
+    for (_, resolved, resolved_file) in resolutions.iter() {
+        if resolved_file.0 != file.0 {
+            continue;
+        }
+        for path in &resolved.paths {
+            resolved_paths.insert(path.span, path);
+        }
+        for item in &resolved.order_items {
+            if let Some(column) = item.column {
+                resolved_order.insert(item.span, column);
+            }
+        }
+    }
     let mut inference = Inference {
         tree: &tree,
+        resolved_paths: &resolved_paths,
+        resolved_order: &resolved_order,
         catalog: snapshot.catalog(),
         scope: &scope.0,
         imports,
@@ -236,6 +265,8 @@ async fn infer_variables(
 }
 
 struct Inference<'a> {
+    resolved_paths: &'a std::collections::HashMap<Span, &'a ResolvedPath>,
+    resolved_order: &'a std::collections::HashMap<Span, crate::catalog::ColumnId>,
     tree: &'a SelectionTree<'a>,
     catalog: &'a crate::catalog::Catalog,
     scope: &'a str,
@@ -264,7 +295,7 @@ impl Inference<'_> {
         for clause in clauses {
             match clause {
                 ClauseFact::Where { expr } => {
-                    self.collect_where(root_table, table, &path.parts, scope, &expr);
+                    self.collect_where(&path.parts, scope, &expr);
                 }
                 ClauseFact::Limit { expr } => self.push_clause_variable(
                     &path.parts,
@@ -285,12 +316,10 @@ impl Inference<'_> {
                         let Some(OrderDirection::Variable(variable)) = &item.direction else {
                             continue;
                         };
-                        let reference = FieldRef {
-                            target: TableRef::parse(&item.field),
-                            selector: None,
-                        };
-                        let FieldCheckResult::Column(column) =
-                            self.catalog.check_field_ref(table, reference)
+                        let Some(column) = self
+                            .resolved_order
+                            .get(&item.field_span)
+                            .and_then(|column| self.catalog.column_by_id(*column))
                         else {
                             continue;
                         };
@@ -391,14 +420,7 @@ impl Inference<'_> {
         }
     }
 
-    fn collect_where(
-        &mut self,
-        root_table: crate::catalog::TableId,
-        table: crate::catalog::TableId,
-        selection_path: &[String],
-        scope: &VariablePathScope,
-        expr: &Expr,
-    ) {
+    fn collect_where(&mut self, selection_path: &[String], scope: &VariablePathScope, expr: &Expr) {
         let Expr::Binary { op, lhs, rhs, .. } = expr else {
             return;
         };
@@ -406,9 +428,7 @@ impl Inference<'_> {
         match (lhs.as_ref(), rhs.as_ref()) {
             (path @ Expr::Path { .. }, Expr::Variable { variable, .. })
             | (Expr::Variable { variable, .. }, path @ Expr::Path { .. }) => {
-                if let Some((data_type, field_path)) =
-                    self.resolve_predicate_path(root_table, table, path)
-                {
+                if let Some((data_type, field_path)) = self.resolve_predicate_path(path) {
                     let anonymous_key = (variable.name.is_none()
                         && matches!(op, BinaryOp::Variable(_)))
                     .then_some(InputPathSegment::Value.as_ref());
@@ -436,64 +456,34 @@ impl Inference<'_> {
                 _ => None,
             };
             if let Some(path) = path
-                && let Some((data_type, field_path)) =
-                    self.resolve_predicate_path(root_table, table, path)
+                && let Some((data_type, field_path)) = self.resolve_predicate_path(path)
             {
                 self.push_operator_binding(selection_path, scope, data_type, &field_path, operator);
             }
         }
 
-        self.collect_where(root_table, table, selection_path, scope, lhs);
-        self.collect_where(root_table, table, selection_path, scope, rhs);
+        self.collect_where(selection_path, scope, lhs);
+        self.collect_where(selection_path, scope, rhs);
     }
 
-    fn resolve_predicate_path(
-        &self,
-        root_table: crate::catalog::TableId,
-        table: crate::catalog::TableId,
-        path: &Expr,
-    ) -> Option<(DataType, Vec<String>)> {
-        use crate::entities::expression::PathAnchor;
-
-        let Expr::Path {
-            anchor, segments, ..
-        } = path
+    /// Terminal column type and display path of a predicate path, read
+    /// from the clause resolution facts.
+    fn resolve_predicate_path(&self, path: &Expr) -> Option<(DataType, Vec<String>)> {
+        let resolved = self.resolved_paths.get(&path.span())?;
+        let crate::resolution::PathTerminal::Column {
+            display, column, ..
+        } = &resolved.terminal
         else {
             return None;
         };
-        let mut current_table = match anchor {
-            PathAnchor::Current => table,
-            PathAnchor::Root => root_table,
-            PathAnchor::Parent => return None,
-        };
-        let (last, relations) = segments.split_last()?;
-        let mut field_path = Vec::new();
-        for segment in relations {
-            let reference = FieldRef {
-                target: TableRef::parse(&segment.name),
-                selector: segment.relation_path.as_deref(),
-            };
-            let display = reference.display_text();
-            let FieldCheckResult::Relation(relation) =
-                self.catalog.check_field_ref(current_table, reference)
-            else {
-                return None;
-            };
-            field_path.push(display);
-            current_table = relation.table.id;
-        }
-        let reference = FieldRef {
-            target: TableRef::parse(&last.name),
-            selector: last.relation_path.as_deref(),
-        };
-        let display = reference.display_text();
-        let FieldCheckResult::Column(column) =
-            self.catalog.check_field_ref(current_table, reference)
-        else {
-            return None;
-        };
-        field_path.push(display);
-        Some((column.data_type, field_path))
+        let data_type = self.catalog.column_by_id(*column)?.data_type;
+        let field_path: Vec<String> = resolved
+            .relations
+            .iter()
+            .map(|step| step.display.clone())
+            .chain(std::iter::once(display.clone()))
+            .collect();
+        Some((data_type, field_path))
     }
 
     fn push_clause_variable(

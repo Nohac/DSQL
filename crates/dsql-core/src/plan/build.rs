@@ -6,8 +6,9 @@
 //! parameters with the same structured paths the variables stage infers.
 //! Runs per definition, gated on [`PlanDemand`].
 
+use crate::resolution::{PathTerminal, ResolvedClause, ResolvedPath};
 use crate::schema::dsql_schema;
-use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, With};
+use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, View, With};
 
 use super::types::{
     FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation,
@@ -16,13 +17,12 @@ use super::types::{
     SqlVariantCase,
 };
 use crate::catalog::{
-    Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
+    Catalog, CatalogSnapshot, ColumnId, FieldCheckResult, FieldRef, TableId, TableRef,
+    TableResolution,
 };
 use crate::entities::clause::{ClauseFact, OrderDirection};
 use crate::entities::definition::{DefDecl, DefKind};
-use crate::entities::expression::{
-    BinaryOp, Expr, LiteralValue, PathAnchor, PathSegment, VariableRef,
-};
+use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, VariableRef};
 use crate::entities::field_selection::{FieldSel, SelectionTree, TreeViews};
 use crate::entities::variable::VariableRole;
 use crate::entities::variable_path::{
@@ -30,7 +30,7 @@ use crate::entities::variable_path::{
 };
 use crate::facts::{
     BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, PlanDemand, PlanKey,
-    Severity, emit_diagnostic,
+    Severity, Span, emit_diagnostic,
 };
 use crate::source::{ResolutionScope, ScopeImports};
 
@@ -45,6 +45,10 @@ pub fn register_planning(reg: &mut Registrar<'_>) {
 /// skipped, unresolved
 /// roots produce plan diagnostics, and fragment spreads below the root
 /// splice the fragment's items in with an enveloped variable scope.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "system parameters are the tracked join, not an API surface"
+)]
 async fn plan_queries(
     _: Query<Entity, With<PlanDemand>>,
     defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
@@ -52,6 +56,7 @@ async fn plan_queries(
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
+    resolutions: View<'_, (Entity, &ResolvedClause, &BelongsToFile)>,
     mut commands: Commands<(
         dsql_schema::QueryPlan,
         dsql_schema::FragmentPlan,
@@ -63,8 +68,30 @@ async fn plan_queries(
     let (_, imports) = imports.item();
 
     let tree = SelectionTree::collect(&views);
+    // Spans are file-unique: the definition's resolved paths and order
+    // items key by span, and planning consumes resolution outcomes
+    // instead of re-resolving raw strings.
+    let mut resolved_paths: std::collections::HashMap<Span, &ResolvedPath> =
+        std::collections::HashMap::new();
+    let mut resolved_order: std::collections::HashMap<Span, ColumnId> =
+        std::collections::HashMap::new();
+    for (_, resolved, resolved_file) in resolutions.iter() {
+        if resolved_file.0 != file.0 {
+            continue;
+        }
+        for path in &resolved.paths {
+            resolved_paths.insert(path.span, path);
+        }
+        for item in &resolved.order_items {
+            if let Some(column) = item.column {
+                resolved_order.insert(item.span, column);
+            }
+        }
+    }
     let mut planner = Planner {
         tree: &tree,
+        resolved_paths: &resolved_paths,
+        resolved_order: &resolved_order,
         catalog: snapshot.catalog(),
         scope: &scope.0,
         imports,
@@ -294,6 +321,8 @@ struct PlanWalk<'a> {
 
 struct Planner<'a> {
     tree: &'a SelectionTree<'a>,
+    resolved_paths: &'a std::collections::HashMap<Span, &'a ResolvedPath>,
+    resolved_order: &'a std::collections::HashMap<Span, ColumnId>,
     catalog: &'a Catalog,
     scope: &'a str,
     imports: &'a ScopeImports,
@@ -477,15 +506,8 @@ impl Planner<'_> {
                 }
                 ClauseFact::OrderBy { items } => {
                     clauses.order_by.extend(items.iter().filter_map(|item| {
-                        let reference = FieldRef {
-                            target: TableRef::parse(&item.field),
-                            selector: None,
-                        };
-                        let FieldCheckResult::Column(column) =
-                            self.catalog.check_field_ref(table, reference)
-                        else {
-                            return None;
-                        };
+                        let column_id = *self.resolved_order.get(&item.field_span)?;
+                        let column = self.catalog.column_by_id(column_id)?;
                         Some(OrderByPlan {
                             column: column.id,
                             direction: match &item.direction {
@@ -569,9 +591,7 @@ impl Planner<'_> {
                     variable.name.as_deref(),
                 ),
             })),
-            Expr::Path { .. } => {
-                self.plan_filter_path(root_table, table, outer_current_table, expr)
-            }
+            Expr::Path { .. } => self.plan_filter_path(outer_current_table, expr),
             Expr::Literal { value, .. } => Some(FilterExpr::Literal(match value {
                 LiteralValue::String(value) => FilterLiteral::String(value.clone()),
                 LiteralValue::Number(value) => FilterLiteral::Number(value.clone()),
@@ -581,7 +601,7 @@ impl Planner<'_> {
             Expr::Binary { op, lhs, rhs, .. } => {
                 if let Expr::Path { .. } = lhs.as_ref()
                     && is_comparison_operator(op)
-                    && let Some(field_path) = self.predicate_path(root_table, table, lhs)
+                    && let Some(field_path) = self.predicate_path(lhs)
                 {
                     let right = match rhs.as_ref() {
                         Expr::Variable { variable, .. } => FilterExpr::Parameter(SqlParameter {
@@ -603,7 +623,6 @@ impl Planner<'_> {
                         )?,
                     };
                     if let Some(filter) = self.relation_predicate_filter(
-                        table,
                         selection_path,
                         lhs,
                         op,
@@ -616,10 +635,9 @@ impl Planner<'_> {
                 }
                 if let (path @ Expr::Path { .. }, Expr::Variable { variable, .. }) =
                     (lhs.as_ref(), rhs.as_ref())
-                    && let Some(field_path) = self.predicate_path(root_table, table, path)
+                    && let Some(field_path) = self.predicate_path(path)
                 {
-                    let left =
-                        self.plan_filter_path(root_table, table, outer_current_table, path)?;
+                    let left = self.plan_filter_path(outer_current_table, path)?;
                     let right = FilterExpr::Parameter(SqlParameter {
                         path: where_value_path(
                             selection_path,
@@ -722,7 +740,7 @@ impl Planner<'_> {
     ) -> Option<(FilterExpr, Option<String>)> {
         match expr {
             Expr::Path { .. } => {
-                let field_path = self.predicate_path(root_table, table, expr);
+                let field_path = self.predicate_path(expr);
                 self.plan_filter_expr(
                     root_table,
                     table,
@@ -767,8 +785,6 @@ impl Planner<'_> {
 
     fn plan_filter_path(
         &mut self,
-        root_table: TableId,
-        table: TableId,
         outer_current_table: Option<TableId>,
         path: &Expr,
     ) -> Option<FilterExpr> {
@@ -787,32 +803,15 @@ impl Planner<'_> {
             PathAnchor::Root => FilterColumnScope::Root,
             PathAnchor::Parent => return None,
         };
-        let source_table = match anchor {
-            PathAnchor::Current => outer_current_table.unwrap_or(table),
-            PathAnchor::Root => root_table,
-            PathAnchor::Parent => return None,
-        };
-        let FieldCheckResult::Column(column) = self
-            .catalog
-            .check_field_ref(source_table, segment_field_ref(&segments[0]))
-        else {
-            return None;
-        };
-        Some(FilterExpr::Column {
-            scope,
-            column: column.id,
-        })
+        let resolved = self.resolved_paths.get(&path.span())?;
+        let column = resolved.terminal.column()?;
+        Some(FilterExpr::Column { scope, column })
     }
 
     /// Multi-segment `Current`-scoped predicate paths become nested
     /// `EXISTS` subqueries stepping through each relation.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "recursion threads the whole walk state"
-    )]
     fn relation_predicate_filter(
         &mut self,
-        table: TableId,
         selection_path: &[String],
         path: &Expr,
         op: &BinaryOp,
@@ -831,10 +830,11 @@ impl Planner<'_> {
         if segments.len() < 2 {
             return None;
         }
-        self.relation_predicate_segments(
-            table,
+        let resolved = *self.resolved_paths.get(&path.span())?;
+        self.relation_predicate_steps(
+            resolved,
+            0,
             selection_path,
-            segments,
             op,
             operator_path,
             right,
@@ -842,52 +842,43 @@ impl Planner<'_> {
         )
     }
 
+    /// Builds the nested `EXISTS` chain for one resolved relation step
+    /// and recurses down the remaining steps; the innermost level compares
+    /// the terminal column.
     #[expect(
         clippy::too_many_arguments,
         reason = "recursion threads the whole walk state"
     )]
-    fn relation_predicate_segments(
+    fn relation_predicate_steps(
         &mut self,
-        table: TableId,
+        resolved: &ResolvedPath,
+        step: usize,
         selection_path: &[String],
-        segments: &[PathSegment],
         op: &BinaryOp,
         operator_path: Option<String>,
         right: FilterExpr,
         variable_scope: &VariablePathScope,
     ) -> Option<FilterExpr> {
-        if segments.len() < 2 {
-            return None;
-        }
-        let FieldCheckResult::Relation(relation) = self
-            .catalog
-            .check_field_ref(table, segment_field_ref(&segments[0]))
-        else {
-            return None;
-        };
-        let relation_table = relation.table.id;
-        let relation_fk = relation.foreign_key.id;
-        let filter = if segments.len() == 2 {
-            let FieldCheckResult::Column(column) = self
-                .catalog
-                .check_field_ref(relation_table, segment_field_ref(&segments[1]))
+        let relation = resolved.relations.get(step)?;
+        let filter = if step + 1 == resolved.relations.len() {
+            let PathTerminal::Column {
+                display, column, ..
+            } = &resolved.terminal
             else {
                 return None;
             };
             let left = FilterExpr::Column {
                 scope: FilterColumnScope::Current,
-                column: column.id,
+                column: *column,
             };
-            let inferred = operator_path.map_or_else(
-                || vec![segment_display(&segments[1])],
-                |path| path_parts(&path),
-            );
+            let inferred =
+                operator_path.map_or_else(|| vec![display.clone()], |path| path_parts(&path));
             self.binary_or_variant(left, op, right, selection_path, variable_scope, &inferred)?
         } else {
-            self.relation_predicate_segments(
-                relation_table,
+            self.relation_predicate_steps(
+                resolved,
+                step + 1,
                 selection_path,
-                &segments[1..],
                 op,
                 operator_path,
                 right,
@@ -895,49 +886,27 @@ impl Planner<'_> {
             )?
         };
         Some(FilterExpr::Exists {
-            foreign_key: relation_fk,
-            table: relation_table,
+            foreign_key: relation.foreign_key,
+            table: relation.table,
             filter: Box::new(filter),
         })
     }
 
-    fn predicate_path(
-        &self,
-        root_table: TableId,
-        table: TableId,
-        path: &Expr,
-    ) -> Option<Vec<String>> {
-        let Expr::Path {
-            anchor, segments, ..
-        } = path
-        else {
+    /// The display path of a fully resolved predicate path, read from the
+    /// clause resolution facts.
+    fn predicate_path(&self, path: &Expr) -> Option<Vec<String>> {
+        let resolved = self.resolved_paths.get(&path.span())?;
+        let PathTerminal::Column { display, .. } = &resolved.terminal else {
             return None;
         };
-        let mut current_table = match anchor {
-            PathAnchor::Current => table,
-            PathAnchor::Root => root_table,
-            PathAnchor::Parent => return None,
-        };
-        let (last, relations) = segments.split_last()?;
-        let mut field_path = Vec::new();
-        for segment in relations {
-            let FieldCheckResult::Relation(relation) = self
-                .catalog
-                .check_field_ref(current_table, segment_field_ref(segment))
-            else {
-                return None;
-            };
-            field_path.push(segment_display(segment));
-            current_table = relation.table.id;
-        }
-        let FieldCheckResult::Column(_) = self
-            .catalog
-            .check_field_ref(current_table, segment_field_ref(last))
-        else {
-            return None;
-        };
-        field_path.push(segment_display(last));
-        Some(field_path)
+        Some(
+            resolved
+                .relations
+                .iter()
+                .map(|step| step.display.clone())
+                .chain(std::iter::once(display.clone()))
+                .collect(),
+        )
     }
 }
 
@@ -1012,17 +981,6 @@ fn plan_u64_value(
         })),
         _ => None,
     }
-}
-
-fn segment_field_ref(segment: &PathSegment) -> FieldRef<'_> {
-    FieldRef {
-        target: TableRef::parse(&segment.name),
-        selector: segment.relation_path.as_deref(),
-    }
-}
-
-fn segment_display(segment: &PathSegment) -> String {
-    segment_field_ref(segment).display_text()
 }
 
 fn path_parts(path: &str) -> Vec<String> {

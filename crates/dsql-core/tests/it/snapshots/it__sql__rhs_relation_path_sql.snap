@@ -1,0 +1,47 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+assertion_line: 175
+expression: "fixture_sql(\"valid/imdb-rhs-relation-path.dsql\").await"
+---
+-- movie_info
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'id',
+        "movie_info_d37aaa02"."id",
+        'movie_id',
+        "movie_info_d37aaa02"."movie_id"
+      )
+    ),
+    '[]'
+  ) as "movie_info"
+from
+  (
+    select
+      *
+    from
+      "public"."movie_info" as "movie_info_d37aaa02"
+    where
+      exists (
+        select
+          1
+        from
+          "public"."title" as "title_1ff2a09c"
+        where
+          "title_1ff2a09c"."id" = "movie_info_d37aaa02"."movie_id"
+          and exists (
+            select
+              1
+            from
+              "public"."aka_title" as "aka_title_3d091d70"
+            where
+              "aka_title_3d091d70"."movie_id" = "title_1ff2a09c"."id"
+              and "aka_title_3d091d70"."movie_id" = "movie_info_d37aaa02"."movie_id"
+          )
+      )
+    order by
+      "movie_info_d37aaa02"."id" asc
+    limit
+      10
+  ) as "movie_info_d37aaa02"

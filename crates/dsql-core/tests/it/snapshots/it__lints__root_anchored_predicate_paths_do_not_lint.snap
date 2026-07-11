@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/lints.rs
+assertion_line: 100
+expression: render_diagnostic_facts(&bowl).await
+---
+

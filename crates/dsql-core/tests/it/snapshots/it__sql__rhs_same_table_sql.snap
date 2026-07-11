@@ -1,0 +1,31 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+assertion_line: 168
+expression: "fixture_sql(\"valid/imdb-rhs-same-table.dsql\").await"
+---
+-- movie_info
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'id',
+        "movie_info_d37aaa02"."id",
+        'movie_id',
+        "movie_info_d37aaa02"."movie_id"
+      )
+    ),
+    '[]'
+  ) as "movie_info"
+from
+  (
+    select
+      *
+    from
+      "public"."movie_info" as "movie_info_d37aaa02"
+    where
+      "movie_info_d37aaa02"."movie_id" = "movie_info_d37aaa02"."movie_id"
+    order by
+      "movie_info_d37aaa02"."id" asc
+    limit
+      3
+  ) as "movie_info_d37aaa02"

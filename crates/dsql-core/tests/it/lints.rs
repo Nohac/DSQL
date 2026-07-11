@@ -81,3 +81,22 @@ fn lints_wait_for_diagnostics_demand() {
         assert_eq!(rows.len(), 0, "no demand, no lints");
     });
 }
+
+/// Root-anchored predicate paths keep the pre-resolution behavior: only
+/// current-anchored relation steps lint as nested scans. This pins the
+/// deliberate choice recorded in `lint_predicates` — root paths need
+/// their own rule before they warn.
+#[test]
+fn root_anchored_predicate_paths_do_not_lint() {
+    block_on(async {
+        let bowl = linted_bowl(Some(LintConfig::default())).await;
+        insert_source(
+            &bowl,
+            "root-path.dsql",
+            "query RootPath {\n  title(where ~aka_title->movie_id.title == \"x\" limit 1) {\n    id\n  }\n}\n",
+        )
+        .await;
+
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
+}
