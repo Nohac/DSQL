@@ -131,3 +131,60 @@ fn catalog_replacement_retires_and_recomputes_diagnostics() {
         insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
     });
 }
+
+/// A field rename is a member-side *value* change: the entity ids — and
+/// with them the engine-maintained `Children`/`FieldResolutions` inverses
+/// the resolver's `In` joins pair through — are unchanged, so the provider
+/// row never moves and only the pair's member does. This is the exact
+/// case delta-planned bound joins can go stale on; diagnostics must
+/// follow every toggle.
+#[test]
+fn member_value_edits_rederive_resolution() {
+    use bowl::Mut;
+    use dsql_core::source::SourceText;
+
+    block_on(async {
+        let bowl = checked_bowl(imdb_catalog()).await;
+        let file = insert_source(
+            &bowl,
+            "edit.dsql",
+            "query Edit {\n  title {\n    id\n  }\n}\n",
+        )
+        .await;
+        assert_eq!(
+            render_diagnostic_facts(&bowl).await,
+            "",
+            "the fixture starts clean"
+        );
+
+        for round in 0..4 {
+            let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+            for (entity, source) in sources.collect() {
+                if entity == file {
+                    source
+                        .with_latest(move |text| {
+                            let edited = if round % 2 == 0 {
+                                text.to_text().replace("    id\n", "    idz\n")
+                            } else {
+                                text.to_text().replace("    idz\n", "    id\n")
+                            };
+                            text.set_text(&edited);
+                        })
+                        .await;
+                }
+            }
+            let diagnostics = render_diagnostic_facts(&bowl).await;
+            if round % 2 == 0 {
+                assert!(
+                    diagnostics.contains("idz"),
+                    "round {round}: the renamed column must re-check, got: {diagnostics:?}"
+                );
+            } else {
+                assert_eq!(
+                    diagnostics, "",
+                    "round {round}: renaming back must retire the diagnostic"
+                );
+            }
+        }
+    });
+}
