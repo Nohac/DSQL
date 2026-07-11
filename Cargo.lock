@@ -468,6 +468,7 @@ dependencies = [
  "facet",
  "facet-yaml",
  "futures",
+ "glob",
  "insta",
  "lelwel",
  "logos 0.16.1",

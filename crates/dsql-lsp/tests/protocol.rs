@@ -261,3 +261,64 @@ async fn hosts_hover_and_foreign_files_are_ignored() {
         "host hover answers through the region, got {response}"
     );
 }
+
+/// A newly created file in a configured scope resolves that scope's
+/// imports (the default-scope bug would leave `TitleBits` unknown), and
+/// closing an edited buffer restores the disk revision.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_files_join_their_configured_scope_and_close_restores_disk() {
+    let mut session = Session::start("scopes").await;
+
+    // A brand-new file under queries/frontend: the frontend scope imports
+    // shared, so the shared fragment must resolve.
+    let uri = session.uri("queries/frontend/fresh.dsql");
+    let text = "query Fresh {\n  title(limit 1) {\n    ...TitleBits\n  }\n}\n";
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": uri, "languageId": "dsql", "version": 1, "text": text}}),
+        )
+        .await;
+    let fresh = session.diagnostics_for(&uri).await;
+    assert_eq!(
+        fresh.as_array().map(Vec::len),
+        Some(0),
+        "configured-scope imports must resolve, got {fresh}"
+    );
+
+    // Break an existing on-disk file in the editor, then close it: the
+    // disk revision is authoritative again and the diagnostic retires.
+    let existing = session.uri("queries/frontend/titles.dsql");
+    let disk_text = session.fixture_text("queries/frontend/titles.dsql");
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": existing, "languageId": "dsql", "version": 1, "text": disk_text}}),
+        )
+        .await;
+    session.diagnostics_for(&existing).await;
+    session
+        .notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": existing, "version": 2},
+                "contentChanges": [{"text": disk_text.replace("...TitleBits", "not_a_column")}],
+            }),
+        )
+        .await;
+    let dirty = session.diagnostics_for(&existing).await;
+    assert!(dirty.to_string().contains("not_a_column"), "got {dirty}");
+
+    session
+        .notify(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": existing}}),
+        )
+        .await;
+    let restored = session.diagnostics_for(&existing).await;
+    assert_eq!(
+        restored.as_array().map(Vec::len),
+        Some(0),
+        "closing restores the clean disk revision, got {restored}"
+    );
+}

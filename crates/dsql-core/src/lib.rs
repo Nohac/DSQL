@@ -85,6 +85,11 @@ pub async fn install_default_singletons(bowl: &Bowl) {
     ))
     .await;
     bowl.insert((
+        Singleton::<source::ScopeDocuments>::new(),
+        source::ScopeDocuments::default(),
+    ))
+    .await;
+    bowl.insert((
         Singleton::<embedding::EmbeddedPattern>::new(),
         embedding::EmbeddedPattern::default(),
     ))

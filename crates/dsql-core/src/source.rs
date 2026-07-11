@@ -139,6 +139,80 @@ impl ResolutionScope {
     }
 }
 
+/// The configured document paths per resolution scope (absolute, already
+/// joined against the project base): the bowl-carried source of scope
+/// *placement*, so an editor opening a brand-new file can ask which scope
+/// owns its path without any adapter-side project state. Empty without
+/// project configuration — everything lands in the default scope.
+#[derive(Component, Debug, Default, Hash)]
+#[component(hash)]
+pub struct ScopeDocuments(pub Vec<(String, Vec<String>)>);
+
+/// Which resolution scope owns a path under the configured patterns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeOwnership {
+    /// No scopes are configured: the project's implicit default scope.
+    ImplicitDefault,
+    /// Exactly one configured scope covers the path.
+    Unique(String),
+    /// A configured project, but no pattern covers the path: the file is
+    /// outside the project's document set (standalone editing).
+    Unmatched,
+    /// More than one scope covers the path — an ownership error at load;
+    /// callers pick a deterministic policy and say so.
+    Ambiguous(Vec<String>),
+}
+
+impl ScopeDocuments {
+    /// Resolves which configured scope owns `path`, preserving the
+    /// unmatched/ambiguous outcomes so callers can react instead of
+    /// silently defaulting.
+    pub fn ownership_of(&self, path: &str) -> ScopeOwnership {
+        if self.0.is_empty() {
+            return ScopeOwnership::ImplicitDefault;
+        }
+        let candidate = Path::new(path);
+        let mut matches: Vec<String> = Vec::new();
+        for (scope, configured) in &self.0 {
+            if configured
+                .iter()
+                .any(|entry| configured_path_matches(Path::new(entry), candidate))
+            {
+                matches.push(scope.clone());
+            }
+        }
+        matches.sort_unstable();
+        matches.dedup();
+        match matches.len() {
+            0 => ScopeOwnership::Unmatched,
+            1 => ScopeOwnership::Unique(matches.remove(0)),
+            _ => ScopeOwnership::Ambiguous(matches),
+        }
+    }
+}
+
+/// Whether one configured document path — glob, directory, or plain file —
+/// covers `path`, without touching the filesystem.
+fn configured_path_matches(configured: &Path, path: &Path) -> bool {
+    let raw = configured.to_string_lossy();
+    if raw.contains('*') || raw.contains('?') || raw.contains('[') {
+        return glob::Pattern::new(&raw)
+            .ok()
+            .is_some_and(|pattern| pattern.matches_path(path));
+    }
+    if path == configured {
+        return is_document_path(path);
+    }
+    path.starts_with(configured) && is_document_path(path)
+}
+
+/// Whether the path carries a dsql document or host extension.
+fn is_document_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "dsql" | "ts" | "tsx"))
+}
+
 /// The scope import graph as a fingerprinted singleton fact: scope name →
 /// directly imported scope names. Imports are not transitive: an importing
 /// scope sees the imported scopes' own definitions only. A default (empty)

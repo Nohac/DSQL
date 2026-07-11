@@ -58,20 +58,16 @@ struct Backend {
     /// empty here and populated (language, catalog, project documents) in
     /// `initialize`.
     bowl: Bowl,
-    /// Serializes buffer mutations and diagnostic publishing. tower-lsp
-    /// runs handlers concurrently; a tokio mutex is FIFO-fair, so locking
-    /// at handler entry preserves the client's notification order — the
-    /// property incremental `didChange` ranges depend on.
-    session: tokio::sync::Mutex<SessionState>,
-}
-
-/// Editor-session bookkeeping guarded by the session lock.
-#[derive(Default)]
-struct SessionState {
-    /// URIs of currently open documents, for cross-file diagnostic
-    /// republishing: an edit in one file can change diagnostics anchored
-    /// in any other (fragments resolve across files).
-    open: std::collections::HashMap<String, Uri>,
+    /// Serializes buffer *mutations*: tower-lsp runs handlers
+    /// concurrently, and a FIFO-fair tokio mutex preserves the client's
+    /// notification order — the property incremental `didChange` ranges
+    /// depend on. Publishing happens after this lock drops, so a slow
+    /// client never blocks edits. All session *state* lives in the bowl.
+    session: tokio::sync::Mutex<()>,
+    /// Orders diagnostic publication: scoop-and-send holds this FIFO
+    /// lock, so an older handler's publication can never overtake a newer
+    /// one — while edits (the `session` lock) never wait on client I/O.
+    publisher: tokio::sync::Mutex<()>,
 }
 
 impl Backend {
@@ -79,16 +75,39 @@ impl Backend {
         Self {
             client,
             bowl: Bowl::builder().plugin(dsql_core::DsqlPlugin).build(),
-            session: tokio::sync::Mutex::new(SessionState::default()),
+            session: tokio::sync::Mutex::new(()),
+            publisher: tokio::sync::Mutex::new(()),
         }
     }
 
-    /// Publishes diagnostics for every open document. Cheap when nothing
+    /// Publishes diagnostics for every open document. Open residency is
+    /// bowl data — the `OpenBuffer` rows the editor stamps — so no
+    /// adapter-side mirror of open files exists. Cheap when nothing
     /// changed (the bowl is already settled); needed because an edit in
-    /// one file can move diagnostics in another.
-    async fn publish_open_documents(&self, state: &SessionState) {
-        for (path, uri) in &state.open {
-            self.publish_diagnostics(uri.clone(), path).await;
+    /// one file can move diagnostics in another (fragments resolve across
+    /// files).
+    async fn publish_open_documents(&self) {
+        let _publisher = self.publisher.lock().await;
+        self.publish_open_documents_locked().await;
+    }
+
+    /// [`Self::publish_open_documents`] body, for callers already holding
+    /// the publisher lock.
+    async fn publish_open_documents_locked(&self) {
+        let open = self
+            .bowl()
+            .scoop::<Query<(Entity, &FilePath), bowl::With<OpenBuffer>>>()
+            .await;
+        let paths: Vec<String> = open
+            .collect()
+            .into_iter()
+            .map(|(_, path)| path.0.clone())
+            .collect();
+        for path in paths {
+            let Some(uri) = Uri::from_file_path(&path) else {
+                continue;
+            };
+            self.publish_diagnostics(uri, &path).await;
         }
     }
 
@@ -283,6 +302,7 @@ impl LanguageServer for Backend {
         let Some(path) = uri_path(&params.text_document.uri) else {
             return;
         };
+        let mut ambiguity_warning: Option<String> = None;
         // Editors send didOpen for every restored tab; only dsql documents
         // and embedding hosts belong in the bowl. Anything else would be
         // parsed as dsql — error-recovering through a lockfile burns
@@ -295,7 +315,7 @@ impl LanguageServer for Backend {
             return;
         }
         let text = params.text_document.text;
-        let mut session = self.session.lock().await;
+        let session = self.session.lock().await;
 
         if let Some((entity, _)) = self.rope_of(&path).await {
             let sources = self
@@ -309,18 +329,50 @@ impl LanguageServer for Backend {
             }
             self.bowl().entity(entity).insert((OpenBuffer,)).await;
         } else {
-            let entity = insert_source_scoped(
-                self.bowl(),
-                path.clone(),
-                &text,
-                ResolutionScope::default_scope(),
-            )
-            .await;
+            // A file the project loader has not seen: the bowl's scope
+            // configuration says which scope owns its path, so a freshly
+            // created document resolves its scope's imports — no
+            // adapter-side project state.
+            let scopes = self
+                .bowl()
+                .scoop::<Query<(Entity, &dsql_core::source::ScopeDocuments)>>()
+                .await;
+            let ownership = scopes
+                .collect()
+                .into_iter()
+                .next()
+                .map(|(_, documents)| documents.ownership_of(&path))
+                .unwrap_or(dsql_core::source::ScopeOwnership::ImplicitDefault);
+            use dsql_core::source::ScopeOwnership;
+            let scope = match ownership {
+                ScopeOwnership::Unique(scope) => ResolutionScope(scope),
+                ScopeOwnership::ImplicitDefault | ScopeOwnership::Unmatched => {
+                    // Outside every configured pattern: standalone editing
+                    // in the (import-less) default scope.
+                    ResolutionScope::default_scope()
+                }
+                ScopeOwnership::Ambiguous(scopes) => {
+                    // The warning sends after the mutation lock drops; a
+                    // slow client must not block subsequent edits.
+                    ambiguity_warning = Some(format!(
+                        "{path} is matched by several resolution scopes ({}); using `{}`",
+                        scopes.join(", "),
+                        scopes[0]
+                    ));
+                    ResolutionScope(scopes[0].clone())
+                }
+            };
+            let entity = insert_source_scoped(self.bowl(), path.clone(), &text, scope).await;
             self.bowl().entity(entity).insert((OpenBuffer,)).await;
         }
 
-        session.open.insert(path, params.text_document.uri);
-        self.publish_open_documents(&session).await;
+        drop(session);
+        self.publish_open_documents().await;
+        if let Some(warning) = ambiguity_warning {
+            self.client
+                .show_message(MessageType::WARNING, warning)
+                .await;
+        }
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -352,20 +404,43 @@ impl LanguageServer for Backend {
                 .await;
         }
 
-        self.publish_open_documents(&session).await;
+        drop(session);
+        self.publish_open_documents().await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        // The buffer's last text stays authoritative until disk watching
-        // lands; the editor no longer owns it, so retract the marker.
+        // The editor no longer owns the buffer: the durable disk revision
+        // becomes authoritative again, so reload it (an unsaved buffer's
+        // text must not survive the editor discarding it). Unreadable
+        // files keep the last text until disk watching lands.
         let Some(path) = uri_path(&params.text_document.uri) else {
             return;
         };
-        let mut session = self.session.lock().await;
-        session.open.remove(&path);
+        let session = self.session.lock().await;
         if let Some((entity, _)) = self.rope_of(&path).await {
+            if let Ok(disk) = tokio::fs::read_to_string(&path).await {
+                let sources = self
+                    .bowl()
+                    .scoop::<Query<(Entity, Mut<SourceText>)>>()
+                    .await;
+                for (source_entity, source) in sources.collect() {
+                    if source_entity == entity {
+                        source
+                            .with_latest(move |source| source.set_text(&disk))
+                            .await;
+                        break;
+                    }
+                }
+            }
             self.bowl().entity(entity).remove::<OpenBuffer>().await;
         }
+        drop(session);
+        // The closed document leaves the open set, so the republish loop
+        // no longer covers it: publish its disk-revision state once so
+        // the client doesn't keep stale editor-buffer diagnostics.
+        self.publish_diagnostics(params.text_document.uri, &path)
+            .await;
+        self.publish_open_documents().await;
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
