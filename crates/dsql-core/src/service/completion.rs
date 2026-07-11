@@ -213,7 +213,10 @@ async fn enrich_completion_requests(
             file: file_entity,
             node: field_node.0,
         };
-        let (field_entity, _, _, _) = tree.fields.iter().find(|(_, _, k, _)| *k == key)?;
+        let (field_entity, _, _, _) = tree
+            .fields_by_entity
+            .values()
+            .find(|(_, _, k, _)| *k == key)?;
         resolve_field_target(&tree, snapshot.catalog(), *field_entity)
     });
 

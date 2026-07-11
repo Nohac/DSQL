@@ -6,6 +6,7 @@
 //! parameters with the same structured paths the variables stage infers.
 //! Runs per definition, gated on [`PlanDemand`].
 
+use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
 use crate::resolution::{PathTerminal, ResolvedClause, ResolvedPath};
 use crate::schema::dsql_schema;
 use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, View, With};
@@ -146,7 +147,11 @@ async fn plan_queries(
                     &mut PlanWalk {
                         result_path: vec![output_name.clone()],
                         spreads: &mut spreads,
-                        visiting: &mut Vec::new(),
+                        expansion: &mut SpreadExpansion::new(
+                            planner.tree,
+                            planner.scope,
+                            planner.imports,
+                        ),
                         diagnostics: &mut diagnostics,
                     },
                     table_id,
@@ -281,7 +286,7 @@ fn plan_fragment_body(
         &mut PlanWalk {
             result_path: Vec::new(),
             spreads: &mut Vec::new(),
-            visiting: &mut Vec::new(),
+            expansion: &mut SpreadExpansion::new(planner.tree, planner.scope, planner.imports),
             diagnostics,
         },
         table_id,
@@ -311,11 +316,11 @@ type PlanDiagnostics = Vec<(crate::facts::Span, DiagnosticCode, String)>;
 
 /// Mutable state threaded through one plan walk. `result_path` follows
 /// output keys (unchanged across spread expansion, extended per relation);
-/// `visiting` guards cyclic spreads.
+/// The shared [`SpreadExpansion`] resolves spreads and guards cycles.
 struct PlanWalk<'a> {
     result_path: Vec<String>,
     spreads: &'a mut Vec<SpreadUse>,
-    visiting: &'a mut Vec<String>,
+    expansion: &'a mut SpreadExpansion<'a, 'a>,
     diagnostics: &'a mut PlanDiagnostics,
 }
 
@@ -370,20 +375,17 @@ impl Planner<'_> {
                         path: walk.result_path.join("."),
                         fragment: name.clone(),
                     });
-                    let Some((fragment_entity, _, _, _)) = self
-                        .tree
-                        .resolve_fragment(&name, self.scope, self.imports)
-                        .copied()
+                    // Planning is demand-driven and runs regardless of
+                    // check status, so the shared expansion's cycle cutoff
+                    // guards cyclic spreads here rather than trusting
+                    // checks to have rejected them.
+                    let ExpandedSpread::Fragment {
+                        entity: fragment_entity,
+                        ..
+                    } = walk.expansion.enter(&name)
                     else {
                         continue;
                     };
-                    // Planning is demand-driven and runs regardless of check
-                    // status, so cyclic spreads must be guarded against here
-                    // rather than trusting checks to have rejected them.
-                    if walk.visiting.contains(&name) {
-                        continue;
-                    }
-                    walk.visiting.push(name.clone());
                     if let Some(fragment_plan) = self.plan_selection_set(
                         walk,
                         root_table,
@@ -395,7 +397,7 @@ impl Planner<'_> {
                     ) {
                         items.extend(fragment_plan.items);
                     }
-                    walk.visiting.pop();
+                    walk.expansion.leave();
                 }
                 Child::Field(field, field_entity) => {
                     let reference = FieldRef {

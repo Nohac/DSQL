@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+assertion_line: 253
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[137..144]: spread `MoreIds` introduces duplicate output key `id`; use an alias
+Error[57..63]: spread `IdBits` introduces duplicate output key `id`; use an alias

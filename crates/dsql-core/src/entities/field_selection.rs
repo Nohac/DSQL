@@ -2,6 +2,8 @@
 //! selection set, with its alias and relation-path selector — plus the
 //! catalog check walk that validates every selection tree top-down.
 
+use std::collections::HashMap;
+
 use bowl::{
     Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View, With,
 };
@@ -9,6 +11,7 @@ use bowl::{
 use crate::catalog::{CatalogSnapshot, FieldCheckResult, FieldRef, TableRef, TableResolution};
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
+use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
 use crate::entities::fragment_spread::{SpreadDecl, check_spread_site};
 use crate::entities::{direct_rule, direct_token, node_span, text};
 use crate::entity::{
@@ -158,11 +161,13 @@ impl LowerStage for FieldSelection {
 /// engine-maintained [`ChildOf`] relationships; entities orphaned by error
 /// recovery carry no edge and stay out of every walk.
 pub(crate) struct SelectionTree<'a> {
-    /// (entity, fact, CST node key, parent entity).
-    pub(crate) fields: Vec<(Entity, &'a FieldSel, NodeKey, Entity)>,
-    pub(crate) spreads: Vec<(Entity, &'a SpreadDecl, Entity)>,
+    /// (entity, fact, CST node key, parent entity), indexed by parent.
+    pub(crate) fields: HashMap<Entity, Vec<(Entity, &'a FieldSel, NodeKey, Entity)>>,
+    /// The same field rows, indexed by their own entity.
+    pub(crate) fields_by_entity: HashMap<Entity, (Entity, &'a FieldSel, NodeKey, Entity)>,
+    pub(crate) spreads: HashMap<Entity, Vec<(Entity, &'a SpreadDecl, Entity)>>,
     pub(crate) fragments: Vec<(Entity, &'a DefDecl, &'a FragmentTarget, &'a ResolutionScope)>,
-    pub(crate) clauses: Vec<(Entity, &'a ClauseFact, Span, Entity)>,
+    pub(crate) clauses: HashMap<Entity, Vec<(Entity, &'a ClauseFact, Span, Entity)>>,
 }
 
 impl SelectionTree<'_> {
@@ -170,37 +175,50 @@ impl SelectionTree<'_> {
         &self,
         parent: Entity,
     ) -> impl Iterator<Item = &(Entity, &FieldSel, NodeKey, Entity)> {
-        self.fields.iter().filter(move |(_, _, _, p)| *p == parent)
+        self.fields.get(&parent).into_iter().flatten()
     }
 
     pub(crate) fn spreads_under(
         &self,
         parent: Entity,
     ) -> impl Iterator<Item = &(Entity, &SpreadDecl, Entity)> {
-        self.spreads.iter().filter(move |(_, _, p)| *p == parent)
+        self.spreads.get(&parent).into_iter().flatten()
     }
 
-    /// Gathers the lowered selection facts out of the ambient views. The
-    /// tree spans every file: edges are entity links so they never cross
-    /// files, while fragments resolve across files by scope.
+    /// Gathers the lowered selection facts out of the ambient views,
+    /// indexed by parent entity so tree descent is a lookup, not a linear
+    /// scan over every fact in the project. The tree spans every file:
+    /// edges are entity links so they never cross files, while fragments
+    /// resolve across files by scope.
     pub(crate) fn collect<'a>(views: &'a TreeViews<'_>) -> SelectionTree<'a> {
+        let mut fields: HashMap<Entity, Vec<(Entity, &FieldSel, NodeKey, Entity)>> = HashMap::new();
+        for (entity, field, key, parent) in views.fields.iter() {
+            fields
+                .entry(parent.0)
+                .or_default()
+                .push((entity, field, *key, parent.0));
+        }
+        let mut spreads: HashMap<Entity, Vec<(Entity, &SpreadDecl, Entity)>> = HashMap::new();
+        for (entity, spread, parent) in views.spreads.iter() {
+            spreads
+                .entry(parent.0)
+                .or_default()
+                .push((entity, spread, parent.0));
+        }
+        let mut clauses: HashMap<Entity, Vec<(Entity, &ClauseFact, Span, Entity)>> = HashMap::new();
+        for (entity, clause, span, parent) in views.clauses.iter() {
+            clauses
+                .entry(parent.0)
+                .or_default()
+                .push((entity, clause, *span, parent.0));
+        }
+        let fields_by_entity = fields.values().flatten().map(|row| (row.0, *row)).collect();
         SelectionTree {
-            fields: views
-                .fields
-                .iter()
-                .map(|(entity, field, key, parent)| (entity, field, *key, parent.0))
-                .collect(),
-            spreads: views
-                .spreads
-                .iter()
-                .map(|(entity, spread, parent)| (entity, spread, parent.0))
-                .collect(),
+            fields,
+            fields_by_entity,
+            spreads,
             fragments: views.fragments.iter().collect(),
-            clauses: views
-                .clauses
-                .iter()
-                .map(|(entity, clause, span, parent)| (entity, clause, *span, parent.0))
-                .collect(),
+            clauses,
         }
     }
 
@@ -231,7 +249,7 @@ impl SelectionTree<'_> {
         &self,
         parent: Entity,
     ) -> impl Iterator<Item = &(Entity, &ClauseFact, Span, Entity)> {
-        self.clauses.iter().filter(move |(_, _, _, p)| *p == parent)
+        self.clauses.get(&parent).into_iter().flatten()
     }
 }
 
@@ -285,8 +303,9 @@ async fn check_selections(
         catalog_entity,
         file: file.0,
         scope: &scope.0,
-        imports,
+        enclosing_fragment: None,
         commands: &mut commands,
+        imports,
     };
 
     match decl.kind {
@@ -306,6 +325,9 @@ pub(crate) struct CheckCtx<'a, 'view> {
     pub(crate) file: Entity,
     /// Resolution scope of the definition being checked.
     pub(crate) scope: &'a str,
+    /// Name of the fragment whose body is being checked, when any: seeds
+    /// spread expansion so self-spreads read as cycles, not duplicates.
+    pub(crate) enclosing_fragment: Option<String>,
     pub(crate) imports: &'a ScopeImports,
     pub(crate) commands: &'a mut Commands<(dsql_schema::Diagnostic,)>,
 }
@@ -406,7 +428,7 @@ impl CheckCtx<'_, '_> {
     /// unresolvable target is reported by the definition entity's own
     /// check; the body is skipped rather than double-reported.
     fn check_fragment_body(&mut self, def_entity: Entity) {
-        let Some((_, _, target, _)) = self
+        let Some((_, decl, target, _)) = self
             .tree
             .fragments
             .iter()
@@ -414,6 +436,7 @@ impl CheckCtx<'_, '_> {
         else {
             return;
         };
+        self.enclosing_fragment = Some(decl.name.clone());
         let Some(table) = self.catalog.table_ref_for(TableRef::parse(&target.name)) else {
             return;
         };
@@ -544,10 +567,7 @@ impl CheckCtx<'_, '_> {
             .map(|(entity, field, _, _)| (*entity, *field))
             .collect();
         for (entity, field) in fields {
-            let key = field
-                .alias
-                .clone()
-                .unwrap_or_else(|| TableRef::parse(&field.name).name.to_string());
+            let key = output_key(field);
             if seen.contains(&key) {
                 self.error(
                     entity,
@@ -569,6 +589,77 @@ impl CheckCtx<'_, '_> {
                     ),
                 );
             }
+        }
+
+        // Spreads splice their fragment's top-level keys into this set:
+        // collisions with local fields (or other spreads) are just as
+        // ambiguous as two local fields, and diagnose at the spread site.
+        let spreads: Vec<_> = self
+            .tree
+            .spreads_under(parent)
+            .map(|(entity, spread, _)| (*entity, spread.name.clone(), spread.name_span))
+            .collect();
+        let tree = self.tree;
+        let mut expansion = SpreadExpansion::new(tree, self.scope, self.imports);
+        if let Some(enclosing) = &self.enclosing_fragment {
+            expansion.seed(enclosing);
+        }
+        for (entity, name, name_span) in spreads {
+            let ExpandedSpread::Fragment {
+                entity: fragment, ..
+            } = expansion.enter(&name)
+            else {
+                continue;
+            };
+            let mut keys = Vec::new();
+            collect_expanded_keys(tree, &mut expansion, fragment, &mut keys);
+            expansion.leave();
+            for key in keys {
+                if seen.contains(&key) {
+                    self.error(
+                        entity,
+                        name_span,
+                        DiagnosticCode::DuplicateOutputKey,
+                        format!(
+                            "spread `{name}` introduces duplicate output key `{key}`; use an alias"
+                        ),
+                    );
+                } else {
+                    seen.push(key);
+                }
+            }
+        }
+    }
+}
+
+/// Output key of one field: alias, or the object name of its target.
+fn output_key(field: &FieldSel) -> String {
+    field
+        .alias
+        .clone()
+        .unwrap_or_else(|| TableRef::parse(&field.name).name.to_string())
+}
+
+/// The top-level output keys a fragment splices into a spreading set,
+/// following the fragment's own top-level spreads through the shared
+/// expansion (cycles cut off).
+fn collect_expanded_keys(
+    tree: &SelectionTree<'_>,
+    expansion: &mut SpreadExpansion<'_, '_>,
+    fragment: Entity,
+    keys: &mut Vec<String>,
+) {
+    for (_, field, _, _) in tree.fields_under(fragment) {
+        keys.push(output_key(field));
+    }
+    let spreads: Vec<String> = tree
+        .spreads_under(fragment)
+        .map(|(_, spread, _)| spread.name.clone())
+        .collect();
+    for name in spreads {
+        if let ExpandedSpread::Fragment { entity, .. } = expansion.enter(&name) {
+            collect_expanded_keys(tree, expansion, entity, keys);
+            expansion.leave();
         }
     }
 }
@@ -652,16 +743,9 @@ pub(crate) fn resolve_context_table(
     let mut chain = Vec::new();
     let mut current = field;
     loop {
-        let (_, _, _, parent) = tree
-            .fields
-            .iter()
-            .find(|(entity, _, _, _)| *entity == current)?;
+        let (_, _, _, parent) = tree.fields_by_entity.get(&current)?;
         chain.push(current);
-        match tree
-            .fields
-            .iter()
-            .find(|(entity, _, _, _)| entity == parent)
-        {
+        match tree.fields_by_entity.get(parent) {
             Some(_) => current = *parent,
             // Parent is the definition entity.
             None => break,
@@ -670,20 +754,14 @@ pub(crate) fn resolve_context_table(
     let root = *chain.last()?;
 
     // Query roots resolve as tables; fragment bodies against the target.
-    let (_, _, _, root_parent) = tree
-        .fields
-        .iter()
-        .find(|(entity, _, _, _)| *entity == root)?;
+    let (_, _, _, root_parent) = tree.fields_by_entity.get(&root)?;
     let fragment_target = tree
         .fragments
         .iter()
         .find(|(def_entity, _, _, _)| def_entity == root_parent)
         .map(|(_, _, target, _)| target.name.clone());
 
-    let (_, root_field, _, _) = tree
-        .fields
-        .iter()
-        .find(|(entity, _, _, _)| *entity == root)?;
+    let (_, root_field, _, _) = tree.fields_by_entity.get(&root)?;
     let mut table = match &fragment_target {
         Some(target) => catalog.table_ref_for(TableRef::parse(target))?.id,
         None => {
@@ -705,10 +783,7 @@ pub(crate) fn resolve_context_table(
         if *step == field {
             return Some(table);
         }
-        let (_, step_field, _, _) = tree
-            .fields
-            .iter()
-            .find(|(entity, _, _, _)| entity == step)?;
+        let (_, step_field, _, _) = tree.fields_by_entity.get(step)?;
         let reference = FieldRef {
             target: TableRef::parse(&step_field.name),
             selector: step_field.relation_path.as_deref(),
@@ -762,11 +837,8 @@ pub(crate) fn resolve_field_target(
     catalog: &crate::catalog::Catalog,
     field_entity: Entity,
 ) -> Option<crate::catalog::TableId> {
-    let (_, field, _, parent) = tree
-        .fields
-        .iter()
-        .find(|(entity, _, _, _)| *entity == field_entity)?;
-    let is_query_root = !tree.fields.iter().any(|(entity, _, _, _)| entity == parent)
+    let (_, field, _, parent) = tree.fields_by_entity.get(&field_entity)?;
+    let is_query_root = !tree.fields_by_entity.contains_key(parent)
         && !tree
             .fragments
             .iter()

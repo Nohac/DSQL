@@ -5,6 +5,7 @@
 //! at which binding time, with which types" — so each occurrence also
 //! becomes its own fact, anchored into the tree by [`ParentKey`].
 
+use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
 use crate::resolution::{ResolvedClause, ResolvedPath};
 use crate::schema::{AstFacts, dsql_schema};
 use bowl::{
@@ -197,8 +198,6 @@ async fn infer_variables(
         resolved_paths: &resolved_paths,
         resolved_order: &resolved_order,
         catalog: snapshot.catalog(),
-        scope: &scope.0,
-        imports,
         bindings: Vec::new(),
     };
 
@@ -248,7 +247,7 @@ async fn infer_variables(
                 def_entity,
                 SelectionPath::fragment_root(),
                 &VariablePathScope::fragment(),
-                Some(&mut Vec::new()),
+                Some(&mut SpreadExpansion::new(&tree, &scope.0, imports)),
             );
         }
     }
@@ -269,15 +268,14 @@ struct Inference<'a> {
     resolved_order: &'a std::collections::HashMap<Span, crate::catalog::ColumnId>,
     tree: &'a SelectionTree<'a>,
     catalog: &'a crate::catalog::Catalog,
-    scope: &'a str,
-    imports: &'a ScopeImports,
     bindings: Vec<(Span, VariableBinding)>,
 }
 
 impl Inference<'_> {
-    /// Clauses of one selection, then its children. `visiting` is `Some`
-    /// in fragment mode, where nested spreads expand (with cycle guard);
-    /// `None` in query mode, where spreads are skipped entirely.
+    /// Clauses of one selection, then its children. `expansion` is `Some`
+    /// in fragment mode, where nested spreads expand through the shared
+    /// [`SpreadExpansion`] walker (with its cycle cutoff); `None` in query
+    /// mode, where spreads are skipped entirely.
     fn collect_selection(
         &mut self,
         root_table: crate::catalog::TableId,
@@ -285,7 +283,7 @@ impl Inference<'_> {
         key: Entity,
         path: SelectionPath,
         scope: &VariablePathScope,
-        visiting: Option<&mut Vec<String>>,
+        expansion: Option<&mut SpreadExpansion<'_, '_>>,
     ) {
         let clauses: Vec<_> = self
             .tree
@@ -345,7 +343,7 @@ impl Inference<'_> {
             }
         }
 
-        self.collect_selection_set(root_table, table, key, path, scope, visiting);
+        self.collect_selection_set(root_table, table, key, path, scope, expansion);
     }
 
     fn collect_selection_set(
@@ -355,26 +353,22 @@ impl Inference<'_> {
         parent: Entity,
         path: SelectionPath,
         scope: &VariablePathScope,
-        mut visiting: Option<&mut Vec<String>>,
+        mut expansion: Option<&mut SpreadExpansion<'_, '_>>,
     ) {
-        if let Some(visiting) = visiting.as_deref_mut() {
+        if let Some(expansion) = expansion.as_deref_mut() {
             let spreads: Vec<_> = self
                 .tree
                 .spreads_under(parent)
                 .map(|(_, spread, _)| spread.name.clone())
                 .collect();
             for name in spreads {
-                let Some((fragment_entity, _, _, _)) = self
-                    .tree
-                    .resolve_fragment(&name, self.scope, self.imports)
-                    .copied()
+                let ExpandedSpread::Fragment {
+                    entity: fragment_entity,
+                    ..
+                } = expansion.enter(&name)
                 else {
                     continue;
                 };
-                if visiting.contains(&name) {
-                    continue;
-                }
-                visiting.push(name.clone());
                 let spread_scope = scope.for_fragment_spread(&path, &name);
                 self.collect_selection_set(
                     root_table,
@@ -382,9 +376,9 @@ impl Inference<'_> {
                     fragment_entity,
                     SelectionPath::fragment_root(),
                     &spread_scope,
-                    Some(visiting),
+                    Some(expansion),
                 );
-                visiting.pop();
+                expansion.leave();
             }
         }
 
@@ -415,7 +409,7 @@ impl Inference<'_> {
                 entity,
                 SelectionPath::body(child_path),
                 scope,
-                visiting.as_deref_mut(),
+                expansion.as_deref_mut(),
             );
         }
     }

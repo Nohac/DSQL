@@ -175,3 +175,42 @@ fn rhs_relation_path_sql() {
         insta::assert_snapshot!(fixture_sql("valid/imdb-rhs-relation-path.dsql").await);
     });
 }
+/// Fragment bodies are expanded by walks in *other* files; the DefIndex
+/// fragment fingerprint is the tracked dependency that keeps dependents
+/// fresh across files.
+#[test]
+fn cross_file_fragment_body_edits_rederive_sql() {
+    use bowl::Mut;
+    use dsql_core::source::SourceText;
+    block_on(async {
+        let bowl = sql_bowl(imdb_catalog()).await;
+        insert_source(&bowl, "frag.dsql", "fragment Bits on title {\n  id\n}\n").await;
+        insert_source(
+            &bowl,
+            "query.dsql",
+            "query UsesBits {\n  title(limit 1) {\n    ...Bits\n  }\n}\n",
+        )
+        .await;
+        let before = render_sql(&bowl).await;
+        assert!(
+            before.contains("\"id\""),
+            "fragment field planned: {before}"
+        );
+
+        let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+        for (_, source) in sources.collect() {
+            source
+                .with_latest(|text| {
+                    if text.to_text().contains("fragment Bits") {
+                        text.set_text("fragment Bits on title {\n  title\n}\n");
+                    }
+                })
+                .await;
+        }
+        let after = render_sql(&bowl).await;
+        // Snapshot the whole post-edit render: a false pass from dropped
+        // expansion (rather than re-derived expansion) is impossible to
+        // write through a full snapshot.
+        insta::assert_snapshot!(after);
+    });
+}

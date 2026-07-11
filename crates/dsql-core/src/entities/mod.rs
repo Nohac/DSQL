@@ -5,6 +5,7 @@ pub mod clause;
 pub mod definition;
 pub mod directive;
 pub mod document;
+pub(crate) mod expansion;
 pub mod expression;
 pub mod field_selection;
 pub mod fragment_spread;

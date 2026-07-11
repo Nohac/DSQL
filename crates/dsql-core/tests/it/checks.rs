@@ -229,3 +229,27 @@ fn directives_are_rejected_as_unsupported() {
         insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
     });
 }
+
+/// Spread-introduced output keys are as ambiguous as local duplicates:
+/// a local field colliding with a fragment field, and two fragments
+/// providing the same key, both diagnose at the spread site.
+#[test]
+fn duplicate_output_keys_through_spreads_are_reported() {
+    block_on(async {
+        let bowl = checked_bowl(imdb_catalog()).await;
+        insert_source(
+            &bowl,
+            "fragments.dsql",
+            "fragment IdBits on title {\n  id\n}\nfragment MoreIds on title {\n  id\n}\n",
+        )
+        .await;
+        insert_source(
+            &bowl,
+            "spreads.dsql",
+            "query LocalVsFragment {\n  title(limit 1) {\n    id\n    ...IdBits\n  }\n}\nquery FragmentVsFragment {\n  title(limit 1) {\n    ...IdBits\n    ...MoreIds\n  }\n}\n",
+        )
+        .await;
+
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
+}
