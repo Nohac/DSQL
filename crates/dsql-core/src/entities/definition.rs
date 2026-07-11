@@ -16,9 +16,7 @@ use bowl::{
 use crate::catalog::{CatalogSnapshot, TableRef, TableResolution};
 use crate::entities::document::ParsedFile;
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{
-    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
-};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     Severity, Span, emit_diagnostic,
@@ -101,6 +99,10 @@ impl LanguageEntity for Definition {
         reg.system(check_duplicate_queries.run_during(Phase::Complete));
         reg.system(check_import_collisions.run_during(Phase::Complete));
         reg.system(check_fragment_targets);
+        // Fully tracked (a per-file bound join, no views), so it needs no
+        // phase barrier: replanning orders it after enrichment and the
+        // lowered facts it joins.
+        reg.system(hover_definitions);
     }
 }
 
@@ -434,15 +436,6 @@ impl FormatStage for Definition {
     }
 }
 
-impl HoverStage for Definition {
-    fn register_hover(reg: &mut Registrar<'_>) {
-        // Fully tracked (a per-file bound join, no views), so it needs no
-        // phase barrier: replanning orders it after enrichment and the
-        // lowered facts it joins.
-        reg.system(hover_definitions);
-    }
-}
-
 /// Answers hover on a definition name with its kind and target: one
 /// invocation per (request, definition-in-file) pair via the
 /// `BelongsToFile` join, the fragment target riding the definition row as
@@ -479,9 +472,4 @@ async fn hover_definitions(
             text,
         },
     ));
-}
-
-impl CompletionStage for Definition {
-    /// Definition keywords come from the grammar layer.
-    fn register_completions(_reg: &mut Registrar<'_>) {}
 }

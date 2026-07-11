@@ -149,20 +149,20 @@ One file per language concept under `crates/dsql-core/src/entities/`. Each file
 co-locates the concept's fact components, CST lowering, checks, and service
 contributions — the "vertical slice" both projects converged on.
 
-The stage traits are the compile-time coverage contract. Mapping the atom
-proposal's stage list onto entity traits:
+The stage traits cover *syntax* only (updated 2026-07-11): `LowerStage` and
+`FormatStage` join the exhaustive generated-rule dispatch, so a new
+construct cannot compile without them. Everything else — checks, lints,
+variables, planning, services — registers as ordinary systems inside
+`LanguageEntity::register`; the bowl schema and declared system outputs are
+the coverage contract for behavior. The per-stage trait matrix below is the
+original atom-era plan, kept for the record:
 
 | Atom stage (dsql-poc) | Entity trait here | Coverage |
 |---|---|---|
 | build_ast + lower | `LowerStage` | required (merged — see decision 1) |
 | format | `FormatStage` | required |
-| check | `CheckStage` | required |
-| lint | `LintStage` | required trait, explicit no-effect impls allowed |
-| variables | `VariablesStage` | same |
-| plan | `PlanStage` | same |
-| sql | `SqlStage` | same |
-| metadata | `MetadataStage` | same |
-| editor (hover, completion, definition, tokens) | `HoverStage`, `CompletionStage`, ... added per service phase | same |
+| check | plain system registration | retired as a trait |
+| lint | plain system registration | retired as a trait |
 
 `register_entity::<E>` bounds on every stage trait, so a new entity fails to
 compile until it declares each stage. A stage that does not apply is an
@@ -351,9 +351,9 @@ Each phase lands as one or more atomic commits with tests.
 ## Open questions
 
 - **Editor stage granularity**: one `EditorStage` trait vs one trait per
-  service (`HoverStage`, `CompletionStage`, ...). Leaning per-service traits
-  added in the phase that introduces the service, so no-effect declarations
-  stay precise.
+  service. RESOLVED 2026-07-11: per-service traits are retired — they were
+  registration ceremony from the POC atom system and proved nothing; only
+  `LowerStage`/`FormatStage` stay (exhaustive generated-rule ownership).
 - **Lexer regex syntax in `.llw`**: extend lelwel's grammar syntax vs sidecar
   annotations. Decide in phase 8 with upstream (0x2a-42/lelwel) compatibility
   in mind — keep the vendored fork rebasable.

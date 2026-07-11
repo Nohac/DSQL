@@ -4,7 +4,7 @@
 # Design question
 
 - DefDecl: is this the correct abstraction, what is DefDecl vs the Ast, isn't lowering supposed to generate Ast nodes? These separations seems completely backwards/redundant? DefKind is just a flat enum, where is the rest of the data etc?
-- Are the stage traits (LowerStage, HoverStage etc) even necessary anymore when we have systems and plugins?
+- ~~Are the stage traits (LowerStage, HoverStage etc) even necessary anymore when we have systems and plugins?~~ RESOLVED 2026-07-11: Hover/CompletionStage retired into plain registration; LowerStage/FormatStage stay (exhaustive rule ownership).
 
 # Tracked follow-ups
 

@@ -14,9 +14,7 @@ use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
 use crate::entities::fragment_spread::{SpreadDecl, check_spread_site};
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{
-    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
-};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
     NodeKey, Severity, Span, emit_diagnostic,
@@ -69,6 +67,8 @@ impl LanguageEntity for FieldSelection {
     fn register(reg: &mut Registrar<'_>) {
         // Views lowered facts ambiently: behind the Complete barrier.
         reg.system(check_selections.run_during(bowl::Phase::Complete));
+        reg.system(hover_fields);
+        reg.system(complete_selections.run_during(bowl::Phase::Complete));
     }
 }
 
@@ -695,12 +695,6 @@ impl FormatStage for FieldSelection {
     }
 }
 
-impl HoverStage for FieldSelection {
-    fn register_hover(reg: &mut Registrar<'_>) {
-        reg.system(hover_fields);
-    }
-}
-
 /// Answers hover on a field selection name with its resolved column or
 /// relation: one tracked invocation per (request, field-in-file) pair via
 /// the `BelongsToFile` join, the meaning read off the field's
@@ -860,12 +854,6 @@ pub(crate) fn resolve_field_target(
     match catalog.check_field_ref(context, reference) {
         FieldCheckResult::Relation(relation) => Some(relation.table.id),
         _ => None,
-    }
-}
-
-impl CompletionStage for FieldSelection {
-    fn register_completions(reg: &mut Registrar<'_>) {
-        reg.system(complete_selections.run_during(bowl::Phase::Complete));
     }
 }
 

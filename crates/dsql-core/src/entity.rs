@@ -6,12 +6,12 @@
 //! This carries the language-atom guarantees in the porridge
 //! playground shape: plain traits and one exhaustive `match`, no registry.
 //!
-//! The stage traits below form the coverage contract. [`register_entity`]
-//! bounds on every stage, so a new entity does not compile until it has
-//! declared each one — a stage that does not apply is an explicit no-effect
-//! impl whose doc comment states why. Stage traits are added in the phase
-//! that introduces the stage (see docs/plan.md), which retroactively forces
-//! every existing entity to declare it.
+//! The stage traits below cover *syntax*: lowering and formatting join
+//! the exhaustive generated-rule dispatch, so a new construct cannot
+//! compile without them. Semantic and service behavior registers as
+//! ordinary systems inside [`LanguageEntity::register`] — empty per-stage
+//! trait impls proved nothing and are gone; the bowl schema and declared
+//! system outputs are the coverage contract for behavior.
 //!
 //! Grammar-rule ownership lives in `entities::lower_rule`: an exhaustive
 //! `match` on the generated [`Rule`] enum, so adding a rule to `dsql.llw`
@@ -77,29 +77,15 @@ pub trait FormatStage: LanguageEntity {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef);
 }
 
-/// Service stage: register systems that answer hover requests by inserting
-/// `HoverCandidate` facts (see `service::hover` for the pipeline). Each
-/// entity's systems read only the enriched request plus the entity's own
-/// facts, so param lists stay small no matter how many entities exist.
-/// Entities without hover content register nothing (explicit empty impl).
-pub trait HoverStage: LanguageEntity {
-    fn register_hover(reg: &mut Registrar<'_>);
-}
-
-/// Service stage: register systems that contribute `CompletionCandidate`
-/// facts for enriched completion requests (see `service::completion`).
-/// Entities without completions register nothing (explicit empty impl).
-pub trait CompletionStage: LanguageEntity {
-    fn register_completions(reg: &mut Registrar<'_>);
-}
-
-/// The compile-time coverage contract: an entity only registers once it has
-/// declared every stage.
+/// The compile-time coverage contract: an entity registers once it has
+/// declared the *syntax* stages — lowering and formatting participate in
+/// exhaustive generated-rule ownership, so a new construct cannot compile
+/// without them. Semantic and service systems are ordinary plugin
+/// registrations inside [`LanguageEntity::register`]; empty trait impls
+/// proved nothing about their coverage and are gone.
 pub fn register_entity<E>(reg: &mut Registrar<'_>)
 where
-    E: LanguageEntity + LowerStage + FormatStage + HoverStage + CompletionStage,
+    E: LanguageEntity + LowerStage + FormatStage,
 {
     E::register(reg);
-    E::register_hover(reg);
-    E::register_completions(reg);
 }

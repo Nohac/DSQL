@@ -9,9 +9,7 @@ use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt
 
 use crate::entities::expression::{Expr, VariableRef, build_expr, build_variable_ref, expr_child};
 use crate::entities::{direct_rule, node_span, text};
-use crate::entity::{
-    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
-};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span};
 use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef, Rule};
@@ -50,8 +48,8 @@ pub struct Clause;
 impl LanguageEntity for Clause {
     const NAME: &'static str = "clause";
 
-    fn register(_reg: &mut Registrar<'_>) {
-        // Clause type checks against the catalog land in phase 6.
+    fn register(reg: &mut Registrar<'_>) {
+        reg.system(complete_clause_positions.run_during(bowl::Phase::Complete));
     }
 }
 
@@ -399,18 +397,6 @@ impl FormatStage for Clause {
                 formatter.expr(value);
             }
         }
-    }
-}
-
-impl HoverStage for Clause {
-    /// Clause keywords carry no hover content of their own; the paths and
-    /// variables inside them answer through their entities.
-    fn register_hover(_reg: &mut Registrar<'_>) {}
-}
-
-impl CompletionStage for Clause {
-    fn register_completions(reg: &mut Registrar<'_>) {
-        reg.system(complete_clause_positions.run_during(bowl::Phase::Complete));
     }
 }
 

@@ -10,11 +10,11 @@
 //!    `None` — so one system seeds the whole answer scaffold
 //!    ([`RequestKey`] and the fallback [`HoverInfo`]) for matched and
 //!    unmatched requests alike.
-//! 2. Each entity's hover systems (Complete, registered through
-//!    `HoverStage`) read the enriched request plus their own facts
-//!    *ambiently* and insert [`HoverCandidate`] facts addressed by an
-//!    equal [`RequestKey`]. The ambient reads of lowered facts are why
-//!    they sit behind the Complete barrier.
+//! 2. Each entity's hover systems (registered in their entity's
+//!    `register`) join the enriched request with their own facts and
+//!    insert [`HoverCandidate`] facts addressed by an equal
+//!    [`RequestKey`]. Fully tracked candidates run phase-free; only the
+//!    ones still reading lowered facts ambiently sit behind Complete.
 //! 3. `arbitrate_hover` (also Complete) consumes candidates *tracked*: the
 //!    [`RequestKey`] join yields one invocation per (request, candidate)
 //!    pair, each monotonically upgrading the request's answer in place
@@ -108,7 +108,7 @@ pub mod priority {
 }
 
 /// Registers enrichment and arbitration; entity candidate systems register
-/// themselves through `HoverStage`.
+/// themselves in their entity's `LanguageEntity::register`.
 pub(crate) fn register_hover_pipeline(reg: &mut Registrar<'_>) {
     // Enrichment reads the region view ambiently (Evaluate-derived):
     // behind the Complete barrier.
