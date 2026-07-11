@@ -173,8 +173,9 @@ pub async fn insert_source(bowl: &Bowl, path: impl Into<String>, text: &str) -> 
     insert_source_scoped(bowl, path, text, ResolutionScope::default_scope()).await
 }
 
-/// Extensions whose files are host sources rather than dsql documents.
-fn is_host_path(path: &str) -> bool {
+/// Extensions whose files are host sources rather than dsql documents —
+/// the one classifier every layer shares (loading, formatting, editors).
+pub fn is_host_path(path: &str) -> bool {
     Path::new(path)
         .extension()
         .and_then(|ext| ext.to_str())

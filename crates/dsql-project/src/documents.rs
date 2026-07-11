@@ -27,6 +27,15 @@ pub struct ProjectDocument {
     pub scope: String,
 }
 
+impl ProjectDocument {
+    /// Whether this file is an embedding host (TypeScript) rather than a
+    /// plain dsql document — the same classification the source model
+    /// applies at insert time.
+    pub fn is_embedding_host(&self) -> bool {
+        dsql_core::source::is_host_path(&self.path.display().to_string())
+    }
+}
+
 /// Reads every document with its owning scope. Configured paths — plain
 /// files, directories, or globs like `queries/shared/**/*.dsql` — resolve
 /// from the project *base* (the parent of `dsql/`), matching how real

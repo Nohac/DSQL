@@ -95,10 +95,20 @@ pub async fn sql(collection_limit: Option<u64>) -> Outcome {
 /// Returns true when nothing needed changing.
 pub async fn fmt(check_only: bool) -> Outcome {
     let project = Project::load().await?;
-    let documents = load_project_documents(&project).await?;
+    fmt_project(&project, check_only).await
+}
+
+/// [`fmt`] against an explicit project root.
+pub async fn fmt_project(project: &Project, check_only: bool) -> Outcome {
+    let documents = load_project_documents(project).await?;
 
     let mut clean = true;
     for document in documents {
+        // Host sources carry embedded regions; whole-file formatting is a
+        // dsql-document affair until region-granular edits are supported.
+        if document.is_embedding_host() {
+            continue;
+        }
         let (cst, diagnostics) = parse(&document.text);
         let formatted = format_document(&cst.into_data(), &document.text, !diagnostics.is_empty());
         if formatted.confidence == FormatConfidence::PreserveOriginal {
