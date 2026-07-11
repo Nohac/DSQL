@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+assertion_line: 231
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[100..115]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet

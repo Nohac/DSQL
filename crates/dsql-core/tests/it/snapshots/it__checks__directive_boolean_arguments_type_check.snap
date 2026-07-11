@@ -1,0 +1,16 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+assertion_line: 290
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[122..137]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet
+Error[163..178]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet
+Error[179..199]: directive `@dsql.include_if` argument `if` expects a boolean expression
+Error[212..227]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet
+Error[228..237]: directive `@dsql.include_if` argument `if` expects a boolean expression
+Error[250..265]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet
+Error[266..271]: directive `@dsql.include_if` argument `if` expects a boolean expression
+Error[284..299]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet
+Error[300..308]: directive `@dsql.include_if` argument `if` expects a boolean expression
+Error[47..62]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet
+Error[84..99]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet

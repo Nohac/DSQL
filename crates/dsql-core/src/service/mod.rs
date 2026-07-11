@@ -9,7 +9,7 @@ use bowl::Registrar;
 
 pub use completion::{
     CompletionCandidate, CompletionContext, CompletionItem, CompletionKind, CompletionList,
-    CompletionRequest, CompletionSite,
+    CompletionRequest, CompletionSite, DirectiveCompletionContext, DirectiveRole,
 };
 pub use definition::{DefinitionRequest, DefinitionTarget};
 pub use hover::{

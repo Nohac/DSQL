@@ -27,6 +27,7 @@ use crate::plan::{FragmentPlanFact, OperationSeed, QueryPlanFact};
 use crate::resolution::{FieldResolutions, ResolutionOf, ResolvedClause, ResolvedSelection};
 use crate::service::completion::{
     CompletionCandidate, CompletionContext, CompletionList, CompletionRequest,
+    DirectiveCompletionContext,
 };
 use crate::service::definition::{DefinitionRequest, DefinitionTarget};
 use crate::service::hover::{
@@ -172,7 +173,12 @@ pub struct DsqlSchema {
         Option<Cursor>,
         Option<BelongsToFile>,
     ),
-    completion_answer: (RequestKey, CompletionList, Option<CompletionContext>),
+    completion_answer: (
+        RequestKey,
+        CompletionList,
+        Option<CompletionContext>,
+        Option<DirectiveCompletionContext>,
+    ),
     definition_enriched: (Cursor, BelongsToFile),
     definition_answer: (DefinitionTarget,),
 }

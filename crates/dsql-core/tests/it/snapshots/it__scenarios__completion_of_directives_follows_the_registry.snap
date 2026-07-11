@@ -1,0 +1,43 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 360
+expression: "sections.join(\"\\n\\n\")"
+---
+at @:
+context: DirectiveName table=title scope=default replace=<none>
+Directive . — the `dsql` namespace shorthand
+Directive dsql — directive namespace
+
+after dsql.:
+context: DirectiveMember table=title scope=default replace=<none>
+Directive deprecated — directive on query, field
+Directive include_if — directive on field (semantics not implemented yet)
+
+after . shorthand:
+context: DirectiveMember table=title scope=default replace=<none>
+Directive deprecated — directive on query, field
+Directive include_if — directive on field (semantics not implemented yet)
+
+argument name:
+context: DirectiveArgument table=title scope=default replace=<none>
+Directive if — a boolean expression, required (inserts `if: `)
+
+boolean value:
+context: DirectiveValue table=title scope=default replace=<none>
+Keyword false
+Keyword true
+
+string value:
+context: DirectiveValue table=title scope=default replace=<none>
+
+after comma:
+context: DirectiveArgument table=title scope=default replace=<none>
+Directive if — a boolean expression, required (inserts `if: `)
+
+name without colon:
+context: DirectiveArgument table=title scope=default replace=<none>
+Directive if — a boolean expression, required (inserts `if: `)
+
+after a comment:
+context: DirectiveArgument table=title scope=default replace=<none>
+Directive if — a boolean expression, required (inserts `if: `)

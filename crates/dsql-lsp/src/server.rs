@@ -504,6 +504,7 @@ impl LanguageServer for Backend {
                     CompletionKind::Relation => CompletionItemKind::REFERENCE,
                     CompletionKind::Table => CompletionItemKind::CLASS,
                     CompletionKind::Fragment => CompletionItemKind::SNIPPET,
+                    CompletionKind::Directive => CompletionItemKind::FUNCTION,
                     CompletionKind::Scope => CompletionItemKind::OPERATOR,
                     CompletionKind::Operator => CompletionItemKind::OPERATOR,
                     CompletionKind::Keyword => CompletionItemKind::KEYWORD,

@@ -309,6 +309,58 @@ fn completion_of_partial_spreads_inserts_missing_dots() {
     });
 }
 
+/// Directive positions complete from the registry: the namespace after
+/// `@`, members after `@dsql.` and the `@.` shorthand, argument names
+/// inside the parens (after `(` and after `,`), and boolean values after
+/// `:` — with no generic expression keywords leaking in (no `null`).
+#[test]
+fn completion_of_directives_follows_the_registry() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        let markers = scenario
+            .open(
+                "d.dsql",
+                concat!(
+                    "query D {\n",
+                    "  title(limit 1) {\n",
+                    "    a: id @<|>\n",
+                    "    b: id @dsql.<|>\n",
+                    "    c: id @.<|>\n",
+                    "    d: id @dsql.include_if(<|>)\n",
+                    "    e: id @dsql.include_if(if: <|>)\n",
+                    "    f: id @dsql.deprecated(reason: <|>)\n",
+                    "    g: id @dsql.include_if(if: true, <|>)\n",
+                    "    h: id @dsql.include_if(if <|>)\n",
+                    "    i: id @dsql.include_if( # a comment\n      <|>)\n",
+                    "  }\n",
+                    "}\n",
+                ),
+            )
+            .await;
+        let mut sections = Vec::new();
+        for (label, offset) in [
+            "at @",
+            "after dsql.",
+            "after . shorthand",
+            "argument name",
+            "boolean value",
+            "string value",
+            "after comma",
+            "name without colon",
+            "after a comment",
+        ]
+        .iter()
+        .zip(&markers)
+        {
+            sections.push(format!(
+                "{label}:\n{}",
+                scenario.complete("d.dsql", *offset).await
+            ));
+        }
+        insta::assert_snapshot!(sections.join("\n\n"));
+    });
+}
+
 /// Definitions resolve across open documents: the spread's target lands
 /// in the other file.
 #[test]

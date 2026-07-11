@@ -59,6 +59,7 @@ pub enum CompletionKind {
     Relation,
     Table,
     Fragment,
+    Directive,
     Scope,
     Operator,
     Keyword,
@@ -93,6 +94,14 @@ pub enum CompletionSite {
     OrderBy,
     /// On a `...Name` spread name.
     SpreadName,
+    /// After `@`, naming a directive namespace (or the `.` shorthand).
+    DirectiveName,
+    /// After `@namespace.` or `@.`, naming a directive member.
+    DirectiveMember,
+    /// Inside a directive's parens, naming an argument.
+    DirectiveArgument,
+    /// After an argument's `:`, supplying its value.
+    DirectiveValue,
     /// Somewhere no completions apply beyond grammar keywords.
     Other,
 }
@@ -113,6 +122,34 @@ pub struct CompletionContext {
     /// fragment completions insert only the dots still missing from a
     /// partial `...` spread.
     pub spread_dots: usize,
+}
+
+/// Where in a directive the cursor sits, stamped alongside
+/// [`CompletionContext`] so the directive entity can contribute items
+/// from its registry.
+#[derive(Debug, Clone, Component, Hash)]
+#[component(hash)]
+pub struct DirectiveCompletionContext {
+    pub role: DirectiveRole,
+}
+
+/// The classified directive position, with the names spelled so far
+/// (shorthand already resolved to the dsql namespace).
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum DirectiveRole {
+    Name,
+    Member {
+        namespace: String,
+    },
+    Argument {
+        namespace: String,
+        member: String,
+    },
+    Value {
+        namespace: String,
+        member: String,
+        argument: String,
+    },
 }
 
 /// One entity's contribution to one request, addressed by an equal
@@ -234,11 +271,15 @@ async fn enrich_completion_requests(
         .take_while(|byte| *byte == b'.')
         .count()
         .min(3);
-    let site = match classify_site(&spine, stop) {
-        // Dots before the word mean a spread is being typed: only
-        // fragments (and the missing dots) make sense, not columns.
-        CompletionSite::SelectionBody if spread_dots > 0 => CompletionSite::SpreadName,
-        site => site,
+    let directive = directive_completion(&truncated_cst, &spine, prefix);
+    let site = match &directive {
+        Some((site, _)) => *site,
+        None => match classify_site(&spine, stop) {
+            // Dots before the word mean a spread is being typed: only
+            // fragments (and the missing dots) make sense, not columns.
+            CompletionSite::SelectionBody if spread_dots > 0 => CompletionSite::SpreadName,
+            site => site,
+        },
     };
 
     // Semantic layer: the innermost open set or clause decides the context
@@ -296,7 +337,15 @@ async fn enrich_completion_requests(
     let mut items = Vec::new();
     let names_only = matches!(
         site,
-        CompletionSite::RootSelection | CompletionSite::SelectionBody | CompletionSite::SpreadName
+        CompletionSite::RootSelection
+            | CompletionSite::SelectionBody
+            | CompletionSite::SpreadName
+            | CompletionSite::DirectiveName
+            | CompletionSite::DirectiveMember
+            | CompletionSite::DirectiveArgument
+            // Values come from the registry (true/false for boolean
+            // arguments); generic expression keywords would offer `null`.
+            | CompletionSite::DirectiveValue
     );
     for keyword in keywords.iter().filter(|_| !names_only) {
         let alphabetic = keyword.chars().all(|c| c.is_ascii_alphabetic());
@@ -323,6 +372,11 @@ async fn enrich_completion_requests(
         .entity(request)
         .insert(crate::service::hover::RequestKey(request));
     commands.entity(request).insert(CompletionList { items, replace });
+    if let Some((_, role)) = directive {
+        commands
+            .entity(request)
+            .insert(DirectiveCompletionContext { role });
+    }
     commands.entity(request).insert(CompletionContext {
         site,
         table,
@@ -392,8 +446,47 @@ enum SpineStop {
     Unstarted(Rule),
 }
 
+/// The last non-trivia token in `node`'s subtree.
+fn last_token(cst: &crate::grammar::parser::CstData, node: NodeRef) -> Option<Token> {
+    let mut last = None;
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        match cst.get(current) {
+            Node::Rule(..) => stack.extend(cst.children(current)),
+            Node::Token(token, _) => {
+                if !matches!(token, Token::Whitespace | Token::Comment) {
+                    let span = cst.span(current);
+                    if last.is_none_or(|(at, _)| at < span.start) {
+                        last = Some((span.start, token));
+                    }
+                }
+            }
+        }
+    }
+    last.map(|(_, token)| token)
+}
+
 /// Whether the walk must stop before `node` instead of entering it.
 fn spine_stop(cst: &crate::grammar::parser::CstData, node: NodeRef, rule: Rule) -> Option<SpineStop> {
+    if rule == Rule::Directive {
+        let has = |token: Token| {
+            cst.children(node)
+                .any(|child| matches!(cst.get(child), Node::Token(t, _) if t == token))
+        };
+        if has(Token::RPar) {
+            return Some(SpineStop::Finished(rule));
+        }
+        if has(Token::LPar) {
+            return None;
+        }
+        // No parens: the directive ends with its name. A name whose last
+        // token is a member/namespace Name is complete; a bare `@` or a
+        // trailing `.` is still being typed.
+        return match last_token(cst, node) {
+            Some(Token::Name) => Some(SpineStop::Finished(rule)),
+            _ => None,
+        };
+    }
     let (opener, closer) = match rule {
         Rule::SelectionSet => (Token::LBrace, Token::RBrace),
         Rule::ClauseList => (Token::LPar, Token::RPar),
@@ -441,6 +534,104 @@ fn open_spine(
         current = child;
     }
     (spine, stop)
+}
+
+/// Classifies a cursor inside a directive: which of its zones is being
+/// typed, with the names spelled so far (shorthand resolved to `dsql`).
+/// `prefix` is the truncated parse's source, so all spans index into it.
+fn directive_completion(
+    cst: &crate::grammar::parser::CstData,
+    spine: &[(Rule, NodeRef)],
+    prefix: &str,
+) -> Option<(CompletionSite, DirectiveRole)> {
+    let (_, directive) = spine
+        .iter()
+        .rev()
+        .find(|(rule, _)| *rule == Rule::Directive)?;
+    let child_rule = |parent: NodeRef, rule: Rule| {
+        cst.children(parent)
+            .find(|child| matches!(cst.get(*child), Node::Rule(r, _) if r == rule))
+    };
+    let name_text = |parent: NodeRef, rule: Rule| {
+        child_rule(parent, rule).and_then(|node| {
+            cst.children(node).find_map(|child| match cst.get(child) {
+                Node::Token(Token::Name, _) => {
+                    let span = cst.span(child);
+                    Some(prefix[span.start..span.end].to_string())
+                }
+                _ => None,
+            })
+        })
+    };
+
+    let name_node = child_rule(*directive, Rule::DirectiveName);
+    let namespace = name_node
+        .and_then(|name| name_text(name, Rule::DirectiveNamespace))
+        .unwrap_or_else(|| crate::entities::directive::DSQL_NAMESPACE.to_string());
+
+    let in_parens = cst
+        .children(*directive)
+        .any(|child| matches!(cst.get(child), Node::Token(Token::LPar, _)));
+    if in_parens {
+        let member = name_node
+            .and_then(|name| name_text(name, Rule::DirectiveMember))
+            .unwrap_or_default();
+        // Argument name vs value, structurally: after `(` or `,` a name
+        // starts; within an argument only a written `:` commits to the
+        // value. (Trivia — including comments — never decides.)
+        let last_argument = cst
+            .children(*directive)
+            .filter(|child| matches!(cst.get(*child), Node::Rule(Rule::DirectiveArgument, _)))
+            .last();
+        let argument_has_colon = last_argument.is_some_and(|argument| {
+            cst.children(argument)
+                .any(|child| matches!(cst.get(child), Node::Token(Token::Colon, _)))
+        });
+        let after_separator = matches!(
+            last_token(cst, *directive),
+            Some(Token::LPar | Token::Comma)
+        );
+        if after_separator || !argument_has_colon {
+            return Some((
+                CompletionSite::DirectiveArgument,
+                DirectiveRole::Argument { namespace, member },
+            ));
+        }
+        let argument = last_argument
+            .and_then(|argument| {
+                cst.children(argument).find_map(|child| match cst.get(child) {
+                    Node::Token(Token::Name, _) => {
+                        let span = cst.span(child);
+                        Some(prefix[span.start..span.end].to_string())
+                    }
+                    _ => None,
+                })
+            })
+            .unwrap_or_default();
+        return Some((
+            CompletionSite::DirectiveValue,
+            DirectiveRole::Value {
+                namespace,
+                member,
+                argument,
+            },
+        ));
+    }
+
+    // Name zone: a `.` commits to a member; before it the namespace (or
+    // the shorthand dot) is being typed.
+    let has_dot = name_node.is_some_and(|name| {
+        cst.children(name)
+            .any(|child| matches!(cst.get(child), Node::Token(Token::Dot, _)))
+    });
+    if has_dot {
+        Some((
+            CompletionSite::DirectiveMember,
+            DirectiveRole::Member { namespace },
+        ))
+    } else {
+        Some((CompletionSite::DirectiveName, DirectiveRole::Name))
+    }
 }
 
 fn classify_site(spine: &[(Rule, NodeRef)], stop: Option<SpineStop>) -> CompletionSite {

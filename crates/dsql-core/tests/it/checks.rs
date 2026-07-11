@@ -212,17 +212,78 @@ fn duplicate_operation_names_are_reported() {
     });
 }
 
-/// Directives parse and lower, but no directive semantics are ported yet:
-/// accepting them as silent no-ops would drop the behavior the directive
-/// spec promises, so every use is an error until the registry lands.
+/// Well-formed uses of the registered directives check clean —
+/// `@dsql.deprecated` on queries and fields (shorthand included). The one
+/// exception is deliberate: `@dsql.include_if` validates fully but still
+/// errors because its conditional-SQL semantics are not implemented;
+/// accepting it would generate silently-unconditional SQL.
 #[test]
-fn directives_are_rejected_as_unsupported() {
+fn registered_directives_check_against_their_schema() {
     block_on(async {
         let bowl = checked_bowl(imdb_catalog()).await;
         insert_source(
             &bowl,
             "annotated.dsql",
-            "query Annotated @dsql.include_if(condition: $flag) {\n  title(limit 1) {\n    id @.deprecated(reason: \"old\")\n  }\n}\n",
+            "query Annotated @dsql.deprecated(reason: \"old\") {\n  title(limit 1) {\n    id @.deprecated\n    title @dsql.include_if(if: $flag)\n  }\n}\n",
+        )
+        .await;
+
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
+}
+
+/// Directive misuse reports the registry's diagnostics: unknown names,
+/// illegal locations, and argument-schema violations, with the proof of
+/// concept's precedence (a duplicate argument skips its own unknown/type
+/// checks; a misplaced directive still checks arguments).
+#[test]
+fn directive_misuse_is_reported() {
+    block_on(async {
+        let bowl = checked_bowl(imdb_catalog()).await;
+        insert_source(
+            &bowl,
+            "misuse.dsql",
+            concat!(
+                "fragment Bits on title {\n  episode_nr\n}\n",
+                "query Misuse @dsql.include_if(if: 1) {\n",
+                "  title(limit 1) @custom @foo.bar {\n",
+                "    id @dsql.deprecated(reason: \"a\", reason: true, extra: 1)\n",
+                "    title @dsql.include_if\n",
+                "    kind_id @dsql.deprecated(reason: true)\n",
+                "    production_year @.deprecated(bogus: 1)\n",
+                "    ...Bits @dsql.deprecated\n",
+                "  }\n",
+                "}\n",
+            ),
+        )
+        .await;
+
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
+}
+
+/// The boolean-expression argument accepts literals, variables, and
+/// binary expressions; paths, strings, and numbers mismatch.
+#[test]
+fn directive_boolean_arguments_type_check() {
+    block_on(async {
+        let bowl = checked_bowl(imdb_catalog()).await;
+        insert_source(
+            &bowl,
+            "booleans.dsql",
+            concat!(
+                "query Booleans {\n",
+                "  title(limit 1) {\n",
+                "    a: id @dsql.include_if(if: true)\n",
+                "    b: id @dsql.include_if(if: $flag)\n",
+                "    c: id @dsql.include_if(if: $a == $b)\n",
+                "    d: id @dsql.include_if(if: .production_year)\n",
+                "    e: id @dsql.include_if(if: \"yes\")\n",
+                "    f: id @dsql.include_if(if: 1)\n",
+                "    g: id @dsql.include_if(if: null)\n",
+                "  }\n",
+                "}\n",
+            ),
         )
         .await;
 

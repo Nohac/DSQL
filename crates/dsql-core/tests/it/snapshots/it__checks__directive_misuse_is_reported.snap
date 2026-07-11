@@ -1,0 +1,17 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+assertion_line: 261
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[105..112]: unknown directive `@foo.bar`
+Error[152..158]: directive `@dsql.deprecated` argument `reason` is given more than once
+Error[166..171]: directive `@dsql.deprecated` has no argument `extra`
+Error[187..202]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet
+Error[187..202]: directive `@dsql.include_if` requires argument `if`
+Error[232..244]: directive `@dsql.deprecated` argument `reason` expects a string
+Error[279..284]: directive `@dsql.deprecated` has no argument `bogus`
+Error[302..317]: directive `@dsql.deprecated` cannot be used on a fragment spread
+Error[54..69]: directive `@dsql.include_if` cannot be used on a query
+Error[54..69]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet
+Error[70..75]: directive `@dsql.include_if` argument `if` expects a boolean expression
+Error[97..103]: unknown directive `@custom`
