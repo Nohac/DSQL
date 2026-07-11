@@ -3,13 +3,13 @@
 //! command line, plus dumps of what the bowl derived — so editor problems
 //! reproduce without an editor in the loop.
 
-use bowl::{Bowl, Entity, Query, Singleton};
+use bowl::{Bowl, Entity, Query};
 
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::field_selection::FieldSel;
 use dsql_core::entities::fragment_spread::SpreadDecl;
 use dsql_core::entities::variable::VariableUse;
-use dsql_core::facts::{BelongsToFile, DiagnosticsDemand, NodeKey, VariablesDemand};
+use dsql_core::facts::{BelongsToFile, NodeKey, arm_editor_demands};
 use dsql_core::service::{
     CompletionList, CompletionRequest, DefinitionRequest, DefinitionTarget, HoverInfo,
     HoverRequest, Position, semantic_tokens,
@@ -26,10 +26,7 @@ use crate::commands::Outcome;
 /// contents, and the demand markers the editor path inserts.
 async fn session_bowl(project: &Project) -> Result<Bowl, ProjectError> {
     let bowl = open_project_bowl(project).await?;
-    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-        .await;
-    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
-        .await;
+    arm_editor_demands(&bowl).await;
     Ok(bowl)
 }
 

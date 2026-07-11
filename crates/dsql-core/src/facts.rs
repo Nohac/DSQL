@@ -1,7 +1,7 @@
 //! Cross-cutting facts shared by every language entity: spans, diagnostics,
 //! file anchoring, and demand markers.
 
-use bowl::{Commands, Component, DerivedFrom, Entity, SpawnsAs};
+use bowl::{Commands, Component, DerivedFrom, Entity, Singleton, SpawnsAs};
 
 /// Byte range into the source text of one file. Positions (line/column)
 /// are computed at protocol boundaries only.
@@ -149,6 +149,31 @@ pub struct PlanDemand;
 #[derive(Component, Hash)]
 #[component(hash)]
 pub struct SqlDemand;
+
+/// Arms the demand set one full generation needs (diagnostics gate the
+/// write, variables/plans/SQL are its artifacts). One bundle instead of
+/// four call-site inserts, so no adapter can settle an incomplete
+/// generation pipeline; [`SqlDemand`]'s plan prerequisite is wired here
+/// once.
+pub async fn arm_generate_demands(bowl: &bowl::Bowl) {
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
+    bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
+        .await;
+    bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))
+        .await;
+}
+
+/// Arms the demand set editor sessions need: diagnostics for publishing
+/// and variables for hover.
+pub async fn arm_editor_demands(bowl: &bowl::Bowl) {
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
+}
 
 /// Everything one diagnostic entity is made of. Every field is required so
 /// no emitter can silently drop a component the LSP or tests key on.

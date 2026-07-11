@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use bowl::{Bowl, Entity, Mut, Query, Singleton};
+use bowl::{Bowl, Entity, Mut, Query};
 use ropey::Rope;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
@@ -20,7 +20,7 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::facts::{
-    BelongsToFile, Diagnostic as DiagnosticFact, DiagnosticsDemand, Severity, Span, VariablesDemand,
+    BelongsToFile, Diagnostic as DiagnosticFact, Severity, Span, arm_editor_demands,
 };
 use dsql_core::format::{FormatConfidence, format_document};
 use dsql_core::grammar::parse;
@@ -234,12 +234,7 @@ impl LanguageServer for Backend {
             )
             .await;
         }
-        self.bowl
-            .insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
-        self.bowl
-            .insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
-            .await;
+        arm_editor_demands(&self.bowl).await;
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
