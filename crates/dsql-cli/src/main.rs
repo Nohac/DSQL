@@ -1,7 +1,9 @@
 //! The dsql command line: check, SQL generation, and formatting over the
 //! project's bowl.
 
-use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand, ValueEnum};
 use dsql_cli::commands;
 
 #[derive(Parser)]
@@ -13,8 +15,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Type-check every project document and print diagnostics.
-    Check,
+    /// Scaffold a new dsql project (dsql/dsql.toml plus schema/).
+    Init {
+        /// Base directory to scaffold into (defaults to the current one).
+        path: Option<PathBuf>,
+        /// Introspect this database into the fresh schema directory.
+        #[arg(long)]
+        database_url: Option<String>,
+    },
+    /// Type-check the project (or one file) and print diagnostics.
+    Check {
+        /// Narrow the report to this document's diagnostics.
+        file: Option<PathBuf>,
+    },
+    /// Validate everything generation needs, without writing anything.
+    Validate,
+    /// Parse one file and print its lossless syntax tree.
+    Parse { file: PathBuf },
     /// Generate PostgreSQL for every query in the project.
     Sql {
         /// Bound nested collection relations at this many rows.
@@ -26,15 +43,32 @@ enum Command {
         /// Report files that would change without rewriting them.
         #[arg(long)]
         check: bool,
+        /// Format only this document.
+        file: Option<PathBuf>,
     },
     /// Write the build/ artifact tree and run the host generator.
     Generate {
-        /// Bound nested collection relations at this many rows.
+        /// What to generate.
+        #[arg(long, value_enum, default_value_t = GenerateTarget::Project)]
+        target: GenerateTarget,
+        /// Bound nested collection relations at this many rows
+        /// (project target only).
         #[arg(long)]
         collection_limit: Option<u64>,
+        /// Output directory for the typescript-metadata target.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
     },
+    /// Print the build manifest's JSON Schema.
+    MetadataSchema,
+    /// Print the build manifest's TypeScript types.
+    MetadataTypescript,
     /// Introspect the project database into the schema/ directory.
-    Introspect,
+    Introspect {
+        /// Print the metadata as YAML instead of writing schema/.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Debug introspection over the project bowl (debug builds only).
     #[cfg(debug_assertions)]
     Debug {
@@ -60,15 +94,57 @@ enum DebugCommand {
     Explain { system: String },
 }
 
+/// The generate subcommand's output flavors.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum GenerateTarget {
+    /// The build/ artifact tree plus the configured host generator.
+    Project,
+    /// The TypeScript consumer contract (manifest schema and types).
+    TypescriptMetadata,
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let outcome = match cli.command {
-        Command::Check => commands::check().await,
+        Command::Init { path, database_url } => commands::init(path, database_url).await,
+        Command::Check { file } => commands::check(file).await,
+        Command::Validate => commands::validate().await,
+        Command::Parse { file } => commands::parse_file(&file).await,
         Command::Sql { collection_limit } => commands::sql(collection_limit).await,
-        Command::Fmt { check } => commands::fmt(check).await,
-        Command::Generate { collection_limit } => commands::generate(collection_limit).await,
-        Command::Introspect => commands::introspect().await,
+        Command::Fmt { check, file } => commands::fmt(check, file).await,
+        Command::Generate {
+            target: GenerateTarget::Project,
+            collection_limit,
+            out_dir: None,
+        } => commands::generate(collection_limit).await,
+        Command::Generate {
+            target: GenerateTarget::Project,
+            out_dir: Some(_),
+            ..
+        } => {
+            eprintln!("error: --out-dir only applies to --target typescript-metadata");
+            return std::process::ExitCode::FAILURE;
+        }
+        Command::Generate {
+            target: GenerateTarget::TypescriptMetadata,
+            collection_limit: Some(_),
+            ..
+        } => {
+            eprintln!("error: --collection-limit only applies to --target project");
+            return std::process::ExitCode::FAILURE;
+        }
+        Command::Generate {
+            target: GenerateTarget::TypescriptMetadata,
+            out_dir,
+            ..
+        } => {
+            commands::generate_typescript_metadata(&out_dir.unwrap_or_else(|| PathBuf::from(".")))
+                .await
+        }
+        Command::MetadataSchema => commands::metadata_schema(),
+        Command::MetadataTypescript => commands::metadata_typescript(),
+        Command::Introspect { dry_run } => commands::introspect(dry_run).await,
         #[cfg(debug_assertions)]
         Command::Debug { command } => match command {
             DebugCommand::Hover { file, offset } => dsql_cli::debug::hover(&file, offset).await,

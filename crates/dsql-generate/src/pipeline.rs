@@ -104,7 +104,41 @@ pub async fn generate_project(
     project: &Project,
     options: GenerateOptions,
 ) -> Result<GenerateOutput> {
-    let facts = collect_facts(project, options).await?;
+    let bowl = open_project_bowl(project).await?;
+    let assembled = assemble_project(&bowl, project, options).await?;
+    write_build_tree(
+        project,
+        &assembled.project_root,
+        assembled.operations,
+        assembled.fragments,
+    )
+    .await
+}
+
+/// Everything generation checks short of writing: language diagnostics,
+/// per-artifact assembly, and build-path collisions. `dsql validate` runs
+/// exactly this over its own bowl.
+pub async fn validate_assembly(
+    bowl: &bowl::Bowl,
+    project: &Project,
+    options: GenerateOptions,
+) -> Result<()> {
+    assemble_project(bowl, project, options).await.map(|_| ())
+}
+
+/// The assembled build tree, not yet written.
+struct AssembledProject {
+    operations: Vec<Hashed<OperationMetadata>>,
+    fragments: Vec<Hashed<FragmentMetadata>>,
+    project_root: PathBuf,
+}
+
+async fn assemble_project(
+    bowl: &bowl::Bowl,
+    project: &Project,
+    options: GenerateOptions,
+) -> Result<AssembledProject> {
+    let facts = collect_facts(bowl, options).await?;
     let catalog = project.load_catalog().await?;
     let project_root = project
         .root
@@ -170,7 +204,11 @@ pub async fn generate_project(
     validate_artifact_paths("operation", &operations, operation_manifest_path)?;
     validate_artifact_paths("fragment", &fragments, fragment_manifest_path)?;
 
-    write_build_tree(project, &project_root, operations, fragments).await
+    Ok(AssembledProject {
+        operations,
+        fragments,
+        project_root,
+    })
 }
 
 /// Rejects artifact path collisions before anything touches the build
@@ -387,9 +425,8 @@ struct CollectedFragment {
     source_offset: usize,
 }
 
-async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<CollectedFacts> {
-    let bowl = open_project_bowl(project).await?;
-    arm_generate_demands(&bowl).await;
+async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<CollectedFacts> {
+    arm_generate_demands(bowl).await;
     if options.collection_limit.is_some() {
         bowl.insert((
             Singleton::<SqlOptions>::new(),

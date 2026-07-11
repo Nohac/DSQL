@@ -165,6 +165,11 @@ impl SourceDiagnostic {
     pub fn is_error(&self) -> bool {
         self.severity == Severity::Error
     }
+
+    /// The reported file (a region's host), as collected.
+    pub fn path(&self) -> &str {
+        &self.rope_source.name
+    }
 }
 
 /// Scoops every diagnostic fact into renderable form, sorted by file and

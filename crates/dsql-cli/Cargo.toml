@@ -13,6 +13,7 @@ clap = { workspace = true }
 dsql-core = { workspace = true }
 dsql-generate = { workspace = true }
 dsql-introspection = { workspace = true }
+dsql-metadata = { workspace = true }
 dsql-project = { workspace = true }
 miette = { workspace = true }
 ropey = { workspace = true }

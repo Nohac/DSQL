@@ -36,7 +36,9 @@ async fn mixed_projects_format_without_touching_hosts() {
     let project = Project::load_from(&dir)
         .await
         .expect("fixture project loads");
-    let clean = fmt_project(&project, false).await.expect("fmt succeeds");
+    let clean = fmt_project(&project, false, None)
+        .await
+        .expect("fmt succeeds");
     assert!(clean, "the canonical fixture needs no reformatting");
 
     let host_after = std::fs::read_to_string(&host_path).expect("host readable");

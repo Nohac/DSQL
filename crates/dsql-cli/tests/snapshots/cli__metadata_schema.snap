@@ -1,0 +1,87 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+assertion_line: 150
+expression: stdout(&schema)
+---
+{
+  "$id": "https://dsql.dev/schemas/build-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "fragments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "path",
+          "hash",
+          "source"
+        ],
+        "additionalProperties": false,
+        "title": "FragmentManifestEntry"
+      }
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "path",
+          "hash",
+          "source"
+        ],
+        "additionalProperties": false,
+        "title": "OperationManifestEntry"
+      }
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "version",
+    "operations",
+    "fragments"
+  ],
+  "additionalProperties": false,
+  "title": "BuildManifest"
+}

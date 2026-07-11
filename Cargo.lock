@@ -450,6 +450,7 @@ dependencies = [
  "dsql-core",
  "dsql-generate",
  "dsql-introspection",
+ "dsql-metadata",
  "dsql-project",
  "futures",
  "insta",
@@ -538,6 +539,7 @@ dependencies = [
  "facet",
  "facet-toml",
  "glob",
+ "insta",
  "thiserror",
  "tokio",
 ]

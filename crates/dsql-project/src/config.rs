@@ -44,6 +44,8 @@ pub enum ProjectError {
     InvalidEmbeddingPattern { language: String, message: String },
     #[error("scope `{scope}` imports unknown scope `{import}`")]
     UnknownScopeImport { scope: String, import: String },
+    #[error("a dsql project already exists at {0}")]
+    AlreadyInitialized(PathBuf),
 }
 
 pub type Result<T> = std::result::Result<T, ProjectError>;
@@ -198,6 +200,103 @@ impl Project {
             .map(|catalog| catalog.with_default_schema(self.config.default_schema.clone()))
             .map_err(ProjectError::CatalogBuild)
     }
+}
+
+/// The starter file's serialized header: routing the URL through
+/// facet_toml escapes whatever characters it carries.
+#[derive(Facet)]
+struct StarterHeader {
+    database_url: String,
+    default_schema: String,
+}
+
+/// Scaffolds a new project under `base_path`: a `dsql/` root with a
+/// starter `dsql.toml` (one `main` scope owning every `.dsql` document)
+/// and an empty `schema/` directory. Refuses to touch an existing
+/// project.
+pub async fn init_project(base_path: &Path, database_url: Option<String>) -> Result<Project> {
+    let root = base_path.join("dsql");
+    let config_path = root.join("dsql.toml");
+
+    // The complete starter is composed and parsed back through the real
+    // Config BEFORE anything touches disk: a URL facet_toml cannot
+    // represent, or template drift, fails cleanly instead of stranding a
+    // half-initialized project.
+    let header = StarterHeader {
+        database_url: database_url.unwrap_or_else(|| "<database url>".to_string()),
+        default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
+    };
+    let header = facet_toml::to_string(&header).map_err(|error| ProjectError::Parse {
+        path: config_path.clone(),
+        message: error.to_string(),
+    })?;
+    let raw = format!(
+        "{header}\n\
+         # Every .dsql document under the project base belongs to `main`.\n\
+         # Add more scopes (and `imports`) to partition definitions.\n\
+         [resolution.main]\ndocuments = [\"**/*.dsql\"]\n"
+    );
+    let config: Config = facet_toml::from_str(&raw).map_err(|error| ProjectError::Parse {
+        path: config_path.clone(),
+        message: error.to_string(),
+    })?;
+
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(|source| ProjectError::Write {
+            path: root.clone(),
+            source,
+        })?;
+    // create_new is the existence check: no separate probe to race with.
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = match options.open(&config_path).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(ProjectError::AlreadyInitialized(config_path));
+        }
+        Err(source) => {
+            return Err(ProjectError::Write {
+                path: config_path,
+                source,
+            });
+        }
+    };
+    // Any failure past this point rolls the config back: a stranded
+    // dsql.toml would turn every retry into AlreadyInitialized. Each step
+    // reports its own path.
+    let schema = root.join("schema");
+    let committed = async {
+        tokio::io::AsyncWriteExt::write_all(&mut file, raw.as_bytes())
+            .await
+            .map_err(|source| ProjectError::Write {
+                path: config_path.clone(),
+                source,
+            })?;
+        tokio::io::AsyncWriteExt::flush(&mut file)
+            .await
+            .map_err(|source| ProjectError::Write {
+                path: config_path.clone(),
+                source,
+            })?;
+        drop(file);
+        tokio::fs::create_dir_all(&schema)
+            .await
+            .map_err(|source| ProjectError::Write {
+                path: schema.clone(),
+                source,
+            })
+    }
+    .await;
+    if let Err(error) = committed {
+        let _ = tokio::fs::remove_file(&config_path).await;
+        return Err(error);
+    }
+    Ok(Project {
+        root,
+        schema,
+        config,
+    })
 }
 
 /// Walks up from `start_dir` looking for a `dsql/dsql.toml` root.

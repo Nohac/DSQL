@@ -11,3 +11,6 @@ facet-toml = { workspace = true }
 glob = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

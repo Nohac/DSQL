@@ -1,0 +1,29 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+assertion_line: 322
+expression: stdout(&output)
+---
+document [0..29]
+    query_def [0..28]
+        Query "query" [0..5]
+        Whitespace " " [5..6]
+        Name "Broken" [6..12]
+        Whitespace " " [12..13]
+        selection_set [13..28]
+            LBrace "{" [13..14]
+            Whitespace "\n  " [14..17]
+            selection [17..28]
+                field_selection [17..28]
+                    relation_ref [17..22]
+                        qualified_name [17..22]
+                            Name "title" [17..22]
+                    field_selection_tail [22..28]
+                        field_suffix [22..28]
+                            clause_list [22..28]
+                                LPar "(" [22..23]
+                                clause [23..28]
+                                    limit_clause [23..28]
+                                        Limit "limit" [23..28]
+    Whitespace "\n" [28..29]
+---
+invalid syntax, expected one of: '$', '$$', '.', '..', 'false', '(', 'null', <number>, <string>, '~', 'true'

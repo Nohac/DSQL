@@ -160,6 +160,111 @@ async fn documents_owned_by_two_scopes_fail_loading() {
 }
 
 #[tokio::test]
+async fn init_scaffolds_a_loadable_project() {
+    let dir = std::env::temp_dir().join(format!("dsql-init-fixture-{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("clean stale dir");
+    }
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+
+    let project = dsql_project::init_project(&dir, None)
+        .await
+        .expect("init scaffolds");
+    assert!(project.schema.is_dir(), "schema/ directory exists");
+    insta::assert_snapshot!(
+        std::fs::read_to_string(project.root.join("dsql.toml")).expect("config written")
+    );
+
+    let reloaded = Project::load_from(&dir).await.expect("project round-trips");
+    assert_eq!(reloaded.config.database_url, "<database url>");
+    assert_eq!(
+        reloaded.config.resolution["main"].documents,
+        vec!["**/*.dsql".to_string()]
+    );
+
+    // A second init must not clobber the existing configuration.
+    let error = dsql_project::init_project(&dir, Some("postgres://x".to_string()))
+        .await
+        .expect_err("re-init refuses");
+    assert!(
+        error.to_string().contains("already exists"),
+        "unexpected error: {error}"
+    );
+
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[tokio::test]
+async fn init_rolls_back_when_the_schema_directory_is_blocked() {
+    let dir = std::env::temp_dir().join(format!("dsql-init-blocked-{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("clean stale dir");
+    }
+    // A regular file where schema/ must go blocks initialization.
+    std::fs::create_dir_all(dir.join("dsql")).expect("fixture dir");
+    std::fs::write(dir.join("dsql/schema"), "blocker").expect("blocking file");
+
+    let error = dsql_project::init_project(&dir, None)
+        .await
+        .expect_err("blocked schema fails init");
+    assert!(
+        error.to_string().contains("schema"),
+        "the error names the failing path: {error}"
+    );
+    assert!(
+        !dir.join("dsql/dsql.toml").exists(),
+        "a failed init must not leave a config behind: {error}"
+    );
+
+    // Removing the blocker makes a retry succeed — nothing was stranded.
+    std::fs::remove_file(dir.join("dsql/schema")).expect("unblock");
+    dsql_project::init_project(&dir, None)
+        .await
+        .expect("retry succeeds after unblocking");
+
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[tokio::test]
+async fn init_escapes_hostile_database_urls() {
+    let dir = std::env::temp_dir().join(format!("dsql-init-escape-{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("clean stale dir");
+    }
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+
+    // Quotes and backslashes are representable TOML: they MUST round-trip.
+    let quoted = "postgres://user:pa\"ss\\word@host/db".to_string();
+    let project = dsql_project::init_project(&dir, Some(quoted.clone()))
+        .await
+        .expect("representable URLs init");
+    assert_eq!(project.config.database_url, quoted);
+    let reloaded = Project::load_from(&dir).await.expect("round-trips");
+    assert_eq!(reloaded.config.database_url, quoted);
+    std::fs::remove_dir_all(&dir).expect("reset");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+
+    // A newline may be unrepresentable in the starter: round-trip exactly
+    // or fail cleanly — never write invalid TOML that strands the project.
+    let hostile = "postgres://user:pa\"ss\\wo\nrd@host/db".to_string();
+    match dsql_project::init_project(&dir, Some(hostile.clone())).await {
+        Ok(project) => {
+            assert_eq!(project.config.database_url, hostile);
+            let reloaded = Project::load_from(&dir).await.expect("round-trips");
+            assert_eq!(reloaded.config.database_url, hostile);
+        }
+        Err(error) => {
+            assert!(
+                !dir.join("dsql/dsql.toml").exists(),
+                "a rejected URL must not leave a config behind: {error}"
+            );
+        }
+    }
+
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[tokio::test]
 async fn schema_directory_round_trips_and_drops_stale_tables() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixture/imdb");
     let project = Project::load_from(&fixture)

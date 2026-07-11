@@ -6,4 +6,6 @@ mod assemble;
 mod layout;
 mod pipeline;
 
-pub use pipeline::{GenerateError, GenerateOptions, GenerateOutput, generate_project};
+pub use pipeline::{
+    GenerateError, GenerateOptions, GenerateOutput, generate_project, validate_assembly,
+};

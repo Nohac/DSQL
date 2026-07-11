@@ -1,0 +1,6 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+assertion_line: 56
+expression: stdout(&output)
+---
+1 document, 1 query
