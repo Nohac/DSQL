@@ -177,8 +177,11 @@ pub struct DsqlSchema {
     definition_answer: (DefinitionTarget,),
 }
 
-/// Everything the shared lowering walk may spawn: the group every
-/// [`LowerStage`] implementation declares through its `Commands`.
+/// Everything the shared lowering walk may spawn — the *normalized AST*:
+/// there is no owned tree value, the fact graph (these shapes plus the
+/// `ChildOf`/`Children` relationships) is the syntax representation
+/// consumers join against. The group every [`LowerStage`] implementation
+/// declares through its `Commands`.
 ///
 /// [`LowerStage`]: crate::entity::LowerStage
 pub type AstFacts = (

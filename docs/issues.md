@@ -26,3 +26,22 @@
   engine feature fingerprinting relationship members' content (subtree
   fingerprints) — recovers per-fragment granularity and belongs with the
   walk decomposition work.
+
+# Deferred designs (owner input wanted)
+
+- **Source residency & representation** (review High 5, and the eviction
+  brainstorm from 2026-07-09): split identity from parse materialization —
+  cheap revision fingerprints for editor-owned ropes vs content
+  fingerprints for derived regions; regions as host/range facts
+  materialized at the parser boundary instead of copied ropes; an
+  analysis-only residency that can release mutable input after outputs
+  are secured. Interacts with `DerivedFrom` anchor semantics (naive
+  component removal bumps the anchor entity) — engine-adjacent.
+- **Per-file diagnostics demand (debounce)**: demand rows per open file
+  instead of the global singleton, so adapters can drop/re-arm per
+  keystroke. Interacts with the check systems' demand joins and the walk
+  decomposition below.
+- **Walk decomposition**: per-(definition, expanded-fragment) tracked
+  pairs (the `resolution.rs` pattern) or engine subtree fingerprints,
+  replacing the `DefDecl::source_hash` + fragment-file-hash invalidation
+  with row-granular deps and retiring the remaining ambient body reads.

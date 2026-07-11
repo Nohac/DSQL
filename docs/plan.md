@@ -5,7 +5,10 @@ as the incremental evaluation engine. The language core is rebuilt as **language
 entities** (the porridge playground pattern) that carry over the **language atom
 principles** from `dsql-poc/docs/proposals/language-atoms.md`.
 
-Status: plan. Nothing below is implemented yet unless marked otherwise.
+Status: **historical port record** (updated 2026-07-11). The port completed
+through phase 12; this document preserves the plan and its decision log.
+Current invariants live in `docs/architecture/compiler.md`, current gaps in
+`docs/issues.md` and `docs/codebase-review.md`.
 
 ## Goals
 
@@ -83,7 +86,7 @@ Everything is a component; there is no side database.
 - A **source file** is an entity with `FilePath` + `FileText`.
 - A **parse system** derives `ParsedFile` (CST) plus parse `Diagnostic`
   entities (`DerivedFrom` the file, so they clean up when the file changes).
-- One generic **lowering walk** (`generate_ast` in playground terms) visits the
+- One generic **lowering walk** (`lower_syntax_facts` in playground terms) visits the
   CST once per file and hands each rule node to the entity that owns it. Owners
   emit **fact components** (typed, span-carrying) as new entities keyed to the
   file.

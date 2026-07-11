@@ -53,7 +53,7 @@ impl Plugin for DsqlPlugin {
         register_entity::<Expression>(reg);
         register_entity::<Variable>(reg);
 
-        reg.system(entities::generate_ast);
+        reg.system(entities::lower_syntax_facts);
 
         embedding::register_embedding(reg);
 

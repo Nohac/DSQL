@@ -3,7 +3,9 @@
 //! Variables live inside expression trees structurally (see `expression`),
 //! but inference is set-oriented — "which parameters does this query take,
 //! at which binding time, with which types" — so each occurrence also
-//! becomes its own fact, anchored into the tree by [`ParentKey`].
+//! becomes its own fact, anchored into the tree by [`ChildOf`].
+//!
+//! [`ChildOf`]: crate::facts::ChildOf
 
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
 use crate::resolution::{ResolvedClause, ResolvedPath};
