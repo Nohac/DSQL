@@ -40,6 +40,7 @@ pub enum DiagnosticCode {
     UnexpectedToken,
     UnexpectedEof,
     DuplicateDefinition,
+    UnsupportedDirective,
     UnknownFragment,
     TableNotFound,
     AmbiguousTable,
