@@ -250,38 +250,46 @@ pub(crate) fn check_spread_site(
         return;
     }
 
-    // Cycle detection: follow spreads through fragment bodies; a fragment
-    // already on the path spreading again is a cycle.
-    let mut path = vec![spread.name.clone()];
-    detect_cycles(ctx, fragment_entity, &mut path);
+    // Cycle detection: follow spreads through fragment bodies via the
+    // shared expansion walker; a fragment already on the path spreading
+    // again is a cycle.
+    let mut expansion =
+        crate::entities::expansion::SpreadExpansion::new(ctx.tree, ctx.scope, ctx.imports);
+    let crate::entities::expansion::ExpandedSpread::Fragment { .. } = expansion.enter(&spread.name)
+    else {
+        return;
+    };
+    detect_cycles(ctx, &mut expansion, fragment_entity);
+    expansion.leave();
 }
 
 fn detect_cycles(
     ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    expansion: &mut crate::entities::expansion::SpreadExpansion<'_, '_>,
     fragment_entity: Entity,
-    path: &mut Vec<String>,
 ) {
+    use crate::entities::expansion::ExpandedSpread;
+
     let inner_spreads = spreads_below(ctx, fragment_entity);
     for (entity, name, name_span) in inner_spreads {
-        if path.contains(&name) {
-            ctx.error(
-                entity,
-                name_span,
-                crate::facts::DiagnosticCode::CircularFragmentSpread,
-                format!("fragment `{name}` recursively spreads itself"),
-            );
-            continue;
+        match expansion.enter(&name) {
+            ExpandedSpread::Cycle => {
+                ctx.error(
+                    entity,
+                    name_span,
+                    crate::facts::DiagnosticCode::CircularFragmentSpread,
+                    format!("fragment `{name}` recursively spreads itself"),
+                );
+            }
+            ExpandedSpread::Unresolved => {}
+            ExpandedSpread::Fragment {
+                entity: next_entity,
+                ..
+            } => {
+                detect_cycles(ctx, expansion, next_entity);
+                expansion.leave();
+            }
         }
-        let Some((next_entity, _, _, _)) = ctx
-            .tree
-            .resolve_fragment(&name, ctx.scope, ctx.imports)
-            .copied()
-        else {
-            continue;
-        };
-        path.push(name);
-        detect_cycles(ctx, next_entity, path);
-        path.pop();
     }
 }
 
