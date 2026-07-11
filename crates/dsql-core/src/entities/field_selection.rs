@@ -21,7 +21,7 @@ use crate::facts::{
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
-use crate::resolution::ResolvedSelection;
+use crate::resolution::{ResolvedClause, ResolvedSelection};
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::completion::{CompletionContext, CompletionRequest};
 use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
@@ -253,6 +253,10 @@ pub(crate) struct TreeViews<'a> {
     clauses: View<'a, (Entity, &'a ClauseFact, &'a Span, &'a ChildOf)>,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "system parameters are the tracked join, not an API surface"
+)]
 async fn check_selections(
     _: Query<Entity, With<DiagnosticsDemand>>,
     defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
@@ -260,6 +264,7 @@ async fn check_selections(
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
+    resolutions: View<'_, (Entity, &ResolvedClause)>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
     let (def_entity, decl, file, scope) = defs.item();
@@ -268,9 +273,14 @@ async fn check_selections(
     let catalog = snapshot.catalog();
 
     let tree = SelectionTree::collect(&views);
+    let clause_resolutions: std::collections::HashMap<Entity, &ResolvedClause> = resolutions
+        .iter()
+        .map(|(_, resolved)| (resolved.clause, resolved))
+        .collect();
 
     let mut ctx = CheckCtx {
         tree: &tree,
+        clause_resolutions: &clause_resolutions,
         catalog,
         catalog_entity,
         file: file.0,
@@ -288,6 +298,9 @@ async fn check_selections(
 /// Shared state of one definition's check walk.
 pub(crate) struct CheckCtx<'a, 'view> {
     pub(crate) tree: &'a SelectionTree<'view>,
+    /// Clause resolutions by clause entity: the one place predicate paths
+    /// and order items were resolved.
+    pub(crate) clause_resolutions: &'a std::collections::HashMap<Entity, &'view ResolvedClause>,
     pub(crate) catalog: &'a crate::catalog::Catalog,
     pub(crate) catalog_entity: Entity,
     pub(crate) file: Entity,
@@ -343,7 +356,6 @@ impl CheckCtx<'_, '_> {
                         crate::entities::clause::check_clause(
                             self,
                             table_id,
-                            table_id,
                             clause_entity,
                             clause,
                             clause_span,
@@ -358,7 +370,7 @@ impl CheckCtx<'_, '_> {
                         );
                         continue;
                     }
-                    self.check_set(table_id, table_id, entity);
+                    self.check_set(table_id, entity);
                 }
                 TableResolution::NotFound { reference } => {
                     self.error(
@@ -406,17 +418,12 @@ impl CheckCtx<'_, '_> {
             return;
         };
         let table_id = table.id;
-        self.check_set(table_id, table_id, def_entity);
+        self.check_set(table_id, def_entity);
     }
 
     /// Checks one selection set (the children of `parent`) against its
     /// context table, then recurses into relation selections.
-    pub(crate) fn check_set(
-        &mut self,
-        root_table: crate::catalog::TableId,
-        table: crate::catalog::TableId,
-        parent: Entity,
-    ) {
+    pub(crate) fn check_set(&mut self, table: crate::catalog::TableId, parent: Entity) {
         self.check_output_keys(parent);
 
         let table_name = match self.catalog.table_by_id(table) {
@@ -472,7 +479,6 @@ impl CheckCtx<'_, '_> {
                     for (clause_entity, clause, clause_span) in field_clauses {
                         crate::entities::clause::check_clause(
                             self,
-                            root_table,
                             relation_table,
                             clause_entity,
                             clause,
@@ -488,7 +494,7 @@ impl CheckCtx<'_, '_> {
                         );
                         continue;
                     }
-                    self.check_set(root_table, relation_table, entity);
+                    self.check_set(relation_table, entity);
                 }
                 FieldCheckResult::NotFound => {
                     self.error(

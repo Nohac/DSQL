@@ -6,23 +6,19 @@
 //! index: relation selections joining over unindexed foreign-key columns,
 //! and multi-step predicate paths scanning or joining on unindexed
 //! columns. Both lints are tracked per resolution fact — the resolver
-//! already established each name's meaning, so no walk happens here. The
-//! predicate lint reads the clause fact ambiently by entity reference,
-//! which puts it behind the Complete barrier.
+//! already established each name's meaning (including every predicate
+//! path), so no walk and no ambient reads happen here.
 
 use crate::schema::dsql_schema;
-use bowl::{Commands, Component, DerivedFrom, Entity, Phase, Query, Registrar, SystemExt, With};
+use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, With};
 
-use crate::catalog::{
-    Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, ForeignKey, TableId, TableRef,
-};
-use crate::entities::clause::ClauseFact;
-use crate::entities::expression::{Expr, PathAnchor, PathSegment};
+use crate::catalog::{Catalog, CatalogSnapshot, ForeignKey};
+use crate::entities::expression::PathAnchor;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, Severity,
     Span, emit_diagnostic,
 };
-use crate::resolution::{ResolvedClause, ResolvedSelection, SelectionTarget};
+use crate::resolution::{PathTerminal, ResolvedClause, ResolvedSelection, SelectionTarget};
 
 /// Lint configuration, one singleton per bowl. Project loading inserts it
 /// from `[lint]` in `dsql.toml`; a bowl without one lints nothing.
@@ -45,8 +41,7 @@ impl Default for LintConfig {
 
 pub fn register_lints(reg: &mut Registrar<'_>) {
     reg.system(lint_relations);
-    // Reads lowered clause facts ambiently: behind the Complete barrier.
-    reg.system(lint_predicates.run_during(Phase::Complete));
+    reg.system(lint_predicates);
 }
 
 /// Flags relation selections joining over unindexed foreign-key columns:
@@ -93,12 +88,12 @@ async fn lint_relations(
 }
 
 /// Flags multi-step predicate paths that scan or join over unindexed
-/// columns: one tracked invocation per clause resolution.
+/// columns: one tracked invocation per clause resolution, read straight
+/// from the resolved paths.
 async fn lint_predicates(
     _: Query<Entity, With<DiagnosticsDemand>>,
     config: Query<(Entity, &LintConfig)>,
     resolutions: Query<(Entity, &ResolvedClause, &BelongsToFile)>,
-    clauses: bowl::View<'_, (Entity, &ClauseFact)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
@@ -110,21 +105,63 @@ async fn lint_predicates(
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
-    let Some(context) = resolved.context else {
-        return;
-    };
-    // The clause fact is Evaluate-lowered and referenced by entity id off
-    // the tracked resolution row; the ambient lookup is why this system
-    // sits at Complete.
-    let Some((_, ClauseFact::Where { expr })) = clauses
-        .iter()
-        .find(|(entity, _)| *entity == resolved.clause)
-    else {
-        return;
-    };
-
-    let mut findings = Vec::new();
-    collect_predicate_findings(catalog, context.table, expr, &mut findings);
+    let mut findings: Vec<Finding> = Vec::new();
+    for path in &resolved.paths {
+        // Only current-anchored, relation-stepping paths become nested
+        // scans; single-segment paths filter the clause's own table, and
+        // root-anchored paths keep the pre-resolution behavior of not
+        // linting (their scan shape differs and needs its own rule).
+        if path.anchor != PathAnchor::Current || path.relations.is_empty() {
+            continue;
+        }
+        for step in &path.relations {
+            let Some(foreign_key) = catalog.foreign_key_by_id(step.foreign_key) else {
+                continue;
+            };
+            for finding in unindexed_join_columns(catalog, foreign_key) {
+                findings.push((
+                    step.span,
+                    DiagnosticCode::UnindexedPredicateJoinColumn,
+                    format!(
+                        "predicate relation `{}` joins on unindexed column `{finding}`; nested scans can be slow",
+                        step.display
+                    ),
+                ));
+            }
+        }
+        let PathTerminal::Column {
+            span,
+            display,
+            column,
+            ..
+        } = &path.terminal
+        else {
+            continue;
+        };
+        let Some(column_info) = catalog.column_by_id(*column) else {
+            continue;
+        };
+        if column_info.is_indexed {
+            continue;
+        }
+        let path_label = format!(
+            ".{}",
+            path.relations
+                .iter()
+                .map(|step| step.display.clone())
+                .chain(std::iter::once(display.clone()))
+                .collect::<Vec<_>>()
+                .join(".")
+        );
+        findings.push((
+            *span,
+            DiagnosticCode::UnindexedScanColumn,
+            format!(
+                "predicate path `{path_label}` filters on unindexed column `{}`; nested scans can be slow",
+                column_label(catalog, *column)
+            ),
+        ));
+    }
     for (span, code, message) in findings {
         emit_diagnostic(
             &mut commands,
@@ -142,97 +179,6 @@ async fn lint_predicates(
 }
 
 type Finding = (Span, DiagnosticCode, String);
-
-fn collect_predicate_findings(
-    catalog: &Catalog,
-    table: TableId,
-    expr: &Expr,
-    findings: &mut Vec<Finding>,
-) {
-    match expr {
-        Expr::Binary { lhs, rhs, .. } => {
-            collect_predicate_findings(catalog, table, lhs, findings);
-            collect_predicate_findings(catalog, table, rhs, findings);
-        }
-        Expr::Path {
-            anchor: PathAnchor::Current,
-            segments,
-            ..
-        } if segments.len() >= 2 => {
-            collect_predicate_path_findings(catalog, table, segments, findings);
-        }
-        Expr::Path { .. } | Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
-    }
-}
-
-/// Multi-step predicate paths become nested scans: every relation step
-/// should join over indexed columns and the terminal column should be
-/// indexed itself.
-fn collect_predicate_path_findings(
-    catalog: &Catalog,
-    table: TableId,
-    segments: &[PathSegment],
-    findings: &mut Vec<Finding>,
-) {
-    let Some((last, relations)) = segments.split_last() else {
-        return;
-    };
-    let mut current = table;
-    for segment in relations {
-        let reference = FieldRef {
-            target: TableRef::parse(&segment.name),
-            selector: segment.relation_path.as_deref(),
-        };
-        let FieldCheckResult::Relation(relation) = catalog.check_field_ref(current, reference)
-        else {
-            return;
-        };
-        for finding in unindexed_join_columns(catalog, relation.foreign_key) {
-            findings.push((
-                segment.span,
-                DiagnosticCode::UnindexedPredicateJoinColumn,
-                format!(
-                    "predicate relation `{}` joins on unindexed column `{finding}`; nested scans can be slow",
-                    reference.display_text()
-                ),
-            ));
-        }
-        current = relation.table.id;
-    }
-
-    let reference = FieldRef {
-        target: TableRef::parse(&last.name),
-        selector: last.relation_path.as_deref(),
-    };
-    let FieldCheckResult::Column(column) = catalog.check_field_ref(current, reference) else {
-        return;
-    };
-    if column.is_indexed {
-        return;
-    }
-    let path_label = format!(
-        ".{}",
-        segments
-            .iter()
-            .map(|segment| {
-                FieldRef {
-                    target: TableRef::parse(&segment.name),
-                    selector: segment.relation_path.as_deref(),
-                }
-                .display_text()
-            })
-            .collect::<Vec<_>>()
-            .join(".")
-    );
-    findings.push((
-        last.span,
-        DiagnosticCode::UnindexedScanColumn,
-        format!(
-            "predicate path `{path_label}` filters on unindexed column `{}`; nested scans can be slow",
-            column_label(catalog, column.id)
-        ),
-    ));
-}
 
 /// The unindexed columns on either side of a foreign-key join, labelled.
 fn unindexed_join_columns(catalog: &Catalog, foreign_key: &ForeignKey) -> Vec<String> {

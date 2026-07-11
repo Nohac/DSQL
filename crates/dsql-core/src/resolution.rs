@@ -28,6 +28,7 @@ use crate::catalog::{
 };
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
+use crate::entities::expression::{Expr, PathAnchor, PathSegment};
 use crate::entities::field_selection::FieldSel;
 use crate::facts::{BelongsToFile, Children, Span};
 
@@ -98,14 +99,99 @@ pub struct ResolutionOf(pub Entity);
 #[relationship_target(relationship = ResolutionOf)]
 pub struct FieldResolutions(pub Vec<Entity>);
 
-/// The tables one clause's expressions resolve against: `None` when the
-/// owning selection never resolved.
+/// The tables one clause's expressions resolve against — plus every
+/// predicate path and order item resolved once, so checks, variable
+/// inference, planning, lints, and highlighting share one semantic
+/// decision instead of re-deriving it from raw strings. `context` is
+/// `None` when the owning selection never resolved (nothing else
+/// resolves either).
 #[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
 #[component(hash)]
 pub struct ResolvedClause {
     /// The clause entity this resolution is about.
     pub clause: Entity,
     pub context: Option<ClauseContext>,
+    /// Every `Expr::Path` in the clause, in expression order, keyed by
+    /// its span.
+    pub paths: Vec<ResolvedPath>,
+    /// Order-by items, in written order.
+    pub order_items: Vec<ResolvedOrderItem>,
+}
+
+impl ResolvedClause {
+    /// The resolution of the path expression at `span`.
+    pub fn path_at(&self, span: Span) -> Option<&ResolvedPath> {
+        self.paths.iter().find(|path| path.span == span)
+    }
+}
+
+/// One predicate path resolved segment by segment against its clause
+/// context.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ResolvedPath {
+    /// Span of the whole path expression — the correlation key for
+    /// consumers still walking the expression tree.
+    pub span: Span,
+    /// Where the path anchors (`.`, `~`, or `..`).
+    pub anchor: PathAnchor,
+    /// The path as written, for diagnostics.
+    pub written: String,
+    /// Relation steps that resolved, in path order; resolution stops at
+    /// the first failure.
+    pub relations: Vec<ResolvedRelationStep>,
+    pub terminal: PathTerminal,
+}
+
+/// One resolved relation step of a predicate path.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ResolvedRelationStep {
+    pub span: Span,
+    /// The qualified name as written (selector excluded), aligned with
+    /// `span` for span-splitting consumers.
+    pub written: String,
+    /// The reference's display form (selector included), for messages.
+    pub display: String,
+    pub foreign_key: ForeignKeyId,
+    /// The table the step lands on.
+    pub table: TableId,
+}
+
+/// Where a resolved path ends.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum PathTerminal {
+    /// The full path resolved to a column of `table`.
+    Column {
+        span: Span,
+        /// The terminal as written, aligned with `span`.
+        written: String,
+        /// The reference's display form (selector included), for messages.
+        display: String,
+        table: TableId,
+        column: ColumnId,
+    },
+    /// Resolution failed (at a relation step or the terminal); the whole
+    /// path diagnoses against the clause context.
+    Failed,
+    /// Parent-scope anchors are not resolvable at check time.
+    OutOfScope,
+}
+
+impl PathTerminal {
+    /// The terminal column, when the path fully resolved.
+    pub fn column(&self) -> Option<ColumnId> {
+        match self {
+            PathTerminal::Column { column, .. } => Some(*column),
+            PathTerminal::Failed | PathTerminal::OutOfScope => None,
+        }
+    }
+}
+
+/// One order-by item resolved against the clause's table.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ResolvedOrderItem {
+    pub span: Span,
+    /// The terminal column, when the item names one.
+    pub column: Option<ColumnId>,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -263,7 +349,10 @@ async fn resolve_nested(
 }
 
 /// Resolves each clause against its owning selection's target table: one
-/// tracked invocation per (field, field-resolution, clause) triple.
+/// tracked invocation per (field, field-resolution, clause) triple. The
+/// clause's predicate paths and order items resolve here, once — every
+/// downstream stage consumes these facts instead of re-resolving raw
+/// strings against the catalog.
 async fn resolve_clauses(
     parents: Query<(
         Entity,
@@ -274,24 +363,161 @@ async fn resolve_clauses(
     )>,
     resolution: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
     clauses: Query<(Entity, &ClauseFact), Where<In<Children>>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands<(dsql_schema::ResolvedClause,)>,
 ) {
     let (field_entity, _, _, _, file) = parents.item();
     let (_, parent_resolved) = resolution.item();
-    let (clause_entity, _clause) = clauses.item();
+    let (clause_entity, clause) = clauses.item();
+    let (catalog_entity, snapshot) = catalog.item();
+    let catalog = snapshot.catalog();
 
     let context = match (parent_resolved.root, parent_resolved.target.child_context()) {
         (Some(root), Some(table)) => Some(ClauseContext { root, table }),
         _ => None,
     };
+
+    let mut paths = Vec::new();
+    let mut order_items = Vec::new();
+    if let Some(context) = context {
+        match clause {
+            ClauseFact::Where { expr } => collect_paths(catalog, context, expr, &mut paths),
+            ClauseFact::OrderBy { items } => {
+                order_items.extend(items.iter().map(|item| {
+                    let reference = FieldRef {
+                        target: TableRef::parse(&item.field),
+                        selector: None,
+                    };
+                    let column = match catalog.check_field_ref(context.table, reference) {
+                        FieldCheckResult::Column(column) => Some(column.id),
+                        _ => None,
+                    };
+                    ResolvedOrderItem {
+                        span: item.field_span,
+                        column,
+                    }
+                }));
+            }
+            ClauseFact::Limit { expr } | ClauseFact::Offset { expr } => {
+                collect_paths(catalog, context, expr, &mut paths);
+            }
+        }
+    }
+
     commands.insert((
-        DerivedFrom::many([field_entity, clause_entity]),
+        DerivedFrom::many([field_entity, clause_entity, catalog_entity]),
         BelongsToFile(file.0),
         ResolvedClause {
             clause: clause_entity,
             context,
+            paths,
+            order_items,
         },
     ));
+}
+
+/// Collects every `Expr::Path` of one clause expression, resolved in
+/// expression order.
+fn collect_paths(
+    catalog: &crate::catalog::Catalog,
+    context: ClauseContext,
+    expr: &Expr,
+    paths: &mut Vec<ResolvedPath>,
+) {
+    match expr {
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_paths(catalog, context, lhs, paths);
+            collect_paths(catalog, context, rhs, paths);
+        }
+        Expr::Path {
+            anchor, segments, ..
+        } => paths.push(resolve_path(catalog, context, expr, anchor, segments)),
+        Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
+    }
+}
+
+/// One path against the clause context: relation steps first, then the
+/// terminal column, stopping at the first failure.
+fn resolve_path(
+    catalog: &crate::catalog::Catalog,
+    context: ClauseContext,
+    expr: &Expr,
+    anchor: &PathAnchor,
+    segments: &[PathSegment],
+) -> ResolvedPath {
+    let span = expr.span();
+    let written = expr.to_string();
+
+    let mut current = match anchor {
+        PathAnchor::Current => context.table,
+        PathAnchor::Root => context.root,
+        PathAnchor::Parent => {
+            return ResolvedPath {
+                span,
+                anchor: *anchor,
+                written,
+                relations: Vec::new(),
+                terminal: PathTerminal::OutOfScope,
+            };
+        }
+    };
+
+    let mut relations = Vec::new();
+    let Some((last, steps)) = segments.split_last() else {
+        return ResolvedPath {
+            span,
+            anchor: *anchor,
+            written,
+            relations,
+            terminal: PathTerminal::Failed,
+        };
+    };
+    for segment in steps {
+        let reference = FieldRef {
+            target: TableRef::parse(&segment.name),
+            selector: segment.relation_path.as_deref(),
+        };
+        let FieldCheckResult::Relation(relation) = catalog.check_field_ref(current, reference)
+        else {
+            return ResolvedPath {
+                span,
+                anchor: *anchor,
+                written,
+                relations,
+                terminal: PathTerminal::Failed,
+            };
+        };
+        relations.push(ResolvedRelationStep {
+            span: segment.span,
+            written: segment.name.clone(),
+            display: reference.display_text(),
+            foreign_key: relation.foreign_key.id,
+            table: relation.table.id,
+        });
+        current = relation.table.id;
+    }
+
+    let reference = FieldRef {
+        target: TableRef::parse(&last.name),
+        selector: last.relation_path.as_deref(),
+    };
+    let terminal = match catalog.check_field_ref(current, reference) {
+        FieldCheckResult::Column(column) => PathTerminal::Column {
+            span: last.span,
+            written: last.name.clone(),
+            display: reference.display_text(),
+            table: current,
+            column: column.id,
+        },
+        _ => PathTerminal::Failed,
+    };
+    ResolvedPath {
+        span,
+        anchor: *anchor,
+        written,
+        relations,
+        terminal,
+    }
 }
 
 /// One name against one context table.

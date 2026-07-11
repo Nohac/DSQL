@@ -158,3 +158,20 @@ fn plans_retire_when_demand_is_removed_sources_change() {
         );
     });
 }
+
+/// Comparison right-hand sides that are themselves column paths: same-table
+/// columns render as plain column references, and relation-path RHS columns
+/// exercise the `OuterCurrent` scope inside the nested `EXISTS`.
+#[test]
+fn rhs_same_table_sql() {
+    block_on(async {
+        insta::assert_snapshot!(fixture_sql("valid/imdb-rhs-same-table.dsql").await);
+    });
+}
+
+#[test]
+fn rhs_relation_path_sql() {
+    block_on(async {
+        insta::assert_snapshot!(fixture_sql("valid/imdb-rhs-relation-path.dsql").await);
+    });
+}
