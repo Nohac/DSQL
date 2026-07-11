@@ -24,9 +24,7 @@ use crate::entities::field_selection::{SelectionTree, TreeViews};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
-use crate::entity::{
-    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
-};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span, VariablesDemand};
 use crate::format::CstFormatter;
 use crate::grammar::parser::NodeRef;
@@ -55,6 +53,9 @@ impl LanguageEntity for Variable {
     fn register(reg: &mut Registrar<'_>) {
         // Views lowered facts ambiently: behind the Complete barrier.
         reg.system(infer_variables.run_during(bowl::Phase::Complete));
+        // Fully tracked (a per-file bound join, no views), so it needs no
+        // phase barrier: pairs replan as bindings commit at Complete.
+        reg.system(hover_variables);
     }
 }
 
@@ -602,14 +603,6 @@ impl FormatStage for Variable {
     }
 }
 
-impl HoverStage for Variable {
-    fn register_hover(reg: &mut Registrar<'_>) {
-        // Fully tracked (a per-file bound join, no views), so it needs no
-        // phase barrier: pairs replan as bindings commit at Complete.
-        reg.system(hover_variables);
-    }
-}
-
 /// Answers hover on a variable occurrence with its inferred binding: one
 /// invocation per (request, binding-in-file) pair via the `BelongsToFile`
 /// join, answering when the binding's span holds the cursor. Without
@@ -649,9 +642,4 @@ async fn hover_variables(
             text,
         },
     ));
-}
-
-impl CompletionStage for Variable {
-    /// Variables are free-form names; nothing to suggest yet.
-    fn register_completions(_reg: &mut Registrar<'_>) {}
 }

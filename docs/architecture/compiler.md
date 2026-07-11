@@ -53,13 +53,13 @@ form a compile-time coverage contract:
 | `LanguageEntity` | identity + system registration |
 | `LowerStage` | CST node → fact components |
 | `FormatStage` | canonical text of owned rules |
-| `HoverStage` | hover candidate systems (or explicit no-op) |
+| (retired) | hover/completion systems register in `LanguageEntity::register` |
 
-`register_entity::<E>` bounds on every stage, so a new entity does not
-compile until it declares each one. Rule ownership lives in two exhaustive
-`match`es in `entities/lowering.rs` (`lower_rule`, `format_rule`): every
-grammar rule is either claimed by an entity or explicitly listed as
-structural. Adding a stage trait retroactively forces every entity to
+`register_entity::<E>` bounds the syntax stages only. Rule ownership lives
+in two exhaustive `match`es in `entities/lowering.rs` (`lower_rule`,
+`format_rule`): every grammar rule is either claimed by an entity or
+explicitly listed as structural. Semantic and service systems register in
+`LanguageEntity::register`; a stage trait is only worth adding when it
 declare it.
 
 The entities: `Document` (files, parse), `Definition` (queries and

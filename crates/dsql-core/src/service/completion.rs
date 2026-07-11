@@ -10,7 +10,7 @@
 //!    the position into a [`CompletionSite`] — a ~30-line match instead of
 //!    a thousand-line classifier, because the grammar layer already covers
 //!    keyword nuance.
-//! 3. **Semantic layer, per entity**: `CompletionStage` systems contribute
+//! 3. **Semantic layer, per entity**: entity-registered candidate systems contribute
 //!    [`CompletionCandidate`] facts (columns, relations, fragments) using
 //!    the same context-table resolution the checks and hover use.
 //!

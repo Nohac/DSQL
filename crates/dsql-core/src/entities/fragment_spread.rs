@@ -7,9 +7,7 @@ use bowl::{
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
 use crate::entities::{direct_token, node_span, text};
-use crate::entity::{
-    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
-};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
     NodeKey, Severity, Span, emit_diagnostic,
@@ -73,6 +71,8 @@ impl LanguageEntity for FragmentSpread {
         // next to index_defs.
         reg.system(resolve_spreads.run_during(Phase::Complete));
         reg.system(check_unknown_fragments.run_during(Phase::Complete));
+        reg.system(hover_spreads);
+        reg.system(complete_spreads.run_during(bowl::Phase::Complete));
     }
 }
 
@@ -386,12 +386,6 @@ impl FormatStage for FragmentSpread {
     }
 }
 
-impl HoverStage for FragmentSpread {
-    fn register_hover(reg: &mut Registrar<'_>) {
-        reg.system(hover_spreads);
-    }
-}
-
 /// Answers hover on a `...Name` spread with the fragment it resolves to:
 /// one tracked invocation per (request, spread-in-file) pair via the
 /// `BelongsToFile` join, the target read off the [`ResolvedSpread`]
@@ -425,12 +419,6 @@ async fn hover_spreads(
             text,
         },
     ));
-}
-
-impl CompletionStage for FragmentSpread {
-    fn register_completions(reg: &mut Registrar<'_>) {
-        reg.system(complete_spreads.run_during(bowl::Phase::Complete));
-    }
 }
 
 /// Contributes fragments whose target matches the context table, both on a

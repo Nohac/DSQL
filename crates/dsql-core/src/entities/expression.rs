@@ -11,9 +11,7 @@ use crate::schema::AstFacts;
 use bowl::{Commands, Entity, Registrar};
 
 use crate::entities::{direct_rule, node_span, text};
-use crate::entity::{
-    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
-};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::Span;
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
@@ -445,15 +443,4 @@ impl FormatStage for Expression {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         formatter.expr(node);
     }
-}
-
-impl HoverStage for Expression {
-    /// Expression internals answer through the variable entity; paths gain
-    /// hover with the editor polish pass.
-    fn register_hover(_reg: &mut Registrar<'_>) {}
-}
-
-impl CompletionStage for Expression {
-    /// Expression operators come from the grammar layer; typed operator filtering is a planned refinement.
-    fn register_completions(_reg: &mut Registrar<'_>) {}
 }

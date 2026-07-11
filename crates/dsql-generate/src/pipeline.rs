@@ -11,8 +11,7 @@ use tokio::process::Command;
 
 use dsql_core::entities::variable::VariableBinding;
 use dsql_core::facts::{
-    BelongsToFile, DefKey, Diagnostic, DiagnosticsDemand, PlanDemand, PlanKey, Severity, Span,
-    SqlDemand, VariablesDemand,
+    BelongsToFile, DefKey, Diagnostic, PlanKey, Severity, Span, arm_generate_demands,
 };
 use dsql_core::plan::{FragmentPlanFact, OperationSeed, QueryPlanFact};
 use dsql_core::source::{BelongsToHost, FilePath, SourceOffset};
@@ -390,14 +389,7 @@ struct CollectedFragment {
 
 async fn collect_facts(project: &Project, options: GenerateOptions) -> Result<CollectedFacts> {
     let bowl = open_project_bowl(project).await?;
-    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-        .await;
-    bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
-        .await;
-    bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))
-        .await;
-    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
-        .await;
+    arm_generate_demands(&bowl).await;
     if options.collection_limit.is_some() {
         bowl.insert((
             Singleton::<SqlOptions>::new(),

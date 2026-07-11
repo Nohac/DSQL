@@ -3,7 +3,7 @@
 
 use bowl::{Entity, Query, Singleton};
 
-use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand};
+use dsql_core::facts::{DiagnosticsDemand, arm_generate_demands};
 use dsql_core::format::{FormatConfidence, format_document};
 use dsql_core::grammar::parse;
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
@@ -49,12 +49,7 @@ pub async fn sql(collection_limit: Option<u64>) -> Outcome {
     let project = Project::load().await?;
     {
         let bowl = open_project_bowl(&project).await?;
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
-        bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
-            .await;
-        bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))
-            .await;
+        arm_generate_demands(&bowl).await;
         if collection_limit.is_some() {
             bowl.insert((
                 Singleton::<SqlOptions>::new(),

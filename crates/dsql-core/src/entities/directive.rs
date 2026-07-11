@@ -6,9 +6,7 @@ use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, With};
 
 use crate::entities::expression::{Expr, build_expr, expr_child};
 use crate::entities::{direct_rule, direct_token, node_span, text};
-use crate::entity::{
-    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
-};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
     NodeKey, Severity, Span, emit_diagnostic,
@@ -176,14 +174,4 @@ impl FormatStage for Directive {
         formatter.write_str(" ");
         formatter.write_node_text(node);
     }
-}
-
-impl HoverStage for Directive {
-    /// Directive hover lands with the directive registry.
-    fn register_hover(_reg: &mut Registrar<'_>) {}
-}
-
-impl CompletionStage for Directive {
-    /// Directive completions land with the directive registry.
-    fn register_completions(_reg: &mut Registrar<'_>) {}
 }

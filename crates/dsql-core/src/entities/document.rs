@@ -4,9 +4,7 @@
 use crate::schema::{AstFacts, dsql_schema};
 use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, With};
 
-use crate::entity::{
-    CompletionStage, FormatStage, HoverStage, LanguageEntity, LowerCtx, LowerStage,
-};
+use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     DiagnosticCode, DiagnosticFacts, DiagnosticSource, Severity, Span, emit_diagnostic,
 };
@@ -121,14 +119,4 @@ impl FormatStage for Document {
             }
         }
     }
-}
-
-impl HoverStage for Document {
-    /// Documents carry no hover content; the service supplies the fallback.
-    fn register_hover(_reg: &mut Registrar<'_>) {}
-}
-
-impl CompletionStage for Document {
-    /// Documents contribute no completions; keywords come from the grammar layer.
-    fn register_completions(_reg: &mut Registrar<'_>) {}
 }

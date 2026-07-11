@@ -16,9 +16,10 @@ use super::documents::load_project_documents;
 use super::embedding::typescript_pattern;
 
 /// Registers the language and populates a fresh bowl with the project's
-/// contents. Demand markers are the caller's choice — a CLI check inserts
-/// `DiagnosticsDemand`, SQL generation `PlanDemand` + `SqlDemand`, an LSP
-/// whatever its editor session needs.
+/// contents. Demand markers are the caller's choice, armed through the
+/// bundles in `dsql_core::facts` (`arm_generate_demands`,
+/// `arm_editor_demands`) so no adapter hand-assembles an incomplete
+/// pipeline.
 pub async fn open_project_bowl(project: &Project) -> Result<Bowl> {
     let bowl = language_bowl().await;
     populate_project_bowl(&bowl, project).await?;
