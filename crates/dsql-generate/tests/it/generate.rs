@@ -99,3 +99,86 @@ async fn error_diagnostics_fail_generation() {
 
     std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }
+
+/// Two scopes may each define an operation with the same public name —
+/// resolution namespaces are independent — but the build tree currently
+/// uses a flat per-kind namespace: generation must refuse before writing
+/// rather than let the later artifact overwrite the earlier one.
+#[tokio::test]
+async fn colliding_operation_names_refuse_before_writing() {
+    let (dir, _) = fixture_project("collide").await;
+    let query = "query Collide {\n  title(limit 1) {\n    id\n  }\n}\n";
+    std::fs::write(dir.join("queries/shared/collide.dsql"), query).expect("shared collide");
+    std::fs::write(dir.join("queries/frontend/collide.dsql"), query).expect("frontend collide");
+    let project = Project::load_from(&dir).await.expect("project reloads");
+
+    let error = generate_project(
+        &project,
+        GenerateOptions {
+            collection_limit: Some(10),
+        },
+    )
+    .await
+    .expect_err("colliding names must refuse generation");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("Collide") && message.contains("both write"),
+        "collision error names the artifacts, got: {message}"
+    );
+    assert!(
+        message.contains("shared/collide.dsql") && message.contains("frontend/collide.dsql"),
+        "collision error names both sources, got: {message}"
+    );
+    assert!(
+        !project.root.join("build").exists(),
+        "no build tree may be written on collision"
+    );
+}
+
+/// Names differing only by case are distinct to the language but alias
+/// one file on case-insensitive filesystems, so they collide too.
+#[tokio::test]
+async fn case_folded_operation_names_refuse_before_writing() {
+    let (dir, _) = fixture_project("case-collide").await;
+    std::fs::write(
+        dir.join("queries/shared/upper.dsql"),
+        "query Collide {
+  title(limit 1) {
+    id
+  }
+}
+",
+    )
+    .expect("shared upper");
+    std::fs::write(
+        dir.join("queries/frontend/lower.dsql"),
+        "query collide {
+  title(limit 1) {
+    id
+  }
+}
+",
+    )
+    .expect("frontend lower");
+    let project = Project::load_from(&dir).await.expect("project reloads");
+
+    let error = generate_project(
+        &project,
+        GenerateOptions {
+            collection_limit: Some(10),
+        },
+    )
+    .await
+    .expect_err("case-folded names must refuse generation");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("Collide") && message.contains("collide"),
+        "collision error names both artifacts, got: {message}"
+    );
+    assert!(
+        !project.root.join("build").exists(),
+        "no build tree may be written on collision"
+    );
+}
