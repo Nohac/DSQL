@@ -185,7 +185,7 @@ pub async fn complete(file: &str, offset: usize) -> Outcome {
             .await;
         match list {
             Ok(list) => {
-                for item in &list.0 {
+                for item in &list.items {
                     println!(
                         "{:?} {}{}",
                         item.kind,
@@ -196,7 +196,7 @@ pub async fn complete(file: &str, offset: usize) -> Outcome {
                             .unwrap_or_default()
                     );
                 }
-                if list.0.is_empty() {
+                if list.items.is_empty() {
                     println!("no completions");
                 }
             }

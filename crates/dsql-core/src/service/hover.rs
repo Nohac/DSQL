@@ -131,7 +131,9 @@ pub(crate) fn map_cursor(
     regions
         .iter()
         .find(|(_, host, start, text)| {
-            host.0 == file && offset >= start.0 && offset < start.0 + text.rope().len()
+            // Inclusive end: a cursor at the region's last byte (right
+            // before the closing delimiter) still edits the region.
+            host.0 == file && offset >= start.0 && offset <= start.0 + text.rope().len()
         })
         .map(|(region, _, start, _)| (region, offset - start.0))
         .unwrap_or((file, offset))

@@ -322,9 +322,9 @@ mod host_requests {
                 .await
                 .expect("completion answered");
             assert!(
-                list.0.iter().any(|item| item.label == "TitleBits"),
+                list.items.iter().any(|item| item.label == "TitleBits"),
                 "expected TitleBits candidate, got: {:?}",
-                list.0.iter().map(|item| &item.label).collect::<Vec<_>>()
+                list.items.iter().map(|item| &item.label).collect::<Vec<_>>()
             );
         });
     }

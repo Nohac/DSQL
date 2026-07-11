@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 422
+expression: "scenario.complete(\"s.dsql\", markers[0]).await"
+---
+context: DocumentRoot table=<unresolved> scope=default replace=<none>
+Keyword fragment
+Keyword query

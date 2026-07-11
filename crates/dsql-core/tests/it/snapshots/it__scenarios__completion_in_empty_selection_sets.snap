@@ -1,6 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/scenarios.rs
-assertion_line: 223
+assertion_line: 368
 expression: "scenario.complete(\"s.dsql\", markers[0]).await"
 ---
 context: SelectionBody table=title scope=default replace=<none>

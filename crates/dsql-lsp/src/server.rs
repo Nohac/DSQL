@@ -490,8 +490,12 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
+        let replace_range = list.replace.map(|span| Range {
+            start: byte_to_position(&rope, span.start),
+            end: byte_to_position(&rope, span.end),
+        });
         let items: Vec<CompletionItem> = list
-            .0
+            .items
             .iter()
             .map(|item| CompletionItem {
                 label: item.label.clone(),
@@ -505,6 +509,15 @@ impl LanguageServer for Backend {
                     CompletionKind::Keyword => CompletionItemKind::KEYWORD,
                 }),
                 detail: item.detail.clone(),
+                text_edit: replace_range.map(|range| {
+                    tower_lsp_server::ls_types::CompletionTextEdit::Edit(TextEdit {
+                        range,
+                        new_text: item
+                            .insert_text
+                            .clone()
+                            .unwrap_or_else(|| item.label.clone()),
+                    })
+                }),
                 insert_text: item.insert_text.clone(),
                 ..CompletionItem::default()
             })

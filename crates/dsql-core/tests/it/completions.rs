@@ -31,7 +31,7 @@ async fn completions(source_with_cursor: &str) -> String {
         .await
         .expect("completion requests with a known file are answered");
 
-    list.0
+    list.items
         .iter()
         .map(|item| {
             let detail = item

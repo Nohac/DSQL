@@ -726,70 +726,6 @@ async fn hover_fields(
     ));
 }
 
-/// The table a field's *own* reference resolves against: its parent's
-/// resolved relation table, or the root table for query roots.
-pub(crate) fn resolve_context_table(
-    tree: &SelectionTree<'_>,
-    catalog: &crate::catalog::Catalog,
-    field: Entity,
-) -> Option<crate::catalog::TableId> {
-    // Build the ancestor chain of field entities, root first.
-    let mut chain = Vec::new();
-    let mut current = field;
-    loop {
-        let (_, _, _, parent) = tree.fields_by_entity.get(&current)?;
-        chain.push(current);
-        match tree.fields_by_entity.get(parent) {
-            Some(_) => current = *parent,
-            // Parent is the definition entity.
-            None => break,
-        }
-    }
-    let root = *chain.last()?;
-
-    // Query roots resolve as tables; fragment bodies against the target.
-    let (_, _, _, root_parent) = tree.fields_by_entity.get(&root)?;
-    let fragment_target = tree
-        .fragments
-        .iter()
-        .find(|(def_entity, _, _, _)| def_entity == root_parent)
-        .map(|(_, _, target, _)| target.name.clone());
-
-    let (_, root_field, _, _) = tree.fields_by_entity.get(&root)?;
-    let mut table = match &fragment_target {
-        Some(target) => catalog.table_ref_for(TableRef::parse(target))?.id,
-        None => {
-            let table = catalog.table_ref_for(TableRef::parse(&root_field.name))?.id;
-            if chain.len() == 1 {
-                // Hovering the root itself: its context is itself.
-                return Some(table);
-            }
-            table
-        }
-    };
-
-    // Descend from below the root to the hovered field's parent.
-    for step in chain
-        .iter()
-        .rev()
-        .skip(if fragment_target.is_some() { 0 } else { 1 })
-    {
-        if *step == field {
-            return Some(table);
-        }
-        let (_, step_field, _, _) = tree.fields_by_entity.get(step)?;
-        let reference = FieldRef {
-            target: TableRef::parse(&step_field.name),
-            selector: step_field.relation_path.as_deref(),
-        };
-        let FieldCheckResult::Relation(relation) = catalog.check_field_ref(table, reference) else {
-            return None;
-        };
-        table = relation.table.id;
-    }
-    Some(table)
-}
-
 /// Renders a resolved selection for hover.
 fn describe_target(
     catalog: &crate::catalog::Catalog,
@@ -820,40 +756,6 @@ fn describe_target(
             ))
         }
         SelectionTarget::Unresolved => None,
-    }
-}
-
-/// The table a field selection *targets*: the table itself for query
-/// roots, or the relation's table for nested selections. This is the
-/// context for everything inside the field's braces and clauses.
-pub(crate) fn resolve_field_target(
-    tree: &SelectionTree<'_>,
-    catalog: &crate::catalog::Catalog,
-    field_entity: Entity,
-) -> Option<crate::catalog::TableId> {
-    let (_, field, _, parent) = tree.fields_by_entity.get(&field_entity)?;
-    let is_query_root = !tree.fields_by_entity.contains_key(parent)
-        && !tree
-            .fragments
-            .iter()
-            .any(|(def_entity, _, _, _)| def_entity == parent);
-    if is_query_root {
-        return catalog
-            .table_ref_for(TableRef::parse(&field.name))
-            .map(|table| table.id);
-    }
-
-    // Nested and fragment-root fields alike: resolve the containing context
-    // (resolve_context_table handles fragment targets), then step through
-    // this field's own relation reference.
-    let context = resolve_context_table(tree, catalog, field_entity)?;
-    let reference = FieldRef {
-        target: TableRef::parse(&field.name),
-        selector: field.relation_path.as_deref(),
-    };
-    match catalog.check_field_ref(context, reference) {
-        FieldCheckResult::Relation(relation) => Some(relation.table.id),
-        _ => None,
     }
 }
 

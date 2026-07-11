@@ -1,9 +1,9 @@
 ---
 source: crates/dsql-core/tests/it/scenarios.rs
-assertion_line: 347
+assertion_line: 437
 expression: "scenario.complete(\"host.ts\", markers[0]).await"
 ---
-context: SelectionBody table=title scope=default
+context: SelectionBody table=title scope=default replace=<none>
 Column episode_nr — int
 Column episode_of_id — int
 Column id — int

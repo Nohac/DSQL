@@ -77,7 +77,7 @@ pub enum SelectionTarget {
 impl SelectionTarget {
     /// The table this selection's own children and clauses resolve
     /// against, if any.
-    fn child_context(&self) -> Option<TableId> {
+    pub(crate) fn child_context(&self) -> Option<TableId> {
         match self {
             SelectionTarget::Table(table) => Some(*table),
             SelectionTarget::Relation { table, .. } => Some(*table),

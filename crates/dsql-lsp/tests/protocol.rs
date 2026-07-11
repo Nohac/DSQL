@@ -262,6 +262,87 @@ async fn hosts_hover_and_foreign_files_are_ignored() {
     );
 }
 
+/// Accepting a completion mid-identifier replaces the identifier: items
+/// carry a text edit spanning the word under the cursor, in the buffer's
+/// own coordinates — including host coordinates inside embedded regions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completion_edits_replace_the_word_under_the_cursor() {
+    let mut session = Session::start("completion-edits").await;
+
+    // Plain document: cursor inside `kin` on line 2; the edit must span
+    // exactly that word.
+    let uri = session.uri("queries/frontend/partial.dsql");
+    let text = "query Partial {\n  title(limit 1) {\n    kin\n  }\n}\n";
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": uri, "languageId": "dsql", "version": 1, "text": text}}),
+        )
+        .await;
+    let id = session
+        .request(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 2, "character": 6},
+            }),
+        )
+        .await;
+    let response = session.response(id).await;
+    let items = response["result"].as_array().expect("completion answers");
+    let kind_id = items
+        .iter()
+        .find(|item| item["label"] == "kind_id")
+        .unwrap_or_else(|| panic!("kind_id offered, got {response}"));
+    assert_eq!(
+        kind_id["textEdit"],
+        json!({
+            "range": {
+                "start": {"line": 2, "character": 4},
+                "end": {"line": 2, "character": 7},
+            },
+            "newText": "kind_id",
+        }),
+        "the edit replaces `kin`"
+    );
+
+    // Embedded region: cursor inside `kind` (the nested `kind` column in
+    // the template) — the edit range must be in host coordinates.
+    let host_uri = session.uri("src/components/TitlePanel.ts");
+    let host_text = session.fixture_text("src/components/TitlePanel.ts");
+    let offset = host_text.find("      kind\n").expect("nested column") + 6;
+    let line = host_text[..offset].matches('\n').count();
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": host_uri, "languageId": "typescript", "version": 1, "text": host_text}}),
+        )
+        .await;
+    let id = session
+        .request(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": host_uri},
+                "position": {"line": line, "character": 8},
+            }),
+        )
+        .await;
+    let response = session.response(id).await;
+    let items = response["result"].as_array().expect("host completion answers");
+    let kind = items
+        .iter()
+        .find(|item| item["label"] == "kind")
+        .unwrap_or_else(|| panic!("kind offered through the region, got {response}"));
+    assert_eq!(
+        kind["textEdit"]["range"],
+        json!({
+            "start": {"line": line, "character": 6},
+            "end": {"line": line, "character": 10},
+        }),
+        "the edit spans `kind` at host coordinates"
+    );
+}
+
 /// A newly created file in a configured scope resolves that scope's
 /// imports (the default-scope bug would leave `TitleBits` unknown), and
 /// closing an edited buffer restores the disk revision.

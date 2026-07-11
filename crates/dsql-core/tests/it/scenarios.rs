@@ -130,14 +130,17 @@ impl Scenario {
                     .table
                     .and_then(|table| catalog.table_by_id(table))
                     .map_or("<unresolved>".to_string(), |table| table.name.clone());
+                let replace = items
+                    .replace
+                    .map_or("<none>".to_string(), |span| format!("[{}..{}]", span.start, span.end));
                 lines.push(format!(
-                    "context: {:?} table={table} scope={}",
+                    "context: {:?} table={table} scope={} replace={replace}",
                     context.site, context.scope
                 ));
             }
             None => lines.push("context: <none>".to_string()),
         }
-        for item in &items.0 {
+        for item in &items.items {
             let mut line = format!("{:?} {}", item.kind, item.label);
             if let Some(detail) = &item.detail {
                 line.push_str(&format!(" — {detail}"));
@@ -221,10 +224,9 @@ fn completion_at_selection_start() {
     });
 }
 
-/// PINNED CURRENT DEFECT (heals in the context-resolution fix): the
-/// site classifies correctly as `SelectionBody`, but the context table
-/// resolves to `None`, so only grammar keywords answer instead of the
-/// table's columns.
+/// Completion between and after sibling fields resolves the enclosing
+/// set's table — containment is decided by the selection set's braces,
+/// not the preceding field's span (which swallows trailing trivia).
 #[test]
 fn completion_between_and_after_fields() {
     block_on(async {
@@ -259,9 +261,7 @@ fn completion_of_spreads_across_documents() {
     });
 }
 
-/// PINNED CURRENT DEFECT (heals in the context-resolution fix): fragment
-/// bodies must complete against the fragment's `on` table — today the
-/// context table never resolves, so nothing answers.
+/// Fragment bodies complete against the fragment's `on` table.
 #[test]
 fn completion_inside_fragment_bodies() {
     block_on(async {
@@ -333,6 +333,114 @@ fn updates_rederive_diagnostics() {
     });
 }
 
+/// Completion mid-identifier reports the identifier's span as the range
+/// accepting an item replaces, from every cursor position in the word.
+#[test]
+fn completion_mid_identifier_replaces_the_word() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        let markers = scenario
+            .open(
+                "s.dsql",
+                "query Q {\n  title(limit 1) {\n    <|>ki<|>nd<|>\n  }\n}\n",
+            )
+            .await;
+        let mut sections = Vec::new();
+        for (label, offset) in ["start", "middle", "end"].iter().zip(&markers) {
+            sections.push(format!(
+                "{label}:\n{}",
+                scenario.complete("s.dsql", *offset).await
+            ));
+        }
+        insta::assert_snapshot!(sections.join("\n\n"));
+    });
+}
+
+/// An empty selection set completes columns and relations with no
+/// identifier to replace.
+#[test]
+fn completion_in_empty_selection_sets() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        let markers = scenario
+            .open("s.dsql", "query Q {\n  title(limit 1) {<|>}\n}\n")
+            .await;
+        insta::assert_snapshot!(scenario.complete("s.dsql", markers[0]).await);
+    });
+}
+
+/// Completion inside clause lists and where-expressions between fields —
+/// the clause context resolves against the owning field's table.
+#[test]
+fn completion_inside_clauses() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        let markers = scenario
+            .open(
+                "s.dsql",
+                "query Q {\n  title(<|>limit 1) {\n    id\n  }\n  title(where .<|> limit 1) {\n    id\n  }\n}\n",
+            )
+            .await;
+        let clause_list = scenario.complete("s.dsql", markers[0]).await;
+        let where_anchor = scenario.complete("s.dsql", markers[1]).await;
+        insta::assert_snapshot!(format!(
+            "clause list:\n{clause_list}\n\nwhere anchor:\n{where_anchor}"
+        ));
+    });
+}
+
+/// Malformed sources still answer with full context: a missing closing
+/// brace, a dangling spread, and an incomplete clause all resolve their
+/// enclosing field's table — the truncated parse ends at the cursor, so
+/// its open constructs are exactly what is being typed into.
+#[test]
+fn completion_survives_malformed_sources() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        let missing_brace = scenario
+            .open("broken1.dsql", "query Q {\n  title(limit 1) {\n    <|>\n")
+            .await;
+        let dangling_spread = scenario
+            .open("broken2.dsql", "query Q {\n  title(limit 1) {\n    ...<|>\n")
+            .await;
+        let incomplete_clause = scenario
+            .open("broken3.dsql", "query Q {\n  title(where <|>\n")
+            .await;
+        let brace = scenario.complete("broken1.dsql", missing_brace[0]).await;
+        let spread = scenario.complete("broken2.dsql", dangling_spread[0]).await;
+        let clause = scenario.complete("broken3.dsql", incomplete_clause[0]).await;
+        insta::assert_snapshot!(format!(
+            "missing brace:\n{brace}\n\ndangling spread:\n{spread}\n\nincomplete clause:\n{clause}"
+        ));
+    });
+}
+
+/// A cursor immediately after a nested set's closing brace sits in the
+/// enclosing selection — the finished set does not capture it.
+#[test]
+fn completion_after_nested_closing_brace() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        let markers = scenario
+            .open(
+                "s.dsql",
+                "query Q {\n  title(limit 1) {\n    id\n  }<|>\n}\n",
+            )
+            .await;
+        insta::assert_snapshot!(scenario.complete("s.dsql", markers[0]).await);
+    });
+}
+
+/// Completion at the very end of the document.
+#[test]
+fn completion_at_end_of_file() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        let markers = scenario.open("s.dsql", "query Q {\n  title\n}\n<|>").await;
+        insta::assert_snapshot!(scenario.complete("s.dsql", markers[0]).await);
+    });
+}
+
 /// Embedded regions answer completion at host coordinates.
 #[test]
 fn completion_inside_embedded_regions() {
@@ -342,6 +450,22 @@ fn completion_inside_embedded_regions() {
             .open(
                 "host.ts",
                 "import { dsql } from \"./dsql\";\nexport const q = dsql`\nquery H {\n  title(limit 1) {\n    <|>\n  }\n}\n`;\n",
+            )
+            .await;
+        insta::assert_snapshot!(scenario.complete("host.ts", markers[0]).await);
+    });
+}
+
+/// A cursor at an embedded region's final byte (right before the closing
+/// delimiter) still belongs to the region — the boundary is inclusive.
+#[test]
+fn completion_at_embedded_region_end() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        let markers = scenario
+            .open(
+                "host.ts",
+                "import { dsql } from \"./dsql\";\nexport const q = dsql`\nquery H {\n  title\n}\n<|>`;\n",
             )
             .await;
         insta::assert_snapshot!(scenario.complete("host.ts", markers[0]).await);

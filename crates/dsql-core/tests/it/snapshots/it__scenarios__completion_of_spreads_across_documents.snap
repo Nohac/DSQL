@@ -1,7 +1,7 @@
 ---
 source: crates/dsql-core/tests/it/scenarios.rs
-assertion_line: 258
+assertion_line: 260
 expression: "scenario.complete(\"q.dsql\", markers[0]).await"
 ---
-context: SpreadName table=title scope=default
+context: SpreadName table=title scope=default replace=<none>
 Fragment Bits — fragment on title

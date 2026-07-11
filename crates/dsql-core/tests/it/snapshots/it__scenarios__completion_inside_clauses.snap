@@ -1,0 +1,29 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+assertion_line: 386
+expression: "format!(\"clause list:\\n{clause_list}\\n\\nwhere anchor:\\n{where_anchor}\")"
+---
+clause list:
+context: ClauseList table=title scope=default replace=[18..23]
+Keyword limit
+Keyword offset
+Keyword order
+Keyword where
+
+where anchor:
+context: WhereExpr table=title scope=default replace=<none>
+Column episode_nr — int
+Column episode_of_id — int
+Column id — int
+Column imdb_id — int
+Column imdb_index — text
+Column kind_id — int
+Column md5sum — text
+Column phonetic_code — text
+Column production_year — int
+Column season_nr — int
+Column series_years — text
+Column title — text
+Scope . — current scope
+Scope .. — parent scope
+Scope ~ — root scope

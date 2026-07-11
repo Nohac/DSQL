@@ -29,8 +29,10 @@ use bowl::{
 
 use crate::catalog::TableId;
 use crate::entities::document::ParsedFile;
-use crate::entities::field_selection::{SelectionTree, TreeViews, resolve_field_target};
+use crate::entities::field_selection::{SelectionTree, TreeViews};
+use crate::grammar::lexer::Token;
 use crate::grammar::parser::{Node, NodeRef, Parser, Rule};
+use crate::facts::Span;
 use crate::schema::dsql_schema;
 use crate::service::hover::Position;
 use crate::source::{FilePath, ResolutionScope, SourceText};
@@ -65,7 +67,13 @@ pub enum CompletionKind {
 /// The answer, written onto the request entity by the finalizer.
 #[derive(Debug, Component, Hash, PartialEq, Eq)]
 #[component(hash)]
-pub struct CompletionList(pub Vec<CompletionItem>);
+pub struct CompletionList {
+    pub items: Vec<CompletionItem>,
+    /// The span of the identifier under the cursor, when there is one:
+    /// accepting an item replaces this range instead of appending at the
+    /// cursor (mid-word completion).
+    pub replace: Option<Span>,
+}
 
 /// Where the cursor sits, from the innermost CST ancestors. Deliberately
 /// coarse: the grammar layer carries the fine distinctions.
@@ -121,6 +129,7 @@ pub(crate) fn register_completion_pipeline(reg: &mut Registrar<'_>) {
 /// Resolves the request's file (bound join on the path), computes the
 /// grammar layer from a cursor-truncated parse, the site from the CST, and
 /// the context table from the fact tree.
+#[expect(clippy::too_many_arguments, reason = "system params are injected")]
 async fn enrich_completion_requests(
     requests: Query<(Entity, &FilePath, &Position), With<CompletionRequest>>,
     file: crate::service::hover::FileMatch<'_>,
@@ -136,6 +145,7 @@ async fn enrich_completion_requests(
     documents: View<'_, (Entity, &ParsedFile, &ResolutionScope)>,
     catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
     views: TreeViews<'_>,
+    resolutions: View<'_, (Entity, &crate::resolution::ResolvedSelection)>,
     mut commands: Commands<(dsql_schema::CompletionAnswer,)>,
 ) {
     let (request, _path, position) = requests.item();
@@ -157,21 +167,30 @@ async fn enrich_completion_requests(
         commands
             .entity(request)
             .insert(crate::service::hover::RequestKey(request));
-        commands.entity(request).insert(CompletionList(Vec::new()));
+        commands.entity(request).insert(CompletionList {
+            items: Vec::new(),
+            replace: None,
+        });
         return;
     };
     let (_, snapshot) = catalog.item();
 
     let offset = cursor.min(parsed.source.len());
 
-    // Grammar layer: parse the text before the cursor. The vendored
-    // expected-token recording captures what could legally come next, both
-    // at parse errors and at constructs that close on end of input; only
-    // the innermost batch at the cursor position counts — later batches are
-    // recovery bubbling outward.
+    // The identifier the cursor touches, when any: items replace it
+    // rather than appending mid-word, and its start anchors the layers
+    // below so every cursor position within the word answers alike.
+    let word = identifier_at(&parsed.source, offset);
+    let anchor = word.map_or(offset, |span| span.start);
+
+    // Grammar layer: parse the text before the identifier under the
+    // cursor. The vendored expected-token recording captures what could
+    // legally come next, both at parse errors and at constructs that
+    // close on end of input; only the innermost batch at the cursor
+    // position counts — later batches are recovery bubbling outward.
     // The parse snapshot is the settle-consistent text the offset was
     // clamped against; no need to re-materialize the rope.
-    let prefix = &parsed.source[..offset];
+    let prefix = &parsed.source[..anchor];
     let mut parse_diagnostics = Vec::new();
     let truncated = Parser::new(prefix, &mut parse_diagnostics).parse(&mut parse_diagnostics);
     let cursor_error_start = truncated
@@ -198,33 +217,73 @@ async fn enrich_completion_requests(
     keywords.sort();
     keywords.dedup();
 
-    // Site layer: the rightmost open construct of the truncated tree — the
-    // spine reflects what the cursor is inside even when error recovery in
-    // the full tree closed the construct early.
+    // Site and semantic layers share one walk: the open spine of the
+    // truncated tree — the constructs still open at the cursor. The spine
+    // tracks the position being typed even where error recovery in the
+    // full-source tree bails frontier text out to the document, so it
+    // works identically for well-formed and mid-edit sources.
     let truncated_cst = truncated.into_data();
-    let spine = rightmost_spine(&truncated_cst);
+    let spine = open_spine(&truncated_cst);
     let site = classify_site(&spine);
 
-    // Semantic layer: the field whose braces or clauses hold the cursor,
-    // from the full tree (facts are keyed to its nodes).
+    // Semantic layer: the innermost open set or clause decides the context
+    // table via its owning construct — a field resolves through its own
+    // resolution fact (one semantic decision, made by the resolver), a
+    // fragment through its `on` target. Truncated-tree fields map onto
+    // resolver facts by their span: both parses see the same tokens before
+    // the cursor.
     let tree = SelectionTree::collect(&views);
-    let table = context_field(&parsed.cst, offset).and_then(|field_node| {
-        let key = crate::facts::NodeKey {
-            file: file_entity,
-            node: field_node.0,
-        };
-        let (field_entity, _, _, _) = tree
-            .fields_by_entity
-            .values()
-            .find(|(_, _, k, _)| *k == key)?;
-        resolve_field_target(&tree, snapshot.catalog(), *field_entity)
+    let table = match spine_owner(&spine) {
+        Some(SetOwner::Field(field_node)) => {
+            let field_start = truncated_cst.span(field_node).start;
+            tree.fields_by_entity
+                .values()
+                .find(|(_, field, key, _)| {
+                    key.file == file_entity && field.span.start == field_start
+                })
+                .and_then(|(field_entity, _, _, _)| {
+                    resolutions
+                        .iter()
+                        .find(|(_, resolved)| resolved.field == *field_entity)
+                        .and_then(|(_, resolved)| resolved.target.child_context())
+                })
+        }
+        Some(SetOwner::Fragment(def_node)) => {
+            crate::entities::direct_rule(&truncated_cst, def_node, Rule::QualifiedName)
+                .map(|name| {
+                    let span = crate::entities::node_span(&truncated_cst, name);
+                    &parsed.source[span.start..span.end]
+                })
+                .and_then(|name| {
+                    snapshot
+                        .catalog()
+                        .table_ref_for(crate::catalog::TableRef::parse(name))
+                })
+                .map(|table| table.id)
+        }
+        Some(SetOwner::Root) | None => None,
+    };
+
+    // The replacement span, rebased into the request file's coordinates so
+    // embedded-region answers edit the host buffer correctly.
+    let rebase = position.offset - cursor;
+    let replace = word.map(|span| Span {
+        start: span.start + rebase,
+        end: span.end + rebase,
     });
 
     // Scaffold: the request key and the grammar layer's keyword items.
     // Entity candidates union in through the tracked join; a request whose
-    // context yields nothing still answers with this list.
+    // context yields nothing still answers with this list. Sites whose
+    // legal continuations are pure names take no grammar items — the
+    // expected set there is polluted by the previous construct's own
+    // continuations (`where`, operators after a sibling field).
     let mut items = Vec::new();
-    for keyword in &keywords {
+    let names_only = matches!(
+        site,
+        CompletionSite::RootSelection | CompletionSite::SelectionBody | CompletionSite::SpreadName
+    );
+    for keyword in keywords.iter().filter(|_| !names_only) {
         let alphabetic = keyword.chars().all(|c| c.is_ascii_alphabetic());
         let comparison = matches!(keyword.as_str(), "==" | "!=" | ">" | ">=" | "<" | "<=");
         if !alphabetic && !comparison {
@@ -248,13 +307,39 @@ async fn enrich_completion_requests(
     commands
         .entity(request)
         .insert(crate::service::hover::RequestKey(request));
-    commands.entity(request).insert(CompletionList(items));
+    commands.entity(request).insert(CompletionList { items, replace });
     commands.entity(request).insert(CompletionContext {
         site,
         table,
         scope: scope.0.clone(),
         keywords,
     });
+}
+
+/// The span of the identifier the cursor touches — the range completion
+/// edits replace. A word ending exactly at the cursor counts (the common
+/// type-then-complete position); no word means plain insertion.
+fn identifier_at(source: &str, offset: usize) -> Option<Span> {
+    // The grammar's identifier shape is [A-Za-z0-9_]; scanning the source
+    // is exact and avoids depending on how error recovery shaped the tree.
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let start = source[..offset]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_word(*c))
+        .last()
+        .map(|(at, _)| at);
+    let end = source[offset..]
+        .char_indices()
+        .take_while(|(_, c)| is_word(*c))
+        .last()
+        .map(|(at, c)| offset + at + c.len_utf8());
+    match (start, end) {
+        (Some(start), Some(end)) => Some(Span { start, end }),
+        (Some(start), None) => Some(Span { start, end: offset }),
+        (None, Some(end)) => Some(Span { start: offset, end }),
+        (None, None) => None,
+    }
 }
 
 /// Inserts `item` at its sorted (kind, label) position unless the label is
@@ -278,25 +363,49 @@ fn merge_item(items: &mut Vec<CompletionItem>, item: CompletionItem) {
 /// The rightmost rule chain of the truncated tree: repeatedly descend into
 /// the last rule child. The chain ends at the construct still open at the
 /// cursor.
-fn rightmost_spine(cst: &crate::grammar::parser::CstData) -> Vec<Rule> {
+/// Whether the rightmost construct already has the token that finishes
+/// it — a set its `}`, a clause list its `)`, a spread its name. The
+/// cursor sits *after* a finished construct, never inside it.
+fn is_finished(cst: &crate::grammar::parser::CstData, node: NodeRef, rule: Rule) -> bool {
+    let closer = match rule {
+        Rule::SelectionSet => Token::RBrace,
+        Rule::ClauseList => Token::RPar,
+        Rule::FragmentSpread => Token::Name,
+        _ => return false,
+    };
+    cst.children(node)
+        .any(|child| matches!(cst.get(child), Node::Token(token, _) if token == closer))
+}
+
+/// The chain of constructs still open at the end of the truncated parse:
+/// the rightmost spine, stopping before any construct that already closed.
+/// This is the cursor's true containment even mid-edit — error recovery in
+/// a full-source parse bails frontier text out to the document, but the
+/// truncated parse ends exactly at the cursor, so its open constructs are
+/// the ones being typed into.
+fn open_spine(cst: &crate::grammar::parser::CstData) -> Vec<(Rule, NodeRef)> {
     let mut spine = Vec::new();
     let mut current = NodeRef::ROOT;
     while let Node::Rule(rule, _) = cst.get(current) {
-        spine.push(rule);
+        spine.push((rule, current));
         let next = cst
             .children(current)
             .filter(|child| matches!(cst.get(*child), Node::Rule(..)))
             .last();
         match next {
-            Some(child) => current = child,
-            None => break,
+            Some(child) if !matches!(cst.get(child), Node::Rule(rule, _)
+                if is_finished(cst, child, rule)) =>
+            {
+                current = child;
+            }
+            _ => break,
         }
     }
     spine
 }
 
-fn classify_site(spine: &[Rule]) -> CompletionSite {
-    for (index, rule) in spine.iter().enumerate().rev() {
+fn classify_site(spine: &[(Rule, NodeRef)]) -> CompletionSite {
+    for (index, (rule, _)) in spine.iter().enumerate().rev() {
         match rule {
             Rule::WhereClause => return CompletionSite::WhereExpr,
             Rule::OrderByClause => return CompletionSite::OrderBy,
@@ -306,8 +415,8 @@ fn classify_site(spine: &[Rule]) -> CompletionSite {
                 // A selection set directly under a definition lists tables
                 // (queries) or the fragment target's fields; deeper ones
                 // list the enclosing field's columns and relations.
-                let under_field = spine[..index].contains(&Rule::FieldSelection);
-                let under_fragment = spine[..index].contains(&Rule::FragmentDef);
+                let under_field = spine[..index].iter().any(|(r, _)| *r == Rule::FieldSelection);
+                let under_fragment = spine[..index].iter().any(|(r, _)| *r == Rule::FragmentDef);
                 return if under_field || under_fragment {
                     CompletionSite::SelectionBody
                 } else {
@@ -317,35 +426,49 @@ fn classify_site(spine: &[Rule]) -> CompletionSite {
             _ => {}
         }
     }
-    if spine == [Rule::Document] {
-        CompletionSite::DocumentRoot
-    } else {
-        CompletionSite::Other
+    // No construct open: between definitions (the spine stops before a
+    // definition's closed body, or the document is empty).
+    match spine.last() {
+        Some((Rule::Document | Rule::QueryDef | Rule::FragmentDef | Rule::Definition, _)) => {
+            CompletionSite::DocumentRoot
+        }
+        _ => CompletionSite::Other,
     }
 }
 
-/// The innermost field selection of the full tree containing the cursor
-/// (a node whose span ends at the cursor still contains it). Its resolved
-/// target is the context table for everything inside it.
-fn context_field(cst: &crate::grammar::parser::CstData, offset: usize) -> Option<NodeRef> {
-    let mut found = None;
-    let mut current = NodeRef::ROOT;
-    while let Node::Rule(rule, _) = cst.get(current) {
-        if rule == Rule::FieldSelection {
-            found = Some(current);
-        }
-        let next = cst.children(current).find(|child| {
-            matches!(cst.get(*child), Node::Rule(..)) && {
-                let span = cst.span(*child);
-                span.start <= offset && offset <= span.end
-            }
-        });
-        match next {
-            Some(child) => current = child,
-            None => break,
-        }
-    }
-    found
+/// What owns the innermost open set or clause at the cursor.
+enum SetOwner {
+    /// A field's braces or clauses: complete against the field's resolved
+    /// child context.
+    Field(NodeRef),
+    /// A fragment definition's braces: complete against the `on` target.
+    Fragment(NodeRef),
+    /// A query definition's braces: root selections name tables.
+    Root,
+}
+
+/// The owning construct of the innermost open set or clause on the spine.
+/// Clause containers count because `title(where .█)` resolves columns
+/// against the same table as `title { █ }` — the field's own target.
+/// Wrapper rules (`selection`, `field_selection_tail`, …) sit between a
+/// container and its owner: the owner is the nearest enclosing field,
+/// fragment, or definition.
+fn spine_owner(spine: &[(Rule, NodeRef)]) -> Option<SetOwner> {
+    let container = spine.iter().rposition(|(rule, _)| {
+        matches!(
+            rule,
+            Rule::SelectionSet | Rule::ClauseList | Rule::WhereClause | Rule::OrderByClause
+        )
+    })?;
+    spine[..container]
+        .iter()
+        .rev()
+        .find_map(|(rule, node)| match rule {
+            Rule::FieldSelection => Some(SetOwner::Field(*node)),
+            Rule::FragmentDef => Some(SetOwner::Fragment(*node)),
+            Rule::QueryDef => Some(SetOwner::Root),
+            _ => None,
+        })
 }
 
 /// Arbitration: one invocation per (request, candidate) pair via the
@@ -371,6 +494,6 @@ async fn arbitrate_completions(
     let (_candidate_entity, candidate) = candidate.item();
 
     for item in &candidate.items {
-        merge_item(&mut list.0, item.clone());
+        merge_item(&mut list.items, item.clone());
     }
 }
