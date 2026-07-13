@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "customConditions": ["bun"],
+    "noEmit": true,
+    "rootDir": ".."
+  },
+  "include": ["*.ts", "generators/**/*.ts"]
+}

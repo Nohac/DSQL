@@ -1,0 +1,3 @@
+{
+  "extends": "./renderers/tsconfig.json"
+}

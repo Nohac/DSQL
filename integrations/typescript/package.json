@@ -1,0 +1,97 @@
+{
+  "name": "@dsql/typescript",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "node": [
+        "./dist/node.d.ts"
+      ],
+      "renderer": [
+        "./dist/renderer.d.ts"
+      ],
+      "vite": [
+        "./dist/vite.d.ts"
+      ],
+      "*": [
+        "./dist/index.d.ts"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "bun": {
+        "types": "./src/index.ts",
+        "default": "./src/index.ts"
+      },
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "bun": {
+        "types": "./src/node.ts",
+        "default": "./src/node.ts"
+      },
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js",
+      "default": "./dist/node.js"
+    },
+    "./runtime": {
+      "bun": {
+        "types": "./src/runtime.ts",
+        "default": "./src/runtime.ts"
+      },
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js",
+      "default": "./dist/runtime.js"
+    },
+    "./renderer": {
+      "bun": {
+        "types": "./src/renderer.ts",
+        "default": "./src/renderer.ts"
+      },
+      "types": "./dist/renderer.d.ts",
+      "import": "./dist/renderer.js",
+      "default": "./dist/renderer.js"
+    },
+    "./vite": {
+      "bun": {
+        "types": "./src/vite.ts",
+        "default": "./src/vite.ts"
+      },
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js",
+      "default": "./dist/vite.js"
+    }
+  },
+  "files": [
+    "dist",
+    "renderers"
+  ],
+  "scripts": {
+    "generate": "cargo run -q --manifest-path ../../Cargo.toml -p dsql-cli -- generate --target typescript-metadata --out-dir src/generated",
+    "test": "bun test tests",
+    "test:daemon": "cargo build -q --manifest-path ../../Cargo.toml -p dsql-cli && DSQL_BIN=../../target/debug/dsql bun test tests",
+    "typecheck": "bunx tsc --noEmit && bunx tsc -p tsconfig.renderers.json",
+    "build": "bunx tsc"
+  },
+  "dependencies": {
+    "ts-morph": "^26.0.0",
+    "typescript": "^5.8.0"
+  },
+  "peerDependencies": {
+    "vite": ">=5.1.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "vite": "^7.0.0"
+  }
+}
