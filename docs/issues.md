@@ -40,6 +40,34 @@
 
 # Deferred designs (owner input wanted)
 
+- **T2 — TS callsite contract: callsite ranges in metadata, not plugin
+  detection.** Owner design direction (Jonas, 2026-07-13): the POC's
+  Vite plugin re-detected `dsql(`…`)` callsites in app sources with its
+  own scanning; instead, keep detection in the ONE place that already
+  does it — the Rust embedding extractor — and ship the ranges through
+  generate metadata. The plugin then becomes a dumb rewriter: look up
+  this file's operations in the manifest, replace each recorded range
+  with the generated operation import.
+
+  The range needed is *not* the one we store today. Regions currently
+  keep only the content span (between the backticks —
+  `SourceOffset(content.start())` + the copied text); the rewrite needs
+  the span of the entire `dsql(`…`)` expression. The extractor's regex
+  full match (`captures.get(0)`) is exactly that and is currently
+  discarded — record it as a fact on the region (e.g. `CallsiteSpan`)
+  and flow it into `OperationMetadata` at assembly (optional: operations
+  defined in plain `.dsql` files have no callsite).
+
+  Open point for the T2 session — range freshness: metadata ranges are
+  generate-time, but a Vite dev-server transform runs against the live
+  buffer, which may have drifted since the last generate (the POC's
+  plugin scanned live precisely because of this). Likely shape: emit
+  the host file's content hash beside its callsite ranges; the plugin
+  verifies the hash and on mismatch triggers/awaits a regenerate
+  instead of rewriting wrong ranges. Build mode is unaffected (content
+  is fixed). Interacts with what replaces the retired daemon protocol
+  for watch-mode regeneration.
+
 - **Source residency & representation** (review High 5, and the eviction
   brainstorm from 2026-07-09): split identity from parse materialization —
   cheap revision fingerprints for editor-owned ropes vs content
