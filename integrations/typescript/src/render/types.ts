@@ -106,7 +106,7 @@ export async function renderDsql(
     }
 
     const filePath = join(queriesDir, `${plan.fileStem}.ts`);
-    files.set(filePath, renderFragmentModule(fragment));
+    files.set(filePath, renderFragmentModule(artifacts, fragment));
     queryExports.push(exportStatement(plan.fileStem));
     const id = artifacts.artifactIds.get(artifactKey("fragment", fragment.name));
     definitions[fragment.name] = {
@@ -234,15 +234,19 @@ function renderOperationModule(
   if (options.includeExecutionPayload) {
     runtimeImports.unshift("DsqlExecutionPayload");
   }
+  // Rendered before the imports: `used` collects exactly the fragment
+  // result types the composition referenced.
+  const resultCtx = resultTypeContext(
+    operation.result.fields,
+    operation.fragment_spreads,
+    artifacts.fragments,
+  );
+  const resultLiteral = resultTypeLiteral(resultCtx);
   const statements = [
     `import type { ${runtimeImports.join(", ")} } from "@dsql/typescript/runtime";`,
-    ...operationFragmentTypeImports(artifacts, operation),
+    ...fragmentTypeImports(resultCtx, operation),
     "",
-    `export type ${resultType} = ${resultTypeLiteral(
-      operation.result.fields,
-      operation.fragment_spreads,
-      artifacts.fragments,
-    )};`,
+    `export type ${resultType} = ${resultLiteral};`,
     "",
     `export type ${paramsType} = ${paramsTypeLiteral(operation.params)};`,
     "",
@@ -273,20 +277,27 @@ function renderOperationModule(
   return `${statements.join("\n")}\n`;
 }
 
-function operationFragmentTypeImports(
-  artifacts: BuildArtifacts,
-  operation: OperationMetadata,
+/**
+ * Fragment-module type imports: result types come from the SAME
+ * effective-spread set the composition used (never the raw spread list —
+ * dropped transitive spreads must not leave unused imports); variables
+ * types ride along for fragments the input envelope references.
+ */
+function fragmentTypeImports(
+  ctx: ResultTypeCtx,
+  operation?: OperationMetadata,
 ): string[] {
-  const fragmentsByName = new Map(
-    artifacts.fragments.map((fragment) => [fragment.name, fragment]),
-  );
   const inputFragments = new Set(
-    operation.input.flatMap((field) => inputPathFragmentNames(field.path)),
+    (operation?.input ?? []).flatMap((field) => inputPathFragmentNames(field.path)),
   );
-  const imports = [...new Set(operation.fragment_spreads.map((spread) => spread.fragment))]
-    .filter((name) => fragmentsByName.has(name))
+  const names = new Set([...ctx.used, ...inputFragments]);
+  const imports = [...names]
+    .filter((name) => ctx.fragmentsByName.has(name))
     .map((name) => {
-      const importedTypes = [fragmentResultTypeName(name)];
+      const importedTypes: string[] = [];
+      if (ctx.used.has(name)) {
+        importedTypes.push(fragmentResultTypeName(name));
+      }
       if (inputFragments.has(name)) {
         importedTypes.push(fragmentVariablesTypeName(name));
       }
@@ -343,20 +354,30 @@ function renderExecutionPayload(
 };`;
 }
 
-function renderFragmentModule(fragment: FragmentMetadata): string {
+function renderFragmentModule(
+  artifacts: BuildArtifacts,
+  fragment: FragmentMetadata,
+): string {
   const name = toPascalCase(fragment.name);
   const resultType = fragmentResultTypeName(fragment.name);
   const paramsType = fragmentParamsTypeName(fragment.name);
   const inputType = fragmentInputTypeName(fragment.name);
   const variablesType = fragmentVariablesTypeName(fragment.name);
+  // Fragments composed of other fragments reuse their types instead of
+  // re-inlining: the body's spread provenance (empty path = fragment
+  // root) drives the same composition operations use. Artifacts written
+  // before the field existed degrade to the inline shape.
+  const resultCtx = resultTypeContext(
+    fragment.result.fields,
+    fragment.fragment_spreads ?? [],
+    artifacts.fragments,
+  );
+  const resultLiteral = resultTypeLiteral(resultCtx);
   return [
     `import type { DsqlFragmentDefinition } from "@dsql/typescript/runtime";`,
+    ...fragmentTypeImports(resultCtx),
     "",
-    `export type ${resultType} = ${resultTypeLiteral(
-      fragment.result.fields,
-      [],
-      [],
-    )};`,
+    `export type ${resultType} = ${resultLiteral};`,
     "",
     `export type ${paramsType} = ${paramsTypeLiteral(fragment.params)};`,
     "",
@@ -680,17 +701,119 @@ function hashString(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function resultTypeLiteral(
+/**
+ * One definition's result-type composition state. Spread provenance is
+ * path-qualified (the empty path is the definition root); `provided`
+ * holds the ABSOLUTE result paths any spread's fragment contributes, so
+ * the walk renders only the definition's own additions next to the
+ * fragment result types it intersects. `used` collects the fragment
+ * types the composition actually referenced — the import list must come
+ * from the same effective-spread calculation as the types, or dropped
+ * transitive spreads would leave unused imports (and nested ones missing
+ * imports).
+ */
+type ResultTypeCtx = {
+  readonly fields: readonly ResultField[];
+  readonly spreads: readonly FragmentSpreadMetadata[];
+  readonly fragmentsByName: ReadonlyMap<string, FragmentMetadata>;
+  readonly provided: ReadonlySet<string>;
+  readonly used: Set<string>;
+};
+
+function resultTypeContext(
   fields: readonly ResultField[],
-  fragmentSpreads: readonly FragmentSpreadMetadata[],
+  spreads: readonly FragmentSpreadMetadata[],
   fragments: readonly FragmentMetadata[],
-): string {
-  const roots = fields.filter(
-    (field) => field.parent_path === "",
+): ResultTypeCtx {
+  const fragmentsByName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
+  const provided = new Set<string>();
+  for (const spread of spreads) {
+    const fragment = fragmentsByName.get(spread.fragment);
+    for (const field of fragment?.result.fields ?? []) {
+      provided.add(spread.path === "" ? field.path : `${spread.path}.${field.path}`);
+    }
+  }
+  return { fields, spreads, fragmentsByName, provided, used: new Set() };
+}
+
+/** Adds `name` and every fragment its ROOT spreads reach (cycle-safe) —
+ * root spreads land at the enclosing spread point, nested ones do not. */
+function rootSpreadClosure(
+  ctx: ResultTypeCtx,
+  name: string,
+  visited: Set<string>,
+): void {
+  if (visited.has(name)) {
+    return;
+  }
+  visited.add(name);
+  const fragment = ctx.fragmentsByName.get(name);
+  for (const spread of fragment?.fragment_spreads ?? []) {
+    if (spread.path === "") {
+      rootSpreadClosure(ctx, spread.fragment, visited);
+    }
+  }
+}
+
+/**
+ * Spreads landing at `path`, minus any that another spread at the SAME
+ * path transitively provides through its root spreads (the plan walk
+ * records transitively entered spreads too — intersecting both parent
+ * and child fragment types would be redundant).
+ */
+function effectiveSpreadsAt(ctx: ResultTypeCtx, path: string): string[] {
+  const direct: string[] = [];
+  for (const spread of ctx.spreads) {
+    if (spread.path === path && !direct.includes(spread.fragment)) {
+      direct.push(spread.fragment);
+    }
+  }
+  const covered = new Set<string>();
+  for (const name of direct) {
+    const closure = new Set<string>();
+    rootSpreadClosure(ctx, name, closure);
+    closure.delete(name);
+    for (const inner of closure) {
+      covered.add(inner);
+    }
+  }
+  return direct.filter((name) => !covered.has(name));
+}
+
+/** Whether the field AND its whole subtree come from spreads — such
+ * fields are dropped from the inline object (the intersected fragment
+ * type carries them). A provided field with unprovided descendants
+ * stays, restricted to those descendants by the recursive walk. */
+function fullyProvided(ctx: ResultTypeCtx, field: ResultField): boolean {
+  if (!ctx.provided.has(field.path)) {
+    return false;
+  }
+  const prefix = `${field.path}.`;
+  return ctx.fields.every(
+    (candidate) => !candidate.path.startsWith(prefix) || ctx.provided.has(candidate.path),
   );
-  return objectType(
-    roots.map((field) => propertyType(field, fields, fragmentSpreads, fragments)),
+}
+
+/** The object type at `path` ("" = definition root): effective spread
+ * types intersected with the definition's own (non-provided) fields. */
+function objectTypeAt(ctx: ResultTypeCtx, path: string): string {
+  const own = ctx.fields.filter(
+    (field) => field.parent_path === path && !fullyProvided(ctx, field),
   );
+  const spreadTypes = effectiveSpreadsAt(ctx, path).map((name) => {
+    ctx.used.add(name);
+    return fragmentResultTypeName(name);
+  });
+  const ownType =
+    own.length > 0 ? objectType(own.map((field) => propertyType(ctx, field))) : null;
+  if (spreadTypes.length === 0) {
+    return ownType ?? "Record<string, never>";
+  }
+  return ownType === null ? spreadTypes.join(" & ") : [...spreadTypes, ownType].join(" & ");
+}
+
+function resultTypeLiteral(ctx: ResultTypeCtx): string {
+  return objectTypeAt(ctx, "");
 }
 
 function paramsTypeLiteral(fields: readonly InputField[]): string {
@@ -811,97 +934,20 @@ function publicInputPath(path: string, prefix: InputRoot): string[] {
   return parts.slice(1);
 }
 
-function propertyType(
-  field: ResultField,
-  fields: readonly ResultField[],
-  fragmentSpreads: readonly FragmentSpreadMetadata[],
-  fragments: readonly FragmentMetadata[],
-): [string, string] {
+function propertyType(ctx: ResultTypeCtx, field: ResultField): [string, string] {
   if (field.kind === RESULT_KIND_SCALAR) {
     return [
       field.name,
       withNullability(dataType(field.data_type), field.nullable),
     ];
   }
-
-  const children = fields.filter(
-    (candidate) => candidate.parent_path === field.path,
-  );
-  const ownType = objectType(
-    children.map((child) =>
-      propertyType(child, fields, fragmentSpreads, fragments),
-    ),
-  );
-  const spreadTypes = fragmentSpreads
-    .filter((spread) => spread.path === field.path)
-    .map((spread) => fragmentResultTypeName(spread.fragment));
-  const type = composeObjectType(
-    spreadTypes,
-    ownType,
-    objectHasOwnFields(field, fields, fragmentSpreads, fragments),
-  );
+  const type = objectTypeAt(ctx, field.path);
   const resultType = field.kind === RESULT_KIND_ARRAY ? `Array<${type}>` : type;
   return [field.name, withNullability(resultType, field.nullable)];
 }
 
-function objectHasOwnFields(
-  field: ResultField,
-  fields: readonly ResultField[],
-  fragmentSpreads: readonly FragmentSpreadMetadata[],
-  fragments: readonly FragmentMetadata[],
-): boolean {
-  const providedPaths = fragmentProvidedPaths(field.path, fragmentSpreads, fragments);
-  if (providedPaths.size === 0) {
-    return fields.some((candidate) => candidate.parent_path === field.path);
-  }
-  return fields.some((candidate) => {
-    const relativePath = relativeResultPath(field.path, candidate.path);
-    return relativePath !== undefined && !providedPaths.has(relativePath);
-  });
-}
-
-function fragmentProvidedPaths(
-  path: string,
-  fragmentSpreads: readonly FragmentSpreadMetadata[],
-  fragments: readonly FragmentMetadata[],
-): ReadonlySet<string> {
-  const provided = new Set<string>();
-  for (const spread of fragmentSpreads) {
-    if (spread.path !== path) {
-      continue;
-    }
-    const fragment = fragments.find((candidate) => candidate.name === spread.fragment);
-    for (const field of fragment?.result.fields ?? []) {
-      provided.add(field.path);
-    }
-  }
-  return provided;
-}
-
-function relativeResultPath(
-  parentPath: string,
-  path: string,
-): string | undefined {
-  const prefix = `${parentPath}.`;
-  return path.startsWith(prefix) ? path.slice(prefix.length) : undefined;
-}
-
 function pathStartsWith(path: readonly string[], prefix: readonly string[]): boolean {
   return prefix.every((part, index) => path[index] === part);
-}
-
-function composeObjectType(
-  spreadTypes: readonly string[],
-  ownType: string,
-  hasOwnFields: boolean,
-): string {
-  if (spreadTypes.length === 0) {
-    return ownType;
-  }
-  if (!hasOwnFields) {
-    return spreadTypes.join(" & ");
-  }
-  return [...spreadTypes, ownType].join(" & ");
 }
 
 function objectType(properties: Array<[string, string]>): string {

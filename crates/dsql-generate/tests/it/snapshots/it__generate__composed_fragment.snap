@@ -1,0 +1,5 @@
+---
+source: crates/dsql-generate/tests/it/generate.rs
+expression: composed
+---
+{"name":"PanelBits","kind":"fragment","table":"title","result":{"fields":[{"path":"id","name":"id","parent_path":"","kind":"scalar","data_type":"int","nullable":false},{"path":"title","name":"title","parent_path":"","kind":"scalar","data_type":"text","nullable":false},{"path":"panel_kind","name":"panel_kind","parent_path":"","kind":"object","data_type":"object","nullable":false},{"path":"panel_kind.kind","name":"kind","parent_path":"panel_kind","kind":"scalar","data_type":"text","nullable":false}]},"params":[],"input":[],"dynamic_inputs":[],"fragment_spreads":[{"path":"","fragment":"TitleBits"},{"path":"panel_kind","fragment":"KindNameBits"}],"source_map":[{"id":"PanelBits","file":"queries/shared/panels.dsql","range":{"start":47,"end":143}}]}

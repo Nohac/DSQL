@@ -62,6 +62,15 @@ async fn generates_manifest_and_artifacts() {
     }
 
     let (dir, project) = fixture_project("artifacts").await;
+    // A fragment composed of other fragments, spread at the root (empty
+    // path) and inside a relation (nested path): renderers reuse types
+    // from exactly this provenance.
+    std::fs::write(
+        dir.join("queries/shared/panels.dsql"),
+        "fragment KindNameBits on kind_type {\n  kind\n}\n\n\
+         fragment PanelBits on title {\n  ...TitleBits\n  panel_kind: kind_type {\n    ...KindNameBits\n  }\n}\n",
+    )
+    .expect("write composed fragments");
     let output = generate_project(
         &project,
         GenerateOptions {
@@ -111,6 +120,12 @@ async fn generates_manifest_and_artifacts() {
     let fragment =
         std::fs::read_to_string(entry_path("TitleBits")).expect("fragment artifact written");
     insta::assert_snapshot!("fragment", fragment);
+
+    // The composed fragment records its spread provenance: the root
+    // spread at the empty path, the nested one at its relation path.
+    let composed =
+        std::fs::read_to_string(entry_path("PanelBits")).expect("composed fragment written");
+    insta::assert_snapshot!("composed_fragment", composed);
 
     // The embedded operation source-maps into its host .ts file and
     // records the fragments its result paths came from.

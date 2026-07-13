@@ -138,6 +138,219 @@ test("only the query of an expression gets a registry key", async () => {
   expect(fragment).not.toContain("declare module");
 });
 
+test("fragment composition: subtraction, reuse, dedup, and path sensitivity", async () => {
+  const root = createRoot();
+  // Fragments: Child (on title), Parent (on title, spreads Child at its
+  // root), Nested (on kind_type, spread INSIDE a relation elsewhere).
+  const child = fragmentMetadata("ChildBits");
+  const parent = {
+    ...fragmentMetadata("ParentBits"),
+    result: {
+      fields: [
+        // Child-provided...
+        ...child.result.fields,
+        // ...plus Parent's own addition.
+        {
+          path: "extra",
+          name: "extra",
+          parent_path: "",
+          kind: "scalar",
+          data_type: "text",
+          nullable: false,
+        },
+      ],
+    },
+    fragment_spreads: [{ path: "", fragment: "ChildBits" }],
+  };
+  const nested = {
+    ...fragmentMetadata("NestedBits"),
+    result: {
+      fields: [
+        {
+          path: "kind",
+          name: "kind",
+          parent_path: "",
+          kind: "scalar",
+          data_type: "text",
+          nullable: false,
+        },
+      ],
+    },
+  };
+
+  // The operation selects one relation that spreads Parent (and,
+  // transitively recorded by the plan walk, Child) plus its own field,
+  // and a second relation whose set spreads Nested plus an extra.
+  const operation = {
+    ...operationMetadata("Composed"),
+    result: {
+      fields: [
+        {
+          path: "movie_info",
+          name: "movie_info",
+          parent_path: "",
+          kind: "array",
+          data_type: "object",
+          nullable: false,
+        },
+        // Provided by ParentBits (via ChildBits) at "movie_info".
+        {
+          path: "movie_info.id",
+          name: "id",
+          parent_path: "movie_info",
+          kind: "scalar",
+          data_type: "int",
+          nullable: false,
+        },
+        {
+          path: "movie_info.extra",
+          name: "extra",
+          parent_path: "movie_info",
+          kind: "scalar",
+          data_type: "text",
+          nullable: false,
+        },
+        // The operation's own addition next to the spreads.
+        {
+          path: "movie_info.own_field",
+          name: "own_field",
+          parent_path: "movie_info",
+          kind: "scalar",
+          data_type: "int",
+          nullable: true,
+        },
+        // A nested relation whose selection set spreads NestedBits and
+        // adds a field of its own (the partial-subtree case, valid DSQL:
+        // spread + additions inside ONE selection set).
+        {
+          path: "movie_info.kind",
+          name: "kind",
+          parent_path: "movie_info",
+          kind: "object",
+          data_type: "object",
+          nullable: false,
+        },
+        {
+          path: "movie_info.kind.kind",
+          name: "kind",
+          parent_path: "movie_info.kind",
+          kind: "scalar",
+          data_type: "text",
+          nullable: false,
+        },
+        {
+          path: "movie_info.kind.own_kind_field",
+          name: "own_kind_field",
+          parent_path: "movie_info.kind",
+          kind: "scalar",
+          data_type: "int",
+          nullable: false,
+        },
+      ],
+    },
+    fragment_spreads: [
+      { path: "movie_info", fragment: "ParentBits" },
+      // The plan walk records transitively entered spreads too.
+      { path: "movie_info", fragment: "ChildBits" },
+      { path: "movie_info.kind", fragment: "NestedBits" },
+    ],
+  };
+
+  const artifacts = {
+    ...createArtifacts(root, { operationNames: ["Composed"] }),
+    operations: [operation],
+    operationsByName: new Map([[operation.name, operation]]),
+    fragments: [child, parent, nested],
+    fragmentsByName: new Map([
+      ["ChildBits", child],
+      ["ParentBits", parent],
+      ["NestedBits", nested],
+    ]),
+  } as BuildArtifacts;
+
+  await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+
+  const rendered = readFileSync(
+    join(root, "src/generated/dsql/queries/Composed.ts"),
+    "utf8",
+  );
+  // One assertion pins the whole composition: Parent covers Child at
+  // the same path (dedup), the fragment-provided id/extra/kind.kind
+  // are subtracted, and only the definition's own additions stay
+  // inline — at the top level and inside the nested selection alike.
+  expect(rendered).toContain(
+    `export type ComposedResult = {
+  movie_info: Array<ParentBitsFragmentResult & {
+  own_field: number | null;
+  kind: NestedBitsFragmentResult & {
+  own_kind_field: number;
+};
+}>;
+};`,
+  );
+  expect(rendered).not.toContain("ChildBitsFragmentResult");
+  // Imports follow the effective set: Parent and Nested, never Child.
+  expect(rendered).toContain('import type { ParentBitsFragmentResult } from "./ParentBits.fragment";');
+  expect(rendered).toContain('import type { NestedBitsFragmentResult } from "./NestedBits.fragment";');
+  expect(rendered).not.toContain("ChildBits.fragment");
+
+  // The composed fragment reuses its parent instead of re-inlining:
+  // ParentBits = ChildBitsFragmentResult & { extra } exactly.
+  const parentModule = readFileSync(
+    join(root, "src/generated/dsql/queries/ParentBits.fragment.ts"),
+    "utf8",
+  );
+  expect(parentModule).toContain(
+    'import type { ChildBitsFragmentResult } from "./ChildBits.fragment";',
+  );
+  expect(parentModule).toContain("ChildBitsFragmentResult & {");
+  expect(parentModule).toContain("extra: string;");
+  expect(parentModule).not.toMatch(/^\s+id: number;/m);
+});
+
+test("nested spreads do not cover the same fragment at other paths", async () => {
+  const root = createRoot();
+  // Deep spreads Leaf INSIDE a relation; the operation ALSO spreads Leaf
+  // directly at the same path it spreads Deep: Deep's nested spread must
+  // not swallow the root-level Leaf (path sensitivity of the closure).
+  const leaf = fragmentMetadata("LeafBits");
+  const deep = {
+    ...fragmentMetadata("DeepBits"),
+    fragment_spreads: [{ path: "rel", fragment: "LeafBits" }],
+  };
+  const operation = {
+    ...operationMetadata("PathSensitive"),
+    fragment_spreads: [
+      { path: "movie_info", fragment: "DeepBits" },
+      { path: "movie_info", fragment: "LeafBits" },
+    ],
+  };
+  const artifacts = {
+    ...createArtifacts(root, { operationNames: ["PathSensitive"] }),
+    operations: [operation],
+    operationsByName: new Map([[operation.name, operation]]),
+    fragments: [leaf, deep],
+    fragmentsByName: new Map([
+      ["LeafBits", leaf],
+      ["DeepBits", deep],
+    ]),
+  } as BuildArtifacts;
+
+  await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+  const rendered = readFileSync(
+    join(root, "src/generated/dsql/queries/PathSensitive.ts"),
+    "utf8",
+  );
+  expect(rendered).toContain("DeepBitsFragmentResult");
+  expect(rendered).toContain("LeafBitsFragmentResult");
+});
+
 test("rejects generated file-stem collisions", async () => {
   const root = createRoot();
   const artifacts = createArtifacts(root, {

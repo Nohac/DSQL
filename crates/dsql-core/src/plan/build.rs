@@ -280,12 +280,14 @@ fn plan_fragment_body(
         return;
     };
     let table_id = table.id;
-    // Fragment artifacts carry no spread provenance of their own; the
-    // operations embedding them record it.
+    // The body's spread provenance travels with the fragment plan (the
+    // empty result path is the fragment root): renderers compose
+    // fragment types by reuse from it.
+    let mut spreads = Vec::new();
     let Some(selections) = planner.plan_selection_set(
         &mut PlanWalk {
             result_path: Vec::new(),
-            spreads: &mut Vec::new(),
+            spreads: &mut spreads,
             expansion: &mut SpreadExpansion::new(planner.tree, planner.scope, planner.imports),
             diagnostics,
         },
@@ -308,6 +310,7 @@ fn plan_fragment_body(
             selections,
             def_span: decl.span,
             scope: scope.to_string(),
+            spreads,
         },
     ));
 }

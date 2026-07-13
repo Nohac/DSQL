@@ -104,6 +104,12 @@ pub struct FragmentMetadata {
     pub params: Vec<InputField>,
     pub input: Vec<InputField>,
     pub dynamic_inputs: Vec<DynamicInputMetadata>,
+    /// Fragment spreads the body expanded, path-qualified like the
+    /// operation-level field (the empty path is the fragment root):
+    /// renderers compose fragment types by reuse from this. Additive to
+    /// manifest version 2 — readers treat absence as empty.
+    #[facet(default)]
+    pub fragment_spreads: Vec<FragmentSpreadMetadata>,
     pub source_map: Vec<SourceMapEntry>,
 }
 

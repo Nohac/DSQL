@@ -58,6 +58,10 @@ pub struct FragmentPlanFact {
     pub selections: SelectionPlan,
     pub def_span: Span,
     pub scope: String,
+    /// Fragment spreads the body expanded, with the result path each sat
+    /// at (the empty path is the fragment root) — provenance renderers
+    /// use to compose fragment types by reuse instead of re-inlining.
+    pub spreads: Vec<SpreadUse>,
 }
 
 /// Binary operator inside a [`FilterExpr`]: comparisons plus the boolean

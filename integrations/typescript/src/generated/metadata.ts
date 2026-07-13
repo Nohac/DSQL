@@ -151,6 +151,13 @@ export interface FragmentMetadata {
   params: InputField[];
   input: InputField[];
   dynamic_inputs: DynamicInputMetadata[];
+  /**
+   * Fragment spreads the body expanded, path-qualified like the
+   * operation-level field (the empty path is the fragment root):
+   * renderers compose fragment types by reuse from this. Additive to
+   * manifest version 2 — readers treat absence as empty.
+   */
+  fragment_spreads?: FragmentSpreadMetadata[];
   source_map: SourceMapEntry[];
 }
 
@@ -171,6 +178,11 @@ export interface SourceMapEntry {
 export interface SourceRange {
   start: number;
   end: number;
+}
+
+export interface FragmentSpreadMetadata {
+  path: string;
+  fragment: string;
 }
 
 export interface DynamicInputMetadata {

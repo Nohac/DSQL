@@ -132,6 +132,15 @@ pub(crate) fn fragment_metadata(
         params: input_fields(inputs.bindings, true),
         input: input_fields(inputs.bindings, false),
         dynamic_inputs: dynamic_inputs(inputs.bindings),
+        fragment_spreads: inputs
+            .plan
+            .spreads
+            .iter()
+            .map(|spread| FragmentSpreadMetadata {
+                path: spread.path.clone(),
+                fragment: spread.fragment.clone(),
+            })
+            .collect(),
         source_map: vec![SourceMapEntry {
             id: inputs.plan.name.clone(),
             file: source_path(project_root, inputs.file),
