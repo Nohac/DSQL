@@ -46,8 +46,29 @@
   fingerprints for derived regions; regions as host/range facts
   materialized at the parser boundary instead of copied ropes; an
   analysis-only residency that can release mutable input after outputs
-  are secured. Interacts with `DerivedFrom` anchor semantics (naive
-  component removal bumps the anchor entity) — engine-adjacent.
+  are secured.
+
+  **Owner design (Jonas, 2026-07-13) — hash-carrying evictable ropes.**
+  `SourceText` becomes `{ rope: Option<Rope>, hash }`: the hash is
+  computed when the rope is loaded and stored beside it, and the manual
+  `Hash` impl hashes the *stored hash only*, never the rope. Evicting
+  the rope (`rope = None`) after the parse consumes it therefore does
+  not change the component's hash — no revision bump, every downstream
+  fact stays valid, and the `DerivedFrom` anchor-bump problem never
+  arises because nothing is removed, only the payload drops. Readers of
+  an evicted rope either get `None` or the accessor reloads it from
+  disk on demand (same hash → still no bump; a hash mismatch on reload
+  means the file changed and *should* bump). Residency is per-origin:
+  - **analysis-only** (CLI check/sql/generate): consume at parse time,
+    set the rope to `None`, keep the hash;
+  - **LSP-owned buffers**: never evicted — the buffer is the source of
+    truth and cannot be reloaded from disk, so the rope stays resident
+    and the stored hash is re-derived from the rope on each edit.
+
+  Remaining sub-questions: where eviction is triggered (parser boundary
+  vs an explicit post-settle sweep), and the separate region-facts idea
+  (regions as host/range facts materialized at the parser boundary
+  instead of copied ropes), which this design does not depend on.
 - **Per-file diagnostics demand (debounce)**: demand rows per open file
   instead of the global singleton, so adapters can drop/re-arm per
   keystroke. Interacts with the check systems' demand joins and the walk
