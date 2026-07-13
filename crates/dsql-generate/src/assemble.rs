@@ -32,6 +32,8 @@ pub(crate) struct OperationInputs<'a> {
     pub file: &'a str,
     /// Byte offset of the document inside its host file.
     pub source_offset: usize,
+    /// For embedded documents: the content's byte range in the host.
+    pub content_range: Option<SourceRange>,
 }
 
 /// One fragment's worth of scooped facts.
@@ -41,6 +43,8 @@ pub(crate) struct FragmentInputs<'a> {
     pub file: &'a str,
     /// Byte offset of the document inside its host file.
     pub source_offset: usize,
+    /// For embedded documents: the content's byte range in the host.
+    pub content_range: Option<SourceRange>,
 }
 
 pub(crate) fn operation_metadata(
@@ -104,6 +108,7 @@ pub(crate) fn operation_metadata(
             id: inputs.seed.query_name.clone(),
             file: source_path(project_root, inputs.file),
             range: source_range(inputs.seed.def_span, inputs.source_offset),
+            content_range: inputs.content_range,
         }],
     })
 }
@@ -131,6 +136,7 @@ pub(crate) fn fragment_metadata(
             id: inputs.plan.name.clone(),
             file: source_path(project_root, inputs.file),
             range: source_range(inputs.plan.def_span, inputs.source_offset),
+            content_range: inputs.content_range,
         }],
     })
 }

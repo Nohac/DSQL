@@ -211,6 +211,16 @@ pub struct AnalysisResidency;
 #[component(hash)]
 pub struct CallsiteSpan(pub crate::facts::Span);
 
+/// The span of the embedded document's content in the host — exactly the
+/// bytes between the backticks (the extraction pattern's `content`
+/// capture). Recorded at extraction like [`CallsiteSpan`] because the
+/// region rope may be evicted before assembly reads it; renderers slice
+/// this range from the host to key source-string type registries without
+/// re-detecting anything (docs/spec/build-daemon.md, Callsites).
+#[derive(Component, Hash, Debug, Clone, Copy, PartialEq, Eq)]
+#[component(hash)]
+pub struct ContentSpan(pub crate::facts::Span);
+
 /// Marks a file entity whose text is owned by a live editor buffer. Disk
 /// watchers and loaders must not overwrite the text while this is present.
 ///

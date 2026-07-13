@@ -293,6 +293,12 @@ The `result` of `compile`/`filesChanged`:
   definitions its embedded document declares. Expression ranges within
   a file never overlap; definitions share their expression's range by
   construction. Rewrite rules live under Callsites and freshness.
+  Embedded definitions' *artifact metadata* additionally records
+  `content_range` on their source-map entry — the exact byte range of
+  the document content between the backticks — so renderers that key
+  generated types by source text slice it from the host by extractor
+  authority instead of re-detecting anything (absent for plain `.dsql`
+  files; additive to manifest version 2).
 - `diagnostics` is a **complete snapshot on every compile response**
   (success and `Diagnostics` failure): warnings and infos appear here on
   success. Bindings replace their entire displayed diagnostic state with
@@ -351,7 +357,7 @@ render map:
   "modules": [
     {
       "id": "frontend/operation/TitlePanel",
-      "module": "./generated/dsql/frontend/queries",  // import specifier
+      "module": "src/generated/dsql/frontend/queries/index.ts",
       "export": "TitlePanel"                           // named export
     }
   ],
@@ -360,6 +366,11 @@ render map:
 }
 ```
 
+- `module` is a **project-base-relative file path**, not an import
+  specifier: the renderer states which file exports the operation, and
+  the binding derives the specifier its host understands (root-relative,
+  `/@fs/` absolute, require path, …) — specifier semantics are host
+  knowledge a renderer must not hardcode.
 - The binding rewrites an expression by replacing its range with a
   reference to the mapped export and ensuring the corresponding import
   exists in the transformed module. How the import is materialized

@@ -23,8 +23,8 @@ use bowl::{
 use regex::Regex;
 
 use crate::source::{
-    AnalysisResidency, BelongsToHost, CallsiteSpan, DsqlDocument, EmbeddingHost, OpenBuffer,
-    ResolutionScope, SourceOffset, SourceText,
+    AnalysisResidency, BelongsToHost, CallsiteSpan, ContentSpan, DsqlDocument, EmbeddingHost,
+    OpenBuffer, ResolutionScope, SourceOffset, SourceText,
 };
 
 /// The extraction pattern, one fingerprinted singleton per bowl: a regex
@@ -198,6 +198,10 @@ async fn extract_embedded_documents(
             DsqlDocument,
             SourceOffset(content.start()),
             CallsiteSpan(expression),
+            ContentSpan(crate::facts::Span {
+                start: content.start(),
+                end: content.end(),
+            }),
             scope.clone(),
             SourceText::from_text(content.as_str()),
         ));

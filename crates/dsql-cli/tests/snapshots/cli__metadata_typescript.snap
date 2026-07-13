@@ -1,6 +1,5 @@
 ---
 source: crates/dsql-cli/tests/cli.rs
-assertion_line: 155
 expression: stdout(&typescript)
 ---
 export interface BuildManifest {
@@ -51,6 +50,14 @@ export interface SourceMapEntry {
   id: string;
   file: string;
   range: SourceRange;
+  /**
+   * For embedded definitions: the exact byte range of the document's
+   * content between the host's backticks (the extractor's `content`
+   * capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
+   * offsets into the host file; identical across definitions from the
+   * same embedded expression. Additive to manifest version 2.
+   */
+  content_range?: SourceRange;
 }
 
 export interface SourceRange {
@@ -155,6 +162,14 @@ export interface SourceMapEntry {
   id: string;
   file: string;
   range: SourceRange;
+  /**
+   * For embedded definitions: the exact byte range of the document's
+   * content between the host's backticks (the extractor's `content`
+   * capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
+   * offsets into the host file; identical across definitions from the
+   * same embedded expression. Additive to manifest version 2.
+   */
+  content_range?: SourceRange;
 }
 
 export interface SourceRange {

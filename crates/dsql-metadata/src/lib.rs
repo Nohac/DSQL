@@ -206,6 +206,13 @@ pub struct SourceMapEntry {
     pub id: String,
     pub file: String,
     pub range: SourceRange,
+    /// For embedded definitions: the exact byte range of the document's
+    /// content between the host's backticks (the extractor's `content`
+    /// capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
+    /// offsets into the host file; identical across definitions from the
+    /// same embedded expression. Additive to manifest version 2.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub content_range: Option<SourceRange>,
 }
 
 #[derive(Clone, Copy, Debug, Facet)]

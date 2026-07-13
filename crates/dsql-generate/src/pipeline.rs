@@ -14,8 +14,11 @@ use dsql_core::facts::{
     BelongsToFile, DefKey, Diagnostic, PlanKey, Severity, Span, arm_generate_demands,
 };
 use dsql_core::plan::{FragmentPlanFact, OperationSeed, QueryPlanFact};
-use dsql_core::source::{BelongsToHost, FilePath, ResolutionScope, ScopeImports, SourceOffset};
+use dsql_core::source::{
+    BelongsToHost, ContentSpan, FilePath, ResolutionScope, ScopeImports, SourceOffset,
+};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
+use dsql_metadata::SourceRange;
 use dsql_project::{Project, ProjectError, open_analysis_bowl};
 
 use crate::assemble::{
@@ -205,6 +208,7 @@ pub async fn assemble_project(
                 bindings,
                 file: &operation.file,
                 source_offset: operation.source_offset,
+                content_range: operation.content_range,
             },
         )
         .map_err(|error| error.named(&operation.seed.query_name))?;
@@ -233,6 +237,7 @@ pub async fn assemble_project(
                 bindings,
                 file: &fragment.file,
                 source_offset: fragment.source_offset,
+                content_range: fragment.content_range,
             },
         )?;
         artifacts.push(snapshot_artifact(
@@ -392,6 +397,7 @@ struct CollectedOperation {
     file: String,
     scope: String,
     source_offset: usize,
+    content_range: Option<SourceRange>,
 }
 
 struct CollectedFragment {
@@ -400,6 +406,7 @@ struct CollectedFragment {
     file: String,
     scope: String,
     source_offset: usize,
+    content_range: Option<SourceRange>,
 }
 
 async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<CollectedFacts> {
@@ -424,14 +431,14 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
     let paths = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
     let path_rows = paths.collect();
     let regions = bowl
-        .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
+        .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset, &ContentSpan)>>()
         .await;
     let region_rows = regions.collect();
     let path_of = |file: Entity| {
         let target = region_rows
             .iter()
-            .find(|(entity, _, _)| *entity == file)
-            .map_or(file, |(_, host, _)| host.0);
+            .find(|(entity, _, _, _)| *entity == file)
+            .map_or(file, |(_, host, _, _)| host.0);
         path_rows
             .iter()
             .find(|(entity, _)| *entity == target)
@@ -441,9 +448,20 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
     let offset_of = |file: Entity| {
         region_rows
             .iter()
-            .find(|(entity, _, _)| *entity == file)
-            .map(|(_, _, offset)| offset.0)
+            .find(|(entity, _, _, _)| *entity == file)
+            .map(|(_, _, offset, _)| offset.0)
             .unwrap_or_default()
+    };
+    // Plain files have no region row and answer `None`: `content_range`
+    // exists only for embedded documents.
+    let content_of = |file: Entity| {
+        region_rows
+            .iter()
+            .find(|(entity, _, _, _)| *entity == file)
+            .map(|(_, _, _, content)| SourceRange {
+                start: content.0.start as u32,
+                end: content.0.end as u32,
+            })
     };
     let scopes = bowl.scoop::<Query<(Entity, &ResolutionScope)>>().await;
     let scope_rows = scopes.collect();
@@ -513,6 +531,7 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
             file: path_of(file.0),
             scope: scope_of(file.0),
             source_offset: offset_of(file.0),
+            content_range: content_of(file.0),
         });
     }
 
@@ -527,6 +546,7 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
             file: path_of(file.0),
             scope: scope_of(file.0),
             source_offset: offset_of(file.0),
+            content_range: content_of(file.0),
         });
     }
 
