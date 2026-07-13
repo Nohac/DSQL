@@ -327,6 +327,40 @@ fn parse_reports_malformed_sources_and_fails() {
 }
 
 #[test]
+fn generate_passes_the_documented_environment_to_the_host_generator() {
+    let dir = scratch_copy("generate-env");
+    let config = dir.join("dsql/dsql.toml");
+    let mut raw = std::fs::read_to_string(&config).expect("config readable");
+    raw.push_str(
+        "\n[generate.typescript]\nenabled = true\ncmd = [\"sh\", \"-c\", \"printf '%s\\\\n%s\\\\n' \\\"$DSQL_PROJECT_DIR\\\" \\\"$DSQL_MANIFEST\\\" > generator-env.txt\"]\n",
+    );
+    std::fs::write(&config, raw).expect("config with generator");
+
+    let output = dsql(&dir, &["generate"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let env = std::fs::read_to_string(dir.join("generator-env.txt")).expect("generator ran");
+    let mut lines = env.lines();
+    let project_dir = Path::new(lines.next().expect("project dir line"));
+    let manifest = Path::new(lines.next().expect("manifest line"));
+    assert!(project_dir.is_absolute(), "DSQL_PROJECT_DIR is absolute");
+    assert_eq!(
+        std::fs::canonicalize(project_dir).expect("project dir exists"),
+        std::fs::canonicalize(&dir).expect("scratch dir exists"),
+        "DSQL_PROJECT_DIR names the project base"
+    );
+    assert!(manifest.is_absolute(), "DSQL_MANIFEST is absolute");
+    assert!(
+        manifest.ends_with("dsql/build/manifest.json"),
+        "DSQL_MANIFEST names the manifest, got {}",
+        manifest.display()
+    );
+    assert!(manifest.is_file(), "the manifest was written first");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn init_scaffolds_and_refuses_to_overwrite() {
     let dir = std::env::temp_dir().join(format!("dsql-cli-init-{}", std::process::id()));
     if dir.exists() {

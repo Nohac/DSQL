@@ -328,7 +328,9 @@ async fn completion_edits_replace_the_word_under_the_cursor() {
         )
         .await;
     let response = session.response(id).await;
-    let items = response["result"].as_array().expect("host completion answers");
+    let items = response["result"]
+        .as_array()
+        .expect("host completion answers");
     let kind = items
         .iter()
         .find(|item| item["label"] == "kind")

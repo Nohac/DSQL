@@ -126,7 +126,9 @@ impl Backend {
             .collect()
             .into_iter()
             .next()
-            .map(|(entity, source)| (entity, source.rope().clone()))
+            // LSP-owned buffers are never evicted; a non-resident rope
+            // here would be a residency-policy bug upstream.
+            .and_then(|(entity, source)| Some((entity, source.rope()?.clone())))
     }
 
     /// Publishes the diagnostics currently derived for `path`.
@@ -386,13 +388,23 @@ impl LanguageServer for Backend {
             source
                 .with_latest(move |source| {
                     for change in &changes {
-                        match change.range {
-                            Some(range) => {
-                                let start = position_to_byte(source.rope(), range.start);
-                                let end = position_to_byte(source.rope(), range.end);
-                                source.apply_edit(start..end, &change.text);
+                        match (change.range, source.rope()) {
+                            (Some(range), Some(rope)) => {
+                                let start = position_to_byte(rope, range.start);
+                                let end = position_to_byte(rope, range.end);
+                                // Just observed resident; cannot fail.
+                                source.apply_edit(start..end, &change.text).ok();
                             }
-                            None => source.set_text(&change.text),
+                            (Some(_), None) => {
+                                // A ranged edit against an evicted rope
+                                // has nothing to apply to, and its text is
+                                // only a fragment — replacing the document
+                                // with it would corrupt the buffer. Drop
+                                // the edit; unreachable by policy (open
+                                // buffers stay resident), and the next
+                                // full sync self-heals.
+                            }
+                            (None, _) => source.set_text(&change.text),
                         }
                     }
                 })

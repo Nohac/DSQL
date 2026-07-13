@@ -71,7 +71,7 @@ async fn edit_settle_cost() {
         for (_, source) in sources.collect() {
             source
                 .with_latest(move |text| {
-                    let current = text.to_text();
+                    let current = text.to_text().expect("editor text is resident");
                     let Some(at) = current.find(anchor) else {
                         panic!("anchor not in host");
                     };

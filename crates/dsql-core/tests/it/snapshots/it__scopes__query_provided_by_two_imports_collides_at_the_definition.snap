@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/scopes.rs
+assertion_line: 155
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[6..12]: query `Titles` is provided to scope `frontend` by scopes `a`, `b`

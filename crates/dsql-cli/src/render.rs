@@ -132,9 +132,13 @@ pub struct SourceDiagnostic {
     message: String,
     code: String,
     severity: Severity,
+    path: String,
     start: usize,
     end: usize,
-    rope_source: RopeSource,
+    /// The source excerpt; absent when the text was evicted and could
+    /// not be recovered (missing or changed on disk) — the diagnostic
+    /// still renders, without a snippet, rather than showing stale text.
+    excerpt: Option<RopeSource>,
 }
 
 impl MietteDiagnostic for SourceDiagnostic {
@@ -151,10 +155,13 @@ impl MietteDiagnostic for SourceDiagnostic {
     }
 
     fn source_code(&self) -> Option<&dyn SourceCode> {
-        Some(&self.rope_source)
+        self.excerpt
+            .as_ref()
+            .map(|excerpt| excerpt as &dyn SourceCode)
     }
 
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
+        self.excerpt.as_ref()?;
         Some(Box::new(std::iter::once(LabeledSpan::underline(
             self.start..self.end,
         ))))
@@ -168,7 +175,7 @@ impl SourceDiagnostic {
 
     /// The reported file (a region's host), as collected.
     pub fn path(&self) -> &str {
-        &self.rope_source.name
+        &self.path
     }
 }
 
@@ -196,20 +203,44 @@ pub async fn collect_diagnostics(bowl: &Bowl) -> Vec<SourceDiagnostic> {
         .await;
     let regions = regions.collect();
 
+    let parsed = bowl
+        .scoop::<Query<(Entity, &dsql_core::entities::document::ParsedFile)>>()
+        .await;
+    let parsed_rows = parsed.collect();
+
     // A finding's file is a plain document or a region; regions render
     // against their host. One shared rope per file across its findings.
+    // Excerpt text, in preference order: the resident rope; a document's
+    // parsed snapshot; the file re-read from disk, accepted only when it
+    // still matches the stored content hash (never show stale text).
     let projection = HostProjection::new(
         regions
             .iter()
             .map(|(region, host, offset)| (*region, host.0, offset.0)),
     );
-    let mut ropes: HashMap<Entity, Arc<Rope>> = HashMap::new();
-    let mut locate = |file: Entity| -> Option<(String, Arc<Rope>, usize)> {
+    let mut ropes: HashMap<Entity, Option<Arc<Rope>>> = HashMap::new();
+    let mut locate = |file: Entity| -> Option<(String, Option<Arc<Rope>>, usize)> {
         let (target, offset) = projection.target_of(file);
         let (_, path, text) = paths.iter().find(|(entity, _, _)| *entity == target)?;
         let rope = ropes
             .entry(target)
-            .or_insert_with(|| Arc::new(text.rope().clone()))
+            .or_insert_with(|| {
+                if let Some(rope) = text.rope() {
+                    return Some(Arc::new(rope.clone()));
+                }
+                if let Some((_, parsed)) = parsed_rows.iter().find(|(entity, _)| *entity == target)
+                {
+                    return Some(Arc::new(Rope::from_str(&parsed.source)));
+                }
+                match std::fs::read_to_string(&path.0) {
+                    Ok(content)
+                        if dsql_core::source::content_hash(&content) == text.content_hash() =>
+                    {
+                        Some(Arc::new(Rope::from_str(&content)))
+                    }
+                    _ => None,
+                }
+            })
             .clone();
         Some((path.0.clone(), rope, offset))
     };
@@ -225,12 +256,19 @@ pub async fn collect_diagnostics(bowl: &Bowl) -> Vec<SourceDiagnostic> {
                 path.clone(),
                 start,
                 SourceDiagnostic {
-                    message: diagnostic.0.clone(),
+                    // Without an excerpt, miette shows no labels — the
+                    // location must survive in the message itself.
+                    message: if rope.is_some() {
+                        diagnostic.0.clone()
+                    } else {
+                        format!("{path}[{start}..{end}]: {}", diagnostic.0)
+                    },
                     code: format!("dsql::{source:?}::{code:?}"),
                     severity: *severity,
+                    path: path.clone(),
                     start,
                     end,
-                    rope_source: RopeSource::new(path, rope),
+                    excerpt: rope.map(|rope| RopeSource::new(path, rope)),
                 },
             ))
         })

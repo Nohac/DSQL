@@ -66,7 +66,13 @@ async fn regions_of(bowl: &Bowl, host: Entity) -> Vec<(Entity, usize, String)> {
         .collect()
         .into_iter()
         .filter(|(_, of, _, _)| of.0 == host)
-        .map(|(entity, _, offset, text)| (entity, offset.0, text.to_text()))
+        .map(|(entity, _, offset, text)| {
+            (
+                entity,
+                offset.0,
+                text.to_text().expect("scenario regions are resident"),
+            )
+        })
         .collect();
     regions.sort_by_key(|(_, offset, _)| *offset);
     regions
@@ -110,7 +116,10 @@ fn untouched_regions_keep_their_entities_across_host_edits() {
             if entity == host {
                 source
                     .with_latest(|text| {
-                        let appended = format!("{}\n// trailing comment\n", text.to_text());
+                        let appended = format!(
+                            "{}\n// trailing comment\n",
+                            text.to_text().expect("editor text is resident")
+                        );
                         text.set_text(&appended);
                     })
                     .await;
@@ -143,7 +152,7 @@ fn host_edits_with_armed_lints_do_not_race() {
                 if entity == host {
                     source
                         .with_latest(move |text| {
-                            let edited = text.to_text().replace(
+                            let edited = text.to_text().expect("editor text is resident").replace(
                                 "limit 1",
                                 if round % 2 == 0 { "limit 3" } else { "limit 1" },
                             );
@@ -324,7 +333,10 @@ mod host_requests {
             assert!(
                 list.items.iter().any(|item| item.label == "TitleBits"),
                 "expected TitleBits candidate, got: {:?}",
-                list.items.iter().map(|item| &item.label).collect::<Vec<_>>()
+                list.items
+                    .iter()
+                    .map(|item| &item.label)
+                    .collect::<Vec<_>>()
             );
         });
     }

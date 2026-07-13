@@ -285,10 +285,7 @@ async fn check_directives(
             report(
                 argument.name_span,
                 DiagnosticCode::UnknownDirectiveArgument,
-                format!(
-                    "directive `@{name}` has no argument `{}`",
-                    argument.name
-                ),
+                format!("directive `@{name}` has no argument `{}`", argument.name),
             );
             continue;
         };
@@ -337,9 +334,9 @@ async fn complete_directives(
     >,
     mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
 ) {
+    use crate::service::DirectiveRole;
     use crate::service::completion::{CompletionItem, CompletionKind};
     use crate::service::hover::RequestKey;
-    use crate::service::DirectiveRole;
 
     let (request, context) = requests.item();
     let directive_item = |label: &str, detail: String, insert: Option<String>| CompletionItem {
@@ -396,7 +393,10 @@ async fn complete_directives(
             let resolved = SYSTEM_DIRECTIVES.iter().find(|definition| {
                 definition.namespace == namespace && definition.member == member
             });
-            for argument in resolved.map(|definition| definition.arguments).unwrap_or(&[]) {
+            for argument in resolved
+                .map(|definition| definition.arguments)
+                .unwrap_or(&[])
+            {
                 items.push(directive_item(
                     argument.name,
                     format!(
@@ -415,9 +415,7 @@ async fn complete_directives(
         } => {
             let value = SYSTEM_DIRECTIVES
                 .iter()
-                .find(|definition| {
-                    definition.namespace == namespace && definition.member == member
-                })
+                .find(|definition| definition.namespace == namespace && definition.member == member)
                 .and_then(|definition| {
                     definition
                         .arguments

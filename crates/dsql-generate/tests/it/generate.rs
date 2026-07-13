@@ -100,16 +100,26 @@ async fn error_diagnostics_fail_generation() {
     std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }
 
-/// Two scopes may each define an operation with the same public name —
-/// resolution namespaces are independent — but the build tree currently
-/// uses a flat per-kind namespace: generation must refuse before writing
-/// rather than let the later artifact overwrite the earlier one.
+/// Two *independent* scopes may each define an operation with the same
+/// public name — resolution namespaces are separate, and without an
+/// import relationship the language checks rightly stay silent (importing
+/// scopes now get a check-time collision diagnostic instead) — but the
+/// build tree currently uses a flat per-kind namespace: generation must
+/// refuse before writing rather than let the later artifact overwrite
+/// the earlier one.
 #[tokio::test]
 async fn colliding_operation_names_refuse_before_writing() {
     let (dir, _) = fixture_project("collide").await;
+    // An `api` scope with no imports: linguistically independent of
+    // `shared`, colliding only in the flat artifact namespace.
+    let config = dir.join("dsql/dsql.toml");
+    let mut raw = std::fs::read_to_string(&config).expect("config readable");
+    raw.push_str("\n[resolution.api]\ndocuments = [\"queries/api/**/*.dsql\"]\n");
+    std::fs::write(&config, raw).expect("config with api scope");
+    std::fs::create_dir_all(dir.join("queries/api")).expect("api dir");
     let query = "query Collide {\n  title(limit 1) {\n    id\n  }\n}\n";
     std::fs::write(dir.join("queries/shared/collide.dsql"), query).expect("shared collide");
-    std::fs::write(dir.join("queries/frontend/collide.dsql"), query).expect("frontend collide");
+    std::fs::write(dir.join("queries/api/collide.dsql"), query).expect("api collide");
     let project = Project::load_from(&dir).await.expect("project reloads");
 
     let error = generate_project(
@@ -127,7 +137,7 @@ async fn colliding_operation_names_refuse_before_writing() {
         "collision error names the artifacts, got: {message}"
     );
     assert!(
-        message.contains("shared/collide.dsql") && message.contains("frontend/collide.dsql"),
+        message.contains("shared/collide.dsql") && message.contains("api/collide.dsql"),
         "collision error names both sources, got: {message}"
     );
     assert!(

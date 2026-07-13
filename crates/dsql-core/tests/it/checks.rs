@@ -164,9 +164,13 @@ fn member_value_edits_rederive_resolution() {
                     source
                         .with_latest(move |text| {
                             let edited = if round % 2 == 0 {
-                                text.to_text().replace("    id\n", "    idz\n")
+                                text.to_text()
+                                    .expect("editor text is resident")
+                                    .replace("    id\n", "    idz\n")
                             } else {
-                                text.to_text().replace("    idz\n", "    id\n")
+                                text.to_text()
+                                    .expect("editor text is resident")
+                                    .replace("    idz\n", "    id\n")
                             };
                             text.set_text(&edited);
                         })
@@ -339,7 +343,10 @@ fn same_length_body_edits_rederive_diagnostics() {
                 source
                     .with_latest(|text| {
                         // Same byte length: `title` -> `titlx`.
-                        let edited = text.to_text().replace("    title\n", "    titlx\n");
+                        let edited = text
+                            .to_text()
+                            .expect("editor text is resident")
+                            .replace("    title\n", "    titlx\n");
                         text.set_text(&edited);
                     })
                     .await;

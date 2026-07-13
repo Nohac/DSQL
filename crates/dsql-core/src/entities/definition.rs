@@ -103,6 +103,7 @@ impl LanguageEntity for Definition {
         reg.system(check_duplicate_fragments.run_during(Phase::Complete));
         reg.system(check_duplicate_queries.run_during(Phase::Complete));
         reg.system(check_import_collisions.run_during(Phase::Complete));
+        reg.system(check_import_ambiguities.run_during(Phase::Complete));
         reg.system(check_fragment_targets);
         // Fully tracked (a per-file bound join, no views), so it needs no
         // phase barrier: replanning orders it after enrichment and the
@@ -189,12 +190,7 @@ impl LowerStage for Definition {
         };
 
         let span = node_span(ctx.cst, node);
-        let source_hash = {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::hash::DefaultHasher::new();
-            text(ctx.source, span).hash(&mut hasher);
-            hasher.finish()
-        };
+        let source_hash = crate::source::content_hash(text(ctx.source, span));
         let decl = DefDecl {
             kind,
             name: text(ctx.source, name_span).to_string(),
@@ -263,17 +259,11 @@ async fn index_defs(
     files: View<'_, (Entity, &SourceText)>,
     mut commands: Commands<(dsql_schema::DefIndex,)>,
 ) {
-    use std::hash::{Hash, Hasher};
-
     let _ = query.item();
 
     let file_hashes: std::collections::HashMap<Entity, u64> = files
         .iter()
-        .map(|(entity, text)| {
-            let mut hasher = std::hash::DefaultHasher::new();
-            text.hash(&mut hasher);
-            (entity, hasher.finish())
-        })
+        .map(|(entity, text)| (entity, text.content_hash()))
         .collect();
     let mut entries: Vec<(String, DefKind, String, Option<u64>)> = defs
         .iter()
@@ -337,9 +327,9 @@ async fn check_duplicate_fragments(
 /// Duplicate *local* query names collide at generation time — every
 /// operation becomes one artifact keyed by its public name — so they are
 /// errors at the language level, scoped per resolution scope like
-/// fragments. Cross-scope artifact collisions surface at the generate
-/// boundary; local-vs-imported query collisions are not diagnosed yet
-/// (tracked in docs/issues.md).
+/// fragments. Local-vs-imported and import-vs-import collisions have
+/// their own checks below; collisions between *independent* scopes are
+/// legitimate language-side and surface at the generate boundary.
 async fn check_duplicate_queries(
     _: Query<Entity, With<DiagnosticsDemand>>,
     query: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
@@ -376,8 +366,9 @@ async fn check_duplicate_queries(
     );
 }
 
-/// A local fragment whose name is also provided by an imported scope is a
-/// diagnostic at the local definition (docs/spec/resolution-scopes.md).
+/// A local definition (either kind) whose name is also provided by an
+/// imported scope is a diagnostic at the local definition
+/// (docs/spec/resolution-scopes.md).
 async fn check_import_collisions(
     _: Query<Entity, With<DiagnosticsDemand>>,
     query: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
@@ -389,12 +380,8 @@ async fn check_import_collisions(
     let (entity, decl, file, scope) = query.item();
     let (_, imports) = imports.item();
 
-    if decl.kind != DefKind::Fragment {
-        return;
-    }
-
     let Some((imported, _, imported_scope)) = defs.iter().find(|(_, other_decl, other_scope)| {
-        other_decl.kind == DefKind::Fragment
+        other_decl.kind == decl.kind
             && other_decl.name == decl.name
             && imports
                 .imports_of(&scope.0)
@@ -413,11 +400,76 @@ async fn check_import_collisions(
             source: DiagnosticSource::Check,
             code: DiagnosticCode::DuplicateDefinition,
             message: format!(
-                "fragment `{}` collides with a definition imported from scope `{}`",
-                decl.name, imported_scope.0
+                "{} `{}` collides with a definition imported from scope `{}`",
+                decl.kind, decl.name, imported_scope.0
             ),
         },
     );
+}
+
+/// Two imported scopes providing one query name to the same consuming
+/// scope collide in that scope's artifact closure, with no local
+/// definition to anchor a diagnostic — this reports once, on the
+/// lexicographically first provider, naming every provider scope.
+/// Fragments deliberately keep their *spread-site* ambiguity diagnostic
+/// instead (two importable fragments with one name are harmless until a
+/// spread actually uses the name); queries have no use sites, so the
+/// definition level is the only place to say it.
+async fn check_import_ambiguities(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    imports: Query<(Entity, &ScopeImports)>,
+    // The definition index is the tracked input that re-runs this check
+    // when definitions appear, rename, or vanish; the ambient view alone
+    // would go stale after the first settle.
+    _index: Query<(Entity, &DefIndex)>,
+    defs: View<'_, (Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (_, imports) = imports.item();
+
+    for consumer in imports.0.keys() {
+        // Group this consumer's imported queries by name.
+        let mut providers: std::collections::BTreeMap<&str, Vec<(Entity, &DefDecl, Entity, &str)>> =
+            std::collections::BTreeMap::new();
+        for (entity, decl, file, def_scope) in defs.iter() {
+            if decl.kind == DefKind::Query
+                && imports
+                    .imports_of(consumer)
+                    .any(|import| import == def_scope.0)
+            {
+                providers.entry(decl.name.as_str()).or_default().push((
+                    entity,
+                    decl,
+                    file.0,
+                    def_scope.0.as_str(),
+                ));
+            }
+        }
+        for (name, mut group) in providers {
+            let distinct: std::collections::BTreeSet<&str> =
+                group.iter().map(|(_, _, _, scope)| *scope).collect();
+            if distinct.len() < 2 {
+                continue;
+            }
+            group.sort_by_key(|(_, decl, _, scope)| (*scope, decl.name_span.start));
+            let (_, decl, file, _) = group[0];
+            let scopes = distinct.into_iter().collect::<Vec<_>>().join("`, `");
+            emit_diagnostic(
+                &mut commands,
+                DiagnosticFacts {
+                    derived_from: DerivedFrom::many(group.iter().map(|(entity, _, _, _)| *entity)),
+                    file,
+                    span: decl.name_span,
+                    severity: Severity::Error,
+                    source: DiagnosticSource::Check,
+                    code: DiagnosticCode::DuplicateDefinition,
+                    message: format!(
+                        "query `{name}` is provided to scope `{consumer}` by scopes `{scopes}`"
+                    ),
+                },
+            );
+        }
+    }
 }
 
 impl FormatStage for Definition {

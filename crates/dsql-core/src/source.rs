@@ -62,17 +62,60 @@ pub struct EmbeddingHost;
 #[component(hash)]
 pub struct BelongsToHost(pub Entity);
 
+/// One content fingerprint for every text-hashing site: source texts,
+/// definition slices, and disk verification hash through here, so a
+/// string and a rope holding the same bytes always agree.
+pub fn content_hash(text: &str) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::hash::DefaultHasher::new();
+    hasher.write(text.as_bytes());
+    hasher.finish()
+}
+
+/// [`content_hash`] over a rope without materializing it.
+fn rope_content_hash(rope: &Rope) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::hash::DefaultHasher::new();
+    for chunk in rope.chunks() {
+        hasher.write(chunk.as_bytes());
+    }
+    hasher.finish()
+}
+
+/// An edit was applied to source text whose rope has been evicted.
+/// Rehydrate with [`SourceText::set_text`] first — incremental edits have
+/// nothing to edit against.
+#[derive(Debug, thiserror::Error)]
+#[error("source text is not resident; rehydrate with set_text before editing")]
+pub struct SourceTextNotResident;
+
 /// Source text of a file entity, rope-backed for cheap incremental edits.
 ///
-/// The fingerprint is a hash of the rope's content, so equal text always
-/// means an equal fingerprint no matter who produced it: an edit burst
-/// that lands back on the previous text, a disk reload of unchanged
-/// content, or a derivation (embedded-region extraction) re-emitting an
-/// untouched region all leave downstream facts valid.
-#[derive(Component, Hash)]
+/// The engine fingerprint is the stored `hash` of the rope's *content*
+/// (never the rope itself), so equal text always means an equal
+/// fingerprint no matter who produced it: an edit burst that lands back
+/// on the previous text, a disk reload of unchanged content, or a
+/// derivation (embedded-region extraction) re-emitting an untouched
+/// region all leave downstream facts valid.
+///
+/// The rope is *evictable* (docs/issues.md, hash-carrying evictable
+/// ropes): batch analysis drops it after the parse boundary has
+/// materialized what derivations need, while the stored hash keeps the
+/// component's fingerprint — and with it every derived fact — intact.
+/// [`SourceText::set_text`] rehydrates (a disk reload of unchanged
+/// content is hash-neutral; changed content bumps, correctly).
+#[derive(Component)]
 #[component(hash)]
 pub struct SourceText {
-    rope: Rope,
+    rope: Option<Rope>,
+    hash: u64,
+}
+
+impl std::hash::Hash for SourceText {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // The stored content hash only: residency is not identity.
+        state.write_u64(self.hash);
+    }
 }
 
 impl SourceText {
@@ -80,35 +123,85 @@ impl SourceText {
     /// region extraction).
     pub fn from_text(text: &str) -> Self {
         Self {
-            rope: Rope::from_str(text),
+            rope: Some(Rope::from_str(text)),
+            hash: content_hash(text),
         }
     }
 
-    /// Replaces the entire text (LSP full-document sync, `didClose` revert).
+    /// Replaces the entire text (LSP full-document sync, `didClose`
+    /// revert, rehydration of an evicted rope).
     pub fn set_text(&mut self, text: &str) {
-        self.rope = Rope::from_str(text);
+        self.rope = Some(Rope::from_str(text));
+        self.hash = content_hash(text);
     }
 
     /// Applies one incremental edit: replaces `byte_range` with
     /// `replacement`. LSP `didChange` events apply their edits in order
     /// through this, each against the rope the previous edit produced.
-    pub fn apply_edit(&mut self, byte_range: std::ops::Range<usize>, replacement: &str) {
-        self.rope.remove(byte_range.clone());
-        self.rope.insert(byte_range.start, replacement);
+    /// Fails on an evicted rope — editor-owned buffers are never evicted,
+    /// so a failure here is a residency-policy bug, not an editing state.
+    pub fn apply_edit(
+        &mut self,
+        byte_range: std::ops::Range<usize>,
+        replacement: &str,
+    ) -> Result<(), SourceTextNotResident> {
+        let Some(rope) = self.rope.as_mut() else {
+            return Err(SourceTextNotResident);
+        };
+        rope.remove(byte_range.clone());
+        rope.insert(byte_range.start, replacement);
+        self.hash = rope_content_hash(rope);
+        Ok(())
     }
 
     /// The rope, for span slicing and position mapping at protocol
-    /// boundaries. Incremental edit helpers land with the LSP crate.
-    pub fn rope(&self) -> &Rope {
-        &self.rope
+    /// boundaries; `None` once evicted.
+    pub fn rope(&self) -> Option<&Rope> {
+        self.rope.as_ref()
     }
 
-    /// Materializes the full text. Only the parse boundary should need this;
-    /// everything else works on byte spans over the parsed snapshot.
-    pub fn to_text(&self) -> String {
-        self.rope.to_string()
+    /// Materializes the full text; `None` once evicted. Only the parse
+    /// boundary should need this; everything else works on byte spans
+    /// over the parsed snapshot.
+    pub fn to_text(&self) -> Option<String> {
+        self.rope.as_ref().map(Rope::to_string)
+    }
+
+    /// Drops the rope, keeping the content hash — fingerprint-neutral, so
+    /// nothing derived from this text retires or re-derives.
+    pub fn evict(&mut self) {
+        self.rope = None;
+    }
+
+    /// Whether the rope is currently materialized (not evicted).
+    pub fn is_resident(&self) -> bool {
+        self.rope.is_some()
+    }
+
+    /// The stored content fingerprint (what the engine hashes).
+    pub fn content_hash(&self) -> u64 {
+        self.hash
     }
 }
+
+/// Arms batch-analysis residency: source ropes are evicted at the parse
+/// and extraction boundaries once derivations have what they need.
+/// Editor-facing bowls must never call this.
+pub async fn arm_analysis_residency(bowl: &bowl::Bowl) {
+    bowl.insert((
+        bowl::Singleton::<AnalysisResidency>::new(),
+        AnalysisResidency,
+    ))
+    .await;
+}
+
+/// Batch-analysis residency: when this singleton is present, the parse
+/// and extraction boundaries evict source ropes after materializing what
+/// derivations need. Editor-facing bowls never insert it, and entities
+/// marked [`OpenBuffer`] are exempt regardless.
+#[derive(Component, Hash)]
+#[component(hash)]
+pub struct AnalysisResidency;
 
 /// Marks a file entity whose text is owned by a live editor buffer. Disk
 /// watchers and loaders must not overwrite the text while this is present.

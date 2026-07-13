@@ -35,7 +35,10 @@ async fn edit_file(bowl: &Bowl, path: &str, replace: (&str, &str)) {
             let (from, to) = (replace.0.to_string(), replace.1.to_string());
             source
                 .with_latest(move |text| {
-                    let edited = text.to_text().replace(&from, &to);
+                    let edited = text
+                        .to_text()
+                        .expect("editor text is resident")
+                        .replace(&from, &to);
                     text.set_text(&edited);
                 })
                 .await;

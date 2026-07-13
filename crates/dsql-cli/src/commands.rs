@@ -13,7 +13,7 @@ use dsql_core::grammar::parse;
 use dsql_core::grammar::parser::{Node, NodeRef, Rule};
 use dsql_core::source::FilePath;
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
-use dsql_project::{Project, ProjectError, load_project_documents, open_project_bowl};
+use dsql_project::{Project, ProjectError, load_project_documents, open_analysis_bowl};
 
 /// The command layer's error: each failure keeps its own type instead of
 /// being coerced into an unrelated project variant.
@@ -60,9 +60,7 @@ async fn project_member(bowl: &Bowl, file: &Path) -> Result<String, CliError> {
         .collect()
         .into_iter()
         .map(|(_, path)| path.0.clone())
-        .find(|path| {
-            std::fs::canonicalize(path).is_ok_and(|candidate| candidate == canonical)
-        })
+        .find(|path| std::fs::canonicalize(path).is_ok_and(|candidate| candidate == canonical))
         .ok_or_else(|| CliError::NotAProjectDocument(file.to_path_buf()))
 }
 
@@ -73,7 +71,7 @@ async fn project_member(bowl: &Bowl, file: &Path) -> Result<String, CliError> {
 pub async fn check(file: Option<PathBuf>) -> Outcome {
     let project = Project::load().await?;
     {
-        let bowl = open_project_bowl(&project).await?;
+        let bowl = open_analysis_bowl(&project).await?;
         bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
         let selected = match &file {
@@ -123,7 +121,7 @@ fn count_query_defs(cst: &dsql_core::grammar::parser::CstData) -> usize {
 pub async fn validate() -> Outcome {
     let project = Project::load().await?;
     {
-        let bowl = open_project_bowl(&project).await?;
+        let bowl = open_analysis_bowl(&project).await?;
         arm_generate_demands(&bowl).await;
 
         let diagnostics = crate::render::collect_diagnostics(&bowl).await;
@@ -163,7 +161,7 @@ pub async fn validate() -> Outcome {
 pub async fn sql(collection_limit: Option<u64>) -> Outcome {
     let project = Project::load().await?;
     {
-        let bowl = open_project_bowl(&project).await?;
+        let bowl = open_analysis_bowl(&project).await?;
         arm_generate_demands(&bowl).await;
         if collection_limit.is_some() {
             bowl.insert((

@@ -32,6 +32,7 @@ use bowl::{
     Where, With,
 };
 
+use crate::entities::document::ParsedFile;
 use crate::schema::dsql_schema;
 use crate::source::{BelongsToHost, FilePath, SourceOffset, SourceText};
 
@@ -124,16 +125,18 @@ pub(crate) type FileMatch<'a> = Option<Query<(Entity, &'a SourceText), Where<Bow
 /// (with the cursor rebased) when `file` is an embedding host, otherwise
 /// the file itself.
 pub(crate) fn map_cursor(
-    regions: &View<'_, (Entity, &BelongsToHost, &SourceOffset, &SourceText)>,
+    regions: &View<'_, (Entity, &BelongsToHost, &SourceOffset, &ParsedFile)>,
     file: Entity,
     offset: usize,
 ) -> (Entity, usize) {
     regions
         .iter()
-        .find(|(_, host, start, text)| {
+        .find(|(_, host, start, parsed)| {
             // Inclusive end: a cursor at the region's last byte (right
-            // before the closing delimiter) still edits the region.
-            host.0 == file && offset >= start.0 && offset <= start.0 + text.rope().len()
+            // before the closing delimiter) still edits the region. The
+            // extent comes from the parsed snapshot — the region's rope
+            // may be evicted.
+            host.0 == file && offset >= start.0 && offset <= start.0 + parsed.source.len()
         })
         .map(|(region, _, start, _)| (region, offset - start.0))
         .unwrap_or((file, offset))
@@ -147,7 +150,7 @@ pub(crate) fn map_cursor(
 async fn resolve_hover_requests(
     query: Query<(Entity, &FilePath, &Position), With<HoverRequest>>,
     file: FileMatch<'_>,
-    regions: View<'_, (Entity, &BelongsToHost, &SourceOffset, &SourceText)>,
+    regions: View<'_, (Entity, &BelongsToHost, &SourceOffset, &ParsedFile)>,
     mut commands: Commands<(dsql_schema::HoverAnswer,)>,
 ) {
     let (request, _path, position) = query.item();

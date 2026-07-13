@@ -2,7 +2,7 @@
 //! turns their text into a lossless CST.
 
 use crate::schema::{AstFacts, dsql_schema};
-use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, With};
+use bowl::{Commands, Component, DerivedFrom, Entity, MutRef, Query, Registrar, View, With};
 
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
@@ -10,7 +10,7 @@ use crate::facts::{
 };
 use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef, Parser};
-use crate::source::{DsqlDocument, SourceText};
+use crate::source::{AnalysisResidency, DsqlDocument, OpenBuffer, SourceText};
 
 /// The parsed form of one file: the CST plus the exact source snapshot it
 /// was parsed from, so byte spans extracted during lowering are always
@@ -59,23 +59,44 @@ fn parse_diagnostic_code(message: &str) -> DiagnosticCode {
     }
 }
 
+/// A document's text with what the eviction decision needs: mutable for
+/// the post-parse evict, plus the editor-ownership marker exempting it.
+pub(crate) type EvictableText<'a, Marker> =
+    Query<(Entity, MutRef<'a, SourceText>, Option<&'a OpenBuffer>), With<Marker>>;
+
 /// Parses each document's text into a [`ParsedFile`] and emits parse
 /// errors as diagnostic entities owned by the file. Gated on
 /// [`DsqlDocument`]: host sources carry text too, but only their
 /// extracted regions parse.
+///
+/// This is the consumption boundary of the evictable-rope design: under
+/// [`AnalysisResidency`], the rope is dropped once [`ParsedFile`] holds
+/// the materialized source (a redundant second copy in batch mode) — a
+/// fingerprint-neutral write, so nothing re-derives. Editor buffers
+/// ([`OpenBuffer`]) always stay resident.
 pub async fn parse_file(
-    query: Query<(Entity, &SourceText), With<DsqlDocument>>,
+    query: EvictableText<'_, DsqlDocument>,
+    residency: View<'_, (Entity, &AnalysisResidency)>,
     mut commands: Commands<(dsql_schema::ParsedFile, dsql_schema::Diagnostic)>,
 ) {
-    let (file, text) = query.item();
+    let (file, mut text, open_buffer) = query.item();
 
-    let source = text.to_text();
+    // An evicted rope means this text (same fingerprint) already parsed.
+    let Some(source) = text.to_text() else {
+        return;
+    };
     let mut parse_diagnostics = Vec::new();
     let cst = Parser::new(&source, &mut parse_diagnostics)
         .parse(&mut parse_diagnostics)
         .into_data();
 
-    commands.entity(file).insert(ParsedFile { cst, source });
+    commands.entity(file).insert(ParsedFile {
+        cst,
+        source: source.clone(),
+    });
+    if residency.iter().next().is_some() && open_buffer.is_none() {
+        text.evict();
+    }
 
     for diagnostic in parse_diagnostics {
         let span = diagnostic

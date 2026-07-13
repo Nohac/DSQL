@@ -9,6 +9,7 @@ mod format;
 mod lints;
 mod lowering;
 mod parse;
+mod residency;
 mod scale;
 mod scenarios;
 mod scopes;

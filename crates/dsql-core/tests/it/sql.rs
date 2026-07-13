@@ -201,7 +201,10 @@ fn cross_file_fragment_body_edits_rederive_sql() {
         for (_, source) in sources.collect() {
             source
                 .with_latest(|text| {
-                    if text.to_text().contains("fragment Bits") {
+                    if text
+                        .to_text()
+                        .is_some_and(|text| text.contains("fragment Bits"))
+                    {
                         text.set_text("fragment Bits on title {\n  title\n}\n");
                     }
                 })

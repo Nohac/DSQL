@@ -7,8 +7,7 @@ use std::path::{Path, PathBuf};
 use dsql_cli::commands::sink_metadata;
 
 fn fixture_schema() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../dsql-project/tests/it/fixture/imdb/dsql/schema")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../dsql-project/tests/it/fixture/imdb/dsql/schema")
 }
 
 #[tokio::test]

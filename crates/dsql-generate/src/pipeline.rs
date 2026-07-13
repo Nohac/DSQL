@@ -20,7 +20,7 @@ use dsql_metadata::{
     BuildManifest, FragmentManifestEntry, FragmentMetadata, OperationManifestEntry,
     OperationMetadata,
 };
-use dsql_project::{Project, ProjectError, open_project_bowl};
+use dsql_project::{Project, ProjectError, open_analysis_bowl};
 
 use crate::assemble::{
     FragmentInputs, OperationInputs, fragment_metadata, operation_metadata, source_path,
@@ -47,6 +47,11 @@ pub enum GenerateError {
     ArtifactCollision(Box<ArtifactCollision>),
     #[error("failed to write {path}: {source}")]
     Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to resolve {path}: {source}")]
+    Io {
         path: PathBuf,
         source: std::io::Error,
     },
@@ -104,7 +109,7 @@ pub async fn generate_project(
     project: &Project,
     options: GenerateOptions,
 ) -> Result<GenerateOutput> {
-    let bowl = open_project_bowl(project).await?;
+    let bowl = open_analysis_bowl(project).await?;
     let assembled = assemble_project(&bowl, project, options).await?;
     write_build_tree(
         project,
@@ -346,7 +351,7 @@ async fn write_build_tree(
         written.push(manifest_path.clone());
     }
 
-    run_host_generator(project, project_root).await?;
+    run_host_generator(project, project_root, &manifest_path).await?;
 
     Ok(GenerateOutput {
         manifest_path,
@@ -379,13 +384,31 @@ async fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
     Ok(true)
 }
 
-async fn run_host_generator(project: &Project, project_root: &Path) -> Result<()> {
+async fn run_host_generator(
+    project: &Project,
+    project_root: &Path,
+    manifest_path: &Path,
+) -> Result<()> {
     let typescript = &project.config.generate.typescript;
     if !typescript.enabled || typescript.cmd.is_empty() {
         return Ok(());
     }
+    // The generator contract (docs/spec/codegen.md): cwd is the project
+    // base, DSQL_PROJECT_DIR names it absolutely, and DSQL_MANIFEST
+    // points at the manifest just written.
+    let absolute_root = std::path::absolute(project_root).map_err(|source| GenerateError::Io {
+        path: project_root.to_path_buf(),
+        source,
+    })?;
+    let absolute_manifest =
+        std::path::absolute(manifest_path).map_err(|source| GenerateError::Io {
+            path: manifest_path.to_path_buf(),
+            source,
+        })?;
     let status = Command::new(&typescript.cmd[0])
         .args(&typescript.cmd[1..])
+        .env("DSQL_PROJECT_DIR", &absolute_root)
+        .env("DSQL_MANIFEST", &absolute_manifest)
         .current_dir(project_root)
         .status()
         .await

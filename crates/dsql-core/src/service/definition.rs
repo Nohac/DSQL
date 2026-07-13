@@ -47,7 +47,7 @@ async fn resolve_definition_requests(
             Entity,
             &crate::source::BelongsToHost,
             &crate::source::SourceOffset,
-            &crate::source::SourceText,
+            &crate::entities::document::ParsedFile,
         ),
     >,
     mut commands: Commands<(dsql_schema::DefinitionEnriched,)>,

@@ -30,12 +30,12 @@ use bowl::{
 use crate::catalog::TableId;
 use crate::entities::document::ParsedFile;
 use crate::entities::field_selection::{SelectionTree, TreeViews};
+use crate::facts::Span;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{Node, NodeRef, Parser, Rule};
-use crate::facts::Span;
 use crate::schema::dsql_schema;
 use crate::service::hover::Position;
-use crate::source::{FilePath, ResolutionScope, SourceText};
+use crate::source::{FilePath, ResolutionScope};
 
 /// Marks an entity as a completion request; pair with [`FilePath`] and
 /// [`Position`].
@@ -180,7 +180,7 @@ async fn enrich_completion_requests(
             Entity,
             &crate::source::BelongsToHost,
             &crate::source::SourceOffset,
-            &SourceText,
+            &ParsedFile,
         ),
     >,
     documents: View<'_, (Entity, &ParsedFile, &ResolutionScope)>,
@@ -371,7 +371,9 @@ async fn enrich_completion_requests(
     commands
         .entity(request)
         .insert(crate::service::hover::RequestKey(request));
-    commands.entity(request).insert(CompletionList { items, replace });
+    commands
+        .entity(request)
+        .insert(CompletionList { items, replace });
     if let Some((_, role)) = directive {
         commands
             .entity(request)
@@ -467,7 +469,11 @@ fn last_token(cst: &crate::grammar::parser::CstData, node: NodeRef) -> Option<To
 }
 
 /// Whether the walk must stop before `node` instead of entering it.
-fn spine_stop(cst: &crate::grammar::parser::CstData, node: NodeRef, rule: Rule) -> Option<SpineStop> {
+fn spine_stop(
+    cst: &crate::grammar::parser::CstData,
+    node: NodeRef,
+    rule: Rule,
+) -> Option<SpineStop> {
     if rule == Rule::Directive {
         let has = |token: Token| {
             cst.children(node)
@@ -512,9 +518,7 @@ fn spine_stop(cst: &crate::grammar::parser::CstData, node: NodeRef, rule: Rule) 
 /// error recovery in a full-source parse bails frontier text out to the
 /// document, but the truncated parse ends exactly at the cursor, so its
 /// open constructs are the ones being typed into.
-fn open_spine(
-    cst: &crate::grammar::parser::CstData,
-) -> (Vec<(Rule, NodeRef)>, Option<SpineStop>) {
+fn open_spine(cst: &crate::grammar::parser::CstData) -> (Vec<(Rule, NodeRef)>, Option<SpineStop>) {
     let mut spine = Vec::new();
     let mut stop = None;
     let mut current = NodeRef::ROOT;
@@ -599,13 +603,14 @@ fn directive_completion(
         }
         let argument = last_argument
             .and_then(|argument| {
-                cst.children(argument).find_map(|child| match cst.get(child) {
-                    Node::Token(Token::Name, _) => {
-                        let span = cst.span(child);
-                        Some(prefix[span.start..span.end].to_string())
-                    }
-                    _ => None,
-                })
+                cst.children(argument)
+                    .find_map(|child| match cst.get(child) {
+                        Node::Token(Token::Name, _) => {
+                            let span = cst.span(child);
+                            Some(prefix[span.start..span.end].to_string())
+                        }
+                        _ => None,
+                    })
             })
             .unwrap_or_default();
         return Some((
@@ -653,7 +658,9 @@ fn classify_site(spine: &[(Rule, NodeRef)], stop: Option<SpineStop>) -> Completi
                 // A selection set directly under a definition lists tables
                 // (queries) or the fragment target's fields; deeper ones
                 // list the enclosing field's columns and relations.
-                let under_field = spine[..index].iter().any(|(r, _)| *r == Rule::FieldSelection);
+                let under_field = spine[..index]
+                    .iter()
+                    .any(|(r, _)| *r == Rule::FieldSelection);
                 let under_fragment = spine[..index].iter().any(|(r, _)| *r == Rule::FragmentDef);
                 return if under_field || under_fragment {
                     CompletionSite::SelectionBody

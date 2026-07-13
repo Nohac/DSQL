@@ -26,6 +26,17 @@ pub async fn open_project_bowl(project: &Project) -> Result<Bowl> {
     Ok(bowl)
 }
 
+/// [`open_project_bowl`] with batch-analysis residency armed: source
+/// ropes are evicted once parsed. For one-shot commands (check, sql,
+/// validate, generate) — anything that keeps answering from the bowl
+/// (debug sessions, daemons, editors) opens a resident bowl instead.
+pub async fn open_analysis_bowl(project: &Project) -> Result<Bowl> {
+    let bowl = language_bowl().await;
+    dsql_core::source::arm_analysis_residency(&bowl).await;
+    populate_project_bowl(&bowl, project).await?;
+    Ok(bowl)
+}
+
 /// Populates an already-registered bowl with the project's catalog, scope
 /// configuration, and documents.
 pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()> {

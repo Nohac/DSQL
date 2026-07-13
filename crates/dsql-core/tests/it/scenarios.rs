@@ -130,9 +130,9 @@ impl Scenario {
                     .table
                     .and_then(|table| catalog.table_by_id(table))
                     .map_or("<unresolved>".to_string(), |table| table.name.clone());
-                let replace = items
-                    .replace
-                    .map_or("<none>".to_string(), |span| format!("[{}..{}]", span.start, span.end));
+                let replace = items.replace.map_or("<none>".to_string(), |span| {
+                    format!("[{}..{}]", span.start, span.end)
+                });
                 lines.push(format!(
                     "context: {:?} table={table} scope={} replace={replace}",
                     context.site, context.scope
@@ -193,7 +193,12 @@ impl Scenario {
             .collect()
             .into_iter()
             .find(|(entity, _, _)| *entity == target.file)
-            .map(|(_, path, text)| (path.0.clone(), text.to_text()))
+            .map(|(_, path, text)| {
+                (
+                    path.0.clone(),
+                    text.to_text().expect("scenario text is resident"),
+                )
+            })
             .unwrap_or_default();
         format!(
             "{target_path}[{}..{}] -> `{}`",
@@ -489,14 +494,19 @@ fn completion_survives_malformed_sources() {
             .open("broken1.dsql", "query Q {\n  title(limit 1) {\n    <|>\n")
             .await;
         let dangling_spread = scenario
-            .open("broken2.dsql", "query Q {\n  title(limit 1) {\n    ...<|>\n")
+            .open(
+                "broken2.dsql",
+                "query Q {\n  title(limit 1) {\n    ...<|>\n",
+            )
             .await;
         let incomplete_clause = scenario
             .open("broken3.dsql", "query Q {\n  title(where <|>\n")
             .await;
         let brace = scenario.complete("broken1.dsql", missing_brace[0]).await;
         let spread = scenario.complete("broken2.dsql", dangling_spread[0]).await;
-        let clause = scenario.complete("broken3.dsql", incomplete_clause[0]).await;
+        let clause = scenario
+            .complete("broken3.dsql", incomplete_clause[0])
+            .await;
         insta::assert_snapshot!(format!(
             "missing brace:\n{brace}\n\ndangling spread:\n{spread}\n\nincomplete clause:\n{clause}"
         ));
@@ -555,7 +565,10 @@ fn completion_context_sweeps_every_offset() {
         let rendered: Vec<String> = runs
             .into_iter()
             .map(|(start, end, line)| {
-                format!("[{start:>2}..{end:>2}] {:?} {line}", &source[start..end.min(source.len())])
+                format!(
+                    "[{start:>2}..{end:>2}] {:?} {line}",
+                    &source[start..end.min(source.len())]
+                )
             })
             .collect();
         insta::assert_snapshot!(rendered.join("\n"));

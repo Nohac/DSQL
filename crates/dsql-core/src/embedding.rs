@@ -17,11 +17,12 @@
 use crate::schema::dsql_schema;
 use std::sync::Mutex;
 
-use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, With};
+use bowl::{Commands, Component, DerivedFrom, Entity, MutRef, Query, Registrar, View, With};
 use regex::Regex;
 
 use crate::source::{
-    BelongsToHost, DsqlDocument, EmbeddingHost, ResolutionScope, SourceOffset, SourceText,
+    AnalysisResidency, BelongsToHost, DsqlDocument, EmbeddingHost, OpenBuffer, ResolutionScope,
+    SourceOffset, SourceText,
 };
 
 /// The extraction pattern, one fingerprinted singleton per bowl: a regex
@@ -61,15 +62,27 @@ pub(crate) fn register_embedding(reg: &mut Registrar<'_>) {
     reg.system(extract_embedded_documents);
 }
 
+/// A host's text with what extraction and the eviction decision need.
+type EvictableHost<'a> = Query<
+    (
+        Entity,
+        MutRef<'a, SourceText>,
+        &'a ResolutionScope,
+        Option<&'a OpenBuffer>,
+    ),
+    With<EmbeddingHost>,
+>;
+
 /// Derives the region entities of one host source: per match, a dsql
 /// document carrying the region text, its byte offset in the host, and
 /// the host's resolution scope.
 async fn extract_embedded_documents(
-    hosts: Query<(Entity, &SourceText, &ResolutionScope), With<EmbeddingHost>>,
+    hosts: EvictableHost<'_>,
     pattern: Query<(Entity, &EmbeddedPattern)>,
+    residency: View<'_, (Entity, &AnalysisResidency)>,
     mut commands: Commands<(dsql_schema::Region,)>,
 ) {
-    let (host, text, scope) = hosts.item();
+    let (host, mut text, scope, open_buffer) = hosts.item();
     let (pattern_entity, pattern) = pattern.item();
 
     // Loaders validate configured patterns up front; the default is
@@ -78,7 +91,11 @@ async fn extract_embedded_documents(
         return;
     };
 
-    let source = text.to_text();
+    // An evicted rope means this host (same fingerprint) already
+    // extracted its regions.
+    let Some(source) = text.to_text() else {
+        return;
+    };
     for captures in regex.captures_iter(&source) {
         let Some(content) = captures.name("content") else {
             continue;
@@ -91,6 +108,11 @@ async fn extract_embedded_documents(
             scope.clone(),
             SourceText::from_text(content.as_str()),
         ));
+    }
+    // Hosts are the largest files and never receive a ParsedFile; the
+    // extraction boundary is their consumption point.
+    if residency.iter().next().is_some() && open_buffer.is_none() {
+        text.evict();
     }
 }
 

@@ -126,6 +126,99 @@ fn fragment_provided_by_two_imports_is_ambiguous_at_the_spread() {
     });
 }
 
+const QUERY: &str = "query Titles {\n  title(limit 1) {\n    id\n  }\n}\n";
+
+/// A local query colliding with an imported one is a language error at
+/// the local definition — mirrors the fragment rule.
+#[test]
+fn local_query_colliding_with_import_is_reported() {
+    block_on(async {
+        let bowl = scoped_bowl(&[("frontend", &["shared"]), ("shared", &[])]).await;
+        insert(&bowl, "shared.dsql", "shared", QUERY).await;
+        insert(&bowl, "page.dsql", "frontend", QUERY).await;
+
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
+}
+
+/// Two imported scopes providing one query name to a consuming scope
+/// collide in its artifact closure even with no local definition or use
+/// site — reported once, on the first provider, naming every provider.
+/// (Fragments keep their spread-site ambiguity diagnostic instead.)
+#[test]
+fn query_provided_by_two_imports_collides_at_the_definition() {
+    block_on(async {
+        let bowl = scoped_bowl(&[("frontend", &["a", "b"]), ("a", &[]), ("b", &[])]).await;
+        insert(&bowl, "a.dsql", "a", QUERY).await;
+        insert(&bowl, "b.dsql", "b", QUERY).await;
+
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
+}
+
+/// The import-ambiguity check follows edits: introducing the second
+/// provider after the first settle reports, renaming it away retires.
+#[test]
+fn import_ambiguities_follow_edits() {
+    use bowl::{Mut, Query};
+    use dsql_core::source::SourceText;
+
+    block_on(async {
+        let bowl = scoped_bowl(&[("frontend", &["a", "b"]), ("a", &[]), ("b", &[])]).await;
+        insert(&bowl, "a.dsql", "a", QUERY).await;
+        insert(
+            &bowl,
+            "b.dsql",
+            "b",
+            "query Other {\n  title(limit 1) {\n    id\n  }\n}\n",
+        )
+        .await;
+        assert_eq!(
+            render_diagnostic_facts(&bowl).await,
+            "",
+            "distinct names are clean"
+        );
+
+        // Rename b's query onto a's name: the ambiguity appears.
+        let target = {
+            let rows = bowl
+                .scoop::<Query<(Entity, &dsql_core::source::FilePath)>>()
+                .await;
+            rows.collect()
+                .into_iter()
+                .find(|(_, path)| path.0 == "b.dsql")
+                .map(|(entity, _)| entity)
+                .expect("b.dsql exists")
+        };
+        let set_b = |text: String| {
+            let bowl = &bowl;
+            async move {
+                let rows = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+                for (entity, slot) in rows.collect() {
+                    if entity == target {
+                        let text = text.clone();
+                        slot.with_latest(move |slot| slot.set_text(&text)).await;
+                    }
+                }
+            }
+        };
+
+        set_b(QUERY.to_string()).await;
+        let reported = render_diagnostic_facts(&bowl).await;
+        assert!(
+            reported.contains("provided to scope `frontend`"),
+            "the ambiguity appears after the edit, got: {reported:?}"
+        );
+
+        set_b("query Other {\n  title(limit 1) {\n    id\n  }\n}\n".to_string()).await;
+        assert_eq!(
+            render_diagnostic_facts(&bowl).await,
+            "",
+            "renaming away retires the ambiguity"
+        );
+    });
+}
+
 /// Scope ownership preserves its outcomes: unmatched and overlapping
 /// paths must not silently collapse into the default scope.
 #[test]

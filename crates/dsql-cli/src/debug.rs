@@ -270,7 +270,7 @@ pub async fn resolution() -> Outcome {
                 host.0.raw(),
                 offset.0,
                 scope.0,
-                text.to_text().len()
+                text.to_text().map_or(0, |text| text.len())
             );
         }
 
