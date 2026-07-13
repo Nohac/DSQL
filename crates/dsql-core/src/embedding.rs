@@ -17,12 +17,14 @@
 use crate::schema::dsql_schema;
 use std::sync::Mutex;
 
-use bowl::{Commands, Component, DerivedFrom, Entity, MutRef, Query, Registrar, View, With};
+use bowl::{
+    Commands, Component, DerivedFrom, Entity, MutRef, Query, Registrar, SystemExt, View, With,
+};
 use regex::Regex;
 
 use crate::source::{
-    AnalysisResidency, BelongsToHost, DsqlDocument, EmbeddingHost, OpenBuffer, ResolutionScope,
-    SourceOffset, SourceText,
+    AnalysisResidency, BelongsToHost, CallsiteSpan, DsqlDocument, EmbeddingHost, OpenBuffer,
+    ResolutionScope, SourceOffset, SourceText,
 };
 
 /// The extraction pattern, one fingerprinted singleton per bowl: a regex
@@ -60,6 +62,84 @@ pub fn compile_embedding_pattern(pattern: &str) -> Result<Regex, String> {
 /// loading install the pattern singleton.
 pub(crate) fn register_embedding(reg: &mut Registrar<'_>) {
     reg.system(extract_embedded_documents);
+    reg.system(check_embedded_expressions.run_during(bowl::Phase::Complete));
+}
+
+/// The rewrite contract's language rules (docs/spec/build-daemon.md,
+/// Callsites): an embedded expression must define exactly one query —
+/// more are an ambiguous rewrite target, and fragment-only expressions
+/// would leave a raw `dsql(…)` value in shipped code (fragment-only
+/// *documents* remain fully supported in plain `.dsql` files).
+async fn check_embedded_expressions(
+    _: Query<Entity, With<crate::facts::DiagnosticsDemand>>,
+    regions: Query<(Entity, &BelongsToHost, &CallsiteSpan), With<DsqlDocument>>,
+    // The definition index is the tracked input that re-runs this check
+    // when definitions appear, change kind, or vanish; the ambient view
+    // alone would go stale after the first settle.
+    _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
+    defs: View<
+        '_,
+        (
+            Entity,
+            &crate::entities::definition::DefDecl,
+            &crate::facts::BelongsToFile,
+        ),
+    >,
+    mut commands: Commands<(crate::schema::dsql_schema::Diagnostic,)>,
+) {
+    use crate::entities::definition::DefKind;
+    use crate::facts::{
+        DiagnosticCode, DiagnosticFacts, DiagnosticSource, Severity, emit_diagnostic,
+    };
+
+    // The CallsiteSpan join is the gate: plain documents have none.
+    let (region, _, _callsite) = regions.item();
+    let queries = defs
+        .iter()
+        .filter(|(_, decl, file)| file.0 == region && decl.kind == DefKind::Query)
+        .count();
+    let fragments = defs
+        .iter()
+        .filter(|(_, decl, file)| file.0 == region && decl.kind == DefKind::Fragment)
+        .count();
+
+    // Diagnostics on regions project onto the host; the callsite span is
+    // already in host coordinates, so anchor at the region's own origin
+    // (span relative to the region = callsite minus the region offset is
+    // not needed — report at the region start, offset 0..0 projected).
+    let message = if queries > 1 {
+        Some(format!(
+            "embedded dsql expression defines {queries} queries; a callsite rewrites to exactly one"
+        ))
+    } else if queries == 0 && fragments > 0 {
+        Some(
+            "embedded dsql expression defines only fragments; move shared fragments into a \
+             .dsql document"
+                .to_string(),
+        )
+    } else if queries == 0 {
+        // Empty expressions have no rewrite target either.
+        Some(
+            "embedded dsql expression defines no query; a callsite rewrites to exactly one"
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    if let Some(message) = message {
+        emit_diagnostic(
+            &mut commands,
+            DiagnosticFacts {
+                derived_from: DerivedFrom::new(region),
+                file: region,
+                span: crate::facts::Span { start: 0, end: 0 },
+                severity: Severity::Error,
+                source: DiagnosticSource::Check,
+                code: DiagnosticCode::EmbeddedExpressionShape,
+                message,
+            },
+        );
+    }
 }
 
 /// A host's text with what extraction and the eviction decision need.
@@ -100,11 +180,24 @@ async fn extract_embedded_documents(
         let Some(content) = captures.name("content") else {
             continue;
         };
+        // The full match is the entire callsite expression — the range a
+        // build-tool binding replaces (docs/spec/build-daemon.md).
+        let expression = captures.get(0).map_or(
+            crate::facts::Span {
+                start: content.start(),
+                end: content.end(),
+            },
+            |full| crate::facts::Span {
+                start: full.start(),
+                end: full.end(),
+            },
+        );
         commands.insert((
             DerivedFrom::many([host, pattern_entity]),
             BelongsToHost(host),
             DsqlDocument,
             SourceOffset(content.start()),
+            CallsiteSpan(expression),
             scope.clone(),
             SourceText::from_text(content.as_str()),
         ));

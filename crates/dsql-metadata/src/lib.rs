@@ -1,6 +1,10 @@
 use facet::Facet;
 
 const BUILD_MANIFEST_SCHEMA_ID: &str = "https://dsql.dev/schemas/build-manifest.schema.json";
+
+/// Manifest format version 2: `generationId` plus content-addressed
+/// artifact paths (docs/spec/build-daemon.md, Transactionality).
+pub const BUILD_MANIFEST_VERSION: u32 = 2;
 const JSON_SCHEMA_DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
 #[derive(Debug, Facet)]
@@ -48,11 +52,16 @@ pub enum ResultDataType {
 #[derive(Clone, Debug, Facet)]
 pub struct BuildManifest {
     pub version: u32,
+    /// The project-monotonic generation this manifest commits
+    /// (docs/spec/build-daemon.md). Required in version 2; version-1
+    /// pointers are read through a private compatibility reader.
+    #[facet(rename = "generationId")]
+    pub generation_id: u64,
     pub operations: Vec<OperationManifestEntry>,
     pub fragments: Vec<FragmentManifestEntry>,
 }
 
-#[derive(Clone, Debug, Facet)]
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct OperationManifestEntry {
     pub name: String,
     pub kind: String,
@@ -61,7 +70,7 @@ pub struct OperationManifestEntry {
     pub source: String,
 }
 
-#[derive(Clone, Debug, Facet)]
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct FragmentManifestEntry {
     pub name: String,
     pub kind: String,

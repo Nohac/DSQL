@@ -3,3 +3,4 @@
 //! consume, and unchanged reruns write nothing.
 
 mod generate;
+mod publish;

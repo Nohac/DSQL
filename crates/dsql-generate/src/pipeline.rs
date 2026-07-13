@@ -14,24 +14,18 @@ use dsql_core::facts::{
     BelongsToFile, DefKey, Diagnostic, PlanKey, Severity, Span, arm_generate_demands,
 };
 use dsql_core::plan::{FragmentPlanFact, OperationSeed, QueryPlanFact};
-use dsql_core::source::{BelongsToHost, FilePath, SourceOffset};
+use dsql_core::source::{BelongsToHost, FilePath, ResolutionScope, ScopeImports, SourceOffset};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
-use dsql_metadata::{
-    BuildManifest, FragmentManifestEntry, FragmentMetadata, OperationManifestEntry,
-    OperationMetadata,
-};
 use dsql_project::{Project, ProjectError, open_analysis_bowl};
 
 use crate::assemble::{
     FragmentInputs, OperationInputs, fragment_metadata, operation_metadata, source_path,
-    stable_hash,
 };
-use crate::layout::{
-    BUILD_DIR, MANIFEST_FILE, fragment_artifact_path, fragment_manifest_path,
-    operation_artifact_path, operation_manifest_path,
+use crate::layout::{BUILD_DIR, artifact_collision_key};
+use crate::publish::{
+    ArtifactFamily, GenerationSnapshot, PublishedGeneration, SnapshotArtifact, SnapshotGroup,
+    prune, publish, sha256_hex,
 };
-
-const BUILD_MANIFEST_VERSION: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GenerateError {
@@ -45,6 +39,15 @@ pub enum GenerateError {
     Serialize { name: String, message: String },
     #[error(transparent)]
     ArtifactCollision(Box<ArtifactCollision>),
+    #[error(
+        "artifact `{id}` addresses `{path}`, which exists with different contents; \
+         refusing to overwrite"
+    )]
+    AddressCollision { path: String, id: String },
+    #[error("another process held the publication lock past the wait bound")]
+    PublicationLocked,
+    #[error("internal failure: {0}")]
+    Internal(String),
     #[error("failed to write {path}: {source}")]
     Write {
         path: PathBuf,
@@ -98,8 +101,13 @@ pub struct GenerateOptions {
 
 #[derive(Debug, Clone)]
 pub struct GenerateOutput {
+    /// The committed generation.
+    pub generation_id: u64,
+    /// The immutable `manifest.<id>.json` this run committed.
     pub manifest_path: PathBuf,
-    /// Artifact files written this run (unchanged ones are skipped).
+    /// The fixed `manifest.json` pointer.
+    pub current_manifest_path: PathBuf,
+    /// Files written this run (unchanged artifacts are skipped).
     pub written: Vec<PathBuf>,
 }
 
@@ -111,13 +119,39 @@ pub async fn generate_project(
 ) -> Result<GenerateOutput> {
     let bowl = open_analysis_bowl(project).await?;
     let assembled = assemble_project(&bowl, project, options).await?;
-    write_build_tree(
-        project,
-        &assembled.project_root,
-        assembled.operations,
-        assembled.fragments,
-    )
-    .await
+    let published = publish_snapshot(project, &assembled.snapshot).await?;
+    let generator =
+        run_host_generator(project, &assembled.project_root, &published.manifest_path).await;
+    // One-shot generation prunes before exiting — even when the host
+    // generator failed, since the generation itself committed. The
+    // daemon prunes after responding. Best-effort either way.
+    let build_dir = project.root.join(BUILD_DIR);
+    {
+        let published = published.clone();
+        tokio::task::spawn_blocking(move || prune(&build_dir, &published))
+            .await
+            .ok();
+    }
+    generator?;
+    Ok(GenerateOutput {
+        generation_id: published.generation_id,
+        manifest_path: published.manifest_path,
+        current_manifest_path: published.current_manifest_path,
+        written: published.written,
+    })
+}
+
+/// Publishes a snapshot transactionally, off the async runtime (the
+/// publication lock is a blocking OS lock).
+pub async fn publish_snapshot(
+    project: &Project,
+    snapshot: &GenerationSnapshot,
+) -> Result<PublishedGeneration> {
+    let build_dir = project.root.join(BUILD_DIR);
+    let snapshot = snapshot.clone();
+    tokio::task::spawn_blocking(move || publish(&build_dir, &snapshot))
+        .await
+        .map_err(|_| GenerateError::Internal("publication task panicked".to_string()))?
 }
 
 /// Everything generation checks short of writing: language diagnostics,
@@ -131,14 +165,17 @@ pub async fn validate_assembly(
     assemble_project(bowl, project, options).await.map(|_| ())
 }
 
-/// The assembled build tree, not yet written.
-struct AssembledProject {
-    operations: Vec<Hashed<OperationMetadata>>,
-    fragments: Vec<Hashed<FragmentMetadata>>,
-    project_root: PathBuf,
+/// The assembled generation with its project root — the shared unit both
+/// one-shot generation and the daemon publish and answer from.
+pub struct AssembledProject {
+    pub snapshot: GenerationSnapshot,
+    pub project_root: PathBuf,
 }
 
-async fn assemble_project(
+/// Assembles the settled bowl into a [`GenerationSnapshot`]: per-artifact
+/// metadata with scope identity and full content hashes, per-scope group
+/// closures, and the flat-namespace collision check.
+pub async fn assemble_project(
     bowl: &bowl::Bowl,
     project: &Project,
     options: GenerateOptions,
@@ -151,7 +188,7 @@ async fn assemble_project(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| project.root.clone());
 
-    let mut operations = Vec::new();
+    let mut artifacts = Vec::new();
     for operation in &facts.operations {
         let bindings = facts
             .bindings
@@ -171,16 +208,17 @@ async fn assemble_project(
             },
         )
         .map_err(|error| error.named(&operation.seed.query_name))?;
-        operations.push(hashed(
-            metadata,
-            |metadata| &metadata.name,
+        artifacts.push(snapshot_artifact(
+            ArtifactFamily::Operation,
+            metadata.name.clone(),
+            metadata.kind.clone(),
+            &metadata,
+            &operation.scope,
             &project_root,
             &operation.file,
         )?);
     }
-    operations.sort_by(|left, right| left.name.cmp(&right.name));
 
-    let mut fragments = Vec::new();
     for fragment in &facts.fragments {
         let bindings = facts
             .bindings
@@ -197,191 +235,103 @@ async fn assemble_project(
                 source_offset: fragment.source_offset,
             },
         )?;
-        fragments.push(hashed(
-            metadata,
-            |metadata| &metadata.name,
+        artifacts.push(snapshot_artifact(
+            ArtifactFamily::Fragment,
+            metadata.name.clone(),
+            metadata.kind.clone(),
+            &metadata,
+            &fragment.scope,
             &project_root,
             &fragment.file,
         )?);
     }
-    fragments.sort_by(|left, right| left.name.cmp(&right.name));
+    artifacts.sort_by(|left, right| left.id.cmp(&right.id));
 
-    validate_artifact_paths("operation", &operations, operation_manifest_path)?;
-    validate_artifact_paths("fragment", &fragments, fragment_manifest_path)?;
+    validate_artifact_paths(&artifacts)?;
+
+    // Per-scope groups: every scope that owns artifacts or appears in the
+    // import graph, with its effective closure (own plus imported).
+    let mut scope_names: std::collections::BTreeSet<String> =
+        facts.imports.keys().cloned().collect();
+    scope_names.extend(artifacts.iter().map(|artifact| artifact.scope.clone()));
+    let groups = scope_names
+        .into_iter()
+        .map(|name| {
+            let imports = facts.imports.get(&name).cloned().unwrap_or_default();
+            let visible: std::collections::BTreeSet<&str> = std::iter::once(name.as_str())
+                .chain(imports.iter().map(String::as_str))
+                .collect();
+            let members = artifacts
+                .iter()
+                .filter(|artifact| visible.contains(artifact.scope.as_str()))
+                .map(|artifact| artifact.id.clone())
+                .collect();
+            SnapshotGroup {
+                name,
+                imports,
+                artifacts: members,
+            }
+        })
+        .collect();
 
     Ok(AssembledProject {
-        operations,
-        fragments,
+        snapshot: GenerationSnapshot { artifacts, groups },
         project_root,
     })
 }
 
-/// Rejects artifact path collisions before anything touches the build
-/// tree: two artifacts of one kind whose names normalize to the same file
-/// stem would silently overwrite each other and duplicate manifest
-/// entries. Same-scope duplicates are language diagnostics; this guards
-/// the build tree's namespace (cross-scope duplicates, normalization
-/// collisions, and derived multi-root names). The flat-per-kind layout is
-/// a current limitation — docs/spec/resolution-scopes.md calls for
-/// scope-qualified artifact groups, which will relax cross-scope
-/// collisions to genuine path collisions only. Keys fold ASCII case so
-/// case-insensitive filesystems cannot alias two artifacts either.
-fn validate_artifact_paths<M>(
-    kind: &'static str,
-    artifacts: &[Hashed<M>],
-    manifest_path: impl Fn(&str) -> String,
-) -> Result<()> {
-    let mut seen: HashMap<String, &Hashed<M>> = HashMap::new();
+fn snapshot_artifact<M: facet::Facet<'static>>(
+    family: ArtifactFamily,
+    name: String,
+    kind: String,
+    metadata: &M,
+    scope: &str,
+    project_root: &Path,
+    file: &str,
+) -> Result<SnapshotArtifact> {
+    let serialized = facet_json::to_string(metadata).map_err(|error| GenerateError::Serialize {
+        name: name.clone(),
+        message: error.to_string(),
+    })?;
+    let hash = sha256_hex(serialized.as_bytes());
+    Ok(SnapshotArtifact {
+        id: format!("{scope}/{}/{name}", family.label()),
+        family,
+        kind,
+        scope: scope.to_string(),
+        name,
+        serialized,
+        hash,
+        source: source_path(project_root, file),
+    })
+}
+
+/// Rejects artifact name collisions before anything touches the build
+/// tree: two artifacts of one family whose names case-fold to the same
+/// file stem would alias each other in the manifest's flat per-family
+/// namespace (and on case-insensitive filesystems). Content addressing
+/// removes *physical* overwrites, but the manifest still keys entries by
+/// name, so same-scope duplicates stay language diagnostics and
+/// cross-scope duplicates stay generate-boundary errors until the
+/// scope-qualified layout lands (docs/issues.md).
+fn validate_artifact_paths(artifacts: &[SnapshotArtifact]) -> Result<()> {
+    let mut seen: HashMap<String, &SnapshotArtifact> = HashMap::new();
     for artifact in artifacts {
-        let path = manifest_path(&artifact.name);
-        if let Some(first) = seen.insert(path.to_ascii_lowercase(), artifact) {
+        let key = artifact_collision_key(artifact.family, &artifact.name);
+        if let Some(first) = seen.insert(key.clone(), artifact) {
             return Err(GenerateError::ArtifactCollision(Box::new(
                 ArtifactCollision {
-                    kind,
+                    kind: artifact.family.label(),
                     first: first.name.clone(),
                     first_source: first.source.clone(),
                     second: artifact.name.clone(),
                     second_source: artifact.source.clone(),
-                    path,
+                    path: key,
                 },
             )));
         }
     }
     Ok(())
-}
-
-/// One assembled artifact: its metadata, public name, serialized form,
-/// content hash, and project-relative source path.
-struct Hashed<M> {
-    metadata: M,
-    name: String,
-    serialized: String,
-    hash: String,
-    source: String,
-}
-
-fn hashed<M: facet::Facet<'static>>(
-    metadata: M,
-    name: impl Fn(&M) -> &str,
-    project_root: &Path,
-    file: &str,
-) -> Result<Hashed<M>> {
-    let serialized =
-        facet_json::to_string(&metadata).map_err(|error| GenerateError::Serialize {
-            name: name(&metadata).to_string(),
-            message: error.to_string(),
-        })?;
-    let hash = stable_hash(&serialized);
-    let source = source_path(project_root, file);
-    let name = name(&metadata).to_string();
-    Ok(Hashed {
-        metadata,
-        name,
-        serialized,
-        hash,
-        source,
-    })
-}
-
-async fn write_build_tree(
-    project: &Project,
-    project_root: &Path,
-    operations: Vec<Hashed<OperationMetadata>>,
-    fragments: Vec<Hashed<FragmentMetadata>>,
-) -> Result<GenerateOutput> {
-    let build_dir = project.root.join(BUILD_DIR);
-    let mut written = Vec::new();
-
-    let mut operation_entries = Vec::new();
-    for Hashed {
-        metadata,
-        serialized,
-        hash,
-        source,
-        ..
-    } in &operations
-    {
-        let path = operation_artifact_path(&build_dir, &metadata.name);
-        if write_if_changed(&path, serialized).await? {
-            written.push(path);
-        }
-        operation_entries.push(OperationManifestEntry {
-            name: metadata.name.clone(),
-            kind: metadata.kind.clone(),
-            path: operation_manifest_path(&metadata.name),
-            hash: hash.clone(),
-            source: source.clone(),
-        });
-    }
-
-    let mut fragment_entries = Vec::new();
-    for Hashed {
-        metadata,
-        serialized,
-        hash,
-        source,
-        ..
-    } in &fragments
-    {
-        let path = fragment_artifact_path(&build_dir, &metadata.name);
-        if write_if_changed(&path, serialized).await? {
-            written.push(path);
-        }
-        fragment_entries.push(FragmentManifestEntry {
-            name: metadata.name.clone(),
-            kind: metadata.kind.clone(),
-            path: fragment_manifest_path(&metadata.name),
-            hash: hash.clone(),
-            source: source.clone(),
-        });
-    }
-
-    let manifest = BuildManifest {
-        version: BUILD_MANIFEST_VERSION,
-        operations: operation_entries,
-        fragments: fragment_entries,
-    };
-    let manifest_path = build_dir.join(MANIFEST_FILE);
-    let serialized =
-        facet_json::to_string(&manifest).map_err(|error| GenerateError::Serialize {
-            name: MANIFEST_FILE.to_string(),
-            message: error.to_string(),
-        })?;
-    if write_if_changed(&manifest_path, &serialized).await? {
-        written.push(manifest_path.clone());
-    }
-
-    run_host_generator(project, project_root, &manifest_path).await?;
-
-    Ok(GenerateOutput {
-        manifest_path,
-        written,
-    })
-}
-
-/// Writes only when content changed: unchanged artifacts keep their mtime,
-/// so downstream watchers and the host generator see per-operation deltas.
-async fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
-    if let Ok(existing) = tokio::fs::read_to_string(path).await
-        && existing == content
-    {
-        return Ok(false);
-    }
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|source| GenerateError::Write {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-    }
-    tokio::fs::write(path, content)
-        .await
-        .map_err(|source| GenerateError::Write {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    Ok(true)
 }
 
 async fn run_host_generator(
@@ -430,6 +380,8 @@ struct CollectedFacts {
     operations: Vec<CollectedOperation>,
     fragments: Vec<CollectedFragment>,
     bindings: BTreeMap<u64, Vec<VariableBinding>>,
+    /// The scope import graph, for group closures.
+    imports: BTreeMap<String, Vec<String>>,
 }
 
 struct CollectedOperation {
@@ -438,6 +390,7 @@ struct CollectedOperation {
     plan: QueryPlanFact,
     sql: GeneratedSqlFact,
     file: String,
+    scope: String,
     source_offset: usize,
 }
 
@@ -445,6 +398,7 @@ struct CollectedFragment {
     def: u64,
     plan: FragmentPlanFact,
     file: String,
+    scope: String,
     source_offset: usize,
 }
 
@@ -489,6 +443,15 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
             .iter()
             .find(|(entity, _, _)| *entity == file)
             .map(|(_, _, offset)| offset.0)
+            .unwrap_or_default()
+    };
+    let scopes = bowl.scoop::<Query<(Entity, &ResolutionScope)>>().await;
+    let scope_rows = scopes.collect();
+    let scope_of = |file: Entity| {
+        scope_rows
+            .iter()
+            .find(|(entity, _)| *entity == file)
+            .map(|(_, scope)| scope.0.clone())
             .unwrap_or_default()
     };
     let errors: Vec<String> = diagnostics
@@ -548,6 +511,7 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
             plan: plan.clone(),
             sql: (*sql).clone(),
             file: path_of(file.0),
+            scope: scope_of(file.0),
             source_offset: offset_of(file.0),
         });
     }
@@ -561,6 +525,7 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
             def: def.0.raw(),
             plan: plan.clone(),
             file: path_of(file.0),
+            scope: scope_of(file.0),
             source_offset: offset_of(file.0),
         });
     }
@@ -583,9 +548,19 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
         })
         .collect();
 
+    let imports = bowl
+        .scoop::<Query<(Entity, &ScopeImports)>>()
+        .await
+        .collect()
+        .into_iter()
+        .next()
+        .map(|(_, imports)| imports.0.clone())
+        .unwrap_or_default();
+
     Ok(CollectedFacts {
         operations,
         fragments,
         bindings,
+        imports,
     })
 }

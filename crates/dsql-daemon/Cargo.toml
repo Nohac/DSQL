@@ -1,21 +1,19 @@
 [package]
-name = "dsql-generate"
+name = "dsql-daemon"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 bowl = { workspace = true }
 dsql-core = { workspace = true }
+dsql-generate = { workspace = true }
 dsql-metadata = { workspace = true }
 dsql-project = { workspace = true }
 facet = { workspace = true }
 facet-json = { workspace = true }
-fd-lock = { workspace = true }
-sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+fd-lock = { workspace = true }
 insta = { workspace = true }
-dsql-metadata = { workspace = true }
-facet-json = { workspace = true }

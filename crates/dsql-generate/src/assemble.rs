@@ -334,14 +334,3 @@ pub(crate) fn source_path(project_root: &Path, file: &str) -> String {
         .map(|relative| relative.to_string_lossy().to_string())
         .unwrap_or_else(|_| file.to_string())
 }
-
-/// FNV-1a over the serialized metadata: a stable, dependency-free content
-/// hash for manifest entries and skip-unchanged writes.
-pub(crate) fn stable_hash(value: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
-}

@@ -12,7 +12,6 @@ use dsql_core::lint::LintConfig;
 use dsql_core::source::{ResolutionScope, ScopeDocuments, ScopeImports, insert_source_scoped};
 
 use super::config::{LintSeverity, Project, Result};
-use super::documents::load_project_documents;
 use super::embedding::typescript_pattern;
 
 /// Registers the language and populates a fresh bowl with the project's
@@ -40,8 +39,19 @@ pub async fn open_analysis_bowl(project: &Project) -> Result<Bowl> {
 /// Populates an already-registered bowl with the project's catalog, scope
 /// configuration, and documents.
 pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()> {
+    populate_project_bowl_excluding(bowl, project, &[]).await
+}
+
+/// [`populate_project_bowl`] with consumer-declared reserved roots
+/// excluded from document discovery (docs/spec/build-daemon.md).
+pub async fn populate_project_bowl_excluding(
+    bowl: &Bowl,
+    project: &Project,
+    extra_reserved: &[String],
+) -> Result<()> {
     let catalog = project.load_catalog().await?;
-    let documents = load_project_documents(project).await?;
+    let documents =
+        crate::documents::load_project_documents_excluding(project, extra_reserved).await?;
     let pattern = typescript_pattern(project)?;
 
     insert_catalog(bowl, catalog).await;
@@ -59,7 +69,7 @@ pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()>
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| project.root.clone());
-    let scope_documents: Vec<(String, Vec<String>)> = project
+    let mut scope_documents: Vec<(String, Vec<String>)> = project
         .config
         .resolution
         .iter()
@@ -74,6 +84,19 @@ pub async fn populate_project_bowl(bowl: &Bowl, project: &Project) -> Result<()>
             )
         })
         .collect();
+    // Top-level `documents` (no scopes configured) own the default scope
+    // — without this, ownership_of cannot recognize configured hosts.
+    if scope_documents.is_empty() && !project.config.documents.is_empty() {
+        scope_documents.push((
+            dsql_core::source::ResolutionScope::DEFAULT.to_string(),
+            project
+                .config
+                .documents
+                .iter()
+                .map(|entry| base.join(entry).display().to_string())
+                .collect(),
+        ));
+    }
     bowl.insert((
         Singleton::<ScopeDocuments>::new(),
         ScopeDocuments(scope_documents),

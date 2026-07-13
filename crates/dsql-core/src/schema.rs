@@ -35,8 +35,8 @@ use crate::service::hover::{
 };
 use crate::service::semantic_tokens::{TokenChunk, TokensDemand};
 use crate::source::{
-    AnalysisResidency, BelongsToHost, DsqlDocument, EmbeddingHost, FilePath, OpenBuffer,
-    ResolutionScope, ScopeDocuments, ScopeImports, SourceOffset, SourceText,
+    AnalysisResidency, BelongsToHost, CallsiteSpan, DsqlDocument, EmbeddingHost, FilePath,
+    OpenBuffer, ResolutionScope, ScopeDocuments, ScopeImports, SourceOffset, SourceText,
 };
 use crate::sql::{GeneratedSqlFact, SqlOptions};
 
@@ -131,6 +131,7 @@ pub struct DsqlSchema {
         SourceText,
         BelongsToHost,
         SourceOffset,
+        CallsiteSpan,
         DsqlDocument,
         ResolutionScope,
         DerivedFrom,

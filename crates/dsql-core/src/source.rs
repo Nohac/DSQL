@@ -203,6 +203,14 @@ pub async fn arm_analysis_residency(bowl: &bowl::Bowl) {
 #[component(hash)]
 pub struct AnalysisResidency;
 
+/// The span of the entire embedding callsite expression in the host —
+/// the whole `dsql(`…`)`, not just the content between the backticks
+/// (docs/spec/build-daemon.md, Callsites): the range a build-tool
+/// binding replaces with the generated operation reference.
+#[derive(Component, Hash, Debug, Clone, Copy, PartialEq, Eq)]
+#[component(hash)]
+pub struct CallsiteSpan(pub crate::facts::Span);
+
 /// Marks a file entity whose text is owned by a live editor buffer. Disk
 /// watchers and loaders must not overwrite the text while this is present.
 ///

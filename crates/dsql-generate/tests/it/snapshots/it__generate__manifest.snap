@@ -1,5 +1,6 @@
 ---
 source: crates/dsql-generate/tests/it/generate.rs
-expression: manifest
+assertion_line: 86
+expression: redact_hashes(&manifest)
 ---
-{"version":1,"operations":[{"name":"TitlePanel","kind":"query","path":"operations/TitlePanel.json","hash":"8fea30b3132c1feb","source":"src/components/TitlePanel.ts"},{"name":"Titles","kind":"query","path":"operations/Titles.json","hash":"264bdc25b74b789b","source":"queries/frontend/titles.dsql"}],"fragments":[{"name":"TitleBits","kind":"fragment","path":"fragments/TitleBits.json","hash":"7dce516fc7b3d4c6","source":"queries/shared/fragments.dsql"}]}
+{"version":2,"generationId":1,"operations":[{"name":"TitlePanel","kind":"query","path":"operations/TitlePanel.<address>.json","hash":"<hash>","source":"src/components/TitlePanel.ts"},{"name":"Titles","kind":"query","path":"operations/Titles.<address>.json","hash":"<hash>","source":"queries/frontend/titles.dsql"}],"fragments":[{"name":"TitleBits","kind":"fragment","path":"fragments/TitleBits.<address>.json","hash":"<hash>","source":"queries/shared/fragments.dsql"}]}

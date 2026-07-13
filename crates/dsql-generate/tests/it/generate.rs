@@ -35,6 +35,32 @@ fn copy_tree(source: &Path, target: &Path) {
 
 #[tokio::test]
 async fn generates_manifest_and_artifacts() {
+    /// Hashes and hashed paths churn with any metadata change; the layout
+    /// is what this snapshot pins.
+    fn redact_hashes(manifest: &str) -> String {
+        let mut redacted = String::new();
+        for (index, piece) in manifest.split('"').enumerate() {
+            if index > 0 {
+                redacted.push('"');
+            }
+            if piece.len() == 64 && piece.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                redacted.push_str("<hash>");
+            } else if piece.contains('.')
+                && piece.split('.').nth(1).is_some_and(|address| {
+                    address.len() == 16 && address.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            {
+                let mut parts = piece.split('.');
+                let stem = parts.next().unwrap_or_default();
+                let extension = parts.nth(1).unwrap_or_default();
+                redacted.push_str(&format!("{stem}.<address>.{extension}"));
+            } else {
+                redacted.push_str(piece);
+            }
+        }
+        redacted
+    }
+
     let (dir, project) = fixture_project("artifacts").await;
     let output = generate_project(
         &project,
@@ -45,22 +71,51 @@ async fn generates_manifest_and_artifacts() {
     .await
     .expect("generation succeeds");
 
-    assert!(output.manifest_path.exists());
+    assert!(output.manifest_path.exists(), "immutable manifest exists");
+    assert!(
+        output.current_manifest_path.exists(),
+        "the pointer manifest exists"
+    );
+    assert_eq!(output.generation_id, 1, "a fresh tree starts at 1");
     let manifest = std::fs::read_to_string(&output.manifest_path).expect("manifest readable");
-    insta::assert_snapshot!("manifest", manifest);
+    assert_eq!(
+        manifest,
+        std::fs::read_to_string(&output.current_manifest_path).expect("pointer readable"),
+        "the pointer carries the same document"
+    );
+    insta::assert_snapshot!("manifest", redact_hashes(&manifest));
 
-    let operation = std::fs::read_to_string(project.root.join("build/operations/Titles.json"))
-        .expect("operation artifact written");
+    // Consumers follow manifest entry paths — content-addressed files are
+    // never discovered by globbing.
+    let parsed: dsql_metadata::BuildManifest =
+        facet_json::from_str(&manifest).expect("manifest parses");
+    let entry_path = |name: &str| {
+        parsed
+            .operations
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.path.clone()))
+            .chain(
+                parsed
+                    .fragments
+                    .iter()
+                    .map(|entry| (entry.name.clone(), entry.path.clone())),
+            )
+            .find(|(entry_name, _)| entry_name == name)
+            .map(|(_, path)| project.root.join("build").join(path))
+            .expect("manifest names the artifact")
+    };
+    let operation =
+        std::fs::read_to_string(entry_path("Titles")).expect("operation artifact written");
     insta::assert_snapshot!("operation", operation);
 
-    let fragment = std::fs::read_to_string(project.root.join("build/fragments/TitleBits.json"))
-        .expect("fragment artifact written");
+    let fragment =
+        std::fs::read_to_string(entry_path("TitleBits")).expect("fragment artifact written");
     insta::assert_snapshot!("fragment", fragment);
 
     // The embedded operation source-maps into its host .ts file and
     // records the fragments its result paths came from.
-    let embedded = std::fs::read_to_string(project.root.join("build/operations/TitlePanel.json"))
-        .expect("embedded operation artifact written");
+    let embedded =
+        std::fs::read_to_string(entry_path("TitlePanel")).expect("embedded artifact written");
     insta::assert_snapshot!("embedded_operation", embedded);
 
     // Second run: everything unchanged, nothing rewritten.
@@ -73,8 +128,17 @@ async fn generates_manifest_and_artifacts() {
     .await
     .expect("rerun succeeds");
     assert!(
-        rerun.written.is_empty(),
-        "unchanged artifacts must be skipped"
+        rerun
+            .written
+            .iter()
+            .all(|path| !path.to_string_lossy().contains("operations/")
+                && !path.to_string_lossy().contains("fragments/")),
+        "unchanged artifact files must be skipped (manifests still commit)"
+    );
+    assert_eq!(
+        rerun.generation_id,
+        output.generation_id + 1,
+        "every explicit generate commits a fresh generation"
     );
 
     std::fs::remove_dir_all(&dir).expect("fixture cleanup");

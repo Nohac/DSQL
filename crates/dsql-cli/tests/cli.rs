@@ -350,9 +350,19 @@ fn generate_passes_the_documented_environment_to_the_host_generator() {
         "DSQL_PROJECT_DIR names the project base"
     );
     assert!(manifest.is_absolute(), "DSQL_MANIFEST is absolute");
+    let manifest_name = manifest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
     assert!(
-        manifest.ends_with("dsql/build/manifest.json"),
-        "DSQL_MANIFEST names the manifest, got {}",
+        manifest_name.starts_with("manifest.")
+            && manifest_name.ends_with(".json")
+            && manifest_name
+                .trim_start_matches("manifest.")
+                .trim_end_matches(".json")
+                .parse::<u64>()
+                .is_ok(),
+        "DSQL_MANIFEST names the immutable per-generation manifest, got {}",
         manifest.display()
     );
     assert!(manifest.is_file(), "the manifest was written first");

@@ -47,6 +47,7 @@ pub enum DiagnosticCode {
     UnknownDirectiveArgument,
     DuplicateDirectiveArgument,
     DirectiveArgumentTypeMismatch,
+    EmbeddedExpressionShape,
     UnknownFragment,
     TableNotFound,
     AmbiguousTable,

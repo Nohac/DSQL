@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+//! Build-tree layout (docs/spec/build-daemon.md, Transactionality):
+//! content-addressed artifact files under per-family directories, an
+//! immutable manifest per generation, and the fixed pointer.
+
+use crate::publish::{ArtifactFamily, artifact_address};
 
 pub(crate) const BUILD_DIR: &str = "build";
 pub(crate) const MANIFEST_FILE: &str = "manifest.json";
@@ -6,20 +10,37 @@ pub(crate) const OPERATIONS_DIR: &str = "operations";
 pub(crate) const FRAGMENTS_DIR: &str = "fragments";
 pub(crate) const ARTIFACT_EXTENSION: &str = "json";
 
-pub(crate) fn operation_artifact_path(build_dir: &Path, name: &str) -> PathBuf {
-    artifact_path(build_dir, OPERATIONS_DIR, name)
+/// The immutable manifest file for one generation.
+pub(crate) fn generation_manifest_file(generation_id: u64) -> String {
+    format!("manifest.{generation_id}.json")
 }
 
-pub(crate) fn fragment_artifact_path(build_dir: &Path, name: &str) -> PathBuf {
-    artifact_path(build_dir, FRAGMENTS_DIR, name)
+/// The content-addressed artifact path, relative to the build directory —
+/// also the manifest entry's `path`. Distinct generations never overwrite
+/// each other's files: the address is the artifact's own hash.
+pub(crate) fn artifact_file_name(family: ArtifactFamily, name: &str, hash: &str) -> String {
+    let directory = match family {
+        ArtifactFamily::Operation => OPERATIONS_DIR,
+        ArtifactFamily::Fragment => FRAGMENTS_DIR,
+    };
+    format!(
+        "{directory}/{}.{}.{ARTIFACT_EXTENSION}",
+        artifact_file_stem(name),
+        artifact_address(hash),
+    )
 }
 
-pub(crate) fn operation_manifest_path(name: &str) -> String {
-    artifact_manifest_path(OPERATIONS_DIR, name)
-}
-
-pub(crate) fn fragment_manifest_path(name: &str) -> String {
-    artifact_manifest_path(FRAGMENTS_DIR, name)
+/// The case-folded stem two artifacts of one kind may not share
+/// (case-insensitive filesystems would alias them).
+pub(crate) fn artifact_collision_key(family: ArtifactFamily, name: &str) -> String {
+    let directory = match family {
+        ArtifactFamily::Operation => OPERATIONS_DIR,
+        ArtifactFamily::Fragment => FRAGMENTS_DIR,
+    };
+    format!(
+        "{directory}/{}",
+        artifact_file_stem(name).to_ascii_lowercase()
+    )
 }
 
 pub(crate) fn artifact_file_stem(name: &str) -> String {
@@ -36,21 +57,4 @@ pub(crate) fn artifact_file_stem(name: &str) -> String {
     } else {
         output
     }
-}
-
-fn artifact_path(build_dir: &Path, directory: &str, name: &str) -> PathBuf {
-    build_dir.join(directory).join(format!(
-        "{}.{}",
-        artifact_file_stem(name),
-        ARTIFACT_EXTENSION
-    ))
-}
-
-fn artifact_manifest_path(directory: &str, name: &str) -> String {
-    format!(
-        "{}/{}.{}",
-        directory,
-        artifact_file_stem(name),
-        ARTIFACT_EXTENSION
-    )
 }

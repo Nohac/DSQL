@@ -63,6 +63,9 @@ enum Command {
     MetadataSchema,
     /// Print the build manifest's TypeScript types.
     MetadataTypescript,
+    /// Serve the build daemon protocol over stdio
+    /// (docs/spec/build-daemon.md).
+    Daemon,
     /// Introspect the project database into the schema/ directory.
     Introspect {
         /// Print the metadata as YAML instead of writing schema/.
@@ -144,6 +147,10 @@ async fn main() -> std::process::ExitCode {
         }
         Command::MetadataSchema => commands::metadata_schema(),
         Command::MetadataTypescript => commands::metadata_typescript(),
+        Command::Daemon => {
+            dsql_daemon::run_stdio().await;
+            return std::process::ExitCode::SUCCESS;
+        }
         Command::Introspect { dry_run } => commands::introspect(dry_run).await,
         #[cfg(debug_assertions)]
         Command::Debug { command } => match command {

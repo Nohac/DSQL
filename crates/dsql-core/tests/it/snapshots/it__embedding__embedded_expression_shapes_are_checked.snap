@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/embedding.rs
+assertion_line: 400
+expression: "crate::render_diagnostic_facts(&bowl).await"
+---
+Error[0..0]: embedded dsql expression defines 2 queries; a callsite rewrites to exactly one
+Error[0..0]: embedded dsql expression defines only fragments; move shared fragments into a .dsql document

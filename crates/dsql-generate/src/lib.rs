@@ -5,7 +5,9 @@
 mod assemble;
 mod layout;
 mod pipeline;
+pub mod publish;
 
 pub use pipeline::{
-    GenerateError, GenerateOptions, GenerateOutput, generate_project, validate_assembly,
+    AssembledProject, GenerateError, GenerateOptions, GenerateOutput, assemble_project,
+    generate_project, publish_snapshot, validate_assembly,
 };

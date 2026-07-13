@@ -1,0 +1,464 @@
+//! Transactional publication of a generation snapshot
+//! (docs/spec/build-daemon.md, Transactionality): content-addressed
+//! artifact files, an immutable per-generation manifest, and a fixed
+//! `manifest.json` pointer committed last by atomic rename — all under an
+//! advisory publication lock shared by every writer, with pruning as a
+//! separate best-effort post-commit step.
+
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use dsql_metadata::{
+    BUILD_MANIFEST_VERSION, BuildManifest, FragmentManifestEntry, OperationManifestEntry,
+};
+
+use crate::layout::{MANIFEST_FILE, artifact_file_name, generation_manifest_file};
+use crate::pipeline::{GenerateError, Result};
+
+/// Full lowercase-hex SHA-256 — the one protocol hash (artifact hashes,
+/// host content hashes); the engine's fast `SourceText` fingerprint is a
+/// different, internal thing.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
+/// The filename address: the hash's first 16 hex characters.
+pub fn artifact_address(hash: &str) -> &str {
+    &hash[..16.min(hash.len())]
+}
+
+/// One assembled artifact, ready to publish: identity, scope, serialized
+/// bytes, and its full content hash.
+#[derive(Debug, Clone)]
+pub struct SnapshotArtifact {
+    /// Stable opaque id: `scope/kind/name`. Consumers key on this.
+    pub id: String,
+    /// `operation` | `fragment` — the artifact family (directory).
+    pub family: ArtifactFamily,
+    /// The metadata's own kind string (`query`, `fragment`).
+    pub kind: String,
+    pub scope: String,
+    pub name: String,
+    /// Serialized metadata JSON, exactly as written to disk.
+    pub serialized: String,
+    /// Full SHA-256 of `serialized`, lowercase hex.
+    pub hash: String,
+    /// Project-relative source path.
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactFamily {
+    Operation,
+    Fragment,
+}
+
+impl ArtifactFamily {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Operation => "operation",
+            Self::Fragment => "fragment",
+        }
+    }
+}
+
+/// One resolution scope's effective view: its imports and the ids of
+/// every artifact visible to it (own plus imported — the closure).
+#[derive(Debug, Clone)]
+pub struct SnapshotGroup {
+    pub name: String,
+    pub imports: Vec<String>,
+    pub artifacts: Vec<String>,
+}
+
+/// The assembled build tree, not yet written — the shared unit both
+/// one-shot generation and the daemon publish and answer from.
+#[derive(Debug, Clone)]
+pub struct GenerationSnapshot {
+    /// Sorted by id.
+    pub artifacts: Vec<SnapshotArtifact>,
+    /// Sorted by name.
+    pub groups: Vec<SnapshotGroup>,
+}
+
+/// A committed generation: its id, the immutable manifest (path and
+/// serialized document), the pointer, and what publication wrote.
+/// Survives a host-generator failure so the error can name the committed
+/// generation and pruning can still run.
+#[derive(Debug, Clone)]
+pub struct PublishedGeneration {
+    pub generation_id: u64,
+    /// The immutable `manifest.<id>.json`.
+    pub manifest_path: PathBuf,
+    /// The manifest document, exactly as written.
+    pub manifest_json: String,
+    /// The fixed `manifest.json` pointer.
+    pub current_manifest_path: PathBuf,
+    /// Files written this publication (unchanged artifacts are skipped).
+    pub written: Vec<PathBuf>,
+    /// The generation the pointer named before this commit.
+    predecessor: Option<u64>,
+}
+
+/// Pointer reader tolerating version-1 manifests (no `generationId`);
+/// the public [`BuildManifest`] requires the field in version 2.
+#[derive(facet::Facet)]
+struct PointerManifest {
+    #[facet(default)]
+    version: u32,
+    #[facet(default, rename = "generationId")]
+    generation_id: u64,
+}
+
+const LOCK_FILE: &str = ".lock";
+const LOCK_DEADLINE: Duration = Duration::from_secs(3);
+const LOCK_POLL: Duration = Duration::from_millis(50);
+
+/// Acquires the publication lock, polling to a fixed deadline.
+fn acquire_lock(build_dir: &Path) -> Result<(std::fs::File, PathBuf)> {
+    std::fs::create_dir_all(build_dir).map_err(|source| GenerateError::Write {
+        path: build_dir.to_path_buf(),
+        source,
+    })?;
+    let lock_path = build_dir.join(LOCK_FILE);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|source| GenerateError::Write {
+            path: lock_path.clone(),
+            source,
+        })?;
+    Ok((file, lock_path))
+}
+
+/// Runs `body` while holding the exclusive publication lock; times out
+/// with [`GenerateError::PublicationLocked`].
+fn with_publication_lock<T>(build_dir: &Path, body: impl FnOnce() -> Result<T>) -> Result<T> {
+    with_publication_lock_deadline(build_dir, LOCK_DEADLINE, body)
+}
+
+fn with_publication_lock_deadline<T>(
+    build_dir: &Path,
+    wait: Duration,
+    body: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let (file, lock_path) = acquire_lock(build_dir)?;
+    let mut lock = fd_lock::RwLock::new(file);
+    let deadline = Instant::now() + wait;
+    loop {
+        match lock.try_write() {
+            Ok(guard) => {
+                let outcome = body();
+                drop(guard);
+                return outcome;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(GenerateError::PublicationLocked);
+                }
+                std::thread::sleep(LOCK_POLL);
+            }
+            Err(source) => {
+                return Err(GenerateError::Write {
+                    path: lock_path,
+                    source,
+                });
+            }
+        }
+    }
+}
+
+/// Writes `content` to `path` atomically: a unique sibling temp file
+/// (`create_new`), write + flush + sync, then rename over the target.
+/// The temp file is removed on any failure.
+fn atomic_write(path: &Path, content: &str) -> Result<()> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|source| GenerateError::Write {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    let temp = parent.join(format!(".{file_name}.tmp-{}-{unique}", std::process::id()));
+    let write = || -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp)?;
+        file.write_all(content.as_bytes())?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    };
+    write().map_err(|source| {
+        let _ = std::fs::remove_file(&temp);
+        GenerateError::Write {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
+}
+
+/// Reads the pointer's generation id; a missing or malformed pointer
+/// counts as no current generation (ids still advance via the on-disk
+/// immutable-manifest scan, so a corrupt pointer can never recycle ids).
+fn pointer_generation(build_dir: &Path) -> Option<u64> {
+    let raw = std::fs::read_to_string(build_dir.join(MANIFEST_FILE)).ok()?;
+    let manifest: PointerManifest = facet_json::from_str(&raw).ok()?;
+    let _ = manifest.version;
+    Some(manifest.generation_id)
+}
+
+/// Every `manifest.<id>.json` id present on disk, committed or stranded.
+/// Scan failures propagate — an unreadable build directory must not
+/// silently restart id allocation.
+fn generation_ids_on_disk(build_dir: &Path) -> Result<Vec<u64>> {
+    let entries = match std::fs::read_dir(build_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(GenerateError::Write {
+                path: build_dir.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let mut ids = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| GenerateError::Write {
+            path: build_dir.to_path_buf(),
+            source,
+        })?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if let Some(id) = name
+            .strip_prefix("manifest.")
+            .and_then(|rest| rest.strip_suffix(".json"))
+            .and_then(|id| id.parse().ok())
+        {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// Builds the manifest document for `snapshot` at `generation_id`.
+fn manifest_for(snapshot: &GenerationSnapshot, generation_id: u64) -> BuildManifest {
+    let mut operations = Vec::new();
+    let mut fragments = Vec::new();
+    for artifact in &snapshot.artifacts {
+        let path = artifact_file_name(artifact.family, &artifact.name, &artifact.hash);
+        match artifact.family {
+            ArtifactFamily::Operation => operations.push(OperationManifestEntry {
+                name: artifact.name.clone(),
+                kind: artifact.kind.clone(),
+                path,
+                hash: artifact.hash.clone(),
+                source: artifact.source.clone(),
+            }),
+            ArtifactFamily::Fragment => fragments.push(FragmentManifestEntry {
+                name: artifact.name.clone(),
+                kind: artifact.kind.clone(),
+                path,
+                hash: artifact.hash.clone(),
+                source: artifact.source.clone(),
+            }),
+        }
+    }
+    BuildManifest {
+        version: BUILD_MANIFEST_VERSION,
+        generation_id,
+        operations,
+        fragments,
+    }
+}
+
+/// Publishes `snapshot`: under the lock, allocates the next generation id
+/// (max of the pointer and every immutable manifest on disk, plus one —
+/// stranded ids are skipped, never reused), writes content-addressed
+/// artifact files (byte-comparing collisions), the immutable manifest,
+/// and finally the pointer.
+pub fn publish(build_dir: &Path, snapshot: &GenerationSnapshot) -> Result<PublishedGeneration> {
+    publish_with_deadline(build_dir, snapshot, LOCK_DEADLINE)
+}
+
+/// [`publish`] with an explicit lock-wait bound (tests keep it short).
+pub fn publish_with_deadline(
+    build_dir: &Path,
+    snapshot: &GenerationSnapshot,
+    wait: Duration,
+) -> Result<PublishedGeneration> {
+    with_publication_lock_deadline(build_dir, wait, || {
+        let predecessor = pointer_generation(build_dir);
+        let generation_id = generation_ids_on_disk(build_dir)?
+            .into_iter()
+            .chain(predecessor)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| GenerateError::Assembly {
+                name: MANIFEST_FILE.to_string(),
+                message: "generation counter overflow".to_string(),
+            })?;
+
+        let mut written = Vec::new();
+        for artifact in &snapshot.artifacts {
+            let relative = artifact_file_name(artifact.family, &artifact.name, &artifact.hash);
+            let path = build_dir.join(&relative);
+            // Only a genuinely absent file is writable; every other read
+            // failure (permissions, invalid UTF-8) must not silently turn
+            // into a replacement.
+            match std::fs::read(&path) {
+                Ok(existing) if existing == artifact.serialized.as_bytes() => continue,
+                Ok(_) => {
+                    return Err(GenerateError::AddressCollision {
+                        path: relative,
+                        id: artifact.id.clone(),
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(GenerateError::Write { path, source });
+                }
+            }
+            atomic_write(&path, &artifact.serialized)?;
+            written.push(path);
+        }
+
+        let manifest = manifest_for(snapshot, generation_id);
+        let serialized =
+            facet_json::to_string(&manifest).map_err(|error| GenerateError::Serialize {
+                name: MANIFEST_FILE.to_string(),
+                message: error.to_string(),
+            })?;
+        let manifest_path = build_dir.join(generation_manifest_file(generation_id));
+        // Immutable means immutable: the allocated id cannot exist on
+        // disk (allocation maxed over the scan, under the lock), so an
+        // existing file here is corruption we refuse to touch.
+        if manifest_path.exists() {
+            return Err(GenerateError::AddressCollision {
+                path: generation_manifest_file(generation_id),
+                id: format!("generation {generation_id}"),
+            });
+        }
+        atomic_write(&manifest_path, &serialized)?;
+        written.push(manifest_path.clone());
+        let current_manifest_path = build_dir.join(MANIFEST_FILE);
+        atomic_write(&current_manifest_path, &serialized)?;
+
+        Ok(PublishedGeneration {
+            generation_id,
+            manifest_path,
+            manifest_json: serialized,
+            current_manifest_path,
+            written,
+            predecessor,
+        })
+    })
+}
+
+/// Best-effort post-commit maintenance: re-acquires the lock, and — only
+/// if the pointer still names `published`'s generation — removes artifact
+/// files and immutable manifests referenced by neither this generation
+/// nor its recorded predecessor. A superseded publisher skips entirely
+/// (the newer one owns maintenance). Failures log to stderr; the commit
+/// already happened.
+pub fn prune(build_dir: &Path, published: &PublishedGeneration) {
+    let outcome = with_publication_lock(build_dir, || {
+        if pointer_generation(build_dir) != Some(published.generation_id) {
+            return Ok(());
+        }
+        // An unreadable retained manifest must ABORT pruning: treating
+        // it as an empty reference set would delete live artifacts.
+        let mut retained: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut retain_manifest = |id: u64| -> Result<()> {
+            let path = build_dir.join(generation_manifest_file(id));
+            let raw = std::fs::read_to_string(&path).map_err(|source| GenerateError::Write {
+                path: path.clone(),
+                source,
+            })?;
+            let manifest: BuildManifest =
+                facet_json::from_str(&raw).map_err(|error| GenerateError::Serialize {
+                    name: path.to_string_lossy().to_string(),
+                    message: error.to_string(),
+                })?;
+            for entry in &manifest.operations {
+                retained.insert(entry.path.clone());
+            }
+            for entry in &manifest.fragments {
+                retained.insert(entry.path.clone());
+            }
+            Ok(())
+        };
+        retain_manifest(published.generation_id)?;
+        if let Some(predecessor) = published.predecessor {
+            retain_manifest(predecessor)?;
+        }
+
+        for id in generation_ids_on_disk(build_dir)? {
+            if Some(id) != published.predecessor && id != published.generation_id {
+                let path = build_dir.join(generation_manifest_file(id));
+                if let Err(error) = std::fs::remove_file(&path) {
+                    eprintln!("dsql: could not prune {}: {error}", path.display());
+                }
+            }
+        }
+        for family in ["operations", "fragments"] {
+            let dir = build_dir.join(family);
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    eprintln!(
+                        "dsql: could not scan {} for pruning: {error}",
+                        dir.display()
+                    );
+                    continue;
+                }
+            };
+            let entries = entries.filter_map(|entry| match entry {
+                Ok(entry) => Some(entry),
+                Err(error) => {
+                    eprintln!(
+                        "dsql: could not read a pruning entry in {}: {error}",
+                        dir.display()
+                    );
+                    None
+                }
+            });
+            for entry in entries {
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                if name.starts_with('.') {
+                    continue;
+                }
+                let relative = format!("{family}/{name}");
+                if !retained.contains(&relative)
+                    && let Err(error) = std::fs::remove_file(entry.path())
+                {
+                    eprintln!("dsql: could not prune {}: {error}", entry.path().display());
+                }
+            }
+        }
+        Ok(())
+    });
+    if let Err(error) = outcome {
+        eprintln!("dsql: build-tree pruning skipped: {error}");
+    }
+}

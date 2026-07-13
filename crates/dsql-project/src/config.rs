@@ -46,6 +46,8 @@ pub enum ProjectError {
     UnknownScopeImport { scope: String, import: String },
     #[error("a dsql project already exists at {0}")]
     AlreadyInitialized(PathBuf),
+    #[error("generator output `{output}` {problem}")]
+    InvalidGeneratorOutput { output: String, problem: String },
 }
 
 pub type Result<T> = std::result::Result<T, ProjectError>;
@@ -128,6 +130,12 @@ pub struct TypescriptGenerateConfig {
     pub enabled: bool,
     #[facet(default)]
     pub cmd: Vec<String>,
+    /// The command's output directories, project-base-relative. Required
+    /// for daemon-driven builds (docs/spec/build-daemon.md, Host
+    /// generator command): consumers exclude them from watching, and the
+    /// daemon skips an enabled command that declares none.
+    #[facet(default)]
+    pub outputs: Vec<String>,
 }
 
 /// One `[resolution.<name>]` section.
@@ -185,6 +193,15 @@ impl Project {
                 }
             }
         }
+        let mut config = config;
+        let normalized_outputs = config
+            .generate
+            .typescript
+            .outputs
+            .iter()
+            .map(|output| validate_reserved_root(&config, output))
+            .collect::<Result<Vec<_>>>()?;
+        config.generate.typescript.outputs = normalized_outputs;
         Ok(Self {
             schema: root.join("schema"),
             root,
@@ -200,6 +217,70 @@ impl Project {
             .map(|catalog| catalog.with_default_schema(self.config.default_schema.clone()))
             .map_err(ProjectError::CatalogBuild)
     }
+}
+
+/// Validates one reserved root (a generator output or a consumer's
+/// `excludeRoots` entry) against the config, returning its normalized
+/// form. Absoluteness and traversal are judged on the RAW value —
+/// trimming first would launder `/tmp/out` into `tmp/out`.
+pub fn validate_reserved_root(config: &Config, output: &str) -> Result<String> {
+    let reject = |problem: &str| {
+        Err(ProjectError::InvalidGeneratorOutput {
+            output: output.to_string(),
+            problem: problem.to_string(),
+        })
+    };
+    if Path::new(output).is_absolute() {
+        return reject("must be a project-base-relative directory");
+    }
+    for component in Path::new(output).components() {
+        use std::path::Component;
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir => return reject("must not traverse out of the project"),
+            Component::RootDir | Component::Prefix(_) => {
+                return reject("must be a project-base-relative directory");
+            }
+        }
+    }
+    // Rebuild from components so `./generated` and `generated/` both
+    // normalize to `generated`.
+    let normalized = Path::new(output)
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => part.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    if normalized.is_empty() {
+        return reject("must not be the project base itself");
+    }
+    let contains =
+        |outer: &str, inner: &str| inner == outer || inner.starts_with(&format!("{outer}/"));
+    for reserved in ["dsql/dsql.toml", "dsql"] {
+        if contains(&normalized, reserved) || contains(reserved, &normalized) {
+            return reject("must be disjoint from the project's own dsql/ tree");
+        }
+    }
+    let document_patterns = config
+        .resolution
+        .values()
+        .flat_map(|scope| scope.documents.iter())
+        .chain(config.documents.iter());
+    for pattern in document_patterns {
+        let prefix: String = pattern
+            .split('/')
+            .take_while(|segment| !segment.contains(['*', '?', '[']))
+            .collect::<Vec<_>>()
+            .join("/");
+        if !prefix.is_empty()
+            && (prefix == normalized || prefix.starts_with(&format!("{normalized}/")))
+        {
+            return reject("must not contain a configured document root");
+        }
+    }
+    Ok(normalized)
 }
 
 /// The starter file's serialized header: routing the URL through

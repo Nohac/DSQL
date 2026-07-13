@@ -1,6 +1,6 @@
 ---
 source: crates/dsql-cli/tests/cli.rs
-assertion_line: 150
+assertion_line: 151
 expression: stdout(&schema)
 ---
 {
@@ -39,6 +39,11 @@ expression: stdout(&schema)
         "additionalProperties": false,
         "title": "FragmentManifestEntry"
       }
+    },
+    "generationId": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The project-monotonic generation this manifest commits\n (docs/spec/build-daemon.md). Required in version 2; version-1\n pointers are read through a private compatibility reader."
     },
     "operations": {
       "type": "array",
@@ -79,6 +84,7 @@ expression: stdout(&schema)
   },
   "required": [
     "version",
+    "generationId",
     "operations",
     "fragments"
   ],

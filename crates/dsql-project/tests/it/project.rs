@@ -298,3 +298,42 @@ async fn schema_directory_round_trips_and_drops_stale_tables() {
 
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+/// Single-star globs must not cross directory boundaries (the manual
+/// reserved-pruning walk keeps glob::glob's literal-separator behavior).
+#[tokio::test]
+async fn single_star_globs_stay_in_their_directory() {
+    let dir = std::env::temp_dir().join(format!("dsql-glob-literal-{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("clean stale dir");
+    }
+    std::fs::create_dir_all(dir.join("dsql")).expect("dirs");
+    std::fs::create_dir_all(dir.join("queries/nested")).expect("dirs");
+    std::fs::write(
+        dir.join("dsql/dsql.toml"),
+        "database_url = \"x\"\n\n[resolution.flat]\ndocuments = [\"queries/*.dsql\"]\n",
+    )
+    .expect("config");
+    let doc = "query Q {\n  title(limit 1) {\n    id\n  }\n}\n";
+    std::fs::write(dir.join("queries/top.dsql"), doc).expect("top doc");
+    std::fs::write(dir.join("queries/nested/deep.dsql"), doc).expect("deep doc");
+
+    let project = Project::load_from(&dir).await.expect("project loads");
+    let documents = dsql_project::load_project_documents(&project)
+        .await
+        .expect("documents load");
+    let paths: Vec<String> = documents
+        .iter()
+        .map(|document| document.path.display().to_string())
+        .collect();
+    assert!(
+        paths.iter().any(|path| path.ends_with("top.dsql")),
+        "the flat file matches, got {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|path| path.ends_with("deep.dsql")),
+        "a single star must not cross directories, got {paths:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

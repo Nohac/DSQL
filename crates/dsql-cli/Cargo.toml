@@ -11,6 +11,7 @@ path = "src/main.rs"
 bowl = { workspace = true }
 clap = { workspace = true }
 dsql-core = { workspace = true }
+dsql-daemon = { workspace = true }
 dsql-generate = { workspace = true }
 dsql-introspection = { workspace = true }
 dsql-metadata = { workspace = true }

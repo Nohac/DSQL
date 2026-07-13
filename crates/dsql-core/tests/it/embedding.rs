@@ -8,7 +8,7 @@ use dsql_core::catalog::insert_catalog;
 use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand};
 use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
-use dsql_core::source::{BelongsToHost, SourceOffset, SourceText, insert_source};
+use dsql_core::source::{BelongsToHost, CallsiteSpan, SourceOffset, SourceText, insert_source};
 use dsql_core::sql::GeneratedSqlFact;
 use futures::executor::block_on;
 
@@ -340,4 +340,141 @@ mod host_requests {
             );
         });
     }
+}
+
+/// Every region records the span of its whole callsite expression — the
+/// range a build-tool binding replaces — covering `dsql` through the
+/// closing backtick/paren, in host coordinates.
+#[test]
+fn regions_record_their_callsite_expressions() {
+    block_on(async {
+        let (bowl, host) = host_bowl().await;
+        let rows = bowl
+            .scoop::<Query<(Entity, &BelongsToHost, &CallsiteSpan, &SourceOffset)>>()
+            .await;
+        let mut callsites: Vec<(usize, usize, usize)> = rows
+            .collect()
+            .into_iter()
+            .filter(|(_, of, _, _)| of.0 == host)
+            .map(|(_, _, callsite, offset)| (callsite.0.start, callsite.0.end, offset.0))
+            .collect();
+        callsites.sort();
+        assert_eq!(callsites.len(), 4, "one callsite per region");
+        for (start, end, content_start) in callsites {
+            let expression = &HOST[start..end];
+            assert!(
+                expression.starts_with("dsql`") && expression.ends_with('`'),
+                "the span covers the whole expression, got {expression:?}"
+            );
+            assert!(
+                start < content_start && content_start < end,
+                "the content sits inside the expression"
+            );
+        }
+    });
+}
+
+/// The rewrite contract rejects embedded expressions that define several
+/// queries or only fragments; exactly-one-query (with helper fragments in
+/// .dsql files) stays clean.
+#[test]
+fn embedded_expression_shapes_are_checked() {
+    block_on(async {
+        let bowl = language_bowl().await;
+        insert_catalog(&bowl, imdb_catalog()).await;
+        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+            .await;
+        insert_source(
+            &bowl,
+            "src/multi.ts",
+            "export const a = dsql`\nquery One {\n  title(limit 1) {\n    id\n  }\n}\nquery Two {\n  kind_type {\n    kind\n  }\n}\n`;\n",
+        )
+        .await;
+        insert_source(
+            &bowl,
+            "src/frags.ts",
+            "export const b = dsql`\nfragment Bits on title {\n  id\n}\n`;\n",
+        )
+        .await;
+
+        insta::assert_snapshot!(crate::render_diagnostic_facts(&bowl).await);
+    });
+}
+
+/// The expression-shape check follows edits: a region growing a second
+/// query after the first settle reports, shrinking back retires. Empty
+/// expressions reject too — no rewrite target.
+#[test]
+fn embedded_expression_shapes_follow_edits() {
+    block_on(async {
+        // A host of its own: the shared fixture contains a deliberate
+        // fragment-only region, which this check rejects by design.
+        let bowl = language_bowl().await;
+        insert_catalog(&bowl, imdb_catalog()).await;
+        let host = insert_source(
+            &bowl,
+            "src/single.ts",
+            "export const q = dsql`\nquery Titles {\n  title(limit 1) {\n    id\n  }\n}\n`;\n",
+        )
+        .await;
+        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+            .await;
+        assert_eq!(
+            crate::render_diagnostic_facts(&bowl).await,
+            "",
+            "the fixture host starts clean"
+        );
+
+        let edit = |from: &'static str, to: &'static str| {
+            let bowl = &bowl;
+            async move {
+                let rows = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+                for (entity, source) in rows.collect() {
+                    if entity == host {
+                        source
+                            .with_latest(move |text| {
+                                let edited = text
+                                    .to_text()
+                                    .expect("editor text is resident")
+                                    .replace(from, to);
+                                text.set_text(&edited);
+                            })
+                            .await;
+                    }
+                }
+            }
+        };
+
+        // Grow the first region to two queries.
+        edit(
+            "query Titles {",
+            "query Extra {\n  kind_type {\n    kind\n  }\n}\nquery Titles {",
+        )
+        .await;
+        let reported = crate::render_diagnostic_facts(&bowl).await;
+        assert!(
+            reported.contains("defines 2 queries"),
+            "the shape check follows the edit, got: {reported:?}"
+        );
+
+        // Shrink back: the diagnostic retires.
+        edit(
+            "query Extra {\n  kind_type {\n    kind\n  }\n}\nquery Titles {",
+            "query Titles {",
+        )
+        .await;
+        assert_eq!(
+            crate::render_diagnostic_facts(&bowl).await,
+            "",
+            "shrinking back retires the diagnostic"
+        );
+
+        // Empty out the first region entirely: no rewrite target.
+        edit("query Titles {\n  title(limit 1) {\n    id\n  }\n}", "").await;
+        let reported = crate::render_diagnostic_facts(&bowl).await;
+        assert!(
+            reported.contains("defines no query"),
+            "empty expressions reject, got: {reported:?}"
+        );
+    });
 }

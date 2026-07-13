@@ -1,10 +1,16 @@
 ---
 source: crates/dsql-cli/tests/cli.rs
-assertion_line: 154
+assertion_line: 155
 expression: stdout(&typescript)
 ---
 export interface BuildManifest {
   version: number;
+  /**
+   * The project-monotonic generation this manifest commits
+   * (docs/spec/build-daemon.md). Required in version 2; version-1
+   * pointers are read through a private compatibility reader.
+   */
+  generationId: number;
   operations: OperationManifestEntry[];
   fragments: FragmentManifestEntry[];
 }
