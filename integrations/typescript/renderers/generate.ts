@@ -93,5 +93,9 @@ export const renderer = defineDsqlRenderer({
 export default renderer;
 
 if (import.meta.main) {
-  await runDsqlRendererFromProject(renderer);
+  // DSQL_BIN points one-shot runs at a specific daemon binary (e.g. a
+  // workspace build); otherwise `dsql` resolves from PATH.
+  await runDsqlRendererFromProject(renderer, {
+    ...(process.env.DSQL_BIN ? { daemon: { command: process.env.DSQL_BIN } } : {}),
+  });
 }
