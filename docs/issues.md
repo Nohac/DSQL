@@ -105,3 +105,50 @@
   pairs (the `resolution.rs` pattern) or engine subtree fingerprints,
   replacing the `DefDecl::source_hash` + fragment-file-hash invalidation
   with row-granular deps and retiring the remaining ambient body reads.
+
+# Porridge issue: staleness on content revisit (A -> B -> A)
+
+Restoring a document's earlier content — the save-undo-save flow —
+leaves the resident bowl with wrong derivation state. Deterministic
+repro: `checks::content_roundtrip_edits_rederive_cleanly` in
+dsql-core (ignored until fixed). Bisected from the imdsql project down
+to one document: two fragments where a length-changing edit to the first
+shifts a second fragment carrying a reverse to-many relation selection
+with a clause (`ratings: movie_info_idx(where .info_type_id == 101
+order by id asc limit 1)`); apply the edit (compiles clean), restore the
+original bytes (compiles clean when loaded fresh), and the settle ends
+with `FieldNotFound` on the clause's order-by column.
+
+Evidence gathered:
+
+- The `ResolvedClause` facts are CORRECT post-settle (the order item at
+  the reported span resolved, column present) — the stale party is the
+  Complete-phase consumer, not the resolver.
+- `explain` post-settle: `check_selections { matched_rows: 2,
+  memoized_rows: 2, stale_views: 9 }` — fully memoized while its ambient
+  views moved after its last run. A second settle does not heal it.
+- An A -> B -> C sequence (different content each step) is fine; only
+  revisiting a previously-held content hash breaks, in both edit
+  directions (probe first or last fragment).
+- A `DefIndex`-style tracked fingerprint over the resolution set does
+  not close it: the aggregator itself runs early in the settle, reads
+  the mid-settle view, commits a value equal to the previous
+  generation's (hash-neutral, no revision bump), and never re-runs —
+  even when driven per resolution row, explain still reports it
+  memoized with a stale view while the checker's new tracked dep never
+  moved. The engine's own memo/replan bookkeeping considers the settle
+  converged while a Complete-phase consumer holds output computed from
+  non-final views.
+
+Affected surfaces: every ambient `View` consumer of Evaluate-phase
+facts behind the Complete barrier — `check_selections`, `plan_queries`
+(stale SQL is possible, not just stale diagnostics), `infer_variables`.
+Fully tracked consumers (`lint_predicates`, `clause_tokens`) are fine.
+
+Workarounds in place: the daemon full-reloads any batch whose file
+revisits a content hash the resident bowl held earlier in its lifetime
+(`Session::seen_hashes`; pinned by `plain_document_edits_roundtrip`).
+Cost: an undo-style edit pays a project reload instead of an
+incremental apply. The LSP path is NOT covered — editor undo can
+strand the same stale state in a resident LSP bowl until the next
+non-revisit edit or restart.

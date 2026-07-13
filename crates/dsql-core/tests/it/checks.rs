@@ -193,6 +193,71 @@ fn member_value_edits_rederive_resolution() {
     });
 }
 
+/// Restoring a document's earlier content (A -> B -> A, a save-undo-save
+/// flow) must leave exactly the facts a fresh load of A would produce.
+/// The reproducing shape (bisected from the imdsql project): a
+/// length-changing edit before a definition that selects a reverse
+/// to-many relation with a clause — the restore answers FieldNotFound on
+/// the clause's order-by column although the ResolvedClause facts are
+/// correct post-settle, and the engine's explain reports the checker
+/// memoized with stale views. Engine-level (porridge) staleness on
+/// content revisit — see docs/issues.md; the daemon works around it by
+/// full-reloading when a file revisits a previously-held content hash
+/// (`plain_document_edits_roundtrip` in dsql-daemon pins that), and the
+/// LSP path remains exposed. Un-ignore once the engine fix lands.
+#[test]
+#[ignore = "porridge staleness on content revisit; see docs/issues.md"]
+fn content_roundtrip_edits_rederive_cleanly() {
+    use bowl::Mut;
+    use dsql_core::source::SourceText;
+
+    block_on(async {
+        let bowl = checked_bowl(imdb_catalog()).await;
+        let original = "fragment TitleBits on title {\n  id\n  title\n}\n\n\
+                        fragment RatingBits on title {\n  ratings: movie_info_idx(where .info_type_id == 101 order by id asc limit 1) {\n    info\n  }\n}\n";
+        let file = insert_source(&bowl, "roundtrip.dsql", original).await;
+        assert_eq!(
+            render_diagnostic_facts(&bowl).await,
+            "",
+            "the fixture starts clean"
+        );
+
+        let set_text = |content: String| {
+            let bowl = &bowl;
+            async move {
+                let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+                for (entity, source) in sources.collect() {
+                    if entity == file {
+                        let content = content.clone();
+                        source
+                            .with_latest(move |text| text.set_text(&content))
+                            .await;
+                    }
+                }
+            }
+        };
+
+        let probed = original.replace(
+            "fragment TitleBits on title {\n  id\n",
+            "fragment TitleBits on title {\n  id\n  probe_year: production_year\n",
+        );
+        assert_ne!(probed, original, "the probe must apply");
+        set_text(probed).await;
+        assert_eq!(
+            render_diagnostic_facts(&bowl).await,
+            "",
+            "the probe edit checks clean"
+        );
+
+        set_text(original.to_string()).await;
+        assert_eq!(
+            render_diagnostic_facts(&bowl).await,
+            "",
+            "restoring the original content checks clean"
+        );
+    });
+}
+
 /// Two operations with one name in one scope collide at the artifact
 /// boundary, so they are language errors like duplicate fragments.
 #[test]

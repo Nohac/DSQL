@@ -506,6 +506,86 @@ async fn reconciliation_precision() {
     );
 }
 
+/// A plain document edited away and back (A -> B -> A) must compile at
+/// every step: restoring earlier content revisits an already-seen text
+/// fingerprint, which must not leave stale facts from the intermediate
+/// version behind (imdsql repro: the restore answered FieldNotFound on
+/// every relation column with spans from the intermediate text).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plain_document_edits_roundtrip() {
+    let mut session = Session::start("aba-roundtrip").await;
+    // The reproducing shape (bisected from the imdsql project): a
+    // definition carrying a clause on a reverse to-many relation. The
+    // fixture schema has no to-many into `title`, so add one.
+    std::fs::write(
+        session.root.join("dsql/schema/public/movie_ratings.yaml"),
+        "---\nschema: public\nname: movie_ratings\nobject_type: table\ncolumns:\n  - name: id\n    database_type: int4\n    data_type: int\n    not_null: true\n  - name: movie_id\n    database_type: int4\n    data_type: int\n    not_null: true\n  - name: info_type_id\n    database_type: int4\n    data_type: int\n    not_null: true\n  - name: info\n    database_type: text\n    data_type: text\n    not_null: true\nconstraints:\n  - name: movie_ratings_pkey\n    kind: primary_key\n    columns:\n      - id\nforeign_keys:\n  - name: movie_ratings_movie_id_fkey\n    columns:\n      - movie_id\n    references:\n      schema: public\n      table: title\n      columns:\n        - id\nindexes:\n  - name: movie_ratings_pkey\n    columns:\n      - id\n    unique: true\n",
+    )
+    .expect("schema write");
+    let doc = session.root.join("queries/shared/fragments.dsql");
+    let original = "fragment TitleBits on title {\n  id\n  title\n}\n\n\
+                    fragment RatingBits on title {\n  ratings: movie_ratings(where .info_type_id == 101 order by id asc limit 1) {\n    info\n  }\n}\n";
+    std::fs::write(&doc, original).expect("fragments write");
+    let init = session
+        .request("initialize", &session.initialize_params())
+        .await;
+    assert!(init.contains("\"result\""), "got {init}");
+    let first = session.request("compile", "{}").await;
+    assert!(first.contains("\"generationId\":1"), "got {first}");
+
+    let probed = original.replace(
+        "fragment TitleBits on title {\n  id\n",
+        "fragment TitleBits on title {\n  id\n  probe_year: production_year\n",
+    );
+    assert_ne!(probed, original, "the probe must apply");
+
+    std::fs::write(&doc, &probed).expect("probe writes");
+    let edited = session
+        .request(
+            "filesChanged",
+            "{\"paths\":[\"queries/shared/fragments.dsql\"]}",
+        )
+        .await;
+    assert!(
+        edited.contains("\"generationId\":2") && edited.contains("probe_year"),
+        "the probe edit compiles, got {edited}"
+    );
+
+    // Restore: the SAME bytes the first generation compiled. Revisiting
+    // an already-seen text fingerprint must not strand span-keyed facts
+    // from the intermediate version.
+    std::fs::write(&doc, original).expect("restore writes");
+    let restored = session
+        .request(
+            "filesChanged",
+            "{\"paths\":[\"queries/shared/fragments.dsql\"]}",
+        )
+        .await;
+    assert!(
+        restored.contains("\"generationId\":3") && !restored.contains("probe_year"),
+        "restoring earlier content compiles cleanly, got {restored}"
+    );
+
+    // The same roundtrip driven by DIRECTORY events: subtree
+    // reconciliation must apply the identical revisit rule.
+    std::fs::write(&doc, &probed).expect("probe writes again");
+    let edited = session
+        .request("filesChanged", "{\"paths\":[\"queries/shared\"]}")
+        .await;
+    assert!(
+        edited.contains("\"generationId\":4") && edited.contains("probe_year"),
+        "the directory-event probe compiles, got {edited}"
+    );
+    std::fs::write(&doc, original).expect("restore writes again");
+    let restored = session
+        .request("filesChanged", "{\"paths\":[\"queries/shared\"]}")
+        .await;
+    assert!(
+        restored.contains("\"generationId\":5") && !restored.contains("probe_year"),
+        "restoring earlier content through a directory event compiles cleanly, got {restored}"
+    );
+}
+
 /// A failing host generator answers GeneratorFailed naming the committed
 /// generation, and the failure replays on unrelated events.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
