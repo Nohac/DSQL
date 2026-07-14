@@ -197,16 +197,15 @@ fn member_value_edits_rederive_resolution() {
 /// flow) must leave exactly the facts a fresh load of A would produce.
 /// The reproducing shape (bisected from the imdsql project): a
 /// length-changing edit before a definition that selects a reverse
-/// to-many relation with a clause — the restore answers FieldNotFound on
-/// the clause's order-by column although the ResolvedClause facts are
-/// correct post-settle, and the engine's explain reports the checker
-/// memoized with stale views. Engine-level (porridge) staleness on
-/// content revisit — see docs/issues.md; the daemon works around it by
-/// full-reloading when a file revisits a previously-held content hash
-/// (`plain_document_edits_roundtrip` in dsql-daemon pins that), and the
-/// LSP path remains exposed. Un-ignore once the engine fix lands.
+/// to-many relation with a clause. The engine's ambient healing
+/// (porridge bdebf49) closes most of the window; the remainder — the
+/// settle phase's own reaps moving viewed stores after the last healing
+/// pass — is fixed by porridge `Heal ambient consumers after
+/// settle-phase reaps` (local commit 8670456, verified green against
+/// this test). Un-ignore when the pin includes it; history in
+/// docs/issues.md.
 #[test]
-#[ignore = "porridge staleness on content revisit; see docs/issues.md"]
+#[ignore = "needs porridge 8670456 (heal after settle-phase reaps) in the pin"]
 fn content_roundtrip_edits_rederive_cleanly() {
     use bowl::Mut;
     use dsql_core::source::SourceText;
