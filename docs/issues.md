@@ -145,10 +145,37 @@ facts behind the Complete barrier — `check_selections`, `plan_queries`
 (stale SQL is possible, not just stale diagnostics), `infer_variables`.
 Fully tracked consumers (`lint_predicates`, `clause_tokens`) are fine.
 
-Workarounds in place: the daemon full-reloads any batch whose file
-revisits a content hash the resident bowl held earlier in its lifetime
-(`Session::seen_hashes`; pinned by `plain_document_edits_roundtrip`).
-Cost: an undo-style edit pays a project reload instead of an
-incremental apply. The LSP path is NOT covered — editor undo can
-strand the same stale state in a resident LSP bowl until the next
-non-revisit edit or restart.
+PARTIALLY RESOLVED upstream: porridge bdebf49 (heal stale ambient
+views at settle convergence) plus 8670456 (heal ambient consumers after
+settle-phase reaps; the healing epoch now closes only at settle
+completion). Plain-document revisits — including LSP editor undo — are
+engine-healed; pinned un-ignored by
+`checks::content_roundtrip_edits_rederive_cleanly`.
+
+STILL OPEN — bound-join replanning on REGION revisit: host files whose
+template content revisits an earlier state break one layer deeper than
+ambient views. Minimal repro (ignored):
+`checks::content_roundtrip_edits_rederive_cleanly_for_hosts` — a
+fragment chain in another file plus sibling host selections, one
+repeating a fragment-selected relation under another alias (bisected
+from imdsql; each piece alone heals fine). Post-restore evidence: the
+current `full_cast` field entity has NO ResolvedSelection at all (its
+`resolve_nested` bound-join invocation never replanned), while a GHOST
+ResolvedSelection anchored on a REMOVED intermediate-era field entity
+survives the stale-derived cleanup; the field's clauses then have no
+ResolvedClause, and the checker reports FieldNotFound on their order
+items. The final heal scan also shows `resolve_spreads` memoized from
+an earlier epoch with moved views. This is the delta-planned bound-join
+caveat (`member_value_edits_rederive_resolution`'s doc comment) in its
+derived-entity form: invocations keyed on derived rows (via the
+engine-maintained `Children`/`FieldResolutions` inverses) fail to
+replan when slots shift back to fingerprint-equal values, and their
+orphaned outputs escape the anchor-revision cleanup.
+
+Because of the open half, the daemon KEEPS the reload-on-revisit
+workaround (`Session::seen_hashes`, byte-exact revisits only; pinned by
+`plain_document_edits_roundtrip` and `host_document_edits_roundtrip`).
+The template-reverted-but-file-otherwise-changed host case is NOT
+covered by any workaround (file hash is fresh, region content revisits)
+— it errors until the engine join replanning is fixed; a daemon-side
+fix would require extraction-level region-hash tracking.

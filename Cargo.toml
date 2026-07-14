@@ -15,7 +15,7 @@ dsql-introspection = { path = "crates/dsql-introspection" }
 dsql-metadata = { path = "crates/dsql-metadata" }
 dsql-project = { path = "crates/dsql-project" }
 
-bowl = { git = "https://github.com/Nohac/porridge", rev = "5e91f52" }
+bowl = { git = "https://github.com/Nohac/porridge", rev = "8670456" }
 lelwel = { path = "vendor/lelwel" }
 miette = { version = "7", features = ["fancy"] }
 logos = { path = "vendor/logos" }

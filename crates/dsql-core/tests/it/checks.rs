@@ -197,15 +197,11 @@ fn member_value_edits_rederive_resolution() {
 /// flow) must leave exactly the facts a fresh load of A would produce.
 /// The reproducing shape (bisected from the imdsql project): a
 /// length-changing edit before a definition that selects a reverse
-/// to-many relation with a clause. The engine's ambient healing
-/// (porridge bdebf49) closes most of the window; the remainder — the
-/// settle phase's own reaps moving viewed stores after the last healing
-/// pass — is fixed by porridge `Heal ambient consumers after
-/// settle-phase reaps` (local commit 8670456, verified green against
-/// this test). Un-ignore when the pin includes it; history in
-/// docs/issues.md.
+/// to-many relation with a clause. Pinned against the engine's ambient
+/// healing (porridge bdebf49) plus its settle-phase extension — reaps
+/// moving viewed stores after the last healing pass (porridge 8670456);
+/// the history is in docs/issues.md.
 #[test]
-#[ignore = "needs porridge 8670456 (heal after settle-phase reaps) in the pin"]
 fn content_roundtrip_edits_rederive_cleanly() {
     use bowl::Mut;
     use dsql_core::source::SourceText;
@@ -239,6 +235,83 @@ fn content_roundtrip_edits_rederive_cleanly() {
         let probed = original.replace(
             "fragment TitleBits on title {\n  id\n",
             "fragment TitleBits on title {\n  id\n  probe_year: production_year\n",
+        );
+        assert_ne!(probed, original, "the probe must apply");
+        set_text(probed).await;
+        assert_eq!(
+            render_diagnostic_facts(&bowl).await,
+            "",
+            "the probe edit checks clean"
+        );
+
+        set_text(original.to_string()).await;
+        assert_eq!(
+            render_diagnostic_facts(&bowl).await,
+            "",
+            "restoring the original content checks clean"
+        );
+    });
+}
+
+/// The host-file variant of the roundtrip: the revisited content lives
+/// in an extracted REGION (a derived entity), not a base document. This
+/// shape (bisected from imdsql: a fragment chain from another file plus
+/// sibling selections, one repeating a fragment-selected relation under
+/// another alias) breaks a layer DEEPER than the ambient-view healing:
+/// post-restore the current `full_cast` field has NO ResolvedSelection
+/// at all (its bound-join invocation never replanned) while a GHOST
+/// resolution anchored on a removed intermediate-era field entity
+/// survives cleanup — porridge's delta-planned bound joins on content
+/// revisit; see docs/issues.md. The daemon covers byte-exact revisits
+/// via its reload workaround; template-revert-with-other-edits remains
+/// exposed. Un-ignore once the engine join replanning is fixed.
+#[test]
+#[ignore = "porridge bound-join replanning on region revisit; see docs/issues.md"]
+fn content_roundtrip_edits_rederive_cleanly_for_hosts() {
+    use bowl::Mut;
+    use dsql_core::source::SourceText;
+
+    block_on(async {
+        let bowl = checked_bowl(imdb_catalog()).await;
+        // The daemon arms the full generate pipeline: plan, variables,
+        // and SQL stages all consume resolutions ambiently at Complete.
+        dsql_core::facts::arm_generate_demands(&bowl).await;
+        // The clause-bearing selections live in a FRAGMENT CHAIN in
+        // another file, and the host adds sibling selections of its own —
+        // one repeating a fragment-selected relation under another alias
+        // (bisected from the imdsql project; smaller shapes heal fine).
+        insert_source(
+            &bowl,
+            "fragments.dsql",
+            "fragment CompactBits on title {\n  id\n}\n\nfragment HeroBits on title {\n  ...CompactBits\n  cast: cast_info(order by nr_order asc limit 5) {\n    nr_order\n  }\n}\n",
+        )
+        .await;
+        let original = "export const Q = dsql(`\nquery Roundtrip {\n  title(where .id == $$movieId limit 1) {\n    ...HeroBits\n    keywords: movie_keyword(order by id asc limit 14) {\n      keyword {\n        keyword\n      }\n    }\n    full_cast: cast_info(order by nr_order asc limit 14) {\n      id\n      nr_order\n    }\n  }\n}\n`);\n";
+        let file = insert_source(&bowl, "roundtrip.ts", original).await;
+        assert_eq!(
+            render_diagnostic_facts(&bowl).await,
+            "",
+            "the fixture starts clean"
+        );
+
+        let set_text = |content: String| {
+            let bowl = &bowl;
+            async move {
+                let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+                for (entity, source) in sources.collect() {
+                    if entity == file {
+                        let content = content.clone();
+                        source
+                            .with_latest(move |text| text.set_text(&content))
+                            .await;
+                    }
+                }
+            }
+        };
+
+        let probed = original.replace(
+            "    ...HeroBits\n",
+            "    probe_year: production_year\n    ...HeroBits\n",
         );
         assert_ne!(probed, original, "the probe must apply");
         set_text(probed).await;
