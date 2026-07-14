@@ -154,8 +154,14 @@ engine-healed; pinned un-ignored by
 
 STILL OPEN — bound-join replanning on REGION revisit: host files whose
 template content revisits an earlier state break one layer deeper than
-ambient views. Minimal repro (ignored):
-`checks::content_roundtrip_edits_rederive_cleanly_for_hosts` — a
+ambient views. ENGINE-LEVEL repro tests now live in porridge (local
+commit `Pin bound-join replanning on content revisit`, failing by
+design): `bound_join_pairs_rederive_on_content_revisit` — one chain
+t(h(c(n))), insert a node early, restore; the deepest node ends with
+TWO resolutions, its own plus a stale pairing from the intermediate
+tree that cleanup never reaps because the slot entity still exists —
+and `bound_join_revisit_leaves_sibling_documents_alone`. dsql-side
+repro (ignored): `checks::content_roundtrip_edits_rederive_cleanly_for_hosts` — a
 fragment chain in another file plus sibling host selections, one
 repeating a fragment-selected relation under another alias (bisected
 from imdsql; each piece alone heals fine). Post-restore evidence: the
