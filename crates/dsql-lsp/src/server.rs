@@ -29,8 +29,8 @@ use dsql_core::service::{
     HoverInfo, HoverRequest, Position, semantic_tokens,
 };
 use dsql_core::source::{
-    BelongsToHost, FilePath, HostProjection, OpenBuffer, ResolutionScope, SourceOffset, SourceText,
-    insert_source_scoped,
+    BelongsToHost, ContentSpan, DsqlDocument, FilePath, HostProjection, OpenBuffer,
+    ResolutionScope, SourceOffset, SourceText, insert_source_scoped,
 };
 use dsql_project::{Project, ProjectError, populate_project_bowl};
 
@@ -193,6 +193,62 @@ impl Backend {
 fn uri_path(uri: &Uri) -> Option<String> {
     uri.to_file_path()
         .map(|path| path.into_owned().display().to_string())
+}
+
+/// Formats one standalone dsql document when parsing is clean and the
+/// canonical text differs from the source.
+fn format_changed_document(source: &str) -> Option<String> {
+    let (cst, diagnostics) = parse(source);
+    let formatted = format_document(&cst.into_data(), source, !diagnostics.is_empty());
+    (formatted.confidence == FormatConfidence::Full && formatted.text != source)
+        .then_some(formatted.text)
+}
+
+/// Formats the dsql body of one embedded region without disturbing the
+/// whitespace that places it inside its host template.
+fn format_changed_region(source: &str) -> Option<String> {
+    let body_start = source.len() - source.trim_start().len();
+    let body_end = source.trim_end().len();
+    if body_start >= body_end {
+        return None;
+    }
+
+    let leading = &source[..body_start];
+    let trailing = &source[body_end..];
+    let body = &source[body_start..body_end];
+    let formatted = format_changed_document(body)?;
+    let formatted = formatted.strip_suffix('\n').unwrap_or(&formatted);
+
+    // A multiline template may indent its first dsql token relative to
+    // the host. The standalone formatter owns dsql indentation; add only
+    // that ambient prefix to continuation lines. Inline leading spaces do
+    // not establish a multiline prefix.
+    let ambient = leading
+        .rsplit_once('\n')
+        .map_or("", |(_, indentation)| indentation);
+    let mut indented = String::with_capacity(formatted.len());
+    for (index, line) in formatted.split('\n').enumerate() {
+        if index > 0 {
+            indented.push('\n');
+            if !line.is_empty() {
+                indented.push_str(ambient);
+            }
+        }
+        indented.push_str(line);
+    }
+
+    let output = format!("{leading}{indented}{trailing}");
+    (output != source).then_some(output)
+}
+
+fn text_edit(rope: &Rope, span: Span, new_text: String) -> TextEdit {
+    TextEdit {
+        range: Range {
+            start: byte_to_position(rope, span.start),
+            end: byte_to_position(rope, span.end),
+        },
+        new_text,
+    }
 }
 
 impl LanguageServer for Backend {
@@ -627,29 +683,48 @@ impl LanguageServer for Backend {
         let Some(path) = uri_path(&params.text_document.uri) else {
             return Ok(None);
         };
-        // Only dsql documents format; host sources are another language's.
-        if std::path::Path::new(&path)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            != Some("dsql")
-        {
-            return Ok(None);
-        }
-        let Some((_, rope)) = self.rope_of(&path).await else {
+        // Formatting edits are tied to one exact host revision. Serialize
+        // the rope and derived-region reads against buffer mutations.
+        let _session = self.session.lock().await;
+        let Some((file_entity, rope)) = self.rope_of(&path).await else {
             return Ok(None);
         };
-        let text = rope.to_string();
-        let (cst, diagnostics) = parse(&text);
-        let formatted = format_document(&cst.into_data(), &text, !diagnostics.is_empty());
-        if formatted.confidence == FormatConfidence::PreserveOriginal || formatted.text == text {
-            return Ok(None);
+
+        let documents = self.bowl().scoop::<Query<(Entity, &DsqlDocument)>>().await;
+        if documents
+            .collect()
+            .into_iter()
+            .any(|(document, _)| document == file_entity)
+        {
+            let text = rope.to_string();
+            return Ok(format_changed_document(&text).map(|formatted| {
+                vec![text_edit(
+                    &rope,
+                    Span {
+                        start: 0,
+                        end: rope.len(),
+                    },
+                    formatted,
+                )]
+            }));
         }
-        Ok(Some(vec![TextEdit {
-            range: Range {
-                start: byte_to_position(&rope, 0),
-                end: byte_to_position(&rope, rope.len()),
-            },
-            new_text: formatted.text,
-        }]))
+
+        let regions = self
+            .bowl()
+            .scoop::<Query<(Entity, &BelongsToHost, &ContentSpan, &SourceText)>>()
+            .await;
+        let mut edits: Vec<(usize, TextEdit)> = regions
+            .collect()
+            .into_iter()
+            .filter(|(_, host, _, _)| host.0 == file_entity)
+            .filter_map(|(_, _, content, source)| {
+                let text = source.to_text()?;
+                let formatted = format_changed_region(&text)?;
+                Some((content.0.start, text_edit(&rope, content.0, formatted)))
+            })
+            .collect();
+        edits.sort_by_key(|(start, _)| *start);
+        let edits: Vec<TextEdit> = edits.into_iter().map(|(_, edit)| edit).collect();
+        Ok((!edits.is_empty()).then_some(edits))
     }
 }

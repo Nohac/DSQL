@@ -116,6 +116,13 @@ tests, project/init/introspection tests. All snapshot-based where the
 POC was snapshot-based; the POC's LSP snapshot suite maps onto the
 scenario harness (bowl-level) plus the protocol harness (transport).
 
+### Editor follow-ups
+
+- **Region-granular LSP formatting**: format-on-save follows the bowl's
+  derived DSQL regions instead of the host extension. Each clean region
+  produces a `ContentSpan`-bounded host edit; TypeScript outside those
+  spans and parse-broken sibling regions remain untouched.
+
 ## Kept out (and why)
 
 - **T2 — TS callsite contract**: needs a design session with you before
@@ -142,9 +149,9 @@ scenario harness (bowl-level) plus the protocol harness (transport).
   outside any project. Ours requires a project and analyzes the file in
   its real resolution scope — strictly more correct, one analysis
   pathway.
-- **Region-granular `fmt` for embedding hosts**: whole-file formatting
-  is a dsql-document affair until region-granular edits are designed;
-  hosts are skipped (and explicitly refused when named).
+- **CLI `fmt` for embedding hosts**: editor formatting is region-granular,
+  but the batch command still skips hosts (and explicitly refuses one
+  when named) rather than rewriting another language's source file.
 
 ## Blocking
 

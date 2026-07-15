@@ -164,6 +164,21 @@ fn copy_tree(source: &Path, target: &Path) {
     }
 }
 
+fn protocol_position(text: &str, byte_offset: usize) -> Value {
+    let prefix = &text[..byte_offset];
+    let line = prefix.matches('\n').count();
+    let line_start = prefix.rfind('\n').map_or(0, |offset| offset + 1);
+    let character = text[line_start..byte_offset].encode_utf16().count();
+    json!({"line": line, "character": character})
+}
+
+fn protocol_range(text: &str, start: usize, end: usize) -> Value {
+    json!({
+        "start": protocol_position(text, start),
+        "end": protocol_position(text, end),
+    })
+}
+
 /// A dsql document publishes diagnostics on open, an edit introducing an
 /// unknown column publishes the error, and reverting clears it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -403,5 +418,145 @@ async fn new_files_join_their_configured_scope_and_close_restores_disk() {
         restored.as_array().map(Vec::len),
         Some(0),
         "closing restores the clean disk revision, got {restored}"
+    );
+}
+
+/// Formatting follows bowl-carried document and region facts: plain dsql
+/// replaces the whole buffer, while a host receives one edit per clean,
+/// changed region in host coordinates. Broken regions and host text are
+/// preserved, and a second request against the formatted revision is a
+/// no-op.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn formatting_follows_dsql_documents_and_embedded_regions() {
+    let mut session = Session::start("formatting").await;
+    let options = json!({"tabSize": 2, "insertSpaces": true});
+
+    let plain_uri = session.uri("queries/frontend/formatting.dsql");
+    let plain = "query Plain { title(limit 1){ id } }";
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": plain_uri, "languageId": "dsql", "version": 1, "text": plain}}),
+        )
+        .await;
+    let id = session
+        .request(
+            "textDocument/formatting",
+            json!({"textDocument": {"uri": plain_uri}, "options": options}),
+        )
+        .await;
+    let response = session.response(id).await;
+    assert_eq!(
+        response["result"],
+        json!([{
+            "range": protocol_range(plain, 0, plain.len()),
+            "newText": "query Plain {\n  title(limit 1) {\n    id\n  }\n}\n",
+        }]),
+        "plain dsql keeps whole-document formatting, got {response}"
+    );
+
+    let inline = "query Inline { title(limit 1){id} }";
+    let indented =
+        "\n    query Indented { title(limit 1){title} }\n\n    fragment Extra on title { id }\n  ";
+    let broken = "query Broken { title(where }";
+    let empty = " \n  ";
+    let host = format!(
+        "const marker = \"🎬\"; export const inline = dsql(`{inline}`);\n\
+         export const indented = dsql(`{indented}`);\n\
+         const keep = \"typescript\";\n\
+         export const broken = dsql(`{broken}`);\n\
+         export const empty = dsql(`{empty}`);\n"
+    );
+    let inline_start = host.find(inline).expect("inline region");
+    let indented_start = host.find(indented).expect("indented region");
+    let formatted_inline = "query Inline {\n  title(limit 1) {\n    id\n  }\n}";
+    let formatted_indented = "\n    query Indented {\n      title(limit 1) {\n        title\n      }\n    }\n\n    fragment Extra on title {\n      id\n    }\n  ";
+
+    let host_uri = session.uri("src/components/Formatting.ts");
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": host_uri, "languageId": "typescript", "version": 1, "text": host}}),
+        )
+        .await;
+    let id = session
+        .request(
+            "textDocument/formatting",
+            json!({"textDocument": {"uri": host_uri}, "options": options}),
+        )
+        .await;
+    let response = session.response(id).await;
+    assert_eq!(
+        response["result"],
+        json!([
+            {
+                "range": protocol_range(&host, inline_start, inline_start + inline.len()),
+                "newText": formatted_inline,
+            },
+            {
+                "range": protocol_range(
+                    &host,
+                    indented_start,
+                    indented_start + indented.len()
+                ),
+                "newText": formatted_indented,
+            }
+        ]),
+        "only clean changed regions edit the host, got {response}"
+    );
+
+    let mut formatted_host = host.clone();
+    formatted_host.replace_range(
+        indented_start..indented_start + indented.len(),
+        formatted_indented,
+    );
+    formatted_host.replace_range(inline_start..inline_start + inline.len(), formatted_inline);
+    assert!(
+        formatted_host.contains("const keep = \"typescript\";")
+            && formatted_host.contains(broken)
+            && formatted_host.contains(&format!("dsql(`{empty}`)")),
+        "format edits preserve host code and non-formatting sibling regions"
+    );
+
+    session
+        .notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": host_uri, "version": 2},
+                "contentChanges": [{"text": formatted_host}],
+            }),
+        )
+        .await;
+    let id = session
+        .request(
+            "textDocument/formatting",
+            json!({"textDocument": {"uri": host_uri}, "options": options}),
+        )
+        .await;
+    let response = session.response(id).await;
+    assert_eq!(
+        response["result"],
+        Value::Null,
+        "formatting the updated host is idempotent, got {response}"
+    );
+
+    let empty_host_uri = session.uri("src/components/NoDsql.tsx");
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": empty_host_uri, "languageId": "typescriptreact", "version": 1, "text": "export const value = 'not dsql';\n"}}),
+        )
+        .await;
+    let id = session
+        .request(
+            "textDocument/formatting",
+            json!({"textDocument": {"uri": empty_host_uri}, "options": options}),
+        )
+        .await;
+    let response = session.response(id).await;
+    assert_eq!(
+        response["result"],
+        Value::Null,
+        "a host without derived dsql regions has nothing to format"
     );
 }
