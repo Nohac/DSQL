@@ -230,7 +230,7 @@ fn validate_rejects_artifact_collisions_without_writing() {
     std::fs::write(
         dir.join("dsql/dsql.toml"),
         "database_url = \"<x>\"\ndefault_schema = \"public\"\n\n\
-         [resolution.a]\ndocuments = [\"a\"]\n\n[resolution.b]\ndocuments = [\"b\"]\n",
+         [resolution.a]\ndocuments = [{ resolver = \"dsql\", paths = [\"a\"] }]\n\n[resolution.b]\ndocuments = [{ resolver = \"dsql\", paths = [\"b\"] }]\n",
     )
     .expect("config");
     let query = "query Titles {\n  title(limit 1) {\n    id\n  }\n}\n";

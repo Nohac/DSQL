@@ -6,7 +6,7 @@ use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::facts::{Diagnostic, DiagnosticsDemand};
 use dsql_core::language_bowl;
-use dsql_core::source::insert_source;
+use dsql_core::source::{insert_embedding_source, insert_source};
 use futures::executor::block_on;
 
 use crate::{fixture, imdb_catalog, render_diagnostic_facts};
@@ -284,7 +284,7 @@ fn content_roundtrip_edits_rederive_cleanly_for_hosts() {
         )
         .await;
         let original = "export const Q = dsql(`\nquery Roundtrip {\n  title(where .id == $$movieId limit 1) {\n    ...HeroBits\n    keywords: movie_keyword(order by id asc limit 14) {\n      keyword {\n        keyword\n      }\n    }\n    full_cast: cast_info(order by nr_order asc limit 14) {\n      id\n      nr_order\n    }\n  }\n}\n`);\n";
-        let file = insert_source(&bowl, "roundtrip.ts", original).await;
+        let file = insert_embedding_source(&bowl, "roundtrip.host", original, "typescript").await;
         assert_eq!(
             render_diagnostic_facts(&bowl).await,
             "",

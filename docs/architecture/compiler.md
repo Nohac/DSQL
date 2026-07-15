@@ -22,11 +22,20 @@ One text component, two writers (`dsql-core/src/source.rs`):
   revision fingerprint for editor roots (hashing a multi-megabyte rope per
   keystroke is wasted work) is part of the tracked source-residency design
   in `docs/issues.md`.
-- **Analysis path**: `load_file`/`insert_source` reads a file once; the
-  component simply is the fact.
+- **Analysis path**: project configuration assigns each physical file a
+  resolver. The built-in `dsql` resolver marks the whole source as a
+  `DsqlDocument`; named embedding resolvers mark an `EmbeddingHost` with an
+  `ExtractionResolver`. Paths and extensions never choose the marker.
 - **LSP path**: the same entity plus an `OpenBuffer` marker; `didChange`
   applies incremental rope edits through porridge external mutation
   (`Mut<SourceText>` + `apply_edit`).
+
+Embedding extraction is provider-driven (`dsql-core/src/embedding.rs`). A
+fingerprinted `ExtractionRegistry` maps configured resolver names to strategies;
+the current `Regex` strategy derives region entities with content and callsite
+ranges. Hosts carry only their resolver name, so adding a tree-sitter strategy
+does not change project discovery, scope ownership, daemon reconciliation, or
+LSP source admission. Multiple named providers may coexist in one bowl.
 
 Spans are byte ranges end to end. Line/column (UTF-16) conversion happens
 only at the LSP boundary (`dsql-lsp/src/position.rs`). Text materializes to

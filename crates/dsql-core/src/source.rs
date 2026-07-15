@@ -56,6 +56,45 @@ pub struct DsqlDocument;
 #[component(hash)]
 pub struct EmbeddingHost;
 
+/// How project configuration resolves one physical source into dsql documents.
+/// Paths select files; this value selects full-document parsing or a named
+/// embedded-document extractor.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceKind {
+    /// The whole physical source is one dsql document.
+    Dsql,
+    /// The physical source is a host interpreted by the named extractor.
+    Embedded(String),
+}
+
+impl SourceKind {
+    /// The built-in resolver name for full-document dsql sources.
+    pub const DSQL_RESOLVER: &'static str = "dsql";
+
+    /// Converts a configured resolver name into its runtime source kind.
+    pub fn from_resolver(resolver: impl Into<String>) -> Self {
+        let resolver = resolver.into();
+        if resolver == Self::DSQL_RESOLVER {
+            Self::Dsql
+        } else {
+            Self::Embedded(resolver)
+        }
+    }
+
+    /// The configured resolver name represented by this source kind.
+    pub fn resolver(&self) -> &str {
+        match self {
+            Self::Dsql => Self::DSQL_RESOLVER,
+            Self::Embedded(resolver) => resolver,
+        }
+    }
+}
+
+/// The named extractor selected for an [`EmbeddingHost`].
+#[derive(Component, Hash, Debug, Clone, PartialEq, Eq)]
+#[component(hash)]
+pub struct ExtractionResolver(pub String);
+
 /// Join key from an extracted region back to its host file entity, the
 /// counterpart of [`crate::facts::BelongsToFile`] one level up.
 #[derive(Component, Hash, PartialEq, Eq, Debug, Clone, Copy)]
@@ -291,25 +330,40 @@ impl HostProjection {
 /// The configured document paths per resolution scope (absolute, already
 /// joined against the project base): the bowl-carried source of scope
 /// *placement*, so an editor opening a brand-new file can ask which scope
-/// owns its path without any adapter-side project state. Empty without
-/// project configuration — everything lands in the default scope.
+/// owns its path without any adapter-side project state. An empty value is
+/// the projectless single-file fallback, where editor-declared dsql documents
+/// land in the default scope.
 #[derive(Component, Debug, Default, Hash)]
 #[component(hash)]
-pub struct ScopeDocuments(pub Vec<(String, Vec<String>)>);
+pub struct ScopeDocuments(pub Vec<(String, Vec<ScopeDocument>)>);
+
+/// One configured group of physical paths interpreted by the same resolver.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ScopeDocument {
+    pub kind: SourceKind,
+    pub paths: Vec<String>,
+}
+
+/// A configured source assignment returned to live adapters.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourceAssignment {
+    pub scope: String,
+    pub kind: SourceKind,
+}
 
 /// Which resolution scope owns a path under the configured patterns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopeOwnership {
-    /// No scopes are configured: the project's implicit default scope.
+    /// No project document assignments are installed: single-file mode.
     ImplicitDefault,
     /// Exactly one configured scope covers the path.
-    Unique(String),
+    Unique(SourceAssignment),
     /// A configured project, but no pattern covers the path: the file is
-    /// outside the project's document set (standalone editing).
+    /// outside the project's document set.
     Unmatched,
     /// More than one scope covers the path — an ownership error at load;
     /// callers pick a deterministic policy and say so.
-    Ambiguous(Vec<String>),
+    Ambiguous(Vec<SourceAssignment>),
 }
 
 impl ScopeDocuments {
@@ -321,13 +375,19 @@ impl ScopeDocuments {
             return ScopeOwnership::ImplicitDefault;
         }
         let candidate = Path::new(path);
-        let mut matches: Vec<String> = Vec::new();
-        for (scope, configured) in &self.0 {
-            if configured
-                .iter()
-                .any(|entry| configured_path_matches(Path::new(entry), candidate))
-            {
-                matches.push(scope.clone());
+        let mut matches: Vec<SourceAssignment> = Vec::new();
+        for (scope, documents) in &self.0 {
+            for document in documents {
+                if document
+                    .paths
+                    .iter()
+                    .any(|entry| configured_path_matches(Path::new(entry), candidate))
+                {
+                    matches.push(SourceAssignment {
+                        scope: scope.clone(),
+                        kind: document.kind.clone(),
+                    });
+                }
             }
         }
         matches.sort_unstable();
@@ -345,21 +405,18 @@ impl ScopeDocuments {
 fn configured_path_matches(configured: &Path, path: &Path) -> bool {
     let raw = configured.to_string_lossy();
     if raw.contains('*') || raw.contains('?') || raw.contains('[') {
+        let options = glob::MatchOptions {
+            require_literal_separator: true,
+            ..glob::MatchOptions::new()
+        };
         return glob::Pattern::new(&raw)
             .ok()
-            .is_some_and(|pattern| pattern.matches_path(path));
+            .is_some_and(|pattern| pattern.matches_path_with(path, options));
     }
     if path == configured {
-        return is_document_path(path);
+        return true;
     }
-    path.starts_with(configured) && is_document_path(path)
-}
-
-/// Whether the path carries a dsql document or host extension.
-fn is_document_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| matches!(ext, "dsql" | "ts" | "tsx"))
+    path.starts_with(configured)
 }
 
 /// The scope import graph as a fingerprinted singleton fact: scope name →
@@ -393,45 +450,64 @@ pub async fn load_file(bowl: &Bowl, path: impl AsRef<Path>) -> io::Result<Entity
 
 /// Inserts in-memory text as a file entity in the default scope.
 pub async fn insert_source(bowl: &Bowl, path: impl Into<String>, text: &str) -> Entity {
-    insert_source_scoped(bowl, path, text, ResolutionScope::default_scope()).await
+    insert_source_scoped(
+        bowl,
+        path,
+        text,
+        ResolutionScope::default_scope(),
+        SourceKind::Dsql,
+    )
+    .await
 }
 
-/// Extensions whose files are host sources rather than dsql documents —
-/// the one classifier every layer shares (loading, formatting, editors).
-pub fn is_host_path(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| matches!(ext, "ts" | "tsx"))
+/// Inserts an embedding host in the default scope with an explicit extractor.
+pub async fn insert_embedding_source(
+    bowl: &Bowl,
+    path: impl Into<String>,
+    text: &str,
+    resolver: impl Into<String>,
+) -> Entity {
+    insert_source_scoped(
+        bowl,
+        path,
+        text,
+        ResolutionScope::default_scope(),
+        SourceKind::Embedded(resolver.into()),
+    )
+    .await
 }
 
-/// Inserts in-memory text as a file entity in `scope`. The one entry point
-/// for every writer: the path's extension decides whether the text is a
-/// dsql document or a host source whose regions extraction derives.
+/// Inserts in-memory text as a file entity in `scope`, interpreted by the
+/// resolver selected in project or editor configuration.
 pub async fn insert_source_scoped(
     bowl: &Bowl,
     path: impl Into<String>,
     text: &str,
     scope: ResolutionScope,
+    kind: SourceKind,
 ) -> Entity {
     let path = path.into();
-    let inserted = if is_host_path(&path) {
-        bowl.insert((
-            FilePath(path),
-            EmbeddingHost,
-            SourceText::from_text(text),
-            scope,
-        ))
-        .await
-    } else {
-        bowl.insert((
-            FilePath(path),
-            SourceOffset(0),
-            DsqlDocument,
-            SourceText::from_text(text),
-            scope,
-        ))
-        .await
+    let inserted = match kind {
+        SourceKind::Embedded(resolver) => {
+            bowl.insert((
+                FilePath(path),
+                EmbeddingHost,
+                ExtractionResolver(resolver),
+                SourceText::from_text(text),
+                scope,
+            ))
+            .await
+        }
+        SourceKind::Dsql => {
+            bowl.insert((
+                FilePath(path),
+                SourceOffset(0),
+                DsqlDocument,
+                SourceText::from_text(text),
+                scope,
+            ))
+            .await
+        }
     };
     inserted.entity()
 }

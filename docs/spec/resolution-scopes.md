@@ -19,20 +19,50 @@ Projects can define named scopes:
 
 ```toml
 [resolution.shared]
-documents = ["queries/shared/**/*.dsql"]
+documents = [{ resolver = "dsql", paths = ["queries/shared/**/*.dsql"] }]
 
 [resolution.frontend]
-documents = ["src/**/*.tsx", "queries/frontend/**/*.dsql"]
+documents = [
+  { resolver = "dsql", paths = ["queries/frontend/**/*.dsql"] },
+  { resolver = "typescript", paths = ["src/**/*.ts", "src/**/*.tsx"] },
+]
 imports = ["shared"]
 
 [resolution.api]
-documents = ["queries/api/**/*.dsql"]
+documents = [{ resolver = "dsql", paths = ["queries/api/**/*.dsql"] }]
 imports = ["shared"]
 ```
 
-Each loaded document belongs to exactly one scope. If the same DSQL file or
-embedded region is matched by more than one scope, project loading should report
-a deterministic ownership error.
+Each document entry selects physical files and the resolver that turns each file
+into DSQL documents. The built-in `dsql` resolver treats the whole file as one
+document. Other names select an `[embedding.<resolver>]` extraction provider;
+`typescript` defaults to the tagged-template regex when no section overrides it.
+Regex is the current provider strategy, not part of source ownership: a future
+tree-sitter provider can use the same resolver-bearing document entries.
+
+```toml
+[embedding.vue]
+strategy = "regex"
+pattern = 'dsql`(?P<content>[\s\S]*?)`'
+
+[resolution.frontend]
+documents = [{ resolver = "vue", paths = ["src/**/*.vue"] }]
+```
+
+Extensions have no compiler-defined meaning. A resolver may select any file
+name, and files outside every configured path are not project inputs. An LSP
+buffer outside the project set is analyzed only when the client explicitly
+opens it with `languageId = "dsql"`; unmatched host files have no extractor and
+are ignored.
+
+Glob paths are recommended. A bare directory intentionally assigns every file
+below it to that resolver, including editor files or documentation, so use one
+only when the directory is resolver-homogeneous.
+
+Each physical file has exactly one `(scope, resolver)` assignment. Overlap
+between scopes, or between two resolvers in one scope, is a deterministic
+ownership error in cold loading and forces equivalent reconciliation in a warm
+daemon.
 
 ## Resolver Model
 

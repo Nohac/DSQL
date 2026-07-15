@@ -10,7 +10,7 @@
 use bowl::{DerivedFrom, Singleton};
 
 use crate::catalog::CatalogSnapshot;
-use crate::embedding::EmbeddedPattern;
+use crate::embedding::ExtractionRegistry;
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefIndex, FragmentKey, FragmentTarget};
 use crate::entities::directive::DirectiveFact;
@@ -36,7 +36,8 @@ use crate::service::hover::{
 use crate::service::semantic_tokens::{TokenChunk, TokensDemand};
 use crate::source::{
     AnalysisResidency, BelongsToHost, CallsiteSpan, ContentSpan, DsqlDocument, EmbeddingHost,
-    FilePath, OpenBuffer, ResolutionScope, ScopeDocuments, ScopeImports, SourceOffset, SourceText,
+    ExtractionResolver, FilePath, OpenBuffer, ResolutionScope, ScopeDocuments, ScopeImports,
+    SourceOffset, SourceText,
 };
 use crate::sql::{GeneratedSqlFact, SqlOptions};
 
@@ -53,14 +54,20 @@ pub struct DsqlSchema {
         SourceOffset,
         ResolutionScope,
     ),
-    host_file: (FilePath, SourceText, EmbeddingHost, ResolutionScope),
+    host_file: (
+        FilePath,
+        SourceText,
+        EmbeddingHost,
+        ExtractionResolver,
+        ResolutionScope,
+    ),
     /// Editor-owned marker stamped externally on open documents.
     open_buffer: (OpenBuffer,),
     catalog: (Singleton<CatalogSnapshot>, CatalogSnapshot),
     scope_imports: (Singleton<ScopeImports>, ScopeImports),
     scope_documents: (Singleton<ScopeDocuments>, ScopeDocuments),
     lint_config: (Singleton<LintConfig>, LintConfig),
-    embedded_pattern: (Singleton<EmbeddedPattern>, EmbeddedPattern),
+    extraction_registry: (Singleton<ExtractionRegistry>, ExtractionRegistry),
     sql_options: (Singleton<SqlOptions>, SqlOptions),
     diagnostics_demand: (Singleton<DiagnosticsDemand>, DiagnosticsDemand),
     analysis_residency: (Singleton<AnalysisResidency>, AnalysisResidency),

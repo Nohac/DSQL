@@ -512,17 +512,11 @@ impl Session {
             .map(|(_, documents)| documents.ownership_of(&path_text));
         match ownership {
             Some(dsql_core::source::ScopeOwnership::Unique(_)) => Relevance::Relevant,
-            // Match discovery exactly: without configuration, only
-            // `.dsql` files under the dsql/ project root load.
             Some(dsql_core::source::ScopeOwnership::ImplicitDefault) | None => {
-                if absolute.starts_with(&self.project.root) && path_text.ends_with(".dsql") {
-                    Relevance::Relevant
-                } else {
-                    Relevance::Irrelevant
-                }
+                Relevance::Irrelevant
             }
             // A newly ambiguous file must behave like a cold reload: the
-            // loader reports DuplicateScopeDocument. Forcing the reload
+            // loader reports a duplicate document assignment. Forcing the reload
             // keeps warm and cold behavior identical.
             Some(dsql_core::source::ScopeOwnership::Ambiguous(_)) => Relevance::Ambiguous,
             Some(dsql_core::source::ScopeOwnership::Unmatched) => Relevance::Irrelevant,
@@ -587,7 +581,7 @@ impl Session {
             BatchPlan::Incremental(paths) => {
                 let bowl = self.bowl.as_ref().expect("classified against a bowl");
                 for (absolute, content) in paths {
-                    upsert(bowl, &self.project, &self.project_base, &absolute, &content).await;
+                    upsert(bowl, &absolute, &content).await;
                 }
                 Ok(())
             }
@@ -830,7 +824,7 @@ fn generate_outcome_error(error: GenerateError) -> Outcome {
     }
 }
 
-async fn upsert(bowl: &Bowl, project: &Project, base: &Path, absolute: &Path, content: &str) {
+async fn upsert(bowl: &Bowl, absolute: &Path, content: &str) {
     let path_text = absolute.to_string_lossy().to_string();
     let target = {
         let rows = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
@@ -862,21 +856,20 @@ async fn upsert(bowl: &Bowl, project: &Project, base: &Path, absolute: &Path, co
             .next()
             .map(|(_, documents)| documents.ownership_of(&path_text));
         use dsql_core::source::ScopeOwnership;
-        let scope = match ownership {
-            Some(ScopeOwnership::Unique(scope)) => Some(scope),
-            // Match discovery exactly: the implicit default scope owns
-            // `.dsql` files under the dsql/ project root only.
-            Some(ScopeOwnership::ImplicitDefault) | None
-                if absolute.starts_with(&project.root) && path_text.ends_with(".dsql") =>
-            {
-                Some(ResolutionScope::DEFAULT.to_string())
-            }
+        let assignment = match ownership {
+            Some(ScopeOwnership::Unique(assignment)) => Some(assignment),
             _ => None,
         };
-        if let Some(scope) = scope {
-            insert_source_scoped(bowl, &path_text, content, ResolutionScope(scope)).await;
+        if let Some(assignment) = assignment {
+            insert_source_scoped(
+                bowl,
+                &path_text,
+                content,
+                ResolutionScope(assignment.scope),
+                assignment.kind,
+            )
+            .await;
         }
-        let _ = base;
     }
 }
 

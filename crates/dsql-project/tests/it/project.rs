@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use bowl::{Entity, Query, Singleton};
 use dsql_core::facts::{Diagnostic, DiagnosticsDemand, PlanDemand, SqlDemand};
+use dsql_core::source::SourceKind;
 use dsql_core::sql::GeneratedSqlFact;
 use dsql_project::{Project, find_root, open_project_bowl};
 
@@ -100,13 +101,86 @@ async fn host_documents_load_whole() {
         .expect("documents load");
     let hosts: Vec<_> = documents
         .iter()
-        .filter(|document| document.path.extension().and_then(|ext| ext.to_str()) == Some("ts"))
+        .filter(|document| matches!(document.kind, SourceKind::Embedded(_)))
         .collect();
     assert_eq!(hosts.len(), 1, "the fixture has one host source");
     let host = hosts[0];
     assert_eq!(host.scope, "frontend");
     assert!(host.text.contains("import"), "hosts carry their full text");
     assert!(host.text.contains("query TitlePanel"));
+}
+
+#[tokio::test]
+async fn configured_resolvers_drive_discovery_independently_of_extensions() {
+    let dir =
+        std::env::temp_dir().join(format!("dsql-source-classification-{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("clean stale dir");
+    }
+    let root = dir.join("dsql");
+    std::fs::create_dir_all(&root).expect("dsql dir");
+    std::fs::write(root.join("dsql.toml"), "database_url = \"x\"\n").expect("config");
+    std::fs::write(root.join("plain.dsql"), "query Plain { title { id } }\n")
+        .expect("plain document");
+    std::fs::write(root.join("host.ts"), "export const value = 1;\n").expect("host");
+    std::fs::write(root.join("notes.md"), "not a source\n").expect("foreign file");
+
+    let project = Project::load_from(&dir).await.expect("project loads");
+    let documents = dsql_project::load_project_documents(&project)
+        .await
+        .expect("default documents load");
+    let names: Vec<_> = documents
+        .iter()
+        .filter_map(|document| document.path.file_name().and_then(|name| name.to_str()))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["plain.dsql"],
+        "default discovery is standalone-only"
+    );
+
+    let sources = dir.join("sources");
+    std::fs::create_dir_all(&sources).expect("sources dir");
+    std::fs::write(
+        sources.join("plain.query"),
+        "query Plain { title { id } }\n",
+    )
+    .expect("plain document");
+    std::fs::write(
+        sources.join("host.component"),
+        "export const value = dsql`query Host { title { id } }`;\n",
+    )
+    .expect("host");
+    std::fs::write(sources.join("notes.md"), "not a source\n").expect("foreign file");
+    std::fs::write(
+        root.join("dsql.toml"),
+        "database_url = \"x\"\ndocuments = [\n  { resolver = \"dsql\", paths = [\"sources/plain.query\"] },\n  { resolver = \"typescript\", paths = [\"sources/host.component\"] },\n]\n",
+    )
+    .expect("configured discovery");
+
+    let project = Project::load_from(&dir)
+        .await
+        .expect("configured project loads");
+    let documents = dsql_project::load_project_documents(&project)
+        .await
+        .expect("configured documents load");
+    let classified: Vec<_> = documents
+        .iter()
+        .filter_map(|document| Some((document.path.file_name()?.to_str()?, document.kind.clone())))
+        .collect();
+    assert_eq!(
+        classified,
+        vec![
+            (
+                "host.component",
+                SourceKind::Embedded("typescript".to_string())
+            ),
+            ("plain.query", SourceKind::Dsql),
+        ],
+        "configured discovery accepts exactly the shared source kinds"
+    );
+
+    std::fs::remove_dir_all(&dir).expect("cleanup");
 }
 
 #[tokio::test]
@@ -140,7 +214,7 @@ async fn documents_owned_by_two_scopes_fail_loading() {
     std::fs::create_dir_all(&queries).expect("fixture dir");
     std::fs::write(
         root.join("dsql.toml"),
-        "database_url = \"x\"\n\n[resolution.a]\ndocuments = [\"queries\"]\n\n[resolution.b]\ndocuments = [\"queries\"]\n",
+        "database_url = \"x\"\n\n[resolution.a]\ndocuments = [{ resolver = \"dsql\", paths = [\"queries\"] }]\n\n[resolution.b]\ndocuments = [{ resolver = \"dsql\", paths = [\"queries\"] }]\n",
     )
     .expect("fixture config");
     std::fs::write(
@@ -154,9 +228,43 @@ async fn documents_owned_by_two_scopes_fail_loading() {
         .await
         .expect_err("dual ownership must fail");
     assert!(
-        error.to_string().contains("owned by both scope"),
+        error.to_string().contains("is assigned to resolver"),
         "unexpected error: {error}"
     );
+}
+
+#[tokio::test]
+async fn documents_assigned_to_two_resolvers_in_one_scope_fail_loading() {
+    let dir = std::env::temp_dir().join(format!(
+        "dsql-duplicate-resolver-fixture-{}",
+        std::process::id()
+    ));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("clean stale dir");
+    }
+    let root = dir.join("dsql");
+    let queries = dir.join("queries");
+    std::fs::create_dir_all(&root).expect("fixture dir");
+    std::fs::create_dir_all(&queries).expect("queries dir");
+    std::fs::write(
+        root.join("dsql.toml"),
+        "database_url = \"x\"\n\n[resolution.frontend]\ndocuments = [\n  { resolver = \"dsql\", paths = [\"queries/source.any\"] },\n  { resolver = \"typescript\", paths = [\"queries/source.any\"] },\n]\n",
+    )
+    .expect("fixture config");
+    std::fs::write(queries.join("source.any"), "query Q { title { id } }\n")
+        .expect("fixture source");
+
+    let project = Project::load_from(&dir).await.expect("config parses");
+    let error = dsql_project::load_project_documents(&project)
+        .await
+        .expect_err("dual resolver assignment must fail");
+    let message = error.to_string();
+    assert!(
+        message.contains("resolver `dsql`") && message.contains("resolver `typescript`"),
+        "unexpected error: {message}"
+    );
+
+    std::fs::remove_dir_all(&dir).expect("cleanup");
 }
 
 #[tokio::test]
@@ -179,7 +287,10 @@ async fn init_scaffolds_a_loadable_project() {
     assert_eq!(reloaded.config.database_url, "<database url>");
     assert_eq!(
         reloaded.config.resolution["main"].documents,
-        vec!["**/*.dsql".to_string()]
+        vec![dsql_project::DocumentConfig {
+            resolver: "dsql".to_string(),
+            paths: vec!["**/*.dsql".to_string()],
+        }]
     );
 
     // A second init must not clobber the existing configuration.
@@ -311,7 +422,7 @@ async fn single_star_globs_stay_in_their_directory() {
     std::fs::create_dir_all(dir.join("queries/nested")).expect("dirs");
     std::fs::write(
         dir.join("dsql/dsql.toml"),
-        "database_url = \"x\"\n\n[resolution.flat]\ndocuments = [\"queries/*.dsql\"]\n",
+        "database_url = \"x\"\n\n[resolution.flat]\ndocuments = [{ resolver = \"dsql\", paths = [\"queries/*.dsql\"] }]\n",
     )
     .expect("config");
     let doc = "query Q {\n  title(limit 1) {\n    id\n  }\n}\n";

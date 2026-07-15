@@ -30,7 +30,7 @@ use dsql_core::service::{
 };
 use dsql_core::source::{
     BelongsToHost, ContentSpan, DsqlDocument, FilePath, HostProjection, OpenBuffer,
-    ResolutionScope, SourceOffset, SourceText, insert_source_scoped,
+    ResolutionScope, SourceKind, SourceOffset, SourceText, insert_source_scoped,
 };
 use dsql_project::{Project, ProjectError, populate_project_bowl};
 
@@ -355,18 +355,8 @@ impl LanguageServer for Backend {
         let Some(path) = uri_path(&params.text_document.uri) else {
             return;
         };
+        let standalone_dsql = params.text_document.language_id == "dsql";
         let mut ambiguity_warning: Option<String> = None;
-        // Editors send didOpen for every restored tab; only dsql documents
-        // and embedding hosts belong in the bowl. Anything else would be
-        // parsed as dsql — error-recovering through a lockfile burns
-        // seconds and floods the session with junk diagnostics.
-        if !std::path::Path::new(&path)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| matches!(ext, "dsql" | "ts" | "tsx"))
-        {
-            return;
-        }
         let text = params.text_document.text;
         let session = self.session.lock().await;
 
@@ -397,25 +387,36 @@ impl LanguageServer for Backend {
                 .map(|(_, documents)| documents.ownership_of(&path))
                 .unwrap_or(dsql_core::source::ScopeOwnership::ImplicitDefault);
             use dsql_core::source::ScopeOwnership;
-            let scope = match ownership {
-                ScopeOwnership::Unique(scope) => ResolutionScope(scope),
-                ScopeOwnership::ImplicitDefault | ScopeOwnership::Unmatched => {
-                    // Outside every configured pattern: standalone editing
-                    // in the (import-less) default scope.
-                    ResolutionScope::default_scope()
+            let (scope, kind) = match ownership {
+                ScopeOwnership::Unique(assignment) => {
+                    (ResolutionScope(assignment.scope), assignment.kind)
                 }
-                ScopeOwnership::Ambiguous(scopes) => {
+                ScopeOwnership::ImplicitDefault | ScopeOwnership::Unmatched if standalone_dsql => {
+                    (ResolutionScope::default_scope(), SourceKind::Dsql)
+                }
+                ScopeOwnership::ImplicitDefault | ScopeOwnership::Unmatched => return,
+                ScopeOwnership::Ambiguous(assignments) => {
                     // The warning sends after the mutation lock drops; a
                     // slow client must not block subsequent edits.
+                    let choices: Vec<String> = assignments
+                        .iter()
+                        .map(|assignment| {
+                            format!("{} via {}", assignment.scope, assignment.kind.resolver())
+                        })
+                        .collect();
                     ambiguity_warning = Some(format!(
-                        "{path} is matched by several resolution scopes ({}); using `{}`",
-                        scopes.join(", "),
-                        scopes[0]
+                        "{path} has several document assignments ({}); using `{}` via `{}`",
+                        choices.join(", "),
+                        assignments[0].scope,
+                        assignments[0].kind.resolver()
                     ));
-                    ResolutionScope(scopes[0].clone())
+                    (
+                        ResolutionScope(assignments[0].scope.clone()),
+                        assignments[0].kind.clone(),
+                    )
                 }
             };
-            let entity = insert_source_scoped(self.bowl(), path.clone(), &text, scope).await;
+            let entity = insert_source_scoped(self.bowl(), path.clone(), &text, scope, kind).await;
             self.bowl().entity(entity).insert((OpenBuffer,)).await;
         }
 

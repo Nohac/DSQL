@@ -331,6 +331,81 @@ async fn files_changed_reconciles_and_replays() {
     assert!(outside.contains("\"InvalidPath\""), "got {outside}");
 }
 
+/// Resolver-bearing document configuration drives cold discovery and warm
+/// reconciliation: unmatched files are ignored while a new custom-extension
+/// host joins its scope with the configured extractor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_extraction_keeps_warm_and_cold_discovery_aligned() {
+    let mut session = Session::start("source-classification").await;
+    let config = session.root.join("dsql/dsql.toml");
+    let raw = std::fs::read_to_string(&config).expect("config readable");
+    let raw = raw.replace(
+        "{ resolver = \"dsql\", paths = [\"queries/frontend/**/*.dsql\"] },",
+        "{ resolver = \"dsql\", paths = [\"queries/frontend/**/*.dsql\", \"single/*.dsql\"] },",
+    );
+    std::fs::write(&config, raw).expect("config with single-star assignment");
+    std::fs::create_dir_all(session.root.join("broad")).expect("broad dir");
+    std::fs::write(session.root.join("broad/cold.md"), "not dsql\n").expect("cold foreign");
+
+    let initialized = session
+        .request("initialize", &session.initialize_params())
+        .await;
+    assert!(initialized.contains("\"result\""), "got {initialized}");
+    let first = session.request("compile", "{}").await;
+    assert!(first.contains("\"generationId\":1"), "got {first}");
+
+    std::fs::write(session.root.join("broad/warm.md"), "not dsql either\n").expect("warm foreign");
+    let foreign = session
+        .request("filesChanged", "{\"paths\":[\"broad/warm.md\"]}")
+        .await;
+    assert!(
+        foreign.contains("\"generationId\":1") && foreign.contains("\"changed\":false"),
+        "an unmatched foreign file is a no-op, got {foreign}"
+    );
+
+    std::fs::create_dir_all(session.root.join("single/nested")).expect("single-star dirs");
+    std::fs::write(
+        session.root.join("single/direct.dsql"),
+        "query FlatWarm { kind_type { kind } }\n",
+    )
+    .expect("direct single-star match");
+    let direct = session
+        .request("filesChanged", "{\"paths\":[\"single/direct.dsql\"]}")
+        .await;
+    assert!(
+        direct.contains("\"id\":\"frontend/operation/FlatWarm\"")
+            && direct.contains("\"generationId\":2")
+            && direct.contains("\"changed\":true"),
+        "a direct child matches a single-star assignment warm, got {direct}"
+    );
+
+    std::fs::write(
+        session.root.join("single/nested/deep.dsql"),
+        "query NestedIgnored { kind_type { kind } }\n",
+    )
+    .expect("nested single-star non-match");
+    let nested = session
+        .request("filesChanged", "{\"paths\":[\"single/nested/deep.dsql\"]}")
+        .await;
+    assert!(
+        nested.contains("\"generationId\":2") && nested.contains("\"changed\":false"),
+        "a single star does not cross a separator warm, got {nested}"
+    );
+
+    std::fs::write(
+        session.root.join("src/Fresh.component"),
+        "export const fresh = dsql`query Fresh { kind_type { kind } }`;\n",
+    )
+    .expect("fresh host");
+    let host = session
+        .request("filesChanged", "{\"paths\":[\"src/Fresh.component\"]}")
+        .await;
+    assert!(
+        host.contains("\"id\":\"frontend/operation/Fresh\"") && host.contains("\"changed\":true"),
+        "a configured host joins the scope warm regardless of extension, got {host}"
+    );
+}
+
 /// EOF exits the daemon (bounded); shutdown answers first.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn eof_exits() {
@@ -793,13 +868,13 @@ async fn new_files_ambiguity_and_unreadable_reserved_roots() {
         "new files join their scope warm, got {fresh}"
     );
 
-    // Overlapping patterns exist from here on (no overlapping FILES yet,
-    // so the reload stays clean); creating a file both scopes match and
-    // notifying THAT FILE exercises warm Relevance::Ambiguous.
+    // Two resolvers in one scope overlap from here on (no overlapping FILES
+    // yet, so the reload stays clean); creating a file both assignments match
+    // exercises warm Relevance::Ambiguous.
     let raw = std::fs::read_to_string(&config).expect("config readable");
     let raw = raw.replace(
-        "[resolution.shared]",
-        "[resolution.grabby]\ndocuments = [\"queries/frontend/sub/**/*.dsql\"]\n\n[resolution.shared]",
+        "  { resolver = \"custom\", paths = [\"src/**/*.component\"] },",
+        "  { resolver = \"custom\", paths = [\"src/**/*.component\"] },\n  { resolver = \"dsql\", paths = [\"src/conflict/**/*.component\"] },",
     );
     std::fs::write(&config, raw).expect("config with overlapping patterns");
     let reloaded = session
@@ -810,20 +885,21 @@ async fn new_files_ambiguity_and_unreadable_reserved_roots() {
         "overlapping patterns without overlapping files stay clean, got {reloaded}"
     );
 
-    std::fs::create_dir_all(session.root.join("queries/frontend/sub")).expect("sub dir");
+    std::fs::create_dir_all(session.root.join("src/conflict")).expect("sub dir");
     std::fs::write(
-        session.root.join("queries/frontend/sub/both.dsql"),
+        session.root.join("src/conflict/both.component"),
         "query Both {\n  kind_type {\n    kind\n  }\n}\n",
     )
     .expect("ambiguous doc");
     let ambiguous = session
         .request(
             "filesChanged",
-            "{\"paths\":[\"queries/frontend/sub/both.dsql\"]}",
+            "{\"paths\":[\"src/conflict/both.component\"]}",
         )
         .await;
     assert!(
-        ambiguous.contains("\"ProjectLoadFailed\"") && ambiguous.contains("owned by both scope"),
+        ambiguous.contains("\"ProjectLoadFailed\"")
+            && ambiguous.contains("is assigned to resolver"),
         "warm ambiguity matches the cold loader error, got {ambiguous}"
     );
 

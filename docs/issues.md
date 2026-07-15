@@ -40,6 +40,13 @@
 
 # Deferred designs (owner input wanted)
 
+- **Per-resolver extraction registry granularity.** `ExtractionRegistry` is a
+  single fingerprinted map, so changing one resolver's provider configuration
+  re-derives regions for hosts using every resolver. Configuration edits are
+  rare and this is no worse than the previous global pattern singleton; split
+  providers into independently tracked inputs if projects accumulate many
+  extractors or live extractor reconfiguration becomes common.
+
 - **T2 — TS callsite contract: callsite ranges in metadata, not plugin
   detection.** Owner design direction (Jonas, 2026-07-13): the POC's
   Vite plugin re-detected `dsql(`…`)` callsites in app sources with its

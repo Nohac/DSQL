@@ -90,8 +90,8 @@ pub async fn install_default_singletons(bowl: &Bowl) {
     ))
     .await;
     bowl.insert((
-        Singleton::<embedding::EmbeddedPattern>::new(),
-        embedding::EmbeddedPattern::default(),
+        Singleton::<embedding::ExtractionRegistry>::new(),
+        embedding::ExtractionRegistry::default(),
     ))
     .await;
     bowl.insert((

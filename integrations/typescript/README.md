@@ -206,14 +206,17 @@ while sharing imported definitions:
 
 ```toml
 [resolution.shared]
-documents = ["queries/shared/**/*.dsql"]
+documents = [{ resolver = "dsql", paths = ["queries/shared/**/*.dsql"] }]
 
 [resolution.frontend]
-documents = ["src/**/*.tsx", "queries/frontend/**/*.dsql"]
+documents = [
+  { resolver = "dsql", paths = ["queries/frontend/**/*.dsql"] },
+  { resolver = "typescript", paths = ["src/**/*.ts", "src/**/*.tsx"] },
+]
 imports = ["shared"]
 
 [resolution.api]
-documents = ["queries/api/**/*.dsql"]
+documents = [{ resolver = "dsql", paths = ["queries/api/**/*.dsql"] }]
 imports = ["shared"]
 ```
 

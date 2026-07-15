@@ -1,12 +1,11 @@
 ---
 source: crates/dsql-project/tests/it/project.rs
-assertion_line: 174
 expression: "std::fs::read_to_string(project.root.join(\"dsql.toml\")).expect(\"config written\")"
 ---
 database_url = "<database url>"
 default_schema = "public"
 
-# Every .dsql document under the project base belongs to `main`.
+# Each entry selects physical paths and the resolver that extracts DSQL.
 # Add more scopes (and `imports`) to partition definitions.
 [resolution.main]
-documents = ["**/*.dsql"]
+documents = [{ resolver = "dsql", paths = ["**/*.dsql"] }]

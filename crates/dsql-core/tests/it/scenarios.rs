@@ -52,6 +52,7 @@ impl Scenario {
             path,
             &clean,
             dsql_core::source::ResolutionScope(scope.to_string()),
+            dsql_core::source::SourceKind::Dsql,
         )
         .await;
         offsets

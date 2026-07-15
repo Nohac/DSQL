@@ -14,7 +14,7 @@
 //! not change re-inserts with an equal fingerprint and invalidates
 //! nothing. Regions that vanish are reaped by the stale-derived cleanup.
 
-use crate::schema::dsql_schema;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use bowl::{
@@ -22,22 +22,34 @@ use bowl::{
 };
 use regex::Regex;
 
+use crate::schema::dsql_schema;
 use crate::source::{
     AnalysisResidency, BelongsToHost, CallsiteSpan, ContentSpan, DsqlDocument, EmbeddingHost,
-    OpenBuffer, ResolutionScope, SourceOffset, SourceText,
+    ExtractionResolver, OpenBuffer, ResolutionScope, SourceOffset, SourceText,
 };
 
-/// The extraction pattern, one fingerprinted singleton per bowl: a regex
-/// whose named `content` capture is the embedded document. Language
-/// registration installs the default; project loading replaces it with
-/// the configured pattern after validating it.
+/// One embedded-document extraction provider. Regex is implemented now;
+/// provider dispatch is explicit so tree-sitter can be added without changing
+/// source discovery or host assignment.
+#[derive(Hash, Debug, Clone, PartialEq, Eq)]
+pub enum ExtractionStrategy {
+    /// A regex whose named `content` capture is the embedded document.
+    Regex { pattern: String },
+}
+
+/// Named extraction providers installed as one fingerprinted bowl input.
 #[derive(Component, Hash, Debug, Clone, PartialEq, Eq)]
 #[component(hash)]
-pub struct EmbeddedPattern(pub String);
+pub struct ExtractionRegistry(pub BTreeMap<String, ExtractionStrategy>);
 
-impl Default for EmbeddedPattern {
+impl Default for ExtractionRegistry {
     fn default() -> Self {
-        Self(default_typescript_pattern().to_string())
+        Self(BTreeMap::from([(
+            "typescript".to_string(),
+            ExtractionStrategy::Regex {
+                pattern: default_typescript_pattern().to_string(),
+            },
+        )]))
     }
 }
 
@@ -59,7 +71,7 @@ pub fn compile_embedding_pattern(pattern: &str) -> Result<Regex, String> {
 }
 
 /// Installs the extraction system; [`crate::language_bowl`] and project
-/// loading install the pattern singleton.
+/// loading install the provider registry singleton.
 pub(crate) fn register_embedding(reg: &mut Registrar<'_>) {
     reg.system(extract_embedded_documents);
     reg.system(check_embedded_expressions.run_during(bowl::Phase::Complete));
@@ -148,6 +160,7 @@ type EvictableHost<'a> = Query<
         Entity,
         MutRef<'a, SourceText>,
         &'a ResolutionScope,
+        &'a ExtractionResolver,
         Option<&'a OpenBuffer>,
     ),
     With<EmbeddingHost>,
@@ -158,16 +171,22 @@ type EvictableHost<'a> = Query<
 /// the host's resolution scope.
 async fn extract_embedded_documents(
     hosts: EvictableHost<'_>,
-    pattern: Query<(Entity, &EmbeddedPattern)>,
+    registry: Query<(Entity, &ExtractionRegistry)>,
     residency: View<'_, (Entity, &AnalysisResidency)>,
     mut commands: Commands<(dsql_schema::Region,)>,
 ) {
-    let (host, mut text, scope, open_buffer) = hosts.item();
-    let (pattern_entity, pattern) = pattern.item();
+    let (host, mut text, scope, resolver, open_buffer) = hosts.item();
+    let (registry_entity, registry) = registry.item();
 
-    // Loaders validate configured patterns up front; the default is
-    // statically valid. A bad pattern reaching this point derives nothing.
-    let Some(regex) = cached_embedding_pattern(&pattern.0) else {
+    let Some(strategy) = registry.0.get(&resolver.0) else {
+        return;
+    };
+    let regex = match strategy {
+        ExtractionStrategy::Regex { pattern } => cached_embedding_pattern(pattern),
+    };
+    // Loaders validate configured providers up front; a bad pattern reaching
+    // this point derives nothing.
+    let Some(regex) = regex else {
         return;
     };
 
@@ -193,7 +212,7 @@ async fn extract_embedded_documents(
             },
         );
         commands.insert((
-            DerivedFrom::many([host, pattern_entity]),
+            DerivedFrom::many([host, registry_entity]),
             BelongsToHost(host),
             DsqlDocument,
             SourceOffset(content.start()),
@@ -214,21 +233,18 @@ async fn extract_embedded_documents(
 }
 
 /// Compiled-pattern cache: extraction reruns per keystroke on open host
-/// buffers, and NFA construction is far too expensive for that. One slot
-/// suffices — a bowl has one pattern, and pattern changes are config
-/// events.
-static COMPILED_PATTERN: Mutex<Option<(String, Regex)>> = Mutex::new(None);
+/// buffers, and NFA construction is far too expensive for that. Multiple
+/// named regex providers may coexist in one bowl.
+static COMPILED_PATTERNS: Mutex<BTreeMap<String, Regex>> = Mutex::new(BTreeMap::new());
 
 fn cached_embedding_pattern(pattern: &str) -> Option<Regex> {
-    let mut cached = COMPILED_PATTERN
+    let mut cached = COMPILED_PATTERNS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((key, regex)) = cached.as_ref()
-        && key == pattern
-    {
+    if let Some(regex) = cached.get(pattern) {
         return Some(regex.clone());
     }
     let regex = compile_embedding_pattern(pattern).ok()?;
-    *cached = Some((pattern.to_string(), regex.clone()));
+    cached.insert(pattern.to_string(), regex.clone());
     Some(regex)
 }

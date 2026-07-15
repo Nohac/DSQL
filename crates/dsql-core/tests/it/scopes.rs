@@ -9,7 +9,10 @@ use dsql_core::catalog::insert_catalog;
 use dsql_core::entities::fragment_spread::ResolvedSpread;
 use dsql_core::facts::DiagnosticsDemand;
 use dsql_core::language_bowl;
-use dsql_core::source::{ResolutionScope, ScopeImports, insert_source_scoped};
+use dsql_core::source::{
+    ResolutionScope, ScopeDocument, ScopeDocuments, ScopeImports, ScopeOwnership, SourceAssignment,
+    SourceKind, insert_source_scoped,
+};
 use futures::executor::block_on;
 
 use crate::{imdb_catalog, render_diagnostic_facts};
@@ -37,7 +40,14 @@ async fn scoped_bowl(imports: &[(&str, &[&str])]) -> Bowl {
 }
 
 async fn insert(bowl: &Bowl, path: &str, scope: &str, text: &str) {
-    insert_source_scoped(bowl, path, text, ResolutionScope(scope.to_string())).await;
+    insert_source_scoped(
+        bowl,
+        path,
+        text,
+        ResolutionScope(scope.to_string()),
+        dsql_core::source::SourceKind::Dsql,
+    )
+    .await;
 }
 
 async fn resolutions(bowl: &Bowl) -> usize {
@@ -223,7 +233,11 @@ fn import_ambiguities_follow_edits() {
 /// paths must not silently collapse into the default scope.
 #[test]
 fn scope_ownership_distinguishes_outcomes() {
-    use dsql_core::source::{ScopeDocuments, ScopeOwnership};
+    assert_eq!(SourceKind::from_resolver("dsql"), SourceKind::Dsql);
+    assert_eq!(
+        SourceKind::from_resolver("custom"),
+        SourceKind::Embedded("custom".to_string())
+    );
 
     let empty = ScopeDocuments::default();
     assert_eq!(
@@ -234,19 +248,28 @@ fn scope_ownership_distinguishes_outcomes() {
     let configured = ScopeDocuments(vec![
         (
             "shared".to_string(),
-            vec!["/p/queries/shared/**/*.dsql".to_string()],
+            vec![ScopeDocument {
+                kind: SourceKind::Dsql,
+                paths: vec!["/p/queries/shared/**/*.dsql".to_string()],
+            }],
         ),
         (
             "frontend".to_string(),
-            vec![
-                "/p/queries/frontend/**/*.dsql".to_string(),
-                "/p/queries/shared/both.dsql".to_string(),
-            ],
+            vec![ScopeDocument {
+                kind: SourceKind::Dsql,
+                paths: vec![
+                    "/p/queries/frontend/**/*.dsql".to_string(),
+                    "/p/queries/shared/both.dsql".to_string(),
+                ],
+            }],
         ),
     ]);
     assert_eq!(
         configured.ownership_of("/p/queries/frontend/new.dsql"),
-        ScopeOwnership::Unique("frontend".to_string())
+        ScopeOwnership::Unique(SourceAssignment {
+            scope: "frontend".to_string(),
+            kind: SourceKind::Dsql,
+        })
     );
     assert_eq!(
         configured.ownership_of("/p/other/loose.dsql"),
@@ -254,6 +277,112 @@ fn scope_ownership_distinguishes_outcomes() {
     );
     assert_eq!(
         configured.ownership_of("/p/queries/shared/both.dsql"),
-        ScopeOwnership::Ambiguous(vec!["frontend".to_string(), "shared".to_string()])
+        ScopeOwnership::Ambiguous(vec![
+            SourceAssignment {
+                scope: "frontend".to_string(),
+                kind: SourceKind::Dsql,
+            },
+            SourceAssignment {
+                scope: "shared".to_string(),
+                kind: SourceKind::Dsql,
+            },
+        ])
+    );
+
+    let broad = ScopeDocuments(vec![(
+        "broad".to_string(),
+        vec![ScopeDocument {
+            kind: SourceKind::Embedded("custom".to_string()),
+            paths: vec![
+                "/p/sources".to_string(),
+                "/p/glob/**/*".to_string(),
+                "/p/exact/readme.md".to_string(),
+            ],
+        }],
+    )]);
+    assert_eq!(
+        broad.ownership_of("/p/sources/readme.md"),
+        ScopeOwnership::Unique(SourceAssignment {
+            scope: "broad".to_string(),
+            kind: SourceKind::Embedded("custom".to_string()),
+        })
+    );
+    assert_eq!(
+        broad.ownership_of("/p/glob/nested/component.vue"),
+        ScopeOwnership::Unique(SourceAssignment {
+            scope: "broad".to_string(),
+            kind: SourceKind::Embedded("custom".to_string()),
+        })
+    );
+    assert_eq!(
+        ScopeDocuments(vec![(
+            "default".to_string(),
+            vec![ScopeDocument {
+                kind: SourceKind::Dsql,
+                paths: vec!["/p/dsql/**/*.dsql".to_string()],
+            }],
+        )])
+        .ownership_of("/p/dsql/root.dsql"),
+        ScopeOwnership::Unique(SourceAssignment {
+            scope: "default".to_string(),
+            kind: SourceKind::Dsql,
+        })
+    );
+
+    let flat = ScopeDocuments(vec![(
+        "flat".to_string(),
+        vec![ScopeDocument {
+            kind: SourceKind::Dsql,
+            paths: vec!["/p/queries/*.dsql".to_string()],
+        }],
+    )]);
+    assert_eq!(
+        flat.ownership_of("/p/queries/direct.dsql"),
+        ScopeOwnership::Unique(SourceAssignment {
+            scope: "flat".to_string(),
+            kind: SourceKind::Dsql,
+        })
+    );
+    assert_eq!(
+        flat.ownership_of("/p/queries/nested/deep.dsql"),
+        ScopeOwnership::Unmatched
+    );
+    assert_eq!(
+        broad.ownership_of("/p/exact/readme.md"),
+        ScopeOwnership::Unique(SourceAssignment {
+            scope: "broad".to_string(),
+            kind: SourceKind::Embedded("custom".to_string()),
+        })
+    );
+    assert_eq!(
+        broad.ownership_of("/p/outside/component.vue"),
+        ScopeOwnership::Unmatched
+    );
+
+    let conflicting_resolvers = ScopeDocuments(vec![(
+        "frontend".to_string(),
+        vec![
+            ScopeDocument {
+                kind: SourceKind::Dsql,
+                paths: vec!["/p/mixed".to_string()],
+            },
+            ScopeDocument {
+                kind: SourceKind::Embedded("custom".to_string()),
+                paths: vec!["/p/mixed".to_string()],
+            },
+        ],
+    )]);
+    assert_eq!(
+        conflicting_resolvers.ownership_of("/p/mixed/source.any"),
+        ScopeOwnership::Ambiguous(vec![
+            SourceAssignment {
+                scope: "frontend".to_string(),
+                kind: SourceKind::Dsql,
+            },
+            SourceAssignment {
+                scope: "frontend".to_string(),
+                kind: SourceKind::Embedded("custom".to_string()),
+            },
+        ])
     );
 }

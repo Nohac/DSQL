@@ -1,7 +1,6 @@
-//! Discovery of the project's document files: plain `.dsql` files and
-//! TypeScript host sources. Embedded regions are *not* extracted here —
-//! that is a dsql-core system over host text — so the disk loader and the
-//! LSP feed the bowl through the same mechanism.
+//! Discovery of physical project sources selected by resolver-bearing
+//! `dsql.toml` document groups. Embedded regions are not extracted here — the
+//! configured resolver travels with the host into the bowl.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -9,31 +8,18 @@ use std::pin::Pin;
 
 use tokio::fs::{read_dir, read_to_string};
 
-use dsql_core::source::ResolutionScope;
+use dsql_core::source::{ResolutionScope, ScopeDocument, SourceKind};
 
-use super::config::{Project, ProjectError, Result};
+use super::config::{DocumentConfig, Project, ProjectError, Result};
 
-/// File extensions that carry dsql documents: `.dsql` wholesale, the rest
-/// as host sources with embedded regions.
-const DOCUMENT_EXTENSIONS: &[&str] = &["dsql", "ts", "tsx"];
-
-/// One discovered document file, with its text already read and the
-/// resolution scope that owns it. Whether a file is a dsql document or an
-/// embedding host is the source model's call, made at insert time.
+/// One discovered physical source, with its text, owning scope, and configured
+/// resolver classification already attached.
 #[derive(Clone, Debug)]
 pub struct ProjectDocument {
     pub path: PathBuf,
     pub text: String,
     pub scope: String,
-}
-
-impl ProjectDocument {
-    /// Whether this file is an embedding host (TypeScript) rather than a
-    /// plain dsql document — the same classification the source model
-    /// applies at insert time.
-    pub fn is_embedding_host(&self) -> bool {
-        dsql_core::source::is_host_path(&self.path.display().to_string())
-    }
+    pub kind: SourceKind,
 }
 
 /// Reads every document with its owning scope. Configured paths — plain
@@ -41,8 +27,8 @@ impl ProjectDocument {
 /// from the project *base* (the parent of `dsql/`), matching how real
 /// projects lay documents out beside the `dsql/` directory. Without any
 /// configuration, every `.dsql` file under `dsql/` itself belongs to the
-/// implicit default scope. A file matched by two scopes is a deterministic
-/// ownership error.
+/// implicit default scope. More than one `(scope, resolver)` assignment for a
+/// file is a deterministic ownership error.
 pub async fn load_project_documents(project: &Project) -> Result<Vec<ProjectDocument>> {
     load_project_documents_excluding(project, &[]).await
 }
@@ -75,62 +61,133 @@ pub async fn load_project_documents_excluding(
         )
         .collect();
     let is_reserved = |path: &Path| reserved.iter().any(|root| path.starts_with(root));
-    let mut owned: Vec<(PathBuf, String)> = Vec::new();
+    let mut owned: Vec<(PathBuf, String, SourceKind)> = Vec::new();
 
     if project.config.resolution.is_empty() {
-        let mut files = Vec::new();
         if project.config.documents.is_empty() {
-            collect_dir(&project.root, &["dsql"], &reserved, &mut files).await?;
-        } else {
-            for configured in &project.config.documents {
-                collect_configured_path(&base.join(configured), &reserved, &mut files).await?;
-            }
-        }
-        files.sort();
-        files.dedup();
-        files.retain(|path| !is_reserved(path));
-        owned.extend(
-            files
-                .into_iter()
-                .map(|path| (path, ResolutionScope::DEFAULT.to_string())),
-        );
-    } else {
-        for (scope, scope_config) in &project.config.resolution {
             let mut files = Vec::new();
-            for configured in &scope_config.documents {
-                collect_configured_path(&base.join(configured), &reserved, &mut files).await?;
-            }
+            collect_dir(&project.root, true, &reserved, &mut files).await?;
             files.sort();
             files.dedup();
-            // Reserved roots drop BEFORE ownership conflicts: two scopes
-            // overlapping inside a generated directory is not an error,
-            // it is not input at all.
-            files.retain(|path| !is_reserved(path));
             for path in files {
-                if let Some((_, first)) = owned.iter().find(|(owned_path, _)| *owned_path == path) {
-                    return Err(ProjectError::DuplicateScopeDocument {
-                        path,
-                        first: first.clone(),
-                        second: scope.clone(),
-                    });
-                }
-                owned.push((path, scope.clone()));
+                owned.push((path, ResolutionScope::DEFAULT.to_string(), SourceKind::Dsql));
+            }
+        } else {
+            for document in &project.config.documents {
+                collect_document_group(
+                    &base,
+                    ResolutionScope::DEFAULT,
+                    document,
+                    &reserved,
+                    &mut owned,
+                )
+                .await?;
             }
         }
-        owned.sort();
+    } else {
+        for (scope, scope_config) in &project.config.resolution {
+            for document in &scope_config.documents {
+                collect_document_group(&base, scope, document, &reserved, &mut owned).await?;
+            }
+        }
     }
+    owned.retain(|(path, _, _)| !is_reserved(path));
+    owned.sort();
 
     let mut documents = Vec::new();
-    for (path, scope) in owned {
+    for (path, scope, kind) in owned {
         let text = read_to_string(&path)
             .await
             .map_err(|source| ProjectError::Read {
                 path: path.clone(),
                 source,
             })?;
-        documents.push(ProjectDocument { path, text, scope });
+        documents.push(ProjectDocument {
+            path,
+            text,
+            scope,
+            kind,
+        });
     }
     Ok(documents)
+}
+
+async fn collect_document_group(
+    base: &Path,
+    scope: &str,
+    document: &DocumentConfig,
+    reserved: &[PathBuf],
+    owned: &mut Vec<(PathBuf, String, SourceKind)>,
+) -> Result<()> {
+    let kind = SourceKind::from_resolver(document.resolver.clone());
+    let mut files = Vec::new();
+    for configured in &document.paths {
+        collect_configured_path(&base.join(configured), reserved, &mut files).await?;
+    }
+    files.sort();
+    files.dedup();
+    files.retain(|path| !reserved.iter().any(|root| path.starts_with(root)));
+    for path in files {
+        if let Some((_, first_scope, first_kind)) =
+            owned.iter().find(|(owned_path, _, _)| *owned_path == path)
+        {
+            return Err(ProjectError::DuplicateDocumentAssignment {
+                path,
+                first_scope: first_scope.clone(),
+                first_resolver: first_kind.resolver().to_string(),
+                second_scope: scope.to_string(),
+                second_resolver: kind.resolver().to_string(),
+            });
+        }
+        owned.push((path, scope.to_string(), kind.clone()));
+    }
+    Ok(())
+}
+
+/// Resolver-bearing absolute path assignments installed in the bowl for live
+/// LSP and daemon ownership decisions.
+pub(crate) fn scope_document_assignments(project: &Project) -> Vec<(String, Vec<ScopeDocument>)> {
+    let base = project
+        .root
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| project.root.clone());
+    if project.config.resolution.is_empty() {
+        let documents = if project.config.documents.is_empty() {
+            vec![ScopeDocument {
+                kind: SourceKind::Dsql,
+                paths: vec![project.root.join("**/*.dsql").display().to_string()],
+            }]
+        } else {
+            absolute_scope_documents(&base, &project.config.documents)
+        };
+        return vec![(ResolutionScope::DEFAULT.to_string(), documents)];
+    }
+    project
+        .config
+        .resolution
+        .iter()
+        .map(|(scope, config)| {
+            (
+                scope.clone(),
+                absolute_scope_documents(&base, &config.documents),
+            )
+        })
+        .collect()
+}
+
+fn absolute_scope_documents(base: &Path, documents: &[DocumentConfig]) -> Vec<ScopeDocument> {
+    documents
+        .iter()
+        .map(|document| ScopeDocument {
+            kind: SourceKind::from_resolver(document.resolver.clone()),
+            paths: document
+                .paths
+                .iter()
+                .map(|path| base.join(path).display().to_string())
+                .collect(),
+        })
+        .collect()
 }
 
 /// One configured document path: a glob pattern, a directory to walk, or
@@ -178,9 +235,7 @@ async fn collect_configured_path(
                         require_literal_separator: true,
                         ..glob::MatchOptions::new()
                     };
-                    if matcher.matches_path_with(&current, options)
-                        && has_document_extension(&current, DOCUMENT_EXTENSIONS)
-                    {
+                    if matcher.matches_path_with(&current, options) {
                         collected.push(current);
                     }
                     continue;
@@ -210,24 +265,16 @@ async fn collect_configured_path(
     }
     let metadata = tokio::fs::metadata(path).await.ok();
     if metadata.as_ref().is_some_and(std::fs::Metadata::is_file) {
-        if has_document_extension(path, DOCUMENT_EXTENSIONS) {
-            files.push(path.to_path_buf());
-        }
+        files.push(path.to_path_buf());
         return Ok(());
     }
-    collect_dir(path, DOCUMENT_EXTENSIONS, reserved, files).await
-}
-
-fn has_document_extension(path: &Path, extensions: &[&str]) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| extensions.contains(&ext))
+    collect_dir(path, false, reserved, files).await
 }
 
 /// Boxed for async recursion.
 fn collect_dir<'a>(
     path: &'a Path,
-    extensions: &'a [&'a str],
+    dsql_only: bool,
     reserved: &'a [PathBuf],
     files: &'a mut Vec<PathBuf>,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
@@ -264,8 +311,13 @@ fn collect_dir<'a>(
                     source,
                 })?;
             if file_type.is_dir() {
-                collect_dir(&entry_path, extensions, reserved, files).await?;
-            } else if has_document_extension(&entry_path, extensions) {
+                collect_dir(&entry_path, dsql_only, reserved, files).await?;
+            } else if !dsql_only
+                || entry_path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    == Some("dsql")
+            {
                 files.push(entry_path);
             }
         }

@@ -11,7 +11,7 @@ use dsql_core::facts::{DiagnosticsDemand, arm_generate_demands};
 use dsql_core::format::{FormatConfidence, format_document};
 use dsql_core::grammar::parse;
 use dsql_core::grammar::parser::{Node, NodeRef, Rule};
-use dsql_core::source::FilePath;
+use dsql_core::source::{FilePath, SourceKind};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use dsql_project::{Project, ProjectError, load_project_documents, open_analysis_bowl};
 
@@ -225,7 +225,7 @@ pub async fn fmt_project(project: &Project, check_only: bool, only: Option<PathB
                         .is_ok_and(|candidate| candidate == canonical)
                 })
                 .ok_or_else(|| CliError::NotAProjectDocument(file.clone()))?;
-            if document.is_embedding_host() {
+            if matches!(document.kind, SourceKind::Embedded(_)) {
                 return Err(CliError::FormatsHost(file));
             }
             Some(canonical)
@@ -242,7 +242,7 @@ pub async fn fmt_project(project: &Project, check_only: bool, only: Option<PathB
         }
         // Host sources carry embedded regions; whole-file formatting is a
         // dsql-document affair until region-granular edits are supported.
-        if document.is_embedding_host() {
+        if matches!(document.kind, SourceKind::Embedded(_)) {
             continue;
         }
         let (cst, diagnostics) = parse(&document.text);

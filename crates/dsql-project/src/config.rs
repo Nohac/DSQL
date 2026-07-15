@@ -3,12 +3,11 @@
 //! Deliberately lean: lint configuration returns with the phase that
 //! consumes it.
 
+use std::collections::BTreeMap;
 use std::env::current_dir;
 use std::path::{Path, PathBuf};
 
 use tokio::fs::read_to_string;
-
-use std::collections::BTreeMap;
 
 use facet::Facet;
 
@@ -34,14 +33,22 @@ pub enum ProjectError {
     },
     #[error("failed to build catalog: {0}")]
     CatalogBuild(CatalogBuildError),
-    #[error("document {path} is owned by both scope `{first}` and scope `{second}`")]
-    DuplicateScopeDocument {
+    #[error(
+        "document {path} is assigned to resolver `{first_resolver}` in scope `{first_scope}` and resolver `{second_resolver}` in scope `{second_scope}`"
+    )]
+    DuplicateDocumentAssignment {
         path: PathBuf,
-        first: String,
-        second: String,
+        first_scope: String,
+        first_resolver: String,
+        second_scope: String,
+        second_resolver: String,
     },
-    #[error("invalid embedding pattern for `{language}`: {message}")]
-    InvalidEmbeddingPattern { language: String, message: String },
+    #[error("invalid embedding pattern for resolver `{resolver}`: {message}")]
+    InvalidEmbeddingPattern { resolver: String, message: String },
+    #[error("embedding resolver `{resolver}` with strategy `regex` requires `pattern`")]
+    MissingEmbeddingPattern { resolver: String },
+    #[error("document resolver `{resolver}` requires an [embedding.{resolver}] config")]
+    MissingEmbeddingConfig { resolver: String },
     #[error("scope `{scope}` imports unknown scope `{import}`")]
     UnknownScopeImport { scope: String, import: String },
     #[error("a dsql project already exists at {0}")]
@@ -58,12 +65,11 @@ pub struct Config {
     pub database_url: String,
     #[facet(default = default_schema())]
     pub default_schema: String,
-    /// Paths (relative to the project root) holding `.dsql` documents.
-    /// Empty means the project root itself. Only consulted when no
-    /// resolution scopes are configured — every document then belongs to
-    /// the implicit `default` scope.
+    /// Resolver-bearing document groups for the implicit default scope.
+    /// Empty with no named scopes falls back to `.dsql` files under the
+    /// project root.
     #[facet(default)]
-    pub documents: Vec<String>,
+    pub documents: Vec<DocumentConfig>,
     /// Named resolution scopes (docs/spec/resolution-scopes.md). Each
     /// document belongs to exactly one scope; imports make another scope's
     /// definitions visible.
@@ -72,9 +78,9 @@ pub struct Config {
     /// Artifact generation configuration.
     #[facet(default)]
     pub generate: GenerateConfig,
-    /// Embedded-document extraction, per host language.
+    /// Embedded-document extraction, keyed by resolver name.
     #[facet(default)]
-    pub embedding: EmbeddingConfig,
+    pub embedding: BTreeMap<String, EmbeddingConfig>,
     /// Lint severities.
     #[facet(default)]
     pub lint: LintSectionConfig,
@@ -99,20 +105,39 @@ pub enum LintSeverity {
     Error,
 }
 
-/// The `[embedding.*]` sections.
-#[derive(Clone, Debug, Default, Facet)]
+/// One `[embedding.<resolver>]` extraction provider.
+#[derive(Clone, Debug, Facet)]
 pub struct EmbeddingConfig {
-    #[facet(default)]
-    pub typescript: TypescriptEmbeddingConfig,
-}
-
-/// `[embedding.typescript]`: how dsql documents are found inside `.ts` and
-/// `.tsx` sources. The pattern is a regex with a named `content` capture;
-/// unset means the default `dsql`-tagged-template pattern.
-#[derive(Clone, Debug, Default, Facet)]
-pub struct TypescriptEmbeddingConfig {
+    #[facet(default = default_embedding_strategy())]
+    pub strategy: EmbeddingStrategy,
+    /// Regex strategy pattern with a named `content` capture.
     #[facet(default)]
     pub pattern: Option<String>,
+    /// Reserved for a future tree-sitter provider.
+    #[facet(default)]
+    pub language: Option<String>,
+    /// Reserved for a future tree-sitter provider.
+    #[facet(default)]
+    pub query: Option<String>,
+}
+
+/// Extraction provider implementation selected by an embedding resolver.
+#[derive(Clone, Copy, Debug, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(C)]
+pub enum EmbeddingStrategy {
+    Regex,
+}
+
+fn default_embedding_strategy() -> EmbeddingStrategy {
+    EmbeddingStrategy::Regex
+}
+
+/// One set of physical paths interpreted by a named document resolver.
+#[derive(Clone, Debug, Facet, PartialEq, Eq)]
+pub struct DocumentConfig {
+    pub resolver: String,
+    pub paths: Vec<String>,
 }
 
 /// The `[generate.*]` sections.
@@ -141,10 +166,9 @@ pub struct TypescriptGenerateConfig {
 /// One `[resolution.<name>]` section.
 #[derive(Clone, Debug, Facet)]
 pub struct ScopeConfig {
-    /// Paths (relative to the project root) whose `.dsql` documents this
-    /// scope owns.
+    /// Resolver-bearing document groups owned by this scope.
     #[facet(default)]
-    pub documents: Vec<String>,
+    pub documents: Vec<DocumentConfig>,
     /// Scopes whose definitions this scope imports (not transitive).
     #[facet(default)]
     pub imports: Vec<String>,
@@ -267,7 +291,8 @@ pub fn validate_reserved_root(config: &Config, output: &str) -> Result<String> {
         .resolution
         .values()
         .flat_map(|scope| scope.documents.iter())
-        .chain(config.documents.iter());
+        .chain(config.documents.iter())
+        .flat_map(|document| document.paths.iter());
     for pattern in document_patterns {
         let prefix: String = pattern
             .split('/')
@@ -313,9 +338,10 @@ pub async fn init_project(base_path: &Path, database_url: Option<String>) -> Res
     })?;
     let raw = format!(
         "{header}\n\
-         # Every .dsql document under the project base belongs to `main`.\n\
+         # Each entry selects physical paths and the resolver that extracts DSQL.\n\
          # Add more scopes (and `imports`) to partition definitions.\n\
-         [resolution.main]\ndocuments = [\"**/*.dsql\"]\n"
+         [resolution.main]\n\
+         documents = [{{ resolver = \"dsql\", paths = [\"**/*.dsql\"] }}]\n"
     );
     let config: Config = facet_toml::from_str(&raw).map_err(|error| ProjectError::Parse {
         path: config_path.clone(),

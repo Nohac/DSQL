@@ -8,7 +8,9 @@ use bowl::{Bowl, Entity, Mut, Query, Singleton};
 use dsql_core::catalog::insert_catalog;
 use dsql_core::facts::{Diagnostic, DiagnosticsDemand};
 use dsql_core::language_bowl;
-use dsql_core::source::{OpenBuffer, SourceText, arm_analysis_residency, insert_source};
+use dsql_core::source::{
+    OpenBuffer, SourceText, arm_analysis_residency, insert_embedding_source, insert_source,
+};
 use futures::executor::block_on;
 
 use crate::imdb_catalog;
@@ -60,7 +62,7 @@ fn analysis_mode_evicts_after_parse_without_rederiving() {
             "query P {\n  title(limit 1) {\n    bogus\n  }\n}\n",
         )
         .await;
-        insert_source(&bowl, "host.ts", HOST).await;
+        insert_embedding_source(&bowl, "host.component", HOST, "typescript").await;
 
         let states = residency(&bowl).await;
         assert_eq!(

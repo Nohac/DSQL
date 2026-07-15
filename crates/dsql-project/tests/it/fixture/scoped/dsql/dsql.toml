@@ -1,11 +1,19 @@
 database_url = "<database url>"
 default_schema = "public"
 
+[embedding.custom]
+strategy = "regex"
+pattern = 'dsql(?:\s*\(\s*)?`(?P<content>[\s\S]*?)`(?:\s*\))?'
+
 [resolution.shared]
-documents = ["queries/shared/**/*.dsql"]
+documents = [{ resolver = "dsql", paths = ["queries/shared/**/*.dsql"] }]
 
 [resolution.frontend]
-documents = ["queries/frontend/**/*.dsql", "src/**/*.ts", "src/**/*.tsx"]
+documents = [
+  { resolver = "dsql", paths = ["queries/frontend/**/*.dsql"] },
+  { resolver = "typescript", paths = ["src/**/*.ts", "src/**/*.tsx"] },
+  { resolver = "custom", paths = ["src/**/*.component"] },
+]
 imports = ["shared"]
 
 [lint]

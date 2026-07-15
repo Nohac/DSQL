@@ -6,7 +6,7 @@ use dsql_cli::render::{collect_diagnostics, render_themed};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::facts::DiagnosticsDemand;
 use dsql_core::language_bowl;
-use dsql_core::source::{arm_analysis_residency, insert_source};
+use dsql_core::source::{arm_analysis_residency, insert_embedding_source};
 use futures::executor::block_on;
 use miette::GraphicalTheme;
 
@@ -19,7 +19,7 @@ fn embedded_findings_render_against_the_host_file() {
             .await;
 
         let host = "import { dsql } from \"./dsql\";\n\nexport const q = dsql`\nquery Q {\n  users {\n    id\n    nonexistent\n  }\n}\n`;\n";
-        insert_source(&bowl, "src/users.ts", host).await;
+        insert_embedding_source(&bowl, "src/users.ts", host, "typescript").await;
 
         let diagnostics = collect_diagnostics(&bowl).await;
         let rendered: Vec<String> = diagnostics
@@ -48,7 +48,13 @@ fn evicted_host_excerpts_recover_from_disk() {
         insert_catalog(&bowl, Catalog::hardcoded()).await;
         bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
-        insert_source(&bowl, host_path.to_str().expect("utf8 path"), BROKEN_HOST).await;
+        insert_embedding_source(
+            &bowl,
+            host_path.to_str().expect("utf8 path"),
+            BROKEN_HOST,
+            "typescript",
+        )
+        .await;
 
         let diagnostics = collect_diagnostics(&bowl).await;
         assert_eq!(diagnostics.len(), 1);
@@ -81,7 +87,13 @@ fn changed_on_disk_hosts_render_without_stale_excerpts() {
         insert_catalog(&bowl, Catalog::hardcoded()).await;
         bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
-        insert_source(&bowl, host_path.to_str().expect("utf8 path"), BROKEN_HOST).await;
+        insert_embedding_source(
+            &bowl,
+            host_path.to_str().expect("utf8 path"),
+            BROKEN_HOST,
+            "typescript",
+        )
+        .await;
         // Settle (and evict) before the disk content diverges.
         let diagnostics = collect_diagnostics(&bowl).await;
         assert_eq!(diagnostics.len(), 1);

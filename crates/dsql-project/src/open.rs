@@ -5,14 +5,14 @@ use std::collections::BTreeMap;
 use bowl::{Bowl, Singleton};
 
 use dsql_core::catalog::insert_catalog;
-use dsql_core::embedding::EmbeddedPattern;
+use dsql_core::embedding::ExtractionRegistry;
 use dsql_core::facts::Severity;
 use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
 use dsql_core::source::{ResolutionScope, ScopeDocuments, ScopeImports, insert_source_scoped};
 
 use super::config::{LintSeverity, Project, Result};
-use super::embedding::typescript_pattern;
+use super::embedding::extraction_registry;
 
 /// Registers the language and populates a fresh bowl with the project's
 /// contents. Demand markers are the caller's choice, armed through the
@@ -52,7 +52,7 @@ pub async fn populate_project_bowl_excluding(
     let catalog = project.load_catalog().await?;
     let documents =
         crate::documents::load_project_documents_excluding(project, extra_reserved).await?;
-    let pattern = typescript_pattern(project)?;
+    let extraction_registry = extraction_registry(project)?;
 
     insert_catalog(bowl, catalog).await;
 
@@ -64,39 +64,7 @@ pub async fn populate_project_bowl_excluding(
         .collect();
     bowl.insert((Singleton::<ScopeImports>::new(), ScopeImports(imports)))
         .await;
-    let base = project
-        .root
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| project.root.clone());
-    let mut scope_documents: Vec<(String, Vec<String>)> = project
-        .config
-        .resolution
-        .iter()
-        .map(|(scope, config)| {
-            (
-                scope.clone(),
-                config
-                    .documents
-                    .iter()
-                    .map(|entry| base.join(entry).display().to_string())
-                    .collect(),
-            )
-        })
-        .collect();
-    // Top-level `documents` (no scopes configured) own the default scope
-    // — without this, ownership_of cannot recognize configured hosts.
-    if scope_documents.is_empty() && !project.config.documents.is_empty() {
-        scope_documents.push((
-            dsql_core::source::ResolutionScope::DEFAULT.to_string(),
-            project
-                .config
-                .documents
-                .iter()
-                .map(|entry| base.join(entry).display().to_string())
-                .collect(),
-        ));
-    }
+    let scope_documents = crate::documents::scope_document_assignments(project);
     bowl.insert((
         Singleton::<ScopeDocuments>::new(),
         ScopeDocuments(scope_documents),
@@ -119,11 +87,8 @@ pub async fn populate_project_bowl_excluding(
         },
     };
     bowl.insert((Singleton::<LintConfig>::new(), lint)).await;
-    bowl.insert((
-        Singleton::<EmbeddedPattern>::new(),
-        EmbeddedPattern(pattern),
-    ))
-    .await;
+    bowl.insert((Singleton::<ExtractionRegistry>::new(), extraction_registry))
+        .await;
 
     for document in documents {
         insert_source_scoped(
@@ -131,6 +96,7 @@ pub async fn populate_project_bowl_excluding(
             document.path.display().to_string(),
             &document.text,
             ResolutionScope(document.scope),
+            document.kind,
         )
         .await;
     }

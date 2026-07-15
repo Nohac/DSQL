@@ -193,7 +193,9 @@ async fn colliding_operation_names_refuse_before_writing() {
     // `shared`, colliding only in the flat artifact namespace.
     let config = dir.join("dsql/dsql.toml");
     let mut raw = std::fs::read_to_string(&config).expect("config readable");
-    raw.push_str("\n[resolution.api]\ndocuments = [\"queries/api/**/*.dsql\"]\n");
+    raw.push_str(
+        "\n[resolution.api]\ndocuments = [{ resolver = \"dsql\", paths = [\"queries/api/**/*.dsql\"] }]\n",
+    );
     std::fs::write(&config, raw).expect("config with api scope");
     std::fs::create_dir_all(dir.join("queries/api")).expect("api dir");
     let query = "query Collide {\n  title(limit 1) {\n    id\n  }\n}\n";

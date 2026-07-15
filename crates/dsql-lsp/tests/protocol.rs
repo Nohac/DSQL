@@ -246,6 +246,33 @@ async fn hosts_hover_and_foreign_files_are_ignored() {
         )
         .await;
 
+    // Explicit editor language configuration preserves standalone DSQL
+    // editing outside every project document pattern, without a suffix rule.
+    let scratch = session.uri("scratch.loose");
+    let scratch_text = "query Scratch { title(limit 1){ id } }";
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": scratch, "languageId": "dsql", "version": 1, "text": scratch_text}}),
+        )
+        .await;
+    let id = session
+        .request(
+            "textDocument/formatting",
+            json!({
+                "textDocument": {"uri": scratch},
+                "options": {"tabSize": 2, "insertSpaces": true},
+            }),
+        )
+        .await;
+    let response = session.response(id).await;
+    assert!(
+        response["result"]
+            .as_array()
+            .is_some_and(|edits| !edits.is_empty()),
+        "languageId=dsql enables unmatched standalone editing, got {response}"
+    );
+
     let uri = session.uri("src/components/TitlePanel.ts");
     let text = session.fixture_text("src/components/TitlePanel.ts");
     let offset = text.find("TitleBits").expect("spread in host");
@@ -472,7 +499,7 @@ async fn formatting_follows_dsql_documents_and_embedded_regions() {
     let formatted_inline = "query Inline {\n  title(limit 1) {\n    id\n  }\n}";
     let formatted_indented = "\n    query Indented {\n      title(limit 1) {\n        title\n      }\n    }\n\n    fragment Extra on title {\n      id\n    }\n  ";
 
-    let host_uri = session.uri("src/components/Formatting.ts");
+    let host_uri = session.uri("src/components/Formatting.component");
     session
         .notify(
             "textDocument/didOpen",

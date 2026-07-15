@@ -3,12 +3,17 @@
 //! keep their identity when their text is untouched, and reap when their
 //! region vanishes.
 
+use std::collections::BTreeMap;
+
 use bowl::{Bowl, Entity, Mut, Query, Singleton};
 use dsql_core::catalog::insert_catalog;
+use dsql_core::embedding::{ExtractionRegistry, ExtractionStrategy};
 use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand};
 use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
-use dsql_core::source::{BelongsToHost, CallsiteSpan, SourceOffset, SourceText, insert_source};
+use dsql_core::source::{
+    BelongsToHost, CallsiteSpan, SourceOffset, SourceText, insert_embedding_source,
+};
 use dsql_core::sql::GeneratedSqlFact;
 use futures::executor::block_on;
 
@@ -54,7 +59,7 @@ query Panel {
 async fn host_bowl() -> (Bowl, Entity) {
     let bowl = language_bowl().await;
     insert_catalog(&bowl, imdb_catalog()).await;
-    let host = insert_source(&bowl, "src/queries.ts", HOST).await;
+    let host = insert_embedding_source(&bowl, "src/queries.host", HOST, "typescript").await;
     (bowl, host)
 }
 
@@ -100,6 +105,52 @@ fn host_sources_derive_regions_that_compile() {
         // Regions are documents: every embedded query renders SQL.
         let sql = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
         assert_eq!(sql.len(), 3, "all embedded queries plan and render");
+    });
+}
+
+#[test]
+fn named_extractors_coexist_and_ignore_host_extensions() {
+    block_on(async {
+        let bowl = language_bowl().await;
+        bowl.insert((
+            Singleton::<ExtractionRegistry>::new(),
+            ExtractionRegistry(BTreeMap::from([
+                (
+                    "brackets".to_string(),
+                    ExtractionStrategy::Regex {
+                        pattern: r"QUERY\[(?P<content>[\s\S]*?)\]".to_string(),
+                    },
+                ),
+                (
+                    "angles".to_string(),
+                    ExtractionStrategy::Regex {
+                        pattern: r"DSQL<(?P<content>[\s\S]*?)>".to_string(),
+                    },
+                ),
+            ])),
+        ))
+        .await;
+        let bracket_host = insert_embedding_source(
+            &bowl,
+            "source.one",
+            "QUERY[query Bracket { title { id } }] DSQL<ignored>",
+            "brackets",
+        )
+        .await;
+        let angle_host = insert_embedding_source(
+            &bowl,
+            "source.two",
+            "QUERY[ignored] DSQL<query Angle { title { title } }>",
+            "angles",
+        )
+        .await;
+
+        let bracket_regions = regions_of(&bowl, bracket_host).await;
+        let angle_regions = regions_of(&bowl, angle_host).await;
+        assert_eq!(bracket_regions.len(), 1);
+        assert_eq!(angle_regions.len(), 1);
+        assert!(bracket_regions[0].2.contains("query Bracket"));
+        assert!(angle_regions[0].2.contains("query Angle"));
     });
 }
 
@@ -207,7 +258,7 @@ mod host_requests {
         let info = bowl
             .insert((
                 HoverRequest,
-                FilePath("src/queries.ts".to_string()),
+                FilePath("src/queries.host".to_string()),
                 Position { offset },
             ))
             .await
@@ -262,7 +313,7 @@ mod host_requests {
             let target = bowl
                 .insert((
                     DefinitionRequest,
-                    FilePath("src/queries.ts".to_string()),
+                    FilePath("src/queries.host".to_string()),
                     Position { offset: spread },
                 ))
                 .await
@@ -289,7 +340,7 @@ mod host_requests {
         block_on(async {
             let (bowl, _) = host_bowl().await;
 
-            let tokens = semantic_tokens(&bowl, "src/queries.ts").await;
+            let tokens = semantic_tokens(&bowl, "src/queries.host").await;
             assert!(!tokens.is_empty(), "host files highlight their regions");
 
             let slice = |span: dsql_core::facts::Span| &HOST[span.start..span.end];
@@ -322,7 +373,7 @@ mod host_requests {
             let list = bowl
                 .insert((
                     CompletionRequest,
-                    FilePath("src/queries.ts".to_string()),
+                    FilePath("src/queries.host".to_string()),
                     Position { offset },
                 ))
                 .await
@@ -384,16 +435,18 @@ fn embedded_expression_shapes_are_checked() {
         insert_catalog(&bowl, imdb_catalog()).await;
         bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
             .await;
-        insert_source(
+        insert_embedding_source(
             &bowl,
             "src/multi.ts",
             "export const a = dsql`\nquery One {\n  title(limit 1) {\n    id\n  }\n}\nquery Two {\n  kind_type {\n    kind\n  }\n}\n`;\n",
+            "typescript",
         )
         .await;
-        insert_source(
+        insert_embedding_source(
             &bowl,
             "src/frags.ts",
             "export const b = dsql`\nfragment Bits on title {\n  id\n}\n`;\n",
+            "typescript",
         )
         .await;
 
@@ -411,10 +464,11 @@ fn embedded_expression_shapes_follow_edits() {
         // fragment-only region, which this check rejects by design.
         let bowl = language_bowl().await;
         insert_catalog(&bowl, imdb_catalog()).await;
-        let host = insert_source(
+        let host = insert_embedding_source(
             &bowl,
             "src/single.ts",
             "export const q = dsql`\nquery Titles {\n  title(limit 1) {\n    id\n  }\n}\n`;\n",
+            "typescript",
         )
         .await;
         bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
