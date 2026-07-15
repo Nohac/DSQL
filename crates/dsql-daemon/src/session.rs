@@ -67,14 +67,6 @@ struct Session {
     /// the full load until it succeeds.
     bowl: Option<Bowl>,
     last: Option<Outcome>,
-    /// Content hashes each file previously held in the CURRENT bowl's
-    /// lifetime (the pre-edit hash is recorded on every incremental
-    /// apply; cleared on full reload). Restoring earlier content — a
-    /// save-undo-save flow — strands stale derivation state in the
-    /// resident bowl (porridge staleness on content revisit, see
-    /// docs/issues.md), so a batch that revisits a recorded hash takes
-    /// the full-reload path instead of an incremental apply.
-    seen_hashes: std::collections::HashMap<String, std::collections::HashSet<u64>>,
 }
 
 impl Daemon {
@@ -192,7 +184,6 @@ impl Daemon {
             exclude_roots,
             bowl: None,
             last: None,
-            seen_hashes: std::collections::HashMap::new(),
         }));
         result_line(request.id, &body)
     }
@@ -264,9 +255,7 @@ enum BatchPlan {
     /// Nothing relevant changed.
     NoOp,
     /// Apply these file upserts — the exact bytes classification read —
-    /// to the resident bowl. Application never re-reads disk: a file
-    /// changing after classification cannot smuggle revisited content
-    /// past the `seen_hashes` check.
+    /// to the resident bowl. Application never re-reads disk.
     Incremental(Vec<(PathBuf, String)>),
     /// Config/schema/deletion or no resident bowl: reload from disk.
     FullReload,
@@ -276,9 +265,6 @@ enum BatchPlan {
 enum FileChange {
     /// The bowl holds these exact bytes: a protocol no-op.
     Unchanged,
-    /// The bowl held these bytes EARLIER in its lifetime: force a full
-    /// reload (porridge staleness on content revisit, docs/issues.md).
-    Revisit,
     /// New content, carried to application verbatim.
     Fresh(String),
 }
@@ -379,9 +365,6 @@ impl Session {
                 match self.classify_file(&absolute).await {
                     // Same-content events are protocol no-ops.
                     Ok(FileChange::Unchanged) => {}
-                    // Content the bowl held EARLIER in its lifetime must
-                    // not apply incrementally (see `seen_hashes`).
-                    Ok(FileChange::Revisit) => reload = true,
                     Ok(FileChange::Fresh(content)) => upserts.push((absolute, content)),
                     Err(problem) => {
                         return Err((
@@ -436,9 +419,9 @@ impl Session {
     }
 
     /// Relevant files under a directory whose bytes differ from the bowl
-    /// (or are new to it), plus whether anything (an ownership ambiguity
-    /// or a content revisit) forces a full reload. Filesystem failures
-    /// surface — silently skipping a subtree would replay a stale success.
+    /// (or are new to it), plus whether an ownership ambiguity forces a
+    /// full reload. Filesystem failures surface — silently skipping a
+    /// subtree would replay a stale success.
     async fn changed_files_under(
         &self,
         directory: &Path,
@@ -466,7 +449,6 @@ impl Session {
                     match self.relevance(&path).await {
                         Relevance::Relevant => match self.classify_file(&path).await? {
                             FileChange::Unchanged => {}
-                            FileChange::Revisit => return Ok((Vec::new(), true)),
                             FileChange::Fresh(content) => found.push((path, content)),
                         },
                         Relevance::Irrelevant => {}
@@ -480,13 +462,9 @@ impl Session {
     }
 
     /// Reads a relevant file ONCE and classifies its content against the
-    /// resident bowl: same bytes (protocol no-op), previously-held bytes
-    /// (content revisit — applying incrementally strands stale derivation
-    /// state, porridge staleness on content revisit, docs/issues.md, so
-    /// the batch must full-reload), or fresh bytes. The classified bytes
-    /// travel with the plan so application never re-reads — a file
-    /// changing between classification and apply cannot smuggle revisited
-    /// content past this check.
+    /// resident bowl as the same bytes (protocol no-op) or fresh bytes.
+    /// The classified bytes travel with the plan so application never
+    /// re-reads and cannot observe different content after classification.
     async fn classify_file(&self, absolute: &Path) -> Result<FileChange, String> {
         let content = std::fs::read_to_string(absolute)
             .map_err(|error| format!("failed to read {}: {error}", absolute.display()))?;
@@ -503,13 +481,6 @@ impl Session {
             {
                 return Ok(FileChange::Unchanged);
             }
-        }
-        if self
-            .seen_hashes
-            .get(&path_text)
-            .is_some_and(|seen| seen.contains(&hash))
-        {
-            return Ok(FileChange::Revisit);
         }
         Ok(FileChange::Fresh(content))
     }
@@ -616,32 +587,11 @@ impl Session {
             BatchPlan::Incremental(paths) => {
                 let bowl = self.bowl.as_ref().expect("classified against a bowl");
                 for (absolute, content) in paths {
-                    // Record the hash being replaced: a later batch that
-                    // brings it back must reload (see `seen_hashes`). The
-                    // scoop guard must drop before upsert takes its Mut.
-                    let path_text = absolute.to_string_lossy().to_string();
-                    let replaced: Vec<u64> = {
-                        let rows = bowl
-                            .scoop::<Query<(Entity, &FilePath, &SourceText)>>()
-                            .await;
-                        rows.collect()
-                            .into_iter()
-                            .filter(|(_, path, _)| path.0 == path_text)
-                            .map(|(_, _, text)| text.content_hash())
-                            .collect()
-                    };
-                    if !replaced.is_empty() {
-                        self.seen_hashes
-                            .entry(path_text)
-                            .or_default()
-                            .extend(replaced);
-                    }
                     upsert(bowl, &self.project, &self.project_base, &absolute, &content).await;
                 }
                 Ok(())
             }
             BatchPlan::FullReload => {
-                self.seen_hashes.clear();
                 // Re-read config + schema too: a transparent full reload.
                 let project = Project::load_from(&self.project_base)
                     .await

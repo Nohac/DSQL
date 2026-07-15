@@ -145,43 +145,42 @@ facts behind the Complete barrier — `check_selections`, `plan_queries`
 (stale SQL is possible, not just stale diagnostics), `infer_variables`.
 Fully tracked consumers (`lint_predicates`, `clause_tokens`) are fine.
 
-PARTIALLY RESOLVED upstream: porridge bdebf49 (heal stale ambient
-views at settle convergence) plus 8670456 (heal ambient consumers after
-settle-phase reaps; the healing epoch now closes only at settle
-completion). Plain-document revisits — including LSP editor undo — are
-engine-healed; pinned un-ignored by
-`checks::content_roundtrip_edits_rederive_cleanly`.
+RESOLVED upstream: porridge bdebf49 heals stale ambient views at settle
+convergence, 8670456 extends healing past settle-phase reaps, and
+e81194e reconciles removed pair-bound invocations to a fixed point and
+schedules the normal follow-up needed to rebuild valid pairs.
+Plain-document revisits — including LSP editor undo — are pinned by
+`checks::content_roundtrip_edits_rederive_cleanly`; derived REGION
+revisits are pinned by
+`checks::content_roundtrip_edits_rederive_cleanly_for_hosts`.
 
-STILL OPEN — bound-join replanning on REGION revisit: host files whose
-template content revisits an earlier state break one layer deeper than
-ambient views. ENGINE-LEVEL repro tests now live in porridge (local
-commit `Pin bound-join replanning on content revisit`, failing by
-design): `bound_join_pairs_rederive_on_content_revisit` — one chain
-t(h(c(n))), insert a node early, restore; the deepest node ends with
-TWO resolutions, its own plus a stale pairing from the intermediate
-tree that cleanup never reaps because the slot entity still exists —
-and `bound_join_revisit_leaves_sibling_documents_alone`. dsql-side
-repro (ignored): `checks::content_roundtrip_edits_rederive_cleanly_for_hosts` — a
-fragment chain in another file plus sibling host selections, one
+The final bound-join defect appeared when host template content revisited
+an earlier state, one layer deeper than ambient views. ENGINE-LEVEL repro
+tests live in porridge: `bound_join_pairs_rederive_on_content_revisit` —
+one chain t(h(c(n))), insert a node early, restore; the deepest node ended
+with TWO resolutions, its own plus a stale pairing from the intermediate
+tree that cleanup could not reap because the slot entity still existed —
+and `bound_join_revisit_leaves_sibling_documents_alone`. The dsql-side
+repro, `checks::content_roundtrip_edits_rederive_cleanly_for_hosts`, uses
+a fragment chain in another file plus sibling host selections, one
 repeating a fragment-selected relation under another alias (bisected
-from imdsql; each piece alone heals fine). Post-restore evidence: the
-current `full_cast` field entity has NO ResolvedSelection at all (its
-`resolve_nested` bound-join invocation never replanned), while a GHOST
-ResolvedSelection anchored on a REMOVED intermediate-era field entity
-survives the stale-derived cleanup; the field's clauses then have no
-ResolvedClause, and the checker reports FieldNotFound on their order
-items. The final heal scan also shows `resolve_spreads` memoized from
-an earlier epoch with moved views. This is the delta-planned bound-join
+from imdsql; each piece alone healed fine). Post-restore evidence was a
+current `full_cast` field entity with no ResolvedSelection (its
+`resolve_nested` bound-join invocation never replanned), while a ghost
+ResolvedSelection anchored on a removed intermediate-era field entity
+survived stale-derived cleanup; the field's clauses then had no
+ResolvedClause, and the checker reported FieldNotFound on their order
+items. The final heal scan also showed `resolve_spreads` memoized from
+an earlier epoch with moved views. This was the delta-planned bound-join
 caveat (`member_value_edits_rederive_resolution`'s doc comment) in its
 derived-entity form: invocations keyed on derived rows (via the
-engine-maintained `Children`/`FieldResolutions` inverses) fail to
-replan when slots shift back to fingerprint-equal values, and their
-orphaned outputs escape the anchor-revision cleanup.
+engine-maintained `Children`/`FieldResolutions` inverses) failed to
+replan when slots shifted back to fingerprint-equal values, and their
+orphaned outputs escaped anchor-revision cleanup.
 
-Because of the open half, the daemon KEEPS the reload-on-revisit
-workaround (`Session::seen_hashes`, byte-exact revisits only; pinned by
-`plain_document_edits_roundtrip` and `host_document_edits_roundtrip`).
-The template-reverted-but-file-otherwise-changed host case is NOT
-covered by any workaround (file hash is fresh, region content revisits)
-— it errors until the engine join replanning is fixed; a daemon-side
-fix would require extraction-level region-hash tracking.
+With e81194e pinned, the daemon no longer carries its byte-exact
+reload-on-revisit workaround (`Session::seen_hashes`).
+`plain_document_edits_roundtrip` and `host_document_edits_roundtrip`
+remain as incremental protocol coverage, including directory events;
+the engine-level host regression covers template revisits even when the
+surrounding file bytes are new.

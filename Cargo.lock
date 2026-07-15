@@ -175,7 +175,7 @@ checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 [[package]]
 name = "bowl"
 version = "0.1.0"
-source = "git+https://github.com/Nohac/porridge?rev=8670456#8670456bd4e5704206cd261a8a34f224bf66910c"
+source = "git+https://github.com/Nohac/porridge?rev=e81194e#e81194e6e203198eafe1132c31ee386d1c0e27b8"
 dependencies = [
  "async_fn_traits",
  "futures",
@@ -1379,7 +1379,7 @@ dependencies = [
 [[package]]
 name = "macros"
 version = "0.1.0"
-source = "git+https://github.com/Nohac/porridge?rev=8670456#8670456bd4e5704206cd261a8a34f224bf66910c"
+source = "git+https://github.com/Nohac/porridge?rev=e81194e#e81194e6e203198eafe1132c31ee386d1c0e27b8"
 
 [[package]]
 name = "md-5"

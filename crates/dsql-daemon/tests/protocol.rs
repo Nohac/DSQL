@@ -512,8 +512,8 @@ async fn reconciliation_precision() {
 /// version behind (imdsql repro: the restore answered FieldNotFound on
 /// every relation column with spans from the intermediate text; the
 /// engine heals ambient consumers of the revisited state at settle
-/// convergence — porridge bdebf49 + 8670456 — so both edits apply
-/// incrementally).
+/// convergence — porridge bdebf49 + 8670456 — while e81194e completes
+/// derived-pair reconciliation, so both edits apply incrementally).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plain_document_edits_roundtrip() {
     let mut session = Session::start("aba-roundtrip").await;
@@ -591,12 +591,10 @@ async fn plain_document_edits_roundtrip() {
 
 /// The host-file variant of the A -> B -> A roundtrip: the revisited
 /// content lives in an extracted region, and the clause-bearing
-/// selection comes from a fragment in another file. Today this passes
-/// through the daemon's reload-on-revisit workaround (`seen_hashes`) —
-/// region revisits still break the engine's bound-join replanning
-/// (`content_roundtrip_edits_rederive_cleanly_for_hosts` in dsql-core,
-/// ignored; docs/issues.md) — and it must KEEP passing whichever layer
-/// provides the guarantee.
+/// selection comes from a fragment in another file. Porridge e81194e
+/// reconciles the removed pair-bound invocations, so restoration applies
+/// incrementally without a daemon reload-on-revisit workaround. The
+/// dsql-core host regression pins the same engine guarantee.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_document_edits_roundtrip() {
     let mut session = Session::start("host-aba-roundtrip").await;

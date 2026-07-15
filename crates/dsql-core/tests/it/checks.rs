@@ -199,8 +199,9 @@ fn member_value_edits_rederive_resolution() {
 /// length-changing edit before a definition that selects a reverse
 /// to-many relation with a clause. Pinned against the engine's ambient
 /// healing (porridge bdebf49) plus its settle-phase extension — reaps
-/// moving viewed stores after the last healing pass (porridge 8670456);
-/// the history is in docs/issues.md.
+/// moving viewed stores after the last healing pass (porridge 8670456).
+/// The current pin also carries the derived-pair reconciliation in
+/// porridge e81194e; the history is in docs/issues.md.
 #[test]
 fn content_roundtrip_edits_rederive_cleanly() {
     use bowl::Mut;
@@ -257,16 +258,12 @@ fn content_roundtrip_edits_rederive_cleanly() {
 /// in an extracted REGION (a derived entity), not a base document. This
 /// shape (bisected from imdsql: a fragment chain from another file plus
 /// sibling selections, one repeating a fragment-selected relation under
-/// another alias) breaks a layer DEEPER than the ambient-view healing:
-/// post-restore the current `full_cast` field has NO ResolvedSelection
-/// at all (its bound-join invocation never replanned) while a GHOST
-/// resolution anchored on a removed intermediate-era field entity
-/// survives cleanup — porridge's delta-planned bound joins on content
-/// revisit; see docs/issues.md. The daemon covers byte-exact revisits
-/// via its reload workaround; template-revert-with-other-edits remains
-/// exposed. Un-ignore once the engine join replanning is fixed.
+/// another alias) exposed a layer deeper than ambient-view healing:
+/// post-restore the current `full_cast` field had no ResolvedSelection
+/// while a ghost resolution anchored on a removed intermediate-era
+/// field entity survived cleanup. Porridge e81194e reconciles removed
+/// pair-bound invocations to a fixed point; see docs/issues.md.
 #[test]
-#[ignore = "porridge bound-join replanning on region revisit; see docs/issues.md"]
 fn content_roundtrip_edits_rederive_cleanly_for_hosts() {
     use bowl::Mut;
     use dsql_core::source::SourceText;
