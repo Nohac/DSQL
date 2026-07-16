@@ -159,6 +159,15 @@ pub struct VariableBinding {
     pub enum_values: Vec<String>,
 }
 
+/// All inferred bindings for one definition, ordered by occurrence span.
+///
+/// This aggregate is the tracked input for definition-level services. The
+/// individual [`VariableBinding`] facts remain the source for occurrence
+/// hover and generated metadata.
+#[derive(Component, Debug, Clone, Hash, PartialEq)]
+#[component(hash)]
+pub struct DefinitionVariables(pub Vec<VariableBinding>);
+
 /// One later anonymous binding whose inferred path duplicates an earlier
 /// binding in the same definition. Variable inference owns this semantic
 /// fact; diagnostics consume it without repeating the inference walk.
@@ -184,18 +193,19 @@ pub struct DuplicateAnonymousBinding {
 )]
 async fn infer_variables(
     _: Query<Entity, With<VariablesDemand>>,
-    defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
+    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
     resolutions: View<'_, (Entity, &ResolvedClause)>,
     mut commands: Commands<(
+        dsql_schema::DefinitionVariables,
         dsql_schema::VariableBinding,
         dsql_schema::DuplicateAnonymousBinding,
     )>,
 ) {
-    let (def_entity, decl, file, scope) = defs.item();
+    let (def_entity, decl, key, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
     let (_, imports) = imports.item();
 
@@ -234,34 +244,42 @@ async fn infer_variables(
             }
         }
         DefKind::Fragment => {
-            let Some((_, _, target, _)) = tree
+            if let Some((_, _, target, _)) = tree
                 .fragments
                 .iter()
                 .find(|(entity, _, _, _)| *entity == def_entity)
-            else {
-                return;
-            };
-            let Some(table) = inference
-                .catalog
-                .table_ref_for(TableRef::parse(&target.name))
-            else {
-                return;
-            };
-            let table_id = table.id;
-            inference.collect_selection_set(
-                table_id,
-                table_id,
-                def_entity,
-                SelectionPath::fragment_root(),
-                &VariablePathScope::fragment(),
-                Some(&mut SpreadExpansion::new(&tree, &scope.0, imports)),
-            );
+                && let Some(table) = inference
+                    .catalog
+                    .table_ref_for(TableRef::parse(&target.name))
+            {
+                let table_id = table.id;
+                inference.collect_selection_set(
+                    table_id,
+                    table_id,
+                    def_entity,
+                    SelectionPath::fragment_root(),
+                    &VariablePathScope::fragment(),
+                    Some(&mut SpreadExpansion::new(&tree, &scope.0, imports)),
+                );
+            }
         }
     }
 
     inference
         .bindings
         .sort_by_key(|(span, _)| (span.start, span.end));
+    commands.insert((
+        DerivedFrom::many([def_entity, catalog_entity]),
+        BelongsToFile(file.0),
+        *key,
+        DefinitionVariables(
+            inference
+                .bindings
+                .iter()
+                .map(|(_, binding)| binding.clone())
+                .collect(),
+        ),
+    ));
     let mut anonymous_paths = std::collections::HashSet::new();
     for (span, binding) in inference.bindings {
         if binding.name.is_none() && !anonymous_paths.insert(binding.path.clone()) {

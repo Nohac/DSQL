@@ -89,6 +89,52 @@ fn hover_on_variables_reports_bindings() {
 }
 
 #[test]
+fn query_definition_hover_reports_inferred_variables() {
+    block_on(async {
+        let source = concat!(
+            "query MovieDetailPageQuery {\n",
+            "  users(\n",
+            "    where .id == $$movieId\n",
+            "    order by created_at $$direction\n",
+            "    limit $count\n",
+            "  ) {\n",
+            "    id\n",
+            "  }\n",
+            "}\n",
+            "query NoVariables {\n",
+            "  users(limit 1) {\n",
+            "    id\n",
+            "  }\n",
+            "}\n",
+        );
+
+        let bowl = language_bowl().await;
+        insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
+        bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+            .await;
+        insert_source(&bowl, FIXTURE, source).await;
+
+        let query = source.find("MovieDetailPageQuery").expect("test text");
+        let no_variables = source.find("NoVariables").expect("test text");
+        let with_variables = hover(&bowl, query).await;
+        let without_variables = hover(&bowl, no_variables).await;
+
+        let bowl_without_demand = language_bowl().await;
+        insert_catalog(
+            &bowl_without_demand,
+            dsql_core::catalog::Catalog::hardcoded(),
+        )
+        .await;
+        insert_source(&bowl_without_demand, FIXTURE, source).await;
+        let without_demand = hover(&bowl_without_demand, query).await;
+
+        insta::assert_snapshot!(format!(
+            "with variables:\n{with_variables}\n\nwithout variables:\n{without_variables}\n\nwithout variable demand:\n{without_demand}"
+        ));
+    });
+}
+
+#[test]
 fn clause_fields_hover_from_semantic_resolutions() {
     block_on(async {
         let bowl = language_bowl().await;

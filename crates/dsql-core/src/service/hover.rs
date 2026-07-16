@@ -101,6 +101,8 @@ pub mod priority {
     pub const SPREAD: u8 = 30;
     /// A field selection name under the cursor.
     pub const FIELD: u8 = 20;
+    /// A query definition enriched with its inferred variable signature.
+    pub const QUERY_SIGNATURE: u8 = 11;
     /// A definition name under the cursor.
     pub const DEFINITION: u8 = 10;
     /// The request resolved to a file but no candidate answered.

@@ -1,0 +1,27 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+expression: "format!(\"with variables:\\n{with_variables}\\n\\nwithout variables:\\n{without_variables}\\n\\nwithout variable demand:\\n{without_demand}\")"
+---
+with variables:
+### Query `MovieDetailPageQuery`
+
+#### Variables
+
+```yaml
+input:
+  users:
+    clause:
+      limit:
+        count: int
+params:
+  direction: enum("asc", "desc")
+  movieId: uuid
+```
+
+without variables:
+### Query `NoVariables`
+
+No variables.
+
+without variable demand:
+query `MovieDetailPageQuery`

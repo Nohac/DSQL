@@ -6,7 +6,7 @@
 //! treats them symmetrically except where [`DefKind`] branches.
 
 use crate::schema::{AstFacts, dsql_schema};
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use bowl::{
     Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Registrar, Singleton,
@@ -14,6 +14,7 @@ use bowl::{
 };
 
 use crate::entities::document::ParsedFile;
+use crate::entities::variable::{DefinitionVariables, VariableBinding, VariableRole};
 use crate::entities::{direct_rule, direct_token, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
@@ -513,34 +514,125 @@ impl FormatStage for Definition {
 /// an optional part.
 /// One definition row in the hovered file: the declaration with its
 /// optional fragment target riding along.
-type DefInFile<'a> = (Entity, &'a DefDecl, Option<&'a FragmentTarget>);
+type DefInFile<'a> = (Entity, &'a DefDecl, &'a NodeKey, Option<&'a FragmentTarget>);
+
+/// Optional variable aggregate for the definition row currently paired by
+/// [`NodeKey`]. It is absent when variable analysis was not demanded.
+type VariablesForDefinition<'a> =
+    Option<Query<(Entity, &'a DefinitionVariables), Where<BowlEq<NodeKey>>>>;
 
 async fn hover_definitions(
     query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     defs: Query<DefInFile<'_>, Where<BowlEq<BelongsToFile>>>,
+    variables: VariablesForDefinition<'_>,
     mut commands: Commands<(dsql_schema::HoverCandidate,)>,
 ) {
     let (request, _file, cursor) = query.item();
-    let (_def_entity, decl, target) = defs.item();
+    let (_def_entity, decl, _key, target) = defs.item();
 
     if !(decl.name_span.start <= cursor.0 && cursor.0 < decl.name_span.end) {
         return;
     }
 
-    let text = match (decl.kind, target) {
-        (DefKind::Query, _) => format!("query `{}`", decl.name),
-        (DefKind::Fragment, Some(target)) => {
-            format!("fragment `{}` on `{}`", decl.name, target.name)
+    let (priority, text) = match (decl.kind, target, variables) {
+        (DefKind::Query, _, Some(variables)) => {
+            let (_, variables) = variables.item();
+            (
+                priority::QUERY_SIGNATURE,
+                describe_query_variables(&decl.name, variables),
+            )
         }
-        (DefKind::Fragment, None) => format!("fragment `{}`", decl.name),
+        (DefKind::Query, _, None) => (priority::DEFINITION, format!("query `{}`", decl.name)),
+        (DefKind::Fragment, Some(target), _) => (
+            priority::DEFINITION,
+            format!("fragment `{}` on `{}`", decl.name, target.name),
+        ),
+        (DefKind::Fragment, None, _) => (priority::DEFINITION, format!("fragment `{}`", decl.name)),
     };
 
     commands.insert((
         DerivedFrom::new(request),
         RequestKey(request),
-        HoverCandidate {
-            priority: priority::DEFINITION,
-            text,
-        },
+        HoverCandidate { priority, text },
     ));
+}
+
+fn describe_query_variables(name: &str, variables: &DefinitionVariables) -> String {
+    let shape = variable_shape(&variables.0);
+    if shape.is_empty() {
+        format!("### Query `{name}`\n\nNo variables.")
+    } else {
+        format!("### Query `{name}`\n\n#### Variables\n\n```yaml\n{shape}```")
+    }
+}
+
+#[derive(Default)]
+struct VariableShapeNode {
+    children: BTreeMap<String, VariableShapeNode>,
+    value: Option<String>,
+}
+
+fn variable_shape(bindings: &[VariableBinding]) -> String {
+    let mut root = VariableShapeNode::default();
+    for binding in bindings {
+        insert_variable_shape(
+            &mut root,
+            &binding.path.split('.').collect::<Vec<_>>(),
+            &variable_type_label(binding),
+        );
+    }
+    let mut output = String::new();
+    render_variable_shape(&root, 0, &mut output);
+    output
+}
+
+fn insert_variable_shape(node: &mut VariableShapeNode, path: &[&str], data_type: &str) {
+    let Some((head, tail)) = path.split_first() else {
+        node.value = Some(data_type.to_string());
+        return;
+    };
+    insert_variable_shape(
+        node.children.entry((*head).to_string()).or_default(),
+        tail,
+        data_type,
+    );
+}
+
+fn render_variable_shape(node: &VariableShapeNode, indent: usize, output: &mut String) {
+    for (key, child) in &node.children {
+        output.push_str(&"  ".repeat(indent));
+        output.push_str(key);
+        if child.children.is_empty() {
+            output.push_str(": ");
+            output.push_str(child.value.as_deref().unwrap_or("unknown"));
+            output.push('\n');
+        } else {
+            output.push_str(":\n");
+            if let Some(value) = &child.value {
+                output.push_str(&"  ".repeat(indent + 1));
+                output.push_str("value: ");
+                output.push_str(value);
+                output.push('\n');
+            }
+            render_variable_shape(child, indent + 1, output);
+        }
+    }
+}
+
+fn variable_type_label(binding: &VariableBinding) -> String {
+    if matches!(
+        binding.role,
+        VariableRole::ComparisonOperator | VariableRole::SortDirection
+    ) {
+        return format!(
+            "enum({})",
+            binding
+                .enum_values
+                .iter()
+                .map(|value| format!("\"{value}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    binding.data_type.as_str().to_string()
 }
