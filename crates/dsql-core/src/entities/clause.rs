@@ -5,14 +5,22 @@
 //! planning surface; [`ClauseFact`] branches where they differ.
 
 use crate::schema::{AstFacts, dsql_schema};
-use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, With};
+use bowl::{
+    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, Registrar, SystemExt, Where,
+    With,
+};
 
+use crate::catalog::CatalogSnapshot;
 use crate::entities::expression::{Expr, VariableRef, build_expr, build_variable_ref, expr_child};
 use crate::entities::{direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span};
 use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef, Rule};
+use crate::resolution::{PathTerminal, ResolvedClause};
+use crate::service::hover::{
+    Cursor, HoverCandidate, HoverEnriched, RequestKey, describe_column, describe_relation, priority,
+};
 
 /// One clause, lowered from `where_clause` / `order_by_clause` /
 /// `limit_clause` / `offset_clause`. [`ChildOf`] links it to the field
@@ -49,8 +57,66 @@ impl LanguageEntity for Clause {
     const NAME: &'static str = "clause";
 
     fn register(reg: &mut Registrar<'_>) {
+        reg.system(hover_clause_fields);
         reg.system(complete_clause_positions.run_during(bowl::Phase::Complete));
     }
+}
+
+/// Answers hover on semantically resolved relation-path segments, terminal
+/// columns, and order-by columns inside clauses. The resolution facts own the
+/// decision; this service only maps their spans to catalog descriptions.
+async fn hover_clause_fields(
+    query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
+    clauses: Query<(Entity, &ResolvedClause), Where<BowlEq<BelongsToFile>>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::HoverCandidate,)>,
+) {
+    let (request, _file, cursor) = query.item();
+    let (_clause_entity, resolved) = clauses.item();
+    let (_, snapshot) = catalog.item();
+    let catalog = snapshot.catalog();
+
+    let text = resolved
+        .paths
+        .iter()
+        .find_map(|path| {
+            path.relations
+                .iter()
+                .find(|step| step.span.start <= cursor.0 && cursor.0 < step.span.end)
+                .and_then(|step| {
+                    describe_relation(catalog, &step.written, step.table, step.foreign_key)
+                })
+                .or_else(|| match &path.terminal {
+                    PathTerminal::Column { span, column, .. }
+                        if span.start <= cursor.0 && cursor.0 < span.end =>
+                    {
+                        describe_column(catalog, *column)
+                    }
+                    PathTerminal::Column { .. }
+                    | PathTerminal::Failed
+                    | PathTerminal::OutOfScope => None,
+                })
+        })
+        .or_else(|| {
+            resolved.order_items.iter().find_map(|item| {
+                (item.span.start <= cursor.0 && cursor.0 < item.span.end)
+                    .then_some(item.column)
+                    .flatten()
+                    .and_then(|column| describe_column(catalog, column))
+            })
+        });
+
+    let Some(text) = text else {
+        return;
+    };
+    commands.insert((
+        DerivedFrom::new(request),
+        RequestKey(request),
+        HoverCandidate {
+            priority: priority::FIELD,
+            text,
+        },
+    ));
 }
 
 impl LowerStage for Clause {

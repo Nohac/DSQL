@@ -89,6 +89,48 @@ fn hover_on_variables_reports_bindings() {
 }
 
 #[test]
+fn clause_fields_hover_from_semantic_resolutions() {
+    block_on(async {
+        let bowl = language_bowl().await;
+        insert_catalog(&bowl, imdb_catalog()).await;
+        let source = concat!(
+            "query TopRated {\n",
+            "  movie_info_idx(\n",
+            "    where .info_type_id == 101\n",
+            "      and .title.kind_id == 1\n",
+            "      and .title.movie_info_idx.info_type_id == 100\n",
+            "    order by info desc, id asc\n",
+            "    limit 16\n",
+            "  ) {\n",
+            "    id\n",
+            "  }\n",
+            "}\n",
+        );
+        insert_source(&bowl, FIXTURE, source).await;
+
+        let direct_column = source.find(".info_type_id").expect("test text") + 1;
+        let first_relation = source.find(".title.kind_id").expect("test text") + 1;
+        let first_terminal = source.find("kind_id == 1").expect("test text");
+        let nested_relation =
+            source.find(".title.movie_info_idx").expect("test text") + ".title.".len();
+        let nested_terminal = source.rfind("info_type_id").expect("test text");
+        let order_info = source.find("order by info").expect("test text") + "order by ".len();
+        let order_id = source.find("info desc, id").expect("test text") + "info desc, ".len();
+
+        insta::assert_snapshot!(format!(
+            "direct column: {}\nfirst relation: {}\nfirst terminal: {}\nnested relation: {}\nnested terminal: {}\norder info: {}\norder id: {}",
+            hover(&bowl, direct_column).await,
+            hover(&bowl, first_relation).await,
+            hover(&bowl, first_terminal).await,
+            hover(&bowl, nested_relation).await,
+            hover(&bowl, nested_terminal).await,
+            hover(&bowl, order_info).await,
+            hover(&bowl, order_id).await,
+        ));
+    });
+}
+
+#[test]
 fn hover_on_unknown_file_reports_it() {
     block_on(async {
         let bowl = service_bowl().await;

@@ -1,0 +1,11 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+expression: "format!(\"direct column: {}\\nfirst relation: {}\\nfirst terminal: {}\\nnested relation: {}\\nnested terminal: {}\\norder info: {}\\norder id: {}\",\nhover(&bowl, direct_column).await, hover(&bowl, first_relation).await,\nhover(&bowl, first_terminal).await, hover(&bowl, nested_relation).await,\nhover(&bowl, nested_terminal).await, hover(&bowl, order_info).await,\nhover(&bowl, order_id).await,)"
+---
+direct column: column `info_type_id`: int (not null)
+first relation: relation `title` → `public`.`title` via `movie_id`
+first terminal: column `kind_id`: int (not null)
+nested relation: relation `movie_info_idx` → `public`.`movie_info_idx` via `movie_id`
+nested terminal: column `info_type_id`: int (not null)
+order info: column `info`: text (not null)
+order id: column `id`: int (not null)

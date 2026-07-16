@@ -25,7 +25,9 @@ use crate::grammar::parser::{NodeRef, Rule};
 use crate::resolution::{ResolvedClause, ResolvedSelection};
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::completion::{CompletionContext, CompletionRequest};
-use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
+use crate::service::hover::{
+    Cursor, HoverCandidate, HoverEnriched, RequestKey, describe_column, describe_relation, priority,
+};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// PostgreSQL truncates result aliases beyond this many bytes
@@ -737,24 +739,10 @@ fn describe_target(
             let table = catalog.table_by_id(*table)?;
             Some(format!("table `{}`.`{}`", table.schema, table.name))
         }
-        SelectionTarget::Column(column) => {
-            let column = catalog.column_by_id(*column)?;
-            Some(format!(
-                "column `{}`: {}{}",
-                column.name,
-                column.data_type.as_str(),
-                if column.not_null { " (not null)" } else { "" },
-            ))
-        }
+        SelectionTarget::Column(column) => describe_column(catalog, *column),
         SelectionTarget::Relation {
-            table, selector, ..
-        } => {
-            let table = catalog.table_by_id(*table)?;
-            Some(format!(
-                "relation `{}` → `{}`.`{}` via `{selector}`",
-                resolved.name, table.schema, table.name,
-            ))
-        }
+            table, foreign_key, ..
+        } => describe_relation(catalog, &resolved.name, *table, *foreign_key),
         SelectionTarget::Unresolved => None,
     }
 }

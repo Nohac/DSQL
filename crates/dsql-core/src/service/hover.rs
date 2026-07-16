@@ -32,6 +32,7 @@ use bowl::{
     Where, With,
 };
 
+use crate::catalog::{Catalog, ColumnId, ForeignKeyId, TableId};
 use crate::entities::document::ParsedFile;
 use crate::schema::dsql_schema;
 use crate::source::{BelongsToHost, FilePath, SourceOffset, SourceText};
@@ -106,6 +107,33 @@ pub mod priority {
     pub const RESOLVED: u8 = 1;
     /// Initial scaffold: the request did not even resolve to a file.
     pub const NONE: u8 = 0;
+}
+
+/// Renders one resolved catalog column for hover consumers.
+pub(crate) fn describe_column(catalog: &Catalog, column: ColumnId) -> Option<String> {
+    let column = catalog.column_by_id(column)?;
+    Some(format!(
+        "column `{}`: {}{}",
+        column.name,
+        column.data_type.as_str(),
+        if column.not_null { " (not null)" } else { "" },
+    ))
+}
+
+/// Renders one resolved catalog relation for hover consumers.
+pub(crate) fn describe_relation(
+    catalog: &Catalog,
+    written: &str,
+    table: TableId,
+    foreign_key: ForeignKeyId,
+) -> Option<String> {
+    let table = catalog.table_by_id(table)?;
+    let foreign_key = catalog.foreign_key_by_id(foreign_key)?;
+    let selector = catalog.foreign_key_selector(foreign_key);
+    Some(format!(
+        "relation `{written}` → `{}`.`{}` via `{selector}`",
+        table.schema, table.name,
+    ))
 }
 
 /// Registers enrichment and arbitration; entity candidate systems register
