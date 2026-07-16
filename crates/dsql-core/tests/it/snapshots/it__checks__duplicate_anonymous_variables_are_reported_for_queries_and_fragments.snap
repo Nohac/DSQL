@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[156..157]: fragment `AmbiguousFragment` has multiple anonymous variables for `input.movie_info.clause.where.id`; name one of them to disambiguate
+Error[55..56]: query `AmbiguousQuery` has multiple anonymous variables for `input.title.clause.where.id`; name one of them to disambiguate

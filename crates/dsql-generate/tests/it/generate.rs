@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use dsql_generate::{GenerateOptions, generate_project};
-use dsql_project::Project;
+use dsql_generate::{GenerateOptions, assemble_project, generate_project};
+use dsql_project::{Project, open_analysis_bowl};
 
 /// Copies the dsql-project scoped fixture into a temp dir so generation
 /// can write its build/ tree without polluting the repository.
@@ -174,6 +174,66 @@ async fn error_diagnostics_fail_generation() {
     assert!(
         error.to_string().contains("missing_table"),
         "unexpected error: {error}"
+    );
+
+    std::fs::remove_dir_all(&dir).expect("fixture cleanup");
+}
+
+#[tokio::test]
+async fn duplicate_anonymous_variables_fail_before_publication() {
+    let (dir, project) = fixture_project("anonymous-variables").await;
+    std::fs::write(
+        dir.join("queries/frontend/anonymous.dsql"),
+        "query Ambiguous {\n  title(where .id > $ and .id < $ limit 1) {\n    id\n  }\n}\n",
+    )
+    .expect("write ambiguous query");
+
+    let error = generate_project(&project, GenerateOptions::default())
+        .await
+        .expect_err("duplicate anonymous variables must fail generation");
+    let message = error.to_string();
+    assert!(
+        message.contains("multiple anonymous variables")
+            && message.contains("input.title.clause.where.id"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        !project.root.join("build").exists(),
+        "language errors must refuse before publication"
+    );
+
+    std::fs::remove_dir_all(&dir).expect("fixture cleanup");
+}
+
+#[tokio::test]
+async fn generated_scope_groups_include_transitive_import_artifacts() {
+    let (dir, _) = fixture_project("transitive-groups").await;
+    let config = dir.join("dsql/dsql.toml");
+    let raw = std::fs::read_to_string(&config)
+        .expect("config readable")
+        .replace("imports = [\"shared\"]", "imports = [\"middle\"]");
+    let raw = format!("{raw}\n[resolution.middle]\ndocuments = []\nimports = [\"shared\"]\n");
+    std::fs::write(&config, raw).expect("transitive config");
+    let project = Project::load_from(&dir).await.expect("project reloads");
+    let bowl = open_analysis_bowl(&project).await.expect("bowl opens");
+
+    let assembled = assemble_project(&bowl, &project, GenerateOptions::default())
+        .await
+        .expect("assembly succeeds");
+    let frontend = assembled
+        .snapshot
+        .groups
+        .iter()
+        .find(|group| group.name == "frontend")
+        .expect("frontend group");
+    assert_eq!(frontend.imports, vec!["middle"]);
+    assert!(
+        frontend
+            .artifacts
+            .iter()
+            .any(|artifact| artifact == "shared/fragment/TitleBits"),
+        "frontend closure includes shared artifacts: {:?}",
+        frontend.artifacts
     );
 
     std::fs::remove_dir_all(&dir).expect("fixture cleanup");

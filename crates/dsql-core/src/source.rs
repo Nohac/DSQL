@@ -20,7 +20,7 @@
 //! extraction. Both writers above write *host* text the same way they
 //! write plain files; regions re-derive from it either way.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
 
@@ -420,22 +420,95 @@ fn configured_path_matches(configured: &Path, path: &Path) -> bool {
 }
 
 /// The scope import graph as a fingerprinted singleton fact: scope name →
-/// directly imported scope names. Imports are not transitive: an importing
-/// scope sees the imported scopes' own definitions only. A default (empty)
-/// value is installed at language registration; project loading replaces it.
+/// directly imported scope names. Consumers resolve the graph transitively
+/// through [`ScopeImports::visible_from`]. A default (empty) value is
+/// installed at language registration; project loading replaces it.
 #[derive(Component, Hash, Debug, Clone, Default, PartialEq, Eq)]
 #[component(hash)]
 pub struct ScopeImports(pub BTreeMap<String, Vec<String>>);
 
 impl ScopeImports {
-    /// The scopes visible from `scope`: itself plus its direct imports.
+    /// The effective scopes visible from `scope`: itself first, then its
+    /// recursive imports in declaration order, with diamond paths deduplicated.
+    /// Cycles are cut defensively; project loading rejects them separately.
     pub fn visible_from<'a>(&'a self, scope: &'a str) -> impl Iterator<Item = &'a str> {
-        std::iter::once(scope).chain(self.0.get(scope).into_iter().flatten().map(String::as_str))
+        fn collect<'a>(
+            graph: &'a ScopeImports,
+            scope: &'a str,
+            seen: &mut BTreeSet<&'a str>,
+            visible: &mut Vec<&'a str>,
+        ) {
+            if !seen.insert(scope) {
+                return;
+            }
+            visible.push(scope);
+            if let Some(imports) = graph.0.get(scope) {
+                for import in imports {
+                    collect(graph, import, seen, visible);
+                }
+            }
+        }
+
+        let mut seen = BTreeSet::new();
+        let mut visible = Vec::new();
+        collect(self, scope, &mut seen, &mut visible);
+        visible.into_iter()
     }
 
-    /// The imports of `scope`, without the scope itself.
+    /// The effective recursive imports of `scope`, without the scope itself.
     pub fn imports_of<'a>(&'a self, scope: &'a str) -> impl Iterator<Item = &'a str> {
-        self.0.get(scope).into_iter().flatten().map(String::as_str)
+        self.visible_from(scope).skip(1)
+    }
+
+    /// Returns the first deterministic import cycle, if the graph is cyclic.
+    /// Scope roots are visited lexicographically and edges in declaration
+    /// order, matching project diagnostics and snapshot ordering.
+    pub fn import_cycle(&self) -> Option<Vec<String>> {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum VisitState {
+            Visiting,
+            Visited,
+        }
+
+        fn visit(
+            graph: &ScopeImports,
+            scope: &str,
+            states: &mut BTreeMap<String, VisitState>,
+            stack: &mut Vec<String>,
+        ) -> Option<Vec<String>> {
+            match states.get(scope) {
+                Some(VisitState::Visited) => return None,
+                Some(VisitState::Visiting) => {
+                    let start = stack.iter().position(|entry| entry == scope)?;
+                    let mut cycle = stack[start..].to_vec();
+                    cycle.push(scope.to_string());
+                    return Some(cycle);
+                }
+                None => {}
+            }
+
+            states.insert(scope.to_string(), VisitState::Visiting);
+            stack.push(scope.to_string());
+            if let Some(imports) = graph.0.get(scope) {
+                for import in imports {
+                    if let Some(cycle) = visit(graph, import, states, stack) {
+                        return Some(cycle);
+                    }
+                }
+            }
+            stack.pop();
+            states.insert(scope.to_string(), VisitState::Visited);
+            None
+        }
+
+        let mut states = BTreeMap::new();
+        let mut stack = Vec::new();
+        for scope in self.0.keys() {
+            if let Some(cycle) = visit(self, scope, &mut states, &mut stack) {
+                return Some(cycle);
+            }
+        }
+        None
     }
 }
 

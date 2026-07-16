@@ -129,7 +129,7 @@ impl LowerStage for FragmentSpread {
 
 /// The fragment definitions a spread in `scope` can see, per the effective
 /// resolver (docs/spec/resolution-scopes.md): the scope's own fragments
-/// plus its direct imports'. Shared by resolution, checks, planning,
+/// plus its transitive imports'. Shared by resolution, checks, planning,
 /// variables, and services.
 pub(crate) fn visible_fragments<'a>(
     name: &'a str,

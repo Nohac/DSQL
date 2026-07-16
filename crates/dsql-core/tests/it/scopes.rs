@@ -87,6 +87,41 @@ fn imported_scopes_provide_fragments() {
 }
 
 #[test]
+fn transitive_imports_provide_fragments() {
+    block_on(async {
+        let bowl = scoped_bowl(&[
+            ("frontend", &["middle"]),
+            ("middle", &["shared"]),
+            ("shared", &[]),
+        ])
+        .await;
+        insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
+        insert(&bowl, "page.dsql", "frontend", SPREAD).await;
+
+        assert_eq!(resolutions(&bowl).await, 1);
+        assert_eq!(render_diagnostic_facts(&bowl).await, "");
+    });
+}
+
+#[test]
+fn diamond_imports_do_not_duplicate_one_origin() {
+    block_on(async {
+        let bowl = scoped_bowl(&[
+            ("frontend", &["left", "right"]),
+            ("left", &["shared"]),
+            ("right", &["shared"]),
+            ("shared", &[]),
+        ])
+        .await;
+        insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
+        insert(&bowl, "page.dsql", "frontend", SPREAD).await;
+
+        assert_eq!(resolutions(&bowl).await, 1, "one origin stays unique");
+        assert_eq!(render_diagnostic_facts(&bowl).await, "");
+    });
+}
+
+#[test]
 fn scopes_without_imports_do_not_see_each_other() {
     block_on(async {
         let bowl = scoped_bowl(&[("api", &[]), ("frontend", &[])]).await;
@@ -148,6 +183,27 @@ fn local_query_colliding_with_import_is_reported() {
         insert(&bowl, "page.dsql", "frontend", QUERY).await;
 
         insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
+}
+
+#[test]
+fn local_query_colliding_with_transitive_import_is_reported() {
+    block_on(async {
+        let bowl = scoped_bowl(&[
+            ("frontend", &["middle"]),
+            ("middle", &["shared"]),
+            ("shared", &[]),
+        ])
+        .await;
+        insert(&bowl, "shared.dsql", "shared", QUERY).await;
+        insert(&bowl, "page.dsql", "frontend", QUERY).await;
+
+        let diagnostics = render_diagnostic_facts(&bowl).await;
+        assert!(
+            diagnostics.contains("imported from scope `shared`"),
+            "transitive imports participate in collisions: {diagnostics}"
+        );
+        insta::assert_snapshot!(diagnostics);
     });
 }
 

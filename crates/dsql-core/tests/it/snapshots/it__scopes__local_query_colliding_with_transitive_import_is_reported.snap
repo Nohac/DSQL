@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/scopes.rs
+expression: diagnostics
+---
+Error[6..12]: query `Titles` collides with a definition imported from scope `shared`

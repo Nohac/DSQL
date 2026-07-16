@@ -17,7 +17,7 @@ use crate::entities::directive::DirectiveFact;
 use crate::entities::document::ParsedFile;
 use crate::entities::field_selection::FieldSel;
 use crate::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
-use crate::entities::variable::{VariableBinding, VariableUse};
+use crate::entities::variable::{DuplicateAnonymousBinding, VariableBinding, VariableUse};
 use crate::facts::{
     BelongsToFile, ChildOf, Children, DefKey, Diagnostic, DiagnosticCode, DiagnosticSource,
     DiagnosticsDemand, NodeKey, PlanDemand, PlanKey, Severity, Span, SqlDemand, VariablesDemand,
@@ -160,6 +160,13 @@ pub struct DsqlSchema {
     resolved_clause: (ResolvedClause, BelongsToFile, DerivedFrom),
     resolved_spread: (ResolvedSpread, BelongsToFile, DerivedFrom),
     variable_binding: (VariableBinding, DefKey, Span, BelongsToFile, DerivedFrom),
+    duplicate_anonymous_binding: (
+        DuplicateAnonymousBinding,
+        DefKey,
+        Span,
+        BelongsToFile,
+        DerivedFrom,
+    ),
     query_plan: (
         QueryPlanFact,
         OperationSeed,

@@ -255,17 +255,17 @@ pub async fn assemble_project(
     validate_artifact_paths(&artifacts)?;
 
     // Per-scope groups: every scope that owns artifacts or appears in the
-    // import graph, with its effective closure (own plus imported).
+    // import graph, with its effective transitive closure.
     let mut scope_names: std::collections::BTreeSet<String> =
         facts.imports.keys().cloned().collect();
     scope_names.extend(artifacts.iter().map(|artifact| artifact.scope.clone()));
+    let scope_imports = ScopeImports(facts.imports.clone());
     let groups = scope_names
         .into_iter()
         .map(|name| {
             let imports = facts.imports.get(&name).cloned().unwrap_or_default();
-            let visible: std::collections::BTreeSet<&str> = std::iter::once(name.as_str())
-                .chain(imports.iter().map(String::as_str))
-                .collect();
+            let visible: std::collections::BTreeSet<&str> =
+                scope_imports.visible_from(&name).collect();
             let members = artifacts
                 .iter()
                 .filter(|artifact| visible.contains(artifact.scope.as_str()))

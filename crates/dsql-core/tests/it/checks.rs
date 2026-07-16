@@ -2,9 +2,9 @@
 //! schema; invalid fixtures and inline sources produce check diagnostics,
 //! demand-gated and catalog-reactive.
 
-use bowl::{Bowl, Entity, Query, Singleton};
+use bowl::{Bowl, Entity, Query};
 use dsql_core::catalog::{Catalog, insert_catalog};
-use dsql_core::facts::{Diagnostic, DiagnosticsDemand};
+use dsql_core::facts::{Diagnostic, arm_editor_demands};
 use dsql_core::language_bowl;
 use dsql_core::source::{insert_embedding_source, insert_source};
 use futures::executor::block_on;
@@ -14,9 +14,30 @@ use crate::{fixture, imdb_catalog, render_diagnostic_facts};
 async fn checked_bowl(catalog: Catalog) -> Bowl {
     let bowl = language_bowl().await;
     insert_catalog(&bowl, catalog).await;
-    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-        .await;
+    arm_editor_demands(&bowl).await;
     bowl
+}
+
+#[test]
+fn duplicate_anonymous_variables_are_reported_for_queries_and_fragments() {
+    block_on(async {
+        let bowl = checked_bowl(imdb_catalog()).await;
+        insert_source(
+            &bowl,
+            "anonymous.dsql",
+            concat!(
+                "query AmbiguousQuery {\n",
+                "  title(where .id > $ and .id < $ limit 1) {\n    id\n  }\n",
+                "}\n",
+                "fragment AmbiguousFragment on title {\n",
+                "  movie_info(where .id > $ and .id < $) {\n    id\n  }\n",
+                "}\n",
+            ),
+        )
+        .await;
+
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
 }
 
 #[test]

@@ -75,6 +75,30 @@ fn validate_fails_on_error_diagnostics() {
 }
 
 #[test]
+fn check_rejects_duplicate_anonymous_variables() {
+    let dir = scratch_copy("check-anonymous-variables");
+    std::fs::write(
+        dir.join("dsql/queries/anonymous.dsql"),
+        "query Ambiguous {\n  title(where .id > $ and .id < $ limit 1) {\n    id\n  }\n}\n",
+    )
+    .expect("ambiguous document");
+
+    let output = dsql(&dir, &["check"]);
+    assert!(
+        !output.status.success(),
+        "duplicate anonymous variables must fail check"
+    );
+    let stdout = stdout(&output);
+    assert!(
+        stdout.contains("multiple anonymous variables")
+            && stdout.contains("input.title.clause.where.id"),
+        "the diagnostic explains how to disambiguate, got {stdout}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn check_narrows_to_one_file_and_fails_only_on_errors() {
     let dir = scratch_copy("check-file");
     std::fs::write(

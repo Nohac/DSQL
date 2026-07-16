@@ -7,7 +7,7 @@ use bowl::{Bowl, Entity, Query, Singleton};
 
 use dsql_core::catalog::{DatabaseMetadata, metadata_to_yaml};
 use dsql_core::entities::document::ParsedFile;
-use dsql_core::facts::{DiagnosticsDemand, arm_generate_demands};
+use dsql_core::facts::{arm_editor_demands, arm_generate_demands};
 use dsql_core::format::{FormatConfidence, format_document};
 use dsql_core::grammar::parse;
 use dsql_core::grammar::parser::{Node, NodeRef, Rule};
@@ -72,8 +72,7 @@ pub async fn check(file: Option<PathBuf>) -> Outcome {
     let project = Project::load().await?;
     {
         let bowl = open_analysis_bowl(&project).await?;
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
+        arm_editor_demands(&bowl).await;
         let selected = match &file {
             Some(file) => Some(project_member(&bowl, file).await?),
             None => None,

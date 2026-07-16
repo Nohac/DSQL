@@ -12,6 +12,7 @@ use tokio::fs::read_to_string;
 use facet::Facet;
 
 use dsql_core::catalog::{Catalog, CatalogBuildError};
+use dsql_core::source::ScopeImports;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectError {
@@ -51,6 +52,8 @@ pub enum ProjectError {
     MissingEmbeddingConfig { resolver: String },
     #[error("scope `{scope}` imports unknown scope `{import}`")]
     UnknownScopeImport { scope: String, import: String },
+    #[error("cyclic scope import: {cycle}")]
+    CyclicScopeImport { cycle: String },
     #[error("a dsql project already exists at {0}")]
     AlreadyInitialized(PathBuf),
     #[error("generator output `{output}` {problem}")]
@@ -169,7 +172,7 @@ pub struct ScopeConfig {
     /// Resolver-bearing document groups owned by this scope.
     #[facet(default)]
     pub documents: Vec<DocumentConfig>,
-    /// Scopes whose definitions this scope imports (not transitive).
+    /// Scopes whose effective definition closures this scope imports.
     #[facet(default)]
     pub imports: Vec<String>,
 }
@@ -216,6 +219,18 @@ impl Project {
                     });
                 }
             }
+        }
+        let imports = ScopeImports(
+            config
+                .resolution
+                .iter()
+                .map(|(scope, scope_config)| (scope.clone(), scope_config.imports.clone()))
+                .collect(),
+        );
+        if let Some(cycle) = imports.import_cycle() {
+            return Err(ProjectError::CyclicScopeImport {
+                cycle: cycle.join(" -> "),
+            });
         }
         let mut config = config;
         let normalized_outputs = config

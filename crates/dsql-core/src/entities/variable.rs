@@ -27,7 +27,10 @@ use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span, VariablesDemand};
+use crate::facts::{
+    BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
+    NodeKey, Severity, Span, VariablesDemand, emit_diagnostic,
+};
 use crate::format::CstFormatter;
 use crate::grammar::parser::NodeRef;
 use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
@@ -55,6 +58,9 @@ impl LanguageEntity for Variable {
     fn register(reg: &mut Registrar<'_>) {
         // Views lowered facts ambiently: behind the Complete barrier.
         reg.system(infer_variables.run_during(bowl::Phase::Complete));
+        // Fully tracked on the duplicate facts: the engine replans the pair
+        // after inference commits them at Complete, like variable hover.
+        reg.system(diagnose_duplicate_anonymous_bindings);
         // Fully tracked (a per-file bound join, no views), so it needs no
         // phase barrier: pairs replan as bindings commit at Complete.
         reg.system(hover_variables);
@@ -153,6 +159,20 @@ pub struct VariableBinding {
     pub enum_values: Vec<String>,
 }
 
+/// One later anonymous binding whose inferred path duplicates an earlier
+/// binding in the same definition. Variable inference owns this semantic
+/// fact; diagnostics consume it without repeating the inference walk.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct DuplicateAnonymousBinding {
+    /// Whether the owning definition is a query or fragment.
+    pub definition_kind: DefKind,
+    /// The owning definition name, for the diagnostic message.
+    pub definition_name: String,
+    /// The inferred input path shared by both anonymous occurrences.
+    pub path: String,
+}
+
 /// Infers the variable bindings of each definition: queries bind their own
 /// clauses (spreads are
 /// not expanded — a fragment's parameters belong to the fragment), while
@@ -170,7 +190,10 @@ async fn infer_variables(
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
     resolutions: View<'_, (Entity, &ResolvedClause, &BelongsToFile)>,
-    mut commands: Commands<(dsql_schema::VariableBinding,)>,
+    mut commands: Commands<(
+        dsql_schema::VariableBinding,
+        dsql_schema::DuplicateAnonymousBinding,
+    )>,
 ) {
     let (def_entity, decl, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
@@ -255,7 +278,24 @@ async fn infer_variables(
         }
     }
 
+    inference
+        .bindings
+        .sort_by_key(|(span, _)| (span.start, span.end));
+    let mut anonymous_paths = std::collections::HashSet::new();
     for (span, binding) in inference.bindings {
+        if binding.name.is_none() && !anonymous_paths.insert(binding.path.clone()) {
+            commands.insert((
+                DerivedFrom::many([def_entity, catalog_entity]),
+                BelongsToFile(file.0),
+                crate::facts::DefKey(def_entity),
+                span,
+                DuplicateAnonymousBinding {
+                    definition_kind: decl.kind,
+                    definition_name: decl.name.clone(),
+                    path: binding.path.clone(),
+                },
+            ));
+        }
         commands.insert((
             DerivedFrom::many([def_entity, catalog_entity]),
             BelongsToFile(file.0),
@@ -264,6 +304,30 @@ async fn infer_variables(
             binding,
         ));
     }
+}
+
+/// Presents duplicate anonymous-binding facts when diagnostics are demanded.
+async fn diagnose_duplicate_anonymous_bindings(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    duplicates: Query<(Entity, &DuplicateAnonymousBinding, &Span, &BelongsToFile)>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (duplicate, binding, span, file) = duplicates.item();
+    emit_diagnostic(
+        &mut commands,
+        DiagnosticFacts {
+            derived_from: DerivedFrom::new(duplicate),
+            file: file.0,
+            span: *span,
+            severity: Severity::Error,
+            source: DiagnosticSource::Generate,
+            code: DiagnosticCode::DuplicateAnonymousVariable,
+            message: format!(
+                "{} `{}` has multiple anonymous variables for `{}`; name one of them to disambiguate",
+                binding.definition_kind, binding.definition_name, binding.path
+            ),
+        },
+    );
 }
 
 struct Inference<'a> {

@@ -62,6 +62,7 @@ pub enum DiagnosticCode {
     CircularFragmentSpread,
     ClauseValueTypeMismatch,
     PredicateTypeMismatch,
+    DuplicateAnonymousVariable,
     UnindexedJoinColumn,
     UnindexedScanColumn,
     UnindexedPredicateJoinColumn,

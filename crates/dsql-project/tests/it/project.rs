@@ -206,6 +206,30 @@ async fn unknown_scope_imports_fail_project_loading() {
 }
 
 #[tokio::test]
+async fn cyclic_scope_imports_fail_project_loading_deterministically() {
+    let dir = std::env::temp_dir().join("dsql-cyclic-import-fixture");
+    let root = dir.join("dsql");
+    std::fs::create_dir_all(&root).expect("fixture dir");
+    std::fs::write(
+        root.join("dsql.toml"),
+        concat!(
+            "database_url = \"x\"\n\n",
+            "[resolution.a]\ndocuments = []\nimports = [\"b\"]\n\n",
+            "[resolution.b]\ndocuments = []\nimports = [\"c\"]\n\n",
+            "[resolution.c]\ndocuments = []\nimports = [\"a\"]\n",
+        ),
+    )
+    .expect("fixture config");
+
+    let error = Project::load_from(&dir)
+        .await
+        .expect_err("cyclic imports must fail");
+    assert_eq!(error.to_string(), "cyclic scope import: a -> b -> c -> a");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
 async fn documents_owned_by_two_scopes_fail_loading() {
     let dir = std::env::temp_dir().join("dsql-dup-ownership-fixture");
     let root = dir.join("dsql");
