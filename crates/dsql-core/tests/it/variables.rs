@@ -4,11 +4,14 @@
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
+use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::variable::VariableBinding;
-use dsql_core::facts::{Span, VariablesDemand};
+use dsql_core::facts::{DefKey, Span, VariablesDemand};
 use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 use futures::executor::block_on;
+
+use crate::imdb_catalog;
 
 async fn variables_bowl() -> Bowl {
     let bowl = language_bowl().await;
@@ -108,5 +111,62 @@ fn fragment_spread_envelopes_nested_bindings() {
         )
         .await;
         insta::assert_snapshot!(snapshot);
+    });
+}
+
+#[test]
+fn cross_file_fragment_clauses_preserve_variable_inference() {
+    block_on(async {
+        let bowl = language_bowl().await;
+        insert_catalog(&bowl, imdb_catalog()).await;
+        bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+            .await;
+        insert_source(
+            &bowl,
+            "rating-filter.dsql",
+            concat!(
+                "fragment RatingFilter on title {\n",
+                "  ratings: movie_info_idx(\n",
+                "    where .info_type_id == $type\n",
+                "    order by id $direction\n",
+                "    limit $count\n",
+                "  ) {\n",
+                "    info\n",
+                "  }\n",
+                "}\n",
+            ),
+        )
+        .await;
+        insert_source(
+            &bowl,
+            "ranked-fields.dsql",
+            "fragment RankedFields on title {\n  ...RatingFilter\n}\n",
+        )
+        .await;
+
+        let definitions = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
+        let ranked = definitions
+            .collect()
+            .into_iter()
+            .find(|(_, definition)| definition.name == "RankedFields")
+            .map(|(entity, _)| entity)
+            .expect("RankedFields definition exists");
+        let bindings = bowl
+            .scoop::<Query<(Entity, &VariableBinding, &DefKey)>>()
+            .await;
+        let mut rendered: Vec<String> = bindings
+            .collect()
+            .into_iter()
+            .filter(|(_, _, definition)| definition.0 == ranked)
+            .map(|(_, binding, _)| {
+                format!(
+                    "{} {:?} {:?} {:?}",
+                    binding.path, binding.role, binding.data_type, binding.name
+                )
+            })
+            .collect();
+        rendered.sort();
+
+        insta::assert_snapshot!(rendered.join("\n"));
     });
 }

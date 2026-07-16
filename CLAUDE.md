@@ -30,3 +30,12 @@
 - AVOID shortening variable names, e.g., use `version` instead of `ver`, and `requires_python`
   instead of `rp`
 - PREFER [`TypeName`] references when writing Rust doc comments
+
+## Issues
+
+- Issues are tracked as markdown files in `issues/`.
+- Create new issues with `scripts/create-issue.sh <issue title>`.
+- Keep issue files concise and standalone enough to understand without Peers threads, chat logs, or other external review state.
+- Do not reference Peers thread IDs from issue files.
+- Set `Status` to `Done` when resolved.
+- Find open issues with `rg 'Status:.*Open' issues/`.

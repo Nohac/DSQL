@@ -8,7 +8,7 @@
 //! [`ChildOf`]: crate::facts::ChildOf
 
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
-use crate::resolution::{ResolvedClause, ResolvedPath};
+use crate::resolution::{ResolvedClause, index_resolved_clauses};
 use crate::schema::{AstFacts, dsql_schema};
 use bowl::{
     Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, View, Where, With,
@@ -189,7 +189,7 @@ async fn infer_variables(
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
-    resolutions: View<'_, (Entity, &ResolvedClause, &BelongsToFile)>,
+    resolutions: View<'_, (Entity, &ResolvedClause)>,
     mut commands: Commands<(
         dsql_schema::VariableBinding,
         dsql_schema::DuplicateAnonymousBinding,
@@ -200,29 +200,10 @@ async fn infer_variables(
     let (_, imports) = imports.item();
 
     let tree = SelectionTree::collect(&views);
-    // Spans are file-unique, so the definition's resolved paths key by
-    // span; inference reads terminal columns instead of re-resolving.
-    let mut resolved_paths: std::collections::HashMap<Span, &ResolvedPath> =
-        std::collections::HashMap::new();
-    let mut resolved_order: std::collections::HashMap<Span, crate::catalog::ColumnId> =
-        std::collections::HashMap::new();
-    for (_, resolved, resolved_file) in resolutions.iter() {
-        if resolved_file.0 != file.0 {
-            continue;
-        }
-        for path in &resolved.paths {
-            resolved_paths.insert(path.span, path);
-        }
-        for item in &resolved.order_items {
-            if let Some(column) = item.column {
-                resolved_order.insert(item.span, column);
-            }
-        }
-    }
+    let resolved_clauses = index_resolved_clauses(resolutions.iter().map(|(_, resolved)| resolved));
     let mut inference = Inference {
         tree: &tree,
-        resolved_paths: &resolved_paths,
-        resolved_order: &resolved_order,
+        resolved_clauses: &resolved_clauses,
         catalog: snapshot.catalog(),
         bindings: Vec::new(),
     };
@@ -331,8 +312,7 @@ async fn diagnose_duplicate_anonymous_bindings(
 }
 
 struct Inference<'a> {
-    resolved_paths: &'a std::collections::HashMap<Span, &'a ResolvedPath>,
-    resolved_order: &'a std::collections::HashMap<Span, crate::catalog::ColumnId>,
+    resolved_clauses: &'a std::collections::HashMap<Entity, &'a ResolvedClause>,
     tree: &'a SelectionTree<'a>,
     catalog: &'a crate::catalog::Catalog,
     bindings: Vec<(Span, VariableBinding)>,
@@ -355,12 +335,15 @@ impl Inference<'_> {
         let clauses: Vec<_> = self
             .tree
             .clauses_under(key)
-            .map(|(_, clause, _, _)| (*clause).clone())
+            .map(|(entity, clause, _, _)| (*entity, (*clause).clone()))
             .collect();
-        for clause in clauses {
+        for (clause_entity, clause) in clauses {
+            let resolved = self.resolved_clauses.get(&clause_entity).copied();
             match clause {
                 ClauseFact::Where { expr } => {
-                    self.collect_where(&path.parts, scope, &expr);
+                    if let Some(resolved) = resolved {
+                        self.collect_where(&path.parts, scope, &expr, resolved);
+                    }
                 }
                 ClauseFact::Limit { expr } => self.push_clause_variable(
                     &path.parts,
@@ -381,11 +364,18 @@ impl Inference<'_> {
                         let Some(OrderDirection::Variable(variable)) = &item.direction else {
                             continue;
                         };
-                        let Some(column) = self
-                            .resolved_order
-                            .get(&item.field_span)
-                            .and_then(|column| self.catalog.column_by_id(*column))
+                        let Some(resolved) = resolved else {
+                            continue;
+                        };
+                        let Some(column_id) = resolved
+                            .order_items
+                            .iter()
+                            .find(|resolved| resolved.span == item.field_span)
+                            .and_then(|resolved| resolved.column)
                         else {
+                            continue;
+                        };
+                        let Some(column) = self.catalog.column_by_id(column_id) else {
                             continue;
                         };
                         let inferred_path = [
@@ -481,7 +471,13 @@ impl Inference<'_> {
         }
     }
 
-    fn collect_where(&mut self, selection_path: &[String], scope: &VariablePathScope, expr: &Expr) {
+    fn collect_where(
+        &mut self,
+        selection_path: &[String],
+        scope: &VariablePathScope,
+        expr: &Expr,
+        resolved: &ResolvedClause,
+    ) {
         let Expr::Binary { op, lhs, rhs, .. } = expr else {
             return;
         };
@@ -489,7 +485,7 @@ impl Inference<'_> {
         match (lhs.as_ref(), rhs.as_ref()) {
             (path @ Expr::Path { .. }, Expr::Variable { variable, .. })
             | (Expr::Variable { variable, .. }, path @ Expr::Path { .. }) => {
-                if let Some((data_type, field_path)) = self.resolve_predicate_path(path) {
+                if let Some((data_type, field_path)) = self.resolve_predicate_path(path, resolved) {
                     let anonymous_key = (variable.name.is_none()
                         && matches!(op, BinaryOp::Variable(_)))
                     .then_some(InputPathSegment::Value.as_ref());
@@ -517,20 +513,24 @@ impl Inference<'_> {
                 _ => None,
             };
             if let Some(path) = path
-                && let Some((data_type, field_path)) = self.resolve_predicate_path(path)
+                && let Some((data_type, field_path)) = self.resolve_predicate_path(path, resolved)
             {
                 self.push_operator_binding(selection_path, scope, data_type, &field_path, operator);
             }
         }
 
-        self.collect_where(selection_path, scope, lhs);
-        self.collect_where(selection_path, scope, rhs);
+        self.collect_where(selection_path, scope, lhs, resolved);
+        self.collect_where(selection_path, scope, rhs, resolved);
     }
 
     /// Terminal column type and display path of a predicate path, read
     /// from the clause resolution facts.
-    fn resolve_predicate_path(&self, path: &Expr) -> Option<(DataType, Vec<String>)> {
-        let resolved = self.resolved_paths.get(&path.span())?;
+    fn resolve_predicate_path(
+        &self,
+        path: &Expr,
+        resolved_clause: &ResolvedClause,
+    ) -> Option<(DataType, Vec<String>)> {
+        let resolved = resolved_clause.path_at(path.span())?;
         let crate::resolution::PathTerminal::Column {
             display, column, ..
         } = &resolved.terminal

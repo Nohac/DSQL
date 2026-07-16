@@ -7,7 +7,7 @@
 //! Runs per definition, gated on [`PlanDemand`].
 
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
-use crate::resolution::{PathTerminal, ResolvedClause, ResolvedPath};
+use crate::resolution::{PathTerminal, ResolvedClause, ResolvedPath, index_resolved_clauses};
 use crate::schema::dsql_schema;
 use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, View, With};
 
@@ -18,8 +18,7 @@ use super::types::{
     SqlVariantCase,
 };
 use crate::catalog::{
-    Catalog, CatalogSnapshot, ColumnId, FieldCheckResult, FieldRef, TableId, TableRef,
-    TableResolution,
+    Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
 };
 use crate::entities::clause::{ClauseFact, OrderDirection};
 use crate::entities::definition::{DefDecl, DefKind};
@@ -31,7 +30,7 @@ use crate::entities::variable_path::{
 };
 use crate::facts::{
     BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, PlanDemand, PlanKey,
-    Severity, Span, emit_diagnostic,
+    Severity, emit_diagnostic,
 };
 use crate::source::{ResolutionScope, ScopeImports};
 
@@ -57,7 +56,7 @@ async fn plan_queries(
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
-    resolutions: View<'_, (Entity, &ResolvedClause, &BelongsToFile)>,
+    resolutions: View<'_, (Entity, &ResolvedClause)>,
     mut commands: Commands<(
         dsql_schema::QueryPlan,
         dsql_schema::FragmentPlan,
@@ -69,30 +68,10 @@ async fn plan_queries(
     let (_, imports) = imports.item();
 
     let tree = SelectionTree::collect(&views);
-    // Spans are file-unique: the definition's resolved paths and order
-    // items key by span, and planning consumes resolution outcomes
-    // instead of re-resolving raw strings.
-    let mut resolved_paths: std::collections::HashMap<Span, &ResolvedPath> =
-        std::collections::HashMap::new();
-    let mut resolved_order: std::collections::HashMap<Span, ColumnId> =
-        std::collections::HashMap::new();
-    for (_, resolved, resolved_file) in resolutions.iter() {
-        if resolved_file.0 != file.0 {
-            continue;
-        }
-        for path in &resolved.paths {
-            resolved_paths.insert(path.span, path);
-        }
-        for item in &resolved.order_items {
-            if let Some(column) = item.column {
-                resolved_order.insert(item.span, column);
-            }
-        }
-    }
+    let resolved_clauses = index_resolved_clauses(resolutions.iter().map(|(_, resolved)| resolved));
     let mut planner = Planner {
         tree: &tree,
-        resolved_paths: &resolved_paths,
-        resolved_order: &resolved_order,
+        resolved_clauses: &resolved_clauses,
         catalog: snapshot.catalog(),
         scope: &scope.0,
         imports,
@@ -329,8 +308,7 @@ struct PlanWalk<'a> {
 
 struct Planner<'a> {
     tree: &'a SelectionTree<'a>,
-    resolved_paths: &'a std::collections::HashMap<Span, &'a ResolvedPath>,
-    resolved_order: &'a std::collections::HashMap<Span, ColumnId>,
+    resolved_clauses: &'a std::collections::HashMap<Entity, &'a ResolvedClause>,
     catalog: &'a Catalog,
     scope: &'a str,
     imports: &'a ScopeImports,
@@ -492,26 +470,34 @@ impl Planner<'_> {
         field_entity: Entity,
     ) -> SelectionClauses {
         let mut clauses = SelectionClauses::default();
-        let field_clauses: Vec<ClauseFact> = self
+        let field_clauses: Vec<(Entity, ClauseFact)> = self
             .tree
             .clauses_under(field_entity)
-            .map(|(_, clause, _, _)| (*clause).clone())
+            .map(|(entity, clause, _, _)| (*entity, (*clause).clone()))
             .collect();
-        for clause in field_clauses {
+        for (clause_entity, clause) in field_clauses {
+            let resolved = self.resolved_clauses.get(&clause_entity).copied();
             match clause {
                 ClauseFact::Where { expr } => {
-                    clauses.filter = self.plan_filter_expr(
-                        root_table,
-                        table,
-                        None,
-                        selection_path,
-                        variable_scope,
-                        &expr,
-                    );
+                    clauses.filter = resolved.and_then(|resolved| {
+                        self.plan_filter_expr(
+                            root_table,
+                            table,
+                            None,
+                            selection_path,
+                            variable_scope,
+                            &expr,
+                            resolved,
+                        )
+                    });
                 }
                 ClauseFact::OrderBy { items } => {
                     clauses.order_by.extend(items.iter().filter_map(|item| {
-                        let column_id = *self.resolved_order.get(&item.field_span)?;
+                        let column_id = resolved?
+                            .order_items
+                            .iter()
+                            .find(|resolved| resolved.span == item.field_span)?
+                            .column?;
                         let column = self.catalog.column_by_id(column_id)?;
                         Some(OrderByPlan {
                             column: column.id,
@@ -572,6 +558,10 @@ impl Planner<'_> {
         clauses
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "filter recursion carries the owning semantic clause fact"
+    )]
     fn plan_filter_expr(
         &mut self,
         root_table: TableId,
@@ -580,6 +570,7 @@ impl Planner<'_> {
         selection_path: &[String],
         variable_scope: &VariablePathScope,
         expr: &Expr,
+        resolved: &ResolvedClause,
     ) -> Option<FilterExpr> {
         match expr {
             Expr::Error { .. } => None,
@@ -596,7 +587,7 @@ impl Planner<'_> {
                     variable.name.as_deref(),
                 ),
             })),
-            Expr::Path { .. } => self.plan_filter_path(outer_current_table, expr),
+            Expr::Path { .. } => self.plan_filter_path(resolved, outer_current_table, expr),
             Expr::Literal { value, .. } => Some(FilterExpr::Literal(match value {
                 LiteralValue::String(value) => FilterLiteral::String(value.clone()),
                 LiteralValue::Number(value) => FilterLiteral::Number(value.clone()),
@@ -606,7 +597,7 @@ impl Planner<'_> {
             Expr::Binary { op, lhs, rhs, .. } => {
                 if let Expr::Path { .. } = lhs.as_ref()
                     && is_comparison_operator(op)
-                    && let Some(field_path) = self.predicate_path(lhs)
+                    && let Some(field_path) = self.predicate_path(resolved, lhs)
                 {
                     let right = match rhs.as_ref() {
                         Expr::Variable { variable, .. } => FilterExpr::Parameter(SqlParameter {
@@ -625,6 +616,7 @@ impl Planner<'_> {
                             selection_path,
                             variable_scope,
                             rhs,
+                            resolved,
                         )?,
                     };
                     if let Some(filter) = self.relation_predicate_filter(
@@ -634,15 +626,16 @@ impl Planner<'_> {
                         Some(field_path.join(".")),
                         right,
                         variable_scope,
+                        resolved,
                     ) {
                         return Some(filter);
                     }
                 }
                 if let (path @ Expr::Path { .. }, Expr::Variable { variable, .. }) =
                     (lhs.as_ref(), rhs.as_ref())
-                    && let Some(field_path) = self.predicate_path(path)
+                    && let Some(field_path) = self.predicate_path(resolved, path)
                 {
-                    let left = self.plan_filter_path(outer_current_table, path)?;
+                    let left = self.plan_filter_path(resolved, outer_current_table, path)?;
                     let right = FilterExpr::Parameter(SqlParameter {
                         path: where_value_path(
                             selection_path,
@@ -668,6 +661,7 @@ impl Planner<'_> {
                     selection_path,
                     variable_scope,
                     lhs,
+                    resolved,
                 )?;
                 let (right, right_path) = self.plan_filter_expr_with_path(
                     root_table,
@@ -676,6 +670,7 @@ impl Planner<'_> {
                     selection_path,
                     variable_scope,
                     rhs,
+                    resolved,
                 )?;
                 let inferred = path_parts(
                     left_path
@@ -734,6 +729,10 @@ impl Planner<'_> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "filter recursion carries the owning semantic clause fact"
+    )]
     fn plan_filter_expr_with_path(
         &mut self,
         root_table: TableId,
@@ -742,10 +741,11 @@ impl Planner<'_> {
         selection_path: &[String],
         variable_scope: &VariablePathScope,
         expr: &Expr,
+        resolved: &ResolvedClause,
     ) -> Option<(FilterExpr, Option<String>)> {
         match expr {
             Expr::Path { .. } => {
-                let field_path = self.predicate_path(expr);
+                let field_path = self.predicate_path(resolved, expr);
                 self.plan_filter_expr(
                     root_table,
                     table,
@@ -753,6 +753,7 @@ impl Planner<'_> {
                     selection_path,
                     variable_scope,
                     expr,
+                    resolved,
                 )
                 .map(|expr| (expr, field_path.map(|parts| parts.join("."))))
             }
@@ -783,6 +784,7 @@ impl Planner<'_> {
                     selection_path,
                     variable_scope,
                     expr,
+                    resolved,
                 )
                 .map(|expr| (expr, None)),
         }
@@ -790,6 +792,7 @@ impl Planner<'_> {
 
     fn plan_filter_path(
         &mut self,
+        resolved_clause: &ResolvedClause,
         outer_current_table: Option<TableId>,
         path: &Expr,
     ) -> Option<FilterExpr> {
@@ -808,13 +811,17 @@ impl Planner<'_> {
             PathAnchor::Root => FilterColumnScope::Root,
             PathAnchor::Parent => return None,
         };
-        let resolved = self.resolved_paths.get(&path.span())?;
+        let resolved = resolved_clause.path_at(path.span())?;
         let column = resolved.terminal.column()?;
         Some(FilterExpr::Column { scope, column })
     }
 
     /// Multi-segment `Current`-scoped predicate paths become nested
     /// `EXISTS` subqueries stepping through each relation.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "relation planning carries its clause resolution and variable context"
+    )]
     fn relation_predicate_filter(
         &mut self,
         selection_path: &[String],
@@ -823,6 +830,7 @@ impl Planner<'_> {
         operator_path: Option<String>,
         right: FilterExpr,
         variable_scope: &VariablePathScope,
+        resolved_clause: &ResolvedClause,
     ) -> Option<FilterExpr> {
         let Expr::Path {
             anchor: PathAnchor::Current,
@@ -835,7 +843,7 @@ impl Planner<'_> {
         if segments.len() < 2 {
             return None;
         }
-        let resolved = *self.resolved_paths.get(&path.span())?;
+        let resolved = resolved_clause.path_at(path.span())?;
         self.relation_predicate_steps(
             resolved,
             0,
@@ -899,8 +907,8 @@ impl Planner<'_> {
 
     /// The display path of a fully resolved predicate path, read from the
     /// clause resolution facts.
-    fn predicate_path(&self, path: &Expr) -> Option<Vec<String>> {
-        let resolved = self.resolved_paths.get(&path.span())?;
+    fn predicate_path(&self, resolved_clause: &ResolvedClause, path: &Expr) -> Option<Vec<String>> {
+        let resolved = resolved_clause.path_at(path.span())?;
         let PathTerminal::Column { display, .. } = &resolved.terminal else {
             return None;
         };

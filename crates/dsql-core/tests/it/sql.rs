@@ -222,6 +222,43 @@ fn cross_file_fragment_body_edits_rederive_sql() {
     });
 }
 
+/// Clause resolutions belong to their clause entities, not to the query
+/// file that expands them. Cross-file fragment expansion must preserve every
+/// semantic clause part instead of retaining only resolution-free limits.
+#[test]
+fn cross_file_fragment_clauses_are_preserved_in_sql() {
+    block_on(async {
+        let bowl = sql_bowl(imdb_catalog()).await;
+        insert_source(
+            &bowl,
+            "rating-fields.dsql",
+            concat!(
+                "fragment RatingFields on title {\n",
+                "  ratings: movie_info_idx(where .info_type_id == 101 order by id asc limit 1) {\n",
+                "    info\n",
+                "  }\n",
+                "}\n",
+            ),
+        )
+        .await;
+        insert_source(
+            &bowl,
+            "top-rated.dsql",
+            concat!(
+                "query TopRated {\n",
+                "  title(limit 1) {\n",
+                "    id\n",
+                "    ...RatingFields\n",
+                "  }\n",
+                "}\n",
+            ),
+        )
+        .await;
+
+        insta::assert_snapshot!(render_sql(&bowl).await);
+    });
+}
+
 /// Every parameter-free valid fixture executes against the reference imdb
 /// database when the opt-in URL is present. Ordinary test runs skip this
 /// external integration boundary.

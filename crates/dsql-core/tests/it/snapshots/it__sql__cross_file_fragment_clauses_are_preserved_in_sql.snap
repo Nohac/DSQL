@@ -1,0 +1,49 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- title
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'id',
+        "title_d4d9f554"."id",
+        'ratings',
+        "ratings_json_7214f337"."ratings_result_7214f337"
+      )
+    ),
+    '[]'
+  ) as "title"
+from
+  (
+    select
+      *
+    from
+      "public"."title" as "title_d4d9f554"
+    limit
+      1
+  ) as "title_d4d9f554"
+  left join LATERAL (
+    select
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT('info', "ratings_7214f337"."info")
+        ),
+        '[]'
+      ) as "ratings_result_7214f337"
+    from
+      (
+        select
+          *
+        from
+          "public"."movie_info_idx" as "ratings_7214f337"
+        where
+          "ratings_7214f337"."movie_id" = "title_d4d9f554"."id"
+          and "ratings_7214f337"."info_type_id" = 101
+        order by
+          "ratings_7214f337"."id" asc
+        limit
+          1
+      ) as "ratings_7214f337"
+  ) as "ratings_json_7214f337" on true
