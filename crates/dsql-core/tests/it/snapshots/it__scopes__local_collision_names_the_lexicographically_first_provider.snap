@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/scopes.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[9..18]: fragment `TitleBits` collides with a definition imported from scope `a`

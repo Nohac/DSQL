@@ -122,6 +122,20 @@ fn diamond_imports_do_not_duplicate_one_origin() {
 }
 
 #[test]
+fn cyclic_import_visibility_is_finite_and_deduplicated() {
+    let imports = ScopeImports(BTreeMap::from([
+        ("a".to_string(), vec!["b".to_string()]),
+        ("b".to_string(), vec!["c".to_string()]),
+        ("c".to_string(), vec!["a".to_string()]),
+    ]));
+
+    assert_eq!(
+        imports.visible_from("a").collect::<Vec<_>>(),
+        ["a", "b", "c"]
+    );
+}
+
+#[test]
 fn scopes_without_imports_do_not_see_each_other() {
     block_on(async {
         let bowl = scoped_bowl(&[("api", &[]), ("frontend", &[])]).await;
@@ -152,6 +166,18 @@ fn local_fragment_colliding_with_import_is_reported() {
     block_on(async {
         let bowl = scoped_bowl(&[("frontend", &["shared"]), ("shared", &[])]).await;
         insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
+        insert(&bowl, "page-fragments.dsql", "frontend", FRAGMENT).await;
+
+        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+    });
+}
+
+#[test]
+fn local_collision_names_the_lexicographically_first_provider() {
+    block_on(async {
+        let bowl = scoped_bowl(&[("frontend", &["b", "a"]), ("a", &[]), ("b", &[])]).await;
+        insert(&bowl, "a.dsql", "a", FRAGMENT).await;
+        insert(&bowl, "b.dsql", "b", FRAGMENT).await;
         insert(&bowl, "page-fragments.dsql", "frontend", FRAGMENT).await;
 
         insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);

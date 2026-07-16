@@ -375,13 +375,24 @@ async fn check_import_collisions(
     let (entity, decl, file, scope) = query.item();
     let (_, imports) = imports.item();
 
-    let Some((imported, _, imported_scope)) = defs.iter().find(|(_, other_decl, other_scope)| {
-        other_decl.kind == decl.kind
-            && other_decl.name == decl.name
-            && imports
-                .imports_of(&scope.0)
-                .any(|import| import == other_scope.0)
-    }) else {
+    let Some((imported, _, imported_scope)) = defs
+        .iter()
+        .filter(|(_, other_decl, other_scope)| {
+            other_decl.kind == decl.kind
+                && other_decl.name == decl.name
+                && imports
+                    .imports_of(&scope.0)
+                    .any(|import| import == other_scope.0)
+        })
+        .min_by(
+            |(left_entity, _, left_scope), (right_entity, _, right_scope)| {
+                left_scope
+                    .0
+                    .cmp(&right_scope.0)
+                    .then_with(|| left_entity.cmp(right_entity))
+            },
+        )
+    else {
         return;
     };
 

@@ -477,9 +477,12 @@ dependencies = [
  "regex",
  "ropey",
  "sea-query",
+ "serde_json",
  "sqlformat",
+ "sqlx",
  "strum",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

@@ -1,6 +1,9 @@
 //! Plan and SQL generation: fixture queries plan and render to PostgreSQL
 //! on demand.
 
+use std::env;
+use std::path::Path;
+
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::facts::{PlanDemand, SqlDemand};
@@ -8,8 +11,9 @@ use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use futures::executor::block_on;
+use sqlx::{AssertSqlSafe, PgPool, Row, postgres::PgPoolOptions};
 
-use crate::{fixture, imdb_catalog};
+use crate::{fixture, imdb_catalog, queries_dir};
 
 async fn sql_bowl(catalog: Catalog) -> Bowl {
     let bowl = language_bowl().await;
@@ -216,4 +220,105 @@ fn cross_file_fragment_body_edits_rederive_sql() {
         // write through a full snapshot.
         insta::assert_snapshot!(after);
     });
+}
+
+/// Every parameter-free valid fixture executes against the reference imdb
+/// database when the opt-in URL is present. Ordinary test runs skip this
+/// external integration boundary.
+#[tokio::test]
+async fn valid_query_fixtures_execute_when_database_url_is_set() {
+    let Ok(database_url) = env::var("DSQL_TEST_DATABASE_URL") else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("reference database connects");
+
+    for name in fixture_names("valid") {
+        let bowl = sql_bowl(imdb_catalog()).await;
+        insert_source(&bowl, &name, &fixture(&name)).await;
+        let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+        let generated: Vec<String> = rows
+            .collect()
+            .into_iter()
+            .map(|(_, fact)| {
+                assert!(
+                    fact.0.parameters.is_empty(),
+                    "{name} must be parameter-free for live execution"
+                );
+                fact.0.sql.clone()
+            })
+            .collect();
+        assert!(!generated.is_empty(), "{name} must generate SQL");
+        for sql in generated {
+            let value = execute_json(&pool, &sql).await;
+            assert!(
+                value.is_array() || value.is_object(),
+                "{name} generated JSON must be an array or object"
+            );
+        }
+    }
+}
+
+/// Data-sensitive integration fixtures pin the reference imdb outputs when
+/// the opt-in database URL is present.
+#[tokio::test]
+async fn integration_query_fixtures_match_expected_output_when_database_url_is_set() {
+    let Ok(database_url) = env::var("DSQL_TEST_DATABASE_URL") else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("reference database connects");
+
+    for name in fixture_names("integration") {
+        let bowl = sql_bowl(imdb_catalog()).await;
+        insert_source(&bowl, &name, &fixture(&name)).await;
+        let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+        let generated: Vec<String> = rows
+            .collect()
+            .into_iter()
+            .map(|(_, fact)| fact.0.sql.clone())
+            .collect();
+        assert_eq!(generated.len(), 1, "{name} must generate one query");
+        let value = execute_json(&pool, &generated[0]).await;
+        let output = serde_json::to_string_pretty(&value).expect("JSON formats");
+        let snapshot = Path::new(&name)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("integration")
+            .replace('-', "_");
+        insta::assert_snapshot!(format!("{snapshot}_output"), output);
+    }
+}
+
+async fn execute_json(pool: &PgPool, sql: &str) -> serde_json::Value {
+    let sql = format!("select ({})::text", sql.trim().trim_end_matches(';'));
+    let row = sqlx::query(AssertSqlSafe(sql))
+        .fetch_one(pool)
+        .await
+        .expect("generated SQL executes");
+    let json: String = row.try_get(0).expect("query returns JSON text");
+    serde_json::from_str(&json).expect("generated output is JSON")
+}
+
+fn fixture_names(directory: &str) -> Vec<String> {
+    let root = queries_dir().join(directory);
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .expect("fixture directory exists")
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("dsql") {
+                return None;
+            }
+            let file_name = path.file_name()?.to_str()?;
+            Some(format!("{directory}/{file_name}"))
+        })
+        .collect();
+    names.sort();
+    names
 }

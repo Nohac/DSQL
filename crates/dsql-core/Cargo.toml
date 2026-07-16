@@ -23,3 +23,6 @@ lelwel = { workspace = true }
 [dev-dependencies]
 futures = { workspace = true }
 insta = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres"] }
+tokio = { workspace = true }
