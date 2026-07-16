@@ -13,7 +13,6 @@ use bowl::{
     SystemExt, View, Where, With,
 };
 
-use crate::catalog::{CatalogSnapshot, TableRef, TableResolution};
 use crate::entities::document::ParsedFile;
 use crate::entities::{direct_rule, direct_token, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
@@ -24,6 +23,7 @@ use crate::facts::{
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
+use crate::resolution::{ResolvedFragmentTarget, ResolvedTableTarget};
 use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
 use crate::source::{ResolutionScope, ScopeImports, SourceText};
 
@@ -116,23 +116,18 @@ impl LanguageEntity for Definition {
 /// only checked once it does (see `field_selection::check_selections`).
 async fn check_fragment_targets(
     _: Query<Entity, With<DiagnosticsDemand>>,
-    query: Query<(Entity, &DefDecl, &FragmentTarget, &BelongsToFile)>,
-    catalog: Query<(Entity, &CatalogSnapshot)>,
+    query: Query<(Entity, &ResolvedFragmentTarget, &BelongsToFile)>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
-    let (fragment, _, target, file) = query.item();
-    let (catalog_entity, snapshot) = catalog.item();
+    let (resolution, target, file) = query.item();
 
-    match snapshot
-        .catalog()
-        .resolve_table_ref_for(TableRef::parse(&target.name))
-    {
-        TableResolution::Found(_) => {}
-        TableResolution::NotFound { reference } => {
+    match &target.target {
+        ResolvedTableTarget::Table(_) => {}
+        ResolvedTableTarget::NotFound { reference } => {
             emit_diagnostic(
                 &mut commands,
                 DiagnosticFacts {
-                    derived_from: DerivedFrom::many([fragment, catalog_entity]),
+                    derived_from: DerivedFrom::new(resolution),
                     file: file.0,
                     span: target.span,
                     severity: Severity::Error,
@@ -142,7 +137,7 @@ async fn check_fragment_targets(
                 },
             );
         }
-        TableResolution::Ambiguous {
+        ResolvedTableTarget::Ambiguous {
             reference,
             candidates,
         } => {
@@ -153,7 +148,7 @@ async fn check_fragment_targets(
             emit_diagnostic(
                 &mut commands,
                 DiagnosticFacts {
-                    derived_from: DerivedFrom::many([fragment, catalog_entity]),
+                    derived_from: DerivedFrom::new(resolution),
                     file: file.0,
                     span: target.span,
                     severity: Severity::Error,

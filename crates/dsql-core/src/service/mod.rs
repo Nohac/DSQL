@@ -11,7 +11,7 @@ pub use completion::{
     CompletionCandidate, CompletionContext, CompletionItem, CompletionKind, CompletionList,
     CompletionRequest, CompletionSite, DirectiveCompletionContext, DirectiveRole,
 };
-pub use definition::{DefinitionRequest, DefinitionTarget};
+pub use definition::{CatalogDefinition, DefinitionRequest, DefinitionTarget};
 pub use hover::{
     Cursor, HoverCandidate, HoverEnriched, HoverInfo, HoverRequest, Position, priority,
 };

@@ -127,8 +127,14 @@ fn goto_definition_follows_spreads() {
             .expect("definition answered");
 
         let name_start = source.find("TitleFields").expect("fixture text");
-        assert_eq!(target.span.start, name_start);
-        assert_eq!(target.span.end, name_start + "TitleFields".len());
+        assert!(
+            matches!(target.as_ref(), DefinitionTarget::Source { .. }),
+            "spread definition must target dsql source"
+        );
+        if let DefinitionTarget::Source { span, .. } = target.as_ref() {
+            assert_eq!(span.start, name_start);
+            assert_eq!(span.end, name_start + "TitleFields".len());
+        }
     });
 }
 

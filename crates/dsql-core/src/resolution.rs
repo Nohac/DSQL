@@ -23,8 +23,8 @@ use crate::schema::dsql_schema;
 use bowl::{Commands, Component, DerivedFrom, Entity, In, Query, Registrar, Where};
 
 use crate::catalog::{
-    CatalogSnapshot, ColumnId, FieldCheckResult, FieldRef, ForeignKeyId, TableId, TableRef,
-    TableResolution,
+    CatalogSnapshot, ColumnId, FieldCheckResult, FieldRef, ForeignKeyId, TableId, TableKey,
+    TableRef, TableResolution,
 };
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
@@ -72,6 +72,32 @@ pub enum SelectionTarget {
     /// The name (or its context) resolved to nothing; the checks report
     /// why.
     Unresolved,
+}
+
+/// The catalog resolution of a fragment declaration's `on` target. Checks
+/// and services consume this shared fact instead of resolving the raw name
+/// independently.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct ResolvedFragmentTarget {
+    /// Span of the target name in the fragment document.
+    pub span: Span,
+    /// The resolved table or the stable failure details used by diagnostics.
+    pub target: ResolvedTableTarget,
+}
+
+/// Owned form of [`TableResolution`] suitable for a derived component.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum ResolvedTableTarget {
+    /// The target resolved to this catalog table.
+    Table(TableId),
+    /// No table matched the written reference.
+    NotFound { reference: String },
+    /// More than one table matched the written reference.
+    Ambiguous {
+        reference: String,
+        candidates: Vec<TableKey>,
+    },
 }
 
 impl SelectionTarget {
@@ -203,9 +229,42 @@ pub struct ClauseContext {
 }
 
 pub fn register_resolution(reg: &mut Registrar<'_>) {
+    reg.system(resolve_fragment_targets);
     reg.system(resolve_roots);
     reg.system(resolve_nested);
     reg.system(resolve_clauses);
+}
+
+/// Resolves each fragment declaration target once against the catalog.
+async fn resolve_fragment_targets(
+    fragments: Query<(Entity, &DefDecl, &FragmentTarget, &BelongsToFile)>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::ResolvedFragmentTarget,)>,
+) {
+    let (fragment, _, target, file) = fragments.item();
+    let (catalog_entity, snapshot) = catalog.item();
+    let target_resolution = match snapshot
+        .catalog()
+        .resolve_table_ref_for(TableRef::parse(&target.name))
+    {
+        TableResolution::Found(table) => ResolvedTableTarget::Table(table.id),
+        TableResolution::NotFound { reference } => ResolvedTableTarget::NotFound { reference },
+        TableResolution::Ambiguous {
+            reference,
+            candidates,
+        } => ResolvedTableTarget::Ambiguous {
+            reference,
+            candidates,
+        },
+    };
+    commands.insert((
+        DerivedFrom::many([fragment, catalog_entity]),
+        BelongsToFile(file.0),
+        ResolvedFragmentTarget {
+            span: target.span,
+            target: target_resolution,
+        },
+    ));
 }
 
 /// Emits one resolution fact.

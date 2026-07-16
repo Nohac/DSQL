@@ -9,7 +9,7 @@
 
 use bowl::{DerivedFrom, Singleton};
 
-use crate::catalog::CatalogSnapshot;
+use crate::catalog::{CatalogSnapshot, CatalogSourceRoot};
 use crate::embedding::ExtractionRegistry;
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefIndex, FragmentKey, FragmentTarget};
@@ -24,7 +24,9 @@ use crate::facts::{
 };
 use crate::lint::LintConfig;
 use crate::plan::{FragmentPlanFact, OperationSeed, QueryPlanFact};
-use crate::resolution::{FieldResolutions, ResolutionOf, ResolvedClause, ResolvedSelection};
+use crate::resolution::{
+    FieldResolutions, ResolutionOf, ResolvedClause, ResolvedFragmentTarget, ResolvedSelection,
+};
 use crate::service::completion::{
     CompletionCandidate, CompletionContext, CompletionList, CompletionRequest,
     DirectiveCompletionContext,
@@ -64,6 +66,7 @@ pub struct DsqlSchema {
     /// Editor-owned marker stamped externally on open documents.
     open_buffer: (OpenBuffer,),
     catalog: (Singleton<CatalogSnapshot>, CatalogSnapshot),
+    catalog_source_root: (Singleton<CatalogSourceRoot>, CatalogSourceRoot),
     scope_imports: (Singleton<ScopeImports>, ScopeImports),
     scope_documents: (Singleton<ScopeDocuments>, ScopeDocuments),
     lint_config: (Singleton<LintConfig>, LintConfig),
@@ -158,6 +161,7 @@ pub struct DsqlSchema {
     def_index: (Singleton<DefIndex>, DefIndex),
     resolved_selection: (ResolvedSelection, ResolutionOf, BelongsToFile, DerivedFrom),
     resolved_clause: (ResolvedClause, BelongsToFile, DerivedFrom),
+    resolved_fragment_target: (ResolvedFragmentTarget, BelongsToFile, DerivedFrom),
     resolved_spread: (ResolvedSpread, BelongsToFile, DerivedFrom),
     variable_binding: (VariableBinding, DefKey, Span, BelongsToFile, DerivedFrom),
     duplicate_anonymous_binding: (

@@ -170,7 +170,8 @@ impl Scenario {
         info.text.clone()
     }
 
-    /// Renders a definition answer as `path[start..end] -> "text"`.
+    /// Renders a source definition as `path[start..end] -> "text"` and a
+    /// catalog definition as its stable semantic identity.
     async fn definition(&self, path: &str, offset: usize) -> String {
         let target = self
             .bowl
@@ -186,27 +187,32 @@ impl Scenario {
         let Ok(target) = target else {
             return "<no definition>".to_string();
         };
-        let rows = self
-            .bowl
-            .scoop::<Query<(Entity, &FilePath, &SourceText)>>()
-            .await;
-        let (target_path, text) = rows
-            .collect()
-            .into_iter()
-            .find(|(entity, _, _)| *entity == target.file)
-            .map(|(_, path, text)| {
-                (
-                    path.0.clone(),
-                    text.to_text().expect("scenario text is resident"),
+        match target.as_ref() {
+            DefinitionTarget::Catalog(target) => format!("{target:?}"),
+            DefinitionTarget::Source { file, span } => {
+                let rows = self
+                    .bowl
+                    .scoop::<Query<(Entity, &FilePath, &SourceText)>>()
+                    .await;
+                let (target_path, text) = rows
+                    .collect()
+                    .into_iter()
+                    .find(|(entity, _, _)| entity == file)
+                    .map(|(_, path, text)| {
+                        (
+                            path.0.clone(),
+                            text.to_text().expect("scenario text is resident"),
+                        )
+                    })
+                    .unwrap_or_default();
+                format!(
+                    "{target_path}[{}..{}] -> `{}`",
+                    span.start,
+                    span.end,
+                    &text[span.start..span.end]
                 )
-            })
-            .unwrap_or_default();
-        format!(
-            "{target_path}[{}..{}] -> `{}`",
-            target.span.start,
-            target.span.end,
-            &text[target.span.start..target.span.end]
-        )
+            }
+        }
     }
 
     async fn diagnostics(&self) -> String {
@@ -383,6 +389,49 @@ fn definitions_resolve_across_documents() {
             )
             .await;
         insta::assert_snapshot!(scenario.definition("q.dsql", markers[0]).await);
+    });
+}
+
+/// Catalog definitions consume the resolver's semantic facts for fragment
+/// targets, query roots, predicate paths, order items, scalar columns, and
+/// relation fields.
+#[test]
+fn definitions_resolve_catalog_targets() {
+    block_on(async {
+        let scenario = Scenario::new().await;
+        let markers = scenario
+            .open(
+                "catalog.dsql",
+                concat!(
+                    "fragment Bits on ti<|>tle {\n  id\n}\n",
+                    "query Catalog {\n",
+                    "  movie_i<|>nfo(where .ti<|>tle.production_y<|>ear == 2000 order by no<|>te asc) {\n",
+                    "    no<|>te\n",
+                    "    ti<|>tle {\n      id\n    }\n",
+                    "  }\n",
+                    "}\n",
+                ),
+            )
+            .await;
+        let mut answers = Vec::new();
+        for (label, offset) in [
+            "fragment target",
+            "query root",
+            "predicate relation",
+            "predicate column",
+            "order column",
+            "selected column",
+            "selected relation",
+        ]
+        .iter()
+        .zip(markers)
+        {
+            answers.push(format!(
+                "{label}: {}",
+                scenario.definition("catalog.dsql", offset).await
+            ));
+        }
+        insta::assert_snapshot!(answers.join("\n"));
     });
 }
 

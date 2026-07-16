@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use bowl::{Bowl, Singleton};
 
-use dsql_core::catalog::insert_catalog;
+use dsql_core::catalog::{CatalogSourceRoot, insert_catalog};
 use dsql_core::embedding::ExtractionRegistry;
 use dsql_core::facts::Severity;
 use dsql_core::language_bowl;
@@ -55,6 +55,11 @@ pub async fn populate_project_bowl_excluding(
     let extraction_registry = extraction_registry(project)?;
 
     insert_catalog(bowl, catalog).await;
+    bowl.insert((
+        Singleton::<CatalogSourceRoot>::new(),
+        CatalogSourceRoot(project.schema.clone()),
+    ))
+    .await;
 
     let imports: BTreeMap<String, Vec<String>> = project
         .config

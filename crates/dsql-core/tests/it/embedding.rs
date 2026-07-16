@@ -330,8 +330,14 @@ mod host_requests {
                 .iter()
                 .find(|(_, _, text)| text.contains("fragment TitleBits"))
                 .expect("fragment region derived");
-            assert_eq!(target.file, *bits_entity);
-            assert_eq!(&bits_text[target.span.start..target.span.end], "TitleBits");
+            assert!(
+                matches!(target.as_ref(), DefinitionTarget::Source { .. }),
+                "spread definition must target its source region"
+            );
+            if let DefinitionTarget::Source { file, span } = target.as_ref() {
+                assert_eq!(*file, *bits_entity);
+                assert_eq!(&bits_text[span.start..span.end], "TitleBits");
+            }
         });
     }
 

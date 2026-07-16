@@ -5,7 +5,7 @@ mod metadata;
 mod provider;
 mod types;
 
-pub use component::{CatalogSnapshot, insert_catalog};
+pub use component::{CatalogSnapshot, CatalogSourceRoot, insert_catalog};
 pub use keys::{ColumnId, ColumnKey, ForeignKeyId, SchemaId, SchemaKey, TableId, TableKey};
 pub use metadata::{
     CatalogBuildError, ColumnMetadata, DatabaseMetadata, ForeignKeyConstraintMetadata,

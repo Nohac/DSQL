@@ -1,0 +1,11 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+expression: "answers.join(\"\\n\")"
+---
+fragment target: Table { schema: "public", table: "title" }
+query root: Table { schema: "public", table: "movie_info" }
+predicate relation: Table { schema: "public", table: "title" }
+predicate column: Column { schema: "public", table: "title", column: "production_year" }
+order column: Column { schema: "public", table: "movie_info", column: "note" }
+selected column: Column { schema: "public", table: "movie_info", column: "note" }
+selected relation: Table { schema: "public", table: "title" }

@@ -12,21 +12,22 @@ use tower_lsp_server::ls_types::{
     DidOpenTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    MessageType, OneOf, Range, SemanticTokensFullOptions, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    MessageType, OneOf, Position as LspPosition, Range, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
-use dsql_core::catalog::{Catalog, insert_catalog};
+use dsql_core::catalog::{Catalog, CatalogSourceRoot, insert_catalog};
 use dsql_core::facts::{
     BelongsToFile, Diagnostic as DiagnosticFact, Severity, Span, arm_editor_demands,
 };
 use dsql_core::format::{FormatConfidence, format_document};
 use dsql_core::grammar::parse;
 use dsql_core::service::{
-    CompletionKind, CompletionList, CompletionRequest, DefinitionRequest, DefinitionTarget,
-    HoverInfo, HoverRequest, Position, semantic_tokens,
+    CatalogDefinition, CompletionKind, CompletionList, CompletionRequest, DefinitionRequest,
+    DefinitionTarget, HoverInfo, HoverRequest, Position as DsqlPosition, semantic_tokens,
 };
 use dsql_core::source::{
     BelongsToHost, ContentSpan, DsqlDocument, FilePath, HostProjection, OpenBuffer,
@@ -519,7 +520,7 @@ impl LanguageServer for Backend {
 
         let info = self
             .bowl()
-            .insert((HoverRequest, FilePath(path), Position { offset }))
+            .insert((HoverRequest, FilePath(path), DsqlPosition { offset }))
             .await
             .bind()
             .take::<HoverInfo>()
@@ -550,7 +551,7 @@ impl LanguageServer for Backend {
 
         let Ok(list) = self
             .bowl()
-            .insert((CompletionRequest, FilePath(path), Position { offset }))
+            .insert((CompletionRequest, FilePath(path), DsqlPosition { offset }))
             .await
             .bind()
             .take::<CompletionList>()
@@ -611,13 +612,22 @@ impl LanguageServer for Backend {
 
         let Ok(target) = self
             .bowl()
-            .insert((DefinitionRequest, FilePath(path), Position { offset }))
+            .insert((DefinitionRequest, FilePath(path), DsqlPosition { offset }))
             .await
             .bind()
             .take::<DefinitionTarget>()
             .await
         else {
             return Ok(None);
+        };
+
+        let (file, span) = match target.as_ref() {
+            DefinitionTarget::Source { file, span } => (*file, *span),
+            DefinitionTarget::Catalog(target) => {
+                return Ok(catalog_location(self.bowl(), target)
+                    .await
+                    .map(GotoDefinitionResponse::Scalar));
+            }
         };
 
         // Resolve the target file entity back to its path and rope. A
@@ -633,7 +643,7 @@ impl LanguageServer for Backend {
                 .into_iter()
                 .map(|(region, host, offset)| (region, host.0, offset.0)),
         );
-        let (target_file, offset) = projection.target_of(target.file);
+        let (target_file, offset) = projection.target_of(file);
         let paths = self.bowl().scoop::<Query<(Entity, &FilePath)>>().await;
         let Some(target_path) = paths
             .collect()
@@ -653,8 +663,8 @@ impl LanguageServer for Backend {
         Ok(Some(GotoDefinitionResponse::Scalar(Location {
             uri: target_uri,
             range: Range {
-                start: byte_to_position(&target_rope, offset + target.span.start),
-                end: byte_to_position(&target_rope, offset + target.span.end),
+                start: byte_to_position(&target_rope, offset + span.start),
+                end: byte_to_position(&target_rope, offset + span.end),
             },
         })))
     }
@@ -728,4 +738,51 @@ impl LanguageServer for Backend {
         let edits: Vec<TextEdit> = edits.into_iter().map(|(_, edit)| edit).collect();
         Ok((!edits.is_empty()).then_some(edits))
     }
+}
+
+/// Presents a semantic catalog target as its YAML source location. The
+/// schema root is session state owned by the bowl; this adapter only maps
+/// it into LSP URI/range values.
+async fn catalog_location(bowl: &Bowl, target: &CatalogDefinition) -> Option<Location> {
+    let roots = bowl.scoop::<Query<(Entity, &CatalogSourceRoot)>>().await;
+    let root = roots
+        .collect()
+        .into_iter()
+        .next()
+        .map(|(_, root)| root.0.clone())?;
+    let (schema, table, column) = match target {
+        CatalogDefinition::Table { schema, table } => (schema, table, None),
+        CatalogDefinition::Column {
+            schema,
+            table,
+            column,
+        } => (schema, table, Some(column.as_str())),
+    };
+    let path = root.join(schema).join(format!("{table}.yaml"));
+    let contents = tokio::fs::read_to_string(&path).await.ok()?;
+    let line = column
+        .and_then(|column| yaml_column_line(&contents, column))
+        .or_else(|| yaml_table_line(&contents, table))
+        .unwrap_or_default() as u32;
+    let uri = Uri::from_file_path(&path)?;
+    let position = LspPosition::new(line, 0);
+    Some(Location {
+        uri,
+        range: Range {
+            start: position,
+            end: position,
+        },
+    })
+}
+
+fn yaml_table_line(contents: &str, table: &str) -> Option<usize> {
+    let expected = format!("name: {table}");
+    contents
+        .lines()
+        .position(|line| line.trim() == expected && !line.trim_start().starts_with("- "))
+}
+
+fn yaml_column_line(contents: &str, column: &str) -> Option<usize> {
+    let expected = format!("- name: {column}");
+    contents.lines().position(|line| line.trim() == expected)
 }

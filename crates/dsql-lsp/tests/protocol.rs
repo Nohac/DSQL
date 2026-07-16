@@ -84,6 +84,19 @@ impl Session {
             .await;
     }
 
+    async fn definition(&mut self, uri: &str, text: &str, byte_offset: usize) -> Value {
+        let id = self
+            .request(
+                "textDocument/definition",
+                json!({
+                    "textDocument": {"uri": uri},
+                    "position": protocol_position(text, byte_offset),
+                }),
+            )
+            .await;
+        self.response(id).await["result"].clone()
+    }
+
     /// Reads framed messages until the response to `id` arrives; other
     /// messages (diagnostics pushes, logs) are discarded. Bounded: a
     /// server that stops answering fails the test instead of hanging it.
@@ -177,6 +190,49 @@ fn protocol_range(text: &str, start: usize, end: usize) -> Value {
         "start": protocol_position(text, start),
         "end": protocol_position(text, end),
     })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalog_definitions_target_schema_yaml() {
+    let mut session = Session::start("catalog-definition").await;
+    let uri = session.uri("queries/frontend/titles.dsql");
+    let text = "query Titles {\n  title(limit 2) {\n    id\n  }\n}\n";
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": uri, "languageId": "dsql", "version": 1, "text": text}}),
+        )
+        .await;
+    let diagnostics = session.diagnostics_for(&uri).await;
+    assert_eq!(
+        diagnostics.as_array().map(Vec::len),
+        Some(0),
+        "definition fixture is clean"
+    );
+
+    let table = session
+        .definition(&uri, text, text.find("title(").expect("table occurrence"))
+        .await;
+    let column = session
+        .definition(&uri, text, text.find("id\n").expect("column occurrence"))
+        .await;
+    let schema_uri = session.uri("dsql/schema/public/title.yaml");
+    assert_eq!(table["uri"].as_str(), Some(schema_uri.as_str()));
+    assert_eq!(
+        table["range"],
+        json!({
+            "start": {"line": 2, "character": 0},
+            "end": {"line": 2, "character": 0},
+        })
+    );
+    assert_eq!(column["uri"].as_str(), Some(schema_uri.as_str()));
+    assert_eq!(
+        column["range"],
+        json!({
+            "start": {"line": 5, "character": 0},
+            "end": {"line": 5, "character": 0},
+        })
+    );
 }
 
 /// A dsql document publishes diagnostics on open, an edit introducing an

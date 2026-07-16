@@ -1,10 +1,18 @@
 //! The catalog as a bowl fact: a fingerprinted singleton snapshot.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bowl::{Bowl, Component, Entity, Singleton};
 
 use super::Catalog;
+
+/// Filesystem root containing the YAML catalog sources for the active
+/// project. Editor adapters read this bowl-owned fact when presenting a
+/// semantic catalog definition as a protocol location.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct CatalogSourceRoot(pub PathBuf);
 
 /// The schema catalog every context-aware check resolves against, as a
 /// singleton component. The fingerprint is the revision verbatim, drawn

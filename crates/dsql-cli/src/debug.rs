@@ -151,19 +151,19 @@ pub async fn goto(file: &str, offset: usize) -> Outcome {
             .take::<DefinitionTarget>()
             .await;
         match target {
-            Ok(target) => {
-                let paths = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
-                let target_path = paths
-                    .collect()
-                    .into_iter()
-                    .find(|(entity, _)| *entity == target.file)
-                    .map(|(_, path)| path.0.clone())
-                    .unwrap_or_else(|| format!("<entity {}>", target.file.raw()));
-                println!(
-                    "definition: {target_path}:{}..{}",
-                    target.span.start, target.span.end
-                );
-            }
+            Ok(target) => match target.as_ref() {
+                DefinitionTarget::Source { file, span } => {
+                    let paths = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
+                    let target_path = paths
+                        .collect()
+                        .into_iter()
+                        .find(|(entity, _)| entity == file)
+                        .map(|(_, path)| path.0.clone())
+                        .unwrap_or_else(|| format!("<entity {}>", file.raw()));
+                    println!("definition: {target_path}:{}..{}", span.start, span.end);
+                }
+                DefinitionTarget::Catalog(target) => println!("definition: {target:?}"),
+            },
             Err(error) => println!("definition: <no answer: {error:?}>"),
         }
         Ok(true)

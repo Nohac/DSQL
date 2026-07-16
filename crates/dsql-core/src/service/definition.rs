@@ -1,5 +1,5 @@
-//! Go-to-definition service: a request at a fragment-spread name answers
-//! with the fragment definition's name span.
+//! Go-to-definition service: fragment spreads answer source locations;
+//! resolved schema names answer stable catalog identities.
 //!
 //! Enrichment stamps the resolved file as `BelongsToFile`, so the spread
 //! lookup is a per-file bound join, and the [`ResolvedSpread`] stamp on
@@ -11,8 +11,13 @@ use bowl::{
     Commands, Component, Entity, Eq as BowlEq, Phase, Query, Registrar, SystemExt, Where, With,
 };
 
+use crate::catalog::{Catalog, CatalogSnapshot, ColumnId, TableId};
 use crate::entities::fragment_spread::ResolvedSpread;
 use crate::facts::{BelongsToFile, Span};
+use crate::resolution::{
+    PathTerminal, ResolvedClause, ResolvedFragmentTarget, ResolvedSelection, ResolvedTableTarget,
+    SelectionTarget,
+};
 use crate::service::hover::{Cursor, FileMatch, Position, map_cursor};
 use crate::source::FilePath;
 
@@ -22,20 +27,41 @@ use crate::source::FilePath;
 #[component(hash)]
 pub struct DefinitionRequest;
 
-/// The answer: where the definition lives, written onto the request.
+/// A schema definition identified independently of its YAML presentation.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum CatalogDefinition {
+    /// A table definition in one schema.
+    Table { schema: String, table: String },
+    /// A column definition in one table.
+    Column {
+        schema: String,
+        table: String,
+        column: String,
+    },
+}
+
+/// The answer written onto a definition request.
 #[derive(Debug, Component, Hash, PartialEq, Eq)]
 #[component(hash)]
-pub struct DefinitionTarget {
-    /// The file entity holding the definition.
-    pub file: Entity,
-    /// The definition's name span within that file.
-    pub span: Span,
+pub enum DefinitionTarget {
+    /// A definition inside a dsql source entity.
+    Source {
+        /// The file entity holding the definition.
+        file: Entity,
+        /// The definition's name span within that file.
+        span: Span,
+    },
+    /// A table or column in the introspected catalog.
+    Catalog(CatalogDefinition),
 }
 
 pub(crate) fn register_definition_pipeline(reg: &mut Registrar<'_>) {
     // Enrichment reads the region view ambiently: behind Complete.
     reg.system(resolve_definition_requests.run_during(Phase::Complete));
     reg.system(answer_spread_definitions);
+    reg.system(answer_selection_definitions);
+    reg.system(answer_clause_definitions);
+    reg.system(answer_fragment_target_definitions);
 }
 
 async fn resolve_definition_requests(
@@ -86,8 +112,123 @@ async fn answer_spread_definitions(
         return;
     };
 
-    commands.entity(request).insert(DefinitionTarget {
+    commands.entity(request).insert(DefinitionTarget::Source {
         file: target.file,
         span: target.name_span,
     });
+}
+
+/// Answers a resolved field name: query roots and relations target tables;
+/// scalar selections target columns.
+async fn answer_selection_definitions(
+    query: Query<(Entity, &BelongsToFile, &Cursor), With<DefinitionRequest>>,
+    selections: Query<(Entity, &ResolvedSelection), Where<BowlEq<BelongsToFile>>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::DefinitionAnswer,)>,
+) {
+    let (request, _file, cursor) = query.item();
+    let (_, resolved) = selections.item();
+    let (_, snapshot) = catalog.item();
+    if !contains(resolved.name_span, cursor.0) {
+        return;
+    }
+    let target = match &resolved.target {
+        SelectionTarget::Table(table) | SelectionTarget::Relation { table, .. } => {
+            table_definition(snapshot.catalog(), *table)
+        }
+        SelectionTarget::Column(column) => column_definition(snapshot.catalog(), *column),
+        SelectionTarget::Unresolved => None,
+    };
+    if let Some(target) = target {
+        commands
+            .entity(request)
+            .insert(DefinitionTarget::Catalog(target));
+    }
+}
+
+/// Answers relation steps, terminal columns, and order-by columns from one
+/// resolved clause without re-resolving expression text.
+async fn answer_clause_definitions(
+    query: Query<(Entity, &BelongsToFile, &Cursor), With<DefinitionRequest>>,
+    clauses: Query<(Entity, &ResolvedClause), Where<BowlEq<BelongsToFile>>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::DefinitionAnswer,)>,
+) {
+    let (request, _file, cursor) = query.item();
+    let (_, resolved) = clauses.item();
+    let (_, snapshot) = catalog.item();
+    let catalog = snapshot.catalog();
+
+    let path_target = resolved.paths.iter().find_map(|path| {
+        path.relations
+            .iter()
+            .find(|relation| contains(relation.span, cursor.0))
+            .and_then(|relation| table_definition(catalog, relation.table))
+            .or_else(|| match &path.terminal {
+                PathTerminal::Column { span, column, .. } if contains(*span, cursor.0) => {
+                    column_definition(catalog, *column)
+                }
+                PathTerminal::Column { .. } | PathTerminal::Failed | PathTerminal::OutOfScope => {
+                    None
+                }
+            })
+    });
+    let target = path_target.or_else(|| {
+        resolved
+            .order_items
+            .iter()
+            .find(|item| contains(item.span, cursor.0))
+            .and_then(|item| item.column)
+            .and_then(|column| column_definition(catalog, column))
+    });
+    if let Some(target) = target {
+        commands
+            .entity(request)
+            .insert(DefinitionTarget::Catalog(target));
+    }
+}
+
+/// Answers a fragment declaration's `on` target from the shared semantic
+/// resolution fact used by its diagnostics.
+async fn answer_fragment_target_definitions(
+    query: Query<(Entity, &BelongsToFile, &Cursor), With<DefinitionRequest>>,
+    targets: Query<(Entity, &ResolvedFragmentTarget), Where<BowlEq<BelongsToFile>>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::DefinitionAnswer,)>,
+) {
+    let (request, _file, cursor) = query.item();
+    let (_, resolved) = targets.item();
+    let (_, snapshot) = catalog.item();
+    if !contains(resolved.span, cursor.0) {
+        return;
+    }
+    let ResolvedTableTarget::Table(table) = &resolved.target else {
+        return;
+    };
+    if let Some(target) = table_definition(snapshot.catalog(), *table) {
+        commands
+            .entity(request)
+            .insert(DefinitionTarget::Catalog(target));
+    }
+}
+
+fn contains(span: Span, offset: usize) -> bool {
+    span.start <= offset && offset < span.end
+}
+
+fn table_definition(catalog: &Catalog, table: TableId) -> Option<CatalogDefinition> {
+    let table = catalog.table_by_id(table)?;
+    Some(CatalogDefinition::Table {
+        schema: table.schema.clone(),
+        table: table.name.clone(),
+    })
+}
+
+fn column_definition(catalog: &Catalog, column: ColumnId) -> Option<CatalogDefinition> {
+    let column = catalog.column_by_id(column)?;
+    Some(CatalogDefinition::Column {
+        schema: column.key.schema.clone(),
+        table: column.key.table.clone(),
+        column: column.name.clone(),
+    })
 }
