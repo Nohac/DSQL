@@ -1,37 +1,31 @@
 # Aggregates
 
-Status: consideration.
+Status: proposed.
 
-Aggregates let a selection transform a related collection into computed output
-values. The main use case is nested API shape, not replacing SQL reporting
-queries.
+Aggregates transform a collection-producing selection into computed output.
+The source may be a root table or a nested relation. The main use case is
+typed API output shape, not unrestricted reporting queries.
 
-## Selection Pipe Blocks
+## Selection Transform
 
-Aggregate syntax should use a pipe block on a relation selection.
+An aggregate is a pipe transform on a collection source:
 
 ```dsql
 query Users {
-  users(where .name like $$ limit 10) {
+  users(limit 10) {
     id
     name
 
     post_stats: posts | aggregate {
       count
       latest_post: max .created_at
-    } |
+    }
   }
 }
 ```
 
-Meaning:
-
-- `posts` resolves as a relation from `users`.
-- The pipe block transforms the related `posts` collection.
-- `aggregate { ... }` produces one embedded object for that relation scope.
-- The output key is the alias when provided, otherwise the relation output key.
-
-Conceptual output:
+`posts` resolves normally from `users`. Its rows are filtered by any permitted
+source clauses and then transformed into one aggregate object:
 
 ```json
 {
@@ -44,23 +38,26 @@ Conceptual output:
 }
 ```
 
-Pipe blocks are selection transforms only. They are not valid in `where`,
-`order by`, `limit`, or `offset` clauses.
+The output key is the explicit alias when present and otherwise the source
+selection's ordinary output key.
 
-## Flattening
+Aggregation requires a collection-producing source. Piping a catalog-proven
+singular relation is a cardinality diagnostic. This is the inverse of ordinary
+relation flattening, which requires a singular object result.
 
-A spread-like marker can flatten a pipe output into the parent object.
+Only one transform may follow a source selection. General pipe chaining is not
+part of this feature.
+
+## Root Aggregates
+
+Root table collections may be aggregated in the same way as related
+collections:
 
 ```dsql
-query Users {
-  users(where .name like $$ limit 10) {
-    id
-    name
-
-    ...posts | aggregate {
-      post_count: count
-      latest_post: max .created_at
-    } |
+query UserStats {
+  stats: users(where .active == true) | aggregate {
+    count
+    latest_signup: max .created_at
   }
 }
 ```
@@ -69,23 +66,162 @@ Conceptual output:
 
 ```json
 {
+  "stats": {
+    "count": 42,
+    "latest_signup": "2026-07-17T08:00:00Z"
+  }
+}
+```
+
+A normal root selection is collection-valued. An ungrouped root aggregate
+changes that root field to one non-null object. SQL generation may still render
+root selections as independent statements; the contract is the assembled
+result object, not a promise that every root shares one SQL statement.
+
+Grouped root aggregates are keyed arrays:
+
+```dsql
+query UsersByStatus {
+  users_by_status: users | aggregate by .status {
+    count
+  }
+}
+```
+
+An empty source produces `[]`, as it does for a grouped nested aggregate.
+
+## Flattened Output
+
+The query language's general `...` form merges an object-valued result into its
+parent. Since an ungrouped aggregate produces one object, it may be flattened:
+
+```dsql
+query Users {
+  users(limit 10) {
+    id
+
+    ...posts | aggregate {
+      post_count: count
+      latest_post: max .created_at
+    }
+  }
+}
+```
+
+```json
+{
   "id": 1,
-  "name": "Ada",
-  "post_count": 3,
+  "post_count": 42,
   "latest_post": "2026-01-01T12:00:00Z"
 }
 ```
 
-Flattening must perform output-key collision checks. If a flattened aggregate
-field would collide with another selected output key, the compiler should report
-a diagnostic and require aliases.
+Root aggregate fields may likewise merge into the query result object:
 
-The spread-like syntax is intentionally similar to fragment spread: it signals
-that the produced fields are merged into the current object.
+```dsql
+query UserStats {
+  ...users | aggregate {
+    user_count: count
+    latest_signup: max .created_at
+  }
+}
+```
 
-## Nested Relation Aggregates
+Flattened aggregate fields participate in the same output-key length and
+collision checks as direct selections and fragment-contributed selections.
+Aggregate collisions are diagnostics and never merge implicitly.
 
-Pipe aggregates should compose inside normal relation selections.
+The full flattening contract, including singular-relation nullability, is in
+[Query Language](query.md#flattened-relation-selections).
+
+## Aggregate Fields
+
+The first aggregate functions are deliberately small:
+
+```dsql
+aggregate {
+  count
+  populated: count .published_at
+  has_posts: exists
+  latest_post: max .created_at
+  earliest_post: min .created_at
+}
+```
+
+Initial function semantics:
+
+| Form | Meaning | Empty input | Logical type | Nullable |
+|---|---|---|---|---|
+| `count` | Count source rows, like `count(*)` | `0` | `int` | no |
+| `count .field` | Count non-null field values | `0` | `int` | no |
+| `exists` | Whether at least one source row exists | `false` | `boolean` | no |
+| `min .field` | Minimum field value | `null` | field type | yes |
+| `max .field` | Maximum field value | `null` | field type | yes |
+
+PostgreSQL returns `bigint` for both count forms. They use dsql's current
+logical `int` contract, including its existing host-number precision limits.
+
+`count` and `exists` infer the output keys `count` and `exists`. Operand forms
+require an explicit alias in the first implementation; the compiler does not
+invent names such as `max_created_at`.
+
+Aggregate output keys are ordinary PostgreSQL result keys. They must be at most
+63 bytes and must not collide with another result field at their final output
+path.
+
+### Operands And Types
+
+Initial operands are `.`-anchored direct scalar columns on the aggregate
+source. Relationship traversal, parent/root anchors, and object-valued operands
+are diagnostics. Each function accepts only operand types supported by the
+selected database provider.
+
+`count .field` accepts any scalar column. The initial `min` and `max` allowlist
+is `int`, `text`, and `timestamptz`. `boolean`, `json`, `uuid`, and `unknown`
+are diagnostics until provider capability metadata explicitly supports them.
+
+`sum` and `avg` are planned additions, not part of the first function set.
+They require logical `Numeric` and `Float` types, PostgreSQL return-type rules,
+and an explicit lossless JSON/TypeScript wire representation. That foundation
+also fixes the existing `unknown` typing of ordinary numeric columns and should
+land independently of aggregate planning.
+
+Function vocabulary is contextual inside aggregate positions. `aggregate`,
+`count`, `exists`, `min`, `max`, `sum`, and `avg` must not become globally
+reserved lexer tokens, because ordinary catalog columns may use those names.
+`by` remains the existing grammar keyword.
+
+Empty `aggregate {}` bodies are diagnostics.
+
+## Source Clauses
+
+The initial aggregate source permits only `where`:
+
+```dsql
+query Users {
+  users {
+    id
+
+    recent_post_stats: posts(where .created_at >= "2026-01-01") | aggregate {
+      count
+      latest_post: max .created_at
+    }
+  }
+}
+```
+
+The filter is scoped to the source collection and applies before aggregation.
+`order by`, `limit`, and `offset` are diagnostics in this first contract:
+ordering alone does not affect an aggregate, while slicing would define a
+different source-subquery feature.
+
+Aggregate inputs are never capped by a renderer's collection safety limit.
+Such a limit may protect returned arrays, but applying it before aggregation
+would silently corrupt counts and other aggregate values.
+
+## Nested Composition
+
+Aggregates compose at every normal relation depth:
 
 ```dsql
 query Users {
@@ -97,17 +233,15 @@ query Users {
 
       comment_stats: comments | aggregate {
         count
-      } |
+      }
     }
   }
 }
 ```
 
-The aggregate scope is the selected relation. In the example above, `comments`
-is aggregated per `posts` row.
+Here `comments` is aggregated independently for each `posts` row.
 
-Aggregates should also compose beside the full relation when an API needs both
-summary information and a limited detail list.
+Summary and detail selections may coexist:
 
 ```dsql
 query Users {
@@ -116,7 +250,7 @@ query Users {
 
     ...posts | aggregate {
       post_count: count
-    } |
+    }
 
     posts(limit 5) {
       id
@@ -126,88 +260,27 @@ query Users {
 }
 ```
 
-Conceptual output:
-
-```json
-{
-  "id": 1,
-  "post_count": 42,
-  "posts": [
-    { "id": 10, "title": "..." }
-  ]
-}
-```
-
-## Aggregate Fields
-
-Initial aggregate fields should be small and explicit.
-
-```dsql
-aggregate {
-  count
-  latest_post: max .created_at
-  earliest_post: min .created_at
-}
-```
-
-Candidate built-ins:
-
-- `count`
-- `count .field`
-- `exists`
-- `max .field`
-- `min .field`
-- `sum .field`
-- `avg .field`
-
-Aggregate field aliases should be supported. If the inferred output key would be
-unclear or collide with another aggregate output, the compiler should require an
-alias.
-
-`exists` returns a boolean indicating whether the scoped relation contains at
-least one row after relation clauses are applied.
-
-```dsql
-query Users {
-  users {
-    id
-
-    ...posts | aggregate {
-      has_posts: exists
-      post_count: count
-    } |
-  }
-}
-```
+The aggregate and detail selections are independent scopes. The detail limit
+does not affect `post_count`.
 
 ## Grouped Aggregates
 
-Grouped aggregates return a collection of aggregate rows instead of one
-aggregate object.
+Grouped aggregates transform the source collection into an array of aggregate
+rows. Group keys are declared after `by` and are automatically emitted into
+each row:
 
 ```dsql
 query Users {
   users {
     id
 
-    post_statuses: posts | aggregate by status {
-      status
+    post_statuses: posts | aggregate by .status {
       count
       latest_post: max .created_at
-    } |
+    }
   }
 }
 ```
-
-Meaning:
-
-- `posts` resolves as a relation from `users`.
-- `status` is the grouping key.
-- Each output row represents one `status` group for that user's posts.
-- `status` is selectable because it is a grouping key.
-- `count` and `max .created_at` are aggregate outputs.
-
-Conceptual output:
 
 ```json
 {
@@ -227,113 +300,184 @@ Conceptual output:
 }
 ```
 
-Ungrouped aggregate:
+Multiple direct scalar keys and aliases use this conceptual shape:
 
 ```dsql
-posts | aggregate {
+posts | aggregate by state: .status, .category {
   count
-} |
+}
 ```
 
-Grouped aggregate:
+The body contains aggregate functions only. Repeating a group key in the body
+is invalid. Group-key aliases define their output keys; unaliased keys use the
+terminal column name. Group-key and aggregate-field collisions are diagnostics.
+Relationship-traversing group keys such as `.author.name` are not supported
+initially. `exists` is invalid in a grouped body because every emitted group is
+non-empty and the value would always be `true`.
 
-```dsql
-posts | aggregate by status {
-  status
-  count
-} |
+Every group contains at least one source row. `count` is therefore non-null.
+`min` and `max` over a not-null operand are non-null in grouped output; they are
+nullable when the operand column is nullable. A nullable group key forms a SQL
+`NULL` group, is emitted as `null`, and retains the column's nullability.
+
+An empty source produces `[]`. Grouped output is array-valued and therefore
+cannot use `...`; that follows from the general rule that only object-valued
+results can flatten.
+
+Initial grouped aggregates have no `having`, group-result pagination, or group
+ordering. As with an ordinary relation lacking `order by`, row order is
+unspecified. These additions can build on the grouped result model without
+changing its basic shape.
+
+## Fragments And Directives
+
+Fragments may contain flattened relation selections and aggregate pipe
+selections. Their produced keys participate in collision checking when the
+fragment is expanded at a spread site.
+
+Aggregate bodies contain aggregate fields only; fragment spreads are invalid
+inside them.
+
+The first aggregate implementation rejects directives on pipe transforms and
+inside aggregate bodies. Aggregate directive locations and conditional output
+shape require a separate specification before they can be enabled.
+
+## Variables And Selection Identity
+
+Aggregation and flattening change result shape, not source resolution. Clause
+variables remain attached to the semantic source selection.
+
+Keyed aggregate selections retain the ordinary alias/output-key selection path.
+Flattened aggregates have no output wrapper, so their variables use the
+underlying root or relation scope plus an aggregate scope segment. Repeated
+flattened scopes, or a flattened scope beside a keyed selection using the same
+path, must diagnose inferred-input ambiguity rather than silently making one
+input control two different filters.
+
+The complete inference rule is in
+[Variables](variables.md#flattened-and-transformed-selections).
+
+## Parser Classification
+
+Ellipsis selections are classified by the syntax following their relation or
+fragment name:
+
+```text
+...Name                         fragment spread
+...relation { ... }             flattened relation selection
+...relation | aggregate { ... } flattened aggregate selection
 ```
 
-Flattening grouped aggregates should be invalid because grouped aggregates
-produce a collection, not a single object that can be merged into the parent.
+Schema qualification and relation-edge selectors are valid on flattened
+relations. A fragment name remains one unqualified name.
 
-## Relation Arguments
+Future fragment binding lists and relation clause lists share a parenthesized
+prefix but have disjoint first tokens: bindings begin with `$` or `$$`, while
+selection clauses begin with clause keywords. Empty ambiguous parentheses are a
+diagnostic. An ellipsis selection classified as a relation but followed by
+neither a selection set nor a pipe is also a diagnostic. `aggregate` followed
+by `by` classifies the grouped form.
 
-The relation before the pipe may use normal relation clauses.
+An alias combined with a flattened selection set or pipe is invalid because
+flattening has no wrapper key. This does not prevent the separately proposed
+`alias: ...Fragment` form for wrapped fragment spreads.
+
+## Result Metadata
+
+Aggregate outputs are ordinary result-shape fields. Generated clients read the
+same path, kind, logical type, and nullability metadata used for catalog fields:
+
+- keyed ungrouped aggregate: non-null object plus scalar child fields;
+- flattened ungrouped aggregate: scalar fields at the parent result path;
+- grouped aggregate: non-null array of object rows with group-key and aggregate
+  fields.
+
+Public `aggregates` or `grouped_aggregates` provenance sidecars are not part of
+the metadata contract. They would duplicate result shape and become ambiguous
+when source paths differ from flattened output paths. Tooling-specific
+provenance can be added later if a concrete consumer requires it.
+
+## SQL Semantics
+
+Each aggregate source is evaluated independently:
+
+- a root aggregate is an uncorrelated aggregate query;
+- a nested aggregate is correlated to its parent relation scope;
+- an ungrouped source produces one aggregate row even for empty input;
+- a grouped source produces zero or more group rows, collected into an array;
+- summary and detail selections of the same relation do not share joins in a
+  way that could multiply parent rows or change either source's clauses.
+
+The semantic plan should represent aggregate outputs directly. SQL generation,
+metadata assembly, services, and generated types consume that checked plan and
+must not independently re-resolve aggregate names or operands.
+
+## Scalar Aggregate Predicates
+
+Purpose-built scalar relation aggregates are a planned later extension:
 
 ```dsql
-query Users {
-  users {
+query PopularUsers {
+  users(where (.posts | count) >= $$minimum_posts) {
     id
+    name
+  }
+}
 
-    recent_post_stats: posts(where .created_at >= "2026-01-01") | aggregate {
-      count
-      latest_post: max .created_at
-    } |
+query UsersWithPosts {
+  users(where .posts | exists) {
+    id
   }
 }
 ```
 
-The relation clauses apply before aggregation and are scoped to that relation.
+The aggregate transform binds before comparison and shares the output
+aggregate function, type, empty-input, and null semantics. `min` or `max` over
+an empty scope yields SQL `NULL`; a comparison with that value is unknown and
+excludes the parent row.
 
-## Codegen Notes
-
-Aggregates should contribute normal result-shape metadata. Generated clients
-should not need to infer aggregate output types from SQL text.
-
-Possible shape:
-
-```json
-{
-  "result": {
-    "users": {
-      "fields": {
-        "post_count": { "type": "int", "nullable": false },
-        "latest_post": { "type": "timestamptz", "nullable": true }
-      }
-    }
-  },
-  "aggregates": [
-    {
-      "path": "users.posts",
-      "output": "post_count",
-      "function": "count"
-    }
-  ],
-  "grouped_aggregates": [
-    {
-      "path": "users.posts",
-      "output": "post_statuses",
-      "group_by": ["status"],
-      "fields": ["status", "count", "latest_post"]
-    }
-  ]
-}
-```
-
-Flattened aggregate outputs should appear at the parent result path, with any
-collision diagnostics resolved before metadata is emitted.
+This form is reserved in the specification but is not part of the first
+aggregate implementation. Clause-bearing relation paths inside predicates,
+multi-step paths, and their nested variable scopes are separate increments.
 
 ## Non-Goals
 
-Pipe blocks should not become a general query language inside DSQL.
+Aggregate blocks are selection transforms. Object-producing pipe blocks and
+general relational pipelines are not valid inside `where`, `order by`,
+`limit`, or `offset`. The reserved scalar predicate forms above are a closed
+allowlist, not a general clause pipeline facility.
 
-Avoid clause-level pipe blocks for now:
+Aggregates do not initially provide:
 
-```dsql
-query Users {
-  users(where posts | aggregate { count } | > 3) {
-    id
-  }
-}
-```
+- relationship-path operands or group keys;
+- source ordering or slicing;
+- single-field object unwrapping;
+- `having`, grouped pagination, or grouped ordering;
+- provider-defined aggregate functions;
+- general pipe composition.
 
-Filtering should continue to use scoped predicates and purpose-built predicate
-forms. DSQL is intended as a convenient subset for nested data fetching and
-common API design, not a replacement for SQL.
+## Incremental Delivery
+
+The contract is designed for independently shippable slices:
+
+1. logical numeric/float types and their JSON/host wire representation;
+2. keyed ungrouped root and relation aggregates with
+   `count`/`exists`/`min`/`max`;
+3. general singular-relation flattening and flattened ungrouped aggregates;
+4. grouped root and relation aggregates;
+5. `sum` and `avg` after numeric return types exist;
+6. scalar aggregate predicates.
+
+The order may vary where slices are independent, but later slices must preserve
+the function and result-shape semantics established by the earlier ones.
 
 ## Open Questions
 
-- Exact parser shape for `...relation | aggregate { ... } |`.
-- Whether `count` means `count(*)` and whether `count .field` skips nulls.
-- How aggregate fields should resolve relationship paths, if at all.
-- Whether aggregate output is always an object or can be unwrapped when it has
-  one field.
-- Whether aggregate relation clauses should allow `order by`, `limit`, and
-  `offset`, or only `where`.
-- How generated SQL variants interact with aggregate pipe outputs.
-- Whether grouped aggregate keys must always appear in the output body.
-- How `order by` works on grouped aggregate output.
-- Whether grouped aggregates need a `having`-style predicate later.
-- How nested grouped aggregates are planned efficiently.
-- Whether grouped aggregates can be paginated.
+- What lossless JSON and TypeScript representation should `Numeric` use?
+- Should `Float` remain distinct from exact `Numeric` in generated contracts?
+- Which aggregate directive locations and merge rules are useful once
+  conditional output semantics exist?
+- What syntax should add grouped ordering, pagination, and `having`?
+- When should aggregate operands and group keys support relationship paths?
+- Which provider capability metadata should replace the initial hard-coded
+  function/type allowlists?

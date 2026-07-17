@@ -236,6 +236,58 @@ The compiler may eventually infer operator-qualified anonymous names such as
 `id_gt` and `id_lt`, but the first implementation should prefer diagnostics
 over surprising generated names.
 
+## Flattened And Transformed Selections
+
+Variable inference follows semantic selection scopes, while flattening changes
+only result shape.
+
+A keyed relation or aggregate selection keeps its ordinary output-key path:
+
+```dsql
+query Users {
+  users {
+    recent_stats: posts(where .created_at >= $since) | aggregate {
+      count
+    }
+  }
+}
+```
+
+Conceptually, `$since` remains under the `recent_stats` selection's clause
+scope. The alias distinguishes it from another independently filtered `posts`
+selection.
+
+A flattened selection has no output wrapper. Its variables use the underlying
+root or relation scope, with a transform segment when needed to distinguish the
+source clause from an ordinary body selection:
+
+```dsql
+query Users {
+  users {
+    ...posts(where .created_at >= $since) | aggregate {
+      post_count: count
+    }
+  }
+}
+```
+
+Conceptual input path:
+
+```text
+input.users.body.posts.aggregate.clause.where.since
+```
+
+Flattening must not make one generated input silently control two distinct
+selection instances. Two flattened selections over the same semantic relation,
+or a flattened selection beside a keyed selection using the same inferred path,
+produce an ambiguity diagnostic when their inferred inputs cannot be merged
+safely. Naming variables may disambiguate their input keys; an implementation
+must not use source order or result flattening as hidden identity.
+
+The same rule applies at query roots. A root aggregate's clauses belong to the
+root source scope whether its aggregate object is keyed or flattened into the
+query result.
+
 ## Bound Definition Inputs
 
 Some source constructs reference another definition that has its own inferred

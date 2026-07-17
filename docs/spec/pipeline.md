@@ -12,11 +12,14 @@ relation aggregates. Selection pipe blocks are intentionally narrower:
 post_stats: posts | aggregate {
   count
   latest_post: max .created_at
-} |
+}
 ```
 
 General pipelines should remain a separate consideration and should not be
-introduced through `where` clauses or other clause positions.
+introduced through `where` clauses or other clause positions. Purpose-built
+scalar aggregate predicates such as `(.posts | count) >= $$minimum` are a
+separate closed expression feature; reserving them does not permit general
+pipeline stages in clauses.
 
 ## Possible Shape
 

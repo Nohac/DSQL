@@ -60,7 +60,7 @@ query UsersPage {
   users_page: users | page_info {
     total_count
     has_next_page
-  } |
+  }
 }
 ```
 

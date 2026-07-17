@@ -178,6 +178,87 @@ query Users {
 }
 ```
 
+## Flattened Relation Selections
+
+A leading `...` merges an object-valued relation selection into its parent
+instead of emitting a wrapper object:
+
+```dsql
+query Users {
+  users {
+    id
+
+    ...profile {
+      display_name: name
+      avatar_url
+    }
+  }
+}
+```
+
+Conceptual result shape:
+
+```json
+{
+  "users": [
+    {
+      "id": 1,
+      "display_name": "Ada",
+      "avatar_url": "https://example.test/ada.png"
+    }
+  ]
+}
+```
+
+Flattening is valid exactly when the selection result is object-valued. A
+catalog-proven singular relation may flatten; a collection-valued relation may
+not. A collection transform that produces one object, such as an ungrouped
+aggregate, may also flatten. Array-valued transforms, including grouped
+aggregates, may not.
+
+If the singular relation may be absent because of a nullable foreign key or its
+clauses, every field contributed through the flatten inherits that absence and
+is nullable in the result contract. Otherwise each contributed field keeps its
+ordinary column or nested-result nullability.
+
+Flattened fields participate in the same output-key length, duplicate, and
+fragment-expansion collision checks as direct fields. The compiler never
+silently overwrites or merges colliding flattened output.
+
+Schema qualification, relation-edge selectors, and relation clauses remain
+available:
+
+```dsql
+query Tasks {
+  tasks {
+    id
+    ...public::users->assignee_id {
+      assignee_name: name
+    }
+  }
+}
+```
+
+An alias cannot wrap a flattened relation because there is no wrapper output
+key. Aliased fragment spreads remain a separate proposed form.
+
+Ellipsis syntax is classified by what follows the name:
+
+```text
+...Name                         fragment spread
+...relation { ... }             flattened relation selection
+...relation | aggregate { ... } flattened object-producing transform
+```
+
+This also leaves future fragment binding lists unambiguous: binding items begin
+with `$` or `$$`, while relation clauses begin with clause keywords. Empty
+ambiguous parentheses are diagnostics. Once an ellipsis selection is classified
+as a relation, omitting both its selection set and pipe transform is invalid.
+
+At a query root, an ordinary table selection is collection-valued and cannot
+flatten. An ungrouped root aggregate is object-valued and may merge its fields
+into the query result object. See [Aggregates](aggregates.md#flattened-output).
+
 ## Dotted Selection Paths
 
 Status: proposed extension.
