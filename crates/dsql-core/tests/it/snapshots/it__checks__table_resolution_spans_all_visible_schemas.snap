@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[192..197]: table `users` is ambiguous; use an alias with a schema-qualified name (other_schema::users, public::users)
+Error[216..223]: table `missing` not found
+Error[28..33]: table `users` is ambiguous; use an alias with a schema-qualified name (other_schema::users, public::users)

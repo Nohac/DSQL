@@ -1,10 +1,10 @@
 ---
 source: crates/dsql-core/tests/it/completions.rs
-expression: "completions(\"fragment UserBits on users {\\n  id\\n}\\nquery Q {\\n  users {\\n    |\\n  }\\n}\\n\").await"
+expression: "completions(\"fragment UserBits on public::users {\\n  id\\n}\\nquery Q {\\n  public::users {\\n    |\\n  }\\n}\\n\").await"
 ---
 Column created_at (timestamptz)
 Column email (text)
 Column id (uuid)
 Column name (text)
 Relation posts (relation to public.posts via user_id)
-Fragment UserBits (fragment on users) insert=...UserBits
+Fragment UserBits (fragment on public::users) insert=...UserBits

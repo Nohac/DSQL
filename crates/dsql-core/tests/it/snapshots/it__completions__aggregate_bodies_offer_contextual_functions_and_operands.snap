@@ -5,7 +5,7 @@ expression: "format!(\"pipe replace={:?}:\\n{}\\n\\npartial pipe replace={:?}:\\
 pipe replace=None:
 Keyword aggregate (selection transform)
 
-partial pipe replace=Some(Span { start: 20, end: 24 }):
+partial pipe replace=Some(Span { start: 28, end: 32 }):
 Keyword aggregate (selection transform)
 
 functions:

@@ -1,6 +1,6 @@
 # Implement cross-schema ambiguous table resolution
 
-**ID:** 5a0a720c | **Status:** Open | **Created:** 2026-07-17T01:46:36+02:00
+**ID:** 5a0a720c | **Status:** Done | **Created:** 2026-07-17T01:46:36+02:00
 
 `docs/spec/query.md` says an unqualified root table is valid only when its
 name is unique across visible schemas and otherwise produces an

@@ -1,5 +1,5 @@
 ---
 source: crates/dsql-core/tests/it/completions.rs
-expression: "completions(\"fragment UserBits on users {\\n  id\\n}\\nfragment PostBits on posts {\\n  id\\n}\\nquery Q {\\n  users {\\n    ...|\\n  }\\n}\\n\").await"
+expression: "completions(\"fragment UserBits on public::users {\\n  id\\n}\\nfragment PostBits on posts {\\n  id\\n}\\nquery Q {\\n  public::users {\\n    ...|\\n  }\\n}\\n\").await"
 ---
-Fragment UserBits (fragment on users)
+Fragment UserBits (fragment on public::users)

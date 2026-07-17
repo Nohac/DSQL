@@ -27,13 +27,32 @@ impl Catalog {
             );
         }
 
-        self.table(&self.default_schema, reference.name)
-            .map_or_else(
-                || TableResolution::NotFound {
+        let matches = self
+            .tables
+            .iter()
+            .filter(|table| table.name == reference.name)
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => TableResolution::NotFound {
+                reference: reference.display_text(),
+            },
+            [table] => TableResolution::Found(table),
+            _ => {
+                let mut candidates = matches
+                    .iter()
+                    .map(|table| table.key.clone())
+                    .collect::<Vec<_>>();
+                candidates.sort_by(|left, right| {
+                    left.schema
+                        .cmp(&right.schema)
+                        .then_with(|| left.table.cmp(&right.table))
+                });
+                TableResolution::Ambiguous {
                     reference: reference.display_text(),
-                },
-                TableResolution::Found,
-            )
+                    candidates,
+                }
+            }
+        }
     }
 
     pub fn table_by_id(&self, id: TableId) -> Option<&Table> {

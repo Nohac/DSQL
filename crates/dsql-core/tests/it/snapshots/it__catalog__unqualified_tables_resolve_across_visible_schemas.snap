@@ -1,0 +1,9 @@
+---
+source: crates/dsql-core/tests/it/catalog.rs
+expression: rendered
+---
+posts: found public::posts
+users: ambiguous users: other_schema::users, public::users
+public::users: found public::users
+other_schema::users: found other_schema::users
+missing: not found missing

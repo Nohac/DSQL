@@ -2,4 +2,4 @@
 source: crates/dsql-core/tests/it/checks.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[16..21]: table `users` not found
+Error[16..29]: table `public::users` not found

@@ -16,7 +16,7 @@ async fn embedded_findings_render_against_the_host_file() {
     bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
         .await;
 
-    let host = "import { dsql } from \"./dsql\";\n\nexport const q = dsql`\nquery Q {\n  users {\n    id\n    nonexistent\n  }\n}\n`;\n";
+    let host = "import { dsql } from \"./dsql\";\n\nexport const q = dsql`\nquery Q {\n  public::users {\n    id\n    nonexistent\n  }\n}\n`;\n";
     insert_embedding_source(&bowl, "src/users.ts", host, "typescript").await;
 
     let diagnostics = collect_diagnostics(&bowl).await;
@@ -27,7 +27,7 @@ async fn embedded_findings_render_against_the_host_file() {
     insta::assert_snapshot!(rendered.join("\n"));
 }
 
-const BROKEN_HOST: &str = "import { dsql } from \"./dsql\";\n\nexport const q = dsql`\nquery Q {\n  users {\n    id\n    nonexistent\n  }\n}\n`;\n";
+const BROKEN_HOST: &str = "import { dsql } from \"./dsql\";\n\nexport const q = dsql`\nquery Q {\n  public::users {\n    id\n    nonexistent\n  }\n}\n`;\n";
 
 /// With analysis residency the host's rope is evicted after extraction;
 /// excerpts recover by re-reading the file from disk, accepted only when

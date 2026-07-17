@@ -66,7 +66,7 @@ async fn case(name: &str, source: &str) -> String {
 async fn variable_bindings_match_reference_shapes() {
     let scalar = case(
             "scalar",
-            "\nquery VariableSearch {\n  users(where .id > $min_id and .posts.title like $$title limit $ offset $$) {\n    id\n    posts(limit $post_limit) {\n      title\n    }\n  }\n}\n",
+            "\nquery VariableSearch {\n  public::users(where .id > $min_id and .posts.title like $$title limit $ offset $$) {\n    id\n    posts(limit $post_limit) {\n      title\n    }\n  }\n}\n",
         )
         .await;
     let operator = case(
@@ -81,7 +81,7 @@ async fn variable_bindings_match_reference_shapes() {
         .await;
     let fragment = case(
             "fragment",
-            "\nfragment UserPosts on users {\n  posts(where .title like $$search limit $post_limit) {\n    title\n  }\n}\n",
+            "\nfragment UserPosts on public::users {\n  posts(where .title like $$search limit $post_limit) {\n    title\n  }\n}\n",
         )
         .await;
 
@@ -97,10 +97,10 @@ async fn fragment_spread_envelopes_nested_bindings() {
     let snapshot = case(
         "envelope",
         concat!(
-            "fragment UserFilter on users {\n",
+            "fragment UserFilter on public::users {\n",
             "  ...UserPosts\n",
             "}\n",
-            "fragment UserPosts on users {\n",
+            "fragment UserPosts on public::users {\n",
             "  recent: posts(limit $count) {\n    id\n  }\n",
             "}\n",
         ),
@@ -115,8 +115,8 @@ async fn flattened_aggregate_inputs_keep_the_source_and_aggregate_path_segments(
         "flattened",
         concat!(
             "query FlattenedInputs {\n",
-            "  ...users(where .name == $root_name) | aggregate { user_count: count }\n",
-            "  accounts: users(limit 1) {\n",
+            "  ...public::users(where .name == $root_name) | aggregate { user_count: count }\n",
+            "  accounts: public::users(limit 1) {\n",
             "    ...posts(where .title == $post_title) | aggregate { post_count: count }\n",
             "  }\n",
             "  feed: posts(limit 1) {\n",

@@ -2,6 +2,7 @@
 //! area, mirroring the layout described in CONTRIBUTING.md.
 
 mod aggregates;
+mod catalog;
 mod checks;
 mod completions;
 mod definitions;

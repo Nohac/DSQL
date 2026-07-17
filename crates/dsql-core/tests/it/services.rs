@@ -62,7 +62,7 @@ async fn hover_on_variables_reports_bindings() {
     insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
     bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
         .await;
-    let source = "query Q {\n  users(where .name like $$search) {\n    id\n  }\n}\n";
+    let source = "query Q {\n  public::users(where .name like $$search) {\n    id\n  }\n}\n";
     insert_source(&bowl, "vars.dsql", source).await;
 
     let offset = source.find("$$search").expect("test text") + "$$".len();
@@ -87,7 +87,7 @@ async fn hover_on_variables_reports_bindings() {
 async fn query_definition_hover_reports_inferred_variables() {
     let source = concat!(
         "query MovieDetailPageQuery {\n",
-        "  users(\n",
+        "  public::users(\n",
         "    where .id == $$movieId\n",
         "    order by created_at $$direction\n",
         "    limit $count\n",
@@ -96,7 +96,7 @@ async fn query_definition_hover_reports_inferred_variables() {
         "  }\n",
         "}\n",
         "query NoVariables {\n",
-        "  users(limit 1) {\n",
+        "  public::users(limit 1) {\n",
         "    id\n",
         "  }\n",
         "}\n",

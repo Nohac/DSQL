@@ -94,6 +94,35 @@ async fn invalid_fixtures_report_diagnostics_against_imdb() {
         &fixture("invalid/imdb-scalar-clause-list.dsql"),
     )
     .await;
+    insert_source(
+        &bowl,
+        "invalid/imdb-duplicate-relation-path.dsql",
+        &fixture("invalid/imdb-duplicate-relation-path.dsql"),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn table_resolution_spans_all_visible_schemas() {
+    let catalog = Catalog::hardcoded().with_default_schema("other_schema");
+    let bowl = checked_bowl(catalog).await;
+    insert_source(
+        &bowl,
+        "cross-schema.dsql",
+        concat!(
+            "fragment AmbiguousTarget on users { id }\n",
+            "query CrossSchema {\n",
+            "  recent: posts(limit 1) { id }\n",
+            "  public_users: public::users(limit 1) { id }\n",
+            "  other_users: other_schema::users(limit 1) { id }\n",
+            "  users(limit 1) { id }\n",
+            "  missing { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
 
     insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
@@ -134,7 +163,7 @@ async fn valid_singular_and_aggregate_flattening_check_cleanly() {
             "}\n",
             "query Flattened {\n",
             "  feed: posts(limit 2) { id ...FlatOwner }\n",
-            "  accounts: users(limit 1) {\n",
+            "  accounts: public::users(limit 1) {\n",
             "    id\n",
             "    ...posts(where .title like $$title) | aggregate { post_count: count }\n",
             "  }\n",
@@ -160,7 +189,7 @@ async fn invalid_flattening_cardinality_bodies_and_collisions_are_reported() {
             "}\n",
             "query InvalidFlattening {\n",
             "  ...public::users { id }\n",
-            "  accounts: users(limit 1) {\n",
+            "  accounts: public::users(limit 1) {\n",
             "    ...posts { title }\n",
             "    ...name { id }\n",
             "    ...email()\n",
@@ -205,7 +234,7 @@ async fn catalog_replacement_retires_and_recomputes_diagnostics() {
     insert_source(
         &bowl,
         "users.dsql",
-        "query Users {\n  users {\n    id\n    nickname\n  }\n}\n",
+        "query Users {\n  public::users {\n    id\n    nickname\n  }\n}\n",
     )
     .await;
 

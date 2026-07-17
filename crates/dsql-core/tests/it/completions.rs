@@ -74,30 +74,34 @@ async fn root_selection_offers_tables() {
 #[tokio::test]
 async fn selection_body_offers_columns_relations_and_fragments() {
     insta::assert_snapshot!(
-        completions("fragment UserBits on users {\n  id\n}\nquery Q {\n  users {\n    |\n  }\n}\n")
+        completions("fragment UserBits on public::users {\n  id\n}\nquery Q {\n  public::users {\n    |\n  }\n}\n")
             .await
     );
 }
 
 #[tokio::test]
 async fn clause_list_offers_clause_keywords() {
-    insta::assert_snapshot!(completions("query Q {\n  users(|) {\n    id\n  }\n}\n").await);
+    insta::assert_snapshot!(completions("query Q {\n  public::users(|) {\n    id\n  }\n}\n").await);
 }
 
 #[tokio::test]
 async fn where_offers_scopes_columns_and_literals() {
-    insta::assert_snapshot!(completions("query Q {\n  users(where |) {\n    id\n  }\n}\n").await);
+    insta::assert_snapshot!(
+        completions("query Q {\n  public::users(where |) {\n    id\n  }\n}\n").await
+    );
 }
 
 #[tokio::test]
 async fn where_after_anchor_offers_columns() {
-    insta::assert_snapshot!(completions("query Q {\n  users(where .|) {\n    id\n  }\n}\n").await);
+    insta::assert_snapshot!(
+        completions("query Q {\n  public::users(where .|) {\n    id\n  }\n}\n").await
+    );
 }
 
 #[tokio::test]
 async fn where_after_path_offers_operators() {
     insta::assert_snapshot!(
-        completions("query Q {\n  users(where .id |) {\n    id\n  }\n}\n").await
+        completions("query Q {\n  public::users(where .id |) {\n    id\n  }\n}\n").await
     );
 }
 
@@ -105,7 +109,7 @@ async fn where_after_path_offers_operators() {
 async fn spread_offers_matching_fragments() {
     insta::assert_snapshot!(
             completions(
-                "fragment UserBits on users {\n  id\n}\nfragment PostBits on posts {\n  id\n}\nquery Q {\n  users {\n    ...|\n  }\n}\n"
+                "fragment UserBits on public::users {\n  id\n}\nfragment PostBits on posts {\n  id\n}\nquery Q {\n  public::users {\n    ...|\n  }\n}\n"
             )
             .await
         );
@@ -114,25 +118,35 @@ async fn spread_offers_matching_fragments() {
 #[tokio::test]
 async fn order_by_offers_columns_and_directions() {
     insta::assert_snapshot!(
-        completions("query Q {\n  users(order by |) {\n    id\n  }\n}\n").await
+        completions("query Q {\n  public::users(order by |) {\n    id\n  }\n}\n").await
     );
 }
 
 #[tokio::test]
 async fn aggregate_bodies_offer_contextual_functions_and_operands() {
-    let functions =
-        completions_with_marker("query Q {\n  users | aggregate {\n    ¦\n  }\n}\n", '¦').await;
-    let operands = completions_with_marker(
-        "query Q {\n  users | aggregate {\n    value: min .¦\n  }\n}\n",
+    let functions = completions_with_marker(
+        "query Q {\n  public::users | aggregate {\n    ¦\n  }\n}\n",
         '¦',
     )
     .await;
-    let pipe = completion_list("query Q {\n  users | ¦\n}\n", '¦').await;
-    let partial_pipe = completion_list("query Q {\n  users | aggr¦ { count }\n}\n", '¦').await;
-    let group_keys =
-        completions_with_marker("query Q {\n  users | aggregate by ¦ { count }\n}\n", '¦').await;
-    let rooted_group_keys =
-        completions_with_marker("query Q {\n  users | aggregate by .n¦ { count }\n}\n", '¦').await;
+    let operands = completions_with_marker(
+        "query Q {\n  public::users | aggregate {\n    value: min .¦\n  }\n}\n",
+        '¦',
+    )
+    .await;
+    let pipe = completion_list("query Q {\n  public::users | ¦\n}\n", '¦').await;
+    let partial_pipe =
+        completion_list("query Q {\n  public::users | aggr¦ { count }\n}\n", '¦').await;
+    let group_keys = completions_with_marker(
+        "query Q {\n  public::users | aggregate by ¦ { count }\n}\n",
+        '¦',
+    )
+    .await;
+    let rooted_group_keys = completions_with_marker(
+        "query Q {\n  public::users | aggregate by .n¦ { count }\n}\n",
+        '¦',
+    )
+    .await;
 
     insta::assert_snapshot!(format!(
         "pipe replace={:?}:\n{}\n\npartial pipe replace={:?}:\n{}\n\nfunctions:\n{functions}\n\noperands:\n{operands}\n\ngroup keys:\n{group_keys}\n\nrooted group keys:\n{rooted_group_keys}",
@@ -156,7 +170,7 @@ async fn flattened_selections_complete_against_their_relation_context() {
     )
     .await;
     let aggregate = completions_with_marker(
-        "query Q {\n  users(limit 1) {\n    ...posts | aggregate {\n      ¦\n    }\n  }\n}\n",
+        "query Q {\n  public::users(limit 1) {\n    ...posts | aggregate {\n      ¦\n    }\n  }\n}\n",
         '¦',
     )
     .await;
