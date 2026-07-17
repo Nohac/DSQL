@@ -137,6 +137,7 @@ type Harness = {
   plugin: ReturnType<typeof dsqlPlugin>;
   hostAbsolute: string;
   renders: DsqlRendererContext[];
+  logs: { error: string[]; info: string[]; warn: string[] };
   scriptPath: string;
   setRendererFailure: (message: string | null) => void;
   requests: () => Array<{ method: string; params?: { paths?: string[] } }>;
@@ -157,6 +158,7 @@ function harness(
   writeFileSync(logPath, "");
 
   const renders: DsqlRendererContext[] = [];
+  const logs = { error: [] as string[], info: [] as string[], warn: [] as string[] };
   let failure: string | null = null;
   const renderer: DsqlRenderer = {
     ownedRoots: ["src/generated/dsql"],
@@ -188,13 +190,24 @@ function harness(
     root: base,
     mode: "development",
     command: "serve" as const,
-    logger: { info() {}, warn() {}, error() {} },
+    logger: {
+      error(message: string) {
+        logs.error.push(message);
+      },
+      info(message: string) {
+        logs.info.push(message);
+      },
+      warn(message: string) {
+        logs.warn.push(message);
+      },
+    },
   };
   (plugin.configResolved as (config: unknown) => void)(fakeConfig);
   return {
     base,
     plugin,
     hostAbsolute,
+    logs,
     renders,
     scriptPath,
     setRendererFailure: (message) => {
@@ -284,6 +297,47 @@ test("transforms callsites from daemon ranges after compile and render", async (
     "query TitlePanel {\n  title {\n    id\n  }\n}",
   );
   expect(h.renders[0]?.command).toBe("serve");
+}, 30_000);
+
+test("successful diagnostics stay quiet while generation errors surface", async () => {
+  const warning = {
+    file: HOST_PATH,
+    range: { start: 0, end: 1 },
+    severity: "Warning",
+    source: "Lint",
+    code: "UnindexedScanColumn",
+    message: "scan can be slow",
+  };
+  const quiet = harness((base) => [
+    initializeStep(base),
+    {
+      expectMethod: "compile",
+      response: {
+        result: { ...resultFor(HOST), diagnostics: [warning] },
+      },
+    },
+  ]);
+
+  expect(await transform(quiet, HOST)).not.toBeNull();
+  expect(quiet.logs).toEqual({ error: [], info: [], warn: [] });
+
+  const broken = harness((base) => [
+    initializeStep(base),
+    {
+      expectMethod: "compile",
+      response: {
+        error: {
+          code: "Diagnostics",
+          message: "cannot generate while diagnostics contain errors",
+          data: { diagnostics: [{ ...warning, severity: "Error", source: "Check" }] },
+        },
+      },
+    },
+  ]);
+  expect(await transform(broken, HOST)).toBeNull();
+  expect(broken.logs.warn).toEqual([]);
+  expect(broken.logs.info).toEqual([]);
+  expect(broken.logs.error.join("\n")).toContain("cannot generate");
 }, 30_000);
 
 test("files without callsites and non-project ids pass through untouched", async () => {

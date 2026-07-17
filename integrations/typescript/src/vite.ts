@@ -135,20 +135,6 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
     });
   };
 
-  const surfaceDiagnostics = (diagnostics: readonly DsqlDiagnostic[]): void => {
-    for (const diagnostic of diagnostics) {
-      if (diagnostic.severity === "Error") {
-        continue; // Error snapshots ride the error outcome.
-      }
-      const line = renderDiagnostic(diagnostic);
-      if (diagnostic.severity === "Warning") {
-        config?.logger.warn(`[dsql] ${line}`);
-      } else {
-        config?.logger.info(`[dsql] ${line}`);
-      }
-    }
-  };
-
   /** Runs one compile for `paths` (empty = the initial full compile). */
   const compileBatch = async (paths: readonly string[]): Promise<CompileOutcome> => {
     const daemon = ensureClient();
@@ -171,7 +157,6 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
           : await daemon.filesChanged(paths);
 
       if (result.changed === false && state !== null) {
-        surfaceDiagnostics(result.diagnostics);
         return { kind: "unchanged", result };
       }
       const next = await renderAndIndex(result);
@@ -184,7 +169,6 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
       lastError = null;
       // The render preflight may have refreshed the result; report the
       // one actually swapped in.
-      surfaceDiagnostics(next.result.diagnostics);
       return { kind: "success", result: next.result };
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
