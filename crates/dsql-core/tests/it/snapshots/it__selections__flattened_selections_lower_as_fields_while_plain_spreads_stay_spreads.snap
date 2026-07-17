@@ -1,0 +1,11 @@
+---
+source: crates/dsql-core/tests/it/selections.rs
+expression: render_selection_tree(&bowl).await
+---
+fragment Bits
+  id
+query Flattened
+  users {...}
+    ...Bits
+    ...posts | {...}
+  ...public::users | {...}

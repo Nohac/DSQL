@@ -1,0 +1,11 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[152..157]: relation `posts` is collection-valued and can only flatten through an object-producing transform
+Error[175..179]: scalar field `name` (text) cannot be flattened
+Error[194..199]: field `email` is a scalar (text); only relations can have clauses
+Error[194..199]: flattened selection `email` must have a selection set or object-producing transform
+Error[248..258]: flattened selection `posts` introduces duplicate output key `post_count`
+Error[326..335]: spread `FlatOwner` introduces duplicate output key `owner_name`; use an alias
+Error[95..108]: table `public::users` is collection-valued and can only flatten through an object-producing transform

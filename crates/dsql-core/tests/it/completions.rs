@@ -122,3 +122,26 @@ async fn aggregate_bodies_offer_contextual_functions_and_operands() {
 
     insta::assert_snapshot!(format!("functions:\n{functions}\n\noperands:\n{operands}"));
 }
+
+#[tokio::test]
+async fn flattened_selections_complete_against_their_relation_context() {
+    let singular = completions_with_marker(
+        "query Q {\n  posts(limit 1) {\n    ...users {\n      ¦\n    }\n  }\n}\n",
+        '¦',
+    )
+    .await;
+    let clause = completions_with_marker(
+        "query Q {\n  posts(limit 1) {\n    ...users(where .¦) { name }\n  }\n}\n",
+        '¦',
+    )
+    .await;
+    let aggregate = completions_with_marker(
+        "query Q {\n  users(limit 1) {\n    ...posts | aggregate {\n      ¦\n    }\n  }\n}\n",
+        '¦',
+    )
+    .await;
+
+    insta::assert_snapshot!(format!(
+        "singular body:\n{singular}\n\nclause:\n{clause}\n\naggregate body:\n{aggregate}"
+    ));
+}

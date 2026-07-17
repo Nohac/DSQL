@@ -13,6 +13,7 @@ pub enum InputPathSegment {
     Input,
     Params,
     Body,
+    Aggregate,
     Clause,
     Where,
     OrderBy,

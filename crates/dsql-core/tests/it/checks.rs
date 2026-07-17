@@ -123,6 +123,63 @@ async fn selection_checks_report_ported_diagnostics() {
 }
 
 #[tokio::test]
+async fn valid_singular_and_aggregate_flattening_check_cleanly() {
+    let bowl = checked_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "flattened-valid.dsql",
+        concat!(
+            "fragment FlatOwner on posts {\n",
+            "  ...users(where .name like $$owner) { owner_name: name }\n",
+            "}\n",
+            "query Flattened {\n",
+            "  feed: posts(limit 2) { id ...FlatOwner }\n",
+            "  accounts: users(limit 1) {\n",
+            "    id\n",
+            "    ...posts(where .title like $$title) | aggregate { post_count: count }\n",
+            "  }\n",
+            "  ...public::users(where .name == $$root_name) | aggregate { user_count: count }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    let diagnostics = render_diagnostic_facts(&bowl).await;
+    assert_eq!(diagnostics, "", "valid flattening must check clean");
+}
+
+#[tokio::test]
+async fn invalid_flattening_cardinality_bodies_and_collisions_are_reported() {
+    let bowl = checked_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "flattened-invalid.dsql",
+        concat!(
+            "fragment FlatOwner on posts {\n",
+            "  ...users { owner_name: name }\n",
+            "}\n",
+            "query InvalidFlattening {\n",
+            "  ...public::users { id }\n",
+            "  accounts: users(limit 1) {\n",
+            "    ...posts { title }\n",
+            "    ...name { id }\n",
+            "    ...email()\n",
+            "    post_count: id\n",
+            "    ...posts | aggregate { post_count: count }\n",
+            "  }\n",
+            "  feed: posts(limit 1) {\n",
+            "    owner_name: title\n",
+            "    ...FlatOwner\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
 async fn fragment_checks_report_target_and_compat_mismatches() {
     let bowl = checked_bowl(imdb_catalog()).await;
 

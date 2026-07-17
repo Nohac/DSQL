@@ -351,6 +351,12 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
             "    latest: max .created_at\n",
             "  }\n",
             "}\n",
+            "fragment FlatPostStats on users {\n",
+            "  ...posts(where .title == $$flat_title) | aggregate {\n",
+            "    flat_post_count: count\n",
+            "    flat_latest: max .created_at\n",
+            "  }\n",
+            "}\n",
             "query RootStats {\n",
             "  user_stats: users(where .name == $$name) | aggregate {\n",
             "    count\n",
@@ -361,6 +367,28 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
             "  users(limit 1) {\n",
             "    id\n",
             "    ...UserStats\n",
+            "  }\n",
+            "}\n",
+            "query FlattenRoot {\n",
+            "  ...users(where .name == $$flat_name) | aggregate {\n",
+            "    user_count: count\n",
+            "    first_name: min .name\n",
+            "  }\n",
+            "}\n",
+            "query FlattenNested {\n",
+            "  accounts: users(limit 1) {\n",
+            "    id\n",
+            "    ...FlatPostStats\n",
+            "  }\n",
+            "}\n",
+            "query FlattenOwner {\n",
+            "  feed: posts(limit 1) {\n",
+            "    id\n",
+            "    ...users(where .name == $$owner_name) {\n",
+            "      owner_name: name\n",
+            "      owner_posts: posts(limit 1) { title }\n",
+            "      ...posts | aggregate { owner_post_count: count }\n",
+            "    }\n",
             "  }\n",
             "}\n",
         ),
@@ -384,7 +412,13 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
         .filter(|artifact| {
             matches!(
                 artifact.name.as_str(),
-                "RootStats" | "NestedStats" | "UserStats"
+                "FlatPostStats"
+                    | "FlattenNested"
+                    | "FlattenOwner"
+                    | "FlattenRoot"
+                    | "NestedStats"
+                    | "RootStats"
+                    | "UserStats"
             )
         })
         .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))

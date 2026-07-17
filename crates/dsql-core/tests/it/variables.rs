@@ -110,6 +110,27 @@ async fn fragment_spread_envelopes_nested_bindings() {
 }
 
 #[tokio::test]
+async fn flattened_aggregate_inputs_keep_the_source_and_aggregate_path_segments() {
+    let snapshot = case(
+        "flattened",
+        concat!(
+            "query FlattenedInputs {\n",
+            "  ...users(where .name == $root_name) | aggregate { user_count: count }\n",
+            "  accounts: users(limit 1) {\n",
+            "    ...posts(where .title == $post_title) | aggregate { post_count: count }\n",
+            "  }\n",
+            "  feed: posts(limit 1) {\n",
+            "    ...users(where .name == $owner_name) { owner_name: name }\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(snapshot);
+}
+
+#[tokio::test]
 async fn cross_file_fragment_clauses_preserve_variable_inference() {
     let bowl = language_bowl().await;
     insert_catalog(&bowl, imdb_catalog()).await;

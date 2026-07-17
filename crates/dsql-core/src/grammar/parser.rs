@@ -6,6 +6,43 @@ pub type Diagnostic = codespan_reporting::diagnostic::Diagnostic<()>;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
+/// A directive can follow either a fragment spread or a relation source.
+/// Only a following selection set commits the ellipsis form to flattening.
+fn directives_end_in_selection_set(parser: &Parser<'_>) -> bool {
+    let mut lookahead = 2;
+    while parser.peek(lookahead) == Token::At {
+        lookahead += 1;
+        if parser.peek(lookahead) == Token::Dot {
+            lookahead += 1;
+        }
+        if parser.peek(lookahead) != Token::Name {
+            return false;
+        }
+        lookahead += 1;
+        if parser.peek(lookahead) == Token::Dot {
+            lookahead += 1;
+            if parser.peek(lookahead) != Token::Name {
+                return false;
+            }
+            lookahead += 1;
+        }
+        if parser.peek(lookahead) == Token::LPar {
+            let mut depth = 1;
+            lookahead += 1;
+            while depth > 0 {
+                match parser.peek(lookahead) {
+                    Token::LPar => depth += 1,
+                    Token::RPar => depth -= 1,
+                    Token::EOF => return false,
+                    _ => {}
+                }
+                lookahead += 1;
+            }
+        }
+    }
+    parser.peek(lookahead) == Token::LBrace
+}
+
 impl<'a> ParserCallbacks<'a> for Parser<'a> {
     type Diagnostic = Diagnostic;
     type Context = (); // TODO: add context information to the parser if required
@@ -54,5 +91,14 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
 
     fn predicate_aggregate_field_1(&self) -> bool {
         matches!(self.peek(1), Token::Name)
+    }
+
+    fn predicate_selection_1(&self) -> bool {
+        !matches!(self.current, Token::Ellipsis)
+            || matches!(
+                self.peek(2),
+                Token::ColonColon | Token::Arrow | Token::LPar | Token::LBrace | Token::Pipe
+            )
+            || (self.peek(2) == Token::At && directives_end_in_selection_set(self))
     }
 }

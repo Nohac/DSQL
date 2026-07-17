@@ -53,6 +53,24 @@ fn aggregate_transform_is_contextual_syntax() {
 }
 
 #[test]
+fn spreads_and_flattened_selections_are_disambiguated_by_the_suffix() {
+    let source = concat!(
+        "fragment Bits on users { id }\n",
+        "query Flattened {\n",
+        "  accounts: users(limit 1) {\n",
+        "    ...Bits @include(if: true)\n",
+        "    ...posts @include(if: true) { title }\n",
+        "    ...posts | aggregate { post_count: count }\n",
+        "  }\n",
+        "  ...public::users(where .name == $$name) | aggregate { user_count: count }\n",
+        "}\n",
+    );
+    let (cst, diagnostics) = parse(source);
+    let rendered = render_diagnostics(source, &diagnostics);
+    insta::assert_snapshot!(format!("{cst}---\n{rendered}"));
+}
+
+#[test]
 fn directives_are_rejected_at_aggregate_owned_positions() {
     let sources = [
         "query Q { title @audit | aggregate { count } }",

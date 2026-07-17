@@ -151,15 +151,26 @@ fn fragment_spreads(spreads: &[SpreadUse]) -> Vec<FragmentSpreadMetadata> {
 
 fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
     let mut fields = Vec::new();
-    collect_collection_fields(
-        catalog,
-        "",
-        &plan.output_name,
-        &plan.collection,
-        collection_result_kind(&plan.collection.result, RelationCardinality::Collection),
-        false,
-        &mut fields,
-    )?;
+    if plan.flattened {
+        collect_collection_children(
+            catalog,
+            plan.collection.table,
+            "",
+            &plan.collection.result,
+            false,
+            &mut fields,
+        )?;
+    } else {
+        collect_collection_fields(
+            catalog,
+            "",
+            &plan.output_name,
+            &plan.collection,
+            collection_result_kind(&plan.collection.result, RelationCardinality::Collection),
+            false,
+            &mut fields,
+        )?;
+    }
     Ok(ResultShape { fields })
 }
 
@@ -171,7 +182,7 @@ fn fragment_result_shape(
 ) -> Result<ResultShape> {
     let mut fields = Vec::new();
     for item in &selection.items {
-        collect_result_item_fields(catalog, table, "", item, &mut fields)
+        collect_result_item_fields(catalog, table, "", item, false, &mut fields)
             .map_err(|error| error.named(name))?;
     }
     Ok(ResultShape { fields })
@@ -196,21 +207,47 @@ fn collect_collection_fields(
         nullable,
     });
 
-    match &collection.result {
+    collect_collection_children(
+        catalog,
+        collection.table,
+        &path,
+        &collection.result,
+        false,
+        fields,
+    )?;
+    Ok(())
+}
+
+fn collect_collection_children(
+    catalog: &Catalog,
+    current_table: TableId,
+    parent_path: &str,
+    result: &CollectionResultPlan,
+    inherited_nullable: bool,
+    fields: &mut Vec<ResultField>,
+) -> Result<()> {
+    match result {
         CollectionResultPlan::Rows(selection) => {
             for item in &selection.items {
-                collect_result_item_fields(catalog, collection.table, &path, item, fields)?;
+                collect_result_item_fields(
+                    catalog,
+                    current_table,
+                    parent_path,
+                    item,
+                    inherited_nullable,
+                    fields,
+                )?;
             }
         }
         CollectionResultPlan::Aggregate(aggregate) => {
             for field in &aggregate.fields {
                 fields.push(ResultField {
-                    path: join_path(&path, &field.output_name),
+                    path: join_path(parent_path, &field.output_name),
                     name: field.output_name.clone(),
-                    parent_path: path.clone(),
+                    parent_path: parent_path.to_string(),
                     kind: ResultFieldKind::Scalar.as_ref().to_string(),
                     data_type: field.data_type.as_str().to_string(),
-                    nullable: field.nullable,
+                    nullable: inherited_nullable || field.nullable,
                 });
             }
         }
@@ -223,6 +260,7 @@ fn collect_result_item_fields(
     current_table: TableId,
     parent_path: &str,
     item: &SelectionPlanItem,
+    inherited_nullable: bool,
     fields: &mut Vec<ResultField>,
 ) -> Result<()> {
     match item {
@@ -240,7 +278,7 @@ fn collect_result_item_fields(
                 parent_path: parent_path.to_string(),
                 kind: ResultFieldKind::Scalar.as_ref().to_string(),
                 data_type: column.data_type.as_str().to_string(),
-                nullable: !column.not_null,
+                nullable: inherited_nullable || !column.not_null,
             });
         }
         SelectionPlanItem::Relation(relation) => {
@@ -265,15 +303,26 @@ fn collect_result_item_fields(
                 }
                 _ => false,
             };
-            collect_collection_fields(
-                catalog,
-                parent_path,
-                &relation.output_name,
-                &relation.collection,
-                kind,
-                nullable,
-                fields,
-            )?;
+            if relation.flattened {
+                collect_collection_children(
+                    catalog,
+                    related_table,
+                    parent_path,
+                    &relation.collection.result,
+                    inherited_nullable || nullable,
+                    fields,
+                )?;
+            } else {
+                collect_collection_fields(
+                    catalog,
+                    parent_path,
+                    &relation.output_name,
+                    &relation.collection,
+                    kind,
+                    inherited_nullable || nullable,
+                    fields,
+                )?;
+            }
         }
     }
     Ok(())

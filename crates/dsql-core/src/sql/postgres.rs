@@ -73,6 +73,7 @@ struct SelectionGenerationContext<'a> {
     cardinality: RelationCardinality,
     options: PostgresSqlOptions,
     public_result_alias: Option<&'a str>,
+    flattened: bool,
 }
 
 struct SqlTemplateContext {
@@ -178,6 +179,7 @@ pub fn generate_postgres_sql_with_options(
             cardinality: RelationCardinality::Collection,
             options,
             public_result_alias: Some(&plan.output_name),
+            flattened: plan.flattened,
         },
         &mut template,
     )?;
@@ -244,6 +246,7 @@ fn generate_rows(
     let current_table = table(catalog, collection.table)?;
     let context = context_for(current_table, output_name, path);
     let root_context = generation.root.unwrap_or(&context);
+    let export_fields = generation.flattened && generation.parent.is_some();
     let mut query = Query::select();
 
     let relation_condition = if let Some((parent, foreign_key)) = generation.parent {
@@ -328,6 +331,7 @@ fn generate_rows(
                 cardinality: relation_cardinality,
                 options: generation.options,
                 public_result_alias: None,
+                flattened: relation.flattened,
             },
             template,
         )?;
@@ -339,7 +343,14 @@ fn generate_rows(
         );
     }
 
-    let object = json_build_object(selection, catalog, &context, path)?;
+    let fields = selection_field_expressions(selection, catalog, &context, path)?;
+    if export_fields {
+        for (output_name, expression) in fields {
+            query.expr_as(expression, Alias::new(output_name));
+        }
+        return Ok(query.to_owned());
+    }
+    let object = json_build_object(fields);
     let expression: Expr = match generation.cardinality {
         RelationCardinality::Collection => {
             Func::coalesce([PgFunc::json_agg(object).into(), Expr::value("[]")]).into()
@@ -369,6 +380,7 @@ fn generate_aggregate(
     let current_table = table(catalog, collection.table)?;
     let context = context_for(current_table, output_name, path);
     let root_context = generation.root.unwrap_or(&context);
+    let export_fields = generation.flattened && generation.parent.is_some();
     let mut query = Query::select();
     query.from_as(
         (
@@ -397,7 +409,7 @@ fn generate_aggregate(
         )?);
     }
 
-    let mut pairs = Vec::new();
+    let mut fields = Vec::new();
     for field in &aggregate.fields {
         let operand = field
             .operand
@@ -421,13 +433,19 @@ fn generate_aggregate(
                 Func::max(operand.ok_or(SqlGenerationError::MissingAggregateOperand)?).into()
             }
         };
-        pairs.push((
-            Expr::value(field.output_name.clone()),
+        fields.push((
+            field.output_name.clone(),
             public_scalar_expression(expression, field.data_type),
         ));
     }
+    if export_fields {
+        for (output_name, expression) in fields {
+            query.expr_as(expression, Alias::new(output_name));
+        }
+        return Ok(query.to_owned());
+    }
     query.expr_as(
-        PgFunc::json_build_object(pairs),
+        json_build_object(fields),
         Alias::new(
             generation
                 .public_result_alias
@@ -674,19 +692,19 @@ fn sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn json_build_object(
+fn selection_field_expressions(
     selection: &SelectionPlan,
     catalog: &Catalog,
     context: &SelectionContext,
     path: &[String],
-) -> Result<Expr, SqlGenerationError> {
-    let mut pairs = Vec::new();
+) -> Result<Vec<(String, Expr)>, SqlGenerationError> {
+    let mut fields = Vec::new();
     for item in &selection.items {
         match item {
             SelectionPlanItem::Projection(projection) => {
                 let column = column(catalog, projection.column)?;
-                pairs.push((
-                    Expr::value(projection.output_name.clone()),
+                fields.push((
+                    projection.output_name.clone(),
                     public_scalar_expression(
                         Expr::col((Alias::new(&context.table_alias), Alias::new(&column.name))),
                         column.data_type,
@@ -698,17 +716,67 @@ fn json_build_object(
                 let mut relation_path = path.to_vec();
                 relation_path.push(path_segment(table, &relation.output_name));
                 let related_context = context_for(table, &relation.output_name, &relation_path);
-                pairs.push((
-                    Expr::value(relation.output_name.clone()),
-                    Expr::col((
-                        Alias::new(&related_context.json_alias),
-                        Alias::new(&related_context.result_alias),
-                    )),
-                ));
+                if relation.flattened {
+                    let mut output_names = Vec::new();
+                    collect_collection_output_names(&relation.collection.result, &mut output_names);
+                    fields.extend(output_names.into_iter().map(|output_name| {
+                        (
+                            output_name.clone(),
+                            Expr::col((
+                                Alias::new(&related_context.json_alias),
+                                Alias::new(output_name),
+                            )),
+                        )
+                    }));
+                } else {
+                    fields.push((
+                        relation.output_name.clone(),
+                        Expr::col((
+                            Alias::new(&related_context.json_alias),
+                            Alias::new(&related_context.result_alias),
+                        )),
+                    ));
+                }
             }
         }
     }
-    Ok(PgFunc::json_build_object(pairs).into())
+    Ok(fields)
+}
+
+fn collect_collection_output_names(result: &CollectionResultPlan, names: &mut Vec<String>) {
+    match result {
+        CollectionResultPlan::Rows(selection) => {
+            for item in &selection.items {
+                match item {
+                    SelectionPlanItem::Projection(projection) => {
+                        names.push(projection.output_name.clone());
+                    }
+                    SelectionPlanItem::Relation(relation) if relation.flattened => {
+                        collect_collection_output_names(&relation.collection.result, names);
+                    }
+                    SelectionPlanItem::Relation(relation) => {
+                        names.push(relation.output_name.clone());
+                    }
+                }
+            }
+        }
+        CollectionResultPlan::Aggregate(aggregate) => names.extend(
+            aggregate
+                .fields
+                .iter()
+                .map(|field| field.output_name.clone()),
+        ),
+    }
+}
+
+fn json_build_object(fields: Vec<(String, Expr)>) -> Expr {
+    PgFunc::json_build_object(
+        fields
+            .into_iter()
+            .map(|(output_name, expression)| (Expr::value(output_name), expression))
+            .collect(),
+    )
+    .into()
 }
 
 /// Converts one scalar expression to its public JSON wire representation.

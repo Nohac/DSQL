@@ -120,13 +120,20 @@ async fn plan_queries(
             TableResolution::Found(table) => {
                 let table_id = table.id;
                 let output_name = field.alias.clone().unwrap_or_else(|| table.name.clone());
-                let selection_path = vec![field.output_key()];
+                let mut selection_path = vec![field.output_key()];
+                if field.flattened && field.has_transform() {
+                    selection_path.push(InputPathSegment::Aggregate.as_ref().to_string());
+                }
                 let variable_scope = VariablePathScope::operation();
                 let clauses =
                     planner.plan_clauses(table_id, &selection_path, &variable_scope, root_entity);
                 let mut spreads = Vec::new();
                 let mut walk = PlanWalk {
-                    result_path: vec![output_name.clone()],
+                    result_path: if field.flattened {
+                        Vec::new()
+                    } else {
+                        vec![output_name.clone()]
+                    },
                     spreads: &mut spreads,
                     expansion: &mut SpreadExpansion::new(
                         planner.tree,
@@ -145,6 +152,7 @@ async fn plan_queries(
                 ) {
                     let plan = QueryPlan {
                         output_name,
+                        flattened: field.flattened,
                         collection: CollectionPlan {
                             table: table_id,
                             clauses,
@@ -448,18 +456,23 @@ impl Planner<'_> {
                             let relation_table = relation.table.id;
                             let relation_name = relation.name.to_string();
                             let foreign_key = relation.foreign_key.id;
-                            let child_path = selection_path.relation_child_path(
+                            let mut child_path = selection_path.relation_child_path(
                                 field.alias.clone().unwrap_or_else(|| relation_name.clone()),
                             );
+                            if field.flattened && field.has_transform() {
+                                child_path.push(InputPathSegment::Aggregate.as_ref().to_string());
+                            }
                             let child_clauses = self.plan_clauses(
                                 relation_table,
                                 &child_path,
                                 variable_scope,
                                 field_entity,
                             );
-                            walk.result_path.push(
-                                field.alias.clone().unwrap_or_else(|| relation_name.clone()),
-                            );
+                            if !field.flattened {
+                                walk.result_path.push(
+                                    field.alias.clone().unwrap_or_else(|| relation_name.clone()),
+                                );
+                            }
                             let nested = self.plan_collection_result(
                                 walk,
                                 relation_table,
@@ -468,7 +481,9 @@ impl Planner<'_> {
                                 field_entity,
                                 field,
                             );
-                            walk.result_path.pop();
+                            if !field.flattened {
+                                walk.result_path.pop();
+                            }
                             if let Some(nested) = nested {
                                 items.push(SelectionPlanItem::Relation(NestedRelation {
                                     relation_name: reference.display_text(),
@@ -476,6 +491,7 @@ impl Planner<'_> {
                                         .alias
                                         .clone()
                                         .unwrap_or(relation_name),
+                                    flattened: field.flattened,
                                     foreign_key,
                                     collection: Box::new(CollectionPlan {
                                         table: relation_table,

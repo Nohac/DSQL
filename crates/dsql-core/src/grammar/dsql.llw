@@ -25,11 +25,11 @@ operator_variable: ('$' | '$$') [Name] '[' comparison_operator (?1 ',' compariso
 binary_operator: comparison_operator | operator_variable;
 selection_set: '{' selection* '}';
 selection:
-  field_selection [',']
+  ?1 field_selection [',']
 | fragment_spread [',']
 ;
 fragment_spread: '...' Name directive*;
-field_selection: relation_ref field_selection_tail;
+field_selection: ['...'] relation_ref field_selection_tail;
 field_selection_tail:
   ':' relation_ref field_suffix
 | field_suffix

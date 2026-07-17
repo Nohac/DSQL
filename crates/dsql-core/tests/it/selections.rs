@@ -55,6 +55,7 @@ async fn render_selection_tree(bowl: &Bowl) -> String {
             let indent = "  ".repeat(depth);
             match node {
                 Node::Field(field) => {
+                    let flattened = if field.flattened { "..." } else { "" };
                     let alias = field
                         .alias
                         .as_deref()
@@ -70,7 +71,10 @@ async fn render_selection_tree(bowl: &Bowl) -> String {
                         FieldBodyKind::SelectionSet => " {...}",
                         FieldBodyKind::Transform => " | {...}",
                     };
-                    out.push_str(&format!("{indent}{alias}{}{path}{nested}\n", field.name));
+                    out.push_str(&format!(
+                        "{indent}{flattened}{alias}{}{path}{nested}\n",
+                        field.name
+                    ));
                 }
                 Node::Spread(spread) => {
                     out.push_str(&format!("{indent}...{}\n", spread.name));
@@ -88,6 +92,28 @@ async fn render_selection_tree(bowl: &Bowl) -> String {
         render(def_entity, &children, 1, &mut out);
     }
     out
+}
+
+#[tokio::test]
+async fn flattened_selections_lower_as_fields_while_plain_spreads_stay_spreads() {
+    let bowl = language_bowl().await;
+    insert_source(
+        &bowl,
+        "flattened.dsql",
+        concat!(
+            "fragment Bits on users { id }\n",
+            "query Flattened {\n",
+            "  users(limit 1) {\n",
+            "    ...Bits\n",
+            "    ...posts | aggregate { post_count: count }\n",
+            "  }\n",
+            "  ...public::users | aggregate { user_count: count }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_selection_tree(&bowl).await);
 }
 
 #[tokio::test]

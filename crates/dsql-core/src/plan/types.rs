@@ -161,6 +161,7 @@ pub struct PlanDiagnostic {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct QueryPlan {
     pub output_name: String,
+    pub flattened: bool,
     pub collection: CollectionPlan,
 }
 
@@ -304,6 +305,7 @@ pub struct Projection {
 pub struct NestedRelation {
     pub relation_name: String,
     pub output_name: String,
+    pub flattened: bool,
     pub foreign_key: ForeignKeyId,
     pub collection: Box<CollectionPlan>,
 }

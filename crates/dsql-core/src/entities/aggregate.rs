@@ -192,12 +192,7 @@ impl LowerStage for Aggregate {
             .filter(|child| ctx.cst.match_rule(*child, Rule::AggregateGroupKey))
             .filter_map(|group_key| lower_group_key(ctx, group_key))
             .collect();
-        let fields = direct_rule(ctx.cst, node, Rule::AggregateSet)
-            .into_iter()
-            .flat_map(|set| ctx.cst.children(set))
-            .filter(|child| ctx.cst.match_rule(*child, Rule::AggregateField))
-            .filter_map(|field| lower_field(ctx, field))
-            .collect();
+        let fields = lower_fields(ctx, node);
         let fact = AggregateTransformFact {
             name: text(ctx.source, name_span).to_string(),
             name_span,
@@ -229,6 +224,33 @@ impl LowerStage for Aggregate {
                 .untyped(),
         })
     }
+}
+
+/// Normalizes the public keys named by an aggregate body while its owning
+/// selection is lowered. Selection collision checks can then stay on their
+/// existing tracked syntax input instead of ambiently reading semantic facts.
+pub(crate) fn aggregate_output_keys(ctx: &LowerCtx<'_>, node: NodeRef) -> Vec<(String, Span)> {
+    lower_fields(ctx, node)
+        .into_iter()
+        .filter_map(|field| {
+            if let Some(alias) = field.alias {
+                Some((alias, field.alias_span.unwrap_or(field.function_span)))
+            } else if matches!(field.function.as_str(), "count" | "exists") {
+                Some((field.function, field.function_span))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn lower_fields(ctx: &LowerCtx<'_>, node: NodeRef) -> Vec<AggregateFieldSyntax> {
+    direct_rule(ctx.cst, node, Rule::AggregateSet)
+        .into_iter()
+        .flat_map(|set| ctx.cst.children(set))
+        .filter(|child| ctx.cst.match_rule(*child, Rule::AggregateField))
+        .filter_map(|field| lower_field(ctx, field))
+        .collect()
 }
 
 fn lower_group_key(ctx: &LowerCtx<'_>, node: NodeRef) -> Option<AggregateGroupKeySyntax> {

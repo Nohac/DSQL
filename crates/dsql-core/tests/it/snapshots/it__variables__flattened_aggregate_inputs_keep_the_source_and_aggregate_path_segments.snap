@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+expression: snapshot
+---
+flattened
+input.users.aggregate.clause.where.name.root_name Structured WhereValue Text Some("root_name") operators=[] enum=[]
+input.accounts.body.posts.aggregate.clause.where.title.post_title Structured WhereValue Text Some("post_title") operators=[] enum=[]
+input.feed.body.users.clause.where.name.owner_name Structured WhereValue Text Some("owner_name") operators=[] enum=[]

@@ -92,6 +92,21 @@ query Summary {
 
 ---
 
+flattened_selections
+query Summary {
+  users(limit 1) {
+    id
+    ...posts(where .title like $$title) | aggregate {
+      post_count: count
+    }
+  }
+  ...public::users | aggregate {
+    user_count: count
+  }
+}
+
+---
+
 comment_trivia
 query Users {
   # ids

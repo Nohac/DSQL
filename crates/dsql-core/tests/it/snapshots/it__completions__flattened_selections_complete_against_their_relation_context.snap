@@ -1,0 +1,25 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+expression: "format!(\"singular body:\\n{singular}\\n\\nclause:\\n{clause}\\n\\naggregate body:\\n{aggregate}\")"
+---
+singular body:
+Column created_at (timestamptz)
+Column email (text)
+Column id (uuid)
+Column name (text)
+Relation posts (relation to public.posts via user_id)
+
+clause:
+Column created_at (timestamptz)
+Column email (text)
+Column id (uuid)
+Column name (text)
+Scope . (current scope)
+Scope .. (parent scope)
+Scope ~ (root scope)
+
+aggregate body:
+Keyword count (aggregate function)
+Keyword exists (aggregate function)
+Keyword max (aggregate function)
+Keyword min (aggregate function)

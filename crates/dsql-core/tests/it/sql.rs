@@ -159,6 +159,44 @@ async fn aggregates_render_root_and_nested_objects_without_safety_caps() {
 }
 
 #[tokio::test]
+async fn flattened_objects_export_fields_without_wrapper_keys() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "flattened-sql.dsql",
+        concat!(
+            "query FlattenOwner {\n",
+            "  feed: public::posts(limit 1) {\n",
+            "    id\n",
+            "    ...users(where .name like $$owner) {\n",
+            "      owner_name: name\n",
+            "      recent: posts(limit 1) { title }\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "query FlattenPostStats {\n",
+            "  accounts: public::users(limit 1) {\n",
+            "    id\n",
+            "    ...posts(where .title like $$title) | aggregate {\n",
+            "      post_count: count\n",
+            "      latest_post: max .created_at\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+            "query FlattenRoot {\n",
+            "  ...public::users(where .name == $$root_name) | aggregate {\n",
+            "    user_count: count\n",
+            "    first_name: min .name\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
 async fn same_slot_aggregate_function_edits_rederive_sql() {
     let bowl = sql_bowl(Catalog::hardcoded()).await;
     let file = insert_source(

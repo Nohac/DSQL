@@ -45,6 +45,10 @@ fn formatter_cases_match_expected_output() {
             "aggregate_transform",
             "query Summary { stats: title(where .production_year > 2000) | aggregate { count, earliest:min .production_year latest:max .title } }",
         ),
+        (
+            "flattened_selections",
+            "query Summary { users(limit 1) { id ...posts(where .title like $$title)|aggregate{post_count:count} } ...public::users|aggregate{user_count:count} }",
+        ),
         ("comment_trivia", "query Users { # ids\n id }"),
     ];
 
@@ -67,7 +71,7 @@ fn formatter_cases_match_expected_output() {
 
 #[test]
 fn formatting_is_idempotent() {
-    let source = "query Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra post_stats: posts | aggregate { count latest: max .created_at } } }\nfragment Extra on users {\n  email\n}\n";
+    let source = "query Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra ...posts(where .title == $$title) | aggregate { count latest: max .created_at } } ...public::users | aggregate { user_count: count } }\nfragment Extra on users {\n  email\n}\n";
     let once = format(source);
     let twice = format(&once.text);
     assert_eq!(once.text, twice.text, "formatting must be idempotent");

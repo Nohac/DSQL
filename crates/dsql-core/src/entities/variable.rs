@@ -232,7 +232,11 @@ async fn infer_variables(
                     continue;
                 };
                 let table_id = table.id;
-                let path = SelectionPath::body(vec![field.output_key()]);
+                let mut path = vec![field.output_key()];
+                if field.flattened && field.has_transform() {
+                    path.push(InputPathSegment::Aggregate.as_ref().to_string());
+                }
+                let path = SelectionPath::body(path);
                 inference.collect_selection(
                     table_id,
                     entity,
@@ -470,7 +474,10 @@ impl Inference<'_> {
                 .alias
                 .clone()
                 .unwrap_or_else(|| relation.name.to_string());
-            let child_path = path.relation_child_path(output_name);
+            let mut child_path = path.relation_child_path(output_name);
+            if field.flattened && field.has_transform() {
+                child_path.push(InputPathSegment::Aggregate.as_ref().to_string());
+            }
             self.collect_selection(
                 relation_table,
                 entity,

@@ -8,7 +8,10 @@ use bowl::{
     Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View, With,
 };
 
-use crate::catalog::{CatalogSnapshot, FieldCheckResult, FieldRef, TableRef, TableResolution};
+use crate::catalog::{
+    CatalogSnapshot, FieldCheckResult, FieldRef, RelationCardinality, TableRef, TableResolution,
+};
+use crate::entities::aggregate::aggregate_output_keys;
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
@@ -40,6 +43,8 @@ pub(crate) const POSTGRES_RESULT_ALIAS_MAX_BYTES: usize = 63;
 #[derive(Component, Debug, Hash)]
 #[component(hash)]
 pub struct FieldSel {
+    /// Whether `...` merges this selection's object fields into its parent.
+    pub flattened: bool,
     /// Output alias, when written as `alias: field`.
     pub alias: Option<String>,
     /// Span of the alias, when present.
@@ -57,6 +62,8 @@ pub struct FieldSel {
     /// Whether the selection has a clause list, even an empty one —
     /// scalar fields must not have clauses at all.
     pub has_clause_list: bool,
+    /// Normalized output keys contributed by a flattened aggregate body.
+    pub aggregate_output_keys: Vec<(String, Span)>,
 }
 
 /// The body attached to a field selection. A pipe transform is distinct from
@@ -107,6 +114,7 @@ impl LowerStage for FieldSelection {
         node: NodeRef,
         commands: &mut Commands<AstFacts>,
     ) -> Option<Entity> {
+        let flattened = direct_token(ctx.cst, node, Token::Ellipsis).is_some();
         let Some(first_ref) = direct_rule(ctx.cst, node, Rule::RelationRef) else {
             // Error recovery consumed the name; parse diagnostics cover it.
             return None;
@@ -150,8 +158,17 @@ impl LowerStage for FieldSelection {
         let has_clause_list = suffix
             .map(|suffix| direct_rule(ctx.cst, suffix, Rule::ClauseList).is_some())
             .unwrap_or(false);
+        let aggregate_output_keys = if flattened {
+            suffix
+                .and_then(|suffix| direct_rule(ctx.cst, suffix, Rule::PipeTransform))
+                .map(|transform| aggregate_output_keys(ctx, transform))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         let selection = FieldSel {
+            flattened,
             alias,
             alias_span,
             name: text(ctx.source, name_span).to_string(),
@@ -160,6 +177,7 @@ impl LowerStage for FieldSelection {
             span: node_span(ctx.cst, node),
             body,
             has_clause_list,
+            aggregate_output_keys,
         };
 
         let key = NodeKey {
@@ -428,6 +446,23 @@ impl CheckCtx<'_, '_> {
                             );
                         }
                     }
+                    if field.flattened {
+                        if field.body == FieldBodyKind::None {
+                            self.missing_flattened_body(entity, field);
+                            continue;
+                        }
+                        if field.has_selection_set() {
+                            self.error(
+                                entity,
+                                field.name_span,
+                                DiagnosticCode::FlattenedSelectionCardinality,
+                                format!(
+                                    "table `{}` is collection-valued and can only flatten through an object-producing transform",
+                                    field.name
+                                ),
+                            );
+                        }
+                    }
                     if !field.has_selection_set() && !field.has_transform() {
                         self.error(
                             entity,
@@ -515,16 +550,31 @@ impl CheckCtx<'_, '_> {
                 FieldCheckResult::Column(column) => {
                     let data_type = column.data_type;
                     if field.has_selection_set() {
-                        self.error(
-                            entity,
-                            field.name_span,
-                            DiagnosticCode::ScalarSelectionSet,
-                            format!(
-                                "field `{}` is a scalar ({}) and cannot have a selection set",
-                                field.name,
-                                data_type.as_str()
-                            ),
-                        );
+                        if field.flattened {
+                            self.error(
+                                entity,
+                                field.name_span,
+                                DiagnosticCode::FlattenedSelectionCardinality,
+                                format!(
+                                    "scalar field `{}` ({}) cannot be flattened",
+                                    field.name,
+                                    data_type.as_str()
+                                ),
+                            );
+                        } else {
+                            self.error(
+                                entity,
+                                field.name_span,
+                                DiagnosticCode::ScalarSelectionSet,
+                                format!(
+                                    "field `{}` is a scalar ({}) and cannot have a selection set",
+                                    field.name,
+                                    data_type.as_str()
+                                ),
+                            );
+                        }
+                    } else if field.flattened && field.body == FieldBodyKind::None {
+                        self.missing_flattened_body(entity, field);
                     }
                     if field.has_clause_list {
                         self.error(
@@ -560,6 +610,30 @@ impl CheckCtx<'_, '_> {
                                 clause_entity,
                                 clause,
                                 clause_span,
+                            );
+                        }
+                    }
+                    if field.flattened {
+                        if field.body == FieldBodyKind::None {
+                            self.missing_flattened_body(entity, field);
+                            continue;
+                        }
+                        let cardinality = self.catalog.relation_cardinality(
+                            table,
+                            relation_table,
+                            relation.foreign_key,
+                        );
+                        if field.has_selection_set()
+                            && cardinality == Some(RelationCardinality::Collection)
+                        {
+                            self.error(
+                                entity,
+                                field.name_span,
+                                DiagnosticCode::FlattenedSelectionCardinality,
+                                format!(
+                                    "relation `{}` is collection-valued and can only flatten through an object-producing transform",
+                                    reference.display_text()
+                                ),
                             );
                         }
                     }
@@ -614,16 +688,54 @@ impl CheckCtx<'_, '_> {
         }
     }
 
+    fn missing_flattened_body(&mut self, entity: Entity, field: &FieldSel) {
+        self.error(
+            entity,
+            field.name_span,
+            DiagnosticCode::MissingFlattenedSelectionBody,
+            format!(
+                "flattened selection `{}` must have a selection set or object-producing transform",
+                field.name
+            ),
+        );
+    }
+
     /// Output keys must be unique within one selection set and fit
     /// PostgreSQL's result-alias limit.
     fn check_output_keys(&mut self, parent: Entity) {
         let mut seen: Vec<String> = Vec::new();
+        let tree = self.tree;
+        let mut expansion = SpreadExpansion::new(tree, self.scope, self.imports);
+        if let Some(enclosing) = &self.enclosing_fragment {
+            expansion.seed(enclosing);
+        }
         let fields: Vec<_> = self
             .tree
             .fields_under(parent)
             .map(|(entity, field, _, _)| (*entity, *field))
             .collect();
         for (entity, field) in fields {
+            if field.flattened {
+                let mut flattened = Vec::new();
+                collect_field_output_keys(tree, &mut expansion, entity, field, &mut flattened);
+                dedup_output_keys(&mut flattened);
+                for output in flattened {
+                    if seen.contains(&output.key) {
+                        self.error(
+                            entity,
+                            output.span,
+                            DiagnosticCode::DuplicateOutputKey,
+                            format!(
+                                "flattened selection `{}` introduces duplicate output key `{}`",
+                                field.name, output.key
+                            ),
+                        );
+                    } else {
+                        seen.push(output.key);
+                    }
+                }
+                continue;
+            }
             let key = field.output_key();
             if seen.contains(&key) {
                 self.error(
@@ -656,11 +768,6 @@ impl CheckCtx<'_, '_> {
             .spreads_under(parent)
             .map(|(entity, spread, _)| (*entity, spread.name.clone(), spread.name_span))
             .collect();
-        let tree = self.tree;
-        let mut expansion = SpreadExpansion::new(tree, self.scope, self.imports);
-        if let Some(enclosing) = &self.enclosing_fragment {
-            expansion.seed(enclosing);
-        }
         for (entity, name, name_span) in spreads {
             let ExpandedSpread::Fragment {
                 entity: fragment, ..
@@ -669,52 +776,93 @@ impl CheckCtx<'_, '_> {
                 continue;
             };
             let mut keys = Vec::new();
-            collect_expanded_keys(tree, &mut expansion, fragment, &mut keys);
+            collect_selection_output_keys(tree, &mut expansion, fragment, &mut keys);
             expansion.leave();
-            for key in keys {
-                if seen.contains(&key) {
+            dedup_output_keys(&mut keys);
+            for output in keys {
+                if seen.contains(&output.key) {
                     self.error(
                         entity,
                         name_span,
                         DiagnosticCode::DuplicateOutputKey,
                         format!(
-                            "spread `{name}` introduces duplicate output key `{key}`; use an alias"
+                            "spread `{name}` introduces duplicate output key `{}`; use an alias",
+                            output.key
                         ),
                     );
                 } else {
-                    seen.push(key);
+                    seen.push(output.key);
                 }
             }
         }
     }
 }
 
-/// The top-level output keys a fragment splices into a spreading set,
-/// following the fragment's own top-level spreads through the shared
-/// expansion (cycles cut off).
-fn collect_expanded_keys(
+struct OutputKey {
+    key: String,
+    span: Span,
+}
+
+fn dedup_output_keys(keys: &mut Vec<OutputKey>) {
+    let mut seen = std::collections::HashSet::new();
+    keys.retain(|output| seen.insert(output.key.clone()));
+}
+
+/// The top-level output keys a set contributes after fragment expansion and
+/// object flattening. The caller owns collision reporting for its parent set.
+fn collect_selection_output_keys(
     tree: &SelectionTree<'_>,
     expansion: &mut SpreadExpansion<'_, '_>,
-    fragment: Entity,
-    keys: &mut Vec<String>,
+    parent: Entity,
+    keys: &mut Vec<OutputKey>,
 ) {
-    for (_, field, _, _) in tree.fields_under(fragment) {
-        keys.push(field.output_key());
+    for (entity, field, _, _) in tree.fields_under(parent) {
+        collect_field_output_keys(tree, expansion, *entity, field, keys);
     }
     let spreads: Vec<String> = tree
-        .spreads_under(fragment)
+        .spreads_under(parent)
         .map(|(_, spread, _)| spread.name.clone())
         .collect();
     for name in spreads {
         if let ExpandedSpread::Fragment { entity, .. } = expansion.enter(&name) {
-            collect_expanded_keys(tree, expansion, entity, keys);
+            collect_selection_output_keys(tree, expansion, entity, keys);
             expansion.leave();
         }
     }
 }
 
+fn collect_field_output_keys(
+    tree: &SelectionTree<'_>,
+    expansion: &mut SpreadExpansion<'_, '_>,
+    entity: Entity,
+    field: &FieldSel,
+    keys: &mut Vec<OutputKey>,
+) {
+    if !field.flattened {
+        keys.push(OutputKey {
+            key: field.output_key(),
+            span: field.alias_span.unwrap_or(field.name_span),
+        });
+    } else if field.has_selection_set() {
+        collect_selection_output_keys(tree, expansion, entity, keys);
+    } else if field.has_transform() {
+        keys.extend(
+            field
+                .aggregate_output_keys
+                .iter()
+                .map(|(key, span)| OutputKey {
+                    key: key.clone(),
+                    span: *span,
+                }),
+        );
+    }
+}
+
 impl FormatStage for FieldSelection {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
+        if formatter.direct_token_text(node, Token::Ellipsis).is_some() {
+            formatter.write_str("...");
+        }
         let first = formatter.direct_relation_ref_text(node);
         let tail = formatter.direct_rule(node, Rule::FieldSelectionTail);
         let (alias, name, suffix) = if let Some(tail) = tail {
