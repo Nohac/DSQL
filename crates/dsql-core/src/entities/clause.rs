@@ -19,7 +19,7 @@ use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef, Rule};
 use crate::resolution::{PathTerminal, ResolvedClause};
 use crate::service::hover::{
-    Cursor, HoverCandidate, HoverEnriched, RequestKey, describe_column, describe_relation, priority,
+    Cursor, HoverEnriched, describe_column, describe_relation, emit_hover_candidate, priority,
 };
 
 /// One clause, lowered from `where_clause` / `order_by_clause` /
@@ -82,14 +82,12 @@ async fn hover_clause_fields(
         .find_map(|path| {
             path.relations
                 .iter()
-                .find(|step| step.span.start <= cursor.0 && cursor.0 < step.span.end)
+                .find(|step| step.span.contains(cursor.0))
                 .and_then(|step| {
                     describe_relation(catalog, &step.written, step.table, step.foreign_key)
                 })
                 .or_else(|| match &path.terminal {
-                    PathTerminal::Column { span, column, .. }
-                        if span.start <= cursor.0 && cursor.0 < span.end =>
-                    {
+                    PathTerminal::Column { span, column, .. } if span.contains(cursor.0) => {
                         describe_column(catalog, *column)
                     }
                     PathTerminal::Column { .. }
@@ -99,7 +97,8 @@ async fn hover_clause_fields(
         })
         .or_else(|| {
             resolved.order_items.iter().find_map(|item| {
-                (item.span.start <= cursor.0 && cursor.0 < item.span.end)
+                item.span
+                    .contains(cursor.0)
                     .then_some(item.column)
                     .flatten()
                     .and_then(|column| describe_column(catalog, column))
@@ -109,14 +108,7 @@ async fn hover_clause_fields(
     let Some(text) = text else {
         return;
     };
-    commands.insert((
-        DerivedFrom::new(request),
-        RequestKey(request),
-        HoverCandidate {
-            priority: priority::FIELD,
-            text,
-        },
-    ));
+    emit_hover_candidate(&mut commands, request, priority::FIELD, text);
 }
 
 impl LowerStage for Clause {
@@ -233,12 +225,8 @@ pub(crate) fn check_clause(
         }
         ClauseFact::OrderBy { items } => {
             for item in items {
-                let resolved_item = resolved.and_then(|resolved| {
-                    resolved
-                        .order_items
-                        .iter()
-                        .find(|candidate| candidate.span == item.field_span)
-                });
+                let resolved_item =
+                    resolved.and_then(|resolved| resolved.order_item_at(item.field_span));
                 if resolved_item.is_none_or(|item| item.column.is_none()) {
                     let table_name = table_name(ctx, table);
                     ctx.error(
@@ -478,7 +466,7 @@ async fn complete_clause_positions(
     mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
 ) {
     use crate::service::completion::{
-        CompletionCandidate, CompletionItem, CompletionKind, CompletionSite,
+        CompletionItem, CompletionKind, CompletionSite, emit_completion_candidate,
     };
 
     let (request, context) = requests.item();
@@ -520,11 +508,5 @@ async fn complete_clause_positions(
         });
     }
 
-    if !items.is_empty() {
-        commands.insert((
-            DerivedFrom::new(request),
-            crate::service::hover::RequestKey(request),
-            CompletionCandidate { items },
-        ));
-    }
+    emit_completion_candidate(&mut commands, request, items);
 }

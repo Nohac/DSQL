@@ -9,7 +9,6 @@ use sea_query::{
     Alias, Asterisk, Condition, Expr, ExprTrait, Func, JoinType, Order, PgFunc,
     PostgresQueryBuilder, Query, SelectStatement,
 };
-use std::fmt::Write;
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -250,7 +249,14 @@ fn generate_selection(
         if let Some(filter) = filter {
             query.and_where(filter);
         }
-        apply_order_limit_offset(catalog, &context, &selection.clauses, &mut query, template)?;
+        apply_order_limit_offset(
+            catalog,
+            &context,
+            &selection.clauses,
+            None,
+            &mut query,
+            template,
+        )?;
     };
 
     for item in &selection.items {
@@ -325,41 +331,13 @@ fn limited_source_query(
         (Alias::new(&table.schema), Alias::new(&table.name)),
         Alias::new(&context.table_alias),
     );
-    if let Some(limit) = limit {
-        query.limit(limit);
-    } else if let Some(SqlValue::Parameter(parameter)) = &clauses.limit {
-        query.limit(template.numeric_parameter_sentinel(parameter));
-    }
     if let Some(relation_condition) = relation_condition {
         query.cond_where(relation_condition);
     }
     if let Some(filter) = filter {
         query.and_where(filter);
     }
-    for order in &clauses.order_by {
-        let column = column(catalog, order.column)?;
-        query.order_by(
-            (Alias::new(&context.table_alias), Alias::new(&column.name)),
-            match &order.direction {
-                SortDirectionPlan::Asc => Order::Asc,
-                SortDirectionPlan::Desc => Order::Desc,
-                SortDirectionPlan::Variant { path, variants } => {
-                    template.replace_order_direction(
-                        &context.table_alias,
-                        &column.name,
-                        path,
-                        variants,
-                    );
-                    Order::Asc
-                }
-            },
-        );
-    }
-    if let Some(offset) = sql_value_u64(&clauses.offset) {
-        query.offset(offset);
-    } else if let Some(SqlValue::Parameter(parameter)) = &clauses.offset {
-        query.offset(template.numeric_parameter_sentinel(parameter));
-    }
+    apply_order_limit_offset(catalog, context, clauses, limit, &mut query, template)?;
     Ok(query.to_owned())
 }
 
@@ -382,6 +360,7 @@ fn apply_order_limit_offset(
     catalog: &Catalog,
     context: &SelectionContext,
     clauses: &SelectionClauses,
+    limit_override: Option<u64>,
     query: &mut SelectStatement,
     template: &mut SqlTemplateContext,
 ) -> Result<(), SqlGenerationError> {
@@ -404,7 +383,7 @@ fn apply_order_limit_offset(
             },
         );
     }
-    if let Some(limit) = sql_value_u64(&clauses.limit) {
+    if let Some(limit) = limit_override.or_else(|| sql_value_u64(&clauses.limit)) {
         query.limit(limit);
     } else if let Some(SqlValue::Parameter(parameter)) = &clauses.limit {
         query.limit(template.numeric_parameter_sentinel(parameter));
@@ -612,40 +591,22 @@ fn relation_condition(
     child_table: TableId,
 ) -> Result<Condition, SqlGenerationError> {
     let mut condition = Condition::all();
-    if child_table == foreign_key.from_table {
-        for (from_column, to_column) in foreign_key
-            .from_columns
-            .iter()
-            .zip(foreign_key.to_columns.iter())
-        {
-            condition = condition.add(
-                Expr::col((
-                    Alias::new(&child.table_alias),
-                    Alias::new(&column(catalog, *from_column)?.name),
-                ))
-                .equals((
-                    Alias::new(&parent.table_alias),
-                    Alias::new(&column(catalog, *to_column)?.name),
-                )),
-            );
-        }
+    let (child_columns, parent_columns) = if child_table == foreign_key.from_table {
+        (&foreign_key.from_columns, &foreign_key.to_columns)
     } else {
-        for (from_column, to_column) in foreign_key
-            .from_columns
-            .iter()
-            .zip(foreign_key.to_columns.iter())
-        {
-            condition = condition.add(
-                Expr::col((
-                    Alias::new(&child.table_alias),
-                    Alias::new(&column(catalog, *to_column)?.name),
-                ))
-                .equals((
-                    Alias::new(&parent.table_alias),
-                    Alias::new(&column(catalog, *from_column)?.name),
-                )),
-            );
-        }
+        (&foreign_key.to_columns, &foreign_key.from_columns)
+    };
+    for (child_column, parent_column) in child_columns.iter().zip(parent_columns) {
+        condition = condition.add(
+            Expr::col((
+                Alias::new(&child.table_alias),
+                Alias::new(&column(catalog, *child_column)?.name),
+            ))
+            .equals((
+                Alias::new(&parent.table_alias),
+                Alias::new(&column(catalog, *parent_column)?.name),
+            )),
+        );
     }
     Ok(condition)
 }
@@ -723,9 +684,7 @@ fn short_hash(value: &str) -> String {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    let mut output = String::new();
-    write!(&mut output, "{:08x}", hash as u32).expect("write hash");
-    output
+    format!("{:08x}", hash as u32)
 }
 
 fn table(catalog: &Catalog, id: TableId) -> Result<&Table, SqlGenerationError> {

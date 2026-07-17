@@ -234,21 +234,16 @@ fn metadata_from_rows(
 ) -> DatabaseMetadata {
     let mut type_map = HashMap::<String, TypeMetadata>::new();
     for row in type_rows {
-        if let Some(type_metadata) = type_map.get_mut(&row.internal_type) {
-            type_metadata.operations.insert(row.operation);
-            continue;
-        }
-        let mut operations = BTreeSet::new();
-        operations.insert(row.operation);
-        type_map.insert(
-            row.internal_type.clone(),
-            TypeMetadata {
+        type_map
+            .entry(row.internal_type.clone())
+            .or_insert_with(|| TypeMetadata {
                 internal_type: row.internal_type,
                 readable_type: row.readable_type,
                 schema: row.operator_schema,
-                operations,
-            },
-        );
+                operations: BTreeSet::new(),
+            })
+            .operations
+            .insert(row.operation);
     }
 
     let mut schema_map = HashMap::<String, HashMap<String, TableMetadata>>::new();
@@ -274,10 +269,7 @@ fn metadata_from_rows(
     }
 
     for row in constraint_rows {
-        let Some(table) = schema_map
-            .get_mut(&row.schema_name)
-            .and_then(|schema| schema.get_mut(&row.table_name))
-        else {
+        let Some(table) = table_mut(&mut schema_map, &row.schema_name, &row.table_name) else {
             continue;
         };
         let kind = match row.constraint_kind.as_str() {
@@ -293,10 +285,7 @@ fn metadata_from_rows(
     }
 
     for row in foreign_key_rows {
-        let Some(table) = schema_map
-            .get_mut(&row.schema_name)
-            .and_then(|schema| schema.get_mut(&row.table_name))
-        else {
+        let Some(table) = table_mut(&mut schema_map, &row.schema_name, &row.table_name) else {
             continue;
         };
         table.foreign_keys.push(ForeignKeyConstraintMetadata {
@@ -311,10 +300,7 @@ fn metadata_from_rows(
     }
 
     for row in index_rows {
-        let Some(table) = schema_map
-            .get_mut(&row.schema_name)
-            .and_then(|schema| schema.get_mut(&row.table_name))
-        else {
+        let Some(table) = table_mut(&mut schema_map, &row.schema_name, &row.table_name) else {
             continue;
         };
         table.indexes.push(IndexMetadata {
@@ -324,22 +310,28 @@ fn metadata_from_rows(
         });
     }
 
-    let mut schemas = schema_map
-        .into_iter()
-        .map(|(name, tables)| {
-            let mut tables = tables.into_values().collect::<Vec<_>>();
-            tables.sort_by(|left, right| left.name.cmp(&right.name));
-            SchemaMetadata { name, tables }
-        })
-        .collect::<Vec<_>>();
-    schemas.sort_by(|left, right| left.name.cmp(&right.name));
-
-    let mut types = type_map.into_values().collect::<Vec<_>>();
-    types.sort_by(|left, right| left.internal_type.cmp(&right.internal_type));
-
-    let mut metadata = DatabaseMetadata { schemas, types };
+    let mut metadata = DatabaseMetadata {
+        schemas: schema_map
+            .into_iter()
+            .map(|(name, tables)| SchemaMetadata {
+                name,
+                tables: tables.into_values().collect(),
+            })
+            .collect(),
+        types: type_map.into_values().collect(),
+    };
     metadata.canonicalize();
     metadata
+}
+
+fn table_mut<'a>(
+    schemas: &'a mut HashMap<String, HashMap<String, TableMetadata>>,
+    schema_name: &str,
+    table_name: &str,
+) -> Option<&'a mut TableMetadata> {
+    schemas
+        .get_mut(schema_name)
+        .and_then(|schema| schema.get_mut(table_name))
 }
 
 #[cfg(test)]

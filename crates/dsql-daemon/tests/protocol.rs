@@ -41,9 +41,7 @@ impl Session {
     /// Starts and initializes.
     async fn ready(test: &str) -> Session {
         let mut session = Session::start(test).await;
-        let response = session
-            .request("initialize", &session.initialize_params())
-            .await;
+        let response = session.initialize().await;
         assert!(
             response.contains("\"result\""),
             "initialize succeeds, got {response}"
@@ -56,6 +54,22 @@ impl Session {
             "{{\"protocolVersion\":1,\"root\":{}}}",
             json_str(&self.root.to_string_lossy())
         )
+    }
+
+    async fn initialize(&mut self) -> String {
+        self.request("initialize", &self.initialize_params()).await
+    }
+
+    async fn compile(&mut self) -> String {
+        self.request("compile", "{}").await
+    }
+
+    async fn files_changed(&mut self, path: &str) -> String {
+        self.request(
+            "filesChanged",
+            &format!("{{\"paths\":[{}]}}", json_str(path)),
+        )
+        .await
     }
 
     async fn send_line(&mut self, line: &str) {
@@ -112,7 +126,7 @@ fn copy_tree(source: &Path, target: &Path) {
 async fn lifecycle_and_framing_edges() {
     let mut session = Session::start("lifecycle").await;
 
-    let early = session.request("compile", "{}").await;
+    let early = session.compile().await;
     assert!(early.contains("\"NotInitialized\""), "got {early}");
 
     let mismatch = session
@@ -131,9 +145,7 @@ async fn lifecycle_and_framing_edges() {
     );
 
     // The failed handshake left it uninitialized: a correct one works.
-    let ok = session
-        .request("initialize", &session.initialize_params())
-        .await;
+    let ok = session.initialize().await;
     assert!(ok.contains("\"protocolVersion\":1"), "got {ok}");
     assert!(
         ok.contains("\"configPath\":\"dsql/dsql.toml\"")
@@ -141,9 +153,7 @@ async fn lifecycle_and_framing_edges() {
         "canonical paths return, got {ok}"
     );
 
-    let double = session
-        .request("initialize", &session.initialize_params())
-        .await;
+    let double = session.initialize().await;
     assert!(double.contains("\"AlreadyInitialized\""), "got {double}");
 
     let unknown = session.request("frobnicate", "{}").await;
@@ -193,7 +203,7 @@ async fn lifecycle_and_framing_edges() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compile_answers_the_result_shape() {
     let mut session = Session::ready("compile").await;
-    let response = session.request("compile", "{}").await;
+    let response = session.compile().await;
 
     for expectation in [
         "\"generationId\":1",
@@ -251,14 +261,12 @@ async fn compile_answers_the_result_shape() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn files_changed_reconciles_and_replays() {
     let mut session = Session::ready("files-changed").await;
-    let first = session.request("compile", "{}").await;
+    let first = session.compile().await;
     assert!(first.contains("\"generationId\":1"), "got {first}");
 
     // Irrelevant file: no-op replay, same generation, changed:false.
     std::fs::write(session.root.join("README.md"), "hello").expect("readme");
-    let noop = session
-        .request("filesChanged", "{\"paths\":[\"README.md\"]}")
-        .await;
+    let noop = session.files_changed("README.md").await;
     assert!(
         noop.contains("\"generationId\":1") && noop.contains("\"changed\":false"),
         "got {noop}"
@@ -268,12 +276,7 @@ async fn files_changed_reconciles_and_replays() {
     let doc = session.root.join("queries/frontend/titles.dsql");
     let text = std::fs::read_to_string(&doc).expect("doc readable");
     std::fs::write(&doc, text.replace("limit 2", "limit 5")).expect("edit");
-    let second = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"queries/frontend/titles.dsql\"]}",
-        )
-        .await;
+    let second = session.files_changed("queries/frontend/titles.dsql").await;
     assert!(
         second.contains("\"generationId\":2") && second.contains("\"changed\":true"),
         "got {second}"
@@ -282,12 +285,7 @@ async fn files_changed_reconciles_and_replays() {
     // Break the file: Diagnostics error, build tree untouched.
     let text = std::fs::read_to_string(&doc).expect("doc readable");
     std::fs::write(&doc, text.replace("...TitleBits", "bogus_column")).expect("break");
-    let broken = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"queries/frontend/titles.dsql\"]}",
-        )
-        .await;
+    let broken = session.files_changed("queries/frontend/titles.dsql").await;
     assert!(
         broken.contains("\"Diagnostics\"") && broken.contains("bogus_column"),
         "got {broken}"
@@ -302,9 +300,7 @@ async fn files_changed_reconciles_and_replays() {
     // Unrelated event now: the Diagnostics outcome replays — a clean
     // earlier result must not resurface.
     std::fs::write(session.root.join("README.md"), "hello again").expect("readme");
-    let replay = session
-        .request("filesChanged", "{\"paths\":[\"README.md\"]}")
-        .await;
+    let replay = session.files_changed("README.md").await;
     assert!(
         replay.contains("\"Diagnostics\"") && replay.contains("bogus_column"),
         "the error outcome replays, got {replay}"
@@ -313,21 +309,14 @@ async fn files_changed_reconciles_and_replays() {
     // Repairing incrementally works without a restart.
     let text = std::fs::read_to_string(&doc).expect("doc readable");
     std::fs::write(&doc, text.replace("bogus_column", "...TitleBits")).expect("repair");
-    let repaired = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"queries/frontend/titles.dsql\"]}",
-        )
-        .await;
+    let repaired = session.files_changed("queries/frontend/titles.dsql").await;
     assert!(
         repaired.contains("\"result\"") && repaired.contains("\"changed\":"),
         "got {repaired}"
     );
 
     // Outside paths reject.
-    let outside = session
-        .request("filesChanged", "{\"paths\":[\"/etc/passwd\"]}")
-        .await;
+    let outside = session.files_changed("/etc/passwd").await;
     assert!(outside.contains("\"InvalidPath\""), "got {outside}");
 }
 
@@ -347,17 +336,13 @@ async fn configured_extraction_keeps_warm_and_cold_discovery_aligned() {
     std::fs::create_dir_all(session.root.join("broad")).expect("broad dir");
     std::fs::write(session.root.join("broad/cold.md"), "not dsql\n").expect("cold foreign");
 
-    let initialized = session
-        .request("initialize", &session.initialize_params())
-        .await;
+    let initialized = session.initialize().await;
     assert!(initialized.contains("\"result\""), "got {initialized}");
-    let first = session.request("compile", "{}").await;
+    let first = session.compile().await;
     assert!(first.contains("\"generationId\":1"), "got {first}");
 
     std::fs::write(session.root.join("broad/warm.md"), "not dsql either\n").expect("warm foreign");
-    let foreign = session
-        .request("filesChanged", "{\"paths\":[\"broad/warm.md\"]}")
-        .await;
+    let foreign = session.files_changed("broad/warm.md").await;
     assert!(
         foreign.contains("\"generationId\":1") && foreign.contains("\"changed\":false"),
         "an unmatched foreign file is a no-op, got {foreign}"
@@ -369,9 +354,7 @@ async fn configured_extraction_keeps_warm_and_cold_discovery_aligned() {
         "query FlatWarm { kind_type { kind } }\n",
     )
     .expect("direct single-star match");
-    let direct = session
-        .request("filesChanged", "{\"paths\":[\"single/direct.dsql\"]}")
-        .await;
+    let direct = session.files_changed("single/direct.dsql").await;
     assert!(
         direct.contains("\"id\":\"frontend/operation/FlatWarm\"")
             && direct.contains("\"generationId\":2")
@@ -384,9 +367,7 @@ async fn configured_extraction_keeps_warm_and_cold_discovery_aligned() {
         "query NestedIgnored { kind_type { kind } }\n",
     )
     .expect("nested single-star non-match");
-    let nested = session
-        .request("filesChanged", "{\"paths\":[\"single/nested/deep.dsql\"]}")
-        .await;
+    let nested = session.files_changed("single/nested/deep.dsql").await;
     assert!(
         nested.contains("\"generationId\":2") && nested.contains("\"changed\":false"),
         "a single star does not cross a separator warm, got {nested}"
@@ -397,9 +378,7 @@ async fn configured_extraction_keeps_warm_and_cold_discovery_aligned() {
         "export const fresh = dsql`query Fresh { kind_type { kind } }`;\n",
     )
     .expect("fresh host");
-    let host = session
-        .request("filesChanged", "{\"paths\":[\"src/Fresh.component\"]}")
-        .await;
+    let host = session.files_changed("src/Fresh.component").await;
     assert!(
         host.contains("\"id\":\"frontend/operation/Fresh\"") && host.contains("\"changed\":true"),
         "a configured host joins the scope warm regardless of extension, got {host}"
@@ -447,15 +426,13 @@ async fn generator_policy_and_reserved_roots() {
     )
     .expect("decoy");
 
-    let init = session
-        .request("initialize", &session.initialize_params())
-        .await;
+    let init = session.initialize().await;
     assert!(
         init.contains("\"generatorOutputs\":[\"src/generated\"]"),
         "outputs return from initialize, got {init}"
     );
 
-    let compiled = session.request("compile", "{}").await;
+    let compiled = session.compile().await;
     assert!(
         compiled.contains("\"result\"") && !compiled.contains("Decoy"),
         "reserved roots never load as input, got {compiled}"
@@ -473,9 +450,7 @@ async fn generator_policy_and_reserved_roots() {
     std::fs::write(&config, raw.replace("outputs = [\"src/generated\"]\n", ""))
         .expect("config without outputs");
     std::fs::remove_file(session.root.join("generator-manifest.txt")).expect("reset");
-    let recompiled = session
-        .request("filesChanged", "{\"paths\":[\"dsql/dsql.toml\"]}")
-        .await;
+    let recompiled = session.files_changed("dsql/dsql.toml").await;
     assert!(
         recompiled.contains("GeneratorSkipped"),
         "the skip warning reports, got {recompiled}"
@@ -512,22 +487,18 @@ async fn config_reload_and_exclude_root_validation() {
         )
         .await;
     assert!(ok.contains("\"result\""), "got {ok}");
-    session.request("compile", "{}").await;
+    session.compile().await;
 
     // Break the config: full reload fails, ProjectLoadFailed.
     let config = session.root.join("dsql/dsql.toml");
     let good = std::fs::read_to_string(&config).expect("config readable");
     std::fs::write(&config, "this is [not toml").expect("broken config");
-    let failed = session
-        .request("filesChanged", "{\"paths\":[\"dsql/dsql.toml\"]}")
-        .await;
+    let failed = session.files_changed("dsql/dsql.toml").await;
     assert!(failed.contains("\"ProjectLoadFailed\""), "got {failed}");
 
     // Repairing the config recovers without a restart.
     std::fs::write(&config, good).expect("config restored");
-    let recovered = session
-        .request("filesChanged", "{\"paths\":[\"dsql/dsql.toml\"]}")
-        .await;
+    let recovered = session.files_changed("dsql/dsql.toml").await;
     assert!(recovered.contains("\"result\""), "got {recovered}");
 }
 
@@ -537,19 +508,14 @@ async fn config_reload_and_exclude_root_validation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconciliation_precision() {
     let mut session = Session::ready("precision").await;
-    let first = session.request("compile", "{}").await;
+    let first = session.compile().await;
     assert!(first.contains("\"generationId\":1"), "got {first}");
 
     // Touch a relevant file without changing content: no-op replay.
     let doc = session.root.join("queries/frontend/titles.dsql");
     let text = std::fs::read_to_string(&doc).expect("doc readable");
     std::fs::write(&doc, &text).expect("touch");
-    let touched = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"queries/frontend/titles.dsql\"]}",
-        )
-        .await;
+    let touched = session.files_changed("queries/frontend/titles.dsql").await;
     assert!(
         touched.contains("\"generationId\":1") && touched.contains("\"changed\":false"),
         "same-content events are no-ops, got {touched}"
@@ -558,9 +524,7 @@ async fn reconciliation_precision() {
     // Deleting an irrelevant file: still a no-op.
     std::fs::write(session.root.join("notes.txt"), "x").expect("notes");
     std::fs::remove_file(session.root.join("notes.txt")).expect("remove notes");
-    let deleted_irrelevant = session
-        .request("filesChanged", "{\"paths\":[\"notes.txt\"]}")
-        .await;
+    let deleted_irrelevant = session.files_changed("notes.txt").await;
     assert!(
         deleted_irrelevant.contains("\"changed\":false"),
         "irrelevant deletions are no-ops, got {deleted_irrelevant}"
@@ -568,12 +532,7 @@ async fn reconciliation_precision() {
 
     // Deleting a real document reloads; its artifact leaves the manifest.
     std::fs::remove_file(&doc).expect("remove doc");
-    let deleted = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"queries/frontend/titles.dsql\"]}",
-        )
-        .await;
+    let deleted = session.files_changed("queries/frontend/titles.dsql").await;
     assert!(
         deleted.contains("\"changed\":true")
             && !deleted.contains("\"id\":\"frontend/operation/Titles\""),
@@ -604,11 +563,9 @@ async fn plain_document_edits_roundtrip() {
     let original = "fragment TitleBits on title {\n  id\n  title\n}\n\n\
                     fragment RatingBits on title {\n  ratings: movie_ratings(where .info_type_id == 101 order by id asc limit 1) {\n    info\n  }\n}\n";
     std::fs::write(&doc, original).expect("fragments write");
-    let init = session
-        .request("initialize", &session.initialize_params())
-        .await;
+    let init = session.initialize().await;
     assert!(init.contains("\"result\""), "got {init}");
-    let first = session.request("compile", "{}").await;
+    let first = session.compile().await;
     assert!(first.contains("\"generationId\":1"), "got {first}");
 
     let probed = original.replace(
@@ -618,12 +575,7 @@ async fn plain_document_edits_roundtrip() {
     assert_ne!(probed, original, "the probe must apply");
 
     std::fs::write(&doc, &probed).expect("probe writes");
-    let edited = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"queries/shared/fragments.dsql\"]}",
-        )
-        .await;
+    let edited = session.files_changed("queries/shared/fragments.dsql").await;
     assert!(
         edited.contains("\"generationId\":2") && edited.contains("probe_year"),
         "the probe edit compiles, got {edited}"
@@ -633,12 +585,7 @@ async fn plain_document_edits_roundtrip() {
     // incrementally. Revisiting an already-seen text fingerprint must
     // not strand span-keyed facts from the intermediate version.
     std::fs::write(&doc, original).expect("restore writes");
-    let restored = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"queries/shared/fragments.dsql\"]}",
-        )
-        .await;
+    let restored = session.files_changed("queries/shared/fragments.dsql").await;
     assert!(
         restored.contains("\"generationId\":3") && !restored.contains("probe_year"),
         "restoring earlier content compiles cleanly, got {restored}"
@@ -647,17 +594,13 @@ async fn plain_document_edits_roundtrip() {
     // The same roundtrip driven by DIRECTORY events: subtree
     // reconciliation must apply the identical revisit rule.
     std::fs::write(&doc, &probed).expect("probe writes again");
-    let edited = session
-        .request("filesChanged", "{\"paths\":[\"queries/shared\"]}")
-        .await;
+    let edited = session.files_changed("queries/shared").await;
     assert!(
         edited.contains("\"generationId\":4") && edited.contains("probe_year"),
         "the directory-event probe compiles, got {edited}"
     );
     std::fs::write(&doc, original).expect("restore writes again");
-    let restored = session
-        .request("filesChanged", "{\"paths\":[\"queries/shared\"]}")
-        .await;
+    let restored = session.files_changed("queries/shared").await;
     assert!(
         restored.contains("\"generationId\":5") && !restored.contains("probe_year"),
         "restoring earlier content through a directory event compiles cleanly, got {restored}"
@@ -686,11 +629,9 @@ async fn host_document_edits_roundtrip() {
     let host = session.root.join("src/components/Consumer.ts");
     let original = "export const ConsumerQuery = dsql(`\nquery Consumer {\n  title(limit 2) {\n    id\n    ...RatingBits\n  }\n}\n`);\n";
     std::fs::write(&host, original).expect("host write");
-    let init = session
-        .request("initialize", &session.initialize_params())
-        .await;
+    let init = session.initialize().await;
     assert!(init.contains("\"result\""), "got {init}");
-    let first = session.request("compile", "{}").await;
+    let first = session.compile().await;
     assert!(first.contains("\"generationId\":1"), "got {first}");
 
     let probed = original.replace(
@@ -699,24 +640,14 @@ async fn host_document_edits_roundtrip() {
     );
     assert_ne!(probed, original, "the probe must apply");
     std::fs::write(&host, &probed).expect("probe writes");
-    let edited = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"src/components/Consumer.ts\"]}",
-        )
-        .await;
+    let edited = session.files_changed("src/components/Consumer.ts").await;
     assert!(
         edited.contains("\"generationId\":2") && edited.contains("probe_year"),
         "the probe edit compiles, got {edited}"
     );
 
     std::fs::write(&host, original).expect("restore writes");
-    let restored = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"src/components/Consumer.ts\"]}",
-        )
-        .await;
+    let restored = session.files_changed("src/components/Consumer.ts").await;
     assert!(
         restored.contains("\"generationId\":3") && !restored.contains("probe_year"),
         "restoring earlier host content compiles cleanly, got {restored}"
@@ -735,12 +666,10 @@ async fn generator_failure_reports_and_replays() {
     );
     std::fs::write(&config, raw).expect("config with failing generator");
 
-    let init = session
-        .request("initialize", &session.initialize_params())
-        .await;
+    let init = session.initialize().await;
     assert!(init.contains("\"result\""), "got {init}");
 
-    let failed = session.request("compile", "{}").await;
+    let failed = session.compile().await;
     assert!(
         failed.contains("\"GeneratorFailed\"")
             && failed.contains("\"generationId\":1")
@@ -754,9 +683,7 @@ async fn generator_failure_reports_and_replays() {
 
     // Unrelated event: the failure replays, the generator is not retried.
     std::fs::write(session.root.join("README.md"), "x").expect("readme");
-    let replay = session
-        .request("filesChanged", "{\"paths\":[\"README.md\"]}")
-        .await;
+    let replay = session.files_changed("README.md").await;
     assert!(
         replay.contains("\"GeneratorFailed\""),
         "the failure outcome replays, got {replay}"
@@ -779,7 +706,7 @@ async fn publication_contention_surfaces() {
     let mut lock = fd_lock::RwLock::new(lock_file);
     let guard = lock.write().expect("held by the test");
 
-    let locked = session.request("compile", "{}").await;
+    let locked = session.compile().await;
     assert!(locked.contains("\"PublicationLocked\""), "got {locked}");
     assert!(
         !build_dir.join("manifest.json").exists(),
@@ -787,7 +714,7 @@ async fn publication_contention_surfaces() {
     );
 
     drop(guard);
-    let unlocked = session.request("compile", "{}").await;
+    let unlocked = session.compile().await;
     assert!(unlocked.contains("\"generationId\":1"), "got {unlocked}");
 }
 
@@ -841,11 +768,9 @@ async fn new_files_ambiguity_and_unreadable_reserved_roots() {
     permissions.set_mode(0o000);
     std::fs::set_permissions(&sealed, permissions).expect("seal");
 
-    let init = session
-        .request("initialize", &session.initialize_params())
-        .await;
+    let init = session.initialize().await;
     assert!(init.contains("\"result\""), "got {init}");
-    let compiled = session.request("compile", "{}").await;
+    let compiled = session.compile().await;
     assert!(
         compiled.contains("\"generationId\":1"),
         "an unreadable reserved subtree must not break discovery, got {compiled}"
@@ -857,12 +782,7 @@ async fn new_files_ambiguity_and_unreadable_reserved_roots() {
         "query Fresh {\n  kind_type {\n    kind\n  }\n}\n",
     )
     .expect("fresh doc");
-    let fresh = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"queries/frontend/fresh.dsql\"]}",
-        )
-        .await;
+    let fresh = session.files_changed("queries/frontend/fresh.dsql").await;
     assert!(
         fresh.contains("\"id\":\"frontend/operation/Fresh\"") && fresh.contains("\"changed\":true"),
         "new files join their scope warm, got {fresh}"
@@ -877,9 +797,7 @@ async fn new_files_ambiguity_and_unreadable_reserved_roots() {
         "  { resolver = \"custom\", paths = [\"src/**/*.component\"] },\n  { resolver = \"dsql\", paths = [\"src/conflict/**/*.component\"] },",
     );
     std::fs::write(&config, raw).expect("config with overlapping patterns");
-    let reloaded = session
-        .request("filesChanged", "{\"paths\":[\"dsql/dsql.toml\"]}")
-        .await;
+    let reloaded = session.files_changed("dsql/dsql.toml").await;
     assert!(
         reloaded.contains("\"result\""),
         "overlapping patterns without overlapping files stay clean, got {reloaded}"
@@ -891,12 +809,7 @@ async fn new_files_ambiguity_and_unreadable_reserved_roots() {
         "query Both {\n  kind_type {\n    kind\n  }\n}\n",
     )
     .expect("ambiguous doc");
-    let ambiguous = session
-        .request(
-            "filesChanged",
-            "{\"paths\":[\"src/conflict/both.component\"]}",
-        )
-        .await;
+    let ambiguous = session.files_changed("src/conflict/both.component").await;
     assert!(
         ambiguous.contains("\"ProjectLoadFailed\"")
             && ambiguous.contains("is assigned to resolver"),

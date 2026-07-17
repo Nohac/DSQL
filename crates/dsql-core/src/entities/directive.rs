@@ -335,8 +335,7 @@ async fn complete_directives(
     mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
 ) {
     use crate::service::DirectiveRole;
-    use crate::service::completion::{CompletionItem, CompletionKind};
-    use crate::service::hover::RequestKey;
+    use crate::service::completion::{CompletionItem, CompletionKind, emit_completion_candidate};
 
     let (request, context) = requests.item();
     let directive_item = |label: &str, detail: String, insert: Option<String>| CompletionItem {
@@ -436,13 +435,7 @@ async fn complete_directives(
             }
         }
     }
-    if !items.is_empty() {
-        commands.insert((
-            DerivedFrom::new(request),
-            RequestKey(request),
-            crate::service::CompletionCandidate { items },
-        ));
-    }
+    emit_completion_candidate(&mut commands, request, items);
 }
 
 impl LowerStage for Directive {

@@ -7,7 +7,6 @@ use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::language_bowl;
 use dsql_core::service::{CompletionList, CompletionRequest, Position};
 use dsql_core::source::{FilePath, insert_source};
-use futures::executor::block_on;
 
 async fn completions(source_with_cursor: &str) -> String {
     let offset = source_with_cursor
@@ -50,83 +49,59 @@ async fn completions(source_with_cursor: &str) -> String {
         .join("\n")
 }
 
-#[test]
-fn document_root_offers_definition_keywords() {
-    block_on(async {
-        insta::assert_snapshot!(completions("|").await);
-    });
+#[tokio::test]
+async fn document_root_offers_definition_keywords() {
+    insta::assert_snapshot!(completions("|").await);
 }
 
-#[test]
-fn root_selection_offers_tables() {
-    block_on(async {
-        insta::assert_snapshot!(completions("query Q {\n  |\n}\n").await);
-    });
+#[tokio::test]
+async fn root_selection_offers_tables() {
+    insta::assert_snapshot!(completions("query Q {\n  |\n}\n").await);
 }
 
-#[test]
-fn selection_body_offers_columns_relations_and_fragments() {
-    block_on(async {
-        insta::assert_snapshot!(
-            completions(
-                "fragment UserBits on users {\n  id\n}\nquery Q {\n  users {\n    |\n  }\n}\n"
-            )
+#[tokio::test]
+async fn selection_body_offers_columns_relations_and_fragments() {
+    insta::assert_snapshot!(
+        completions("fragment UserBits on users {\n  id\n}\nquery Q {\n  users {\n    |\n  }\n}\n")
             .await
-        );
-    });
+    );
 }
 
-#[test]
-fn clause_list_offers_clause_keywords() {
-    block_on(async {
-        insta::assert_snapshot!(completions("query Q {\n  users(|) {\n    id\n  }\n}\n").await);
-    });
+#[tokio::test]
+async fn clause_list_offers_clause_keywords() {
+    insta::assert_snapshot!(completions("query Q {\n  users(|) {\n    id\n  }\n}\n").await);
 }
 
-#[test]
-fn where_offers_scopes_columns_and_literals() {
-    block_on(async {
-        insta::assert_snapshot!(
-            completions("query Q {\n  users(where |) {\n    id\n  }\n}\n").await
-        );
-    });
+#[tokio::test]
+async fn where_offers_scopes_columns_and_literals() {
+    insta::assert_snapshot!(completions("query Q {\n  users(where |) {\n    id\n  }\n}\n").await);
 }
 
-#[test]
-fn where_after_anchor_offers_columns() {
-    block_on(async {
-        insta::assert_snapshot!(
-            completions("query Q {\n  users(where .|) {\n    id\n  }\n}\n").await
-        );
-    });
+#[tokio::test]
+async fn where_after_anchor_offers_columns() {
+    insta::assert_snapshot!(completions("query Q {\n  users(where .|) {\n    id\n  }\n}\n").await);
 }
 
-#[test]
-fn where_after_path_offers_operators() {
-    block_on(async {
-        insta::assert_snapshot!(
-            completions("query Q {\n  users(where .id |) {\n    id\n  }\n}\n").await
-        );
-    });
+#[tokio::test]
+async fn where_after_path_offers_operators() {
+    insta::assert_snapshot!(
+        completions("query Q {\n  users(where .id |) {\n    id\n  }\n}\n").await
+    );
 }
 
-#[test]
-fn spread_offers_matching_fragments() {
-    block_on(async {
-        insta::assert_snapshot!(
+#[tokio::test]
+async fn spread_offers_matching_fragments() {
+    insta::assert_snapshot!(
             completions(
                 "fragment UserBits on users {\n  id\n}\nfragment PostBits on posts {\n  id\n}\nquery Q {\n  users {\n    ...|\n  }\n}\n"
             )
             .await
         );
-    });
 }
 
-#[test]
-fn order_by_offers_columns_and_directions() {
-    block_on(async {
-        insta::assert_snapshot!(
-            completions("query Q {\n  users(order by |) {\n    id\n  }\n}\n").await
-        );
-    });
+#[tokio::test]
+async fn order_by_offers_columns_and_directions() {
+    insta::assert_snapshot!(
+        completions("query Q {\n  users(order by |) {\n    id\n  }\n}\n").await
+    );
 }

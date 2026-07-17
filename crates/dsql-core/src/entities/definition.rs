@@ -25,7 +25,7 @@ use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 use crate::resolution::{ResolvedFragmentTarget, ResolvedTableTarget};
-use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
+use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
 use crate::source::{ResolutionScope, ScopeImports, SourceText};
 
 /// What kind of definition a [`DefDecl`] fact describes.
@@ -101,8 +101,7 @@ impl LanguageEntity for Definition {
         // barrier (the engine's same-phase race flag enforces this);
         // check_fragment_targets reads only tracked inputs and needs none.
         reg.system(index_defs.run_during(Phase::Complete));
-        reg.system(check_duplicate_fragments.run_during(Phase::Complete));
-        reg.system(check_duplicate_queries.run_during(Phase::Complete));
+        reg.system(check_duplicate_definitions.run_during(Phase::Complete));
         reg.system(check_import_collisions.run_during(Phase::Complete));
         reg.system(check_import_ambiguities.run_during(Phase::Complete));
         reg.system(check_fragment_targets);
@@ -276,15 +275,17 @@ async fn index_defs(
     commands.insert((Singleton::<DefIndex>::new(), DefIndex(entries)));
 }
 
-/// Duplicate fragment names are ambiguous at spread-resolution time, so
-/// they are errors — scoped per resolution scope (the same name in two
-/// independent scopes is fine, per docs/spec/resolution-scopes.md).
+/// Duplicate names of the same definition kind are errors within one
+/// resolution scope. Fragments would be ambiguous at spread-resolution time;
+/// operations would collide at the generation artifact boundary. The same
+/// name in independent scopes remains valid, and local-vs-imported and
+/// import-vs-import collisions have their own checks below.
 ///
 /// The [`DefIndex`] query keeps this check honest: the `View` of other
 /// definitions contributes no memo deps, so without a tracked input over the
 /// definition *set*, a row would never rerun when an unrelated definition is
 /// added or removed — a surviving duplicate could go unreported.
-async fn check_duplicate_fragments(
+async fn check_duplicate_definitions(
     _: Query<Entity, With<DiagnosticsDemand>>,
     query: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
     _index: Query<(Entity, &DefIndex)>,
@@ -293,17 +294,18 @@ async fn check_duplicate_fragments(
 ) {
     let (entity, decl, file, scope) = query.item();
 
-    if decl.kind != DefKind::Fragment {
-        return;
-    }
-
     let Some((previous, _, _)) = defs.iter().find(|(other, other_decl, other_scope)| {
         *other < entity
-            && other_decl.kind == DefKind::Fragment
+            && other_decl.kind == decl.kind
             && other_decl.name == decl.name
             && other_scope.0 == scope.0
     }) else {
         return;
+    };
+
+    let noun = match decl.kind {
+        DefKind::Query => "operation",
+        DefKind::Fragment => "fragment",
     };
 
     emit_diagnostic(
@@ -315,49 +317,7 @@ async fn check_duplicate_fragments(
             severity: Severity::Error,
             source: DiagnosticSource::Check,
             code: DiagnosticCode::DuplicateDefinition,
-            message: format!("duplicate fragment `{}`", decl.name),
-        },
-    );
-}
-
-/// Duplicate *local* query names collide at generation time — every
-/// operation becomes one artifact keyed by its public name — so they are
-/// errors at the language level, scoped per resolution scope like
-/// fragments. Local-vs-imported and import-vs-import collisions have
-/// their own checks below; collisions between *independent* scopes are
-/// legitimate language-side and surface at the generate boundary.
-async fn check_duplicate_queries(
-    _: Query<Entity, With<DiagnosticsDemand>>,
-    query: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
-    _index: Query<(Entity, &DefIndex)>,
-    defs: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
-    mut commands: Commands<(dsql_schema::Diagnostic,)>,
-) {
-    let (entity, decl, file, scope) = query.item();
-
-    if decl.kind != DefKind::Query {
-        return;
-    }
-
-    let Some((previous, _, _)) = defs.iter().find(|(other, other_decl, other_scope)| {
-        *other < entity
-            && other_decl.kind == DefKind::Query
-            && other_decl.name == decl.name
-            && other_scope.0 == scope.0
-    }) else {
-        return;
-    };
-
-    emit_diagnostic(
-        &mut commands,
-        DiagnosticFacts {
-            derived_from: DerivedFrom::many([entity, previous]),
-            file: file.0,
-            span: decl.name_span,
-            severity: Severity::Error,
-            source: DiagnosticSource::Check,
-            code: DiagnosticCode::DuplicateDefinition,
-            message: format!("duplicate operation `{}`", decl.name),
+            message: format!("duplicate {noun} `{}`", decl.name),
         },
     );
 }
@@ -530,7 +490,7 @@ async fn hover_definitions(
     let (request, _file, cursor) = query.item();
     let (_def_entity, decl, _key, target) = defs.item();
 
-    if !(decl.name_span.start <= cursor.0 && cursor.0 < decl.name_span.end) {
+    if !decl.name_span.contains(cursor.0) {
         return;
     }
 
@@ -550,11 +510,7 @@ async fn hover_definitions(
         (DefKind::Fragment, None, _) => (priority::DEFINITION, format!("fragment `{}`", decl.name)),
     };
 
-    commands.insert((
-        DerivedFrom::new(request),
-        RequestKey(request),
-        HoverCandidate { priority, text },
-    ));
+    emit_hover_candidate(&mut commands, request, priority, text);
 }
 
 fn describe_query_variables(name: &str, variables: &DefinitionVariables) -> String {

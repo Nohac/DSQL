@@ -42,13 +42,8 @@ pub async fn load_project_documents_excluding(
     project: &Project,
     extra_reserved: &[String],
 ) -> Result<Vec<ProjectDocument>> {
-    let base = project
-        .root
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| project.root.clone());
-    let build_dir = project.root.join("build");
-    let reserved: Vec<PathBuf> = std::iter::once(build_dir.clone())
+    let base = project.base();
+    let reserved: Vec<PathBuf> = std::iter::once(project.root.join("build"))
         .chain(
             project
                 .config
@@ -60,38 +55,26 @@ pub async fn load_project_documents_excluding(
                 .map(|root| base.join(root.trim_matches('/'))),
         )
         .collect();
-    let is_reserved = |path: &Path| reserved.iter().any(|root| path.starts_with(root));
     let mut owned: Vec<(PathBuf, String, SourceKind)> = Vec::new();
 
-    if project.config.resolution.is_empty() {
-        if project.config.documents.is_empty() {
-            let mut files = Vec::new();
-            collect_dir(&project.root, true, &reserved, &mut files).await?;
-            files.sort();
-            files.dedup();
-            for path in files {
-                owned.push((path, ResolutionScope::DEFAULT.to_string(), SourceKind::Dsql));
-            }
-        } else {
-            for document in &project.config.documents {
-                collect_document_group(
-                    &base,
-                    ResolutionScope::DEFAULT,
-                    document,
-                    &reserved,
-                    &mut owned,
-                )
-                .await?;
-            }
+    if project.config.uses_implicit_documents() {
+        // Preserve the legacy cold-path directory walk: unlike configured
+        // glob discovery it neither follows symlinked directories nor parses
+        // metacharacters in the project-root path.
+        let mut files = Vec::new();
+        collect_dir(&project.root, true, &reserved, &mut files).await?;
+        files.sort();
+        files.dedup();
+        for path in files {
+            owned.push((path, ResolutionScope::DEFAULT.to_string(), SourceKind::Dsql));
         }
     } else {
-        for (scope, scope_config) in &project.config.resolution {
-            for document in &scope_config.documents {
-                collect_document_group(&base, scope, document, &reserved, &mut owned).await?;
+        for (scope, documents) in project.config.document_scopes() {
+            for document in documents {
+                collect_document_group(base, scope, document, &reserved, &mut owned).await?;
             }
         }
     }
-    owned.retain(|(path, _, _)| !is_reserved(path));
     owned.sort();
 
     let mut documents = Vec::new();
@@ -147,45 +130,34 @@ async fn collect_document_group(
 /// Resolver-bearing absolute path assignments installed in the bowl for live
 /// LSP and daemon ownership decisions.
 pub(crate) fn scope_document_assignments(project: &Project) -> Vec<(String, Vec<ScopeDocument>)> {
-    let base = project
-        .root
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| project.root.clone());
-    if project.config.resolution.is_empty() {
-        let documents = if project.config.documents.is_empty() {
+    let base = project.base();
+    if project.config.uses_implicit_documents() {
+        return vec![(
+            ResolutionScope::DEFAULT.to_string(),
             vec![ScopeDocument {
                 kind: SourceKind::Dsql,
                 paths: vec![project.root.join("**/*.dsql").display().to_string()],
-            }]
-        } else {
-            absolute_scope_documents(&base, &project.config.documents)
-        };
-        return vec![(ResolutionScope::DEFAULT.to_string(), documents)];
+            }],
+        )];
     }
     project
         .config
-        .resolution
-        .iter()
-        .map(|(scope, config)| {
+        .document_scopes()
+        .map(|(scope, documents)| {
             (
-                scope.clone(),
-                absolute_scope_documents(&base, &config.documents),
+                scope.to_string(),
+                documents
+                    .iter()
+                    .map(|document| ScopeDocument {
+                        kind: SourceKind::from_resolver(document.resolver.clone()),
+                        paths: document
+                            .paths
+                            .iter()
+                            .map(|path| base.join(path).display().to_string())
+                            .collect(),
+                    })
+                    .collect(),
             )
-        })
-        .collect()
-}
-
-fn absolute_scope_documents(base: &Path, documents: &[DocumentConfig]) -> Vec<ScopeDocument> {
-    documents
-        .iter()
-        .map(|document| ScopeDocument {
-            kind: SourceKind::from_resolver(document.resolver.clone()),
-            paths: document
-                .paths
-                .iter()
-                .map(|path| base.join(path).display().to_string())
-                .collect(),
         })
         .collect()
 }

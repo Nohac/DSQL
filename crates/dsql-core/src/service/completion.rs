@@ -23,8 +23,8 @@
 //! grammar layer's keywords, unresolved ones keep an empty scaffold list.
 
 use bowl::{
-    Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, Registrar, SystemExt, View,
-    Where, With,
+    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, MutRef, Phase, Query, Registrar,
+    SystemExt, View, Where, With,
 };
 
 use crate::catalog::TableId;
@@ -34,7 +34,7 @@ use crate::facts::Span;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{Node, NodeRef, Parser, Rule};
 use crate::schema::dsql_schema;
-use crate::service::hover::Position;
+use crate::service::hover::{Position, RequestKey};
 use crate::source::{FilePath, ResolutionScope};
 
 /// Marks an entity as a completion request; pair with [`FilePath`] and
@@ -160,6 +160,21 @@ pub enum DirectiveRole {
 #[component(hash)]
 pub struct CompletionCandidate {
     pub items: Vec<CompletionItem>,
+}
+
+/// Emits a non-empty set of completion items for one request.
+pub(crate) fn emit_completion_candidate(
+    commands: &mut Commands<(dsql_schema::CompletionCandidate,)>,
+    request: Entity,
+    items: Vec<CompletionItem>,
+) {
+    if !items.is_empty() {
+        commands.insert((
+            DerivedFrom::new(request),
+            RequestKey(request),
+            CompletionCandidate { items },
+        ));
+    }
 }
 
 pub(crate) fn register_completion_pipeline(reg: &mut Registrar<'_>) {

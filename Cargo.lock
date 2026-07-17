@@ -453,7 +453,6 @@ dependencies = [
  "dsql-introspection",
  "dsql-metadata",
  "dsql-project",
- "futures",
  "insta",
  "miette",
  "ropey",
@@ -469,7 +468,6 @@ dependencies = [
  "codespan-reporting",
  "facet",
  "facet-yaml",
- "futures",
  "glob",
  "insta",
  "lelwel",
@@ -563,6 +561,7 @@ dependencies = [
  "facet-toml",
  "glob",
  "insta",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

@@ -7,7 +7,7 @@
 //! Runs per definition, gated on [`PlanDemand`].
 
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
-use crate::resolution::{PathTerminal, ResolvedClause, ResolvedPath, index_resolved_clauses};
+use crate::resolution::{PathTerminal, ResolvedClause, index_resolved_clauses};
 use crate::schema::dsql_schema;
 use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, View, With};
 
@@ -69,7 +69,7 @@ async fn plan_queries(
 
     let tree = SelectionTree::collect(&views);
     let resolved_clauses = index_resolved_clauses(resolutions.iter().map(|(_, resolved)| resolved));
-    let mut planner = Planner {
+    let planner = Planner {
         tree: &tree,
         resolved_clauses: &resolved_clauses,
         catalog: snapshot.catalog(),
@@ -80,7 +80,7 @@ async fn plan_queries(
 
     if decl.kind == DefKind::Fragment {
         plan_fragment_body(
-            &mut planner,
+            &planner,
             def_entity,
             decl,
             file.0,
@@ -112,15 +112,10 @@ async fn plan_queries(
             TableResolution::Found(table) => {
                 let table_id = table.id;
                 let output_name = field.alias.clone().unwrap_or_else(|| table.name.clone());
-                let selection_path = vec![response_key(field)];
+                let selection_path = vec![field.output_key()];
                 let variable_scope = VariablePathScope::operation();
-                let clauses = planner.plan_clauses(
-                    table_id,
-                    table_id,
-                    &selection_path,
-                    &variable_scope,
-                    root_entity,
-                );
+                let clauses =
+                    planner.plan_clauses(table_id, &selection_path, &variable_scope, root_entity);
                 let mut spreads = Vec::new();
                 if let Some(selections) = planner.plan_selection_set(
                     &mut PlanWalk {
@@ -133,7 +128,6 @@ async fn plan_queries(
                         ),
                         diagnostics: &mut diagnostics,
                     },
-                    table_id,
                     table_id,
                     &clauses,
                     SelectionPath::body(selection_path),
@@ -233,7 +227,7 @@ fn emit_plan_diagnostics(
 /// the plan.
 #[expect(clippy::too_many_arguments, reason = "one emission site, all context")]
 fn plan_fragment_body(
-    planner: &mut Planner<'_>,
+    planner: &Planner<'_>,
     def_entity: Entity,
     decl: &DefDecl,
     file: Entity,
@@ -270,7 +264,6 @@ fn plan_fragment_body(
             expansion: &mut SpreadExpansion::new(planner.tree, planner.scope, planner.imports),
             diagnostics,
         },
-        table_id,
         table_id,
         &SelectionClauses::default(),
         SelectionPath::fragment_root(),
@@ -315,14 +308,9 @@ struct Planner<'a> {
 }
 
 impl Planner<'_> {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "recursion threads the whole walk state"
-    )]
     fn plan_selection_set(
-        &mut self,
+        &self,
         walk: &mut PlanWalk<'_>,
-        root_table: TableId,
         table: TableId,
         clauses: &SelectionClauses,
         selection_path: SelectionPath,
@@ -369,7 +357,6 @@ impl Planner<'_> {
                     };
                     if let Some(fragment_plan) = self.plan_selection_set(
                         walk,
-                        root_table,
                         table,
                         &SelectionClauses::default(),
                         SelectionPath::fragment_root(),
@@ -405,7 +392,6 @@ impl Planner<'_> {
                                 field.alias.clone().unwrap_or_else(|| relation_name.clone()),
                             );
                             let child_clauses = self.plan_clauses(
-                                root_table,
                                 relation_table,
                                 &child_path,
                                 variable_scope,
@@ -416,7 +402,6 @@ impl Planner<'_> {
                             );
                             let nested = self.plan_selection_set(
                                 walk,
-                                root_table,
                                 relation_table,
                                 &child_clauses,
                                 SelectionPath::body(child_path),
@@ -462,42 +447,31 @@ impl Planner<'_> {
     }
 
     fn plan_clauses(
-        &mut self,
-        root_table: TableId,
+        &self,
         table: TableId,
         selection_path: &[String],
         variable_scope: &VariablePathScope,
         field_entity: Entity,
     ) -> SelectionClauses {
         let mut clauses = SelectionClauses::default();
-        let field_clauses: Vec<(Entity, ClauseFact)> = self
-            .tree
-            .clauses_under(field_entity)
-            .map(|(entity, clause, _, _)| (*entity, (*clause).clone()))
-            .collect();
-        for (clause_entity, clause) in field_clauses {
-            let resolved = self.resolved_clauses.get(&clause_entity).copied();
+        for (clause_entity, clause, _, _) in self.tree.clauses_under(field_entity) {
+            let resolved = self.resolved_clauses.get(clause_entity).copied();
             match clause {
                 ClauseFact::Where { expr } => {
                     clauses.filter = resolved.and_then(|resolved| {
                         self.plan_filter_expr(
-                            root_table,
                             table,
                             None,
                             selection_path,
                             variable_scope,
-                            &expr,
+                            expr,
                             resolved,
                         )
                     });
                 }
                 ClauseFact::OrderBy { items } => {
                     clauses.order_by.extend(items.iter().filter_map(|item| {
-                        let column_id = resolved?
-                            .order_items
-                            .iter()
-                            .find(|resolved| resolved.span == item.field_span)?
-                            .column?;
+                        let column_id = resolved?.order_item_at(item.field_span)?.column?;
                         let column = self.catalog.column_by_id(column_id)?;
                         Some(OrderByPlan {
                             column: column.id,
@@ -541,7 +515,7 @@ impl Planner<'_> {
                         variable_scope,
                         VariableRole::Limit,
                         InputPathSegment::Limit,
-                        &expr,
+                        expr,
                     );
                 }
                 ClauseFact::Offset { expr } => {
@@ -550,7 +524,7 @@ impl Planner<'_> {
                         variable_scope,
                         VariableRole::Offset,
                         InputPathSegment::Offset,
-                        &expr,
+                        expr,
                     );
                 }
             }
@@ -558,13 +532,8 @@ impl Planner<'_> {
         clauses
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "filter recursion carries the owning semantic clause fact"
-    )]
     fn plan_filter_expr(
-        &mut self,
-        root_table: TableId,
+        &self,
         table: TableId,
         outer_current_table: Option<TableId>,
         selection_path: &[String],
@@ -610,7 +579,6 @@ impl Planner<'_> {
                             ),
                         }),
                         _ => self.plan_filter_expr(
-                            root_table,
                             table,
                             Some(table),
                             selection_path,
@@ -655,7 +623,6 @@ impl Planner<'_> {
                     );
                 }
                 let (left, left_path) = self.plan_filter_expr_with_path(
-                    root_table,
                     table,
                     outer_current_table,
                     selection_path,
@@ -664,7 +631,6 @@ impl Planner<'_> {
                     resolved,
                 )?;
                 let (right, right_path) = self.plan_filter_expr_with_path(
-                    root_table,
                     table,
                     outer_current_table,
                     selection_path,
@@ -686,7 +652,7 @@ impl Planner<'_> {
     /// A concrete binary filter, or a variant filter when the operator is
     /// an operator variable.
     fn binary_or_variant(
-        &mut self,
+        &self,
         left: FilterExpr,
         op: &BinaryOp,
         right: FilterExpr,
@@ -694,23 +660,8 @@ impl Planner<'_> {
         variable_scope: &VariablePathScope,
         inferred_path: &[String],
     ) -> Option<FilterExpr> {
-        match op {
-            BinaryOp::Comparison(op) => Some(FilterExpr::Binary {
-                left: Box::new(left),
-                op: FilterOp::from(*op),
-                right: Box::new(right),
-            }),
-            BinaryOp::And => Some(FilterExpr::Binary {
-                left: Box::new(left),
-                op: FilterOp::And,
-                right: Box::new(right),
-            }),
-            BinaryOp::Or => Some(FilterExpr::Binary {
-                left: Box::new(left),
-                op: FilterOp::Or,
-                right: Box::new(right),
-            }),
-            BinaryOp::Variable(variable) => Some(FilterExpr::VariantBinary {
+        if let BinaryOp::Variable(variable) = op {
+            return Some(FilterExpr::VariantBinary {
                 left: Box::new(left),
                 path: variable_path(
                     selection_path,
@@ -725,17 +676,23 @@ impl Planner<'_> {
                 ),
                 variants: operator_variants(variable),
                 right: Box::new(right),
-            }),
+            });
         }
+        let op = match op {
+            BinaryOp::Comparison(op) => FilterOp::from(*op),
+            BinaryOp::And => FilterOp::And,
+            BinaryOp::Or => FilterOp::Or,
+            BinaryOp::Variable(_) => return None,
+        };
+        Some(FilterExpr::Binary {
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        })
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "filter recursion carries the owning semantic clause fact"
-    )]
     fn plan_filter_expr_with_path(
-        &mut self,
-        root_table: TableId,
+        &self,
         table: TableId,
         outer_current_table: Option<TableId>,
         selection_path: &[String],
@@ -743,55 +700,25 @@ impl Planner<'_> {
         expr: &Expr,
         resolved: &ResolvedClause,
     ) -> Option<(FilterExpr, Option<String>)> {
-        match expr {
-            Expr::Path { .. } => {
-                let field_path = self.predicate_path(resolved, expr);
-                self.plan_filter_expr(
-                    root_table,
-                    table,
-                    outer_current_table,
-                    selection_path,
-                    variable_scope,
-                    expr,
-                    resolved,
-                )
-                .map(|expr| (expr, field_path.map(|parts| parts.join("."))))
-            }
-            Expr::Variable { variable, .. } => {
-                let inferred = [InputPathSegment::Value.as_ref().to_string()];
-                Some((
-                    FilterExpr::Parameter(SqlParameter {
-                        path: variable_path(
-                            selection_path,
-                            VariablePathContext {
-                                role: VariableRole::WhereValue,
-                                inferred_path: &inferred,
-                                anonymous_key: None,
-                            },
-                            variable_scope,
-                            variable.sigil,
-                            variable.name.as_deref(),
-                        ),
-                    }),
-                    None,
-                ))
-            }
-            _ => self
-                .plan_filter_expr(
-                    root_table,
-                    table,
-                    outer_current_table,
-                    selection_path,
-                    variable_scope,
-                    expr,
-                    resolved,
-                )
-                .map(|expr| (expr, None)),
-        }
+        let field_path = if matches!(expr, Expr::Path { .. }) {
+            self.predicate_path(resolved, expr)
+                .map(|parts| parts.join("."))
+        } else {
+            None
+        };
+        self.plan_filter_expr(
+            table,
+            outer_current_table,
+            selection_path,
+            variable_scope,
+            expr,
+            resolved,
+        )
+        .map(|expr| (expr, field_path))
     }
 
     fn plan_filter_path(
-        &mut self,
+        &self,
         resolved_clause: &ResolvedClause,
         outer_current_table: Option<TableId>,
         path: &Expr,
@@ -823,7 +750,7 @@ impl Planner<'_> {
         reason = "relation planning carries its clause resolution and variable context"
     )]
     fn relation_predicate_filter(
-        &mut self,
+        &self,
         selection_path: &[String],
         path: &Expr,
         op: &BinaryOp,
@@ -844,82 +771,41 @@ impl Planner<'_> {
             return None;
         }
         let resolved = resolved_clause.path_at(path.span())?;
-        self.relation_predicate_steps(
-            resolved,
-            0,
-            selection_path,
-            op,
-            operator_path,
-            right,
-            variable_scope,
-        )
-    }
-
-    /// Builds the nested `EXISTS` chain for one resolved relation step
-    /// and recurses down the remaining steps; the innermost level compares
-    /// the terminal column.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "recursion threads the whole walk state"
-    )]
-    fn relation_predicate_steps(
-        &mut self,
-        resolved: &ResolvedPath,
-        step: usize,
-        selection_path: &[String],
-        op: &BinaryOp,
-        operator_path: Option<String>,
-        right: FilterExpr,
-        variable_scope: &VariablePathScope,
-    ) -> Option<FilterExpr> {
-        let relation = resolved.relations.get(step)?;
-        let filter = if step + 1 == resolved.relations.len() {
-            let PathTerminal::Column {
-                display, column, ..
-            } = &resolved.terminal
-            else {
-                return None;
-            };
-            let left = FilterExpr::Column {
-                scope: FilterColumnScope::Current,
-                column: *column,
-            };
-            let inferred =
-                operator_path.map_or_else(|| vec![display.clone()], |path| path_parts(&path));
-            self.binary_or_variant(left, op, right, selection_path, variable_scope, &inferred)?
-        } else {
-            self.relation_predicate_steps(
-                resolved,
-                step + 1,
-                selection_path,
-                op,
-                operator_path,
-                right,
-                variable_scope,
-            )?
+        if resolved.relations.is_empty() {
+            return None;
+        }
+        let PathTerminal::Column {
+            display, column, ..
+        } = &resolved.terminal
+        else {
+            return None;
         };
-        Some(FilterExpr::Exists {
-            foreign_key: relation.foreign_key,
-            table: relation.table,
-            filter: Box::new(filter),
-        })
+        let left = FilterExpr::Column {
+            scope: FilterColumnScope::Current,
+            column: *column,
+        };
+        let inferred =
+            operator_path.map_or_else(|| vec![display.clone()], |path| path_parts(&path));
+        let filter =
+            self.binary_or_variant(left, op, right, selection_path, variable_scope, &inferred)?;
+        Some(
+            resolved
+                .relations
+                .iter()
+                .rev()
+                .fold(filter, |filter, relation| FilterExpr::Exists {
+                    foreign_key: relation.foreign_key,
+                    table: relation.table,
+                    filter: Box::new(filter),
+                }),
+        )
     }
 
     /// The display path of a fully resolved predicate path, read from the
     /// clause resolution facts.
     fn predicate_path(&self, resolved_clause: &ResolvedClause, path: &Expr) -> Option<Vec<String>> {
         let resolved = resolved_clause.path_at(path.span())?;
-        let PathTerminal::Column { display, .. } = &resolved.terminal else {
-            return None;
-        };
-        Some(
-            resolved
-                .relations
-                .iter()
-                .map(|step| step.display.clone())
-                .chain(std::iter::once(display.clone()))
-                .collect(),
-        )
+        Some(resolved.display_path()?.map(str::to_owned).collect())
     }
 }
 
@@ -998,12 +884,4 @@ fn plan_u64_value(
 
 fn path_parts(path: &str) -> Vec<String> {
     path.split('.').map(ToString::to_string).collect()
-}
-
-/// Output key of a selection: alias, or the object name of its target.
-fn response_key(selection: &FieldSel) -> String {
-    selection
-        .alias
-        .clone()
-        .unwrap_or_else(|| TableRef::parse(&selection.name).name.to_string())
 }

@@ -224,11 +224,7 @@ impl Catalog {
         for schema_metadata in &metadata.schemas {
             let schema_id = schema_ids[&schema_metadata.name];
             for table_metadata in &schema_metadata.tables {
-                let table_schema = if table_metadata.schema.is_empty() {
-                    schema_metadata.name.as_str()
-                } else {
-                    table_metadata.schema.as_str()
-                };
+                let table_schema = effective_table_schema(schema_metadata, table_metadata);
                 let table_key = (table_schema.to_string(), table_metadata.name.clone());
                 if table_ids.contains_key(&table_key) {
                     return Err(CatalogBuildError::DuplicateTable {
@@ -260,11 +256,7 @@ impl Catalog {
 
         for schema_metadata in &metadata.schemas {
             for table_metadata in &schema_metadata.tables {
-                let table_schema = if table_metadata.schema.is_empty() {
-                    schema_metadata.name.as_str()
-                } else {
-                    table_metadata.schema.as_str()
-                };
+                let table_schema = effective_table_schema(schema_metadata, table_metadata);
                 let table_id = table_ids[&(table_schema.to_string(), table_metadata.name.clone())];
                 for column_metadata in &table_metadata.columns {
                     let key = (
@@ -299,11 +291,7 @@ impl Catalog {
 
         for schema_metadata in &metadata.schemas {
             for table_metadata in &schema_metadata.tables {
-                let table_schema = if table_metadata.schema.is_empty() {
-                    schema_metadata.name.as_str()
-                } else {
-                    table_metadata.schema.as_str()
-                };
+                let table_schema = effective_table_schema(schema_metadata, table_metadata);
                 let table_id = table_ids[&(table_schema.to_string(), table_metadata.name.clone())];
 
                 for constraint in &table_metadata.constraints {
@@ -371,11 +359,7 @@ impl Catalog {
         let mut foreign_key_keys = HashSet::<(Vec<ColumnId>, Vec<ColumnId>)>::new();
         for schema_metadata in &metadata.schemas {
             for table_metadata in &schema_metadata.tables {
-                let table_schema = if table_metadata.schema.is_empty() {
-                    schema_metadata.name.as_str()
-                } else {
-                    table_metadata.schema.as_str()
-                };
+                let table_schema = effective_table_schema(schema_metadata, table_metadata);
                 let from_table =
                     table_ids[&(table_schema.to_string(), table_metadata.name.clone())];
                 for foreign_key in &table_metadata.foreign_keys {
@@ -453,6 +437,14 @@ impl Catalog {
             columns,
             foreign_keys,
         })
+    }
+}
+
+fn effective_table_schema<'a>(schema: &'a SchemaMetadata, table: &'a TableMetadata) -> &'a str {
+    if table.schema.is_empty() {
+        &schema.name
+    } else {
+        &table.schema
     }
 }
 

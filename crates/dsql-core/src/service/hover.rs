@@ -28,8 +28,8 @@
 //!     .bind().take::<HoverInfo>()`.
 
 use bowl::{
-    Commands, Component, Entity, Eq as BowlEq, MutRef, Phase, Query, Registrar, SystemExt, View,
-    Where, With,
+    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, MutRef, Phase, Query, Registrar,
+    SystemExt, View, Where, With,
 };
 
 use crate::catalog::{Catalog, ColumnId, ForeignKeyId, TableId};
@@ -89,6 +89,20 @@ pub struct HoverEnriched;
 pub struct HoverCandidate {
     pub priority: u8,
     pub text: String,
+}
+
+/// Emits one entity's answer for a hover request.
+pub(crate) fn emit_hover_candidate(
+    commands: &mut Commands<(dsql_schema::HoverCandidate,)>,
+    request: Entity,
+    priority: u8,
+    text: String,
+) {
+    commands.insert((
+        DerivedFrom::new(request),
+        RequestKey(request),
+        HoverCandidate { priority, text },
+    ));
 }
 
 /// Priority bands for hover answers: the more specific the matched

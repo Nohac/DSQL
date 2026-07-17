@@ -9,12 +9,9 @@ import {
   type DsqlDiagnostic,
 } from "./daemon.ts";
 import {
-  buildArtifactsFromGenerated,
-  embeddedDefinitionsOf,
   projectRelative,
-  resolveEmbeddedSources,
+  renderDsqlCompileResult,
   sha256Hex,
-  validateDsqlRenderMap,
   type DsqlRenderer,
   type DsqlRenderMap,
   type DsqlRenderModule,
@@ -206,34 +203,19 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
   const renderAndIndex = async (first: DsqlCompileResult): Promise<ReadyState> => {
     const daemon = ensureClient();
     const base = projectBase();
-    let result = first;
-    let artifacts = buildArtifactsFromGenerated(result, { projectBase: base });
-    let embedded = resolveEmbeddedSources(embeddedDefinitionsOf(artifacts), {
-      projectBase: base,
-      callsites: result.callsites,
-    });
-    if (embedded.mismatches.length > 0) {
-      result = await daemon.filesChanged(embedded.mismatches);
-      artifacts = buildArtifactsFromGenerated(result, { projectBase: base });
-      embedded = resolveEmbeddedSources(embeddedDefinitionsOf(artifacts), {
+    const { result, renderMap } = await renderDsqlCompileResult(
+      options.renderer,
+      first,
+      {
         projectBase: base,
-        callsites: result.callsites,
-      });
-      if (embedded.mismatches.length > 0) {
-        throw new Error(
-          `embedded hosts kept changing while rendering: ${embedded.mismatches.join(", ")}`,
-        );
-      }
-    }
-    const renderMap = await options.renderer.render({
-      projectBase: base,
-      result,
-      artifacts,
-      embeddedSources: embedded.sources,
-      mode: env?.mode ?? config?.mode ?? "development",
-      command: (env?.command ?? config?.command) === "build" ? "build" : "serve",
-    });
-    validateDsqlRenderMap(renderMap, options.renderer);
+        refresh: (paths) => daemon.filesChanged(paths),
+        environment: () => ({
+          mode: env?.mode ?? config?.mode ?? "development",
+          command:
+            (env?.command ?? config?.command) === "build" ? "build" : "serve",
+        }),
+      },
+    );
     return {
       result,
       renderMap,

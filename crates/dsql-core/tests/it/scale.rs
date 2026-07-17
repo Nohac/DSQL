@@ -5,10 +5,9 @@
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::facts::DiagnosticsDemand;
 use dsql_core::language_bowl;
-use dsql_core::source::{FilePath, SourceText, insert_source};
-use futures::executor::block_on;
+use dsql_core::source::{FilePath, insert_source};
 
-use crate::imdb_catalog;
+use crate::{imdb_catalog, replace_source_text};
 
 async fn runs_of(bowl: &Bowl, suffix: &str) -> u64 {
     bowl.profile_all()
@@ -20,7 +19,6 @@ async fn runs_of(bowl: &Bowl, suffix: &str) -> u64 {
 }
 
 async fn edit_file(bowl: &Bowl, path: &str, replace: (&str, &str)) {
-    use bowl::Mut;
     let sources = bowl
         .scoop::<Query<(Entity, &FilePath)>>()
         .await
@@ -29,21 +27,7 @@ async fn edit_file(bowl: &Bowl, path: &str, replace: (&str, &str)) {
         .find(|(_, candidate)| candidate.0 == path)
         .map(|(entity, _)| entity);
     let target = sources.expect("edited file exists");
-    let rows = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
-    for (entity, source) in rows.collect() {
-        if entity == target {
-            let (from, to) = (replace.0.to_string(), replace.1.to_string());
-            source
-                .with_latest(move |text| {
-                    let edited = text
-                        .to_text()
-                        .expect("editor text is resident")
-                        .replace(&from, &to);
-                    text.set_text(&edited);
-                })
-                .await;
-        }
-    }
+    replace_source_text(bowl, target, replace.0, replace.1).await;
     let _ = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
 }
 
@@ -52,47 +36,45 @@ async fn edit_file(bowl: &Bowl, path: &str, replace: (&str, &str)) {
 /// with it every other definition's walk) must stay untouched. A
 /// fragment-file edit is the deliberate opposite — fragment bodies ARE
 /// cross-file inputs, and every dependent walk re-runs.
-#[test]
-fn query_edits_rerun_one_definition_fragment_edits_rerun_all() {
-    block_on(async {
-        let bowl = language_bowl().await;
-        dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
+#[tokio::test]
+async fn query_edits_rerun_one_definition_fragment_edits_rerun_all() {
+    let bowl = language_bowl().await;
+    dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
 
-        const FILES: u64 = 20;
-        for index in 0..FILES {
-            insert_source(
-                &bowl,
-                format!("query-{index}.dsql"),
-                &format!("query Q{index} {{\n  title(limit 1) {{\n    id\n  }}\n}}\n"),
-            )
-            .await;
-        }
+    const FILES: u64 = 20;
+    for index in 0..FILES {
         insert_source(
             &bowl,
-            "fragments.dsql",
-            "fragment Bits on title {\n  id\n}\n",
+            format!("query-{index}.dsql"),
+            &format!("query Q{index} {{\n  title(limit 1) {{\n    id\n  }}\n}}\n"),
         )
         .await;
-        let _ = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
+    }
+    insert_source(
+        &bowl,
+        "fragments.dsql",
+        "fragment Bits on title {\n  id\n}\n",
+    )
+    .await;
+    let _ = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
 
-        let baseline = runs_of(&bowl, "check_selections").await;
+    let baseline = runs_of(&bowl, "check_selections").await;
 
-        edit_file(&bowl, "query-3.dsql", ("limit 1", "limit 2")).await;
-        let after_query_edit = runs_of(&bowl, "check_selections").await;
-        assert!(
-            after_query_edit - baseline <= 2,
-            "a query edit re-runs its own definition only, got {} extra runs",
-            after_query_edit - baseline
-        );
+    edit_file(&bowl, "query-3.dsql", ("limit 1", "limit 2")).await;
+    let after_query_edit = runs_of(&bowl, "check_selections").await;
+    assert!(
+        after_query_edit - baseline <= 2,
+        "a query edit re-runs its own definition only, got {} extra runs",
+        after_query_edit - baseline
+    );
 
-        edit_file(&bowl, "fragments.dsql", ("  id", "  title")).await;
-        let after_fragment_edit = runs_of(&bowl, "check_selections").await;
-        assert!(
-            after_fragment_edit - after_query_edit >= FILES,
-            "a fragment body edit re-runs every dependent walk, got {} runs",
-            after_fragment_edit - after_query_edit
-        );
-    });
+    edit_file(&bowl, "fragments.dsql", ("  id", "  title")).await;
+    let after_fragment_edit = runs_of(&bowl, "check_selections").await;
+    assert!(
+        after_fragment_edit - after_query_edit >= FILES,
+        "a fragment body edit re-runs every dependent walk, got {} runs",
+        after_fragment_edit - after_query_edit
+    );
 }

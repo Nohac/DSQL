@@ -16,7 +16,7 @@ use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::NodeRef;
 use crate::schema::{AstFacts, dsql_schema};
-use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
+use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// One `...Name` spread, lowered from `fragment_spread`.
@@ -398,7 +398,7 @@ async fn hover_spreads(
     let (request, _file, cursor) = query.item();
     let (_, resolved) = spreads.item();
 
-    if !(resolved.name_span.start <= cursor.0 && cursor.0 < resolved.name_span.end) {
+    if !resolved.name_span.contains(cursor.0) {
         return;
     }
 
@@ -411,14 +411,7 @@ async fn hover_spreads(
         None => format!("fragment `{}`", resolved.name),
     };
 
-    commands.insert((
-        DerivedFrom::new(request),
-        RequestKey(request),
-        HoverCandidate {
-            priority: priority::SPREAD,
-            text,
-        },
-    ));
+    emit_hover_candidate(&mut commands, request, priority::SPREAD, text);
 }
 
 /// Contributes fragments whose target matches the context table, both on a
@@ -443,7 +436,7 @@ async fn complete_spreads(
 ) {
     use crate::catalog::TableRef;
     use crate::service::completion::{
-        CompletionCandidate, CompletionItem, CompletionKind, CompletionSite,
+        CompletionItem, CompletionKind, CompletionSite, emit_completion_candidate,
     };
 
     let (request, context) = requests.item();
@@ -488,11 +481,5 @@ async fn complete_spreads(
                 .then(|| format!("{}{}", ".".repeat(missing_dots), decl.name)),
         });
     }
-    if !items.is_empty() {
-        commands.insert((
-            DerivedFrom::new(request),
-            RequestKey(request),
-            CompletionCandidate { items },
-        ));
-    }
+    emit_completion_candidate(&mut commands, request, items);
 }

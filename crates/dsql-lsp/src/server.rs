@@ -132,6 +132,41 @@ impl Backend {
             .and_then(|(entity, source)| Some((entity, source.rope()?.clone())))
     }
 
+    async fn set_source_text(&self, path: &str, text: &str) {
+        let sources = self
+            .bowl()
+            .scoop::<Query<(Entity, Mut<SourceText>), bowl::Where<bowl::Eq<FilePath>>>>()
+            .args(FilePath(path.to_string()))
+            .await;
+        if let Some((_, source)) = sources.collect().into_iter().next() {
+            source.with_latest(|source| source.set_text(text)).await;
+        }
+    }
+
+    async fn source_position(
+        &self,
+        uri: &Uri,
+        position: LspPosition,
+    ) -> Option<(String, Rope, usize)> {
+        let path = uri_path(uri)?;
+        let (_, rope) = self.rope_of(&path).await?;
+        let offset = position_to_byte(&rope, position);
+        Some((path, rope, offset))
+    }
+
+    async fn host_projection(&self) -> HostProjection {
+        let regions = self
+            .bowl()
+            .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
+            .await;
+        HostProjection::new(
+            regions
+                .collect()
+                .into_iter()
+                .map(|(region, host, offset)| (region, host.0, offset.0)),
+        )
+    }
+
     /// Publishes the diagnostics currently derived for `path`.
     async fn publish_diagnostics(&self, uri: Uri, path: &str) {
         let Some((file_entity, rope)) = self.rope_of(path).await else {
@@ -143,16 +178,7 @@ impl Backend {
             .await;
         // A host file's diagnostics live on its extracted regions; they
         // publish under the host, shifted into host coordinates.
-        let regions = self
-            .bowl()
-            .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
-            .await;
-        let projection = HostProjection::new(
-            regions
-                .collect()
-                .into_iter()
-                .map(|(region, host, offset)| (region, host.0, offset.0)),
-        );
+        let projection = self.host_projection().await;
         let offset_of = |file: Entity| -> Option<usize> {
             let (target, offset) = projection.target_of(file);
             (target == file_entity).then_some(offset)
@@ -362,15 +388,7 @@ impl LanguageServer for Backend {
         let session = self.session.lock().await;
 
         if let Some((entity, _)) = self.rope_of(&path).await {
-            let sources = self
-                .bowl()
-                .scoop::<Query<(Entity, Mut<SourceText>)>>()
-                .await;
-            for (source_entity, source) in sources.collect() {
-                if source_entity == entity {
-                    source.with_latest(|source| source.set_text(&text)).await;
-                }
-            }
+            self.set_source_text(&path, &text).await;
             self.bowl().entity(entity).insert((OpenBuffer,)).await;
         } else {
             // A file the project loader has not seen: the bowl's scope
@@ -484,18 +502,7 @@ impl LanguageServer for Backend {
         let session = self.session.lock().await;
         if let Some((entity, _)) = self.rope_of(&path).await {
             if let Ok(disk) = tokio::fs::read_to_string(&path).await {
-                let sources = self
-                    .bowl()
-                    .scoop::<Query<(Entity, Mut<SourceText>)>>()
-                    .await;
-                for (source_entity, source) in sources.collect() {
-                    if source_entity == entity {
-                        source
-                            .with_latest(move |source| source.set_text(&disk))
-                            .await;
-                        break;
-                    }
-                }
+                self.set_source_text(&path, &disk).await;
             }
             self.bowl().entity(entity).remove::<OpenBuffer>().await;
         }
@@ -510,13 +517,12 @@ impl LanguageServer for Backend {
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
-        let Some(path) = uri_path(&uri) else {
+        let Some((path, _, offset)) = self
+            .source_position(&uri, params.text_document_position_params.position)
+            .await
+        else {
             return Ok(None);
         };
-        let Some((_, rope)) = self.rope_of(&path).await else {
-            return Ok(None);
-        };
-        let offset = position_to_byte(&rope, params.text_document_position_params.position);
 
         let info = self
             .bowl()
@@ -541,13 +547,12 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
-        let Some(path) = uri_path(&uri) else {
+        let Some((path, rope, offset)) = self
+            .source_position(&uri, params.text_document_position.position)
+            .await
+        else {
             return Ok(None);
         };
-        let Some((_, rope)) = self.rope_of(&path).await else {
-            return Ok(None);
-        };
-        let offset = position_to_byte(&rope, params.text_document_position.position);
 
         let Ok(list) = self
             .bowl()
@@ -602,13 +607,12 @@ impl LanguageServer for Backend {
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = params.text_document_position_params.text_document.uri;
-        let Some(path) = uri_path(&uri) else {
+        let Some((path, _, offset)) = self
+            .source_position(&uri, params.text_document_position_params.position)
+            .await
+        else {
             return Ok(None);
         };
-        let Some((_, rope)) = self.rope_of(&path).await else {
-            return Ok(None);
-        };
-        let offset = position_to_byte(&rope, params.text_document_position_params.position);
 
         let Ok(target) = self
             .bowl()
@@ -633,17 +637,7 @@ impl LanguageServer for Backend {
         // Resolve the target file entity back to its path and rope. A
         // target inside an extracted region resolves to its host file,
         // with the span shifted into host coordinates.
-        let regions = self
-            .bowl()
-            .scoop::<Query<(Entity, &BelongsToHost, &SourceOffset)>>()
-            .await;
-        let projection = HostProjection::new(
-            regions
-                .collect()
-                .into_iter()
-                .map(|(region, host, offset)| (region, host.0, offset.0)),
-        );
-        let (target_file, offset) = projection.target_of(file);
+        let (target_file, offset) = self.host_projection().await.target_of(file);
         let paths = self.bowl().scoop::<Query<(Entity, &FilePath)>>().await;
         let Some(target_path) = paths
             .collect()

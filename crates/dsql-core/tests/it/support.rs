@@ -4,9 +4,10 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use bowl::{Bowl, Entity, Query};
+use bowl::{Bowl, Entity, Mut, Query};
 use codespan_reporting::diagnostic::Severity;
 use dsql_core::grammar::parser::Diagnostic;
+use dsql_core::source::SourceText;
 
 /// Directory holding the shared `.dsql` fixture queries.
 pub fn queries_dir() -> PathBuf {
@@ -20,6 +21,47 @@ pub fn fixture(relative_path: &str) -> String {
         Ok(text) => text,
         Err(error) => panic!("failed to read fixture {}: {error}", path.display()),
     }
+}
+
+/// Replaces one source entity's complete text through the same external
+/// mutation path editor integrations use.
+pub async fn set_source_text(bowl: &Bowl, file: Entity, text: impl Into<String>) {
+    let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+    let source = sources
+        .collect()
+        .into_iter()
+        .find_map(|(entity, source)| (entity == file).then_some(source))
+        .expect("source entity must exist");
+    let text = text.into();
+    source
+        .with_latest(move |source| source.set_text(&text))
+        .await;
+}
+
+/// Replaces every occurrence of `from` in one resident source entity.
+pub async fn replace_source_text(
+    bowl: &Bowl,
+    file: Entity,
+    from: impl Into<String>,
+    to: impl Into<String>,
+) {
+    let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+    let source = sources
+        .collect()
+        .into_iter()
+        .find_map(|(entity, source)| (entity == file).then_some(source))
+        .expect("source entity must exist");
+    let from = from.into();
+    let to = to.into();
+    source
+        .with_latest(move |source| {
+            let text = source
+                .to_text()
+                .expect("edited source text must be resident")
+                .replace(&from, &to);
+            source.set_text(&text);
+        })
+        .await;
 }
 
 /// Renders every diagnostic fact in a settled bowl, sorted for stability.

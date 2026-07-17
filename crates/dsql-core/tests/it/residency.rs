@@ -4,16 +4,15 @@
 //! fact valid — eviction is fingerprint-neutral, rehydration with equal
 //! content is too, and only real content changes re-derive.
 
-use bowl::{Bowl, Entity, Mut, Query, Singleton};
+use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::insert_catalog;
 use dsql_core::facts::{Diagnostic, DiagnosticsDemand};
 use dsql_core::language_bowl;
 use dsql_core::source::{
     OpenBuffer, SourceText, arm_analysis_residency, insert_embedding_source, insert_source,
 };
-use futures::executor::block_on;
 
-use crate::imdb_catalog;
+use crate::{imdb_catalog, set_source_text};
 
 const HOST: &str = "import { dsql } from \"./dsql\";\nexport const q = dsql`\nquery H {\n  title(limit 1) {\n    id\n  }\n}\n`;\n";
 
@@ -52,108 +51,91 @@ async fn diagnostic_entities(bowl: &Bowl) -> Vec<Entity> {
 /// Batch mode evicts plain documents, hosts, and regions alike; the
 /// settle is stable (a second look changes nothing), and re-deriving is
 /// not triggered by the eviction itself.
-#[test]
-fn analysis_mode_evicts_after_parse_without_rederiving() {
-    block_on(async {
-        let bowl = analysis_bowl().await;
-        insert_source(
-            &bowl,
-            "plain.dsql",
-            "query P {\n  title(limit 1) {\n    bogus\n  }\n}\n",
-        )
-        .await;
-        insert_embedding_source(&bowl, "host.component", HOST, "typescript").await;
+#[tokio::test]
+async fn analysis_mode_evicts_after_parse_without_rederiving() {
+    let bowl = analysis_bowl().await;
+    insert_source(
+        &bowl,
+        "plain.dsql",
+        "query P {\n  title(limit 1) {\n    bogus\n  }\n}\n",
+    )
+    .await;
+    insert_embedding_source(&bowl, "host.component", HOST, "typescript").await;
 
-        let states = residency(&bowl).await;
-        assert_eq!(
-            states,
-            vec![false, false, false],
-            "plain document, host, and region are all evicted"
-        );
-        let before = diagnostic_entities(&bowl).await;
-        assert_eq!(before.len(), 1, "the unknown column reports");
+    let states = residency(&bowl).await;
+    assert_eq!(
+        states,
+        vec![false, false, false],
+        "plain document, host, and region are all evicted"
+    );
+    let before = diagnostic_entities(&bowl).await;
+    assert_eq!(before.len(), 1, "the unknown column reports");
 
-        // A second settle pass re-derives nothing: same fact entities,
-        // still evicted, no residency flapping.
-        let after = diagnostic_entities(&bowl).await;
-        assert_eq!(before, after, "no re-derivation from eviction");
-        assert_eq!(residency(&bowl).await, vec![false, false, false]);
-    });
+    // A second settle pass re-derives nothing: same fact entities,
+    // still evicted, no residency flapping.
+    let after = diagnostic_entities(&bowl).await;
+    assert_eq!(before, after, "no re-derivation from eviction");
+    assert_eq!(residency(&bowl).await, vec![false, false, false]);
 }
 
 /// Rehydrating with identical content is fingerprint-neutral: facts keep
 /// their entities. Different content re-derives.
-#[test]
-fn rehydration_rederives_only_on_real_changes() {
-    block_on(async {
-        let bowl = analysis_bowl().await;
-        let source = "query P {\n  title(limit 1) {\n    bogus\n  }\n}\n";
-        let file = insert_source(&bowl, "plain.dsql", source).await;
-        let before = diagnostic_entities(&bowl).await;
-        assert_eq!(before.len(), 1);
+#[tokio::test]
+async fn rehydration_rederives_only_on_real_changes() {
+    let bowl = analysis_bowl().await;
+    let source = "query P {\n  title(limit 1) {\n    bogus\n  }\n}\n";
+    let file = insert_source(&bowl, "plain.dsql", source).await;
+    let before = diagnostic_entities(&bowl).await;
+    assert_eq!(before.len(), 1);
 
-        let bowl = &bowl;
-        let rehydrate = |text: String| async move {
-            let rows = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
-            for (entity, slot) in rows.collect() {
-                if entity == file {
-                    let text = text.clone();
-                    slot.with_latest(move |slot| slot.set_text(&text)).await;
-                }
-            }
-        };
+    // Same content: same hash, no bump, diagnostics keep identity.
+    set_source_text(&bowl, file, source).await;
+    assert_eq!(
+        diagnostic_entities(&bowl).await,
+        before,
+        "same-content rehydration must not re-derive"
+    );
 
-        // Same content: same hash, no bump, diagnostics keep identity.
-        rehydrate(source.to_string()).await;
-        assert_eq!(
-            diagnostic_entities(bowl).await,
-            before,
-            "same-content rehydration must not re-derive"
-        );
-
-        // Changed content: the diagnostic moves to the new name.
-        rehydrate(source.replace("bogus", "fake")).await;
-        let rows = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await;
-        let messages: Vec<String> = rows
-            .collect()
-            .into_iter()
-            .map(|(_, diagnostic)| diagnostic.0.clone())
-            .collect();
-        assert!(
-            messages.iter().any(|message| message.contains("fake")),
-            "changed content re-checks, got {messages:?}"
-        );
-    });
+    // Changed content: the diagnostic moves to the new name.
+    set_source_text(&bowl, file, source.replace("bogus", "fake")).await;
+    let rows = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await;
+    let messages: Vec<String> = rows
+        .collect()
+        .into_iter()
+        .map(|(_, diagnostic)| diagnostic.0.clone())
+        .collect();
+    assert!(
+        messages.iter().any(|message| message.contains("fake")),
+        "changed content re-checks, got {messages:?}"
+    );
 }
 
 /// Open editor buffers never evict, even in analysis mode.
-#[test]
-fn open_buffers_stay_resident() {
-    block_on(async {
-        let bowl = analysis_bowl().await;
-        let file = insert_source(
-            &bowl,
-            "open.dsql",
-            "query O {\n  title(limit 1) {\n    id\n  }\n}\n",
-        )
-        .await;
-        bowl.entity(file).insert((OpenBuffer,)).await;
-        insert_source(
-            &bowl,
-            "closed.dsql",
-            "query C {\n  kind_type {\n    kind\n  }\n}\n",
-        )
-        .await;
+#[tokio::test]
+async fn open_buffers_stay_resident() {
+    let bowl = analysis_bowl().await;
+    let file = insert_source(
+        &bowl,
+        "open.dsql",
+        "query O {\n  title(limit 1) {\n    id\n  }\n}\n",
+    )
+    .await;
+    bowl.entity(file).insert((OpenBuffer,)).await;
+    insert_source(
+        &bowl,
+        "closed.dsql",
+        "query C {\n  kind_type {\n    kind\n  }\n}\n",
+    )
+    .await;
 
-        let rows = bowl.scoop::<Query<(Entity, &SourceText)>>().await;
-        for (entity, text) in rows.collect() {
-            if entity == file {
-                assert!(text.is_resident(), "open buffers keep their rope");
-            } else {
-                assert!(!text.is_resident(), "closed files evict");
-            }
+    let rows = bowl.scoop::<Query<(Entity, &SourceText)>>().await;
+    for (entity, text) in rows.collect() {
+        if entity == file {
+            assert!(text.is_resident(), "open buffers keep their rope");
+        } else {
+            assert!(!text.is_resident(), "closed files evict");
         }
-    });
+    }
 }
 
 /// Eviction never changes the stored content hash.

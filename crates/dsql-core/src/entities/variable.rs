@@ -33,7 +33,7 @@ use crate::facts::{
 };
 use crate::format::CstFormatter;
 use crate::grammar::parser::NodeRef;
-use crate::service::hover::{Cursor, HoverCandidate, HoverEnriched, RequestKey, priority};
+use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// One variable occurrence, lowered from `value_variable` or
@@ -232,9 +232,8 @@ async fn infer_variables(
                     continue;
                 };
                 let table_id = table.id;
-                let path = SelectionPath::body(vec![response_key(field)]);
+                let path = SelectionPath::body(vec![field.output_key()]);
                 inference.collect_selection(
-                    table_id,
                     table_id,
                     entity,
                     path,
@@ -254,7 +253,6 @@ async fn infer_variables(
             {
                 let table_id = table.id;
                 inference.collect_selection_set(
-                    table_id,
                     table_id,
                     def_entity,
                     SelectionPath::fragment_root(),
@@ -343,7 +341,6 @@ impl Inference<'_> {
     /// mode, where spreads are skipped entirely.
     fn collect_selection(
         &mut self,
-        root_table: crate::catalog::TableId,
         table: crate::catalog::TableId,
         key: Entity,
         path: SelectionPath,
@@ -386,9 +383,7 @@ impl Inference<'_> {
                             continue;
                         };
                         let Some(column_id) = resolved
-                            .order_items
-                            .iter()
-                            .find(|resolved| resolved.span == item.field_span)
+                            .order_item_at(item.field_span)
                             .and_then(|resolved| resolved.column)
                         else {
                             continue;
@@ -418,12 +413,11 @@ impl Inference<'_> {
             }
         }
 
-        self.collect_selection_set(root_table, table, key, path, scope, expansion);
+        self.collect_selection_set(table, key, path, scope, expansion);
     }
 
     fn collect_selection_set(
         &mut self,
-        root_table: crate::catalog::TableId,
         table: crate::catalog::TableId,
         parent: Entity,
         path: SelectionPath,
@@ -446,7 +440,6 @@ impl Inference<'_> {
                 };
                 let spread_scope = scope.for_fragment_spread(&path, &name);
                 self.collect_selection_set(
-                    root_table,
                     table,
                     fragment_entity,
                     SelectionPath::fragment_root(),
@@ -479,7 +472,6 @@ impl Inference<'_> {
                 .unwrap_or_else(|| relation.name.to_string());
             let child_path = path.relation_child_path(output_name);
             self.collect_selection(
-                root_table,
                 relation_table,
                 entity,
                 SelectionPath::body(child_path),
@@ -549,19 +541,9 @@ impl Inference<'_> {
         resolved_clause: &ResolvedClause,
     ) -> Option<(DataType, Vec<String>)> {
         let resolved = resolved_clause.path_at(path.span())?;
-        let crate::resolution::PathTerminal::Column {
-            display, column, ..
-        } = &resolved.terminal
-        else {
-            return None;
-        };
-        let data_type = self.catalog.column_by_id(*column)?.data_type;
-        let field_path: Vec<String> = resolved
-            .relations
-            .iter()
-            .map(|step| step.display.clone())
-            .chain(std::iter::once(display.clone()))
-            .collect();
+        let column = resolved.terminal.column()?;
+        let data_type = self.catalog.column_by_id(column)?.data_type;
+        let field_path = resolved.display_path()?.map(str::to_owned).collect();
         Some((data_type, field_path))
     }
 
@@ -672,14 +654,6 @@ struct BindingContext<'a> {
     enum_values: Vec<String>,
 }
 
-/// Output key of a selection: alias, or the object name of its target.
-fn response_key(selection: &crate::entities::field_selection::FieldSel) -> String {
-    selection
-        .alias
-        .clone()
-        .unwrap_or_else(|| TableRef::parse(&selection.name).name.to_string())
-}
-
 impl FormatStage for Variable {
     /// Variables are preserved verbatim.
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
@@ -699,7 +673,7 @@ async fn hover_variables(
     let (request, _file, cursor) = query.item();
     let (_, span, binding) = bindings.item();
 
-    if !(span.start <= cursor.0 && cursor.0 < span.end) {
+    if !span.contains(cursor.0) {
         return;
     }
 
@@ -718,12 +692,5 @@ async fn hover_variables(
         binding.data_type.as_str(),
     );
 
-    commands.insert((
-        DerivedFrom::new(request),
-        RequestKey(request),
-        HoverCandidate {
-            priority: priority::VARIABLE,
-            text,
-        },
-    ));
+    emit_hover_candidate(&mut commands, request, priority::VARIABLE, text);
 }

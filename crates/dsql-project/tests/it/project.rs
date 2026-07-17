@@ -2,94 +2,99 @@
 
 use std::path::{Path, PathBuf};
 
-use bowl::{Entity, Query, Singleton};
-use dsql_core::facts::{Diagnostic, DiagnosticsDemand, PlanDemand, SqlDemand};
+use bowl::{Entity, Query};
+use dsql_core::facts::{Diagnostic, arm_generate_demands};
 use dsql_core::source::SourceKind;
 use dsql_core::sql::GeneratedSqlFact;
-use dsql_project::{Project, find_root, open_project_bowl};
+use dsql_project::{Project, ProjectError, find_root, open_project_bowl};
+use tempfile::TempDir;
 
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixture/imdb")
+fn fixture_dir(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/it/fixture/{name}"))
+}
+
+fn write_file(root: &Path, relative: &str, contents: &str) {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("fixture parent directory");
+    }
+    std::fs::write(path, contents).expect("fixture file");
+}
+
+fn scratch() -> TempDir {
+    tempfile::tempdir().expect("scratch directory")
+}
+
+fn scratch_project(config: &str) -> TempDir {
+    let scratch = scratch();
+    write_file(scratch.path(), "dsql/dsql.toml", config);
+    scratch
 }
 
 #[tokio::test]
 async fn root_discovery_walks_upward() {
-    let nested = fixture_dir().join("dsql/queries");
-    assert_eq!(find_root(&nested).await, Some(fixture_dir().join("dsql")));
+    let fixture = fixture_dir("imdb");
+    let nested = fixture.join("dsql/queries");
+    assert_eq!(find_root(&nested).await, Some(fixture.join("dsql")));
 }
 
 #[tokio::test]
 async fn project_checks_clean_and_generates_sql() {
-    {
-        let project = Project::load_from(&fixture_dir())
-            .await
-            .expect("fixture project loads");
-        assert_eq!(project.config.default_schema, "public");
+    let project = Project::load_from(&fixture_dir("imdb"))
+        .await
+        .expect("fixture project loads");
+    assert_eq!(project.config.default_schema, "public");
 
-        let bowl = open_project_bowl(&project).await.expect("bowl assembles");
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
-        bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
-            .await;
-        bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))
-            .await;
+    let bowl = open_project_bowl(&project).await.expect("bowl assembles");
+    arm_generate_demands(&bowl).await;
 
-        let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
-        assert_eq!(diagnostics, 0, "fixture project must check clean");
+    let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
+    assert_eq!(diagnostics, 0, "fixture project must check clean");
 
-        let generated = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
-        let names: Vec<String> = generated
-            .collect()
-            .into_iter()
-            .map(|(_, fact)| fact.0.output_name.clone())
-            .collect();
-        assert_eq!(names, vec!["title".to_string()]);
-    }
+    let generated = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+    let names: Vec<String> = generated
+        .collect()
+        .into_iter()
+        .map(|(_, fact)| fact.0.output_name.clone())
+        .collect();
+    assert_eq!(names, vec!["title".to_string()]);
 }
 
 #[tokio::test]
 async fn scoped_project_resolves_imports_end_to_end() {
-    {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixture/scoped");
-        let project = Project::load_from(&fixture)
-            .await
-            .expect("scoped fixture loads");
-        assert!(
-            matches!(
-                project.config.lint.unindexed_scan_severity,
-                Some(dsql_project::LintSeverity::Warning)
-            ),
-            "the [lint] section parses"
-        );
+    let project = Project::load_from(&fixture_dir("scoped"))
+        .await
+        .expect("scoped fixture loads");
+    assert!(
+        matches!(
+            project.config.lint.unindexed_scan_severity,
+            Some(dsql_project::LintSeverity::Warning)
+        ),
+        "the [lint] section parses"
+    );
 
-        let bowl = open_project_bowl(&project).await.expect("bowl assembles");
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
-        bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
-            .await;
-        bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))
-            .await;
+    let bowl = open_project_bowl(&project).await.expect("bowl assembles");
+    arm_generate_demands(&bowl).await;
 
-        let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
-        assert_eq!(
-            diagnostics, 0,
-            "the frontend scope must see shared fragments"
-        );
+    let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
+    assert_eq!(
+        diagnostics, 0,
+        "the frontend scope must see shared fragments"
+    );
 
-        let generated = bowl
-            .scoop::<Query<(Entity, &GeneratedSqlFact)>>()
-            .await
-            .len();
-        assert_eq!(
-            generated, 2,
-            "plain and embedded queries must plan and render"
-        );
-    }
+    let generated = bowl
+        .scoop::<Query<(Entity, &GeneratedSqlFact)>>()
+        .await
+        .len();
+    assert_eq!(
+        generated, 2,
+        "plain and embedded queries must plan and render"
+    );
 }
 
 #[tokio::test]
 async fn host_documents_load_whole() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixture/scoped");
+    let fixture = fixture_dir("scoped");
     let project = Project::load_from(&fixture)
         .await
         .expect("scoped fixture loads");
@@ -112,20 +117,13 @@ async fn host_documents_load_whole() {
 
 #[tokio::test]
 async fn configured_resolvers_drive_discovery_independently_of_extensions() {
-    let dir =
-        std::env::temp_dir().join(format!("dsql-source-classification-{}", std::process::id()));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("clean stale dir");
-    }
-    let root = dir.join("dsql");
-    std::fs::create_dir_all(&root).expect("dsql dir");
-    std::fs::write(root.join("dsql.toml"), "database_url = \"x\"\n").expect("config");
-    std::fs::write(root.join("plain.dsql"), "query Plain { title { id } }\n")
-        .expect("plain document");
-    std::fs::write(root.join("host.ts"), "export const value = 1;\n").expect("host");
-    std::fs::write(root.join("notes.md"), "not a source\n").expect("foreign file");
+    let scratch = scratch_project("database_url = \"x\"\n");
+    let dir = scratch.path();
+    write_file(dir, "dsql/plain.dsql", "query Plain { title { id } }\n");
+    write_file(dir, "dsql/host.ts", "export const value = 1;\n");
+    write_file(dir, "dsql/notes.md", "not a source\n");
 
-    let project = Project::load_from(&dir).await.expect("project loads");
+    let project = Project::load_from(dir).await.expect("project loads");
     let documents = dsql_project::load_project_documents(&project)
         .await
         .expect("default documents load");
@@ -139,26 +137,20 @@ async fn configured_resolvers_drive_discovery_independently_of_extensions() {
         "default discovery is standalone-only"
     );
 
-    let sources = dir.join("sources");
-    std::fs::create_dir_all(&sources).expect("sources dir");
-    std::fs::write(
-        sources.join("plain.query"),
-        "query Plain { title { id } }\n",
-    )
-    .expect("plain document");
-    std::fs::write(
-        sources.join("host.component"),
+    write_file(dir, "sources/plain.query", "query Plain { title { id } }\n");
+    write_file(
+        dir,
+        "sources/host.component",
         "export const value = dsql`query Host { title { id } }`;\n",
-    )
-    .expect("host");
-    std::fs::write(sources.join("notes.md"), "not a source\n").expect("foreign file");
-    std::fs::write(
-        root.join("dsql.toml"),
+    );
+    write_file(dir, "sources/notes.md", "not a source\n");
+    write_file(
+        dir,
+        "dsql/dsql.toml",
         "database_url = \"x\"\ndocuments = [\n  { resolver = \"dsql\", paths = [\"sources/plain.query\"] },\n  { resolver = \"typescript\", paths = [\"sources/host.component\"] },\n]\n",
-    )
-    .expect("configured discovery");
+    );
 
-    let project = Project::load_from(&dir)
+    let project = Project::load_from(dir)
         .await
         .expect("configured project loads");
     let documents = dsql_project::load_project_documents(&project)
@@ -180,126 +172,123 @@ async fn configured_resolvers_drive_discovery_independently_of_extensions() {
         "configured discovery accepts exactly the shared source kinds"
     );
 
-    std::fs::remove_dir_all(&dir).expect("cleanup");
-}
+    // Named scopes replace the top-level default routing everywhere. An
+    // output may therefore overlap the ignored group, while the effective
+    // scope remains resolver-driven regardless of its file extension.
+    write_file(
+        dir,
+        "dsql/dsql.toml",
+        "database_url = \"x\"\ndocuments = [{ resolver = \"typescript\", paths = [\"ignored\"] }]\n\n[resolution.frontend]\ndocuments = [{ resolver = \"dsql\", paths = [\"sources/plain.query\"] }]\n\n[generate.typescript]\noutputs = [\"ignored\"]\n",
+    );
 
-#[tokio::test]
-async fn unknown_scope_imports_fail_project_loading() {
-    let dir = std::env::temp_dir().join("dsql-unknown-import-fixture");
-    let root = dir.join("dsql");
-    std::fs::create_dir_all(&root).expect("fixture dir");
-    std::fs::write(
-        root.join("dsql.toml"),
-        "database_url = \"x\"\n\n[resolution.frontend]\ndocuments = []\nimports = [\"missing\"]\n",
-    )
-    .expect("fixture config");
-
-    let error = Project::load_from(&dir)
+    let project = Project::load_from(dir)
         .await
-        .expect_err("unknown import must fail");
-    assert!(
-        error
-            .to_string()
-            .contains("imports unknown scope `missing`"),
-        "unexpected error: {error}"
+        .expect("ignored default routes do not reserve generator outputs");
+    let documents = dsql_project::load_project_documents(&project)
+        .await
+        .expect("named documents load");
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].scope, "frontend");
+    assert_eq!(documents[0].kind, SourceKind::Dsql);
+    assert_eq!(
+        documents[0].path.file_name().and_then(|name| name.to_str()),
+        Some("plain.query")
     );
 }
 
 #[tokio::test]
-async fn cyclic_scope_imports_fail_project_loading_deterministically() {
-    let dir = std::env::temp_dir().join("dsql-cyclic-import-fixture");
-    let root = dir.join("dsql");
-    std::fs::create_dir_all(&root).expect("fixture dir");
-    std::fs::write(
-        root.join("dsql.toml"),
-        concat!(
-            "database_url = \"x\"\n\n",
-            "[resolution.a]\ndocuments = []\nimports = [\"b\"]\n\n",
-            "[resolution.b]\ndocuments = []\nimports = [\"c\"]\n\n",
-            "[resolution.c]\ndocuments = []\nimports = [\"a\"]\n",
+async fn invalid_scope_import_graphs_are_rejected() {
+    let cases = [
+        (
+            "unknown import",
+            "database_url = \"x\"\n\n[resolution.frontend]\ndocuments = []\nimports = [\"missing\"]\n",
+            "scope `frontend` imports unknown scope `missing`",
         ),
-    )
-    .expect("fixture config");
-
-    let error = Project::load_from(&dir)
-        .await
-        .expect_err("cyclic imports must fail");
-    assert_eq!(error.to_string(), "cyclic scope import: a -> b -> c -> a");
-
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[tokio::test]
-async fn documents_owned_by_two_scopes_fail_loading() {
-    let dir = std::env::temp_dir().join("dsql-dup-ownership-fixture");
-    let root = dir.join("dsql");
-    // Document paths resolve from the project base, beside dsql/.
-    let queries = dir.join("queries");
-    std::fs::create_dir_all(&queries).expect("fixture dir");
-    std::fs::write(
-        root.join("dsql.toml"),
-        "database_url = \"x\"\n\n[resolution.a]\ndocuments = [{ resolver = \"dsql\", paths = [\"queries\"] }]\n\n[resolution.b]\ndocuments = [{ resolver = \"dsql\", paths = [\"queries\"] }]\n",
-    )
-    .expect("fixture config");
-    std::fs::write(
-        queries.join("q.dsql"),
-        "query Q {\n  title {\n    id\n  }\n}\n",
-    )
-    .expect("fixture doc");
-
-    let project = Project::load_from(&dir).await.expect("config parses");
-    let error = dsql_project::load_project_documents(&project)
-        .await
-        .expect_err("dual ownership must fail");
-    assert!(
-        error.to_string().contains("is assigned to resolver"),
-        "unexpected error: {error}"
-    );
-}
-
-#[tokio::test]
-async fn documents_assigned_to_two_resolvers_in_one_scope_fail_loading() {
-    let dir = std::env::temp_dir().join(format!(
-        "dsql-duplicate-resolver-fixture-{}",
-        std::process::id()
-    ));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("clean stale dir");
+        (
+            "cyclic imports",
+            concat!(
+                "database_url = \"x\"\n\n",
+                "[resolution.a]\ndocuments = []\nimports = [\"b\"]\n\n",
+                "[resolution.b]\ndocuments = []\nimports = [\"c\"]\n\n",
+                "[resolution.c]\ndocuments = []\nimports = [\"a\"]\n",
+            ),
+            "cyclic scope import: a -> b -> c -> a",
+        ),
+    ];
+    for (case, config, expected) in cases {
+        let scratch = scratch_project(config);
+        let error = Project::load_from(scratch.path())
+            .await
+            .expect_err("invalid imports must fail");
+        assert_eq!(error.to_string(), expected, "{case}");
     }
-    let root = dir.join("dsql");
-    let queries = dir.join("queries");
-    std::fs::create_dir_all(&root).expect("fixture dir");
-    std::fs::create_dir_all(&queries).expect("queries dir");
-    std::fs::write(
-        root.join("dsql.toml"),
-        "database_url = \"x\"\n\n[resolution.frontend]\ndocuments = [\n  { resolver = \"dsql\", paths = [\"queries/source.any\"] },\n  { resolver = \"typescript\", paths = [\"queries/source.any\"] },\n]\n",
-    )
-    .expect("fixture config");
-    std::fs::write(queries.join("source.any"), "query Q { title { id } }\n")
-        .expect("fixture source");
+}
 
-    let project = Project::load_from(&dir).await.expect("config parses");
-    let error = dsql_project::load_project_documents(&project)
-        .await
-        .expect_err("dual resolver assignment must fail");
-    let message = error.to_string();
-    assert!(
-        message.contains("resolver `dsql`") && message.contains("resolver `typescript`"),
-        "unexpected error: {message}"
-    );
-
-    std::fs::remove_dir_all(&dir).expect("cleanup");
+#[tokio::test]
+async fn duplicate_document_assignments_report_both_owners() {
+    let cases = [
+        (
+            "two scopes",
+            "database_url = \"x\"\n\n[resolution.a]\ndocuments = [{ resolver = \"dsql\", paths = [\"queries/source.any\"] }]\n\n[resolution.b]\ndocuments = [{ resolver = \"dsql\", paths = [\"queries/source.any\"] }]\n",
+            ("a", "dsql", "b", "dsql"),
+        ),
+        (
+            "two resolvers",
+            "database_url = \"x\"\n\n[resolution.frontend]\ndocuments = [\n  { resolver = \"dsql\", paths = [\"queries/source.any\"] },\n  { resolver = \"typescript\", paths = [\"queries/source.any\"] },\n]\n",
+            ("frontend", "dsql", "frontend", "typescript"),
+        ),
+    ];
+    for (case, config, expected) in cases {
+        let scratch = scratch_project(config);
+        write_file(
+            scratch.path(),
+            "queries/source.any",
+            "query Q { title { id } }\n",
+        );
+        let project = Project::load_from(scratch.path())
+            .await
+            .expect("config parses");
+        let error = dsql_project::load_project_documents(&project)
+            .await
+            .expect_err("duplicate assignment must fail");
+        let actual = if let ProjectError::DuplicateDocumentAssignment {
+            path,
+            first_scope,
+            first_resolver,
+            second_scope,
+            second_resolver,
+        } = error
+        {
+            Some((
+                path,
+                first_scope,
+                first_resolver,
+                second_scope,
+                second_resolver,
+            ))
+        } else {
+            None
+        };
+        assert_eq!(
+            actual,
+            Some((
+                scratch.path().join("queries/source.any"),
+                expected.0.to_string(),
+                expected.1.to_string(),
+                expected.2.to_string(),
+                expected.3.to_string(),
+            )),
+            "{case}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn init_scaffolds_a_loadable_project() {
-    let dir = std::env::temp_dir().join(format!("dsql-init-fixture-{}", std::process::id()));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("clean stale dir");
-    }
-    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let scratch = scratch();
+    let dir = scratch.path();
 
-    let project = dsql_project::init_project(&dir, None)
+    let project = dsql_project::init_project(dir, None)
         .await
         .expect("init scaffolds");
     assert!(project.schema.is_dir(), "schema/ directory exists");
@@ -307,7 +296,7 @@ async fn init_scaffolds_a_loadable_project() {
         std::fs::read_to_string(project.root.join("dsql.toml")).expect("config written")
     );
 
-    let reloaded = Project::load_from(&dir).await.expect("project round-trips");
+    let reloaded = Project::load_from(dir).await.expect("project round-trips");
     assert_eq!(reloaded.config.database_url, "<database url>");
     assert_eq!(
         reloaded.config.resolution["main"].documents,
@@ -318,28 +307,23 @@ async fn init_scaffolds_a_loadable_project() {
     );
 
     // A second init must not clobber the existing configuration.
-    let error = dsql_project::init_project(&dir, Some("postgres://x".to_string()))
+    let error = dsql_project::init_project(dir, Some("postgres://x".to_string()))
         .await
         .expect_err("re-init refuses");
     assert!(
         error.to_string().contains("already exists"),
         "unexpected error: {error}"
     );
-
-    std::fs::remove_dir_all(&dir).expect("cleanup");
 }
 
 #[tokio::test]
 async fn init_rolls_back_when_the_schema_directory_is_blocked() {
-    let dir = std::env::temp_dir().join(format!("dsql-init-blocked-{}", std::process::id()));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("clean stale dir");
-    }
+    let scratch = scratch();
+    let dir = scratch.path();
     // A regular file where schema/ must go blocks initialization.
-    std::fs::create_dir_all(dir.join("dsql")).expect("fixture dir");
-    std::fs::write(dir.join("dsql/schema"), "blocker").expect("blocking file");
+    write_file(dir, "dsql/schema", "blocker");
 
-    let error = dsql_project::init_project(&dir, None)
+    let error = dsql_project::init_project(dir, None)
         .await
         .expect_err("blocked schema fails init");
     assert!(
@@ -353,39 +337,33 @@ async fn init_rolls_back_when_the_schema_directory_is_blocked() {
 
     // Removing the blocker makes a retry succeed — nothing was stranded.
     std::fs::remove_file(dir.join("dsql/schema")).expect("unblock");
-    dsql_project::init_project(&dir, None)
+    dsql_project::init_project(dir, None)
         .await
         .expect("retry succeeds after unblocking");
-
-    std::fs::remove_dir_all(&dir).expect("cleanup");
 }
 
 #[tokio::test]
 async fn init_escapes_hostile_database_urls() {
-    let dir = std::env::temp_dir().join(format!("dsql-init-escape-{}", std::process::id()));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("clean stale dir");
-    }
-    std::fs::create_dir_all(&dir).expect("fixture dir");
-
     // Quotes and backslashes are representable TOML: they MUST round-trip.
+    let quoted_scratch = scratch();
+    let dir = quoted_scratch.path();
     let quoted = "postgres://user:pa\"ss\\word@host/db".to_string();
-    let project = dsql_project::init_project(&dir, Some(quoted.clone()))
+    let project = dsql_project::init_project(dir, Some(quoted.clone()))
         .await
         .expect("representable URLs init");
     assert_eq!(project.config.database_url, quoted);
-    let reloaded = Project::load_from(&dir).await.expect("round-trips");
+    let reloaded = Project::load_from(dir).await.expect("round-trips");
     assert_eq!(reloaded.config.database_url, quoted);
-    std::fs::remove_dir_all(&dir).expect("reset");
-    std::fs::create_dir_all(&dir).expect("fixture dir");
 
     // A newline may be unrepresentable in the starter: round-trip exactly
     // or fail cleanly — never write invalid TOML that strands the project.
+    let hostile_scratch = scratch();
+    let dir = hostile_scratch.path();
     let hostile = "postgres://user:pa\"ss\\wo\nrd@host/db".to_string();
-    match dsql_project::init_project(&dir, Some(hostile.clone())).await {
+    match dsql_project::init_project(dir, Some(hostile.clone())).await {
         Ok(project) => {
             assert_eq!(project.config.database_url, hostile);
-            let reloaded = Project::load_from(&dir).await.expect("round-trips");
+            let reloaded = Project::load_from(dir).await.expect("round-trips");
             assert_eq!(reloaded.config.database_url, hostile);
         }
         Err(error) => {
@@ -395,13 +373,11 @@ async fn init_escapes_hostile_database_urls() {
             );
         }
     }
-
-    std::fs::remove_dir_all(&dir).expect("cleanup");
 }
 
 #[tokio::test]
 async fn schema_directory_round_trips_and_drops_stale_tables() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixture/imdb");
+    let fixture = fixture_dir("imdb");
     let project = Project::load_from(&fixture)
         .await
         .expect("imdb fixture loads");
@@ -409,14 +385,12 @@ async fn schema_directory_round_trips_and_drops_stale_tables() {
         .await
         .expect("schema loads");
 
-    let dir = std::env::temp_dir().join(format!("dsql-schema-roundtrip-{}", std::process::id()));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("clean stale dir");
-    }
-    dsql_project::store_metadata_dir(&metadata, &dir)
+    let scratch = scratch();
+    let dir = scratch.path();
+    dsql_project::store_metadata_dir(&metadata, dir)
         .await
         .expect("schema stores");
-    let reloaded = dsql_project::load_metadata_dir(&dir)
+    let reloaded = dsql_project::load_metadata_dir(dir)
         .await
         .expect("stored schema loads");
     let mut canonical = metadata.clone();
@@ -425,35 +399,26 @@ async fn schema_directory_round_trips_and_drops_stale_tables() {
 
     // A table file for a dropped table disappears on the next store.
     let stale = dir.join("public/dropped_table.yaml");
-    std::fs::write(&stale, "stale").expect("stale file writes");
-    dsql_project::store_metadata_dir(&metadata, &dir)
+    write_file(dir, "public/dropped_table.yaml", "stale");
+    dsql_project::store_metadata_dir(&metadata, dir)
         .await
         .expect("schema restores");
     assert!(!stale.exists(), "stale table files are removed");
-
-    std::fs::remove_dir_all(&dir).expect("cleanup");
 }
 
 /// Single-star globs must not cross directory boundaries (the manual
 /// reserved-pruning walk keeps glob::glob's literal-separator behavior).
 #[tokio::test]
 async fn single_star_globs_stay_in_their_directory() {
-    let dir = std::env::temp_dir().join(format!("dsql-glob-literal-{}", std::process::id()));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("clean stale dir");
-    }
-    std::fs::create_dir_all(dir.join("dsql")).expect("dirs");
-    std::fs::create_dir_all(dir.join("queries/nested")).expect("dirs");
-    std::fs::write(
-        dir.join("dsql/dsql.toml"),
+    let scratch = scratch_project(
         "database_url = \"x\"\n\n[resolution.flat]\ndocuments = [{ resolver = \"dsql\", paths = [\"queries/*.dsql\"] }]\n",
-    )
-    .expect("config");
+    );
+    let dir = scratch.path();
     let doc = "query Q {\n  title(limit 1) {\n    id\n  }\n}\n";
-    std::fs::write(dir.join("queries/top.dsql"), doc).expect("top doc");
-    std::fs::write(dir.join("queries/nested/deep.dsql"), doc).expect("deep doc");
+    write_file(dir, "queries/top.dsql", doc);
+    write_file(dir, "queries/nested/deep.dsql", doc);
 
-    let project = Project::load_from(&dir).await.expect("project loads");
+    let project = Project::load_from(dir).await.expect("project loads");
     let documents = dsql_project::load_project_documents(&project)
         .await
         .expect("documents load");
@@ -469,6 +434,4 @@ async fn single_star_globs_stay_in_their_directory() {
         !paths.iter().any(|path| path.ends_with("deep.dsql")),
         "a single star must not cross directories, got {paths:?}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }

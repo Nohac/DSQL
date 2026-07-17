@@ -13,9 +13,8 @@ use dsql_core::source::{
     ResolutionScope, ScopeDocument, ScopeDocuments, ScopeImports, ScopeOwnership, SourceAssignment,
     SourceKind, insert_source_scoped,
 };
-use futures::executor::block_on;
 
-use crate::{imdb_catalog, render_diagnostic_facts};
+use crate::{imdb_catalog, render_diagnostic_facts, set_source_text};
 
 async fn scoped_bowl(imports: &[(&str, &[&str])]) -> Bowl {
     let bowl = language_bowl().await;
@@ -62,63 +61,55 @@ async fn resolutions(bowl: &Bowl) -> usize {
 const FRAGMENT: &str = "fragment TitleBits on title {\n  id\n}\n";
 const SPREAD: &str = "query Q {\n  title {\n    ...TitleBits\n  }\n}\n";
 
-#[test]
-fn fragments_resolve_across_files_within_a_scope() {
-    block_on(async {
-        let bowl = scoped_bowl(&[]).await;
-        insert(&bowl, "fragments.dsql", "default", FRAGMENT).await;
-        insert(&bowl, "query.dsql", "default", SPREAD).await;
+#[tokio::test]
+async fn fragments_resolve_across_files_within_a_scope() {
+    let bowl = scoped_bowl(&[]).await;
+    insert(&bowl, "fragments.dsql", "default", FRAGMENT).await;
+    insert(&bowl, "query.dsql", "default", SPREAD).await;
 
-        assert_eq!(resolutions(&bowl).await, 1);
-        assert_eq!(render_diagnostic_facts(&bowl).await, "");
-    });
+    assert_eq!(resolutions(&bowl).await, 1);
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
 }
 
-#[test]
-fn imported_scopes_provide_fragments() {
-    block_on(async {
-        let bowl = scoped_bowl(&[("frontend", &["shared"]), ("shared", &[])]).await;
-        insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
-        insert(&bowl, "page.dsql", "frontend", SPREAD).await;
+#[tokio::test]
+async fn imported_scopes_provide_fragments() {
+    let bowl = scoped_bowl(&[("frontend", &["shared"]), ("shared", &[])]).await;
+    insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
+    insert(&bowl, "page.dsql", "frontend", SPREAD).await;
 
-        assert_eq!(resolutions(&bowl).await, 1);
-        assert_eq!(render_diagnostic_facts(&bowl).await, "");
-    });
+    assert_eq!(resolutions(&bowl).await, 1);
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
 }
 
-#[test]
-fn transitive_imports_provide_fragments() {
-    block_on(async {
-        let bowl = scoped_bowl(&[
-            ("frontend", &["middle"]),
-            ("middle", &["shared"]),
-            ("shared", &[]),
-        ])
-        .await;
-        insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
-        insert(&bowl, "page.dsql", "frontend", SPREAD).await;
+#[tokio::test]
+async fn transitive_imports_provide_fragments() {
+    let bowl = scoped_bowl(&[
+        ("frontend", &["middle"]),
+        ("middle", &["shared"]),
+        ("shared", &[]),
+    ])
+    .await;
+    insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
+    insert(&bowl, "page.dsql", "frontend", SPREAD).await;
 
-        assert_eq!(resolutions(&bowl).await, 1);
-        assert_eq!(render_diagnostic_facts(&bowl).await, "");
-    });
+    assert_eq!(resolutions(&bowl).await, 1);
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
 }
 
-#[test]
-fn diamond_imports_do_not_duplicate_one_origin() {
-    block_on(async {
-        let bowl = scoped_bowl(&[
-            ("frontend", &["left", "right"]),
-            ("left", &["shared"]),
-            ("right", &["shared"]),
-            ("shared", &[]),
-        ])
-        .await;
-        insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
-        insert(&bowl, "page.dsql", "frontend", SPREAD).await;
+#[tokio::test]
+async fn diamond_imports_do_not_duplicate_one_origin() {
+    let bowl = scoped_bowl(&[
+        ("frontend", &["left", "right"]),
+        ("left", &["shared"]),
+        ("right", &["shared"]),
+        ("shared", &[]),
+    ])
+    .await;
+    insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
+    insert(&bowl, "page.dsql", "frontend", SPREAD).await;
 
-        assert_eq!(resolutions(&bowl).await, 1, "one origin stays unique");
-        assert_eq!(render_diagnostic_facts(&bowl).await, "");
-    });
+    assert_eq!(resolutions(&bowl).await, 1, "one origin stays unique");
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
 }
 
 #[test]
@@ -135,180 +126,151 @@ fn cyclic_import_visibility_is_finite_and_deduplicated() {
     );
 }
 
-#[test]
-fn scopes_without_imports_do_not_see_each_other() {
-    block_on(async {
-        let bowl = scoped_bowl(&[("api", &[]), ("frontend", &[])]).await;
-        insert(&bowl, "api.dsql", "api", FRAGMENT).await;
-        insert(&bowl, "page.dsql", "frontend", SPREAD).await;
+#[tokio::test]
+async fn scopes_without_imports_do_not_see_each_other() {
+    let bowl = scoped_bowl(&[("api", &[]), ("frontend", &[])]).await;
+    insert(&bowl, "api.dsql", "api", FRAGMENT).await;
+    insert(&bowl, "page.dsql", "frontend", SPREAD).await;
 
-        assert_eq!(resolutions(&bowl).await, 0);
-        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
-    });
+    assert_eq!(resolutions(&bowl).await, 0);
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
-#[test]
-fn same_name_in_independent_scopes_is_clean() {
-    block_on(async {
-        let bowl = scoped_bowl(&[("api", &[]), ("frontend", &[])]).await;
-        insert(&bowl, "api.dsql", "api", FRAGMENT).await;
-        insert(&bowl, "api-query.dsql", "api", SPREAD).await;
-        insert(&bowl, "page-fragments.dsql", "frontend", FRAGMENT).await;
-        insert(&bowl, "page.dsql", "frontend", SPREAD).await;
+#[tokio::test]
+async fn same_name_in_independent_scopes_is_clean() {
+    let bowl = scoped_bowl(&[("api", &[]), ("frontend", &[])]).await;
+    insert(&bowl, "api.dsql", "api", FRAGMENT).await;
+    insert(&bowl, "api-query.dsql", "api", SPREAD).await;
+    insert(&bowl, "page-fragments.dsql", "frontend", FRAGMENT).await;
+    insert(&bowl, "page.dsql", "frontend", SPREAD).await;
 
-        assert_eq!(resolutions(&bowl).await, 2, "each scope resolves locally");
-        assert_eq!(render_diagnostic_facts(&bowl).await, "");
-    });
+    assert_eq!(resolutions(&bowl).await, 2, "each scope resolves locally");
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
 }
 
-#[test]
-fn local_fragment_colliding_with_import_is_reported() {
-    block_on(async {
-        let bowl = scoped_bowl(&[("frontend", &["shared"]), ("shared", &[])]).await;
-        insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
-        insert(&bowl, "page-fragments.dsql", "frontend", FRAGMENT).await;
+#[tokio::test]
+async fn local_fragment_colliding_with_import_is_reported() {
+    let bowl = scoped_bowl(&[("frontend", &["shared"]), ("shared", &[])]).await;
+    insert(&bowl, "shared.dsql", "shared", FRAGMENT).await;
+    insert(&bowl, "page-fragments.dsql", "frontend", FRAGMENT).await;
 
-        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
-    });
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
-#[test]
-fn local_collision_names_the_lexicographically_first_provider() {
-    block_on(async {
-        let bowl = scoped_bowl(&[("frontend", &["b", "a"]), ("a", &[]), ("b", &[])]).await;
-        insert(&bowl, "a.dsql", "a", FRAGMENT).await;
-        insert(&bowl, "b.dsql", "b", FRAGMENT).await;
-        insert(&bowl, "page-fragments.dsql", "frontend", FRAGMENT).await;
+#[tokio::test]
+async fn local_collision_names_the_lexicographically_first_provider() {
+    let bowl = scoped_bowl(&[("frontend", &["b", "a"]), ("a", &[]), ("b", &[])]).await;
+    insert(&bowl, "a.dsql", "a", FRAGMENT).await;
+    insert(&bowl, "b.dsql", "b", FRAGMENT).await;
+    insert(&bowl, "page-fragments.dsql", "frontend", FRAGMENT).await;
 
-        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
-    });
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
-#[test]
-fn fragment_provided_by_two_imports_is_ambiguous_at_the_spread() {
-    block_on(async {
-        let bowl = scoped_bowl(&[("frontend", &["a", "b"]), ("a", &[]), ("b", &[])]).await;
-        insert(&bowl, "a.dsql", "a", FRAGMENT).await;
-        insert(&bowl, "b.dsql", "b", FRAGMENT).await;
-        insert(&bowl, "page.dsql", "frontend", SPREAD).await;
+#[tokio::test]
+async fn fragment_provided_by_two_imports_is_ambiguous_at_the_spread() {
+    let bowl = scoped_bowl(&[("frontend", &["a", "b"]), ("a", &[]), ("b", &[])]).await;
+    insert(&bowl, "a.dsql", "a", FRAGMENT).await;
+    insert(&bowl, "b.dsql", "b", FRAGMENT).await;
+    insert(&bowl, "page.dsql", "frontend", SPREAD).await;
 
-        assert_eq!(resolutions(&bowl).await, 0);
-        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
-    });
+    assert_eq!(resolutions(&bowl).await, 0);
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
 const QUERY: &str = "query Titles {\n  title(limit 1) {\n    id\n  }\n}\n";
 
 /// A local query colliding with an imported one is a language error at
 /// the local definition — mirrors the fragment rule.
-#[test]
-fn local_query_colliding_with_import_is_reported() {
-    block_on(async {
-        let bowl = scoped_bowl(&[("frontend", &["shared"]), ("shared", &[])]).await;
-        insert(&bowl, "shared.dsql", "shared", QUERY).await;
-        insert(&bowl, "page.dsql", "frontend", QUERY).await;
+#[tokio::test]
+async fn local_query_colliding_with_import_is_reported() {
+    let bowl = scoped_bowl(&[("frontend", &["shared"]), ("shared", &[])]).await;
+    insert(&bowl, "shared.dsql", "shared", QUERY).await;
+    insert(&bowl, "page.dsql", "frontend", QUERY).await;
 
-        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
-    });
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
-#[test]
-fn local_query_colliding_with_transitive_import_is_reported() {
-    block_on(async {
-        let bowl = scoped_bowl(&[
-            ("frontend", &["middle"]),
-            ("middle", &["shared"]),
-            ("shared", &[]),
-        ])
-        .await;
-        insert(&bowl, "shared.dsql", "shared", QUERY).await;
-        insert(&bowl, "page.dsql", "frontend", QUERY).await;
+#[tokio::test]
+async fn local_query_colliding_with_transitive_import_is_reported() {
+    let bowl = scoped_bowl(&[
+        ("frontend", &["middle"]),
+        ("middle", &["shared"]),
+        ("shared", &[]),
+    ])
+    .await;
+    insert(&bowl, "shared.dsql", "shared", QUERY).await;
+    insert(&bowl, "page.dsql", "frontend", QUERY).await;
 
-        let diagnostics = render_diagnostic_facts(&bowl).await;
-        assert!(
-            diagnostics.contains("imported from scope `shared`"),
-            "transitive imports participate in collisions: {diagnostics}"
-        );
-        insta::assert_snapshot!(diagnostics);
-    });
+    let diagnostics = render_diagnostic_facts(&bowl).await;
+    assert!(
+        diagnostics.contains("imported from scope `shared`"),
+        "transitive imports participate in collisions: {diagnostics}"
+    );
+    insta::assert_snapshot!(diagnostics);
 }
 
 /// Two imported scopes providing one query name to a consuming scope
 /// collide in its artifact closure even with no local definition or use
 /// site — reported once, on the first provider, naming every provider.
 /// (Fragments keep their spread-site ambiguity diagnostic instead.)
-#[test]
-fn query_provided_by_two_imports_collides_at_the_definition() {
-    block_on(async {
-        let bowl = scoped_bowl(&[("frontend", &["a", "b"]), ("a", &[]), ("b", &[])]).await;
-        insert(&bowl, "a.dsql", "a", QUERY).await;
-        insert(&bowl, "b.dsql", "b", QUERY).await;
+#[tokio::test]
+async fn query_provided_by_two_imports_collides_at_the_definition() {
+    let bowl = scoped_bowl(&[("frontend", &["a", "b"]), ("a", &[]), ("b", &[])]).await;
+    insert(&bowl, "a.dsql", "a", QUERY).await;
+    insert(&bowl, "b.dsql", "b", QUERY).await;
 
-        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
-    });
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
 /// The import-ambiguity check follows edits: introducing the second
 /// provider after the first settle reports, renaming it away retires.
-#[test]
-fn import_ambiguities_follow_edits() {
-    use bowl::{Mut, Query};
-    use dsql_core::source::SourceText;
+#[tokio::test]
+async fn import_ambiguities_follow_edits() {
+    let bowl = scoped_bowl(&[("frontend", &["a", "b"]), ("a", &[]), ("b", &[])]).await;
+    insert(&bowl, "a.dsql", "a", QUERY).await;
+    insert(
+        &bowl,
+        "b.dsql",
+        "b",
+        "query Other {\n  title(limit 1) {\n    id\n  }\n}\n",
+    )
+    .await;
+    assert_eq!(
+        render_diagnostic_facts(&bowl).await,
+        "",
+        "distinct names are clean"
+    );
 
-    block_on(async {
-        let bowl = scoped_bowl(&[("frontend", &["a", "b"]), ("a", &[]), ("b", &[])]).await;
-        insert(&bowl, "a.dsql", "a", QUERY).await;
-        insert(
-            &bowl,
-            "b.dsql",
-            "b",
-            "query Other {\n  title(limit 1) {\n    id\n  }\n}\n",
-        )
-        .await;
-        assert_eq!(
-            render_diagnostic_facts(&bowl).await,
-            "",
-            "distinct names are clean"
-        );
+    // Rename b's query onto a's name: the ambiguity appears.
+    let target = {
+        let rows = bowl
+            .scoop::<Query<(Entity, &dsql_core::source::FilePath)>>()
+            .await;
+        rows.collect()
+            .into_iter()
+            .find(|(_, path)| path.0 == "b.dsql")
+            .map(|(entity, _)| entity)
+            .expect("b.dsql exists")
+    };
+    set_source_text(&bowl, target, QUERY).await;
+    let reported = render_diagnostic_facts(&bowl).await;
+    assert!(
+        reported.contains("provided to scope `frontend`"),
+        "the ambiguity appears after the edit, got: {reported:?}"
+    );
 
-        // Rename b's query onto a's name: the ambiguity appears.
-        let target = {
-            let rows = bowl
-                .scoop::<Query<(Entity, &dsql_core::source::FilePath)>>()
-                .await;
-            rows.collect()
-                .into_iter()
-                .find(|(_, path)| path.0 == "b.dsql")
-                .map(|(entity, _)| entity)
-                .expect("b.dsql exists")
-        };
-        let set_b = |text: String| {
-            let bowl = &bowl;
-            async move {
-                let rows = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
-                for (entity, slot) in rows.collect() {
-                    if entity == target {
-                        let text = text.clone();
-                        slot.with_latest(move |slot| slot.set_text(&text)).await;
-                    }
-                }
-            }
-        };
-
-        set_b(QUERY.to_string()).await;
-        let reported = render_diagnostic_facts(&bowl).await;
-        assert!(
-            reported.contains("provided to scope `frontend`"),
-            "the ambiguity appears after the edit, got: {reported:?}"
-        );
-
-        set_b("query Other {\n  title(limit 1) {\n    id\n  }\n}\n".to_string()).await;
-        assert_eq!(
-            render_diagnostic_facts(&bowl).await,
-            "",
-            "renaming away retires the ambiguity"
-        );
-    });
+    set_source_text(
+        &bowl,
+        target,
+        "query Other {\n  title(limit 1) {\n    id\n  }\n}\n",
+    )
+    .await;
+    assert_eq!(
+        render_diagnostic_facts(&bowl).await,
+        "",
+        "renaming away retires the ambiguity"
+    );
 }
 
 /// Scope ownership preserves its outcomes: unmatched and overlapping

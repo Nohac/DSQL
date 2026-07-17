@@ -105,7 +105,7 @@ async fn answer_spread_definitions(
     let (request, _file, cursor) = query.item();
     let (_, resolved) = spreads.item();
 
-    if !(resolved.name_span.start <= cursor.0 && cursor.0 < resolved.name_span.end) {
+    if !resolved.name_span.contains(cursor.0) {
         return;
     }
     let Some(target) = &resolved.target else {
@@ -129,7 +129,7 @@ async fn answer_selection_definitions(
     let (request, _file, cursor) = query.item();
     let (_, resolved) = selections.item();
     let (_, snapshot) = catalog.item();
-    if !contains(resolved.name_span, cursor.0) {
+    if !resolved.name_span.contains(cursor.0) {
         return;
     }
     let target = match &resolved.target {
@@ -162,10 +162,10 @@ async fn answer_clause_definitions(
     let path_target = resolved.paths.iter().find_map(|path| {
         path.relations
             .iter()
-            .find(|relation| contains(relation.span, cursor.0))
+            .find(|relation| relation.span.contains(cursor.0))
             .and_then(|relation| table_definition(catalog, relation.table))
             .or_else(|| match &path.terminal {
-                PathTerminal::Column { span, column, .. } if contains(*span, cursor.0) => {
+                PathTerminal::Column { span, column, .. } if span.contains(cursor.0) => {
                     column_definition(catalog, *column)
                 }
                 PathTerminal::Column { .. } | PathTerminal::Failed | PathTerminal::OutOfScope => {
@@ -177,7 +177,7 @@ async fn answer_clause_definitions(
         resolved
             .order_items
             .iter()
-            .find(|item| contains(item.span, cursor.0))
+            .find(|item| item.span.contains(cursor.0))
             .and_then(|item| item.column)
             .and_then(|column| column_definition(catalog, column))
     });
@@ -199,7 +199,7 @@ async fn answer_fragment_target_definitions(
     let (request, _file, cursor) = query.item();
     let (_, resolved) = targets.item();
     let (_, snapshot) = catalog.item();
-    if !contains(resolved.span, cursor.0) {
+    if !resolved.span.contains(cursor.0) {
         return;
     }
     let ResolvedTableTarget::Table(table) = &resolved.target else {
@@ -210,10 +210,6 @@ async fn answer_fragment_target_definitions(
             .entity(request)
             .insert(DefinitionTarget::Catalog(target));
     }
-}
-
-fn contains(span: Span, offset: usize) -> bool {
-    span.start <= offset && offset < span.end
 }
 
 fn table_definition(catalog: &Catalog, table: TableId) -> Option<CatalogDefinition> {

@@ -151,11 +151,7 @@ impl Daemon {
             }
         };
         // Canonicalize once; every later path exchange is lexical.
-        let base = project
-            .root
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| project.root.clone());
+        let base = project.base().to_path_buf();
         let project_base = std::fs::canonicalize(&base).unwrap_or(base);
         let mut exclude_roots = Vec::new();
         for root in request.params.exclude_roots.clone().unwrap_or_default() {

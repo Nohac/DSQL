@@ -12,6 +12,13 @@ pub struct Span {
     pub end: usize,
 }
 
+impl Span {
+    /// Whether `offset` lies inside this half-open byte range.
+    pub fn contains(self, offset: usize) -> bool {
+        self.start <= offset && offset < self.end
+    }
+}
+
 impl From<std::ops::Range<usize>> for Span {
     fn from(range: std::ops::Range<usize>) -> Self {
         Self {

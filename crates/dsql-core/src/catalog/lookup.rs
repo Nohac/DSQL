@@ -67,36 +67,28 @@ impl Catalog {
         let Some(table) = self.tables.get(table.0) else {
             return Vec::new();
         };
-        let mut relations = Vec::new();
-        for fk in table
+        table
             .foreign_keys_to
             .iter()
             .filter_map(|id| self.foreign_keys.get(id.0))
-        {
-            if let Some(related) = self.tables.get(fk.from_table.0) {
-                relations.push(RelationField {
+            .map(|foreign_key| (foreign_key, foreign_key.from_table))
+            .chain(
+                table
+                    .foreign_keys_from
+                    .iter()
+                    .filter_map(|id| self.foreign_keys.get(id.0))
+                    .map(|foreign_key| (foreign_key, foreign_key.to_table)),
+            )
+            .filter_map(|(foreign_key, related_table)| {
+                let related = self.tables.get(related_table.0)?;
+                Some(RelationField {
                     name: related.name.as_str(),
-                    selector: self.foreign_key_selector(fk),
+                    selector: self.foreign_key_selector(foreign_key),
                     table: related,
-                    foreign_key: fk,
-                });
-            }
-        }
-        for fk in table
-            .foreign_keys_from
-            .iter()
-            .filter_map(|id| self.foreign_keys.get(id.0))
-        {
-            if let Some(related) = self.tables.get(fk.to_table.0) {
-                relations.push(RelationField {
-                    name: related.name.as_str(),
-                    selector: self.foreign_key_selector(fk),
-                    table: related,
-                    foreign_key: fk,
-                });
-            }
-        }
-        relations
+                    foreign_key,
+                })
+            })
+            .collect()
     }
 
     pub fn foreign_key_selector(&self, foreign_key: &ForeignKey) -> String {

@@ -17,15 +17,9 @@ use super::config::{EmbeddingConfig, EmbeddingStrategy, Project, ProjectError, R
 /// when it has no explicit `[embedding.typescript]` section.
 pub fn extraction_registry(project: &Project) -> Result<ExtractionRegistry> {
     let mut resolvers = BTreeSet::new();
-    if project.config.resolution.is_empty() {
-        for document in &project.config.documents {
+    for (_, documents) in project.config.document_scopes() {
+        for document in documents {
             resolvers.insert(document.resolver.as_str());
-        }
-    } else {
-        for scope in project.config.resolution.values() {
-            for document in &scope.documents {
-                resolvers.insert(document.resolver.as_str());
-            }
         }
     }
 

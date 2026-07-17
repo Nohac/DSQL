@@ -40,8 +40,8 @@ impl Session {
             next_id: 0,
         };
         let root_uri = format!("file://{}", session.root.display());
-        let id = session
-            .request(
+        let _ = session
+            .request_response(
                 "initialize",
                 json!({
                     "processId": null,
@@ -51,7 +51,6 @@ impl Session {
                 }),
             )
             .await;
-        session.response(id).await;
         session.notify("initialized", json!({})).await;
         session
     }
@@ -79,22 +78,63 @@ impl Session {
         id
     }
 
+    async fn request_response(&mut self, method: &str, params: Value) -> Value {
+        let id = self.request(method, params).await;
+        self.response(id).await
+    }
+
     async fn notify(&mut self, method: &str, params: Value) {
         self.send(json!({"jsonrpc": "2.0", "method": method, "params": params}))
             .await;
     }
 
+    async fn open(&mut self, uri: &str, language_id: &str, text: &str) {
+        self.notify(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": language_id,
+                    "version": 1,
+                    "text": text,
+                }
+            }),
+        )
+        .await;
+    }
+
+    async fn replace(&mut self, uri: &str, version: i64, text: &str) {
+        self.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": uri, "version": version},
+                "contentChanges": [{"text": text}],
+            }),
+        )
+        .await;
+    }
+
+    async fn formatting(&mut self, uri: &str) -> Value {
+        self.request_response(
+            "textDocument/formatting",
+            json!({
+                "textDocument": {"uri": uri},
+                "options": {"tabSize": 2, "insertSpaces": true},
+            }),
+        )
+        .await
+    }
+
     async fn definition(&mut self, uri: &str, text: &str, byte_offset: usize) -> Value {
-        let id = self
-            .request(
-                "textDocument/definition",
-                json!({
-                    "textDocument": {"uri": uri},
-                    "position": protocol_position(text, byte_offset),
-                }),
-            )
-            .await;
-        self.response(id).await["result"].clone()
+        self.request_response(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": protocol_position(text, byte_offset),
+            }),
+        )
+        .await["result"]
+            .clone()
     }
 
     /// Reads framed messages until the response to `id` arrives; other
@@ -197,12 +237,7 @@ async fn catalog_definitions_target_schema_yaml() {
     let mut session = Session::start("catalog-definition").await;
     let uri = session.uri("queries/frontend/titles.dsql");
     let text = "query Titles {\n  title(limit 2) {\n    id\n  }\n}\n";
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": uri, "languageId": "dsql", "version": 1, "text": text}}),
-        )
-        .await;
+    session.open(&uri, "dsql", text).await;
     let diagnostics = session.diagnostics_for(&uri).await;
     assert_eq!(
         diagnostics.as_array().map(Vec::len),
@@ -243,40 +278,19 @@ async fn diagnostics_follow_edits() {
     let uri = session.uri("queries/frontend/titles.dsql");
     let text = session.fixture_text("queries/frontend/titles.dsql");
 
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": uri, "languageId": "dsql", "version": 1, "text": text}}),
-        )
-        .await;
+    session.open(&uri, "dsql", &text).await;
     let clean = session.diagnostics_for(&uri).await;
     assert_eq!(clean.as_array().map(Vec::len), Some(0), "fixture is clean");
 
     let broken = text.replace("...TitleBits", "not_a_column");
-    session
-        .notify(
-            "textDocument/didChange",
-            json!({
-                "textDocument": {"uri": uri, "version": 2},
-                "contentChanges": [{"text": broken}],
-            }),
-        )
-        .await;
+    session.replace(&uri, 2, &broken).await;
     let dirty = session.diagnostics_for(&uri).await;
     assert!(
         dirty.to_string().contains("not_a_column"),
         "the diagnostic names the unknown column, got {dirty}"
     );
 
-    session
-        .notify(
-            "textDocument/didChange",
-            json!({
-                "textDocument": {"uri": uri, "version": 3},
-                "contentChanges": [{"text": text}],
-            }),
-        )
-        .await;
+    session.replace(&uri, 3, &text).await;
     let clean_again = session.diagnostics_for(&uri).await;
     assert_eq!(
         clean_again.as_array().map(Vec::len),
@@ -295,33 +309,14 @@ async fn hosts_hover_and_foreign_files_are_ignored() {
     // A file type the server does not own: opening it must not wedge
     // anything (the next interactions still answer).
     let foreign = session.uri("dsql/dsql.toml");
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": foreign, "languageId": "toml", "version": 1, "text": "x = 1"}}),
-        )
-        .await;
+    session.open(&foreign, "toml", "x = 1").await;
 
     // Explicit editor language configuration preserves standalone DSQL
     // editing outside every project document pattern, without a suffix rule.
     let scratch = session.uri("scratch.loose");
     let scratch_text = "query Scratch { title(limit 1){ id } }";
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": scratch, "languageId": "dsql", "version": 1, "text": scratch_text}}),
-        )
-        .await;
-    let id = session
-        .request(
-            "textDocument/formatting",
-            json!({
-                "textDocument": {"uri": scratch},
-                "options": {"tabSize": 2, "insertSpaces": true},
-            }),
-        )
-        .await;
-    let response = session.response(id).await;
+    session.open(&scratch, "dsql", scratch_text).await;
+    let response = session.formatting(&scratch).await;
     assert!(
         response["result"]
             .as_array()
@@ -332,25 +327,18 @@ async fn hosts_hover_and_foreign_files_are_ignored() {
     let uri = session.uri("src/components/TitlePanel.ts");
     let text = session.fixture_text("src/components/TitlePanel.ts");
     let offset = text.find("TitleBits").expect("spread in host");
-    let line = text[..offset].matches('\n').count();
-    let character = offset - text[..offset].rfind('\n').map_or(0, |at| at + 1);
+    let position = protocol_position(&text, offset + 1);
 
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": uri, "languageId": "typescript", "version": 1, "text": text}}),
-        )
-        .await;
-    let id = session
-        .request(
+    session.open(&uri, "typescript", &text).await;
+    let response = session
+        .request_response(
             "textDocument/hover",
             json!({
                 "textDocument": {"uri": uri},
-                "position": {"line": line, "character": character + 1},
+                "position": position,
             }),
         )
         .await;
-    let response = session.response(id).await;
     let content = response["result"]["contents"]["value"]
         .as_str()
         .unwrap_or_default();
@@ -371,14 +359,9 @@ async fn completion_edits_replace_the_word_under_the_cursor() {
     // exactly that word.
     let uri = session.uri("queries/frontend/partial.dsql");
     let text = "query Partial {\n  title(limit 1) {\n    kin\n  }\n}\n";
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": uri, "languageId": "dsql", "version": 1, "text": text}}),
-        )
-        .await;
-    let id = session
-        .request(
+    session.open(&uri, "dsql", text).await;
+    let response = session
+        .request_response(
             "textDocument/completion",
             json!({
                 "textDocument": {"uri": uri},
@@ -386,7 +369,6 @@ async fn completion_edits_replace_the_word_under_the_cursor() {
             }),
         )
         .await;
-    let response = session.response(id).await;
     let items = response["result"].as_array().expect("completion answers");
     let kind_id = items
         .iter()
@@ -410,14 +392,9 @@ async fn completion_edits_replace_the_word_under_the_cursor() {
     let host_text = session.fixture_text("src/components/TitlePanel.ts");
     let offset = host_text.find("      kind\n").expect("nested column") + 6;
     let line = host_text[..offset].matches('\n').count();
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": host_uri, "languageId": "typescript", "version": 1, "text": host_text}}),
-        )
-        .await;
-    let id = session
-        .request(
+    session.open(&host_uri, "typescript", &host_text).await;
+    let response = session
+        .request_response(
             "textDocument/completion",
             json!({
                 "textDocument": {"uri": host_uri},
@@ -425,7 +402,6 @@ async fn completion_edits_replace_the_word_under_the_cursor() {
             }),
         )
         .await;
-    let response = session.response(id).await;
     let items = response["result"]
         .as_array()
         .expect("host completion answers");
@@ -454,12 +430,7 @@ async fn new_files_join_their_configured_scope_and_close_restores_disk() {
     // shared, so the shared fragment must resolve.
     let uri = session.uri("queries/frontend/fresh.dsql");
     let text = "query Fresh {\n  title(limit 1) {\n    ...TitleBits\n  }\n}\n";
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": uri, "languageId": "dsql", "version": 1, "text": text}}),
-        )
-        .await;
+    session.open(&uri, "dsql", text).await;
     let fresh = session.diagnostics_for(&uri).await;
     assert_eq!(
         fresh.as_array().map(Vec::len),
@@ -471,20 +442,13 @@ async fn new_files_join_their_configured_scope_and_close_restores_disk() {
     // disk revision is authoritative again and the diagnostic retires.
     let existing = session.uri("queries/frontend/titles.dsql");
     let disk_text = session.fixture_text("queries/frontend/titles.dsql");
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": existing, "languageId": "dsql", "version": 1, "text": disk_text}}),
-        )
-        .await;
+    session.open(&existing, "dsql", &disk_text).await;
     session.diagnostics_for(&existing).await;
     session
-        .notify(
-            "textDocument/didChange",
-            json!({
-                "textDocument": {"uri": existing, "version": 2},
-                "contentChanges": [{"text": disk_text.replace("...TitleBits", "not_a_column")}],
-            }),
+        .replace(
+            &existing,
+            2,
+            &disk_text.replace("...TitleBits", "not_a_column"),
         )
         .await;
     let dirty = session.diagnostics_for(&existing).await;
@@ -512,23 +476,11 @@ async fn new_files_join_their_configured_scope_and_close_restores_disk() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn formatting_follows_dsql_documents_and_embedded_regions() {
     let mut session = Session::start("formatting").await;
-    let options = json!({"tabSize": 2, "insertSpaces": true});
 
     let plain_uri = session.uri("queries/frontend/formatting.dsql");
     let plain = "query Plain { title(limit 1){ id } }";
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": plain_uri, "languageId": "dsql", "version": 1, "text": plain}}),
-        )
-        .await;
-    let id = session
-        .request(
-            "textDocument/formatting",
-            json!({"textDocument": {"uri": plain_uri}, "options": options}),
-        )
-        .await;
-    let response = session.response(id).await;
+    session.open(&plain_uri, "dsql", plain).await;
+    let response = session.formatting(&plain_uri).await;
     assert_eq!(
         response["result"],
         json!([{
@@ -556,19 +508,8 @@ async fn formatting_follows_dsql_documents_and_embedded_regions() {
     let formatted_indented = "\n    query Indented {\n      title(limit 1) {\n        title\n      }\n    }\n\n    fragment Extra on title {\n      id\n    }\n  ";
 
     let host_uri = session.uri("src/components/Formatting.component");
-    session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": host_uri, "languageId": "typescript", "version": 1, "text": host}}),
-        )
-        .await;
-    let id = session
-        .request(
-            "textDocument/formatting",
-            json!({"textDocument": {"uri": host_uri}, "options": options}),
-        )
-        .await;
-    let response = session.response(id).await;
+    session.open(&host_uri, "typescript", &host).await;
+    let response = session.formatting(&host_uri).await;
     assert_eq!(
         response["result"],
         json!([
@@ -601,22 +542,8 @@ async fn formatting_follows_dsql_documents_and_embedded_regions() {
         "format edits preserve host code and non-formatting sibling regions"
     );
 
-    session
-        .notify(
-            "textDocument/didChange",
-            json!({
-                "textDocument": {"uri": host_uri, "version": 2},
-                "contentChanges": [{"text": formatted_host}],
-            }),
-        )
-        .await;
-    let id = session
-        .request(
-            "textDocument/formatting",
-            json!({"textDocument": {"uri": host_uri}, "options": options}),
-        )
-        .await;
-    let response = session.response(id).await;
+    session.replace(&host_uri, 2, &formatted_host).await;
+    let response = session.formatting(&host_uri).await;
     assert_eq!(
         response["result"],
         Value::Null,
@@ -625,18 +552,13 @@ async fn formatting_follows_dsql_documents_and_embedded_regions() {
 
     let empty_host_uri = session.uri("src/components/NoDsql.tsx");
     session
-        .notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": empty_host_uri, "languageId": "typescriptreact", "version": 1, "text": "export const value = 'not dsql';\n"}}),
+        .open(
+            &empty_host_uri,
+            "typescriptreact",
+            "export const value = 'not dsql';\n",
         )
         .await;
-    let id = session
-        .request(
-            "textDocument/formatting",
-            json!({"textDocument": {"uri": empty_host_uri}, "options": options}),
-        )
-        .await;
-    let response = session.response(id).await;
+    let response = session.formatting(&empty_host_uri).await;
     assert_eq!(
         response["result"],
         Value::Null,

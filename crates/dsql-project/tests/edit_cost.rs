@@ -7,7 +7,7 @@
 //! under callgrind.
 
 use bowl::{Entity, Eq as BowlEq, Mut, Query, Singleton, Where};
-use dsql_core::facts::{DiagnosticsDemand, VariablesDemand};
+use dsql_core::facts::arm_editor_demands;
 use dsql_core::service::TokensDemand;
 use dsql_core::source::{FilePath, OpenBuffer, SourceText};
 use dsql_project::{Project, open_project_bowl};
@@ -34,10 +34,7 @@ async fn edit_settle_cost() {
 
     let project = Project::load_from(&root).await.expect("project loads");
     let bowl = open_project_bowl(&project).await.expect("bowl assembles");
-    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-        .await;
-    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
-        .await;
+    arm_editor_demands(&bowl).await;
     bowl.insert((Singleton::<TokensDemand>::new(), TokensDemand))
         .await;
 

@@ -5,7 +5,6 @@ use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::entities::definition::{DefDecl, FragmentTarget};
 use dsql_core::facts::{Diagnostic, DiagnosticsDemand};
 use dsql_core::source::insert_source;
-use futures::executor::block_on;
 
 use crate::{fixture, render_diagnostic_facts};
 
@@ -48,59 +47,53 @@ async fn render_def_facts(bowl: &Bowl) -> String {
     lines.join("\n")
 }
 
-#[test]
-fn definitions_lower_into_facts() {
-    block_on(async {
-        let bowl = language_bowl().await;
+#[tokio::test]
+async fn definitions_lower_into_facts() {
+    let bowl = language_bowl().await;
 
-        insert_source(
-            &bowl,
-            "valid/imdb-fragment-spread.dsql",
-            &fixture("valid/imdb-fragment-spread.dsql"),
-        )
-        .await;
+    insert_source(
+        &bowl,
+        "valid/imdb-fragment-spread.dsql",
+        &fixture("valid/imdb-fragment-spread.dsql"),
+    )
+    .await;
 
-        insta::assert_snapshot!(render_def_facts(&bowl).await);
-    });
+    insta::assert_snapshot!(render_def_facts(&bowl).await);
 }
 
-#[test]
-fn duplicate_fragments_are_reported_on_demand() {
-    block_on(async {
-        let bowl = language_bowl().await;
+#[tokio::test]
+async fn duplicate_fragments_are_reported_on_demand() {
+    let bowl = language_bowl().await;
 
-        insert_source(
+    insert_source(
             &bowl,
             "dupes.dsql",
             "fragment F on title {\n  id\n}\nfragment F on title {\n  title\n}\nquery Q {\n  title {\n    ...F\n  }\n}\n",
         )
         .await;
 
-        let undemanded = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
-        assert_eq!(undemanded, 0, "duplicate checks must not run undemanded");
+    let undemanded = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
+    assert_eq!(undemanded, 0, "duplicate checks must not run undemanded");
 
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
 
-        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
-    });
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
-#[test]
-fn duplicate_fragments_across_files_in_one_scope_are_reported() {
-    block_on(async {
-        let bowl = language_bowl().await;
+#[tokio::test]
+async fn duplicate_fragments_across_files_in_one_scope_are_reported() {
+    let bowl = language_bowl().await;
 
-        insert_source(&bowl, "a.dsql", "fragment F on title {\n  id\n}\n").await;
-        insert_source(&bowl, "b.dsql", "fragment F on title {\n  id\n}\n").await;
+    insert_source(&bowl, "a.dsql", "fragment F on title {\n  id\n}\n").await;
+    insert_source(&bowl, "b.dsql", "fragment F on title {\n  id\n}\n").await;
 
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
 
-        let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
-        assert_eq!(
-            diagnostics, 1,
-            "one scope resolves fragments across files, so the names collide"
-        );
-    });
+    let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await.len();
+    assert_eq!(
+        diagnostics, 1,
+        "one scope resolves fragments across files, so the names collide"
+    );
 }

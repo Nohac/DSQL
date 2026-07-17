@@ -1,12 +1,12 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import type { BuildArtifacts, DsqlRenderResult } from "@dsql/typescript/node";
+import { VariableDeclarationKind } from "@dsql/typescript/renderer";
 import {
-  Project,
-  QuoteKind,
-  VariableDeclarationKind,
-} from "@dsql/typescript/renderer";
+  createGeneratorProject,
+  createSourceFromTemplate,
+  importSpecifier,
+  toPascalCase,
+} from "./shared";
 
 type RenderOptions = {
   readonly outDir: string;
@@ -34,11 +34,12 @@ export async function renderTanStackStart(
   const root = resolve(options.root ?? process.cwd());
   const clientPath = join(options.outDir, "tanstack-start.ts");
   const serverPath = join(options.outDir, "tanstack-start.server.ts");
-  const project = createProject();
+  const project = createGeneratorProject();
   const source = createSourceFromTemplate(
     project,
     options.outDir,
     "tanstack-start.ts",
+    import.meta.url,
   );
   const serverSource = project.createSourceFile(
     serverPath,
@@ -134,73 +135,6 @@ ${artifacts.operations
     await file.save();
   }
   return [clientPath, serverPath];
-}
-
-function createProject(): Project {
-  return new Project({
-    manipulationSettings: {
-      quoteKind: QuoteKind.Double,
-    },
-  });
-}
-
-function createSourceFromTemplate(
-  project: Project,
-  outDir: string,
-  name: string,
-) {
-  mkdirSync(outDir, { recursive: true });
-  return project.createSourceFile(
-    join(outDir, name),
-    templateContents(name),
-    { overwrite: true },
-  );
-}
-
-function templateContents(name: string): string {
-  return readFileSync(templatePath(name), "utf8").replace(
-    /^\/\/ @ts-nocheck\r?\n/,
-    "",
-  );
-}
-
-function templatePath(name: string): string {
-  const generatorDir = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(generatorDir, "templates", name),
-    join(dirname(generatorDir), "templates", name),
-  ];
-  const path = candidates.find((candidate) => existsSync(candidate));
-  if (!path) {
-    throw new Error(`missing TanStack template ${name}`);
-  }
-  return path;
-}
-
-function toPascalCase(value: string): string {
-  const result = value
-    .split(/[^A-Za-z0-9]+/)
-    .filter(Boolean)
-    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join("");
-
-  if (!result) {
-    return "Operation";
-  }
-
-  return /^[0-9]/.test(result) ? `_${result}` : result;
-}
-
-function importSpecifier(root: string, fromFile: string, modulePath: string): string {
-  if (!modulePath.startsWith(".")) {
-    return modulePath;
-  }
-
-  const absoluteModulePath = resolve(root, modulePath);
-  const relativePath = relative(dirname(fromFile), absoluteModulePath)
-    .split("\\")
-    .join("/");
-  return relativePath.startsWith(".") ? relativePath : `./${relativePath}`;
 }
 
 function validatorImports(

@@ -418,6 +418,57 @@ export function renderMapFromResults(
 }
 
 /**
+ * Renders one compile result after hash-checking every embedded host. A
+ * drifting host gets exactly one refresh; validation completes before the
+ * render map becomes visible to the caller.
+ */
+export async function renderDsqlCompileResult(
+  renderer: DsqlRenderer,
+  initialResult: DsqlCompileResult,
+  options: {
+    readonly projectBase: string;
+    readonly refresh: (paths: readonly string[]) => Promise<DsqlCompileResult>;
+    readonly environment: () => Pick<DsqlRendererContext, "mode" | "command">;
+  },
+): Promise<{
+  readonly result: DsqlCompileResult;
+  readonly renderMap: DsqlRenderMap;
+}> {
+  const prepare = (result: DsqlCompileResult) => {
+    const artifacts = buildArtifactsFromGenerated(result, {
+      projectBase: options.projectBase,
+    });
+    const embedded = resolveEmbeddedSources(embeddedDefinitionsOf(artifacts), {
+      projectBase: options.projectBase,
+      callsites: result.callsites,
+    });
+    return { artifacts, embedded };
+  };
+
+  let result = initialResult;
+  let prepared = prepare(result);
+  if (prepared.embedded.mismatches.length > 0) {
+    result = await options.refresh(prepared.embedded.mismatches);
+    prepared = prepare(result);
+    if (prepared.embedded.mismatches.length > 0) {
+      throw new Error(
+        `embedded hosts kept changing while rendering: ${prepared.embedded.mismatches.join(", ")}`,
+      );
+    }
+  }
+
+  const renderMap = await renderer.render({
+    projectBase: options.projectBase,
+    result,
+    artifacts: prepared.artifacts,
+    embeddedSources: prepared.embedded.sources,
+    ...options.environment(),
+  });
+  validateDsqlRenderMap(renderMap, renderer);
+  return { result, renderMap };
+}
+
+/**
  * Runs a renderer once against a freshly spawned daemon — the explicit
  * one-shot channel (`bun dsql/generate.ts`), giving it the same groups
  * and content hashes as a binding. Shuts the daemon down in `finally`.
@@ -437,37 +488,17 @@ export async function runDsqlRendererFromProject(
     ...(options.daemon ? { daemon: options.daemon } : {}),
   });
   try {
-    let result = await client.compile();
+    const result = await client.compile();
     const projectBase = client.info?.projectBase ?? root;
-    let artifacts = buildArtifactsFromGenerated(result, { projectBase });
-    let embedded = resolveEmbeddedSources(embeddedDefinitionsOf(artifacts), {
+    const rendered = await renderDsqlCompileResult(renderer, result, {
       projectBase,
-      callsites: result.callsites,
+      refresh: (paths) => client.filesChanged(paths),
+      environment: () => ({
+        mode: options.mode ?? process.env.NODE_ENV ?? "production",
+        command: "build",
+      }),
     });
-    if (embedded.mismatches.length > 0) {
-      // Hosts drifted between compile and read: one refresh, one retry.
-      result = await client.filesChanged(embedded.mismatches);
-      artifacts = buildArtifactsFromGenerated(result, { projectBase });
-      embedded = resolveEmbeddedSources(embeddedDefinitionsOf(artifacts), {
-        projectBase,
-        callsites: result.callsites,
-      });
-      if (embedded.mismatches.length > 0) {
-        throw new Error(
-          `embedded hosts kept changing while rendering: ${embedded.mismatches.join(", ")}`,
-        );
-      }
-    }
-    const map = await renderer.render({
-      projectBase,
-      result,
-      artifacts,
-      embeddedSources: embedded.sources,
-      mode: options.mode ?? process.env.NODE_ENV ?? "production",
-      command: "build",
-    });
-    validateDsqlRenderMap(map, renderer);
-    return map;
+    return rendered.renderMap;
   } finally {
     await client.shutdown();
   }

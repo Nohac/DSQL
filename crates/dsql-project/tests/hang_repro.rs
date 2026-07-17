@@ -2,8 +2,8 @@
 //! plain bowl operations — scoop, external marker insert, request take —
 //! looped. Run with `--ignored`; a hang here is an engine repro.
 
-use bowl::{Entity, Query, Singleton};
-use dsql_core::facts::{DiagnosticsDemand, VariablesDemand};
+use bowl::{Entity, Query};
+use dsql_core::facts::arm_editor_demands;
 use dsql_core::service::{HoverInfo, HoverRequest, Position};
 use dsql_core::source::{FilePath, OpenBuffer, SourceText};
 use dsql_project::{Project, open_project_bowl};
@@ -17,10 +17,7 @@ async fn did_open_then_hover_never_stalls() {
 
     for round in 0..200 {
         let bowl = open_project_bowl(&project).await.expect("bowl assembles");
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
-        bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
-            .await;
+        arm_editor_demands(&bowl).await;
 
         // didOpen: resolve the host entity (scoop settles the project),
         // stamp the open-buffer marker externally.
@@ -84,10 +81,7 @@ async fn concurrent_open_and_hover_never_stall() {
 
     for round in 0..100 {
         let bowl = open_project_bowl(&project).await.expect("bowl assembles");
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
-        bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
-            .await;
+        arm_editor_demands(&bowl).await;
 
         let open_bowl = bowl.clone();
         let open_path = host_path.clone();

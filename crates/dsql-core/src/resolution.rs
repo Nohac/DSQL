@@ -149,6 +149,11 @@ impl ResolvedClause {
     pub fn path_at(&self, span: Span) -> Option<&ResolvedPath> {
         self.paths.iter().find(|path| path.span == span)
     }
+
+    /// The resolution of the order item at `span`.
+    pub fn order_item_at(&self, span: Span) -> Option<&ResolvedOrderItem> {
+        self.order_items.iter().find(|item| item.span == span)
+    }
 }
 
 /// Indexes clause resolutions by the clause entity they resolve.
@@ -180,6 +185,21 @@ pub struct ResolvedPath {
     /// the first failure.
     pub relations: Vec<ResolvedRelationStep>,
     pub terminal: PathTerminal,
+}
+
+impl ResolvedPath {
+    /// The display parts of a fully resolved column path.
+    pub fn display_path(&self) -> Option<impl Iterator<Item = &str>> {
+        let PathTerminal::Column { display, .. } = &self.terminal else {
+            return None;
+        };
+        Some(
+            self.relations
+                .iter()
+                .map(|step| step.display.as_str())
+                .chain(std::iter::once(display.as_str())),
+        )
+    }
 }
 
 /// One resolved relation step of a predicate path.

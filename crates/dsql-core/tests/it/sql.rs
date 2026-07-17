@@ -10,10 +10,9 @@ use dsql_core::facts::{PlanDemand, SqlDemand};
 use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
-use futures::executor::block_on;
 use sqlx::{AssertSqlSafe, PgPool, Row, postgres::PgPoolOptions};
 
-use crate::{fixture, imdb_catalog, queries_dir};
+use crate::{fixture, imdb_catalog, queries_dir, set_source_text};
 
 async fn sql_bowl(catalog: Catalog) -> Bowl {
     let bowl = language_bowl().await;
@@ -78,185 +77,142 @@ async fn fixture_sql(name: &str) -> String {
     render_sql(&bowl).await
 }
 
-#[test]
-fn title_basic_sql() {
-    block_on(async {
-        insta::assert_snapshot!(fixture_sql("valid/imdb-title-basic.dsql").await);
-    });
+#[tokio::test]
+async fn title_basic_sql() {
+    insta::assert_snapshot!(fixture_sql("valid/imdb-title-basic.dsql").await);
 }
 
-#[test]
-fn movie_info_basic_sql() {
-    block_on(async {
-        insta::assert_snapshot!(fixture_sql("valid/imdb-movie-info-basic.dsql").await);
-    });
+#[tokio::test]
+async fn movie_info_basic_sql() {
+    insta::assert_snapshot!(fixture_sql("valid/imdb-movie-info-basic.dsql").await);
 }
 
-#[test]
-fn relation_path_selector_sql() {
-    block_on(async {
-        insta::assert_snapshot!(fixture_sql("valid/imdb-relation-path-selector.dsql").await);
-    });
+#[tokio::test]
+async fn relation_path_selector_sql() {
+    insta::assert_snapshot!(fixture_sql("valid/imdb-relation-path-selector.dsql").await);
 }
 
-#[test]
-fn scoped_relation_predicate_sql() {
-    block_on(async {
-        insta::assert_snapshot!(fixture_sql("valid/imdb-scoped-relation-predicate.dsql").await);
-    });
+#[tokio::test]
+async fn scoped_relation_predicate_sql() {
+    insta::assert_snapshot!(fixture_sql("valid/imdb-scoped-relation-predicate.dsql").await);
 }
 
-#[test]
-fn fragment_spread_sql() {
-    block_on(async {
-        insta::assert_snapshot!(fixture_sql("valid/imdb-fragment-spread.dsql").await);
-    });
+#[tokio::test]
+async fn fragment_spread_sql() {
+    insta::assert_snapshot!(fixture_sql("valid/imdb-fragment-spread.dsql").await);
 }
 
-#[test]
-fn variables_render_as_parameters_and_variants() {
-    block_on(async {
-        let bowl = sql_bowl(Catalog::hardcoded()).await;
-        insert_source(
+#[tokio::test]
+async fn variables_render_as_parameters_and_variants() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    insert_source(
             &bowl,
             "params.dsql",
             "query UsersPage {\n  users(\n    where .name $$name_op[==, like] $$name and .id == $tenant\n    order by created_at $$dir\n    limit $$max\n    offset $skip\n  ) {\n    id\n    posts(limit 5) {\n      title\n    }\n  }\n}\n",
         )
         .await;
 
-        insta::assert_snapshot!(render_sql(&bowl).await);
-    });
+    insta::assert_snapshot!(render_sql(&bowl).await);
 }
 
-#[test]
-fn plans_retire_when_demand_is_removed_sources_change() {
-    block_on(async {
-        let bowl = sql_bowl(imdb_catalog()).await;
-        insert_source(&bowl, "q.dsql", "query Q {\n  title {\n    id\n  }\n}\n").await;
+#[tokio::test]
+async fn plans_retire_when_demand_is_removed_sources_change() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    let file = insert_source(&bowl, "q.dsql", "query Q {\n  title {\n    id\n  }\n}\n").await;
 
-        let generated = bowl
-            .scoop::<Query<(Entity, &GeneratedSqlFact)>>()
-            .await
-            .len();
-        assert_eq!(generated, 1);
+    let generated = bowl
+        .scoop::<Query<(Entity, &GeneratedSqlFact)>>()
+        .await
+        .len();
+    assert_eq!(generated, 1);
 
-        let sources = bowl
-            .scoop::<Query<(Entity, bowl::Mut<dsql_core::source::SourceText>)>>()
-            .await;
-        for (_, source) in sources.collect() {
-            source
-                .with_latest(|text| text.set_text("query Q {\n  kind_type {\n    kind\n  }\n}\n"))
-                .await;
-        }
+    set_source_text(&bowl, file, "query Q {\n  kind_type {\n    kind\n  }\n}\n").await;
 
-        let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
-        let names: Vec<String> = rows
-            .collect()
-            .into_iter()
-            .map(|(_, fact)| fact.0.output_name.clone())
-            .collect();
-        assert_eq!(
-            names,
-            vec!["kind_type".to_string()],
-            "stale SQL must retire with the edit"
-        );
-    });
+    let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+    let names: Vec<String> = rows
+        .collect()
+        .into_iter()
+        .map(|(_, fact)| fact.0.output_name.clone())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["kind_type".to_string()],
+        "stale SQL must retire with the edit"
+    );
 }
 
 /// Comparison right-hand sides that are themselves column paths: same-table
 /// columns render as plain column references, and relation-path RHS columns
 /// exercise the `OuterCurrent` scope inside the nested `EXISTS`.
-#[test]
-fn rhs_same_table_sql() {
-    block_on(async {
-        insta::assert_snapshot!(fixture_sql("valid/imdb-rhs-same-table.dsql").await);
-    });
+#[tokio::test]
+async fn rhs_same_table_sql() {
+    insta::assert_snapshot!(fixture_sql("valid/imdb-rhs-same-table.dsql").await);
 }
 
-#[test]
-fn rhs_relation_path_sql() {
-    block_on(async {
-        insta::assert_snapshot!(fixture_sql("valid/imdb-rhs-relation-path.dsql").await);
-    });
+#[tokio::test]
+async fn rhs_relation_path_sql() {
+    insta::assert_snapshot!(fixture_sql("valid/imdb-rhs-relation-path.dsql").await);
 }
 /// Fragment bodies are expanded by walks in *other* files; the DefIndex
 /// fragment fingerprint is the tracked dependency that keeps dependents
 /// fresh across files.
-#[test]
-fn cross_file_fragment_body_edits_rederive_sql() {
-    use bowl::Mut;
-    use dsql_core::source::SourceText;
-    block_on(async {
-        let bowl = sql_bowl(imdb_catalog()).await;
-        insert_source(&bowl, "frag.dsql", "fragment Bits on title {\n  id\n}\n").await;
-        insert_source(
-            &bowl,
-            "query.dsql",
-            "query UsesBits {\n  title(limit 1) {\n    ...Bits\n  }\n}\n",
-        )
-        .await;
-        let before = render_sql(&bowl).await;
-        assert!(
-            before.contains("\"id\""),
-            "fragment field planned: {before}"
-        );
+#[tokio::test]
+async fn cross_file_fragment_body_edits_rederive_sql() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    let fragment = insert_source(&bowl, "frag.dsql", "fragment Bits on title {\n  id\n}\n").await;
+    insert_source(
+        &bowl,
+        "query.dsql",
+        "query UsesBits {\n  title(limit 1) {\n    ...Bits\n  }\n}\n",
+    )
+    .await;
+    let before = render_sql(&bowl).await;
+    assert!(
+        before.contains("\"id\""),
+        "fragment field planned: {before}"
+    );
 
-        let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
-        for (_, source) in sources.collect() {
-            source
-                .with_latest(|text| {
-                    if text
-                        .to_text()
-                        .is_some_and(|text| text.contains("fragment Bits"))
-                    {
-                        text.set_text("fragment Bits on title {\n  title\n}\n");
-                    }
-                })
-                .await;
-        }
-        let after = render_sql(&bowl).await;
-        // Snapshot the whole post-edit render: a false pass from dropped
-        // expansion (rather than re-derived expansion) is impossible to
-        // write through a full snapshot.
-        insta::assert_snapshot!(after);
-    });
+    set_source_text(&bowl, fragment, "fragment Bits on title {\n  title\n}\n").await;
+    let after = render_sql(&bowl).await;
+    // Snapshot the whole post-edit render: a false pass from dropped
+    // expansion (rather than re-derived expansion) is impossible to
+    // write through a full snapshot.
+    insta::assert_snapshot!(after);
 }
 
 /// Clause resolutions belong to their clause entities, not to the query
 /// file that expands them. Cross-file fragment expansion must preserve every
 /// semantic clause part instead of retaining only resolution-free limits.
-#[test]
-fn cross_file_fragment_clauses_are_preserved_in_sql() {
-    block_on(async {
-        let bowl = sql_bowl(imdb_catalog()).await;
-        insert_source(
-            &bowl,
-            "rating-fields.dsql",
-            concat!(
-                "fragment RatingFields on title {\n",
-                "  ratings: movie_info_idx(where .info_type_id == 101 order by id asc limit 1) {\n",
-                "    info\n",
-                "  }\n",
-                "}\n",
-            ),
-        )
-        .await;
-        insert_source(
-            &bowl,
-            "top-rated.dsql",
-            concat!(
-                "query TopRated {\n",
-                "  title(limit 1) {\n",
-                "    id\n",
-                "    ...RatingFields\n",
-                "  }\n",
-                "}\n",
-            ),
-        )
-        .await;
+#[tokio::test]
+async fn cross_file_fragment_clauses_are_preserved_in_sql() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "rating-fields.dsql",
+        concat!(
+            "fragment RatingFields on title {\n",
+            "  ratings: movie_info_idx(where .info_type_id == 101 order by id asc limit 1) {\n",
+            "    info\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+    insert_source(
+        &bowl,
+        "top-rated.dsql",
+        concat!(
+            "query TopRated {\n",
+            "  title(limit 1) {\n",
+            "    id\n",
+            "    ...RatingFields\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
 
-        insta::assert_snapshot!(render_sql(&bowl).await);
-    });
+    insta::assert_snapshot!(render_sql(&bowl).await);
 }
 
 /// Every parameter-free valid fixture executes against the reference imdb

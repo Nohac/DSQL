@@ -2,15 +2,14 @@
 //! parent-keyed encoding of the selection tree, and spreads resolve to their
 //! fragment definitions through the bound join.
 
-use bowl::{Bowl, Entity, Mut, Query, Singleton};
+use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::field_selection::FieldSel;
 use dsql_core::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use dsql_core::facts::{ChildOf, DiagnosticsDemand, NodeKey};
-use dsql_core::source::{SourceText, insert_source};
-use futures::executor::block_on;
+use dsql_core::source::insert_source;
 
-use crate::{fixture, render_diagnostic_facts};
+use crate::{fixture, render_diagnostic_facts, set_source_text};
 
 async fn language_bowl() -> Bowl {
     dsql_core::language_bowl().await
@@ -87,26 +86,24 @@ async fn render_selection_tree(bowl: &Bowl) -> String {
     out
 }
 
-#[test]
-fn selections_lower_into_a_parent_keyed_tree() {
-    block_on(async {
-        let bowl = language_bowl().await;
+#[tokio::test]
+async fn selections_lower_into_a_parent_keyed_tree() {
+    let bowl = language_bowl().await;
 
-        insert_source(
-            &bowl,
-            "valid/imdb-relation-path-selector.dsql",
-            &fixture("valid/imdb-relation-path-selector.dsql"),
-        )
-        .await;
-        insert_source(
-            &bowl,
-            "valid/imdb-fragment-spread.dsql",
-            &fixture("valid/imdb-fragment-spread.dsql"),
-        )
-        .await;
+    insert_source(
+        &bowl,
+        "valid/imdb-relation-path-selector.dsql",
+        &fixture("valid/imdb-relation-path-selector.dsql"),
+    )
+    .await;
+    insert_source(
+        &bowl,
+        "valid/imdb-fragment-spread.dsql",
+        &fixture("valid/imdb-fragment-spread.dsql"),
+    )
+    .await;
 
-        insta::assert_snapshot!(render_selection_tree(&bowl).await);
-    });
+    insta::assert_snapshot!(render_selection_tree(&bowl).await);
 }
 
 /// Renders spread resolutions by name, sorted for stability.
@@ -132,57 +129,49 @@ async fn render_resolutions(bowl: &Bowl) -> Vec<String> {
     lines
 }
 
-#[test]
-fn spreads_resolve_to_fragments_in_the_same_file() {
-    block_on(async {
-        let bowl = language_bowl().await;
+#[tokio::test]
+async fn spreads_resolve_to_fragments_in_the_same_file() {
+    let bowl = language_bowl().await;
 
-        insert_source(
-            &bowl,
-            "valid/imdb-fragment-spread.dsql",
-            &fixture("valid/imdb-fragment-spread.dsql"),
-        )
-        .await;
+    insert_source(
+        &bowl,
+        "valid/imdb-fragment-spread.dsql",
+        &fixture("valid/imdb-fragment-spread.dsql"),
+    )
+    .await;
 
-        assert_eq!(
-            render_resolutions(&bowl).await,
-            vec!["...TitleFields -> fragment TitleFields"],
-        );
-    });
+    assert_eq!(
+        render_resolutions(&bowl).await,
+        vec!["...TitleFields -> fragment TitleFields"],
+    );
 }
 
-#[test]
-fn renaming_a_fragment_retires_the_resolution() {
-    block_on(async {
-        let bowl = language_bowl().await;
+#[tokio::test]
+async fn renaming_a_fragment_retires_the_resolution() {
+    let bowl = language_bowl().await;
 
-        insert_source(
-            &bowl,
-            "rename.dsql",
-            "fragment F on title {\n  id\n}\nquery Q {\n  title {\n    ...F\n  }\n}\n",
-        )
+    let file = insert_source(
+        &bowl,
+        "rename.dsql",
+        "fragment F on title {\n  id\n}\nquery Q {\n  title {\n    ...F\n  }\n}\n",
+    )
+    .await;
+    assert_eq!(render_resolutions(&bowl).await.len(), 1);
+
+    set_source_text(
+        &bowl,
+        file,
+        "fragment G on title {\n  id\n}\nquery Q {\n  title {\n    ...F\n  }\n}\n",
+    )
+    .await;
+
+    assert_eq!(
+        render_resolutions(&bowl).await.len(),
+        0,
+        "resolution must retire with the renamed fragment"
+    );
+
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
         .await;
-        assert_eq!(render_resolutions(&bowl).await.len(), 1);
-
-        let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
-        for (_, source) in sources.collect() {
-            source
-                .with_latest(|text| {
-                    text.set_text(
-                        "fragment G on title {\n  id\n}\nquery Q {\n  title {\n    ...F\n  }\n}\n",
-                    );
-                })
-                .await;
-        }
-
-        assert_eq!(
-            render_resolutions(&bowl).await.len(),
-            0,
-            "resolution must retire with the renamed fragment"
-        );
-
-        bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
-            .await;
-        insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
-    });
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }

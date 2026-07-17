@@ -123,8 +123,7 @@ pub async fn generate_project(
     let bowl = open_analysis_bowl(project).await?;
     let assembled = assemble_project(&bowl, project, options).await?;
     let published = publish_snapshot(project, &assembled.snapshot).await?;
-    let generator =
-        run_host_generator(project, &assembled.project_root, &published.manifest_path).await;
+    let generator = run_host_generator(project, project.base(), &published.manifest_path).await;
     // One-shot generation prunes before exiting — even when the host
     // generator failed, since the generation itself committed. The
     // daemon prunes after responding. Best-effort either way.
@@ -168,11 +167,10 @@ pub async fn validate_assembly(
     assemble_project(bowl, project, options).await.map(|_| ())
 }
 
-/// The assembled generation with its project root — the shared unit both
-/// one-shot generation and the daemon publish and answer from.
+/// The assembled generation snapshot shared by one-shot generation and
+/// the daemon.
 pub struct AssembledProject {
     pub snapshot: GenerationSnapshot,
-    pub project_root: PathBuf,
 }
 
 /// Assembles the settled bowl into a [`GenerationSnapshot`]: per-artifact
@@ -185,11 +183,7 @@ pub async fn assemble_project(
 ) -> Result<AssembledProject> {
     let facts = collect_facts(bowl, options).await?;
     let catalog = project.load_catalog().await?;
-    let project_root = project
-        .root
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| project.root.clone());
+    let project_root = project.base();
 
     let mut artifacts = Vec::new();
     for operation in &facts.operations {
@@ -200,7 +194,7 @@ pub async fn assemble_project(
             .unwrap_or_default();
         let metadata = operation_metadata(
             &catalog,
-            &project_root,
+            project_root,
             &OperationInputs {
                 seed: &operation.seed,
                 plan: &operation.plan.0,
@@ -218,7 +212,7 @@ pub async fn assemble_project(
             metadata.kind.clone(),
             &metadata,
             &operation.scope,
-            &project_root,
+            project_root,
             &operation.file,
         )?);
     }
@@ -231,7 +225,7 @@ pub async fn assemble_project(
             .unwrap_or_default();
         let metadata = fragment_metadata(
             &catalog,
-            &project_root,
+            project_root,
             &FragmentInputs {
                 plan: &fragment.plan,
                 bindings,
@@ -246,7 +240,7 @@ pub async fn assemble_project(
             metadata.kind.clone(),
             &metadata,
             &fragment.scope,
-            &project_root,
+            project_root,
             &fragment.file,
         )?);
     }
@@ -281,7 +275,6 @@ pub async fn assemble_project(
 
     Ok(AssembledProject {
         snapshot: GenerationSnapshot { artifacts, groups },
-        project_root,
     })
 }
 

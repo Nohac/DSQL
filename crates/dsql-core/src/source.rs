@@ -21,6 +21,7 @@
 //! write plain files; regions re-derive from it either way.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::path::Path;
 
@@ -101,23 +102,14 @@ pub struct ExtractionResolver(pub String);
 #[component(hash)]
 pub struct BelongsToHost(pub Entity);
 
-/// One content fingerprint for every text-hashing site: source texts,
-/// definition slices, and disk verification hash through here, so a
-/// string and a rope holding the same bytes always agree.
+/// Content fingerprint for contiguous source text.
 pub fn content_hash(text: &str) -> u64 {
-    use std::hash::Hasher;
-    let mut hasher = std::hash::DefaultHasher::new();
-    hasher.write(text.as_bytes());
-    hasher.finish()
+    fingerprint(text)
 }
 
-/// [`content_hash`] over a rope without materializing it.
-fn rope_content_hash(rope: &Rope) -> u64 {
-    use std::hash::Hasher;
-    let mut hasher = std::hash::DefaultHasher::new();
-    for chunk in rope.chunks() {
-        hasher.write(chunk.as_bytes());
-    }
+fn fingerprint<T: Hash + ?Sized>(value: &T) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -150,8 +142,8 @@ pub struct SourceText {
     hash: u64,
 }
 
-impl std::hash::Hash for SourceText {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl Hash for SourceText {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         // The stored content hash only: residency is not identity.
         state.write_u64(self.hash);
     }
@@ -161,17 +153,18 @@ impl SourceText {
     /// Creates source text from a contiguous string (disk load, `didOpen`,
     /// region extraction).
     pub fn from_text(text: &str) -> Self {
+        let rope = Rope::from_str(text);
+        let hash = fingerprint(&rope);
         Self {
-            rope: Some(Rope::from_str(text)),
-            hash: content_hash(text),
+            rope: Some(rope),
+            hash,
         }
     }
 
     /// Replaces the entire text (LSP full-document sync, `didClose`
     /// revert, rehydration of an evicted rope).
     pub fn set_text(&mut self, text: &str) {
-        self.rope = Some(Rope::from_str(text));
-        self.hash = content_hash(text);
+        *self = Self::from_text(text);
     }
 
     /// Applies one incremental edit: replaces `byte_range` with
@@ -189,7 +182,7 @@ impl SourceText {
         };
         rope.remove(byte_range.clone());
         rope.insert(byte_range.start, replacement);
-        self.hash = rope_content_hash(rope);
+        self.hash = fingerprint(rope);
         Ok(())
     }
 

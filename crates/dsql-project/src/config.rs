@@ -12,7 +12,7 @@ use tokio::fs::read_to_string;
 use facet::Facet;
 
 use dsql_core::catalog::{Catalog, CatalogBuildError};
-use dsql_core::source::ScopeImports;
+use dsql_core::source::{ResolutionScope, ScopeImports};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectError {
@@ -87,6 +87,41 @@ pub struct Config {
     /// Lint severities.
     #[facet(default)]
     pub lint: LintSectionConfig,
+}
+
+impl Config {
+    /// Whether an entirely unconfigured project uses the legacy recursive
+    /// `.dsql` discovery fallback. Cold discovery deliberately keeps its
+    /// directory walk, while warm ownership represents the same intent as a
+    /// glob; centralizing the predicate prevents empty named scopes from
+    /// accidentally enabling either fallback.
+    pub(crate) fn uses_implicit_documents(&self) -> bool {
+        self.resolution.is_empty() && self.documents.is_empty()
+    }
+
+    /// Effective configured document groups, with named scopes taking
+    /// precedence over the implicit default scope.
+    pub(crate) fn document_scopes(&self) -> impl Iterator<Item = (&str, &[DocumentConfig])> {
+        self.resolution
+            .is_empty()
+            .then_some((ResolutionScope::DEFAULT, self.documents.as_slice()))
+            .into_iter()
+            .chain(
+                self.resolution
+                    .iter()
+                    .map(|(scope, config)| (scope.as_str(), config.documents.as_slice())),
+            )
+    }
+
+    /// The named scope import graph installed in the language bowl.
+    pub(crate) fn scope_imports(&self) -> ScopeImports {
+        ScopeImports(
+            self.resolution
+                .iter()
+                .map(|(scope, config)| (scope.clone(), config.imports.clone()))
+                .collect(),
+        )
+    }
 }
 
 /// The `[lint]` section.
@@ -190,6 +225,11 @@ pub struct Project {
 }
 
 impl Project {
+    /// The project directory containing the `dsql/` root.
+    pub fn base(&self) -> &Path {
+        self.root.parent().unwrap_or(&self.root)
+    }
+
     pub async fn load() -> Result<Self> {
         let start = current_dir().map_err(ProjectError::CurrentDir)?;
         Self::load_from(&start).await
@@ -220,13 +260,7 @@ impl Project {
                 }
             }
         }
-        let imports = ScopeImports(
-            config
-                .resolution
-                .iter()
-                .map(|(scope, scope_config)| (scope.clone(), scope_config.imports.clone()))
-                .collect(),
-        );
+        let imports = config.scope_imports();
         if let Some(cycle) = imports.import_cycle() {
             return Err(ProjectError::CyclicScopeImport {
                 cycle: cycle.join(" -> "),
@@ -303,10 +337,8 @@ pub fn validate_reserved_root(config: &Config, output: &str) -> Result<String> {
         }
     }
     let document_patterns = config
-        .resolution
-        .values()
-        .flat_map(|scope| scope.documents.iter())
-        .chain(config.documents.iter())
+        .document_scopes()
+        .flat_map(|(_, documents)| documents.iter())
         .flat_map(|document| document.paths.iter());
     for pattern in document_patterns {
         let prefix: String = pattern

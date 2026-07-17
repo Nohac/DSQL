@@ -19,10 +19,7 @@ pub(crate) fn generation_manifest_file(generation_id: u64) -> String {
 /// also the manifest entry's `path`. Distinct generations never overwrite
 /// each other's files: the address is the artifact's own hash.
 pub(crate) fn artifact_file_name(family: ArtifactFamily, name: &str, hash: &str) -> String {
-    let directory = match family {
-        ArtifactFamily::Operation => OPERATIONS_DIR,
-        ArtifactFamily::Fragment => FRAGMENTS_DIR,
-    };
+    let directory = artifact_directory(family);
     format!(
         "{directory}/{}.{}.{ARTIFACT_EXTENSION}",
         artifact_file_stem(name),
@@ -33,14 +30,18 @@ pub(crate) fn artifact_file_name(family: ArtifactFamily, name: &str, hash: &str)
 /// The case-folded stem two artifacts of one kind may not share
 /// (case-insensitive filesystems would alias them).
 pub(crate) fn artifact_collision_key(family: ArtifactFamily, name: &str) -> String {
-    let directory = match family {
-        ArtifactFamily::Operation => OPERATIONS_DIR,
-        ArtifactFamily::Fragment => FRAGMENTS_DIR,
-    };
+    let directory = artifact_directory(family);
     format!(
         "{directory}/{}",
         artifact_file_stem(name).to_ascii_lowercase()
     )
+}
+
+fn artifact_directory(family: ArtifactFamily) -> &'static str {
+    match family {
+        ArtifactFamily::Operation => OPERATIONS_DIR,
+        ArtifactFamily::Fragment => FRAGMENTS_DIR,
+    }
 }
 
 pub(crate) fn artifact_file_stem(name: &str) -> String {

@@ -63,7 +63,7 @@ async fn print_facts_at(bowl: &Bowl, file: Entity, offset: usize) {
         .scoop::<Query<(Entity, &DefDecl, &BelongsToFile)>>()
         .await;
     for (_, decl, of) in defs.collect() {
-        if of.0 == file && decl.name_span.start <= offset && offset < decl.name_span.end {
+        if of.0 == file && decl.name_span.contains(offset) {
             hits.push(format!(
                 "def `{}` name at {}..{}",
                 decl.name, decl.name_span.start, decl.name_span.end
@@ -74,7 +74,7 @@ async fn print_facts_at(bowl: &Bowl, file: Entity, offset: usize) {
         .scoop::<Query<(Entity, &FieldSel, &NodeKey, &BelongsToFile)>>()
         .await;
     for (_, field, _, of) in fields.collect() {
-        if of.0 == file && field.name_span.start <= offset && offset < field.name_span.end {
+        if of.0 == file && field.name_span.contains(offset) {
             hits.push(format!(
                 "field `{}` name at {}..{}",
                 field.name, field.name_span.start, field.name_span.end
@@ -85,7 +85,7 @@ async fn print_facts_at(bowl: &Bowl, file: Entity, offset: usize) {
         .scoop::<Query<(Entity, &SpreadDecl, &BelongsToFile)>>()
         .await;
     for (_, spread, of) in spreads.collect() {
-        if of.0 == file && spread.name_span.start <= offset && offset < spread.name_span.end {
+        if of.0 == file && spread.name_span.contains(offset) {
             hits.push(format!(
                 "spread `{}` name at {}..{}",
                 spread.name, spread.name_span.start, spread.name_span.end
@@ -96,7 +96,7 @@ async fn print_facts_at(bowl: &Bowl, file: Entity, offset: usize) {
         .scoop::<Query<(Entity, &VariableUse, &BelongsToFile)>>()
         .await;
     for (_, variable, of) in variables.collect() {
-        if of.0 == file && variable.0.span.start <= offset && offset < variable.0.span.end {
+        if of.0 == file && variable.0.span.contains(offset) {
             hits.push(format!(
                 "variable at {}..{}",
                 variable.0.span.start, variable.0.span.end

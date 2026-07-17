@@ -9,7 +9,6 @@ use dsql_core::entities::variable::VariableBinding;
 use dsql_core::facts::{DefKey, Span, VariablesDemand};
 use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
-use futures::executor::block_on;
 
 use crate::imdb_catalog;
 
@@ -63,110 +62,104 @@ async fn case(name: &str, source: &str) -> String {
 }
 
 /// The four reference inference cases.
-#[test]
-fn variable_bindings_match_reference_shapes() {
-    block_on(async {
-        let scalar = case(
+#[tokio::test]
+async fn variable_bindings_match_reference_shapes() {
+    let scalar = case(
             "scalar",
             "\nquery VariableSearch {\n  users(where .id > $min_id and .posts.title like $$title limit $ offset $$) {\n    id\n    posts(limit $post_limit) {\n      title\n    }\n  }\n}\n",
         )
         .await;
-        let operator = case(
+    let operator = case(
             "operator",
             "\nquery PostSearch {\n  posts(where .created_at $[>, >=] $min_created_at and .title $$title_op[==, !=, like] $title limit $) {\n    id\n  }\n}\n",
         )
         .await;
-        let order_by_direction = case(
+    let order_by_direction = case(
             "order_by_direction",
             "\nquery PostOrdering {\n  posts(order by created_at $created_dir, title $$) {\n    id\n  }\n}\n",
         )
         .await;
-        let fragment = case(
+    let fragment = case(
             "fragment",
             "\nfragment UserPosts on users {\n  posts(where .title like $$search limit $post_limit) {\n    title\n  }\n}\n",
         )
         .await;
 
-        insta::assert_snapshot!(format!(
-            "{scalar}\n\n---\n\n{operator}\n\n---\n\n{order_by_direction}\n\n---\n\n{fragment}"
-        ));
-    });
+    insta::assert_snapshot!(format!(
+        "{scalar}\n\n---\n\n{operator}\n\n---\n\n{order_by_direction}\n\n---\n\n{fragment}"
+    ));
 }
 
 /// Fragment spreads nested inside fragment bodies expand with an enveloped
 /// path scope (`input.<selection>.body.<Fragment>.params...`).
-#[test]
-fn fragment_spread_envelopes_nested_bindings() {
-    block_on(async {
-        let snapshot = case(
-            "envelope",
-            concat!(
-                "fragment UserFilter on users {\n",
-                "  ...UserPosts\n",
-                "}\n",
-                "fragment UserPosts on users {\n",
-                "  recent: posts(limit $count) {\n    id\n  }\n",
-                "}\n",
-            ),
-        )
-        .await;
-        insta::assert_snapshot!(snapshot);
-    });
+#[tokio::test]
+async fn fragment_spread_envelopes_nested_bindings() {
+    let snapshot = case(
+        "envelope",
+        concat!(
+            "fragment UserFilter on users {\n",
+            "  ...UserPosts\n",
+            "}\n",
+            "fragment UserPosts on users {\n",
+            "  recent: posts(limit $count) {\n    id\n  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+    insta::assert_snapshot!(snapshot);
 }
 
-#[test]
-fn cross_file_fragment_clauses_preserve_variable_inference() {
-    block_on(async {
-        let bowl = language_bowl().await;
-        insert_catalog(&bowl, imdb_catalog()).await;
-        bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
-            .await;
-        insert_source(
-            &bowl,
-            "rating-filter.dsql",
-            concat!(
-                "fragment RatingFilter on title {\n",
-                "  ratings: movie_info_idx(\n",
-                "    where .info_type_id == $type\n",
-                "    order by id $direction\n",
-                "    limit $count\n",
-                "  ) {\n",
-                "    info\n",
-                "  }\n",
-                "}\n",
-            ),
-        )
+#[tokio::test]
+async fn cross_file_fragment_clauses_preserve_variable_inference() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, imdb_catalog()).await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
         .await;
-        insert_source(
-            &bowl,
-            "ranked-fields.dsql",
-            "fragment RankedFields on title {\n  ...RatingFilter\n}\n",
-        )
+    insert_source(
+        &bowl,
+        "rating-filter.dsql",
+        concat!(
+            "fragment RatingFilter on title {\n",
+            "  ratings: movie_info_idx(\n",
+            "    where .info_type_id == $type\n",
+            "    order by id $direction\n",
+            "    limit $count\n",
+            "  ) {\n",
+            "    info\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+    insert_source(
+        &bowl,
+        "ranked-fields.dsql",
+        "fragment RankedFields on title {\n  ...RatingFilter\n}\n",
+    )
+    .await;
+
+    let definitions = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
+    let ranked = definitions
+        .collect()
+        .into_iter()
+        .find(|(_, definition)| definition.name == "RankedFields")
+        .map(|(entity, _)| entity)
+        .expect("RankedFields definition exists");
+    let bindings = bowl
+        .scoop::<Query<(Entity, &VariableBinding, &DefKey)>>()
         .await;
+    let mut rendered: Vec<String> = bindings
+        .collect()
+        .into_iter()
+        .filter(|(_, _, definition)| definition.0 == ranked)
+        .map(|(_, binding, _)| {
+            format!(
+                "{} {:?} {:?} {:?}",
+                binding.path, binding.role, binding.data_type, binding.name
+            )
+        })
+        .collect();
+    rendered.sort();
 
-        let definitions = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
-        let ranked = definitions
-            .collect()
-            .into_iter()
-            .find(|(_, definition)| definition.name == "RankedFields")
-            .map(|(entity, _)| entity)
-            .expect("RankedFields definition exists");
-        let bindings = bowl
-            .scoop::<Query<(Entity, &VariableBinding, &DefKey)>>()
-            .await;
-        let mut rendered: Vec<String> = bindings
-            .collect()
-            .into_iter()
-            .filter(|(_, _, definition)| definition.0 == ranked)
-            .map(|(_, binding, _)| {
-                format!(
-                    "{} {:?} {:?} {:?}",
-                    binding.path, binding.role, binding.data_type, binding.name
-                )
-            })
-            .collect();
-        rendered.sort();
-
-        insta::assert_snapshot!(rendered.join("\n"));
-    });
+    insta::assert_snapshot!(rendered.join("\n"));
 }

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { renderDsql, type BuildArtifacts } from "../src/node";
+import { renderTanStackQuery } from "../renderers/generators/tanstack-query";
 import { renderTanStackStart } from "../renderers/generators/tanstack-start";
 
 test("tanstack start uses imported validator expressions when provided", async () => {
@@ -31,6 +32,10 @@ test("tanstack start uses imported validator expressions when provided", async (
       };
     },
   });
+  await renderTanStackQuery(artifacts, dsql, {
+    root,
+    outDir: join(root, "src/generated/dsql"),
+  });
 
   const source = readFileSync(
     join(root, "src/generated/dsql/tanstack-start.ts"),
@@ -41,6 +46,13 @@ test("tanstack start uses imported validator expressions when provided", async (
   );
   expect(source).toContain(
     ".inputValidator(MovieInfoVariablesSchema.parse as (variables: DsqlServerVariables<typeof MovieInfoLookupOperation>) => DsqlServerVariables<typeof MovieInfoLookupOperation>)",
+  );
+  const querySource = readFileSync(
+    join(root, "src/generated/dsql/tanstack-query.ts"),
+    "utf8",
+  );
+  expect(querySource).toContain(
+    '"MovieInfoLookup": MovieInfoLookupServerFn as DsqlServerFunction<typeof MovieInfoLookupOperation>',
   );
 });
 

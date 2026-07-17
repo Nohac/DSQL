@@ -1,7 +1,5 @@
 //! Bowl assembly: a loaded project becomes a settled language bowl.
 
-use std::collections::BTreeMap;
-
 use bowl::{Bowl, Singleton};
 
 use dsql_core::catalog::{CatalogSourceRoot, insert_catalog};
@@ -61,13 +59,8 @@ pub async fn populate_project_bowl_excluding(
     ))
     .await;
 
-    let imports: BTreeMap<String, Vec<String>> = project
-        .config
-        .resolution
-        .iter()
-        .map(|(scope, config)| (scope.clone(), config.imports.clone()))
-        .collect();
-    bowl.insert((Singleton::<ScopeImports>::new(), ScopeImports(imports)))
+    let imports = project.config.scope_imports();
+    bowl.insert((Singleton::<ScopeImports>::new(), imports))
         .await;
     let scope_documents = crate::documents::scope_document_assignments(project);
     bowl.insert((

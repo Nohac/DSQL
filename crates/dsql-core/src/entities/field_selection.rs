@@ -26,7 +26,7 @@ use crate::resolution::{ResolvedClause, ResolvedSelection};
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::completion::{CompletionContext, CompletionRequest};
 use crate::service::hover::{
-    Cursor, HoverCandidate, HoverEnriched, RequestKey, describe_column, describe_relation, priority,
+    Cursor, HoverEnriched, describe_column, describe_relation, emit_hover_candidate, priority,
 };
 use crate::source::{ResolutionScope, ScopeImports};
 
@@ -57,6 +57,16 @@ pub struct FieldSel {
     /// Whether the selection has a clause list, even an empty one —
     /// scalar fields must not have clauses at all.
     pub has_clause_list: bool,
+}
+
+impl FieldSel {
+    /// The response-object key: an explicit alias, or the selected object's
+    /// unqualified name.
+    pub(crate) fn output_key(&self) -> String {
+        self.alias
+            .clone()
+            .unwrap_or_else(|| TableRef::parse(&self.name).name.to_string())
+    }
 }
 
 /// Owns `field_selection` (and consumes `field_selection_tail` and
@@ -569,7 +579,7 @@ impl CheckCtx<'_, '_> {
             .map(|(entity, field, _, _)| (*entity, *field))
             .collect();
         for (entity, field) in fields {
-            let key = output_key(field);
+            let key = field.output_key();
             if seen.contains(&key) {
                 self.error(
                     entity,
@@ -634,14 +644,6 @@ impl CheckCtx<'_, '_> {
     }
 }
 
-/// Output key of one field: alias, or the object name of its target.
-fn output_key(field: &FieldSel) -> String {
-    field
-        .alias
-        .clone()
-        .unwrap_or_else(|| TableRef::parse(&field.name).name.to_string())
-}
-
 /// The top-level output keys a fragment splices into a spreading set,
 /// following the fragment's own top-level spreads through the shared
 /// expansion (cycles cut off).
@@ -652,7 +654,7 @@ fn collect_expanded_keys(
     keys: &mut Vec<String>,
 ) {
     for (_, field, _, _) in tree.fields_under(fragment) {
-        keys.push(output_key(field));
+        keys.push(field.output_key());
     }
     let spreads: Vec<String> = tree
         .spreads_under(fragment)
@@ -712,20 +714,13 @@ async fn hover_fields(
     let (_, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
-    if !(resolved.name_span.start <= cursor.0 && cursor.0 < resolved.name_span.end) {
+    if !resolved.name_span.contains(cursor.0) {
         return;
     }
 
     let text = describe_target(catalog, resolved).unwrap_or_else(|| format!("`{}`", resolved.name));
 
-    commands.insert((
-        DerivedFrom::new(request),
-        RequestKey(request),
-        HoverCandidate {
-            priority: priority::FIELD,
-            text,
-        },
-    ));
+    emit_hover_candidate(&mut commands, request, priority::FIELD, text);
 }
 
 /// Renders a resolved selection for hover.
@@ -756,7 +751,7 @@ async fn complete_selections(
     mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
 ) {
     use crate::service::completion::{
-        CompletionCandidate, CompletionItem, CompletionKind, CompletionSite,
+        CompletionItem, CompletionKind, CompletionSite, emit_completion_candidate,
     };
 
     let (request, context) = requests.item();
@@ -816,11 +811,5 @@ async fn complete_selections(
         _ => {}
     }
 
-    if !items.is_empty() {
-        commands.insert((
-            DerivedFrom::new(request),
-            RequestKey(request),
-            CompletionCandidate { items },
-        ));
-    }
+    emit_completion_candidate(&mut commands, request, items);
 }

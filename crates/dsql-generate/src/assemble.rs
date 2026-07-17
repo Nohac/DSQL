@@ -9,7 +9,7 @@ use dsql_core::entities::variable_path::{is_input_path, is_params_path};
 use dsql_core::facts::Span;
 use dsql_core::plan::{
     FragmentPlanFact, OperationSeed, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
-    SqlValue,
+    SpreadUse, SqlValue,
 };
 use dsql_core::sql::GeneratedSql;
 use dsql_metadata::{
@@ -95,15 +95,7 @@ pub(crate) fn operation_metadata(
         dynamic_inputs: dynamic_inputs(inputs.bindings),
         policies: Vec::new(),
         handoffs: Vec::new(),
-        fragment_spreads: inputs
-            .seed
-            .spreads
-            .iter()
-            .map(|spread| FragmentSpreadMetadata {
-                path: spread.path.clone(),
-                fragment: spread.fragment.clone(),
-            })
-            .collect(),
+        fragment_spreads: fragment_spreads(&inputs.seed.spreads),
         source_map: vec![SourceMapEntry {
             id: inputs.seed.query_name.clone(),
             file: source_path(project_root, inputs.file),
@@ -132,15 +124,7 @@ pub(crate) fn fragment_metadata(
         params: input_fields(inputs.bindings, true),
         input: input_fields(inputs.bindings, false),
         dynamic_inputs: dynamic_inputs(inputs.bindings),
-        fragment_spreads: inputs
-            .plan
-            .spreads
-            .iter()
-            .map(|spread| FragmentSpreadMetadata {
-                path: spread.path.clone(),
-                fragment: spread.fragment.clone(),
-            })
-            .collect(),
+        fragment_spreads: fragment_spreads(&inputs.plan.spreads),
         source_map: vec![SourceMapEntry {
             id: inputs.plan.name.clone(),
             file: source_path(project_root, inputs.file),
@@ -148,6 +132,16 @@ pub(crate) fn fragment_metadata(
             content_range: inputs.content_range,
         }],
     })
+}
+
+fn fragment_spreads(spreads: &[SpreadUse]) -> Vec<FragmentSpreadMetadata> {
+    spreads
+        .iter()
+        .map(|spread| FragmentSpreadMetadata {
+            path: spread.path.clone(),
+            fragment: spread.fragment.clone(),
+        })
+        .collect()
 }
 
 fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
