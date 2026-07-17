@@ -81,6 +81,8 @@ pub enum AggregateFunction {
     Exists,
     Min,
     Max,
+    Sum,
+    Avg,
 }
 
 /// One checked aggregate output field. Planning, SQL, metadata, and services
@@ -512,6 +514,8 @@ fn resolve_field(
         "exists" => Some(AggregateFunction::Exists),
         "min" => Some(AggregateFunction::Min),
         "max" => Some(AggregateFunction::Max),
+        "sum" => Some(AggregateFunction::Sum),
+        "avg" => Some(AggregateFunction::Avg),
         _ => {
             problems.push(AggregateProblem {
                 span: field.function_span,
@@ -564,7 +568,10 @@ fn resolve_field(
                 });
             }
         }
-        AggregateFunction::Min | AggregateFunction::Max => {
+        AggregateFunction::Min
+        | AggregateFunction::Max
+        | AggregateFunction::Sum
+        | AggregateFunction::Avg => {
             let Some(operand) = &field.operand else {
                 problems.push(AggregateProblem {
                     span: field.function_span,
@@ -574,11 +581,21 @@ fn resolve_field(
             };
             require_alias(field, function, problems);
             resolve_operand(catalog, table, operand, &mut resolved, problems);
-            if let Some(data_type) = resolved.data_type
-                && !matches!(
+            let supported = resolved.data_type.is_some_and(|data_type| match function {
+                AggregateFunction::Min | AggregateFunction::Max => matches!(
                     data_type,
                     DataType::Int | DataType::Text | DataType::Timestamptz
-                )
+                ),
+                AggregateFunction::Sum | AggregateFunction::Avg => {
+                    matches!(
+                        data_type,
+                        DataType::Int | DataType::Numeric | DataType::Float
+                    )
+                }
+                AggregateFunction::Count | AggregateFunction::Exists => false,
+            });
+            if let Some(data_type) = resolved.data_type
+                && !supported
             {
                 problems.push(AggregateProblem {
                     span: operand.span(),
@@ -588,8 +605,15 @@ fn resolve_field(
                     },
                 });
             }
-            // An ungrouped min/max is null on an empty source even when the
-            // operand column itself is not null.
+            if matches!(function, AggregateFunction::Sum | AggregateFunction::Avg) {
+                resolved.data_type = resolved.data_type.map(|data_type| match data_type {
+                    DataType::Float => DataType::Float,
+                    DataType::Int | DataType::Numeric => DataType::Numeric,
+                    other => other,
+                });
+            }
+            // An ungrouped value aggregate is null on an empty source even
+            // when the operand column itself is not null.
             resolved.nullable = mode == AggregateMode::Ungrouped
                 || resolved
                     .operand
@@ -852,6 +876,8 @@ async fn complete_aggregate_positions(
             AggregateFunction::Exists,
             AggregateFunction::Min,
             AggregateFunction::Max,
+            AggregateFunction::Sum,
+            AggregateFunction::Avg,
         ]
         .into_iter()
         .map(|function| CompletionItem {
@@ -948,6 +974,8 @@ impl AggregateFunction {
             Self::Exists => "exists",
             Self::Min => "min",
             Self::Max => "max",
+            Self::Sum => "sum",
+            Self::Avg => "avg",
         }
     }
 }

@@ -13,11 +13,12 @@ Error[440..443]: aggregate function `exists` does not accept an operand
 Error[448..451]: aggregate function `min` requires a direct column operand
 Error[471..477]: aggregate operand `..name` must be a `.`-anchored direct scalar column
 Error[496..499]: aggregate function `min` does not support `uuid` operands
-Error[514..519]: aggregate output key `count` is ambiguous; use a distinct alias
-Error[524..588]: aggregate output key `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` is 64 bytes; PostgreSQL result aliases must be at most 63 bytes
+Error[518..523]: aggregate function `sum` does not support `text` operands
 Error[53..62]: unknown selection transform `summarize`
-Error[624..637]: aggregate sources do not support `order by` clauses
-Error[638..645]: aggregate sources do not support `limit` clauses
-Error[646..654]: aggregate sources do not support `offset` clauses
-Error[717..721]: aggregate source `name` must be a collection; singular and scalar sources cannot be aggregated
-Error[789..794]: aggregate source `users` must be a collection; singular and scalar sources cannot be aggregated
+Error[538..543]: aggregate output key `count` is ambiguous; use a distinct alias
+Error[548..612]: aggregate output key `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` is 64 bytes; PostgreSQL result aliases must be at most 63 bytes
+Error[648..661]: aggregate sources do not support `order by` clauses
+Error[662..669]: aggregate sources do not support `limit` clauses
+Error[670..678]: aggregate sources do not support `offset` clauses
+Error[741..745]: aggregate source `name` must be a collection; singular and scalar sources cannot be aggregated
+Error[813..818]: aggregate source `users` must be a collection; singular and scalar sources cannot be aggregated

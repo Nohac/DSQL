@@ -3,10 +3,12 @@ source: crates/dsql-core/tests/it/completions.rs
 expression: "format!(\"functions:\\n{functions}\\n\\noperands:\\n{operands}\\n\\ngroup keys:\\n{group_keys}\")"
 ---
 functions:
+Keyword avg (aggregate function)
 Keyword count (aggregate function)
 Keyword exists (aggregate function)
 Keyword max (aggregate function)
 Keyword min (aggregate function)
+Keyword sum (aggregate function)
 
 operands:
 Column created_at (timestamptz)

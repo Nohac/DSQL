@@ -8,11 +8,11 @@ select
     JSON_AGG(
       JSON_BUILD_OBJECT(
         'email_group',
-        "by_email_74e58642_groups"."email_group",
+        "by_email_74e58642_groups_efee4319"."email_group",
         'count',
-        "by_email_74e58642_groups"."count",
+        "by_email_74e58642_groups_efee4319"."count",
         'earliest_signup',
-        "by_email_74e58642_groups"."earliest_signup"
+        "by_email_74e58642_groups_efee4319"."earliest_signup"
       )
     ),
     '[]'
@@ -27,7 +27,7 @@ from
       "public"."users" as "by_email_74e58642"
     group by
       "by_email_74e58642"."email"
-  ) as "by_email_74e58642_groups"
+  ) as "by_email_74e58642_groups_efee4319"
 
 -- stats
 select
@@ -92,11 +92,11 @@ from
         JSON_AGG(
           JSON_BUILD_OBJECT(
             'title_group',
-            "post_groups_412749f0_groups"."title_group",
+            "post_groups_412749f0_groups_94123404"."title_group",
             'count',
-            "post_groups_412749f0_groups"."count",
+            "post_groups_412749f0_groups_94123404"."count",
             'latest',
-            "post_groups_412749f0_groups"."latest"
+            "post_groups_412749f0_groups_94123404"."latest"
           )
         ),
         '[]'
@@ -113,5 +113,5 @@ from
           "post_groups_412749f0"."user_id" = "users_99fc7350"."id"
         group by
           "post_groups_412749f0"."title"
-      ) as "post_groups_412749f0_groups"
+      ) as "post_groups_412749f0_groups_94123404"
   ) as "post_groups_json_412749f0" on true

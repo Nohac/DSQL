@@ -134,6 +134,7 @@ async fn invalid_aggregate_contracts_report_typed_diagnostics() {
             "    min\n",
             "    traversed: max ..name\n",
             "    uuid_min: min .id\n",
+            "    text_sum: sum .name\n",
             "    count\n",
             "    count\n",
             "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: count\n",

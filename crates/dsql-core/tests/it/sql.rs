@@ -1,6 +1,7 @@
 //! Plan and SQL generation: fixture queries plan and render to PostgreSQL
 //! on demand.
 
+use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 
@@ -129,6 +130,14 @@ async fn exact_and_floating_numbers_use_their_public_wire_types() {
             "  }\n",
             "  groups: metrics | aggregate by amount_group: .amount, ratio_group: .ratio {\n",
             "    count\n",
+            "    total_amount: sum .amount\n",
+            "    average_ratio: avg .ratio\n",
+            "  }\n",
+            "  summary: metrics | aggregate {\n",
+            "    total_amount: sum .amount\n",
+            "    average_amount: avg .amount\n",
+            "    total_ratio: sum .ratio\n",
+            "    average_ratio: avg .ratio\n",
             "  }\n",
             "}\n",
         ),
@@ -391,6 +400,56 @@ async fn valid_query_fixtures_execute_when_database_url_is_set() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn grouped_aggregates_execute_empty_and_null_groups_when_database_url_is_set() {
+    let Ok(database_url) = env::var("DSQL_TEST_DATABASE_URL") else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("reference database connects");
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "grouped-live.dsql",
+        concat!(
+            "query GroupedLive {\n",
+            "  empty: title(where .id != .id) | aggregate by .episode_nr { count }\n",
+            "  episodes: title | aggregate by .episode_nr { count }\n",
+            "}\n",
+        ),
+    )
+    .await;
+    let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+    let generated = rows
+        .collect()
+        .into_iter()
+        .map(|(_, fact)| (fact.0.output_name.clone(), fact.0.sql.clone()))
+        .collect::<HashMap<_, _>>();
+    let empty = execute_json(
+        &pool,
+        generated.get("empty").expect("empty grouped SQL exists"),
+    )
+    .await;
+    assert_eq!(empty, serde_json::json!([]), "empty grouped source is []");
+    let episodes = execute_json(
+        &pool,
+        generated
+            .get("episodes")
+            .expect("episode grouped SQL exists"),
+    )
+    .await;
+    let groups = episodes.as_array().expect("grouped result is an array");
+    assert!(
+        groups.iter().any(|group| group
+            .get("episode_nr")
+            .is_some_and(serde_json::Value::is_null)),
+        "nullable key retains its NULL group"
+    );
 }
 
 /// Data-sensitive integration fixtures pin the reference imdb outputs when

@@ -473,7 +473,11 @@ fn generate_grouped_aggregate(
         );
     }
 
-    let grouped_alias = format!("{}_groups", context.table_alias);
+    let grouped_alias = generated_identifier(
+        &context.table_alias,
+        "_groups_",
+        &short_hash(&context.table_alias),
+    );
     let fields = aggregate
         .group_keys
         .iter()
@@ -528,6 +532,12 @@ fn aggregate_expression(
         }
         AggregateFunction::Max => {
             Func::max(operand.ok_or(SqlGenerationError::MissingAggregateOperand)?).into()
+        }
+        AggregateFunction::Sum => {
+            Func::sum(operand.ok_or(SqlGenerationError::MissingAggregateOperand)?).into()
+        }
+        AggregateFunction::Avg => {
+            Func::avg(operand.ok_or(SqlGenerationError::MissingAggregateOperand)?).into()
         }
     })
 }

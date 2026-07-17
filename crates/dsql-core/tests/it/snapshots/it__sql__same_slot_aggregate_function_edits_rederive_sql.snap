@@ -23,9 +23,9 @@ select
     JSON_AGG(
       JSON_BUILD_OBJECT(
         'key',
-        "edge_26e19395_groups"."key",
+        "edge_26e19395_groups_46a1febd"."key",
         'count',
-        "edge_26e19395_groups"."count"
+        "edge_26e19395_groups_46a1febd"."count"
       )
     ),
     '[]'
@@ -39,7 +39,7 @@ from
       "public"."users" as "edge_26e19395"
     group by
       "edge_26e19395"."name"
-  ) as "edge_26e19395_groups"
+  ) as "edge_26e19395_groups_46a1febd"
 
 grouped after:
 -- edge
@@ -48,9 +48,9 @@ select
     JSON_AGG(
       JSON_BUILD_OBJECT(
         'key',
-        "edge_26e19395_groups"."key",
+        "edge_26e19395_groups_46a1febd"."key",
         'count',
-        "edge_26e19395_groups"."count"
+        "edge_26e19395_groups_46a1febd"."count"
       )
     ),
     '[]'
@@ -64,4 +64,4 @@ from
       "public"."users" as "edge_26e19395"
     group by
       "edge_26e19395"."email"
-  ) as "edge_26e19395_groups"
+  ) as "edge_26e19395_groups_46a1febd"

@@ -249,7 +249,19 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
     .expect("numeric schema fixture");
     std::fs::write(
         dir.join("queries/frontend/numeric.dsql"),
-        "query NumericMetrics {\n  metrics(where .amount >= $$minimum) {\n    amount\n    ratio\n  }\n}\n",
+        concat!(
+            "query NumericMetrics {\n",
+            "  metrics(where .amount >= $$minimum) { amount ratio }\n",
+            "}\n",
+            "query NumericSummary {\n",
+            "  summary: metrics | aggregate {\n",
+            "    total_amount: sum .amount\n",
+            "    average_amount: avg .amount\n",
+            "    total_ratio: sum .ratio\n",
+            "    average_ratio: avg .ratio\n",
+            "  }\n",
+            "}\n",
+        ),
     )
     .expect("numeric query fixture");
     let project = Project::load_from(&dir).await.expect("project reloads");
@@ -257,14 +269,16 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
     let assembled = assemble_project(&bowl, &project, GenerateOptions::default())
         .await
         .expect("assembly succeeds");
-    let artifact = assembled
+    let mut artifacts = assembled
         .snapshot
         .artifacts
         .iter()
-        .find(|artifact| artifact.name == "NumericMetrics")
-        .expect("numeric operation");
+        .filter(|artifact| matches!(artifact.name.as_str(), "NumericMetrics" | "NumericSummary"))
+        .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
+        .collect::<Vec<_>>();
+    artifacts.sort();
 
-    insta::assert_snapshot!(artifact.serialized);
+    insta::assert_snapshot!(artifacts.join("\n---\n"));
 
     std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }

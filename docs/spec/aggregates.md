@@ -145,6 +145,8 @@ aggregate {
   has_posts: exists
   latest_post: max .created_at
   earliest_post: min .created_at
+  total_amount: sum .amount
+  average_score: avg .score
 }
 ```
 
@@ -157,6 +159,8 @@ Initial function semantics:
 | `exists` | Whether at least one source row exists | `false` | `boolean` | no |
 | `min .field` | Minimum field value | `null` | field type | yes |
 | `max .field` | Maximum field value | `null` | field type | yes |
+| `sum .field` | Sum numeric values | `null` | `numeric`, or `float` for float operands | yes |
+| `avg .field` | Average numeric values | `null` | `numeric`, or `float` for float operands | yes |
 
 PostgreSQL returns `bigint` for both count forms. They use dsql's current
 logical `int` contract, including its existing host-number precision limits.
@@ -176,14 +180,12 @@ source. Relationship traversal, parent/root anchors, and object-valued operands
 are diagnostics. Each function accepts only operand types supported by the
 selected database provider.
 
-`count .field` accepts any scalar column. The initial `min` and `max` allowlist
-is `int`, `text`, and `timestamptz`. `boolean`, `json`, `uuid`, and `unknown`
-are diagnostics until provider capability metadata explicitly supports them.
-
-`sum` and `avg` are planned additions, not part of the first function set.
-They require logical `Numeric` and `Float` types and PostgreSQL return-type
-rules. That foundation also fixes the existing `unknown` typing of ordinary
-numeric columns and should land independently of aggregate planning.
+`count .field` accepts any scalar column. The `min` and `max` allowlist is
+`int`, `text`, and `timestamptz`. `sum` and `avg` accept `int`, `numeric`, and
+`float`. Exact `int` and `numeric` operands produce logical `numeric`; float
+operands produce logical `float`. Operand forms require aliases. `boolean`,
+`json`, `uuid`, and `unknown` are diagnostics until provider capability
+metadata explicitly supports them.
 
 ### Numeric And Float Wire Types
 

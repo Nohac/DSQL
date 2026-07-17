@@ -19,7 +19,9 @@ Scope .. (parent scope)
 Scope ~ (root scope)
 
 aggregate body:
+Keyword avg (aggregate function)
 Keyword count (aggregate function)
 Keyword exists (aggregate function)
 Keyword max (aggregate function)
 Keyword min (aggregate function)
+Keyword sum (aggregate function)

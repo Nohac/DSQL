@@ -8,11 +8,15 @@ select
     JSON_AGG(
       JSON_BUILD_OBJECT(
         'amount_group',
-        "groups_ddd104a7_groups"."amount_group",
+        "groups_ddd104a7_groups_36433875"."amount_group",
         'ratio_group',
-        "groups_ddd104a7_groups"."ratio_group",
+        "groups_ddd104a7_groups_36433875"."ratio_group",
         'count',
-        "groups_ddd104a7_groups"."count"
+        "groups_ddd104a7_groups_36433875"."count",
+        'total_amount',
+        "groups_ddd104a7_groups_36433875"."total_amount",
+        'average_ratio',
+        "groups_ddd104a7_groups_36433875"."average_ratio"
       )
     ),
     '[]'
@@ -22,13 +26,15 @@ from
     select
       CAST("groups_ddd104a7"."amount" as text) as "amount_group",
       "groups_ddd104a7"."ratio" as "ratio_group",
-      COUNT(*) as "count"
+      COUNT(*) as "count",
+      CAST(SUM("groups_ddd104a7"."amount") as text) as "total_amount",
+      AVG("groups_ddd104a7"."ratio") as "average_ratio"
     from
       "public"."metrics" as "groups_ddd104a7"
     group by
       "groups_ddd104a7"."amount",
       "groups_ddd104a7"."ratio"
-  ) as "groups_ddd104a7_groups"
+  ) as "groups_ddd104a7_groups_36433875"
 
 -- metrics
 select
@@ -54,3 +60,18 @@ from
     limit
       10
   ) as "metrics_b773e828"
+
+-- summary
+select
+  JSON_BUILD_OBJECT(
+    'total_amount',
+    CAST(SUM("summary_bea0cdc1"."amount") as text),
+    'average_amount',
+    CAST(AVG("summary_bea0cdc1"."amount") as text),
+    'total_ratio',
+    SUM("summary_bea0cdc1"."ratio"),
+    'average_ratio',
+    AVG("summary_bea0cdc1"."ratio")
+  ) as "summary"
+from
+  "public"."metrics" as "summary_bea0cdc1"
