@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[107..120]: field `.ratio` expects number but predicate uses string

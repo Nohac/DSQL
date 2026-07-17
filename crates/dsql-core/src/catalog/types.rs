@@ -40,6 +40,7 @@ pub struct Column {
     pub key: ColumnKey,
     pub table: TableId,
     pub name: String,
+    pub database_type: String,
     pub data_type: DataType,
     pub not_null: bool,
     pub is_unique: bool,
@@ -71,6 +72,8 @@ pub enum DataType {
     Text,
     Timestamptz,
     Int,
+    Numeric,
+    Float,
     Boolean,
     Json,
     Unknown,
@@ -189,6 +192,7 @@ impl Column {
         schema: &str,
         table_name: &str,
         name: &str,
+        database_type: &str,
         data_type: DataType,
         not_null: bool,
         is_unique: bool,
@@ -203,6 +207,7 @@ impl Column {
             },
             table,
             name: name.to_string(),
+            database_type: database_type.to_string(),
             data_type,
             not_null,
             is_unique,
@@ -218,6 +223,8 @@ impl DataType {
             Self::Text => "text",
             Self::Timestamptz => "timestamptz",
             Self::Int => "int",
+            Self::Numeric => "numeric",
+            Self::Float => "float",
             Self::Boolean => "boolean",
             Self::Json => "json",
             Self::Unknown => "unknown",
@@ -228,6 +235,8 @@ impl DataType {
         match database_type {
             "bool" | "boolean" => Self::Boolean,
             "int2" | "int4" | "int8" | "integer" | "smallint" | "bigint" => Self::Int,
+            "numeric" | "decimal" => Self::Numeric,
+            "float4" | "real" | "float8" | "double precision" => Self::Float,
             "json" | "jsonb" => Self::Json,
             "text" | "varchar" | "bpchar" | "char" | "name" => Self::Text,
             "timestamptz" | "timestamp with time zone" => Self::Timestamptz,
@@ -238,7 +247,7 @@ impl DataType {
 
     pub fn operator_ops(self) -> &'static [ComparisonOp] {
         match self {
-            Self::Int | Self::Timestamptz => &[
+            Self::Int | Self::Numeric | Self::Float | Self::Timestamptz => &[
                 ComparisonOp::Eq,
                 ComparisonOp::Ne,
                 ComparisonOp::Gt,
@@ -255,7 +264,7 @@ impl DataType {
 
     pub fn accepts_literal_kind(self, literal: LiteralKind) -> bool {
         match self {
-            Self::Int => literal == LiteralKind::Number,
+            Self::Int | Self::Numeric | Self::Float => literal == LiteralKind::Number,
             Self::Boolean => literal == LiteralKind::Boolean,
             Self::Text | Self::Uuid | Self::Timestamptz | Self::Json => {
                 literal == LiteralKind::String
@@ -276,7 +285,7 @@ impl DataType {
 
     pub fn expected_literal_description(self) -> &'static str {
         match self {
-            Self::Int => "number",
+            Self::Int | Self::Numeric | Self::Float => "number",
             Self::Boolean => "boolean",
             Self::Text | Self::Uuid | Self::Timestamptz | Self::Json => "string",
             Self::Unknown => "value",

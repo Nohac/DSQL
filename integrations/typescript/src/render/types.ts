@@ -76,6 +76,7 @@ const RESULT_KIND_SCALAR = "scalar";
 const RESULT_KIND_ARRAY = "array";
 const PARAMS_PREFIX = "params";
 const INPUT_PREFIX = "input";
+const FLOAT_TS_TYPE = 'number | "NaN" | "Infinity" | "-Infinity"';
 const UNKNOWN_TS_TYPE = "unknown";
 const RENDER_DSQL_VERSION = 1;
 const RENDER_MANIFEST_NAME = ".dsql-render-manifest.json";
@@ -1046,6 +1047,10 @@ function dataType(type: string): string {
       return "boolean";
     case "int":
       return "number";
+    case "float":
+      return FLOAT_TS_TYPE;
+    case "numeric":
+      return "string";
     case "json":
       return UNKNOWN_TS_TYPE;
     case "text":

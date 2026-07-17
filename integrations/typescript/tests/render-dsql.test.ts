@@ -63,6 +63,80 @@ test("renders inline per-definition dsql modules", async () => {
   );
 });
 
+test("renders exact numeric and finite/non-finite float wire types", async () => {
+  const root = createRoot();
+  const operation = {
+    ...operationMetadata("NumericMetrics"),
+    result: {
+      fields: [
+        {
+          path: "metrics",
+          name: "metrics",
+          parent_path: "",
+          kind: "array",
+          data_type: "object",
+          nullable: false,
+        },
+        {
+          path: "metrics.amount",
+          name: "amount",
+          parent_path: "metrics",
+          kind: "scalar",
+          data_type: "numeric",
+          nullable: false,
+        },
+        {
+          path: "metrics.ratio",
+          name: "ratio",
+          parent_path: "metrics",
+          kind: "scalar",
+          data_type: "float",
+          nullable: true,
+        },
+      ],
+    },
+    params: [
+      {
+        path: "params.minimum",
+        data_type: "numeric",
+        enum_values: [],
+        required: true,
+        nullable: false,
+      },
+      {
+        path: "params.threshold",
+        data_type: "float",
+        enum_values: [],
+        required: true,
+        nullable: false,
+      },
+    ],
+  };
+  const artifacts = {
+    ...createArtifacts(root, { operationNames: [operation.name] }),
+    operations: [operation],
+    operationsByName: new Map([[operation.name, operation]]),
+  } as BuildArtifacts;
+
+  await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+  const rendered = readFileSync(
+    join(root, "src/generated/dsql/queries/NumericMetrics.ts"),
+    "utf8",
+  );
+
+  expect(rendered).toContain("amount: string;");
+  expect(rendered).toContain(
+    'ratio: number | "NaN" | "Infinity" | "-Infinity" | null;',
+  );
+  expect(rendered).toContain("minimum: string;");
+  expect(rendered).toContain(
+    'threshold: number | "NaN" | "Infinity" | "-Infinity";',
+  );
+});
+
 test("renders split query and execution modules with matching filenames", async () => {
   const root = createRoot();
   const artifacts = createArtifacts(root);

@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 
 use bowl::{Bowl, Entity, Mut, Query};
 use codespan_reporting::diagnostic::Severity;
+use dsql_core::catalog::{
+    Catalog, ColumnMetadata, DataType, DatabaseMetadata, ObjectType, SchemaMetadata, TableMetadata,
+    table_metadata_from_yaml,
+};
 use dsql_core::grammar::parser::Diagnostic;
 use dsql_core::source::SourceText;
 
@@ -117,9 +121,7 @@ pub fn render_diagnostics(source: &str, diagnostics: &[Diagnostic]) -> String {
 
 /// Loads the imdb schema fixtures into a [`dsql_core::catalog::Catalog`].
 /// The directory loader lives here until `dsql-project` exists.
-pub fn imdb_catalog() -> dsql_core::catalog::Catalog {
-    use dsql_core::catalog::{Catalog, SchemaMetadata, TableMetadata, table_metadata_from_yaml};
-
+pub fn imdb_catalog() -> Catalog {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/schema/imdb");
     let mut schemas = Vec::new();
     for entry in std::fs::read_dir(&root).expect("schema fixture dir must exist") {
@@ -151,11 +153,47 @@ pub fn imdb_catalog() -> dsql_core::catalog::Catalog {
     }
     schemas.sort_by(|left, right| left.name.cmp(&right.name));
 
-    dsql_core::catalog::DatabaseMetadata {
+    DatabaseMetadata {
         schemas,
         types: Vec::new(),
     }
     .into_catalog()
     .expect("imdb fixture catalog must build")
+    .with_default_schema(Catalog::DEFAULT_SCHEMA)
+}
+
+/// A compact catalog that exercises exact and floating-point PostgreSQL
+/// number types through the full language pipeline.
+pub fn numeric_catalog() -> Catalog {
+    DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![TableMetadata {
+                schema: "public".to_string(),
+                name: "metrics".to_string(),
+                object_type: ObjectType::Table,
+                columns: vec![
+                    ColumnMetadata {
+                        name: "amount".to_string(),
+                        database_type: "numeric".to_string(),
+                        data_type: DataType::from_database_type("numeric"),
+                        not_null: true,
+                    },
+                    ColumnMetadata {
+                        name: "ratio".to_string(),
+                        database_type: "float8".to_string(),
+                        data_type: DataType::from_database_type("float8"),
+                        not_null: false,
+                    },
+                ],
+                constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        }],
+        types: Vec::new(),
+    }
+    .into_catalog()
+    .expect("numeric fixture catalog must build")
     .with_default_schema(Catalog::DEFAULT_SCHEMA)
 }

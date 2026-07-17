@@ -181,10 +181,32 @@ is `int`, `text`, and `timestamptz`. `boolean`, `json`, `uuid`, and `unknown`
 are diagnostics until provider capability metadata explicitly supports them.
 
 `sum` and `avg` are planned additions, not part of the first function set.
-They require logical `Numeric` and `Float` types, PostgreSQL return-type rules,
-and an explicit lossless JSON/TypeScript wire representation. That foundation
-also fixes the existing `unknown` typing of ordinary numeric columns and should
-land independently of aggregate planning.
+They require logical `Numeric` and `Float` types and PostgreSQL return-type
+rules. That foundation also fixes the existing `unknown` typing of ordinary
+numeric columns and should land independently of aggregate planning.
+
+### Numeric And Float Wire Types
+
+Exact PostgreSQL `numeric`/`decimal` values use dsql's logical `numeric` type.
+They are serialized as JSON strings and generate TypeScript `string`. Finite
+values use their decimal text; PostgreSQL's supported non-finite values use the
+exact tags `NaN`, `Infinity`, and `-Infinity`. The SQL renderer casts exact
+numerics to text at the JSON construction boundary so the database never rounds
+them through a JSON or JavaScript number. Numeric inputs use the same string
+contract; PostgreSQL infers or receives the target numeric type from the
+expression in which the parameter is used.
+
+PostgreSQL `real`/`float4` and `double precision`/`float8` use the distinct
+logical `float` type. Finite values remain JSON numbers. PostgreSQL serializes
+non-finite values as the JSON strings `NaN`, `Infinity`, and `-Infinity`, so the
+generated TypeScript type is
+`number | "NaN" | "Infinity" | "-Infinity"`.
+
+Float inputs accept that same union. The string tags are the reliable transport
+form for non-finite inputs because JSON serialization turns JavaScript
+`NaN`/infinities into `null`; PostgreSQL accepts the tags as parameter text.
+Keeping finite floats as numbers preserves normal host ergonomics while the
+distinct logical type avoids weakening exact numerics to floating point.
 
 Function vocabulary is contextual inside aggregate positions. `aggregate`,
 `count`, `exists`, `min`, `max`, `sum`, and `avg` must not become globally
@@ -473,8 +495,6 @@ the function and result-shape semantics established by the earlier ones.
 
 ## Open Questions
 
-- What lossless JSON and TypeScript representation should `Numeric` use?
-- Should `Float` remain distinct from exact `Numeric` in generated contracts?
 - Which aggregate directive locations and merge rules are useful once
   conditional output semantics exist?
 - What syntax should add grouped ordering, pagination, and `having`?

@@ -12,7 +12,7 @@ use dsql_core::source::insert_source;
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use sqlx::{AssertSqlSafe, PgPool, Row, postgres::PgPoolOptions};
 
-use crate::{fixture, imdb_catalog, queries_dir, set_source_text};
+use crate::{fixture, imdb_catalog, numeric_catalog, queries_dir, set_source_text};
 
 async fn sql_bowl(catalog: Catalog) -> Bowl {
     let bowl = language_bowl().await;
@@ -111,6 +111,19 @@ async fn variables_render_as_parameters_and_variants() {
             "query UsersPage {\n  users(\n    where .name $$name_op[==, like] $$name and .id == $tenant\n    order by created_at $$dir\n    limit $$max\n    offset $skip\n  ) {\n    id\n    posts(limit 5) {\n      title\n    }\n  }\n}\n",
         )
         .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn exact_and_floating_numbers_use_their_public_wire_types() {
+    let bowl = sql_bowl(numeric_catalog()).await;
+    insert_source(
+        &bowl,
+        "numeric.dsql",
+        "query NumericMetrics {\n  metrics(where .amount >= 12345678901234567890.12345678901234567890) {\n    amount\n    ratio\n  }\n}\n",
+    )
+    .await;
 
     insta::assert_snapshot!(render_sql(&bowl).await);
 }

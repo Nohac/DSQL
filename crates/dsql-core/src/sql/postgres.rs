@@ -1,5 +1,6 @@
 use crate::catalog::{
-    Catalog, Column, ColumnId, ForeignKey, ForeignKeyId, RelationCardinality, Table, TableId,
+    Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyId, RelationCardinality, Table,
+    TableId,
 };
 use crate::plan::{
     FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, QueryPlan, SelectionClauses,
@@ -131,9 +132,17 @@ impl SqlTemplateContext {
 
     fn numeric_parameter_sentinel(&mut self, parameter: &SqlParameter) -> u64 {
         let placeholder = self.parameter(parameter);
+        self.numeric_sentinel(placeholder)
+    }
+
+    fn numeric_literal_sentinel(&mut self, literal: &str) -> u64 {
+        self.numeric_sentinel(literal.to_string())
+    }
+
+    fn numeric_sentinel(&mut self, replacement: String) -> u64 {
         let sentinel = self.next_sentinel;
         self.next_sentinel += 1;
-        self.replacements.push((sentinel.to_string(), placeholder));
+        self.replacements.push((sentinel.to_string(), replacement));
         sentinel
     }
 }
@@ -427,11 +436,14 @@ fn filter_expr(
         FilterExpr::Parameter(parameter) => Expr::cust(template.parameter(parameter)),
         FilterExpr::Literal(literal) => match literal {
             FilterLiteral::String(value) => Expr::value(value.clone()),
-            FilterLiteral::Number(value) => value
-                .parse::<i64>()
-                .map(Expr::value)
-                .or_else(|_| value.parse::<f64>().map(Expr::value))
-                .unwrap_or_else(|_| Expr::value(value.clone())),
+            FilterLiteral::Number(value) => {
+                value.parse::<i64>().map(Expr::value).unwrap_or_else(|_| {
+                    // The parser has already validated this token as a
+                    // number. Preserve its source text: routing exact
+                    // numerics through f64 would silently round them.
+                    Expr::value(template.numeric_literal_sentinel(value))
+                })
+            }
             FilterLiteral::Bool(value) => Expr::value(*value),
             FilterLiteral::Null => Expr::cust("null"),
         },
@@ -562,7 +574,7 @@ fn json_build_object(
                 let column = column(catalog, projection.column)?;
                 pairs.push((
                     Expr::value(projection.output_name.clone()),
-                    Expr::col((Alias::new(&context.table_alias), Alias::new(&column.name))),
+                    json_scalar_expression(column, context),
                 ));
             }
             SelectionPlanItem::Relation(relation) => {
@@ -581,6 +593,18 @@ fn json_build_object(
         }
     }
     Ok(PgFunc::json_build_object(pairs).into())
+}
+
+/// Converts one scalar projection to its public JSON wire representation.
+/// Exact numerics cross the JSON boundary as text so host runtimes cannot
+/// silently round them through an IEEE-754 number.
+fn json_scalar_expression(column: &Column, context: &SelectionContext) -> Expr {
+    let expression = Expr::col((Alias::new(&context.table_alias), Alias::new(&column.name)));
+    if column.data_type == DataType::Numeric {
+        expression.cast_as(Alias::new("text"))
+    } else {
+        expression
+    }
 }
 
 fn relation_condition(

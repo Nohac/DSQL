@@ -239,6 +239,36 @@ async fn generated_scope_groups_include_transitive_import_artifacts() {
     std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }
 
+#[tokio::test]
+async fn numeric_wire_types_flow_through_generated_metadata() {
+    let (dir, _) = fixture_project("numeric-wire").await;
+    std::fs::write(
+        dir.join("dsql/schema/public/metrics.yaml"),
+        "---\nschema: public\nname: metrics\nobject_type: table\ncolumns:\n  - name: amount\n    database_type: numeric\n    data_type: numeric\n    not_null: true\n  - name: ratio\n    database_type: float8\n    data_type: float\n    not_null: false\nconstraints: []\nforeign_keys: []\nindexes: []\n",
+    )
+    .expect("numeric schema fixture");
+    std::fs::write(
+        dir.join("queries/frontend/numeric.dsql"),
+        "query NumericMetrics {\n  metrics(where .amount >= $$minimum) {\n    amount\n    ratio\n  }\n}\n",
+    )
+    .expect("numeric query fixture");
+    let project = Project::load_from(&dir).await.expect("project reloads");
+    let bowl = open_analysis_bowl(&project).await.expect("bowl opens");
+    let assembled = assemble_project(&bowl, &project, GenerateOptions::default())
+        .await
+        .expect("assembly succeeds");
+    let artifact = assembled
+        .snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "NumericMetrics")
+        .expect("numeric operation");
+
+    insta::assert_snapshot!(artifact.serialized);
+
+    std::fs::remove_dir_all(&dir).expect("fixture cleanup");
+}
+
 /// Two *independent* scopes may each define an operation with the same
 /// public name — resolution namespaces are separate, and without an
 /// import relationship the language checks rightly stay silent (importing

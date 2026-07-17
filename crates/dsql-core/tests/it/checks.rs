@@ -8,7 +8,10 @@ use dsql_core::facts::{Diagnostic, arm_editor_demands};
 use dsql_core::language_bowl;
 use dsql_core::source::{insert_embedding_source, insert_source};
 
-use crate::{fixture, imdb_catalog, render_diagnostic_facts, replace_source_text, set_source_text};
+use crate::{
+    fixture, imdb_catalog, numeric_catalog, render_diagnostic_facts, replace_source_text,
+    set_source_text,
+};
 
 async fn checked_bowl(catalog: Catalog) -> Bowl {
     let bowl = language_bowl().await;
@@ -53,6 +56,26 @@ async fn valid_fixtures_check_clean_against_imdb() {
 
     let diagnostics = render_diagnostic_facts(&bowl).await;
     assert_eq!(diagnostics, "", "valid fixtures must check clean");
+}
+
+#[tokio::test]
+async fn numeric_and_float_literals_follow_their_logical_types() {
+    let bowl = checked_bowl(numeric_catalog()).await;
+    insert_source(
+        &bowl,
+        "numeric-literals.dsql",
+        concat!(
+            "query NumericLiterals {\n",
+            "  metrics(where .amount >= 12345678901234567890.12345678901234567890",
+            " and .ratio == \"not a float\") {\n",
+            "    amount\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
 #[tokio::test]

@@ -280,6 +280,7 @@ impl Catalog {
                         table_schema,
                         &table_metadata.name,
                         &column_metadata.name,
+                        &column_metadata.database_type,
                         column_metadata.data_type,
                         column_metadata.not_null,
                         false,
