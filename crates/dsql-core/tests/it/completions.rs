@@ -158,6 +158,33 @@ async fn aggregate_bodies_offer_contextual_functions_and_operands() {
 }
 
 #[tokio::test]
+async fn aggregate_predicates_offer_contextual_functions_and_related_operands() {
+    let functions = completion_list(
+        "query Q {\n  public::users(where .posts | ¦ limit 1) { id }\n}\n",
+        '¦',
+    )
+    .await;
+    let partial = completion_list(
+        "query Q {\n  public::users(where .posts | co¦ >= 1 limit 1) { id }\n}\n",
+        '¦',
+    )
+    .await;
+    let operands = completions_with_marker(
+        "query Q {\n  public::users(where (.posts | min .¦) == \"a\" limit 1) { id }\n}\n",
+        '¦',
+    )
+    .await;
+
+    insta::assert_snapshot!(format!(
+        "functions replace={:?}:\n{}\n\npartial replace={:?}:\n{}\n\noperands:\n{operands}",
+        functions.replace,
+        render_completion_items(&functions),
+        partial.replace,
+        render_completion_items(&partial),
+    ));
+}
+
+#[tokio::test]
 async fn flattened_selections_complete_against_their_relation_context() {
     let singular = completions_with_marker(
         "query Q {\n  posts(limit 1) {\n    ...users {\n      ¦\n    }\n  }\n}\n",

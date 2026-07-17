@@ -6,11 +6,11 @@ use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::variable::VariableBinding;
-use dsql_core::facts::{DefKey, Span, VariablesDemand};
+use dsql_core::facts::{DefKey, Span, VariablesDemand, arm_editor_demands};
 use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 
-use crate::imdb_catalog;
+use crate::{imdb_catalog, render_diagnostic_facts};
 
 async fn variables_bowl() -> Bowl {
     let bowl = language_bowl().await;
@@ -128,6 +128,54 @@ async fn flattened_aggregate_inputs_keep_the_source_and_aggregate_path_segments(
     .await;
 
     insta::assert_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn aggregate_predicate_inputs_use_resolved_result_types_and_paths() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, imdb_catalog()).await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
+    insert_source(
+        &bowl,
+        "aggregate-predicate-inputs.dsql",
+        concat!(
+            "query AggregatePredicateInputs {\n",
+            "  title(\n",
+            "    where (.movie_info_idx | count) >= $minimum\n",
+            "      and (.movie_info_idx | min .info) >= $$earliest\n",
+            "      and (.movie_info_idx | sum .info_type_id) >= $total\n",
+            "    limit 1\n",
+            "  ) { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_bindings(&bowl).await);
+}
+
+#[tokio::test]
+async fn invalid_aggregate_predicates_do_not_infer_bindings() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, imdb_catalog()).await;
+    arm_editor_demands(&bowl).await;
+    insert_source(
+        &bowl,
+        "invalid-aggregate-predicate-input.dsql",
+        concat!(
+            "query InvalidAggregateInput {\n",
+            "  title(where (.kind_type | count) >= $minimum limit 1) { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(format!(
+        "diagnostics:\n{}\n\nbindings:\n{}",
+        render_diagnostic_facts(&bowl).await,
+        render_bindings(&bowl).await,
+    ));
 }
 
 #[tokio::test]

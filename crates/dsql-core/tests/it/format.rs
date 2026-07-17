@@ -46,6 +46,10 @@ fn formatter_cases_match_expected_output() {
             "query Summary { stats: title(where .production_year > 2000) | aggregate { count, earliest:min .production_year latest:max .title } }",
         ),
         (
+            "aggregate_predicates",
+            "query Popular { title(where .movie_info_idx|exists and .movie_info_idx|count>=$$minimum limit 10) { id } }",
+        ),
+        (
             "flattened_selections",
             "query Summary { users(limit 1) { id ...posts(where .title like $$title)|aggregate{post_count:count} } ...public::users|aggregate{user_count:count} }",
         ),
@@ -71,7 +75,7 @@ fn formatter_cases_match_expected_output() {
 
 #[test]
 fn formatting_is_idempotent() {
-    let source = "query Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra ...posts(where .title == $$title) | aggregate { count latest: max .created_at } } ...public::users | aggregate { user_count: count } }\nfragment Extra on users {\n  email\n}\n";
+    let source = "query Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra ...posts(where .title == $$title) | aggregate { count latest: max .created_at } } ...public::users | aggregate { user_count: count } }\nfragment Extra on users {\n  email\n}\nquery Filtered { public::users(where .posts | exists and .posts | count >= $$minimum limit 1) { id } }\n";
     let once = format(source);
     let twice = format(&once.text);
     assert_eq!(once.text, twice.text, "formatting must be idempotent");

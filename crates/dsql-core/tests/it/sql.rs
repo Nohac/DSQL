@@ -247,6 +247,36 @@ async fn aggregates_render_root_and_nested_objects_without_safety_caps() {
 }
 
 #[tokio::test]
+async fn scalar_aggregate_predicates_render_correlated_values() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "aggregate-predicate-sql.dsql",
+        concat!(
+            "query AggregatePredicateSql {\n",
+            "  title(\n",
+            "    where .movie_info_idx | exists\n",
+            "      and .movie_info_idx | count >= $minimum\n",
+            "      and $maximum >= (.movie_info_idx | count)\n",
+            "      and 0 < (.movie_info_idx | count .info)\n",
+            "      and (.movie_info_idx | count .info) > 0\n",
+            "      and (.movie_info_idx | count .info) <= (.movie_info_idx | count)\n",
+            "      and (.movie_info_idx | min .info) like \"4.%\"\n",
+            "      and (.movie_info_idx | max .info) != null\n",
+            "      and (.movie_info_idx | sum .info_type_id) > 0\n",
+            "      and (.movie_info_idx | avg .info_type_id) > 0\n",
+            "    order by id asc\n",
+            "    limit 5\n",
+            "  ) { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
 async fn flattened_objects_export_fields_without_wrapper_keys() {
     let bowl = sql_bowl(Catalog::hardcoded()).await;
     insert_source(
@@ -517,6 +547,107 @@ async fn renderer_edge_cases_execute_when_database_url_is_set() {
         .and_then(serde_json::Value::as_array)
         .expect("ordered title contains aliases");
     assert_number_desc_id_asc(aliases, "kind_id");
+}
+
+#[tokio::test]
+async fn scalar_aggregate_predicates_execute_empty_and_nonempty_relations_when_database_url_is_set()
+{
+    let Ok(database_url) = env::var("DSQL_TEST_DATABASE_URL") else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("reference database connects");
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "aggregate-predicate-live.dsql",
+        concat!(
+            "query AggregatePredicateLive {\n",
+            "  empty: title(where (.movie_info_idx | count) == 0 order by id asc limit 1) { id }\n",
+            "  null_filtered: title(\n",
+            "    where (.movie_info_idx | count) == 0\n",
+            "      and (.movie_info_idx | min .info) != \"never\"\n",
+            "    order by id asc\n",
+            "    limit 1\n",
+            "  ) { id }\n",
+            "  with_exists: title(where .movie_info_idx | exists order by id asc limit 1) { id }\n",
+            "  with_count: title(where (.movie_info_idx | count) > 0 order by id asc limit 1) { id }\n",
+            "  numeric: title(\n",
+            "    where (.movie_info_idx | sum .info_type_id) > 0\n",
+            "      and (.movie_info_idx | avg .info_type_id) > 0\n",
+            "    order by id asc\n",
+            "    limit 1\n",
+            "  ) { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+    let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+    let generated = rows
+        .collect()
+        .into_iter()
+        .map(|(_, fact)| (fact.0.output_name.clone(), fact.0.sql.clone()))
+        .collect::<HashMap<_, _>>();
+    let fetch_id = |name: &str| {
+        generated
+            .get(name)
+            .cloned()
+            .expect("aggregate predicate root generates SQL")
+    };
+
+    let empty = sqlx::query(AssertSqlSafe(fetch_id("empty")))
+        .fetch_one(&pool)
+        .await
+        .expect("empty-relation count query executes");
+    let null_filtered = sqlx::query(AssertSqlSafe(fetch_id("null_filtered")))
+        .fetch_one(&pool)
+        .await
+        .expect("empty-relation nullable aggregate query executes");
+    let with_exists = sqlx::query(AssertSqlSafe(fetch_id("with_exists")))
+        .fetch_one(&pool)
+        .await
+        .expect("exists aggregate query returns a row");
+    let with_count = sqlx::query(AssertSqlSafe(fetch_id("with_count")))
+        .fetch_one(&pool)
+        .await
+        .expect("count aggregate query returns a row");
+    let numeric = sqlx::query(AssertSqlSafe(fetch_id("numeric")))
+        .fetch_one(&pool)
+        .await
+        .expect("numeric aggregate predicates return a row");
+
+    let empty_result: serde_json::Value = empty
+        .try_get("empty")
+        .expect("empty result decodes as JSON");
+    let null_filtered_result: serde_json::Value = null_filtered
+        .try_get("null_filtered")
+        .expect("null-filtered result decodes as JSON");
+    assert_eq!(
+        empty_result.as_array().map(Vec::len),
+        Some(1),
+        "count returns zero for an empty relation"
+    );
+    assert_eq!(
+        null_filtered_result.as_array().map(Vec::len),
+        Some(0),
+        "comparison with min over an empty relation remains SQL unknown"
+    );
+    let exists_id: serde_json::Value = with_exists
+        .try_get("with_exists")
+        .expect("exists result decodes as JSON");
+    let count_id: serde_json::Value = with_count
+        .try_get("with_count")
+        .expect("count result decodes as JSON");
+    assert_eq!(
+        exists_id, count_id,
+        "exists and count select the same first row"
+    );
+    let _: serde_json::Value = numeric
+        .try_get("numeric")
+        .expect("numeric predicate result decodes as JSON");
 }
 
 fn assert_string_desc_id_asc(rows: &[serde_json::Value], primary: &str) {

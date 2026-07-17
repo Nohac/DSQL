@@ -60,11 +60,13 @@ directive_name:
 directive_namespace: Name;
 directive_member: Name;
 directive_argument: Name ':' expr;
+scalar_aggregate_expr: scoped_path '|' Name [scoped_path];
 expr:
   expr binary_operator expr @binary_expr
 | expr 'and' expr @binary_expr
 | expr 'or' expr @binary_expr
 | literal
+| ?1 scalar_aggregate_expr
 | scoped_path
 | value_variable
 | '(' expr ')'

@@ -1,0 +1,117 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+assertion_line: 276
+expression: render_sql(&bowl).await
+---
+-- title
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT('id', "title_d4d9f554"."id")
+      order by
+        "title_d4d9f554"."id" asc
+    ),
+    '[]'
+  ) as "title"
+from
+  (
+    select
+      *
+    from
+      "public"."title" as "title_d4d9f554"
+    where
+      exists (
+        select
+          1
+        from
+          "public"."movie_info_idx" as "movie_info_idx_0e8d3454"
+        where
+          "movie_info_idx_0e8d3454"."movie_id" = "title_d4d9f554"."id"
+      )
+      and (
+        select
+          COUNT(*)
+        from
+          "public"."movie_info_idx" as "movie_info_idx_ce96181b"
+        where
+          "movie_info_idx_ce96181b"."movie_id" = "title_d4d9f554"."id"
+      ) >= ($1)
+      and ($2) >= (
+        select
+          COUNT(*)
+        from
+          "public"."movie_info_idx" as "movie_info_idx_ce96181b"
+        where
+          "movie_info_idx_ce96181b"."movie_id" = "title_d4d9f554"."id"
+      )
+      and 0 < (
+        select
+          COUNT("movie_info_idx_ce96181b"."info")
+        from
+          "public"."movie_info_idx" as "movie_info_idx_ce96181b"
+        where
+          "movie_info_idx_ce96181b"."movie_id" = "title_d4d9f554"."id"
+      )
+      and (
+        select
+          COUNT("movie_info_idx_ce96181b"."info")
+        from
+          "public"."movie_info_idx" as "movie_info_idx_ce96181b"
+        where
+          "movie_info_idx_ce96181b"."movie_id" = "title_d4d9f554"."id"
+      ) > 0
+      and (
+        select
+          COUNT("movie_info_idx_ce96181b"."info")
+        from
+          "public"."movie_info_idx" as "movie_info_idx_ce96181b"
+        where
+          "movie_info_idx_ce96181b"."movie_id" = "title_d4d9f554"."id"
+      ) <= (
+        select
+          COUNT(*)
+        from
+          "public"."movie_info_idx" as "movie_info_idx_ce96181b"
+        where
+          "movie_info_idx_ce96181b"."movie_id" = "title_d4d9f554"."id"
+      )
+      and (
+        (
+          select
+            MIN("movie_info_idx_ed246d98"."info")
+          from
+            "public"."movie_info_idx" as "movie_info_idx_ed246d98"
+          where
+            "movie_info_idx_ed246d98"."movie_id" = "title_d4d9f554"."id"
+        ) like '4.%'
+      )
+      and (
+        select
+          MAX("movie_info_idx_ed3b5ab2"."info")
+        from
+          "public"."movie_info_idx" as "movie_info_idx_ed3b5ab2"
+        where
+          "movie_info_idx_ed3b5ab2"."movie_id" = "title_d4d9f554"."id"
+      ) <> (null)
+      and (
+        select
+          SUM("movie_info_idx_3323c8f7"."info_type_id")
+        from
+          "public"."movie_info_idx" as "movie_info_idx_3323c8f7"
+        where
+          "movie_info_idx_3323c8f7"."movie_id" = "title_d4d9f554"."id"
+      ) > 0
+      and (
+        select
+          AVG("movie_info_idx_db8946e4"."info_type_id")
+        from
+          "public"."movie_info_idx" as "movie_info_idx_db8946e4"
+        where
+          "movie_info_idx_db8946e4"."movie_id" = "title_d4d9f554"."id"
+      ) > 0
+    order by
+      "title_d4d9f554"."id" asc
+    limit
+      5
+  ) as "title_d4d9f554"
+-- parameters: input.title.clause.where.movie_info_idx.count.minimum, input.title.clause.where.movie_info_idx.count.maximum

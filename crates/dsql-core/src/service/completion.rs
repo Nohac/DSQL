@@ -27,7 +27,7 @@ use bowl::{
     SystemExt, View, Where, With,
 };
 
-use crate::catalog::TableId;
+use crate::catalog::{FieldCheckResult, FieldRef, TableId, TableRef};
 use crate::entities::document::ParsedFile;
 use crate::entities::field_selection::{SelectionTree, TreeViews};
 use crate::facts::Span;
@@ -100,6 +100,10 @@ pub enum CompletionSite {
     AggregateGroupKey,
     /// Naming the contextual transform immediately after `|`.
     PipeTransform,
+    /// Naming the closed aggregate function after a predicate pipe.
+    PredicateAggregateFunction,
+    /// Naming a direct related-table operand after its `.` anchor.
+    PredicateAggregateOperand,
     /// After `@`, naming a directive namespace (or the `.` shorthand).
     DirectiveName,
     /// After `@namespace.` or `@.`, naming a directive member.
@@ -310,7 +314,7 @@ async fn enrich_completion_requests(
     // resolver facts by their span: both parses see the same tokens before
     // the cursor.
     let tree = SelectionTree::collect(&views);
-    let table = match spine_owner(&spine, site) {
+    let owner_table = match spine_owner(&spine, site) {
         Some(SetOwner::Field(field_node)) => {
             let field_start = truncated_cst.span(field_node).start;
             tree.fields_by_entity
@@ -340,6 +344,19 @@ async fn enrich_completion_requests(
         }
         Some(SetOwner::Root) | None => None,
     };
+    let table = if site == CompletionSite::PredicateAggregateOperand {
+        owner_table.and_then(|table| {
+            predicate_aggregate_operand_table(
+                &truncated_cst,
+                &spine,
+                prefix,
+                table,
+                snapshot.catalog(),
+            )
+        })
+    } else {
+        owner_table
+    };
 
     // The replacement span, rebased into the request file's coordinates so
     // embedded-region answers edit the host buffer correctly.
@@ -364,6 +381,8 @@ async fn enrich_completion_requests(
             | CompletionSite::AggregateBody
             | CompletionSite::AggregateGroupKey
             | CompletionSite::PipeTransform
+            | CompletionSite::PredicateAggregateFunction
+            | CompletionSite::PredicateAggregateOperand
             | CompletionSite::DirectiveName
             | CompletionSite::DirectiveMember
             | CompletionSite::DirectiveArgument
@@ -696,6 +715,26 @@ fn classify_site(
             Rule::FragmentSpread => return CompletionSite::SpreadName,
             Rule::AggregateSet => return CompletionSite::AggregateBody,
             Rule::AggregateGroupKey => return CompletionSite::AggregateGroupKey,
+            Rule::ScalarAggregateExpr => {
+                let has_function = cst
+                    .children(*node)
+                    .any(|child| cst.match_token(child, Token::Name).is_some());
+                if !has_function {
+                    return CompletionSite::PredicateAggregateFunction;
+                }
+                let path_count = cst
+                    .children(*node)
+                    .filter(|child| cst.match_rule(*child, Rule::ScopedPath))
+                    .count();
+                if path_count > 1
+                    || matches!(
+                        last_token(cst, *node),
+                        Some(Token::Dot | Token::DotDot | Token::Tilde)
+                    )
+                {
+                    return CompletionSite::PredicateAggregateOperand;
+                }
+            }
             Rule::PipeTransform
                 if !cst
                     .children(*node)
@@ -728,6 +767,62 @@ fn classify_site(
         }
         _ => CompletionSite::Other,
     }
+}
+
+fn predicate_aggregate_operand_table(
+    cst: &crate::grammar::parser::CstData,
+    spine: &[(Rule, NodeRef)],
+    source: &str,
+    context: TableId,
+    catalog: &crate::catalog::Catalog,
+) -> Option<TableId> {
+    let aggregate = spine
+        .iter()
+        .rev()
+        .find_map(|(rule, node)| (*rule == Rule::ScalarAggregateExpr).then_some(*node))?;
+    let source_path = cst
+        .children(aggregate)
+        .find(|child| cst.match_rule(*child, Rule::ScopedPath))?;
+    if !matches!(first_non_trivia_token(cst, source_path), Some(Token::Dot)) {
+        return None;
+    }
+    let mut segments = cst
+        .children(source_path)
+        .filter(|child| cst.match_rule(*child, Rule::ScopedPathSegment));
+    let segment = segments.next()?;
+    if segments.next().is_some() {
+        return None;
+    }
+    let name = crate::entities::direct_rule(cst, segment, Rule::QualifiedName)
+        .map(|name| crate::entities::node_span(cst, name))?;
+    let selector = cst
+        .children(segment)
+        .find_map(|child| match cst.get(child) {
+            Node::Token(Token::Name, _) => {
+                let span = cst.span(child);
+                Some(&source[span.start..span.end])
+            }
+            _ => None,
+        });
+    let reference = FieldRef {
+        target: TableRef::parse(&source[name.start..name.end]),
+        selector,
+    };
+    match catalog.check_field_ref(context, reference) {
+        FieldCheckResult::Relation(relation) => Some(relation.table.id),
+        FieldCheckResult::Column(_)
+        | FieldCheckResult::NotFound
+        | FieldCheckResult::AmbiguousRelation { .. } => None,
+    }
+}
+
+fn first_non_trivia_token(cst: &crate::grammar::parser::CstData, node: NodeRef) -> Option<Token> {
+    cst.children(node).find_map(|child| match cst.get(child) {
+        Node::Token(token, _) if !matches!(token, Token::Whitespace | Token::Comment) => {
+            Some(token)
+        }
+        Node::Rule(..) | Node::Token(..) => None,
+    })
 }
 
 /// What owns the innermost open set or clause at the cursor.

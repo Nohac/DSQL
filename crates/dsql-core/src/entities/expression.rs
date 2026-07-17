@@ -10,7 +10,7 @@
 use crate::schema::AstFacts;
 use bowl::{Commands, Entity, Registrar};
 
-use crate::entities::{direct_rule, node_span, text};
+use crate::entities::{direct_rule, direct_token, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::Span;
 use crate::format::CstFormatter;
@@ -40,6 +40,14 @@ pub enum Expr {
         variable: VariableRef,
         span: Span,
     },
+    /// A closed scalar aggregate over one relation inside a predicate.
+    Aggregate {
+        source: Box<Expr>,
+        function: String,
+        function_span: Span,
+        operand: Option<Box<Expr>>,
+        span: Span,
+    },
     /// A hole left by parse-error recovery; parse diagnostics cover it.
     Error {
         span: Span,
@@ -53,6 +61,7 @@ impl Expr {
             | Expr::Literal { span, .. }
             | Expr::Path { span, .. }
             | Expr::Variable { span, .. }
+            | Expr::Aggregate { span, .. }
             | Expr::Error { span } => *span,
         }
     }
@@ -167,6 +176,7 @@ pub(crate) fn expr_child(cst: &CstData, node: NodeRef) -> Option<NodeRef> {
             Node::Rule(
                 Rule::Expr
                     | Rule::BinaryExpr
+                    | Rule::ScalarAggregateExpr
                     | Rule::Literal
                     | Rule::ScopedPath
                     | Rule::ValueVariable,
@@ -182,6 +192,7 @@ pub(crate) fn build_expr(cst: &CstData, source: &str, node: NodeRef) -> Expr {
     let span = node_span(cst, node);
     match cst.get(node) {
         Node::Rule(Rule::BinaryExpr, _) => build_binary(cst, source, node, span),
+        Node::Rule(Rule::ScalarAggregateExpr, _) => build_scalar_aggregate(cst, source, node, span),
         Node::Rule(Rule::Expr, _) => match expr_child(cst, node) {
             // `expr` wraps one alternative, or parenthesizes another expr.
             Some(inner) => build_expr(cst, source, inner),
@@ -204,6 +215,7 @@ fn build_binary(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr 
             Node::Rule(
                 Rule::Expr
                     | Rule::BinaryExpr
+                    | Rule::ScalarAggregateExpr
                     | Rule::Literal
                     | Rule::ScopedPath
                     | Rule::ValueVariable,
@@ -226,6 +238,25 @@ fn build_binary(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr 
         // Error recovery produced a partial binary expression; keep the one
         // operand we have so checks can still see into it.
         (Some(only), None, _) => build_expr(cst, source, only),
+        _ => Expr::Error { span },
+    }
+}
+
+fn build_scalar_aggregate(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr {
+    let mut paths = cst
+        .children(node)
+        .filter(|child| cst.match_rule(*child, Rule::ScopedPath));
+    let source_path = paths.next();
+    let operand = paths.next();
+    let function_span = direct_token(cst, node, Token::Name);
+    match (source_path, function_span) {
+        (Some(source_path), Some(function_span)) => Expr::Aggregate {
+            source: Box::new(build_expr(cst, source, source_path)),
+            function: text(source, function_span).to_string(),
+            function_span,
+            operand: operand.map(|operand| Box::new(build_expr(cst, source, operand))),
+            span,
+        },
         _ => Expr::Error { span },
     }
 }
@@ -421,6 +452,18 @@ impl std::fmt::Display for Expr {
                 Ok(())
             }
             Expr::Variable { variable, .. } => f.write_str(&render_variable(variable)),
+            Expr::Aggregate {
+                source,
+                function,
+                operand,
+                ..
+            } => {
+                write!(f, "{source} | {function}")?;
+                if let Some(operand) = operand {
+                    write!(f, " {operand}")?;
+                }
+                Ok(())
+            }
             Expr::Error { .. } => f.write_str("<error>"),
         }
     }

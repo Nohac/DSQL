@@ -6,6 +6,7 @@ use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::entities::aggregate::{AggregateMode, ResolvedAggregate};
 use dsql_core::facts::arm_editor_demands;
 use dsql_core::language_bowl;
+use dsql_core::resolution::ResolvedClause;
 use dsql_core::source::insert_source;
 
 use crate::render_diagnostic_facts;
@@ -61,6 +62,37 @@ async fn render_resolved_aggregates(bowl: &Bowl) -> String {
             format!(
                 "table={:?} {mode} valid={} keys=[{group_keys}] fields=[{fields}]",
                 aggregate.table,
+                aggregate.is_valid(),
+            )
+        })
+        .collect();
+    lines.sort();
+    lines.join("\n")
+}
+
+async fn render_predicate_aggregates(bowl: &Bowl) -> String {
+    let clauses = bowl.scoop::<Query<(Entity, &ResolvedClause)>>().await;
+    let mut lines: Vec<String> = clauses
+        .collect()
+        .into_iter()
+        .flat_map(|(_, clause)| clause.aggregates.iter())
+        .map(|aggregate| {
+            let relation = aggregate
+                .relation
+                .as_ref()
+                .map_or("<invalid>", |relation| relation.display.as_str());
+            let function = aggregate
+                .function
+                .map_or("<invalid>", |function| function.label());
+            let data_type = aggregate
+                .data_type
+                .map_or("<invalid>", |data_type| data_type.as_str());
+            format!(
+                "{}..{} {relation} | {function} operand={:?} -> {data_type} nullable={} valid={}",
+                aggregate.span.start,
+                aggregate.span.end,
+                aggregate.operand,
+                aggregate.nullable,
                 aggregate.is_valid(),
             )
         })
@@ -146,6 +178,66 @@ async fn invalid_aggregate_contracts_report_typed_diagnostics() {
             "  public::posts(limit 1) {\n",
             "    singular: users | aggregate { count }\n",
             "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn scalar_predicate_aggregates_share_selection_function_semantics() {
+    let bowl = checked_bowl(crate::imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "aggregate-predicates.dsql",
+        concat!(
+            "query AggregatePredicates {\n",
+            "  title(\n",
+            "    where .movie_info_idx | exists\n",
+            "      and .movie_info_idx | count >= $$minimum\n",
+            "      and (.movie_info_idx | count .info) >= 1\n",
+            "      and (.movie_info_idx | min .info) like \"4.%\"\n",
+            "      and (.movie_info_idx | max .info) != null\n",
+            "      and (.movie_info_idx | sum .info_type_id) > 0\n",
+            "      and (.movie_info_idx | avg .info_type_id) > 0\n",
+            "      and (.aka_title->movie_id | count) >= 0\n",
+            "    limit 1\n",
+            "  ) { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
+    insta::assert_snapshot!(render_predicate_aggregates(&bowl).await);
+}
+
+#[tokio::test]
+async fn invalid_scalar_predicate_aggregates_report_typed_diagnostics() {
+    let bowl = checked_bowl(crate::imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "invalid-aggregate-predicates.dsql",
+        concat!(
+            "query InvalidPredicates @.include_if(if: .movie_info_idx | exists) {\n",
+            "  title(\n",
+            "    where ..movie_info_idx | count > 0\n",
+            "      and .movie_info_idx.title | count > 0\n",
+            "      and .kind_type | count > 0\n",
+            "      and .id | count > 0\n",
+            "      and .movie_info_idx | mystery > 0\n",
+            "      and .movie_info_idx | min > 0\n",
+            "      and .movie_info_idx | exists .info\n",
+            "      and .movie_info_idx | sum .info > 0\n",
+            "      and .movie_info_idx | exists > 1\n",
+            "      and .movie_info_idx | count\n",
+            "      and .movie_info_idx | count $$operator[==, >] 1\n",
+            "      and .movie_info_idx.info == (.aka_title->movie_id | count)\n",
+            "      and (.aka_title->movie_id | count) == .movie_info_idx.info\n",
+            "    limit .movie_info_idx | count\n",
+            "  ) { id }\n",
             "}\n",
         ),
     )

@@ -1,0 +1,13 @@
+---
+source: crates/dsql-core/tests/it/aggregates.rs
+assertion_line: 214
+expression: render_predicate_aggregates(&bowl).await
+---
+130..159 movie_info_idx | count operand=Some(ColumnId(71)) -> int nullable=false valid=true
+177..204 movie_info_idx | min operand=Some(ColumnId(71)) -> text nullable=true valid=true
+228..255 movie_info_idx | max operand=Some(ColumnId(71)) -> text nullable=true valid=true
+276..311 movie_info_idx | sum operand=Some(ColumnId(70)) -> numeric nullable=true valid=true
+328..363 movie_info_idx | avg operand=Some(ColumnId(70)) -> numeric nullable=true valid=true
+380..408 aka_title->movie_id | count operand=None -> int nullable=false valid=true
+47..71 movie_info_idx | exists operand=None -> boolean nullable=false valid=true
+82..105 movie_info_idx | count operand=None -> int nullable=false valid=true

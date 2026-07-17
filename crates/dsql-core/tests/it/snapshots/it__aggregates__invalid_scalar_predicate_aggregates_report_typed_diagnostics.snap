@@ -1,0 +1,22 @@
+---
+source: crates/dsql-core/tests/it/aggregates.rs
+assertion_line: 246
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[127..148]: aggregate predicate source `.movie_info_idx.title` must be a direct `.`-anchored collection relation
+Error[171..181]: aggregate predicate source `.kind_type` must be a direct `.`-anchored collection relation
+Error[204..207]: aggregate predicate source `.id` must be a direct `.`-anchored collection relation
+Error[248..255]: unknown aggregate function `mystery`
+Error[25..36]: directive `@dsql.include_if` cannot be used on a query
+Error[25..36]: directive `@dsql.include_if` is recognized but its semantics are not implemented yet
+Error[288..291]: aggregate function `min` requires a direct column operand
+Error[331..336]: aggregate function `exists` does not accept an operand
+Error[369..374]: aggregate function `sum` does not support `text` operands
+Error[37..65]: directive `@dsql.include_if` argument `if` expects a boolean expression
+Error[389..413]: aggregate predicate of type boolean does not support operator `>`
+Error[428..451]: aggregate function `count` must be compared to a value; only `exists` is a predicate by itself
+Error[486..503]: operator variables are not supported for aggregate predicates
+Error[516..536]: aggregate comparisons only support direct `.`- or `~`-anchored scalar path operands
+Error[615..635]: aggregate comparisons only support direct `.`- or `~`-anchored scalar path operands
+Error[646..669]: clause `limit` does not accept aggregate predicate expressions
+Error[88..104]: aggregate predicate source `..movie_info_idx` must be a direct `.`-anchored collection relation

@@ -45,6 +45,7 @@ fn lower_rule(
         // contain them (expression::build_expr); the claim is a no-op.
         Rule::Expr
         | Rule::BinaryExpr
+        | Rule::ScalarAggregateExpr
         | Rule::Literal
         | Rule::BinaryOperator
         | Rule::ComparisonOperator
@@ -186,6 +187,7 @@ pub fn format_rule(
         Rule::ValueVariable | Rule::OperatorVariable => Variable::format(formatter, node),
         Rule::Expr
         | Rule::BinaryExpr
+        | Rule::ScalarAggregateExpr
         | Rule::Literal
         | Rule::BinaryOperator
         | Rule::ComparisonOperator

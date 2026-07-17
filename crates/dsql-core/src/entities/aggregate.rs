@@ -100,6 +100,25 @@ pub struct ResolvedAggregateField {
     pub nullable: bool,
 }
 
+/// One aggregate scalar after contextual function and operand resolution.
+/// Selection aggregates and predicate aggregates share this value so their
+/// types, empty-input behavior, and provider allowlists cannot drift.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub(crate) struct ResolvedAggregateValue {
+    /// Contextual function name, when recognized.
+    pub(crate) function: Option<AggregateFunction>,
+    /// Direct operand column, when one resolved.
+    pub(crate) operand: Option<ColumnId>,
+    /// Whole operand path span.
+    pub(crate) operand_span: Option<Span>,
+    /// Terminal operand-name span used by editor services.
+    pub(crate) operand_name_span: Option<Span>,
+    /// Logical scalar result type.
+    pub(crate) data_type: Option<DataType>,
+    /// Whether this value may be SQL `NULL`.
+    pub(crate) nullable: bool,
+}
+
 /// One checked direct scalar group key.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ResolvedAggregateGroupKey {
@@ -147,6 +166,12 @@ pub enum AggregateProblemKind {
     },
     SourceMustBeCollection {
         source: String,
+    },
+    PredicateSourceMustBeDirectCollection {
+        source: String,
+    },
+    PredicateAggregateMustBeBoolean {
+        function: AggregateFunction,
     },
     EmptyBody,
     InvalidGroupKey {
@@ -509,7 +534,72 @@ fn resolve_field(
     field: &AggregateFieldSyntax,
     problems: &mut Vec<AggregateProblem>,
 ) -> ResolvedAggregateField {
-    let function = match field.function.as_str() {
+    let value = resolve_aggregate_value(
+        catalog,
+        table,
+        mode,
+        &field.function,
+        field.function_span,
+        field.operand.as_ref(),
+        field.span,
+        problems,
+    );
+    let output_span = field.alias_span.unwrap_or(field.function_span);
+    let mut resolved = ResolvedAggregateField {
+        function: value.function,
+        function_span: field.function_span,
+        output_name: field.alias.clone(),
+        output_span,
+        operand: value.operand,
+        operand_span: value.operand_span,
+        operand_name_span: value.operand_name_span,
+        data_type: value.data_type,
+        nullable: value.nullable,
+    };
+    let Some(function) = value.function else {
+        return resolved;
+    };
+
+    match function {
+        AggregateFunction::Count => {
+            if field.operand.is_some() {
+                require_alias(field, function, problems);
+            } else {
+                resolved.output_name = field.alias.clone().or_else(|| Some("count".to_string()));
+            }
+        }
+        AggregateFunction::Exists => {
+            resolved.output_name = field.alias.clone().or_else(|| Some("exists".to_string()));
+        }
+        AggregateFunction::Min
+        | AggregateFunction::Max
+        | AggregateFunction::Sum
+        | AggregateFunction::Avg => {
+            if field.operand.is_some() {
+                require_alias(field, function, problems);
+            }
+        }
+    }
+    resolved
+}
+
+/// Resolves one aggregate scalar independently of its output alias or
+/// placement. Callers add shape-specific rules after this shared contract.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate value resolution needs syntax spans and catalog context"
+)]
+pub(crate) fn resolve_aggregate_value(
+    catalog: &Catalog,
+    table: TableId,
+    mode: AggregateMode,
+    function_name: &str,
+    function_span: Span,
+    operand: Option<&Expr>,
+    value_span: Span,
+    problems: &mut Vec<AggregateProblem>,
+) -> ResolvedAggregateValue {
+    let function = match function_name {
         "count" => Some(AggregateFunction::Count),
         "exists" => Some(AggregateFunction::Exists),
         "min" => Some(AggregateFunction::Min),
@@ -518,23 +608,19 @@ fn resolve_field(
         "avg" => Some(AggregateFunction::Avg),
         _ => {
             problems.push(AggregateProblem {
-                span: field.function_span,
+                span: function_span,
                 kind: AggregateProblemKind::UnknownFunction {
-                    name: field.function.clone(),
+                    name: function_name.to_string(),
                 },
             });
             None
         }
     };
-    let output_span = field.alias_span.unwrap_or(field.function_span);
-    let mut resolved = ResolvedAggregateField {
+    let mut resolved = ResolvedAggregateValue {
         function,
-        function_span: field.function_span,
-        output_name: field.alias.clone(),
-        output_span,
         operand: None,
-        operand_span: field.operand.as_ref().map(Expr::span),
-        operand_name_span: field.operand.as_ref().and_then(|operand| match operand {
+        operand_span: operand.map(Expr::span),
+        operand_name_span: operand.and_then(|operand| match operand {
             Expr::Path { segments, .. } => segments.last().map(|segment| segment.span),
             _ => None,
         }),
@@ -547,23 +633,16 @@ fn resolve_field(
 
     match function {
         AggregateFunction::Count => {
-            resolved.data_type = Some(DataType::Int);
-            if let Some(operand) = &field.operand {
-                resolve_operand(catalog, table, operand, &mut resolved, problems);
-                // The operand controls which rows count, not the count's
-                // public result type.
-                resolved.data_type = Some(DataType::Int);
-                require_alias(field, function, problems);
-            } else {
-                resolved.output_name = field.alias.clone().or_else(|| Some("count".to_string()));
+            if let Some(operand) = operand {
+                resolve_value_operand(catalog, table, operand, &mut resolved, problems);
             }
+            resolved.data_type = Some(DataType::Int);
         }
         AggregateFunction::Exists => {
             resolved.data_type = Some(DataType::Boolean);
-            resolved.output_name = field.alias.clone().or_else(|| Some("exists".to_string()));
-            if field.operand.is_some() {
+            if operand.is_some() {
                 problems.push(AggregateProblem {
-                    span: field.operand.as_ref().map_or(field.span, Expr::span),
+                    span: operand.map_or(value_span, Expr::span),
                     kind: AggregateProblemKind::UnexpectedOperand { function },
                 });
             }
@@ -572,26 +651,23 @@ fn resolve_field(
         | AggregateFunction::Max
         | AggregateFunction::Sum
         | AggregateFunction::Avg => {
-            let Some(operand) = &field.operand else {
+            let Some(operand) = operand else {
                 problems.push(AggregateProblem {
-                    span: field.function_span,
+                    span: function_span,
                     kind: AggregateProblemKind::MissingOperand { function },
                 });
                 return resolved;
             };
-            require_alias(field, function, problems);
-            resolve_operand(catalog, table, operand, &mut resolved, problems);
+            resolve_value_operand(catalog, table, operand, &mut resolved, problems);
             let supported = resolved.data_type.is_some_and(|data_type| match function {
                 AggregateFunction::Min | AggregateFunction::Max => matches!(
                     data_type,
                     DataType::Int | DataType::Text | DataType::Timestamptz
                 ),
-                AggregateFunction::Sum | AggregateFunction::Avg => {
-                    matches!(
-                        data_type,
-                        DataType::Int | DataType::Numeric | DataType::Float
-                    )
-                }
+                AggregateFunction::Sum | AggregateFunction::Avg => matches!(
+                    data_type,
+                    DataType::Int | DataType::Numeric | DataType::Float
+                ),
                 AggregateFunction::Count | AggregateFunction::Exists => false,
             });
             if let Some(data_type) = resolved.data_type
@@ -612,8 +688,6 @@ fn resolve_field(
                     other => other,
                 });
             }
-            // An ungrouped value aggregate is null on an empty source even
-            // when the operand column itself is not null.
             resolved.nullable = mode == AggregateMode::Ungrouped
                 || resolved
                     .operand
@@ -637,11 +711,11 @@ fn require_alias(
     }
 }
 
-fn resolve_operand(
+fn resolve_value_operand(
     catalog: &Catalog,
     table: TableId,
     operand: &Expr,
-    resolved: &mut ResolvedAggregateField,
+    resolved: &mut ResolvedAggregateValue,
     problems: &mut Vec<AggregateProblem>,
 ) {
     let Expr::Path {
@@ -855,6 +929,8 @@ async fn complete_aggregate_positions(
         CompletionSite::AggregateBody
             | CompletionSite::AggregateGroupKey
             | CompletionSite::PipeTransform
+            | CompletionSite::PredicateAggregateFunction
+            | CompletionSite::PredicateAggregateOperand
     ) {
         return;
     }
@@ -866,7 +942,11 @@ async fn complete_aggregate_positions(
             detail: Some("selection transform".to_string()),
             insert_text: None,
         }]
-    } else if context.site == CompletionSite::AggregateGroupKey || context.spread_dots > 0 {
+    } else if matches!(
+        context.site,
+        CompletionSite::AggregateGroupKey | CompletionSite::PredicateAggregateOperand
+    ) || context.spread_dots > 0
+    {
         context.table.map_or_else(Vec::new, |table| {
             snapshot
                 .catalog()
@@ -903,10 +983,13 @@ async fn complete_aggregate_positions(
 }
 
 impl AggregateProblemKind {
-    fn code(&self) -> DiagnosticCode {
+    pub(crate) fn code(&self) -> DiagnosticCode {
         match self {
             Self::UnknownTransform { .. } => DiagnosticCode::UnknownTransform,
-            Self::SourceMustBeCollection { .. } => DiagnosticCode::AggregateSourceCardinality,
+            Self::SourceMustBeCollection { .. }
+            | Self::PredicateSourceMustBeDirectCollection { .. } => {
+                DiagnosticCode::AggregateSourceCardinality
+            }
             Self::EmptyBody => DiagnosticCode::EmptyAggregate,
             Self::DuplicateOutputKey { .. } => DiagnosticCode::DuplicateOutputKey,
             Self::OutputKeyTooLong { .. } => DiagnosticCode::OutputKeyTooLong,
@@ -914,6 +997,7 @@ impl AggregateProblemKind {
             | Self::InvalidGroupKey { .. }
             | Self::GroupedCannotFlatten
             | Self::ExistsInGroupedAggregate
+            | Self::PredicateAggregateMustBeBoolean { .. }
             | Self::MissingOperand { .. }
             | Self::UnexpectedOperand { .. }
             | Self::AliasRequired { .. }
@@ -922,11 +1006,18 @@ impl AggregateProblemKind {
         }
     }
 
-    fn message(&self) -> String {
+    pub(crate) fn message(&self) -> String {
         match self {
             Self::UnknownTransform { name } => format!("unknown selection transform `{name}`"),
             Self::SourceMustBeCollection { source } => format!(
                 "aggregate source `{source}` must be a collection; singular and scalar sources cannot be aggregated"
+            ),
+            Self::PredicateSourceMustBeDirectCollection { source } => format!(
+                "aggregate predicate source `{source}` must be a direct `.`-anchored collection relation"
+            ),
+            Self::PredicateAggregateMustBeBoolean { function } => format!(
+                "aggregate function `{}` must be compared to a value; only `exists` is a predicate by itself",
+                function.label()
             ),
             Self::EmptyBody => "aggregate body must contain at least one field".to_string(),
             Self::InvalidGroupKey { written } => format!(

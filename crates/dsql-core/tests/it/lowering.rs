@@ -78,7 +78,7 @@ async fn clauses_lower_with_expression_trees() {
     insert_source(
             &bowl,
             "expressions.dsql",
-            "query Exprs {\n  users(\n    where .tenant_id == $tenant and (.age >= $$min or .name like \"a%\")\n    order by created_at desc, id\n    limit $$max\n    offset 10\n  ) {\n    id\n  }\n}\n",
+            "query Exprs {\n  users(\n    where .tenant_id == $tenant and (.age >= $$min or .name like \"a%\")\n    order by created_at desc, id\n    limit $$max\n    offset 10\n  ) {\n    id\n  }\n}\nquery Aggregates {\n  users(where .posts | exists and .posts | count >= $$minimum limit 10) {\n    id\n  }\n}\n",
         )
         .await;
 

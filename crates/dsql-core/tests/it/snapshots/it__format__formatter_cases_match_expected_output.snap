@@ -1,5 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/format.rs
+assertion_line: 73
 expression: output
 ---
 selection_boundaries
@@ -87,6 +88,18 @@ query Summary {
     count
     earliest: min .production_year
     latest: max .title
+  }
+}
+
+---
+
+aggregate_predicates
+query Popular {
+  title(where .movie_info_idx | exists
+    and .movie_info_idx | count >= $$minimum
+    limit 10
+  ) {
+    id
   }
 }
 

@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+assertion_line: 155
+expression: render_bindings(&bowl).await
+---
+input.title.clause.where.movie_info_idx.count.minimum Structured WhereValue Int Some("minimum") operators=[] enum=[]
+params.earliest TopLevel WhereValue Text Some("earliest") operators=[] enum=[]
+input.title.clause.where.movie_info_idx.sum.info_type_id.total Structured WhereValue Numeric Some("total") operators=[] enum=[]

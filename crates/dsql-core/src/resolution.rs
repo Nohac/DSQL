@@ -23,8 +23,12 @@ use crate::schema::dsql_schema;
 use bowl::{Commands, Component, DerivedFrom, Entity, In, Query, Registrar, Where};
 
 use crate::catalog::{
-    CatalogSnapshot, ColumnId, FieldCheckResult, FieldRef, ForeignKeyId, TableId, TableKey,
-    TableRef, TableResolution,
+    CatalogSnapshot, ColumnId, DataType, FieldCheckResult, FieldRef, ForeignKeyId,
+    RelationCardinality, TableId, TableKey, TableRef, TableResolution,
+};
+use crate::entities::aggregate::{
+    AggregateFunction, AggregateMode, AggregateProblem, AggregateProblemKind,
+    resolve_aggregate_value,
 };
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
@@ -140,6 +144,8 @@ pub struct ResolvedClause {
     /// Every `Expr::Path` in the clause, in expression order, keyed by
     /// its span.
     pub paths: Vec<ResolvedPath>,
+    /// Every scalar relation aggregate in expression order, keyed by span.
+    pub aggregates: Vec<ResolvedPredicateAggregate>,
     /// Order-by items, in written order.
     pub order_items: Vec<ResolvedOrderItem>,
 }
@@ -153,6 +159,59 @@ impl ResolvedClause {
     /// The resolution of the order item at `span`.
     pub fn order_item_at(&self, span: Span) -> Option<&ResolvedOrderItem> {
         self.order_items.iter().find(|item| item.span == span)
+    }
+
+    /// The scalar predicate aggregate at `span`.
+    pub fn aggregate_at(&self, span: Span) -> Option<&ResolvedPredicateAggregate> {
+        self.aggregates
+            .iter()
+            .find(|aggregate| aggregate.span == span)
+    }
+}
+
+/// One direct relation aggregate resolved inside a clause expression.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ResolvedPredicateAggregate {
+    /// Span of the complete scalar aggregate expression.
+    pub span: Span,
+    /// Contextual function name span.
+    pub function_span: Span,
+    /// Terminal operand name, when an operand was written.
+    pub operand_name_span: Option<Span>,
+    /// Direct relation source, when it resolved.
+    pub relation: Option<ResolvedRelationStep>,
+    /// Aggregate function, when recognized.
+    pub function: Option<AggregateFunction>,
+    /// Direct related-table operand, when one resolved.
+    pub operand: Option<ColumnId>,
+    /// Logical scalar result type.
+    pub data_type: Option<DataType>,
+    /// Whether the aggregate can be SQL `NULL` on this source shape.
+    pub nullable: bool,
+    /// Stable typed failures found while resolving the expression.
+    pub problems: Vec<AggregateProblem>,
+}
+
+impl ResolvedPredicateAggregate {
+    /// Whether planning can safely consume this aggregate value.
+    pub fn is_valid(&self) -> bool {
+        self.problems.is_empty()
+            && self.relation.is_some()
+            && self.function.is_some()
+            && self.data_type.is_some()
+    }
+
+    /// Stable inferred variable-path parts for this scalar value.
+    pub fn display_path(&self, catalog: &crate::catalog::Catalog) -> Option<Vec<String>> {
+        let relation = self.relation.as_ref()?;
+        let function = self.function?;
+        let mut parts = vec![relation.display.clone(), function.label().to_string()];
+        if let Some(operand) = self.operand
+            && let Some(column) = catalog.column_by_id(operand)
+        {
+            parts.push(column.name.clone());
+        }
+        Some(parts)
     }
 }
 
@@ -471,10 +530,13 @@ async fn resolve_clauses(
     };
 
     let mut paths = Vec::new();
+    let mut aggregates = Vec::new();
     let mut order_items = Vec::new();
     if let Some(context) = context {
         match clause {
-            ClauseFact::Where { expr } => collect_paths(catalog, context, expr, &mut paths),
+            ClauseFact::Where { expr } => {
+                collect_clause_values(catalog, context, expr, &mut paths, &mut aggregates)
+            }
             ClauseFact::OrderBy { items } => {
                 order_items.extend(items.iter().map(|item| {
                     let reference = FieldRef {
@@ -492,7 +554,7 @@ async fn resolve_clauses(
                 }));
             }
             ClauseFact::Limit { expr } | ClauseFact::Offset { expr } => {
-                collect_paths(catalog, context, expr, &mut paths);
+                collect_clause_values(catalog, context, expr, &mut paths, &mut aggregates);
             }
         }
     }
@@ -504,6 +566,7 @@ async fn resolve_clauses(
             clause: clause_entity,
             context,
             paths,
+            aggregates,
             order_items,
         },
     ));
@@ -511,22 +574,133 @@ async fn resolve_clauses(
 
 /// Collects every `Expr::Path` of one clause expression, resolved in
 /// expression order.
-fn collect_paths(
+fn collect_clause_values(
     catalog: &crate::catalog::Catalog,
     context: ClauseContext,
     expr: &Expr,
     paths: &mut Vec<ResolvedPath>,
+    aggregates: &mut Vec<ResolvedPredicateAggregate>,
 ) {
     match expr {
         Expr::Binary { lhs, rhs, .. } => {
-            collect_paths(catalog, context, lhs, paths);
-            collect_paths(catalog, context, rhs, paths);
+            collect_clause_values(catalog, context, lhs, paths, aggregates);
+            collect_clause_values(catalog, context, rhs, paths, aggregates);
         }
         Expr::Path {
             anchor, segments, ..
         } => paths.push(resolve_path(catalog, context, expr, anchor, segments)),
+        Expr::Aggregate { .. } => {
+            aggregates.push(resolve_predicate_aggregate(catalog, context, expr));
+        }
         Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
     }
+}
+
+fn resolve_predicate_aggregate(
+    catalog: &crate::catalog::Catalog,
+    context: ClauseContext,
+    expr: &Expr,
+) -> ResolvedPredicateAggregate {
+    let Expr::Aggregate {
+        source,
+        function,
+        function_span,
+        operand,
+        span,
+    } = expr
+    else {
+        return ResolvedPredicateAggregate {
+            span: expr.span(),
+            function_span: expr.span(),
+            operand_name_span: None,
+            relation: None,
+            function: None,
+            operand: None,
+            data_type: None,
+            nullable: false,
+            problems: Vec::new(),
+        };
+    };
+    let mut problems = Vec::new();
+    let relation = resolve_predicate_relation(catalog, context, source, &mut problems);
+    let value = relation.as_ref().map(|relation| {
+        resolve_aggregate_value(
+            catalog,
+            relation.table,
+            AggregateMode::Ungrouped,
+            function,
+            *function_span,
+            operand.as_deref(),
+            *span,
+            &mut problems,
+        )
+    });
+    ResolvedPredicateAggregate {
+        span: *span,
+        function_span: *function_span,
+        operand_name_span: value.as_ref().and_then(|value| value.operand_name_span),
+        relation,
+        function: value.as_ref().and_then(|value| value.function),
+        operand: value.as_ref().and_then(|value| value.operand),
+        data_type: value.as_ref().and_then(|value| value.data_type),
+        nullable: value.is_some_and(|value| value.nullable),
+        problems,
+    }
+}
+
+fn resolve_predicate_relation(
+    catalog: &crate::catalog::Catalog,
+    context: ClauseContext,
+    source: &Expr,
+    problems: &mut Vec<AggregateProblem>,
+) -> Option<ResolvedRelationStep> {
+    let Expr::Path {
+        anchor: PathAnchor::Current,
+        segments,
+        ..
+    } = source
+    else {
+        push_invalid_predicate_source(source, problems);
+        return None;
+    };
+    let [segment] = segments.as_slice() else {
+        push_invalid_predicate_source(source, problems);
+        return None;
+    };
+    let reference = FieldRef {
+        target: TableRef::parse(&segment.name),
+        selector: segment.relation_path.as_deref(),
+    };
+    let FieldCheckResult::Relation(relation) = catalog.check_field_ref(context.table, reference)
+    else {
+        push_invalid_predicate_source(source, problems);
+        return None;
+    };
+    let collection = catalog
+        .foreign_key_by_id(relation.foreign_key.id)
+        .and_then(|foreign_key| {
+            catalog.relation_cardinality(context.table, relation.table.id, foreign_key)
+        })
+        == Some(RelationCardinality::Collection);
+    if !collection {
+        push_invalid_predicate_source(source, problems);
+    }
+    Some(ResolvedRelationStep {
+        span: segment.span,
+        written: segment.name.clone(),
+        display: reference.display_text(),
+        foreign_key: relation.foreign_key.id,
+        table: relation.table.id,
+    })
+}
+
+fn push_invalid_predicate_source(source: &Expr, problems: &mut Vec<AggregateProblem>) {
+    problems.push(AggregateProblem {
+        span: source.span(),
+        kind: AggregateProblemKind::PredicateSourceMustBeDirectCollection {
+            source: source.to_string(),
+        },
+    });
 }
 
 /// One path against the clause context: relation steps first, then the

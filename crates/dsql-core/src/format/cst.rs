@@ -338,6 +338,7 @@ impl<'a> CstFormatter<'a> {
         match self.rule(node) {
             Some(Rule::BinaryExpr) => self.binary_expr(node),
             Some(Rule::Literal) => self.literal(node),
+            Some(Rule::ScalarAggregateExpr) => self.scalar_aggregate_expr(node),
             Some(Rule::Expr) => {
                 let grouped = self.is_grouped_expr(node);
                 if grouped {
@@ -345,6 +346,8 @@ impl<'a> CstFormatter<'a> {
                 }
                 if let Some(binary) = self.direct_rule(node, Rule::BinaryExpr) {
                     self.binary_expr(binary);
+                } else if let Some(aggregate) = self.direct_rule(node, Rule::ScalarAggregateExpr) {
+                    self.scalar_aggregate_expr(aggregate);
                 } else if let Some(literal) = self.direct_rule(node, Rule::Literal) {
                     self.literal(literal);
                 } else if let Some(path) = self.direct_rule(node, Rule::ScopedPath) {
@@ -367,6 +370,25 @@ impl<'a> CstFormatter<'a> {
             }
             Some(Rule::ScopedPath) | Some(Rule::ValueVariable) => self.write_node_text(node),
             _ => {}
+        }
+    }
+
+    fn scalar_aggregate_expr(&mut self, node: NodeRef) {
+        let paths = self.direct_rules(node, Rule::ScopedPath);
+        if let Some(source) = paths.first().copied() {
+            self.write_node_text(source);
+        }
+        self.out.push_str(" | ");
+        if let Some(function) = self
+            .children(node)
+            .into_iter()
+            .find(|child| self.token(*child) == Some(Token::Name))
+        {
+            self.write_node_text(function);
+        }
+        if let Some(operand) = paths.get(1).copied() {
+            self.out.push(' ');
+            self.write_node_text(operand);
         }
     }
 

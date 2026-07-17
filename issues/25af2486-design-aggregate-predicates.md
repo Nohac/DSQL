@@ -1,6 +1,6 @@
 # Design aggregate predicates
 
-**ID:** 25af2486 | **Status:** Open | **Created:** 2026-07-17T16:24:34+02:00
+**ID:** 25af2486 | **Status:** Done | **Created:** 2026-07-17T16:24:34+02:00
 
 Implement the scalar relation-aggregate predicates reserved by the aggregate
 specification:
@@ -19,3 +19,9 @@ Keep the first increment narrow: no clauses on the relation path, no multi-step
 paths, and no general pipe blocks inside clauses. Add parser, resolution,
 planning, SQL, variable-inference, diagnostic, and service coverage without
 turning pipes into a general predicate pipeline.
+
+Resolved with a closed scalar-aggregate expression over direct collection
+relations. Predicate aggregates share selection aggregate function and operand
+typing, lower to correlated PostgreSQL scalar subqueries or `EXISTS`, preserve
+empty-input NULL semantics, infer typed variables, and participate in editor
+hover, tokens, and completion. Broader predicate pipelines remain out of scope.

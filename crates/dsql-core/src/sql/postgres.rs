@@ -605,8 +605,16 @@ fn aggregate_expression(
     catalog: &Catalog,
     context: &SelectionContext,
 ) -> Result<Expr, SqlGenerationError> {
-    let operand = field
-        .operand
+    aggregate_value_expression(field.function, field.operand, catalog, context)
+}
+
+fn aggregate_value_expression(
+    function: AggregateFunction,
+    operand: Option<ColumnId>,
+    catalog: &Catalog,
+    context: &SelectionContext,
+) -> Result<Expr, SqlGenerationError> {
+    let operand = operand
         .map(|column_id| {
             let column = column(catalog, column_id)?;
             Ok(Expr::col((
@@ -615,7 +623,7 @@ fn aggregate_expression(
             )))
         })
         .transpose()?;
-    Ok(match field.function {
+    Ok(match function {
         AggregateFunction::Count => {
             Func::count(operand.unwrap_or_else(|| Expr::col(Asterisk))).into()
         }
@@ -761,11 +769,9 @@ fn filter_expr(
         },
         FilterExpr::Binary { left, op, right } => {
             if *op == FilterOp::Like {
-                return Ok(Expr::cust(format!(
-                    "{} like {}",
-                    filter_expr_fragment(catalog, context, root, outer_current, left, template)?,
-                    filter_expr_fragment(catalog, context, root, outer_current, right, template)?
-                )));
+                let left = filter_expr(catalog, context, root, outer_current, left, template)?;
+                let right = filter_expr(catalog, context, root, outer_current, right, template)?;
+                return Ok(Expr::cust_with_exprs("$1 like $2", [left, right]));
             }
             let left = filter_expr(catalog, context, root, outer_current, left, template)?;
             let right = filter_expr(catalog, context, root, outer_current, right, template)?;
@@ -832,6 +838,47 @@ fn filter_expr(
             )?);
             Expr::exists(query.to_owned())
         }
+        FilterExpr::RelationAggregate {
+            foreign_key: foreign_key_id,
+            table: table_id,
+            function,
+            operand,
+        } => {
+            let related_table = table(catalog, *table_id)?;
+            let foreign_key = foreign_key(catalog, *foreign_key_id)?;
+            let aggregate_context = context_for(
+                related_table,
+                &related_table.name,
+                &[table_label(related_table), function.label().to_string()],
+            );
+            let mut query = Query::select();
+            query.from_as(
+                (
+                    Alias::new(&related_table.schema),
+                    Alias::new(&related_table.name),
+                ),
+                Alias::new(&aggregate_context.table_alias),
+            );
+            query.cond_where(relation_condition(
+                catalog,
+                context,
+                &aggregate_context,
+                foreign_key,
+                *table_id,
+            )?);
+            if *function == AggregateFunction::Exists {
+                query.expr(Expr::value(1));
+                Expr::exists(query.to_owned())
+            } else {
+                query.expr(aggregate_value_expression(
+                    *function,
+                    *operand,
+                    catalog,
+                    &aggregate_context,
+                )?);
+                Expr::SubQuery(None, Box::new(query.to_owned().into()))
+            }
+        }
     })
 }
 
@@ -863,7 +910,8 @@ fn filter_expr_fragment(
         FilterExpr::Literal(FilterLiteral::Null) => "null".to_string(),
         FilterExpr::Binary { .. }
         | FilterExpr::VariantBinary { .. }
-        | FilterExpr::Exists { .. } => {
+        | FilterExpr::Exists { .. }
+        | FilterExpr::RelationAggregate { .. } => {
             return Err(SqlGenerationError::UnsupportedFilterFragment);
         }
     })

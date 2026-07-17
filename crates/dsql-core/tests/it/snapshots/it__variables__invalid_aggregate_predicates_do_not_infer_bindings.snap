@@ -1,0 +1,9 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+assertion_line: 174
+expression: "format!(\"diagnostics:\\n{}\\n\\nbindings:\\n{}\",\nrender_diagnostic_facts(&bowl).await, render_bindings(&bowl).await,)"
+---
+diagnostics:
+Error[45..55]: aggregate predicate source `.kind_type` must be a direct `.`-anchored collection relation
+
+bindings:

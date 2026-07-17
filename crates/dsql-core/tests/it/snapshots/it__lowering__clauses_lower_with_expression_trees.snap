@@ -1,5 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/lowering.rs
+assertion_line: 85
 expression: render_clauses(&bowl).await
 ---
 title: limit 1
@@ -8,6 +9,8 @@ title: order by id asc
 title: where (.aka_title->movie_id.title like "%foo%")
 title: where (.id > 0)
 users: limit $$max
+users: limit 10
 users: offset 10
 users: order by created_at desc, id
 users: where ((.tenant_id == $tenant) and ((.age >= $$min) or (.name like "a%")))
+users: where (.posts | exists and (.posts | count >= $$minimum))

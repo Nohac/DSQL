@@ -653,7 +653,54 @@ impl Planner<'_> {
                 LiteralValue::Bool(value) => FilterLiteral::Bool(*value),
                 LiteralValue::Null => FilterLiteral::Null,
             })),
+            Expr::Aggregate { .. } => {
+                let aggregate = resolved.aggregate_at(expr.span())?;
+                if aggregate.function != Some(crate::entities::aggregate::AggregateFunction::Exists)
+                {
+                    return None;
+                }
+                self.plan_predicate_aggregate(expr, resolved)
+            }
             Expr::Binary { op, lhs, rhs, .. } => {
+                let aggregate = match (lhs.as_ref(), rhs.as_ref()) {
+                    (aggregate @ Expr::Aggregate { .. }, _)
+                    | (_, aggregate @ Expr::Aggregate { .. }) => Some(aggregate),
+                    _ => None,
+                };
+                if aggregate.is_some() && matches!(op, BinaryOp::Variable(_)) {
+                    return None;
+                }
+                if let Some(aggregate) = aggregate
+                    && matches!(op, BinaryOp::Comparison(_))
+                    && let Some(field_path) = self.predicate_value_path(resolved, aggregate)
+                {
+                    let left = self.plan_aggregate_comparison_operand(
+                        lhs,
+                        table,
+                        selection_path,
+                        variable_scope,
+                        &field_path,
+                        op,
+                        resolved,
+                    )?;
+                    let right = self.plan_aggregate_comparison_operand(
+                        rhs,
+                        table,
+                        selection_path,
+                        variable_scope,
+                        &field_path,
+                        op,
+                        resolved,
+                    )?;
+                    return self.binary_or_variant(
+                        left,
+                        op,
+                        right,
+                        selection_path,
+                        variable_scope,
+                        &field_path,
+                    );
+                }
                 if let Expr::Path { .. } = lhs.as_ref()
                     && is_comparison_operator(op)
                     && let Some(field_path) = self.predicate_path(resolved, lhs)
@@ -790,12 +837,9 @@ impl Planner<'_> {
         expr: &Expr,
         resolved: &ResolvedClause,
     ) -> Option<(FilterExpr, Option<String>)> {
-        let field_path = if matches!(expr, Expr::Path { .. }) {
-            self.predicate_path(resolved, expr)
-                .map(|parts| parts.join("."))
-        } else {
-            None
-        };
+        let field_path = self
+            .predicate_value_path(resolved, expr)
+            .map(|parts| parts.join("."));
         self.plan_filter_expr(
             table,
             outer_current_table,
@@ -831,6 +875,56 @@ impl Planner<'_> {
         let resolved = resolved_clause.path_at(path.span())?;
         let column = resolved.terminal.column()?;
         Some(FilterExpr::Column { scope, column })
+    }
+
+    fn plan_predicate_aggregate(
+        &self,
+        expr: &Expr,
+        resolved_clause: &ResolvedClause,
+    ) -> Option<FilterExpr> {
+        let aggregate = resolved_clause.aggregate_at(expr.span())?;
+        if !aggregate.is_valid() {
+            return None;
+        }
+        let relation = aggregate.relation.as_ref()?;
+        Some(FilterExpr::RelationAggregate {
+            foreign_key: relation.foreign_key,
+            table: relation.table,
+            function: aggregate.function?,
+            operand: aggregate.operand,
+        })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "comparison operands share the enclosing variable and clause context"
+    )]
+    fn plan_aggregate_comparison_operand(
+        &self,
+        expr: &Expr,
+        table: TableId,
+        selection_path: &[String],
+        variable_scope: &VariablePathScope,
+        inferred_path: &[String],
+        op: &BinaryOp,
+        resolved: &ResolvedClause,
+    ) -> Option<FilterExpr> {
+        match expr {
+            Expr::Aggregate { .. } => self.plan_predicate_aggregate(expr, resolved),
+            Expr::Variable { variable, .. } => Some(FilterExpr::Parameter(SqlParameter {
+                path: where_value_path(selection_path, variable_scope, inferred_path, op, variable),
+            })),
+            Expr::Binary { .. } | Expr::Literal { .. } | Expr::Path { .. } | Expr::Error { .. } => {
+                self.plan_filter_expr(
+                    table,
+                    Some(table),
+                    selection_path,
+                    variable_scope,
+                    expr,
+                    resolved,
+                )
+            }
+        }
     }
 
     /// Multi-segment `Current`-scoped predicate paths become nested
@@ -896,6 +990,23 @@ impl Planner<'_> {
     fn predicate_path(&self, resolved_clause: &ResolvedClause, path: &Expr) -> Option<Vec<String>> {
         let resolved = resolved_clause.path_at(path.span())?;
         Some(resolved.display_path()?.map(str::to_owned).collect())
+    }
+
+    fn predicate_value_path(
+        &self,
+        resolved_clause: &ResolvedClause,
+        expr: &Expr,
+    ) -> Option<Vec<String>> {
+        match expr {
+            Expr::Path { .. } => self.predicate_path(resolved_clause, expr),
+            Expr::Aggregate { .. } => resolved_clause
+                .aggregate_at(expr.span())?
+                .display_path(self.catalog),
+            Expr::Binary { .. }
+            | Expr::Literal { .. }
+            | Expr::Variable { .. }
+            | Expr::Error { .. } => None,
+        }
     }
 }
 

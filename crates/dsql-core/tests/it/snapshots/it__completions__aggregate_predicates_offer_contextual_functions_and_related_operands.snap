@@ -1,0 +1,27 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+assertion_line: 178
+expression: "format!(\"functions replace={:?}:\\n{}\\n\\npartial replace={:?}:\\n{}\\n\\noperands:\\n{operands}\",\nfunctions.replace, render_completion_items(&functions), partial.replace,\nrender_completion_items(&partial),)"
+---
+functions replace=None:
+Keyword avg (aggregate function)
+Keyword count (aggregate function)
+Keyword exists (aggregate function)
+Keyword max (aggregate function)
+Keyword min (aggregate function)
+Keyword sum (aggregate function)
+
+partial replace=Some(Span { start: 41, end: 43 }):
+Keyword avg (aggregate function)
+Keyword count (aggregate function)
+Keyword exists (aggregate function)
+Keyword max (aggregate function)
+Keyword min (aggregate function)
+Keyword sum (aggregate function)
+
+operands:
+Column body (text)
+Column created_at (timestamptz)
+Column id (uuid)
+Column title (text)
+Column user_id (uuid)

@@ -219,6 +219,53 @@ async fn aggregate_fields_hover_and_tokenize_from_semantic_resolutions() {
 }
 
 #[tokio::test]
+async fn aggregate_predicates_hover_and_tokenize_from_clause_resolutions() {
+    use dsql_core::service::semantic_tokens;
+
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
+    let source = concat!(
+        "query Filtered {\n",
+        "  public::users(\n",
+        "    where .posts | exists\n",
+        "      and (.posts | min .title) like \"A%\"\n",
+        "    limit 1\n",
+        "  ) { id }\n",
+        "}\n",
+    );
+    insert_source(&bowl, FIXTURE, source).await;
+
+    let first_relation = source.find(".posts").expect("test text") + 1;
+    let exists = source.find("exists").expect("test text");
+    let second_relation = source.rfind(".posts").expect("test text") + 1;
+    let min = source.find("min .title").expect("test text");
+    let operand = source.find(".title").expect("test text") + 1;
+    let tokens = semantic_tokens(&bowl, FIXTURE)
+        .await
+        .into_iter()
+        .map(|token| {
+            format!(
+                "{:?} {}..{} `{}`",
+                token.kind,
+                token.span.start,
+                token.span.end,
+                &source[token.span.start..token.span.end],
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    insta::assert_snapshot!(format!(
+        "first relation: {}\nexists: {}\nsecond relation: {}\nmin: {}\noperand: {}\n\ntokens:\n{tokens}",
+        hover(&bowl, first_relation).await,
+        hover(&bowl, exists).await,
+        hover(&bowl, second_relation).await,
+        hover(&bowl, min).await,
+        hover(&bowl, operand).await,
+    ));
+}
+
+#[tokio::test]
 async fn hover_on_unknown_file_reports_it() {
     let bowl = service_bowl().await;
     let info = bowl

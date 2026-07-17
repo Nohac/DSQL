@@ -43,6 +43,40 @@ fn directives_end_in_selection_set(parser: &Parser<'_>) -> bool {
     parser.peek(lookahead) == Token::LBrace
 }
 
+/// Whether the scoped path at the current token is followed by a predicate
+/// aggregate pipe. The grammar keeps plain paths and aggregate values as
+/// separate CST rules, so lowering does not have to reinterpret token tails.
+fn scoped_path_ends_in_pipe(parser: &Parser<'_>) -> bool {
+    if !matches!(parser.current, Token::Dot | Token::DotDot | Token::Tilde) {
+        return false;
+    }
+    let mut lookahead = 1;
+    loop {
+        if parser.peek(lookahead) != Token::Name {
+            return false;
+        }
+        lookahead += 1;
+        if parser.peek(lookahead) == Token::ColonColon {
+            lookahead += 1;
+            if parser.peek(lookahead) != Token::Name {
+                return false;
+            }
+            lookahead += 1;
+        }
+        if parser.peek(lookahead) == Token::Arrow {
+            lookahead += 1;
+            if parser.peek(lookahead) != Token::Name {
+                return false;
+            }
+            lookahead += 1;
+        }
+        if parser.peek(lookahead) != Token::Dot {
+            return parser.peek(lookahead) == Token::Pipe;
+        }
+        lookahead += 1;
+    }
+}
+
 impl<'a> ParserCallbacks<'a> for Parser<'a> {
     type Diagnostic = Diagnostic;
     type Context = (); // TODO: add context information to the parser if required
@@ -91,6 +125,10 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
 
     fn predicate_aggregate_field_1(&self) -> bool {
         matches!(self.peek(1), Token::Name)
+    }
+
+    fn predicate_expr_1(&self) -> bool {
+        scoped_path_ends_in_pipe(self)
     }
 
     fn predicate_selection_1(&self) -> bool {

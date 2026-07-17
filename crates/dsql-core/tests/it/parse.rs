@@ -53,6 +53,23 @@ fn aggregate_transform_is_contextual_syntax() {
 }
 
 #[test]
+fn scalar_aggregate_predicates_bind_before_comparisons_and_clauses() {
+    let source = concat!(
+        "query AggregateFilters {\n",
+        "  title(\n",
+        "    where .movie_info_idx | exists\n",
+        "      and .movie_info_idx | count >= $$minimum\n",
+        "      and (.movie_info_idx | min .info) like \"4.%\"\n",
+        "    limit 10\n",
+        "  ) { id }\n",
+        "}\n",
+    );
+    let (cst, diagnostics) = parse(source);
+    let rendered = render_diagnostics(source, &diagnostics);
+    insta::assert_snapshot!(format!("{cst}---\n{rendered}"));
+}
+
+#[test]
 fn spreads_and_flattened_selections_are_disambiguated_by_the_suffix() {
     let source = concat!(
         "fragment Bits on users { id }\n",

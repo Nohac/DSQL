@@ -500,9 +500,16 @@ impl Inference<'_> {
         };
 
         match (lhs.as_ref(), rhs.as_ref()) {
-            (path @ Expr::Path { .. }, Expr::Variable { variable, .. })
-            | (Expr::Variable { variable, .. }, path @ Expr::Path { .. }) => {
-                if let Some((data_type, field_path)) = self.resolve_predicate_path(path, resolved) {
+            (
+                value @ (Expr::Path { .. } | Expr::Aggregate { .. }),
+                Expr::Variable { variable, .. },
+            )
+            | (
+                Expr::Variable { variable, .. },
+                value @ (Expr::Path { .. } | Expr::Aggregate { .. }),
+            ) => {
+                if let Some((data_type, field_path)) = self.resolve_predicate_value(value, resolved)
+                {
                     let anonymous_key = (variable.name.is_none()
                         && matches!(op, BinaryOp::Variable(_)))
                     .then_some(InputPathSegment::Value.as_ref());
@@ -526,11 +533,12 @@ impl Inference<'_> {
 
         if let BinaryOp::Variable(operator) = op {
             let path = match (lhs.as_ref(), rhs.as_ref()) {
-                (path @ Expr::Path { .. }, _) | (_, path @ Expr::Path { .. }) => Some(path),
+                (value @ (Expr::Path { .. } | Expr::Aggregate { .. }), _)
+                | (_, value @ (Expr::Path { .. } | Expr::Aggregate { .. })) => Some(value),
                 _ => None,
             };
             if let Some(path) = path
-                && let Some((data_type, field_path)) = self.resolve_predicate_path(path, resolved)
+                && let Some((data_type, field_path)) = self.resolve_predicate_value(path, resolved)
             {
                 self.push_operator_binding(selection_path, scope, data_type, &field_path, operator);
             }
@@ -552,6 +560,27 @@ impl Inference<'_> {
         let data_type = self.catalog.column_by_id(column)?.data_type;
         let field_path = resolved.display_path()?.map(str::to_owned).collect();
         Some((data_type, field_path))
+    }
+
+    fn resolve_predicate_value(
+        &self,
+        expr: &Expr,
+        resolved_clause: &ResolvedClause,
+    ) -> Option<(DataType, Vec<String>)> {
+        match expr {
+            Expr::Path { .. } => self.resolve_predicate_path(expr, resolved_clause),
+            Expr::Aggregate { .. } => {
+                let aggregate = resolved_clause.aggregate_at(expr.span())?;
+                if !aggregate.is_valid() {
+                    return None;
+                }
+                Some((aggregate.data_type?, aggregate.display_path(self.catalog)?))
+            }
+            Expr::Binary { .. }
+            | Expr::Literal { .. }
+            | Expr::Variable { .. }
+            | Expr::Error { .. } => None,
+        }
     }
 
     fn push_clause_variable(

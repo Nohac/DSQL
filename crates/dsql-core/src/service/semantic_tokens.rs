@@ -262,6 +262,24 @@ async fn clause_tokens(
             });
         }
     }
+    for aggregate in &resolved.aggregates {
+        if let Some(relation) = &aggregate.relation {
+            qualified_ref_tokens(
+                &mut tokens,
+                &relation.written,
+                relation.span,
+                SemanticTokenKind::Relation,
+            );
+        }
+        if aggregate.operand.is_some()
+            && let Some(span) = aggregate.operand_name_span
+        {
+            tokens.push(SemanticToken {
+                span,
+                kind: SemanticTokenKind::Column,
+            });
+        }
+    }
     emit_chunk(
         &mut commands,
         DerivedFrom::many([resolution_entity, demand_entity]),

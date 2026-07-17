@@ -265,6 +265,13 @@ pub enum FilterExpr {
         table: TableId,
         filter: Box<FilterExpr>,
     },
+    /// One correlated scalar aggregate over a direct relation.
+    RelationAggregate {
+        foreign_key: ForeignKeyId,
+        table: TableId,
+        function: AggregateFunction,
+        operand: Option<ColumnId>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

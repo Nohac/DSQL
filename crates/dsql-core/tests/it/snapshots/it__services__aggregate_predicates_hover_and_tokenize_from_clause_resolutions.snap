@@ -1,0 +1,19 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+assertion_line: 258
+expression: "format!(\"first relation: {}\\nexists: {}\\nsecond relation: {}\\nmin: {}\\noperand: {}\\n\\ntokens:\\n{tokens}\",\nhover(&bowl, first_relation).await, hover(&bowl, exists).await,\nhover(&bowl, second_relation).await, hover(&bowl, min).await,\nhover(&bowl, operand).await,)"
+---
+first relation: relation `posts` → `public`.`posts` via `user_id`
+exists: aggregate predicate `exists`: boolean
+second relation: relation `posts` → `public`.`posts` via `user_id`
+min: aggregate predicate `min`: text (nullable)
+operand: column `title`: text (not null)
+
+tokens:
+Fragment 6..14 `Filtered`
+Schema 19..25 `public`
+Table 27..32 `users`
+Relation 45..50 `posts`
+Relation 72..77 `posts`
+Column 85..90 `title`
+Column 120..122 `id`

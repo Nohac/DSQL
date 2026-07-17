@@ -11,7 +11,9 @@ use bowl::{
 };
 
 use crate::catalog::CatalogSnapshot;
-use crate::entities::expression::{Expr, VariableRef, build_expr, build_variable_ref, expr_child};
+use crate::entities::expression::{
+    Expr, PathAnchor, VariableRef, build_expr, build_variable_ref, expr_child,
+};
 use crate::entities::{direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span};
@@ -94,6 +96,44 @@ async fn hover_clause_fields(
                     | PathTerminal::Failed
                     | PathTerminal::OutOfScope => None,
                 })
+        })
+        .or_else(|| {
+            resolved.aggregates.iter().find_map(|aggregate| {
+                if let Some(relation) = &aggregate.relation
+                    && relation.span.contains(cursor.0)
+                {
+                    return describe_relation(
+                        catalog,
+                        &relation.written,
+                        relation.table,
+                        relation.foreign_key,
+                    );
+                }
+                if aggregate
+                    .operand_name_span
+                    .is_some_and(|span| span.contains(cursor.0))
+                    && let Some(operand) = aggregate.operand
+                {
+                    return describe_column(catalog, operand);
+                }
+                if aggregate.function_span.contains(cursor.0)
+                    && let Some(function) = aggregate.function
+                {
+                    return Some(format!(
+                        "aggregate predicate `{}`: {}{}",
+                        function.label(),
+                        aggregate
+                            .data_type
+                            .map_or("unknown", crate::catalog::DataType::as_str),
+                        if aggregate.nullable {
+                            " (nullable)"
+                        } else {
+                            ""
+                        },
+                    ));
+                }
+                None
+            })
         })
         .or_else(|| {
             resolved.order_items.iter().find_map(|item| {
@@ -221,7 +261,7 @@ pub(crate) fn check_clause(
     let resolved = ctx.clause_resolutions.get(&entity).copied();
     match clause {
         ClauseFact::Where { expr } => {
-            check_predicate_expr(ctx, resolved, table, entity, expr);
+            check_predicate_expr(ctx, resolved, table, entity, expr, true);
         }
         ClauseFact::OrderBy { items } => {
             for item in items {
@@ -262,6 +302,7 @@ fn check_predicate_expr(
     table: crate::catalog::TableId,
     entity: bowl::Entity,
     expr: &Expr,
+    boolean_position: bool,
 ) {
     use crate::entities::expression::BinaryOp;
     use crate::facts::DiagnosticCode;
@@ -281,6 +322,8 @@ fn check_predicate_expr(
         Expr::Binary { op, lhs, rhs, .. } => {
             match op {
                 BinaryOp::Comparison(op) => {
+                    check_aggregate_comparison_operator(ctx, resolved, entity, lhs, *op, rhs);
+                    check_aggregate_comparison_path(ctx, resolved, entity, lhs, rhs);
                     check_binary_predicate_types(ctx, resolved, entity, lhs, *op, rhs);
                 }
                 BinaryOp::Variable(operator) => {
@@ -288,10 +331,102 @@ fn check_predicate_expr(
                 }
                 BinaryOp::And | BinaryOp::Or => {}
             }
-            check_predicate_expr(ctx, resolved, table, entity, lhs);
-            check_predicate_expr(ctx, resolved, table, entity, rhs);
+            let child_boolean = matches!(op, BinaryOp::And | BinaryOp::Or);
+            check_predicate_expr(ctx, resolved, table, entity, lhs, child_boolean);
+            check_predicate_expr(ctx, resolved, table, entity, rhs, child_boolean);
+        }
+        Expr::Aggregate { .. } => {
+            let Some(aggregate) = resolved.and_then(|resolved| resolved.aggregate_at(expr.span()))
+            else {
+                return;
+            };
+            for problem in &aggregate.problems {
+                ctx.error(
+                    entity,
+                    problem.span,
+                    problem.kind.code(),
+                    problem.kind.message(),
+                );
+            }
+            if boolean_position
+                && let Some(function) = aggregate.function
+                && function != crate::entities::aggregate::AggregateFunction::Exists
+            {
+                let problem = crate::entities::aggregate::AggregateProblemKind::PredicateAggregateMustBeBoolean {
+                    function,
+                };
+                ctx.error(entity, expr.span(), problem.code(), problem.message());
+            }
         }
         Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
+    }
+}
+
+fn check_aggregate_comparison_path(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    resolved: Option<&crate::resolution::ResolvedClause>,
+    entity: bowl::Entity,
+    lhs: &Expr,
+    rhs: &Expr,
+) {
+    use crate::facts::DiagnosticCode;
+
+    let path = match (lhs, rhs) {
+        (Expr::Aggregate { .. }, path @ Expr::Path { .. })
+        | (path @ Expr::Path { .. }, Expr::Aggregate { .. }) => path,
+        _ => return,
+    };
+    let Expr::Path {
+        anchor, segments, ..
+    } = path
+    else {
+        return;
+    };
+    if segments.len() == 1 && matches!(anchor, PathAnchor::Current | PathAnchor::Root) {
+        return;
+    }
+    if resolved_path_type(ctx, resolved, path).is_none() {
+        return;
+    }
+    ctx.error(
+        entity,
+        path.span(),
+        DiagnosticCode::ClauseValueTypeMismatch,
+        "aggregate comparisons only support direct `.`- or `~`-anchored scalar path operands"
+            .to_string(),
+    );
+}
+
+fn check_aggregate_comparison_operator(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    resolved: Option<&crate::resolution::ResolvedClause>,
+    entity: bowl::Entity,
+    lhs: &Expr,
+    op: crate::entities::expression::ComparisonOp,
+    rhs: &Expr,
+) {
+    use crate::facts::DiagnosticCode;
+
+    let aggregate = match (lhs, rhs) {
+        (aggregate @ Expr::Aggregate { .. }, _) | (_, aggregate @ Expr::Aggregate { .. }) => {
+            aggregate
+        }
+        _ => return,
+    };
+    let Some(data_type) = resolved_expr_type(ctx, resolved, aggregate) else {
+        return;
+    };
+    if !data_type.operator_ops().contains(&op) {
+        ctx.error(
+            entity,
+            aggregate.span(),
+            DiagnosticCode::ClauseValueTypeMismatch,
+            format!(
+                "aggregate predicate of type {} does not support operator `{}`",
+                data_type.as_str(),
+                op.as_str()
+            ),
+        );
     }
 }
 
@@ -306,10 +441,20 @@ fn check_operator_variable(
     use crate::facts::DiagnosticCode;
 
     let path = match (lhs, rhs) {
-        (path @ Expr::Path { .. }, _) | (_, path @ Expr::Path { .. }) => path,
+        (path @ (Expr::Path { .. } | Expr::Aggregate { .. }), _)
+        | (_, path @ (Expr::Path { .. } | Expr::Aggregate { .. })) => path,
         _ => return,
     };
-    let Some(data_type) = resolved_path_type(ctx, resolved, path) else {
+    if matches!(path, Expr::Aggregate { .. }) {
+        ctx.error(
+            entity,
+            operator.span,
+            DiagnosticCode::ClauseValueTypeMismatch,
+            "operator variables are not supported for aggregate predicates".to_string(),
+        );
+        return;
+    }
+    let Some(data_type) = resolved_expr_type(ctx, resolved, path) else {
         return;
     };
     let Some(allowed) = &operator.operators else {
@@ -343,13 +488,20 @@ fn check_binary_predicate_types(
     use crate::facts::DiagnosticCode;
 
     let (path, literal, literal_span) = match (lhs, rhs) {
-        (path @ Expr::Path { .. }, Expr::Literal { value, span }) => (path, value, *span),
-        (Expr::Literal { value, span }, path @ Expr::Path { .. }) => (path, value, *span),
+        (path @ (Expr::Path { .. } | Expr::Aggregate { .. }), Expr::Literal { value, span }) => {
+            (path, value, *span)
+        }
+        (Expr::Literal { value, span }, path @ (Expr::Path { .. } | Expr::Aggregate { .. })) => {
+            (path, value, *span)
+        }
         _ => return,
     };
-    let Some(data_type) = resolved_path_type(ctx, resolved, path) else {
+    let Some(data_type) = resolved_expr_type(ctx, resolved, path) else {
         return;
     };
+    if matches!(path, Expr::Aggregate { .. }) && !data_type.operator_ops().contains(&op) {
+        return;
+    }
     let (actual, raw_value) = match literal {
         LiteralValue::String(value) => (LiteralKind::String, value.as_str()),
         LiteralValue::Number(value) => (LiteralKind::Number, value.as_str()),
@@ -397,6 +549,26 @@ fn resolved_path_type(
         .map(|column| column.data_type)
 }
 
+fn resolved_expr_type(
+    ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
+    resolved: Option<&crate::resolution::ResolvedClause>,
+    expr: &Expr,
+) -> Option<crate::catalog::DataType> {
+    match expr {
+        Expr::Path { .. } => resolved_path_type(ctx, resolved, expr),
+        Expr::Aggregate { .. } => {
+            let aggregate = resolved?.aggregate_at(expr.span())?;
+            if !aggregate.is_valid() {
+                return None;
+            }
+            aggregate.data_type
+        }
+        Expr::Binary { .. } | Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {
+            None
+        }
+    }
+}
+
 fn check_non_negative_integer(
     ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
     entity: bowl::Entity,
@@ -407,6 +579,15 @@ fn check_non_negative_integer(
     use crate::entities::expression::LiteralValue;
     use crate::facts::DiagnosticCode;
 
+    if matches!(expr, Expr::Aggregate { .. }) {
+        ctx.error(
+            entity,
+            expr.span(),
+            DiagnosticCode::ClauseValueTypeMismatch,
+            format!("clause `{clause}` does not accept aggregate predicate expressions"),
+        );
+        return;
+    }
     let valid = matches!(
         expr,
         Expr::Literal { value: LiteralValue::Number(value), .. } if value.parse::<u64>().is_ok()
