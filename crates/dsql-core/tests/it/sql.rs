@@ -121,7 +121,17 @@ async fn exact_and_floating_numbers_use_their_public_wire_types() {
     insert_source(
         &bowl,
         "numeric.dsql",
-        "query NumericMetrics {\n  metrics(where .amount >= 12345678901234567890.12345678901234567890) {\n    amount\n    ratio\n  }\n}\n",
+        concat!(
+            "query NumericMetrics {\n",
+            "  metrics(where .amount >= 12345678901234567890.12345678901234567890) {\n",
+            "    amount\n",
+            "    ratio\n",
+            "  }\n",
+            "  groups: metrics | aggregate by amount_group: .amount, ratio_group: .ratio {\n",
+            "    count\n",
+            "  }\n",
+            "}\n",
+        ),
     )
     .await;
 
@@ -143,9 +153,17 @@ async fn aggregates_render_root_and_nested_objects_without_safety_caps() {
             "    first_name: min .name\n",
             "    latest_signup: max .created_at\n",
             "  }\n",
+            "  by_email: public::users | aggregate by email_group: .email {\n",
+            "    count\n",
+            "    earliest_signup: min .created_at\n",
+            "  }\n",
             "  public::users(limit 2) {\n",
             "    id\n",
             "    post_stats: posts(where .title like \"%x%\") | aggregate {\n",
+            "      count\n",
+            "      latest: max .created_at\n",
+            "    }\n",
+            "    post_groups: posts | aggregate by title_group: .title {\n",
             "      count\n",
             "      latest: max .created_at\n",
             "    }\n",
@@ -215,7 +233,24 @@ async fn same_slot_aggregate_function_edits_rederive_sql() {
     .await;
     let after = render_sql(&bowl).await;
 
-    insta::assert_snapshot!(format!("before:\n{before}\n\nafter:\n{after}"));
+    set_source_text(
+        &bowl,
+        file,
+        "query Edge { edge: public::users | aggregate by key: .name { count } }\n",
+    )
+    .await;
+    let grouped_before = render_sql(&bowl).await;
+    set_source_text(
+        &bowl,
+        file,
+        "query Edge { edge: public::users | aggregate by key: .email { count } }\n",
+    )
+    .await;
+    let grouped_after = render_sql(&bowl).await;
+
+    insta::assert_snapshot!(format!(
+        "before:\n{before}\n\nafter:\n{after}\n\ngrouped before:\n{grouped_before}\n\ngrouped after:\n{grouped_after}"
+    ));
 }
 
 #[tokio::test]

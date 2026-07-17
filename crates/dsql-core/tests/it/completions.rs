@@ -119,8 +119,12 @@ async fn aggregate_bodies_offer_contextual_functions_and_operands() {
         '¦',
     )
     .await;
+    let group_keys =
+        completions_with_marker("query Q {\n  users | aggregate by .n¦ { count }\n}\n", '¦').await;
 
-    insta::assert_snapshot!(format!("functions:\n{functions}\n\noperands:\n{operands}"));
+    insta::assert_snapshot!(format!(
+        "functions:\n{functions}\n\noperands:\n{operands}\n\ngroup keys:\n{group_keys}"
+    ));
 }
 
 #[tokio::test]

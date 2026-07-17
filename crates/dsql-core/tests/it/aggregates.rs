@@ -45,8 +45,21 @@ async fn render_resolved_aggregates(bowl: &Bowl) -> String {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
+            let group_keys = aggregate
+                .group_keys
+                .iter()
+                .map(|key| {
+                    format!(
+                        "{}: {} nullable={}",
+                        key.output_name,
+                        key.data_type.as_str(),
+                        key.nullable
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
             format!(
-                "table={:?} {mode} valid={} [{fields}]",
+                "table={:?} {mode} valid={} keys=[{group_keys}] fields=[{fields}]",
                 aggregate.table,
                 aggregate.is_valid(),
             )
@@ -67,6 +80,10 @@ async fn root_nested_and_fragment_aggregates_resolve_from_one_semantic_ir() {
             "  post_stats: posts | aggregate {\n",
             "    count\n",
             "  }\n",
+            "  post_titles: posts | aggregate by title_group: .title {\n",
+            "    count\n",
+            "    latest: max .created_at\n",
+            "  }\n",
             "}\n",
             "query Summaries {\n",
             "  stats: public::users(where .name like \"A%\") | aggregate {\n",
@@ -74,6 +91,10 @@ async fn root_nested_and_fragment_aggregates_resolve_from_one_semantic_ir() {
             "    populated_email: count .email\n",
             "    any: exists\n",
             "    first_name: min .name\n",
+            "    latest_signup: max .created_at\n",
+            "  }\n",
+            "  by_name: public::users | aggregate by label: .name, .email {\n",
+            "    count\n",
             "    latest_signup: max .created_at\n",
             "  }\n",
             "  public::users(limit 2) {\n",
@@ -101,7 +122,10 @@ async fn invalid_aggregate_contracts_report_typed_diagnostics() {
         concat!(
             "query InvalidAggregates {\n",
             "  unknown: public::users | summarize { count }\n",
-            "  grouped: public::users | aggregate by .name { count }\n",
+            "  grouped_exists: public::users | aggregate by .name { exists }\n",
+            "  grouped_path: public::users | aggregate by ..name { count }\n",
+            "  grouped_collision: public::users | aggregate by count: .name { count }\n",
+            "  ...public::users | aggregate by .name { count }\n",
             "  empty: public::users | aggregate {}\n",
             "  fields: public::users | aggregate {\n",
             "    mystery\n",

@@ -2,19 +2,22 @@
 source: crates/dsql-core/tests/it/aggregates.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[152..166]: aggregate body must contain at least one field
-Error[209..216]: unknown aggregate function `mystery`
-Error[221..226]: aggregate function `count` with an operand requires an output alias
-Error[247..250]: aggregate function `exists` does not accept an operand
-Error[255..258]: aggregate function `min` requires a direct column operand
-Error[278..284]: aggregate operand `..name` must be a `.`-anchored direct scalar column
-Error[303..306]: aggregate function `min` does not support `uuid` operands
-Error[321..326]: aggregate output key `count` is ambiguous; use a distinct alias
-Error[331..395]: aggregate output key `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` is 64 bytes; PostgreSQL result aliases must be at most 63 bytes
-Error[431..444]: aggregate sources do not support `order by` clauses
-Error[445..452]: aggregate sources do not support `limit` clauses
-Error[453..461]: aggregate sources do not support `offset` clauses
-Error[524..528]: aggregate source `name` must be a collection; singular and scalar sources cannot be aggregated
+Error[128..134]: aggregate function `exists` is not meaningful in grouped output
+Error[182..188]: aggregate group key `..name` must be a `.`-anchored direct scalar column
+Error[264..269]: aggregate output key `count` is ambiguous; use a distinct alias
+Error[277..290]: grouped aggregate output is array-valued and cannot be flattened
+Error[345..359]: aggregate body must contain at least one field
+Error[402..409]: unknown aggregate function `mystery`
+Error[414..419]: aggregate function `count` with an operand requires an output alias
+Error[440..443]: aggregate function `exists` does not accept an operand
+Error[448..451]: aggregate function `min` requires a direct column operand
+Error[471..477]: aggregate operand `..name` must be a `.`-anchored direct scalar column
+Error[496..499]: aggregate function `min` does not support `uuid` operands
+Error[514..519]: aggregate output key `count` is ambiguous; use a distinct alias
+Error[524..588]: aggregate output key `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` is 64 bytes; PostgreSQL result aliases must be at most 63 bytes
 Error[53..62]: unknown selection transform `summarize`
-Error[596..601]: aggregate source `users` must be a collection; singular and scalar sources cannot be aggregated
-Error[98..128]: grouped aggregates are recognized but are not implemented yet
+Error[624..637]: aggregate sources do not support `order by` clauses
+Error[638..645]: aggregate sources do not support `limit` clauses
+Error[646..654]: aggregate sources do not support `offset` clauses
+Error[717..721]: aggregate source `name` must be a collection; singular and scalar sources cannot be aggregated
+Error[789..794]: aggregate source `users` must be a collection; singular and scalar sources cannot be aggregated

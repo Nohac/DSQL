@@ -2,6 +2,8 @@
 source: crates/dsql-core/tests/it/aggregates.rs
 expression: render_resolved_aggregates(&bowl).await
 ---
-table=Some(TableId(0)) ungrouped valid=true [count: count -> int nullable=false, populated_email: count -> int nullable=false, any: exists -> boolean nullable=false, first_name: min -> text nullable=true, latest_signup: max -> timestamptz nullable=true]
-table=Some(TableId(1)) ungrouped valid=true [count: count -> int nullable=false, latest: max -> timestamptz nullable=true]
-table=Some(TableId(1)) ungrouped valid=true [count: count -> int nullable=false]
+table=Some(TableId(0)) grouped valid=true keys=[label: text nullable=false, email: text nullable=true] fields=[count: count -> int nullable=false, latest_signup: max -> timestamptz nullable=false]
+table=Some(TableId(0)) ungrouped valid=true keys=[] fields=[count: count -> int nullable=false, populated_email: count -> int nullable=false, any: exists -> boolean nullable=false, first_name: min -> text nullable=true, latest_signup: max -> timestamptz nullable=true]
+table=Some(TableId(1)) grouped valid=true keys=[title_group: text nullable=false] fields=[count: count -> int nullable=false, latest: max -> timestamptz nullable=false]
+table=Some(TableId(1)) ungrouped valid=true keys=[] fields=[count: count -> int nullable=false, latest: max -> timestamptz nullable=true]
+table=Some(TableId(1)) ungrouped valid=true keys=[] fields=[count: count -> int nullable=false]

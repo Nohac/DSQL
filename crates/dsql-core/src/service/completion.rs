@@ -96,6 +96,8 @@ pub enum CompletionSite {
     SpreadName,
     /// Inside an aggregate result body.
     AggregateBody,
+    /// Inside one `aggregate by` key.
+    AggregateGroupKey,
     /// After `@`, naming a directive namespace (or the `.` shorthand).
     DirectiveName,
     /// After `@namespace.` or `@.`, naming a directive member.
@@ -291,7 +293,7 @@ async fn enrich_completion_requests(
     let directive = directive_completion(&truncated_cst, &spine, prefix);
     let site = match &directive {
         Some((site, _)) => *site,
-        None => match classify_site(&spine, stop) {
+        None => match classify_site(&truncated_cst, &spine, stop) {
             // Dots before the word mean a spread is being typed: only
             // fragments (and the missing dots) make sense, not columns.
             CompletionSite::SelectionBody if spread_dots > 0 => CompletionSite::SpreadName,
@@ -306,7 +308,7 @@ async fn enrich_completion_requests(
     // resolver facts by their span: both parses see the same tokens before
     // the cursor.
     let tree = SelectionTree::collect(&views);
-    let table = match spine_owner(&spine) {
+    let table = match spine_owner(&spine, site) {
         Some(SetOwner::Field(field_node)) => {
             let field_start = truncated_cst.span(field_node).start;
             tree.fields_by_entity
@@ -358,6 +360,7 @@ async fn enrich_completion_requests(
             | CompletionSite::SelectionBody
             | CompletionSite::SpreadName
             | CompletionSite::AggregateBody
+            | CompletionSite::AggregateGroupKey
             | CompletionSite::DirectiveName
             | CompletionSite::DirectiveMember
             | CompletionSite::DirectiveArgument
@@ -657,7 +660,11 @@ fn directive_completion(
     }
 }
 
-fn classify_site(spine: &[(Rule, NodeRef)], stop: Option<SpineStop>) -> CompletionSite {
+fn classify_site(
+    cst: &crate::grammar::parser::CstData,
+    spine: &[(Rule, NodeRef)],
+    stop: Option<SpineStop>,
+) -> CompletionSite {
     // A cursor in the gap after a field's `(...)` or in a definition
     // header (before its `{`) has no meaningful completions of its own:
     // the next token is structural.
@@ -666,6 +673,18 @@ fn classify_site(spine: &[(Rule, NodeRef)], stop: Option<SpineStop>) -> Completi
     {
         return CompletionSite::Other;
     }
+    if stop == Some(SpineStop::Unstarted(Rule::AggregateSet))
+        && spine
+            .iter()
+            .rev()
+            .find_map(|(rule, node)| (*rule == Rule::PipeTransform).then_some(*node))
+            .is_some_and(|transform| {
+                cst.children(transform)
+                    .any(|child| cst.match_token(child, Token::By).is_some())
+            })
+    {
+        return CompletionSite::AggregateGroupKey;
+    }
     for (index, (rule, _)) in spine.iter().enumerate().rev() {
         match rule {
             Rule::WhereClause => return CompletionSite::WhereExpr,
@@ -673,6 +692,7 @@ fn classify_site(spine: &[(Rule, NodeRef)], stop: Option<SpineStop>) -> Completi
             Rule::ClauseList => return CompletionSite::ClauseList,
             Rule::FragmentSpread => return CompletionSite::SpreadName,
             Rule::AggregateSet => return CompletionSite::AggregateBody,
+            Rule::AggregateGroupKey => return CompletionSite::AggregateGroupKey,
             Rule::SelectionSet => {
                 // A selection set directly under a definition lists tables
                 // (queries) or the fragment target's fields; deeper ones
@@ -717,12 +737,18 @@ enum SetOwner {
 /// Wrapper rules (`selection`, `field_selection_tail`, …) sit between a
 /// container and its owner: the owner is the nearest enclosing field,
 /// fragment, or definition.
-fn spine_owner(spine: &[(Rule, NodeRef)]) -> Option<SetOwner> {
+fn spine_owner(spine: &[(Rule, NodeRef)], site: CompletionSite) -> Option<SetOwner> {
+    if site == CompletionSite::AggregateGroupKey {
+        return spine.iter().rev().find_map(|(rule, node)| {
+            (*rule == Rule::FieldSelection).then_some(SetOwner::Field(*node))
+        });
+    }
     let container = spine.iter().rposition(|(rule, _)| {
         matches!(
             rule,
             Rule::SelectionSet
                 | Rule::AggregateSet
+                | Rule::AggregateGroupKey
                 | Rule::ClauseList
                 | Rule::WhereClause
                 | Rule::OrderByClause

@@ -12,15 +12,16 @@ use crate::schema::dsql_schema;
 use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View, With};
 
 use super::types::{
-    AggregatePlan, AggregateProjection, CollectionPlan, CollectionResultPlan, FilterColumnScope,
-    FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation, OperationSeed,
-    OrderByPlan, Projection, QueryPlan, QueryPlanFact, SelectionClauses, SelectionPlan,
-    SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
+    AggregateGroupProjection, AggregatePlan, AggregateProjection, CollectionPlan,
+    CollectionResultPlan, FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact,
+    NestedRelation, OperationSeed, OrderByPlan, Projection, QueryPlan, QueryPlanFact,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter,
+    SqlValue, SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
 };
-use crate::entities::aggregate::{AggregateMode, ResolvedAggregate};
+use crate::entities::aggregate::ResolvedAggregate;
 use crate::entities::clause::{ClauseFact, OrderDirection};
 use crate::entities::definition::{DefDecl, DefKind};
 use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, VariableRef};
@@ -359,9 +360,19 @@ impl Planner<'_> {
 
     fn plan_aggregate(&self, source: Entity) -> Option<AggregatePlan> {
         let aggregate = self.resolved_aggregates.get(&source)?;
-        if !aggregate.is_valid() || aggregate.mode != AggregateMode::Ungrouped {
+        if !aggregate.is_valid() {
             return None;
         }
+        let group_keys = aggregate
+            .group_keys
+            .iter()
+            .map(|key| AggregateGroupProjection {
+                column: key.column,
+                output_name: key.output_name.clone(),
+                data_type: key.data_type,
+                nullable: key.nullable,
+            })
+            .collect();
         let fields = aggregate
             .fields
             .iter()
@@ -375,7 +386,11 @@ impl Planner<'_> {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
-        Some(AggregatePlan { fields })
+        Some(AggregatePlan {
+            mode: aggregate.mode,
+            group_keys,
+            fields,
+        })
     }
 
     fn plan_selection_set(

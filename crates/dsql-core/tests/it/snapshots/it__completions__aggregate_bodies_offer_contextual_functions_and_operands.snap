@@ -1,6 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/completions.rs
-expression: "format!(\"functions:\\n{functions}\\n\\noperands:\\n{operands}\")"
+expression: "format!(\"functions:\\n{functions}\\n\\noperands:\\n{operands}\\n\\ngroup keys:\\n{group_keys}\")"
 ---
 functions:
 Keyword count (aggregate function)
@@ -9,6 +9,12 @@ Keyword max (aggregate function)
 Keyword min (aggregate function)
 
 operands:
+Column created_at (timestamptz)
+Column email (text)
+Column id (uuid)
+Column name (text)
+
+group keys:
 Column created_at (timestamptz)
 Column email (text)
 Column id (uuid)

@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use dsql_core::catalog::{Catalog, RelationCardinality, TableId};
+use dsql_core::entities::aggregate::AggregateMode;
 use dsql_core::entities::variable::VariableBinding;
 use dsql_core::entities::variable_path::{is_input_path, is_params_path};
 use dsql_core::facts::Span;
@@ -240,6 +241,16 @@ fn collect_collection_children(
             }
         }
         CollectionResultPlan::Aggregate(aggregate) => {
+            for key in &aggregate.group_keys {
+                fields.push(ResultField {
+                    path: join_path(parent_path, &key.output_name),
+                    name: key.output_name.clone(),
+                    parent_path: parent_path.to_string(),
+                    kind: ResultFieldKind::Scalar.as_ref().to_string(),
+                    data_type: key.data_type.as_str().to_string(),
+                    nullable: inherited_nullable || key.nullable,
+                });
+            }
             for field in &aggregate.fields {
                 fields.push(ResultField {
                     path: join_path(parent_path, &field.output_name),
@@ -333,7 +344,10 @@ fn collection_result_kind(
     cardinality: RelationCardinality,
 ) -> ResultFieldKind {
     match result {
-        CollectionResultPlan::Aggregate(_) => ResultFieldKind::Object,
+        CollectionResultPlan::Aggregate(aggregate) => match aggregate.mode {
+            AggregateMode::Ungrouped => ResultFieldKind::Object,
+            AggregateMode::Grouped => ResultFieldKind::Array,
+        },
         CollectionResultPlan::Rows(_) => match cardinality {
             RelationCardinality::Collection => ResultFieldKind::Array,
             RelationCardinality::Singular => ResultFieldKind::Object,

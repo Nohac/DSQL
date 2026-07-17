@@ -2,6 +2,34 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: render_sql(&bowl).await
 ---
+-- groups
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'amount_group',
+        "groups_ddd104a7_groups"."amount_group",
+        'ratio_group',
+        "groups_ddd104a7_groups"."ratio_group",
+        'count',
+        "groups_ddd104a7_groups"."count"
+      )
+    ),
+    '[]'
+  ) as "groups"
+from
+  (
+    select
+      CAST("groups_ddd104a7"."amount" as text) as "amount_group",
+      "groups_ddd104a7"."ratio" as "ratio_group",
+      COUNT(*) as "count"
+    from
+      "public"."metrics" as "groups_ddd104a7"
+    group by
+      "groups_ddd104a7"."amount",
+      "groups_ddd104a7"."ratio"
+  ) as "groups_ddd104a7_groups"
+
 -- metrics
 select
   COALESCE(

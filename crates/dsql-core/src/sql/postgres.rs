@@ -2,7 +2,7 @@ use crate::catalog::{
     Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyId, RelationCardinality, Table,
     TableId,
 };
-use crate::entities::aggregate::AggregateFunction;
+use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
     AggregatePlan, CollectionPlan, CollectionResultPlan, FilterColumnScope, FilterExpr,
     FilterLiteral, FilterOp, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
@@ -409,33 +409,24 @@ fn generate_aggregate(
         )?);
     }
 
+    if aggregate.mode == AggregateMode::Grouped {
+        return generate_grouped_aggregate(
+            query,
+            aggregate,
+            catalog,
+            &context,
+            generation.public_result_alias,
+        );
+    }
+
     let mut fields = Vec::new();
     for field in &aggregate.fields {
-        let operand = field
-            .operand
-            .map(|column_id| {
-                let column = column(catalog, column_id)?;
-                Ok(Expr::col((
-                    Alias::new(&context.table_alias),
-                    Alias::new(&column.name),
-                )))
-            })
-            .transpose()?;
-        let expression: Expr = match field.function {
-            AggregateFunction::Count => {
-                Func::count(operand.unwrap_or_else(|| Expr::col(Asterisk))).into()
-            }
-            AggregateFunction::Exists => Func::count(Expr::col(Asterisk)).gt(0),
-            AggregateFunction::Min => {
-                Func::min(operand.ok_or(SqlGenerationError::MissingAggregateOperand)?).into()
-            }
-            AggregateFunction::Max => {
-                Func::max(operand.ok_or(SqlGenerationError::MissingAggregateOperand)?).into()
-            }
-        };
         fields.push((
             field.output_name.clone(),
-            public_scalar_expression(expression, field.data_type),
+            public_scalar_expression(
+                aggregate_expression(field, catalog, &context)?,
+                field.data_type,
+            ),
         ));
     }
     if export_fields {
@@ -453,6 +444,92 @@ fn generate_aggregate(
         ),
     );
     Ok(query.to_owned())
+}
+
+fn generate_grouped_aggregate(
+    mut grouped: SelectStatement,
+    aggregate: &AggregatePlan,
+    catalog: &Catalog,
+    context: &SelectionContext,
+    public_result_alias: Option<&str>,
+) -> Result<SelectStatement, SqlGenerationError> {
+    for key in &aggregate.group_keys {
+        let column = column(catalog, key.column)?;
+        let grouped_column =
+            || Expr::col((Alias::new(&context.table_alias), Alias::new(&column.name)));
+        grouped.expr_as(
+            public_scalar_expression(grouped_column(), key.data_type),
+            Alias::new(&key.output_name),
+        );
+        grouped.add_group_by([grouped_column()]);
+    }
+    for field in &aggregate.fields {
+        grouped.expr_as(
+            public_scalar_expression(
+                aggregate_expression(field, catalog, context)?,
+                field.data_type,
+            ),
+            Alias::new(&field.output_name),
+        );
+    }
+
+    let grouped_alias = format!("{}_groups", context.table_alias);
+    let fields = aggregate
+        .group_keys
+        .iter()
+        .map(|key| key.output_name.as_str())
+        .chain(
+            aggregate
+                .fields
+                .iter()
+                .map(|field| field.output_name.as_str()),
+        )
+        .map(|output_name| {
+            (
+                output_name.to_string(),
+                Expr::col((Alias::new(&grouped_alias), Alias::new(output_name))),
+            )
+        })
+        .collect();
+    let mut query = Query::select();
+    query.from_subquery(grouped, Alias::new(grouped_alias));
+    query.expr_as(
+        Func::coalesce([
+            PgFunc::json_agg(json_build_object(fields)).into(),
+            Expr::value("[]"),
+        ]),
+        Alias::new(public_result_alias.unwrap_or(&context.result_alias)),
+    );
+    Ok(query.to_owned())
+}
+
+fn aggregate_expression(
+    field: &crate::plan::AggregateProjection,
+    catalog: &Catalog,
+    context: &SelectionContext,
+) -> Result<Expr, SqlGenerationError> {
+    let operand = field
+        .operand
+        .map(|column_id| {
+            let column = column(catalog, column_id)?;
+            Ok(Expr::col((
+                Alias::new(&context.table_alias),
+                Alias::new(&column.name),
+            )))
+        })
+        .transpose()?;
+    Ok(match field.function {
+        AggregateFunction::Count => {
+            Func::count(operand.unwrap_or_else(|| Expr::col(Asterisk))).into()
+        }
+        AggregateFunction::Exists => Func::count(Expr::col(Asterisk)).gt(0),
+        AggregateFunction::Min => {
+            Func::min(operand.ok_or(SqlGenerationError::MissingAggregateOperand)?).into()
+        }
+        AggregateFunction::Max => {
+            Func::max(operand.ok_or(SqlGenerationError::MissingAggregateOperand)?).into()
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

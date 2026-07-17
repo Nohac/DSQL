@@ -1,11 +1,13 @@
 ---
 source: crates/dsql-core/tests/it/services.rs
-expression: "format!(\"count: {}\\nalias: {}\\nfunction: {}\\noperand: {}\\n\\ntokens:\\n{tokens}\",\nhover(&bowl, count).await, hover(&bowl, alias).await,\nhover(&bowl, function).await, hover(&bowl, operand).await,)"
+expression: "format!(\"count: {}\\nalias: {}\\nfunction: {}\\noperand: {}\\ngroup alias: {}\\ngroup column: {}\\n\\ntokens:\\n{tokens}\",\nhover(&bowl, count).await, hover(&bowl, alias).await,\nhover(&bowl, function).await, hover(&bowl, operand).await,\nhover(&bowl, group_alias).await, hover(&bowl, group_column).await,)"
 ---
 count: aggregate function `count`: int
 alias: aggregate field `first_name`: text (nullable)
 function: aggregate function `min`: text (nullable)
 operand: column `name`: text (not null)
+group alias: aggregate group key `name_group`: text
+group column: column `name`: text (not null)
 
 tokens:
 Fragment 6..11 `Stats`
@@ -14,3 +16,8 @@ Schema 28..34 `public`
 Table 36..41 `users`
 Alias 70..80 `first_name`
 Column 87..91 `name`
+Alias 98..109 `user_groups`
+Schema 111..117 `public`
+Table 119..124 `users`
+Alias 140..150 `name_group`
+Column 153..157 `name`

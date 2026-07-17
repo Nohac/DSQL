@@ -350,6 +350,10 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
             "    count\n",
             "    latest: max .created_at\n",
             "  }\n",
+            "  post_groups: posts | aggregate by title_group: .title {\n",
+            "    count\n",
+            "    latest_group: max .created_at\n",
+            "  }\n",
             "}\n",
             "fragment FlatPostStats on users {\n",
             "  ...posts(where .title == $$flat_title) | aggregate {\n",
@@ -361,6 +365,12 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
             "  user_stats: users(where .name == $$name) | aggregate {\n",
             "    count\n",
             "    first_name: min .name\n",
+            "  }\n",
+            "}\n",
+            "query GroupedRoot {\n",
+            "  user_groups: users | aggregate by label: .name {\n",
+            "    count\n",
+            "    latest_name: max .name\n",
             "  }\n",
             "}\n",
             "query NestedStats {\n",
@@ -413,6 +423,7 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
             matches!(
                 artifact.name.as_str(),
                 "FlatPostStats"
+                    | "GroupedRoot"
                     | "FlattenNested"
                     | "FlattenOwner"
                     | "FlattenRoot"

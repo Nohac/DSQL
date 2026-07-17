@@ -179,6 +179,9 @@ async fn aggregate_fields_hover_and_tokenize_from_semantic_resolutions() {
         "    count\n",
         "    first_name: min .name\n",
         "  }\n",
+        "  user_groups: public::users | aggregate by name_group: .name {\n",
+        "    count\n",
+        "  }\n",
         "}\n",
     );
     insert_source(&bowl, FIXTURE, source).await;
@@ -187,6 +190,8 @@ async fn aggregate_fields_hover_and_tokenize_from_semantic_resolutions() {
     let alias = source.find("first_name").expect("test text");
     let function = source.find("min .name").expect("test text");
     let operand = source.find(".name").expect("test text") + 1;
+    let group_alias = source.find("name_group").expect("test text");
+    let group_column = source.rfind(".name").expect("test text") + 1;
     let tokens = semantic_tokens(&bowl, FIXTURE)
         .await
         .into_iter()
@@ -203,11 +208,13 @@ async fn aggregate_fields_hover_and_tokenize_from_semantic_resolutions() {
         .join("\n");
 
     insta::assert_snapshot!(format!(
-        "count: {}\nalias: {}\nfunction: {}\noperand: {}\n\ntokens:\n{tokens}",
+        "count: {}\nalias: {}\nfunction: {}\noperand: {}\ngroup alias: {}\ngroup column: {}\n\ntokens:\n{tokens}",
         hover(&bowl, count).await,
         hover(&bowl, alias).await,
         hover(&bowl, function).await,
         hover(&bowl, operand).await,
+        hover(&bowl, group_alias).await,
+        hover(&bowl, group_column).await,
     ));
 }
 

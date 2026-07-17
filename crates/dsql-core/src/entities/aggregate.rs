@@ -98,6 +98,17 @@ pub struct ResolvedAggregateField {
     pub nullable: bool,
 }
 
+/// One checked direct scalar group key.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ResolvedAggregateGroupKey {
+    pub output_name: String,
+    pub output_span: Span,
+    pub column: ColumnId,
+    pub column_span: Span,
+    pub data_type: DataType,
+    pub nullable: bool,
+}
+
 /// The coherent semantic result for one pipe transform. A single component
 /// carries ordered fields so every consumer observes the same resolution.
 #[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
@@ -107,6 +118,7 @@ pub struct ResolvedAggregate {
     pub transform: Entity,
     pub table: Option<TableId>,
     pub mode: AggregateMode,
+    pub group_keys: Vec<ResolvedAggregateGroupKey>,
     pub fields: Vec<ResolvedAggregateField>,
     pub problems: Vec<AggregateProblem>,
 }
@@ -134,8 +146,12 @@ pub enum AggregateProblemKind {
     SourceMustBeCollection {
         source: String,
     },
-    GroupedNotSupported,
     EmptyBody,
+    InvalidGroupKey {
+        written: String,
+    },
+    GroupedCannotFlatten,
+    ExistsInGroupedAggregate,
     UnknownFunction {
         name: String,
     },
@@ -323,12 +339,6 @@ async fn resolve_aggregates(
             },
         });
     }
-    if mode == AggregateMode::Grouped {
-        problems.push(AggregateProblem {
-            span: transform.span,
-            kind: AggregateProblemKind::GroupedNotSupported,
-        });
-    }
     if transform.fields.is_empty() {
         problems.push(AggregateProblem {
             span: transform.span,
@@ -346,14 +356,48 @@ async fn resolve_aggregates(
         });
     }
 
+    let group_keys = table.map_or_else(Vec::new, |table| {
+        transform
+            .group_keys
+            .iter()
+            .filter_map(|key| resolve_group_key(catalog, table, key, &mut problems))
+            .collect()
+    });
     let fields = table.map_or_else(Vec::new, |table| {
         transform
             .fields
             .iter()
-            .map(|field| resolve_field(catalog, table, field, &mut problems))
+            .map(|field| resolve_field(catalog, table, mode, field, &mut problems))
             .collect()
     });
-    check_output_keys(&fields, &mut problems);
+    if mode == AggregateMode::Grouped {
+        if source.flattened {
+            problems.push(AggregateProblem {
+                span: source.name_span,
+                kind: AggregateProblemKind::GroupedCannotFlatten,
+            });
+        }
+        for field in &fields {
+            if field.function == Some(AggregateFunction::Exists) {
+                problems.push(AggregateProblem {
+                    span: field.function_span,
+                    kind: AggregateProblemKind::ExistsInGroupedAggregate,
+                });
+            }
+        }
+    }
+    check_output_keys(
+        group_keys
+            .iter()
+            .map(|key| (key.output_name.as_str(), key.output_span))
+            .chain(fields.iter().filter_map(|field| {
+                field
+                    .output_name
+                    .as_deref()
+                    .map(|name| (name, field.output_span))
+            })),
+        &mut problems,
+    );
 
     commands.insert((
         DerivedFrom::many([
@@ -368,10 +412,73 @@ async fn resolve_aggregates(
             transform: transform_entity,
             table,
             mode,
+            group_keys,
             fields,
             problems,
         },
     ));
+}
+
+fn resolve_group_key(
+    catalog: &Catalog,
+    table: TableId,
+    key: &AggregateGroupKeySyntax,
+    problems: &mut Vec<AggregateProblem>,
+) -> Option<ResolvedAggregateGroupKey> {
+    let Expr::Path {
+        anchor, segments, ..
+    } = &key.path
+    else {
+        problems.push(AggregateProblem {
+            span: key.span,
+            kind: AggregateProblemKind::InvalidGroupKey {
+                written: key.path.to_string(),
+            },
+        });
+        return None;
+    };
+    let [segment] = segments.as_slice() else {
+        problems.push(AggregateProblem {
+            span: key.span,
+            kind: AggregateProblemKind::InvalidGroupKey {
+                written: key.path.to_string(),
+            },
+        });
+        return None;
+    };
+    let reference = FieldRef {
+        target: TableRef::parse(&segment.name),
+        selector: None,
+    };
+    let FieldCheckResult::Column(column) = catalog.check_field_ref(table, reference) else {
+        problems.push(AggregateProblem {
+            span: key.span,
+            kind: AggregateProblemKind::InvalidGroupKey {
+                written: key.path.to_string(),
+            },
+        });
+        return None;
+    };
+    if *anchor != crate::entities::expression::PathAnchor::Current
+        || segment.relation_path.is_some()
+        || segment.name.contains("::")
+    {
+        problems.push(AggregateProblem {
+            span: key.span,
+            kind: AggregateProblemKind::InvalidGroupKey {
+                written: key.path.to_string(),
+            },
+        });
+        return None;
+    }
+    Some(ResolvedAggregateGroupKey {
+        output_name: key.alias.clone().unwrap_or_else(|| column.name.clone()),
+        output_span: key.alias_span.unwrap_or(segment.span),
+        column: column.id,
+        column_span: segment.span,
+        data_type: column.data_type,
+        nullable: !column.not_null,
+    })
 }
 
 fn aggregate_source(catalog: &Catalog, resolved: &ResolvedSelection) -> (Option<TableId>, bool) {
@@ -396,6 +503,7 @@ fn aggregate_source(catalog: &Catalog, resolved: &ResolvedSelection) -> (Option<
 fn resolve_field(
     catalog: &Catalog,
     table: TableId,
+    mode: AggregateMode,
     field: &AggregateFieldSyntax,
     problems: &mut Vec<AggregateProblem>,
 ) -> ResolvedAggregateField {
@@ -482,7 +590,11 @@ fn resolve_field(
             }
             // An ungrouped min/max is null on an empty source even when the
             // operand column itself is not null.
-            resolved.nullable = true;
+            resolved.nullable = mode == AggregateMode::Ungrouped
+                || resolved
+                    .operand
+                    .and_then(|column| catalog.column_by_id(column))
+                    .is_none_or(|column| !column.not_null);
         }
     }
     resolved
@@ -547,26 +659,28 @@ fn push_invalid_operand(operand: &Expr, problems: &mut Vec<AggregateProblem>) {
     });
 }
 
-fn check_output_keys(fields: &[ResolvedAggregateField], problems: &mut Vec<AggregateProblem>) {
+fn check_output_keys<'a>(
+    fields: impl IntoIterator<Item = (&'a str, Span)>,
+    problems: &mut Vec<AggregateProblem>,
+) {
     let mut seen = Vec::new();
-    for field in fields {
-        let Some(key) = &field.output_name else {
-            continue;
-        };
-        if seen.contains(key) {
+    for (key, span) in fields {
+        if seen.contains(&key) {
             problems.push(AggregateProblem {
-                span: field.output_span,
-                kind: AggregateProblemKind::DuplicateOutputKey { key: key.clone() },
+                span,
+                kind: AggregateProblemKind::DuplicateOutputKey {
+                    key: key.to_string(),
+                },
             });
         } else {
-            seen.push(key.clone());
+            seen.push(key);
         }
         let bytes = key.len();
         if bytes > crate::entities::field_selection::POSTGRES_RESULT_ALIAS_MAX_BYTES {
             problems.push(AggregateProblem {
-                span: field.output_span,
+                span,
                 kind: AggregateProblemKind::OutputKeyTooLong {
-                    key: key.clone(),
+                    key: key.to_string(),
                     bytes,
                 },
             });
@@ -607,6 +721,23 @@ async fn hover_aggregate_fields(
     let (request, _, cursor) = query.item();
     let (_, aggregate) = aggregates.item();
     let (_, snapshot) = catalog.item();
+    for key in &aggregate.group_keys {
+        let text = if key.column_span.contains(cursor.0) {
+            describe_column(snapshot.catalog(), key.column)
+        } else if key.output_span.contains(cursor.0) {
+            Some(format!(
+                "aggregate group key `{}`: {}{}",
+                key.output_name,
+                key.data_type.as_str(),
+                if key.nullable { " (nullable)" } else { "" },
+            ))
+        } else {
+            None
+        };
+        if let Some(text) = text {
+            emit_hover_candidate(&mut commands, request, priority::FIELD, text);
+        }
+    }
     for field in &aggregate.fields {
         let text = if field
             .operand_name_span
@@ -650,6 +781,18 @@ async fn aggregate_tokens(
     let demand_entity = demand.item();
     let (aggregate_entity, aggregate, file) = aggregates.item();
     let mut tokens = Vec::new();
+    for key in &aggregate.group_keys {
+        if key.output_span != key.column_span {
+            tokens.push(SemanticToken {
+                span: key.output_span,
+                kind: SemanticTokenKind::Alias,
+            });
+        }
+        tokens.push(SemanticToken {
+            span: key.column_span,
+            kind: SemanticTokenKind::Column,
+        });
+    }
     for field in &aggregate.fields {
         if field.output_span != field.function_span && field.output_name.is_some() {
             tokens.push(SemanticToken {
@@ -683,11 +826,14 @@ async fn complete_aggregate_positions(
     mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
 ) {
     let (request, context) = requests.item();
-    if context.site != CompletionSite::AggregateBody {
+    if !matches!(
+        context.site,
+        CompletionSite::AggregateBody | CompletionSite::AggregateGroupKey
+    ) {
         return;
     }
     let (_, snapshot) = catalog.item();
-    let items = if context.spread_dots > 0 {
+    let items = if context.site == CompletionSite::AggregateGroupKey || context.spread_dots > 0 {
         context.table.map_or_else(Vec::new, |table| {
             snapshot
                 .catalog()
@@ -724,11 +870,13 @@ impl AggregateProblemKind {
         match self {
             Self::UnknownTransform { .. } => DiagnosticCode::UnknownTransform,
             Self::SourceMustBeCollection { .. } => DiagnosticCode::AggregateSourceCardinality,
-            Self::GroupedNotSupported => DiagnosticCode::GroupedAggregateUnsupported,
             Self::EmptyBody => DiagnosticCode::EmptyAggregate,
             Self::DuplicateOutputKey { .. } => DiagnosticCode::DuplicateOutputKey,
             Self::OutputKeyTooLong { .. } => DiagnosticCode::OutputKeyTooLong,
             Self::UnknownFunction { .. }
+            | Self::InvalidGroupKey { .. }
+            | Self::GroupedCannotFlatten
+            | Self::ExistsInGroupedAggregate
             | Self::MissingOperand { .. }
             | Self::UnexpectedOperand { .. }
             | Self::AliasRequired { .. }
@@ -743,10 +891,16 @@ impl AggregateProblemKind {
             Self::SourceMustBeCollection { source } => format!(
                 "aggregate source `{source}` must be a collection; singular and scalar sources cannot be aggregated"
             ),
-            Self::GroupedNotSupported => {
-                "grouped aggregates are recognized but are not implemented yet".to_string()
-            }
             Self::EmptyBody => "aggregate body must contain at least one field".to_string(),
+            Self::InvalidGroupKey { written } => format!(
+                "aggregate group key `{written}` must be a `.`-anchored direct scalar column"
+            ),
+            Self::GroupedCannotFlatten => {
+                "grouped aggregate output is array-valued and cannot be flattened".to_string()
+            }
+            Self::ExistsInGroupedAggregate => {
+                "aggregate function `exists` is not meaningful in grouped output".to_string()
+            }
             Self::UnknownFunction { name } => format!("unknown aggregate function `{name}`"),
             Self::MissingOperand { function } => {
                 format!(

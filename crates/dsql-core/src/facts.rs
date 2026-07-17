@@ -67,7 +67,6 @@ pub enum DiagnosticCode {
     RelationSelectionSet,
     UnknownTransform,
     AggregateSourceCardinality,
-    GroupedAggregateUnsupported,
     EmptyAggregate,
     InvalidAggregateField,
     AggregateClauseNotAllowed,

@@ -3,7 +3,7 @@
 use bowl::Component;
 
 use crate::catalog::{ColumnId, DataType, ForeignKeyId, TableId, TableKey};
-use crate::entities::aggregate::AggregateFunction;
+use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::entities::expression::ComparisonOp;
 use crate::facts::Span;
 
@@ -191,10 +191,20 @@ pub enum CollectionResultPlan {
     Aggregate(AggregatePlan),
 }
 
-/// One ungrouped aggregate object.
+/// One aggregate object or grouped array.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AggregatePlan {
+    pub mode: AggregateMode,
+    pub group_keys: Vec<AggregateGroupProjection>,
     pub fields: Vec<AggregateProjection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AggregateGroupProjection {
+    pub column: ColumnId,
+    pub output_name: String,
+    pub data_type: DataType,
+    pub nullable: bool,
 }
 
 /// One computed scalar inside an [`AggregatePlan`].
