@@ -98,6 +98,8 @@ pub enum CompletionSite {
     AggregateBody,
     /// Inside one `aggregate by` key.
     AggregateGroupKey,
+    /// Naming the contextual transform immediately after `|`.
+    PipeTransform,
     /// After `@`, naming a directive namespace (or the `.` shorthand).
     DirectiveName,
     /// After `@namespace.` or `@.`, naming a directive member.
@@ -361,6 +363,7 @@ async fn enrich_completion_requests(
             | CompletionSite::SpreadName
             | CompletionSite::AggregateBody
             | CompletionSite::AggregateGroupKey
+            | CompletionSite::PipeTransform
             | CompletionSite::DirectiveName
             | CompletionSite::DirectiveMember
             | CompletionSite::DirectiveArgument
@@ -685,7 +688,7 @@ fn classify_site(
     {
         return CompletionSite::AggregateGroupKey;
     }
-    for (index, (rule, _)) in spine.iter().enumerate().rev() {
+    for (index, (rule, node)) in spine.iter().enumerate().rev() {
         match rule {
             Rule::WhereClause => return CompletionSite::WhereExpr,
             Rule::OrderByClause => return CompletionSite::OrderBy,
@@ -693,6 +696,13 @@ fn classify_site(
             Rule::FragmentSpread => return CompletionSite::SpreadName,
             Rule::AggregateSet => return CompletionSite::AggregateBody,
             Rule::AggregateGroupKey => return CompletionSite::AggregateGroupKey,
+            Rule::PipeTransform
+                if !cst
+                    .children(*node)
+                    .any(|child| cst.match_token(child, Token::Name).is_some()) =>
+            {
+                return CompletionSite::PipeTransform;
+            }
             Rule::SelectionSet => {
                 // A selection set directly under a definition lists tables
                 // (queries) or the fragment target's fields; deeper ones

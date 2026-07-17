@@ -852,12 +852,21 @@ async fn complete_aggregate_positions(
     let (request, context) = requests.item();
     if !matches!(
         context.site,
-        CompletionSite::AggregateBody | CompletionSite::AggregateGroupKey
+        CompletionSite::AggregateBody
+            | CompletionSite::AggregateGroupKey
+            | CompletionSite::PipeTransform
     ) {
         return;
     }
     let (_, snapshot) = catalog.item();
-    let items = if context.site == CompletionSite::AggregateGroupKey || context.spread_dots > 0 {
+    let items = if context.site == CompletionSite::PipeTransform {
+        vec![CompletionItem {
+            label: "aggregate".to_string(),
+            kind: CompletionKind::Keyword,
+            detail: Some("selection transform".to_string()),
+            insert_text: None,
+        }]
+    } else if context.site == CompletionSite::AggregateGroupKey || context.spread_dots > 0 {
         context.table.map_or_else(Vec::new, |table| {
             snapshot
                 .catalog()
@@ -866,7 +875,9 @@ async fn complete_aggregate_positions(
                     label: column.name.clone(),
                     kind: CompletionKind::Column,
                     detail: Some(column.data_type.as_str().to_string()),
-                    insert_text: None,
+                    insert_text: (context.site == CompletionSite::AggregateGroupKey
+                        && context.spread_dots == 0)
+                        .then(|| format!(".{}", column.name)),
                 })
                 .collect()
         })

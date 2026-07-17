@@ -1,7 +1,13 @@
 ---
 source: crates/dsql-core/tests/it/completions.rs
-expression: "format!(\"functions:\\n{functions}\\n\\noperands:\\n{operands}\\n\\ngroup keys:\\n{group_keys}\")"
+expression: "format!(\"pipe replace={:?}:\\n{}\\n\\npartial pipe replace={:?}:\\n{}\\n\\nfunctions:\\n{functions}\\n\\noperands:\\n{operands}\\n\\ngroup keys:\\n{group_keys}\\n\\nrooted group keys:\\n{rooted_group_keys}\",\npipe.replace, render_completion_items(&pipe), partial_pipe.replace,\nrender_completion_items(&partial_pipe),)"
 ---
+pipe replace=None:
+Keyword aggregate (selection transform)
+
+partial pipe replace=Some(Span { start: 20, end: 24 }):
+Keyword aggregate (selection transform)
+
 functions:
 Keyword avg (aggregate function)
 Keyword count (aggregate function)
@@ -17,6 +23,12 @@ Column id (uuid)
 Column name (text)
 
 group keys:
+Column created_at (timestamptz) insert=.created_at
+Column email (text) insert=.email
+Column id (uuid) insert=.id
+Column name (text) insert=.name
+
+rooted group keys:
 Column created_at (timestamptz)
 Column email (text)
 Column id (uuid)

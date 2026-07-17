@@ -3,6 +3,8 @@
 //! contribute tables, columns, relations, and fragments for the resolved
 //! context table.
 
+use std::sync::Arc;
+
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::language_bowl;
 use dsql_core::service::{CompletionList, CompletionRequest, Position};
@@ -13,6 +15,11 @@ async fn completions(source_with_cursor: &str) -> String {
 }
 
 async fn completions_with_marker(source_with_cursor: &str, marker: char) -> String {
+    let list = completion_list(source_with_cursor, marker).await;
+    render_completion_items(&list)
+}
+
+async fn completion_list(source_with_cursor: &str, marker: char) -> Arc<CompletionList> {
     let offset = source_with_cursor
         .find(marker)
         .expect("test source marks the cursor with |");
@@ -22,18 +29,19 @@ async fn completions_with_marker(source_with_cursor: &str, marker: char) -> Stri
     insert_catalog(&bowl, Catalog::hardcoded()).await;
     insert_source(&bowl, "test.dsql", &source).await;
 
-    let list = bowl
-        .insert((
-            CompletionRequest,
-            FilePath("test.dsql".to_string()),
-            Position { offset },
-        ))
-        .await
-        .bind()
-        .take::<CompletionList>()
-        .await
-        .expect("completion requests with a known file are answered");
+    bowl.insert((
+        CompletionRequest,
+        FilePath("test.dsql".to_string()),
+        Position { offset },
+    ))
+    .await
+    .bind()
+    .take::<CompletionList>()
+    .await
+    .expect("completion requests with a known file are answered")
+}
 
+fn render_completion_items(list: &CompletionList) -> String {
     list.items
         .iter()
         .map(|item| {
@@ -119,11 +127,19 @@ async fn aggregate_bodies_offer_contextual_functions_and_operands() {
         '¦',
     )
     .await;
+    let pipe = completion_list("query Q {\n  users | ¦\n}\n", '¦').await;
+    let partial_pipe = completion_list("query Q {\n  users | aggr¦ { count }\n}\n", '¦').await;
     let group_keys =
+        completions_with_marker("query Q {\n  users | aggregate by ¦ { count }\n}\n", '¦').await;
+    let rooted_group_keys =
         completions_with_marker("query Q {\n  users | aggregate by .n¦ { count }\n}\n", '¦').await;
 
     insta::assert_snapshot!(format!(
-        "functions:\n{functions}\n\noperands:\n{operands}\n\ngroup keys:\n{group_keys}"
+        "pipe replace={:?}:\n{}\n\npartial pipe replace={:?}:\n{}\n\nfunctions:\n{functions}\n\noperands:\n{operands}\n\ngroup keys:\n{group_keys}\n\nrooted group keys:\n{rooted_group_keys}",
+        pipe.replace,
+        render_completion_items(&pipe),
+        partial_pipe.replace,
+        render_completion_items(&partial_pipe),
     ));
 }
 
