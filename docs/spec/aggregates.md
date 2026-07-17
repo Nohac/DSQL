@@ -198,6 +198,11 @@ them through a JSON or JavaScript number. Numeric inputs use the same string
 contract; PostgreSQL infers or receives the target numeric type from the
 expression in which the parameter is used.
 
+`sum` also exposes integer operands as logical `numeric`: PostgreSQL widens
+integer sums, and the result may exceed JavaScript's exact integer range even
+when every input value fits. Keeping the widened result on the lossless string
+wire contract avoids silently rounding valid sums.
+
 PostgreSQL `real`/`float4` and `double precision`/`float8` use the distinct
 logical `float` type. Finite values remain JSON numbers. PostgreSQL serializes
 non-finite values as the JSON strings `NaN`, `Infinity`, and `-Infinity`, so the
