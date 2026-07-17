@@ -11,6 +11,7 @@ struct Session {
     output: DuplexStream,
     buffer: Vec<u8>,
     root: PathBuf,
+    initialize: Value,
     next_id: i64,
 }
 
@@ -37,10 +38,11 @@ impl Session {
             output: client_out,
             buffer: Vec::new(),
             root,
+            initialize: Value::Null,
             next_id: 0,
         };
         let root_uri = format!("file://{}", session.root.display());
-        let _ = session
+        session.initialize = session
             .request_response(
                 "initialize",
                 json!({
@@ -345,6 +347,43 @@ async fn hosts_hover_and_foreign_files_are_ignored() {
     assert!(
         content.contains("TitleBits"),
         "host hover answers through the region, got {response}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn semantic_tokens_advertise_and_encode_the_host_wire_contract() {
+    let mut session = Session::start("semantic-tokens").await;
+    assert_eq!(
+        session.initialize["result"]["capabilities"]["semanticTokensProvider"]["legend"],
+        json!({
+            "tokenTypes": ["namespace", "class", "relation", "property", "fragment", "alias"],
+            "tokenModifiers": [],
+        })
+    );
+
+    let uri = session.uri("src/components/SemanticTokens.ts");
+    let text = concat!(
+        "const marker = \"😀\";\n",
+        "export const query = dsql(`\n",
+        "query Tokens {\n",
+        "  title(where .title == \"😀\" limit 1) { movie_id: id }\n",
+        "}\n",
+        "`);\n",
+    );
+    session.open(&uri, "typescript", text).await;
+    let response = session
+        .request_response(
+            "textDocument/semanticTokens/full",
+            json!({"textDocument": {"uri": uri}}),
+        )
+        .await;
+
+    assert_eq!(
+        response["result"]["data"],
+        json!([
+            2, 6, 6, 4, 0, 1, 2, 5, 1, 0, 0, 13, 5, 3, 0, 0, 25, 8, 5, 0, 0, 10, 2, 3, 0,
+        ]),
+        "tokens use host lines, UTF-16 columns, and LSP delta encoding"
     );
 }
 

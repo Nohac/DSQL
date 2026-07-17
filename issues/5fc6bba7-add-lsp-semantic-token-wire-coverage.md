@@ -1,6 +1,6 @@
 # Add LSP semantic token wire coverage
 
-**ID:** 5fc6bba7 | **Status:** Open | **Created:** 2026-07-17T01:46:36+02:00
+**ID:** 5fc6bba7 | **Status:** Done | **Created:** 2026-07-17T01:46:36+02:00
 
 The LSP advertises and implements `textDocument/semanticTokens/full`, while
 current coverage stops at core token classification and host projection. Add
