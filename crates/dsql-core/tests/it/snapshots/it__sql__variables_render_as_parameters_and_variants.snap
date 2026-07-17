@@ -12,6 +12,8 @@ select
         'posts',
         "posts_json_9b3bd304"."posts_result_9b3bd304"
       )
+      order by
+        "users_99fc7350"."created_at" {{params.dir}}
     ),
     '[]'
   ) as "users"

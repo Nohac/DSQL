@@ -5,8 +5,8 @@ use crate::catalog::{
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
     AggregatePlan, CollectionPlan, CollectionResultPlan, FilterColumnScope, FilterExpr,
-    FilterLiteral, FilterOp, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
-    SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    FilterLiteral, FilterOp, NestedRelation, QueryPlan, SelectionClauses, SelectionPlan,
+    SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
 };
 use sea_query::{
     Alias, Asterisk, Condition, Expr, ExprTrait, Func, JoinType, Order, PgFunc,
@@ -50,6 +50,8 @@ pub enum SqlGenerationError {
     MissingAggregateOperand,
     #[error("filter shape is not supported in a text fragment position")]
     UnsupportedFilterFragment,
+    #[error("SQL template numeric sentinel space was exhausted")]
+    TemplateSentinelExhausted,
     #[error(
         "foreign key `{foreign_key}` does not connect parent table `{parent}` to child table `{child}`"
     )]
@@ -80,21 +82,23 @@ struct SqlTemplateContext {
     parameters: Vec<GeneratedSqlParameter>,
     variants: Vec<GeneratedSqlVariant>,
     replacements: Vec<(String, String)>,
+    numeric_replacements: Vec<(String, String)>,
     next_sentinel: u64,
 }
 
-impl Default for SqlTemplateContext {
-    fn default() -> Self {
+const FIRST_NUMERIC_SENTINEL: u64 = 9_000_000_000_000_000_000;
+
+impl SqlTemplateContext {
+    fn new(next_sentinel: u64) -> Self {
         Self {
             parameters: Vec::new(),
             variants: Vec::new(),
             replacements: Vec::new(),
-            next_sentinel: 9_000_000_000_000_000_000,
+            numeric_replacements: Vec::new(),
+            next_sentinel,
         }
     }
-}
 
-impl SqlTemplateContext {
     fn parameter(&mut self, parameter: &SqlParameter) -> String {
         if let Some(index) = self
             .parameters
@@ -135,20 +139,26 @@ impl SqlTemplateContext {
         ));
     }
 
-    fn numeric_parameter_sentinel(&mut self, parameter: &SqlParameter) -> u64 {
+    fn numeric_parameter_sentinel(
+        &mut self,
+        parameter: &SqlParameter,
+    ) -> Result<u64, SqlGenerationError> {
         let placeholder = self.parameter(parameter);
         self.numeric_sentinel(placeholder)
     }
 
-    fn numeric_literal_sentinel(&mut self, literal: &str) -> u64 {
+    fn numeric_literal_sentinel(&mut self, literal: &str) -> Result<u64, SqlGenerationError> {
         self.numeric_sentinel(literal.to_string())
     }
 
-    fn numeric_sentinel(&mut self, replacement: String) -> u64 {
+    fn numeric_sentinel(&mut self, replacement: String) -> Result<u64, SqlGenerationError> {
         let sentinel = self.next_sentinel;
-        self.next_sentinel += 1;
-        self.replacements.push((sentinel.to_string(), replacement));
-        sentinel
+        self.next_sentinel = sentinel
+            .checked_add(1)
+            .ok_or(SqlGenerationError::TemplateSentinelExhausted)?;
+        self.numeric_replacements
+            .push((sentinel.to_string(), replacement));
+        Ok(sentinel)
     }
 }
 
@@ -164,44 +174,83 @@ pub fn generate_postgres_sql_with_options(
     catalog: &Catalog,
     options: PostgresSqlOptions,
 ) -> Result<GeneratedSql, SqlGenerationError> {
-    let mut path = Vec::new();
-    let mut template = SqlTemplateContext::default();
-    let root = table(catalog, plan.collection.table)?;
-    path.push(path_segment(root, &plan.output_name));
-    let root_query = generate_collection(
-        &plan.collection,
-        catalog,
-        &plan.output_name,
-        &path,
-        SelectionGenerationContext {
-            parent: None,
-            root: None,
-            cardinality: RelationCardinality::Collection,
-            options,
-            public_result_alias: Some(&plan.output_name),
-            flattened: plan.flattened,
-        },
-        &mut template,
-    )?;
     let format_options = sqlformat::FormatOptions {
         uppercase: Some(false),
         indent: sqlformat::Indent::Spaces(2),
         ..Default::default()
     };
-    let mut sql = sqlformat::format(
-        &root_query.to_string(PostgresQueryBuilder),
-        &sqlformat::QueryParams::default(),
-        &format_options,
-    );
-    for (needle, replacement) in &template.replacements {
-        sql = sql.replace(needle, replacement);
+    let mut next_sentinel = FIRST_NUMERIC_SENTINEL;
+    loop {
+        let mut path = Vec::new();
+        let mut template = SqlTemplateContext::new(next_sentinel);
+        let root = table(catalog, plan.collection.table)?;
+        path.push(path_segment(root, &plan.output_name));
+        let root_query = generate_collection(
+            &plan.collection,
+            catalog,
+            &plan.output_name,
+            &path,
+            SelectionGenerationContext {
+                parent: None,
+                root: None,
+                cardinality: RelationCardinality::Collection,
+                options,
+                public_result_alias: Some(&plan.output_name),
+                flattened: plan.flattened,
+            },
+            &mut template,
+        )?;
+        let formatted = sqlformat::format(
+            &root_query.to_string(PostgresQueryBuilder),
+            &sqlformat::QueryParams::default(),
+            &format_options,
+        );
+        let Some(mut sql) = replace_numeric_sentinels(&formatted, &template.numeric_replacements)
+        else {
+            next_sentinel = template.next_sentinel;
+            continue;
+        };
+        for (needle, replacement) in &template.replacements {
+            sql = sql.replace(needle, replacement);
+        }
+        return Ok(GeneratedSql {
+            output_name: plan.output_name.clone(),
+            sql,
+            parameters: template.parameters,
+            variants: template.variants,
+        });
     }
-    Ok(GeneratedSql {
-        output_name: plan.output_name.clone(),
-        sql,
-        parameters: template.parameters,
-        variants: template.variants,
-    })
+}
+
+/// Replaces numeric template markers against their ranges in the original
+/// formatted SQL, so one replacement's payload is never scanned for another
+/// marker. `None` asks the caller to rebuild with a fresh sentinel range.
+fn replace_numeric_sentinels(sql: &str, replacements: &[(String, String)]) -> Option<String> {
+    let mut ranges = Vec::with_capacity(replacements.len());
+    for (needle, replacement) in replacements {
+        let mut occurrences = sql.match_indices(needle);
+        let (start, _) = occurrences.next()?;
+        if occurrences.next().is_some() {
+            return None;
+        }
+        ranges.push((start, start + needle.len(), replacement.as_str()));
+    }
+    ranges.sort_by_key(|(start, _, _)| *start);
+
+    let mut rendered = String::with_capacity(sql.len());
+    let mut cursor = 0;
+    for (start, end, replacement) in ranges {
+        // Distinct sentinels each occurring once identify disjoint render
+        // sites. Treat any overlap as a collision and retry defensively.
+        if start < cursor {
+            return None;
+        }
+        rendered.push_str(&sql[cursor..start]);
+        rendered.push_str(replacement);
+        cursor = end;
+    }
+    rendered.push_str(&sql[cursor..]);
+    Some(rendered)
 }
 
 fn generate_collection(
@@ -246,7 +295,8 @@ fn generate_rows(
     let current_table = table(catalog, collection.table)?;
     let context = context_for(current_table, output_name, path);
     let root_context = generation.root.unwrap_or(&context);
-    let export_fields = generation.flattened && generation.parent.is_some();
+    let export_fields = generation.flattened;
+    let encode_exported_fields = generation.parent.is_none();
     let mut query = Query::select();
 
     let relation_condition = if let Some((parent, foreign_key)) = generation.parent {
@@ -304,13 +354,13 @@ fn generate_rows(
         )?;
     };
 
-    for item in &selection.items {
+    for (item_index, item) in selection.items.iter().enumerate() {
         let SelectionPlanItem::Relation(relation) = item else {
             continue;
         };
         let related_table = table(catalog, relation.collection.table)?;
-        let mut relation_path = path.to_vec();
-        relation_path.push(path_segment(related_table, &relation.output_name));
+        let relation_path =
+            relation_instance_path(selection, item_index, related_table, relation, path);
         let foreign_key = foreign_key(catalog, relation.foreign_key)?;
         let relation_cardinality = catalog
             .relation_cardinality(collection.table, relation.collection.table, foreign_key)
@@ -346,15 +396,22 @@ fn generate_rows(
     let fields = selection_field_expressions(selection, catalog, &context, path)?;
     if export_fields {
         for (output_name, expression) in fields {
+            let expression = if encode_exported_fields {
+                json_wire_expression(expression)
+            } else {
+                expression
+            };
             query.expr_as(expression, Alias::new(output_name));
         }
         return Ok(query.to_owned());
     }
     let object = json_build_object(fields);
     let expression: Expr = match generation.cardinality {
-        RelationCardinality::Collection => {
-            Func::coalesce([PgFunc::json_agg(object).into(), Expr::value("[]")]).into()
-        }
+        RelationCardinality::Collection => Func::coalesce([
+            ordered_json_agg(object, &collection.clauses, catalog, &context)?,
+            Expr::value("[]"),
+        ])
+        .into(),
         RelationCardinality::Singular => object,
     };
     query.expr_as(
@@ -366,6 +423,36 @@ fn generate_rows(
         ),
     );
     Ok(query.to_owned())
+}
+
+fn ordered_json_agg(
+    object: Expr,
+    clauses: &SelectionClauses,
+    catalog: &Catalog,
+    context: &SelectionContext,
+) -> Result<Expr, SqlGenerationError> {
+    if clauses.order_by.is_empty() {
+        return Ok(PgFunc::json_agg(object).into());
+    }
+
+    let mut expressions = vec![object];
+    let mut order_items = Vec::with_capacity(clauses.order_by.len());
+    for order in &clauses.order_by {
+        let column = column(catalog, order.column)?;
+        expressions.push(Expr::col((
+            Alias::new(&context.table_alias),
+            Alias::new(&column.name),
+        )));
+        let direction = match &order.direction {
+            SortDirectionPlan::Asc | SortDirectionPlan::Variant { .. } => "ASC",
+            SortDirectionPlan::Desc => "DESC",
+        };
+        order_items.push(format!("${} {direction}", expressions.len()));
+    }
+    Ok(Expr::cust_with_exprs(
+        format!("JSON_AGG($1 ORDER BY {})", order_items.join(", ")),
+        expressions,
+    ))
 }
 
 fn generate_aggregate(
@@ -380,7 +467,8 @@ fn generate_aggregate(
     let current_table = table(catalog, collection.table)?;
     let context = context_for(current_table, output_name, path);
     let root_context = generation.root.unwrap_or(&context);
-    let export_fields = generation.flattened && generation.parent.is_some();
+    let export_fields = generation.flattened;
+    let encode_exported_fields = generation.parent.is_none();
     let mut query = Query::select();
     query.from_as(
         (
@@ -431,6 +519,11 @@ fn generate_aggregate(
     }
     if export_fields {
         for (output_name, expression) in fields {
+            let expression = if encode_exported_fields {
+                json_wire_expression(expression)
+            } else {
+                expression
+            };
             query.expr_as(expression, Alias::new(output_name));
         }
         return Ok(query.to_owned());
@@ -613,12 +706,12 @@ fn apply_order_limit_offset(
     if let Some(limit) = limit_override.or_else(|| sql_value_u64(&clauses.limit)) {
         query.limit(limit);
     } else if let Some(SqlValue::Parameter(parameter)) = &clauses.limit {
-        query.limit(template.numeric_parameter_sentinel(parameter));
+        query.limit(template.numeric_parameter_sentinel(parameter)?);
     }
     if let Some(offset) = sql_value_u64(&clauses.offset) {
         query.offset(offset);
     } else if let Some(SqlValue::Parameter(parameter)) = &clauses.offset {
-        query.offset(template.numeric_parameter_sentinel(parameter));
+        query.offset(template.numeric_parameter_sentinel(parameter)?);
     }
     Ok(())
 }
@@ -654,14 +747,15 @@ fn filter_expr(
         FilterExpr::Parameter(parameter) => Expr::cust(template.parameter(parameter)),
         FilterExpr::Literal(literal) => match literal {
             FilterLiteral::String(value) => Expr::value(value.clone()),
-            FilterLiteral::Number(value) => {
-                value.parse::<i64>().map(Expr::value).unwrap_or_else(|_| {
+            FilterLiteral::Number(value) => match value.parse::<i64>() {
+                Ok(value) => Expr::value(value),
+                Err(_) => {
                     // The parser has already validated this token as a
                     // number. Preserve its source text: routing exact
                     // numerics through f64 would silently round them.
-                    Expr::value(template.numeric_literal_sentinel(value))
-                })
-            }
+                    Expr::value(template.numeric_literal_sentinel(value)?)
+                }
+            },
             FilterLiteral::Bool(value) => Expr::value(*value),
             FilterLiteral::Null => Expr::cust("null"),
         },
@@ -779,6 +873,37 @@ fn sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// Extends a semantic result path with one nested selection instance.
+/// Repeated flattened siblings can share a public relation name, so later
+/// occurrences receive an internal-only discriminator.
+fn relation_instance_path(
+    selection: &SelectionPlan,
+    item_index: usize,
+    table: &Table,
+    relation: &NestedRelation,
+    parent_path: &[String],
+) -> Vec<String> {
+    let occurrence = selection.items[..item_index]
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                SelectionPlanItem::Relation(candidate)
+                    if candidate.collection.table == relation.collection.table
+                        && candidate.output_name == relation.output_name
+            )
+        })
+        .count();
+    let mut segment = path_segment(table, &relation.output_name);
+    if occurrence > 0 {
+        segment.push('#');
+        segment.push_str(&occurrence.to_string());
+    }
+    let mut path = parent_path.to_vec();
+    path.push(segment);
+    path
+}
+
 fn selection_field_expressions(
     selection: &SelectionPlan,
     catalog: &Catalog,
@@ -786,7 +911,7 @@ fn selection_field_expressions(
     path: &[String],
 ) -> Result<Vec<(String, Expr)>, SqlGenerationError> {
     let mut fields = Vec::new();
-    for item in &selection.items {
+    for (item_index, item) in selection.items.iter().enumerate() {
         match item {
             SelectionPlanItem::Projection(projection) => {
                 let column = column(catalog, projection.column)?;
@@ -800,8 +925,8 @@ fn selection_field_expressions(
             }
             SelectionPlanItem::Relation(relation) => {
                 let table = table(catalog, relation.collection.table)?;
-                let mut relation_path = path.to_vec();
-                relation_path.push(path_segment(table, &relation.output_name));
+                let relation_path =
+                    relation_instance_path(selection, item_index, table, relation, path);
                 let related_context = context_for(table, &relation.output_name, &relation_path);
                 if relation.flattened {
                     let mut output_names = Vec::new();
@@ -875,6 +1000,12 @@ fn public_scalar_expression(expression: Expr, data_type: DataType) -> Expr {
     } else {
         expression
     }
+}
+
+/// Gives root-flattened result columns the same public JSON value encoding
+/// they would receive inside [`json_build_object`].
+fn json_wire_expression(expression: Expr) -> Expr {
+    Expr::cust_with_expr("TO_JSON($1)", expression)
 }
 
 fn relation_condition(

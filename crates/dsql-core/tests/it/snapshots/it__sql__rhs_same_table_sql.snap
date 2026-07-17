@@ -1,6 +1,5 @@
 ---
 source: crates/dsql-core/tests/it/sql.rs
-assertion_line: 168
 expression: "fixture_sql(\"valid/imdb-rhs-same-table.dsql\").await"
 ---
 -- movie_info
@@ -13,6 +12,8 @@ select
         'movie_id',
         "movie_info_d37aaa02"."movie_id"
       )
+      order by
+        "movie_info_d37aaa02"."id" asc
     ),
     '[]'
   ) as "movie_info"

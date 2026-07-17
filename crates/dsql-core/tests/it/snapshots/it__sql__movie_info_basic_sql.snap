@@ -18,6 +18,8 @@ select
         'info_type',
         "info_type_json_3587486e"."info_type_result_3587486e"
       )
+      order by
+        "movie_info_d37aaa02"."id" asc
     ),
     '[]'
   ) as "movie_info"

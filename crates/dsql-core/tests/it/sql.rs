@@ -11,23 +11,25 @@ use dsql_core::facts::{PlanDemand, SqlDemand};
 use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
-use sqlx::{AssertSqlSafe, PgPool, Row, postgres::PgPoolOptions};
+use sqlx::{AssertSqlSafe, Column, Row};
+use sqlx_postgres::{PgPool, PgPoolOptions};
 
 use crate::{fixture, imdb_catalog, numeric_catalog, queries_dir, set_source_text};
 
 async fn sql_bowl(catalog: Catalog) -> Bowl {
+    sql_bowl_with_limit(catalog, Some(10)).await
+}
+
+async fn sql_bowl_with_limit(catalog: Catalog, collection_limit: Option<u64>) -> Bowl {
     let bowl = language_bowl().await;
     insert_catalog(&bowl, catalog).await;
     bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
         .await;
     bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))
         .await;
-    // Bound nested collections at 10, the reference snapshot setting.
     bowl.insert((
         Singleton::<SqlOptions>::new(),
-        SqlOptions {
-            collection_limit: Some(10),
-        },
+        SqlOptions { collection_limit },
     ))
     .await;
     bowl
@@ -77,6 +79,42 @@ async fn fixture_sql(name: &str) -> String {
     insert_source(&bowl, name, &fixture(name)).await;
     render_sql(&bowl).await
 }
+
+const MOVIE_SIGNALS: &str = concat!(
+    "fragment MovieSignals on title {\n",
+    "  ...movie_info_idx(where .info_type_id == 101) | aggregate {\n",
+    "    rating: max .info\n",
+    "  }\n",
+    "  ...movie_info_idx(where .info_type_id == 100) | aggregate {\n",
+    "    votes: max .info\n",
+    "  }\n",
+    "}\n",
+);
+
+const RENDERER_EDGE_QUERY: &str = concat!(
+    "query RendererEdges {\n",
+    "  signals: title(where .id == 2 limit 1) { id ...MovieSignals }\n",
+    "  ratings: movie_info_idx(\n",
+    "    where .info_type_id == 101\n",
+    "    order by info desc, id asc\n",
+    "    limit 16\n",
+    "  ) { id info }\n",
+    "  ordered_title: title(where .id == 943844 limit 1) {\n",
+    "    aliases: aka_title->movie_id(order by kind_id desc, id asc limit 16) {\n",
+    "      id\n",
+    "      kind_id\n",
+    "    }\n",
+    "  }\n",
+    "  singular: title(where .id == 2 limit 1) {\n",
+    "    id\n",
+    "    ...kind_type { kind }\n",
+    "  }\n",
+    "  ...kind_type | aggregate {\n",
+    "    kind_count: count\n",
+    "    first_kind: min .kind\n",
+    "  }\n",
+    "}\n",
+);
 
 #[tokio::test]
 async fn title_basic_sql() {
@@ -139,6 +177,29 @@ async fn exact_and_floating_numbers_use_their_public_wire_types() {
             "    total_ratio: sum .ratio\n",
             "    average_ratio: avg .ratio\n",
             "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn numeric_template_replacements_never_rewrite_source_literals() {
+    let bowl = sql_bowl_with_limit(numeric_catalog(), None).await;
+    insert_source(
+        &bowl,
+        "numeric-template.dsql",
+        concat!(
+            "query NumericTemplate {\n",
+            "  metrics(\n",
+            "    where .amount == 9000000000000000000\n",
+            "      or .amount == 9000000000000000005.5\n",
+            "      or .amount == 12345678901234567890.12345678901234567890\n",
+            "    limit $$page_limit\n",
+            "    offset $$page_offset\n",
+            "  ) { amount }\n",
             "}\n",
         ),
     )
@@ -219,6 +280,15 @@ async fn flattened_objects_export_fields_without_wrapper_keys() {
         ),
     )
     .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn repeated_flattened_aggregates_and_collection_ordering_render_independently() {
+    let bowl = sql_bowl_with_limit(imdb_catalog(), None).await;
+    insert_source(&bowl, "movie-signals.dsql", MOVIE_SIGNALS).await;
+    insert_source(&bowl, "renderer-edges.dsql", RENDERER_EDGE_QUERY).await;
 
     insta::assert_snapshot!(render_sql(&bowl).await);
 }
@@ -360,6 +430,151 @@ async fn cross_file_fragment_clauses_are_preserved_in_sql() {
     .await;
 
     insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn renderer_edge_cases_execute_when_database_url_is_set() {
+    let Ok(database_url) = env::var("DSQL_TEST_DATABASE_URL") else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("reference database connects");
+    let bowl = sql_bowl_with_limit(imdb_catalog(), None).await;
+    insert_source(&bowl, "movie-signals.dsql", MOVIE_SIGNALS).await;
+    insert_source(&bowl, "renderer-edges.dsql", RENDERER_EDGE_QUERY).await;
+    let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+    let generated = rows
+        .collect()
+        .into_iter()
+        .map(|(_, fact)| (fact.0.output_name.clone(), fact.0.sql.clone()))
+        .collect::<HashMap<_, _>>();
+
+    let flattened_sql = generated
+        .get("kind_type")
+        .expect("root flattened SQL exists")
+        .clone();
+    let flattened = sqlx::query(AssertSqlSafe(flattened_sql))
+        .fetch_one(&pool)
+        .await
+        .expect("root flattened SQL executes");
+    let column_names = flattened
+        .columns()
+        .iter()
+        .map(|column| column.name())
+        .collect::<Vec<_>>();
+    assert_eq!(column_names, ["kind_count", "first_kind"]);
+    let kind_count: serde_json::Value = flattened
+        .try_get("kind_count")
+        .expect("count uses the JSON driver type");
+    let first_kind: serde_json::Value = flattened
+        .try_get("first_kind")
+        .expect("text uses the JSON driver type");
+    assert!(kind_count.is_number(), "count stays a JSON number");
+    assert!(first_kind.is_string(), "text stays a JSON string");
+
+    let singular = execute_json(
+        &pool,
+        generated.get("singular").expect("singular SQL exists"),
+    )
+    .await;
+    let singular = singular
+        .as_array()
+        .and_then(|rows| rows.first())
+        .and_then(serde_json::Value::as_object)
+        .expect("singular result contains one object");
+    assert_eq!(singular.len(), 2);
+    assert!(singular.contains_key("id") && singular.contains_key("kind"));
+
+    let signals = execute_json(&pool, generated.get("signals").expect("signals SQL exists")).await;
+    let signals = signals
+        .as_array()
+        .and_then(|rows| rows.first())
+        .and_then(serde_json::Value::as_object)
+        .expect("signals result contains one object");
+    assert_eq!(signals.get("rating"), Some(&serde_json::json!("4.0")));
+    assert_eq!(signals.get("votes"), Some(&serde_json::json!("53")));
+
+    let ratings = execute_json(&pool, generated.get("ratings").expect("ratings SQL exists")).await;
+    assert_string_desc_id_asc(
+        ratings.as_array().expect("ratings result is an array"),
+        "info",
+    );
+
+    let ordered_title = execute_json(
+        &pool,
+        generated
+            .get("ordered_title")
+            .expect("ordered title SQL exists"),
+    )
+    .await;
+    let aliases = ordered_title
+        .as_array()
+        .and_then(|rows| rows.first())
+        .and_then(|title| title.get("aliases"))
+        .and_then(serde_json::Value::as_array)
+        .expect("ordered title contains aliases");
+    assert_number_desc_id_asc(aliases, "kind_id");
+}
+
+fn assert_string_desc_id_asc(rows: &[serde_json::Value], primary: &str) {
+    assert_eq!(rows.len(), 16, "limited collection keeps all rows");
+    let mut saw_tie = false;
+    for pair in rows.windows(2) {
+        let left = pair[0]
+            .get(primary)
+            .and_then(serde_json::Value::as_str)
+            .expect("ordered string field must be present");
+        let right = pair[1]
+            .get(primary)
+            .and_then(serde_json::Value::as_str)
+            .expect("ordered string field must be present");
+        let left_id = pair[0]
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .expect("ordered id field must be present");
+        let right_id = pair[1]
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .expect("ordered id field must be present");
+        assert!(left >= right, "primary string order is descending");
+        if left == right {
+            saw_tie = true;
+            assert!(left_id < right_id, "tied ids are ascending");
+        }
+    }
+    assert!(saw_tie, "fixture must exercise secondary ordering");
+}
+
+fn assert_number_desc_id_asc(rows: &[serde_json::Value], primary: &str) {
+    assert_eq!(rows.len(), 16, "limited collection keeps all rows");
+    let mut saw_tie = false;
+    for pair in rows.windows(2) {
+        let left = pair[0]
+            .get(primary)
+            .and_then(serde_json::Value::as_i64)
+            .expect("ordered numeric field must be present");
+        let right = pair[1]
+            .get(primary)
+            .and_then(serde_json::Value::as_i64)
+            .expect("ordered numeric field must be present");
+        let left_id = pair[0]
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .expect("ordered id field must be present");
+        let right_id = pair[1]
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .expect("ordered id field must be present");
+        assert!(left >= right, "primary numeric order is descending");
+        if left == right {
+            saw_tie = true;
+            assert!(left_id < right_id, "tied ids are ascending");
+        }
+    }
+    assert!(saw_tie, "fixture must exercise secondary ordering");
 }
 
 /// Every parameter-free valid fixture executes against the reference imdb

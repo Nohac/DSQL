@@ -16,6 +16,8 @@ select
         'kind_type',
         "kind_type_json_d78b0eec"."kind_type_result_d78b0eec"
       )
+      order by
+        "title_d4d9f554"."id" asc
     ),
     '[]'
   ) as "title"

@@ -29,6 +29,8 @@ from
       COALESCE(
         JSON_AGG(
           JSON_BUILD_OBJECT('info', "ratings_7214f337"."info")
+          order by
+            "ratings_7214f337"."id" asc
         ),
         '[]'
       ) as "ratings_result_7214f337"

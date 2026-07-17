@@ -1,6 +1,6 @@
 # Avoid SQL template sentinel collisions
 
-**ID:** 5bf53cda | **Status:** Open | **Created:** 2026-07-17T14:25:17+02:00
+**ID:** 5bf53cda | **Status:** Done | **Created:** 2026-07-17T14:25:17+02:00
 
 PostgreSQL rendering temporarily substitutes large integer sentinels for
 parameterized `limit`/`offset` values and exact numeric literals, then replaces

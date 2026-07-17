@@ -96,12 +96,8 @@ from
 
 -- users
 select
-  JSON_BUILD_OBJECT(
-    'user_count',
-    COUNT(*),
-    'first_name',
-    MIN("users_99fc7350"."name")
-  ) as "users"
+  TO_JSON(COUNT(*)) as "user_count",
+  TO_JSON(MIN("users_99fc7350"."name")) as "first_name"
 from
   "public"."users" as "users_99fc7350"
 where

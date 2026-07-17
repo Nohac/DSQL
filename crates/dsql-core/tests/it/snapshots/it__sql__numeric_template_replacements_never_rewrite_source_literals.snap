@@ -1,0 +1,29 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- metrics
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'amount',
+        CAST("metrics_b773e828"."amount" as text)
+      )
+    ),
+    '[]'
+  ) as "metrics"
+from
+  (
+    select
+      *
+    from
+      "public"."metrics" as "metrics_b773e828"
+    where
+      "metrics_b773e828"."amount" = 9000000000000000000
+      or "metrics_b773e828"."amount" = 9000000000000000005.5
+      or "metrics_b773e828"."amount" = 12345678901234567890.12345678901234567890
+    limit
+      $1 offset $2
+  ) as "metrics_b773e828"
+-- parameters: params.page_limit, params.page_offset
