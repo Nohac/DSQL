@@ -75,6 +75,47 @@ fn validate_fails_on_error_diagnostics() {
 }
 
 #[test]
+fn sql_prints_configured_operations_in_output_order() {
+    let dir = scratch_copy("sql");
+    std::fs::write(
+        dir.join("dsql/queries/actors.dsql"),
+        "query Actors {\n  actors: title(limit 1) {\n    id\n    title\n  }\n}\n",
+    )
+    .expect("second query");
+
+    let output = dsql(&dir, &["sql"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let stdout = stdout(&output);
+    let actors = stdout.find("-- actors").expect("actors SQL heading");
+    let title = stdout.find("-- title").expect("title SQL heading");
+    assert!(actors < title, "SQL headings are sorted, got {stdout}");
+    insta::assert_snapshot!(stdout);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn sql_rejects_error_diagnostics_without_printing_partial_sql() {
+    let dir = scratch_copy("sql-broken");
+    std::fs::write(
+        dir.join("dsql/queries/broken.dsql"),
+        "query Broken {\n  title(limit 1) {\n    bogus\n  }\n}\n",
+    )
+    .expect("broken query");
+
+    let output = dsql(&dir, &["sql"]);
+    assert!(!output.status.success(), "errors must fail SQL generation");
+    let stdout = stdout(&output);
+    assert!(stdout.contains("bogus"), "diagnostic prints, got {stdout}");
+    assert!(
+        !stdout.lines().any(|line| line.starts_with("-- ")),
+        "partial SQL must not print, got {stdout}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn check_rejects_duplicate_anonymous_variables() {
     let dir = scratch_copy("check-anonymous-variables");
     std::fs::write(
