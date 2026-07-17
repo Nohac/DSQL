@@ -14,7 +14,7 @@ use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use sqlx::{AssertSqlSafe, Column, Row};
 use sqlx_postgres::{PgPool, PgPoolOptions};
 
-use crate::{fixture, imdb_catalog, numeric_catalog, queries_dir, set_source_text};
+use crate::{fixture, fixture_names, imdb_catalog, numeric_catalog, set_source_text};
 
 async fn sql_bowl(catalog: Catalog) -> Bowl {
     sql_bowl_with_limit(catalog, Some(10)).await
@@ -724,7 +724,7 @@ async fn valid_query_fixtures_execute_when_database_url_is_set() {
 
     for name in fixture_names("valid") {
         let bowl = sql_bowl(imdb_catalog()).await;
-        insert_source(&bowl, &name, &fixture(&name)).await;
+        insert_source(&bowl, name, &fixture(name)).await;
         let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
         let generated: Vec<String> = rows
             .collect()
@@ -813,7 +813,7 @@ async fn integration_query_fixtures_match_expected_output_when_database_url_is_s
 
     for name in fixture_names("integration") {
         let bowl = sql_bowl(imdb_catalog()).await;
-        insert_source(&bowl, &name, &fixture(&name)).await;
+        insert_source(&bowl, name, &fixture(name)).await;
         let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
         let generated: Vec<String> = rows
             .collect()
@@ -840,21 +840,4 @@ async fn execute_json(pool: &PgPool, sql: &str) -> serde_json::Value {
         .expect("generated SQL executes");
     let json: String = row.try_get(0).expect("query returns JSON text");
     serde_json::from_str(&json).expect("generated output is JSON")
-}
-
-fn fixture_names(directory: &str) -> Vec<String> {
-    let root = queries_dir().join(directory);
-    let mut names: Vec<String> = std::fs::read_dir(&root)
-        .expect("fixture directory exists")
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("dsql") {
-                return None;
-            }
-            let file_name = path.file_name()?.to_str()?;
-            Some(format!("{directory}/{file_name}"))
-        })
-        .collect();
-    names.sort();
-    names
 }

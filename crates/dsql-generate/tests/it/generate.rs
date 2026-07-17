@@ -1,7 +1,168 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use dsql_generate::{GenerateOptions, assemble_project, generate_project};
-use dsql_project::{Project, open_analysis_bowl};
+use bowl::Bowl;
+use dsql_core::catalog::{
+    Catalog, DatabaseMetadata, SchemaMetadata, TableMetadata, table_metadata_from_yaml,
+};
+use dsql_core::embedding::ExtractionRegistry;
+use dsql_core::input::{LanguageDocument, LanguageInputs, populate_language_bowl};
+use dsql_core::language_bowl;
+use dsql_core::source::{ResolutionScope, ScopeDocuments, ScopeImports, SourceKind};
+use dsql_generate::{GenerateOptions, assemble_bowl, generate_project};
+use dsql_project::Project;
+
+const SHARED_SOURCE: &str =
+    include_str!("../../../dsql-project/tests/it/fixture/scoped/queries/shared/fragments.dsql");
+const FRONTEND_SOURCE: &str =
+    include_str!("../../../dsql-project/tests/it/fixture/scoped/queries/frontend/titles.dsql");
+const HOST_SOURCE: &str =
+    include_str!("../../../dsql-project/tests/it/fixture/scoped/src/components/TitlePanel.ts");
+const KIND_TYPE_SCHEMA: &str =
+    include_str!("../../../dsql-project/tests/it/fixture/scoped/dsql/schema/public/kind_type.yaml");
+const TITLE_SCHEMA: &str =
+    include_str!("../../../dsql-project/tests/it/fixture/scoped/dsql/schema/public/title.yaml");
+const NUMERIC_SCHEMA: &str = r#"---
+schema: public
+name: metrics
+object_type: table
+columns:
+  - name: amount
+    database_type: numeric
+    data_type: numeric
+    not_null: true
+  - name: ratio
+    database_type: float8
+    data_type: float
+    not_null: false
+constraints: []
+foreign_keys: []
+indexes: []
+"#;
+const USERS_SCHEMA: &str = r#"---
+schema: public
+name: users
+object_type: table
+columns:
+  - name: id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: name
+    database_type: text
+    data_type: text
+    not_null: true
+constraints:
+  - name: users_pkey
+    kind: primary_key
+    columns: [id]
+foreign_keys: []
+indexes:
+  - name: users_pkey
+    columns: [id]
+    unique: true
+"#;
+const POSTS_SCHEMA: &str = r#"---
+schema: public
+name: posts
+object_type: table
+columns:
+  - name: id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: user_id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: title
+    database_type: text
+    data_type: text
+    not_null: false
+  - name: created_at
+    database_type: timestamptz
+    data_type: timestamptz
+    not_null: true
+constraints:
+  - name: posts_pkey
+    kind: primary_key
+    columns: [id]
+foreign_keys:
+  - name: posts_user_id_fkey
+    columns: [user_id]
+    references:
+      schema: public
+      table: users
+      columns: [id]
+indexes:
+  - name: posts_pkey
+    columns: [id]
+    unique: true
+"#;
+
+fn document(path: &str, text: &str, scope: &str) -> LanguageDocument {
+    LanguageDocument {
+        path: path.to_string(),
+        text: text.to_string(),
+        scope: ResolutionScope(scope.to_string()),
+        kind: SourceKind::Dsql,
+    }
+}
+
+fn scoped_documents() -> Vec<LanguageDocument> {
+    vec![
+        document("queries/shared/fragments.dsql", SHARED_SOURCE, "shared"),
+        document("queries/frontend/titles.dsql", FRONTEND_SOURCE, "frontend"),
+        LanguageDocument {
+            path: "src/components/TitlePanel.ts".to_string(),
+            text: HOST_SOURCE.to_string(),
+            scope: ResolutionScope("frontend".to_string()),
+            kind: SourceKind::Embedded("typescript".to_string()),
+        },
+    ]
+}
+
+fn catalog_from_tables(tables: impl IntoIterator<Item = &'static str>) -> Catalog {
+    let mut tables = tables
+        .into_iter()
+        .map(|raw| table_metadata_from_yaml(raw).expect("embedded table metadata parses"))
+        .collect::<Vec<TableMetadata>>();
+    tables.sort_by(|left, right| left.name.cmp(&right.name));
+    DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables,
+        }],
+        types: Vec::new(),
+    }
+    .into_catalog()
+    .expect("embedded catalog builds")
+}
+
+fn scoped_catalog() -> Catalog {
+    catalog_from_tables([KIND_TYPE_SCHEMA, TITLE_SCHEMA])
+}
+
+async fn memory_bowl(
+    catalog: Catalog,
+    documents: Vec<LanguageDocument>,
+    imports: BTreeMap<String, Vec<String>>,
+) -> Bowl {
+    let bowl = language_bowl().await;
+    populate_language_bowl(
+        &bowl,
+        LanguageInputs {
+            catalog,
+            documents,
+            scope_imports: ScopeImports(imports),
+            scope_documents: ScopeDocuments::default(),
+            extraction_registry: ExtractionRegistry::default(),
+            lint: None,
+        },
+    )
+    .await;
+    bowl
+}
 
 /// Copies the dsql-project scoped fixture into a temp dir so generation
 /// can write its build/ tree without polluting the repository.
@@ -161,34 +322,38 @@ async fn generates_manifest_and_artifacts() {
 
 #[tokio::test]
 async fn error_diagnostics_fail_generation() {
-    let (dir, project) = fixture_project("diagnostics").await;
-    std::fs::write(
-        dir.join("queries/frontend/broken.dsql"),
-        "query Broken {\n  missing_table {\n    id\n  }\n}\n",
+    let bowl = memory_bowl(
+        scoped_catalog(),
+        vec![document(
+            "queries/frontend/broken.dsql",
+            "query Broken {\n  missing_table {\n    id\n  }\n}\n",
+            "frontend",
+        )],
+        BTreeMap::new(),
     )
-    .expect("write broken query");
-
-    let error = generate_project(&project, GenerateOptions::default())
+    .await;
+    let error = assemble_bowl(&bowl, None, GenerateOptions::default())
         .await
         .expect_err("diagnostics must fail generation");
     assert!(
         error.to_string().contains("missing_table"),
         "unexpected error: {error}"
     );
-
-    std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }
 
 #[tokio::test]
 async fn duplicate_anonymous_variables_fail_before_publication() {
-    let (dir, project) = fixture_project("anonymous-variables").await;
-    std::fs::write(
-        dir.join("queries/frontend/anonymous.dsql"),
-        "query Ambiguous {\n  title(where .id > $ and .id < $ limit 1) {\n    id\n  }\n}\n",
+    let bowl = memory_bowl(
+        scoped_catalog(),
+        vec![document(
+            "queries/frontend/anonymous.dsql",
+            "query Ambiguous {\n  title(where .id > $ and .id < $ limit 1) {\n    id\n  }\n}\n",
+            "frontend",
+        )],
+        BTreeMap::new(),
     )
-    .expect("write ambiguous query");
-
-    let error = generate_project(&project, GenerateOptions::default())
+    .await;
+    let error = assemble_bowl(&bowl, None, GenerateOptions::default())
         .await
         .expect_err("duplicate anonymous variables must fail generation");
     let message = error.to_string();
@@ -197,27 +362,21 @@ async fn duplicate_anonymous_variables_fail_before_publication() {
             && message.contains("input.title.clause.where.id"),
         "unexpected error: {message}"
     );
-    assert!(
-        !project.root.join("build").exists(),
-        "language errors must refuse before publication"
-    );
-
-    std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }
 
 #[tokio::test]
 async fn generated_scope_groups_include_transitive_import_artifacts() {
-    let (dir, _) = fixture_project("transitive-groups").await;
-    let config = dir.join("dsql/dsql.toml");
-    let raw = std::fs::read_to_string(&config)
-        .expect("config readable")
-        .replace("imports = [\"shared\"]", "imports = [\"middle\"]");
-    let raw = format!("{raw}\n[resolution.middle]\ndocuments = []\nimports = [\"shared\"]\n");
-    std::fs::write(&config, raw).expect("transitive config");
-    let project = Project::load_from(&dir).await.expect("project reloads");
-    let bowl = open_analysis_bowl(&project).await.expect("bowl opens");
-
-    let assembled = assemble_project(&bowl, &project, GenerateOptions::default())
+    let bowl = memory_bowl(
+        scoped_catalog(),
+        scoped_documents(),
+        BTreeMap::from([
+            ("frontend".to_string(), vec!["middle".to_string()]),
+            ("middle".to_string(), vec!["shared".to_string()]),
+            ("shared".to_string(), Vec::new()),
+        ]),
+    )
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
         .await
         .expect("assembly succeeds");
     let frontend = assembled
@@ -235,38 +394,33 @@ async fn generated_scope_groups_include_transitive_import_artifacts() {
         "frontend closure includes shared artifacts: {:?}",
         frontend.artifacts
     );
-
-    std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }
 
 #[tokio::test]
 async fn numeric_wire_types_flow_through_generated_metadata() {
-    let (dir, _) = fixture_project("numeric-wire").await;
-    std::fs::write(
-        dir.join("dsql/schema/public/metrics.yaml"),
-        "---\nschema: public\nname: metrics\nobject_type: table\ncolumns:\n  - name: amount\n    database_type: numeric\n    data_type: numeric\n    not_null: true\n  - name: ratio\n    database_type: float8\n    data_type: float\n    not_null: false\nconstraints: []\nforeign_keys: []\nindexes: []\n",
+    let bowl = memory_bowl(
+        catalog_from_tables([NUMERIC_SCHEMA]),
+        vec![document(
+            "queries/frontend/numeric.dsql",
+            concat!(
+                "query NumericMetrics {\n",
+                "  metrics(where .amount >= $$minimum) { amount ratio }\n",
+                "}\n",
+                "query NumericSummary {\n",
+                "  summary: metrics | aggregate {\n",
+                "    total_amount: sum .amount\n",
+                "    average_amount: avg .amount\n",
+                "    total_ratio: sum .ratio\n",
+                "    average_ratio: avg .ratio\n",
+                "  }\n",
+                "}\n",
+            ),
+            "frontend",
+        )],
+        BTreeMap::new(),
     )
-    .expect("numeric schema fixture");
-    std::fs::write(
-        dir.join("queries/frontend/numeric.dsql"),
-        concat!(
-            "query NumericMetrics {\n",
-            "  metrics(where .amount >= $$minimum) { amount ratio }\n",
-            "}\n",
-            "query NumericSummary {\n",
-            "  summary: metrics | aggregate {\n",
-            "    total_amount: sum .amount\n",
-            "    average_amount: avg .amount\n",
-            "    total_ratio: sum .ratio\n",
-            "    average_ratio: avg .ratio\n",
-            "  }\n",
-            "}\n",
-        ),
-    )
-    .expect("numeric query fixture");
-    let project = Project::load_from(&dir).await.expect("project reloads");
-    let bowl = open_analysis_bowl(&project).await.expect("bowl opens");
-    let assembled = assemble_project(&bowl, &project, GenerateOptions::default())
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
         .await
         .expect("assembly succeeds");
     let mut artifacts = assembled
@@ -279,150 +433,80 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
     artifacts.sort();
 
     insta::assert_snapshot!(artifacts.join("\n---\n"));
-
-    std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }
 
 #[tokio::test]
 async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
-    let (dir, _) = fixture_project("aggregate-metadata").await;
-    std::fs::write(
-        dir.join("dsql/schema/public/users.yaml"),
-        concat!(
-            "---\n",
-            "schema: public\n",
-            "name: users\n",
-            "object_type: table\n",
-            "columns:\n",
-            "  - name: id\n",
-            "    database_type: uuid\n",
-            "    data_type: uuid\n",
-            "    not_null: true\n",
-            "  - name: name\n",
-            "    database_type: text\n",
-            "    data_type: text\n",
-            "    not_null: true\n",
-            "constraints:\n",
-            "  - name: users_pkey\n",
-            "    kind: primary_key\n",
-            "    columns: [id]\n",
-            "foreign_keys: []\n",
-            "indexes:\n",
-            "  - name: users_pkey\n",
-            "    columns: [id]\n",
-            "    unique: true\n",
-        ),
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
+        vec![document(
+            "queries/frontend/aggregates.dsql",
+            concat!(
+                "fragment UserStats on users {\n",
+                "  post_stats: posts(where .title == $$title) | aggregate {\n",
+                "    count\n",
+                "    latest: max .created_at\n",
+                "  }\n",
+                "  post_groups: posts | aggregate by title_group: .title {\n",
+                "    count\n",
+                "    latest_group: max .created_at\n",
+                "  }\n",
+                "}\n",
+                "fragment FlatPostStats on users {\n",
+                "  ...posts(where .title == $$flat_title) | aggregate {\n",
+                "    flat_post_count: count\n",
+                "    flat_latest: max .created_at\n",
+                "  }\n",
+                "}\n",
+                "query RootStats {\n",
+                "  user_stats: users(where .name == $$name) | aggregate {\n",
+                "    count\n",
+                "    first_name: min .name\n",
+                "  }\n",
+                "}\n",
+                "query GroupedRoot {\n",
+                "  user_groups: users | aggregate by label: .name {\n",
+                "    count\n",
+                "    latest_name: max .name\n",
+                "  }\n",
+                "}\n",
+                "query NestedStats {\n",
+                "  users(limit 1) {\n",
+                "    id\n",
+                "    ...UserStats\n",
+                "  }\n",
+                "}\n",
+                "query FlattenRoot {\n",
+                "  ...users(where .name == $$flat_name) | aggregate {\n",
+                "    user_count: count\n",
+                "    first_name: min .name\n",
+                "  }\n",
+                "}\n",
+                "query FlattenNested {\n",
+                "  accounts: users(limit 1) {\n",
+                "    id\n",
+                "    ...FlatPostStats\n",
+                "  }\n",
+                "}\n",
+                "query FlattenOwner {\n",
+                "  feed: posts(limit 1) {\n",
+                "    id\n",
+                "    ...users(where .name == $$owner_name) {\n",
+                "      owner_name: name\n",
+                "      owner_posts: posts(limit 1) { title }\n",
+                "      ...posts | aggregate { owner_post_count: count }\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+            "frontend",
+        )],
+        BTreeMap::new(),
     )
-    .expect("users schema fixture");
-    std::fs::write(
-        dir.join("dsql/schema/public/posts.yaml"),
-        concat!(
-            "---\n",
-            "schema: public\n",
-            "name: posts\n",
-            "object_type: table\n",
-            "columns:\n",
-            "  - name: id\n",
-            "    database_type: uuid\n",
-            "    data_type: uuid\n",
-            "    not_null: true\n",
-            "  - name: user_id\n",
-            "    database_type: uuid\n",
-            "    data_type: uuid\n",
-            "    not_null: true\n",
-            "  - name: title\n",
-            "    database_type: text\n",
-            "    data_type: text\n",
-            "    not_null: false\n",
-            "  - name: created_at\n",
-            "    database_type: timestamptz\n",
-            "    data_type: timestamptz\n",
-            "    not_null: true\n",
-            "constraints:\n",
-            "  - name: posts_pkey\n",
-            "    kind: primary_key\n",
-            "    columns: [id]\n",
-            "foreign_keys:\n",
-            "  - name: posts_user_id_fkey\n",
-            "    columns: [user_id]\n",
-            "    references:\n",
-            "      schema: public\n",
-            "      table: users\n",
-            "      columns: [id]\n",
-            "indexes:\n",
-            "  - name: posts_pkey\n",
-            "    columns: [id]\n",
-            "    unique: true\n",
-        ),
-    )
-    .expect("posts schema fixture");
-    std::fs::write(
-        dir.join("queries/frontend/aggregates.dsql"),
-        concat!(
-            "fragment UserStats on users {\n",
-            "  post_stats: posts(where .title == $$title) | aggregate {\n",
-            "    count\n",
-            "    latest: max .created_at\n",
-            "  }\n",
-            "  post_groups: posts | aggregate by title_group: .title {\n",
-            "    count\n",
-            "    latest_group: max .created_at\n",
-            "  }\n",
-            "}\n",
-            "fragment FlatPostStats on users {\n",
-            "  ...posts(where .title == $$flat_title) | aggregate {\n",
-            "    flat_post_count: count\n",
-            "    flat_latest: max .created_at\n",
-            "  }\n",
-            "}\n",
-            "query RootStats {\n",
-            "  user_stats: users(where .name == $$name) | aggregate {\n",
-            "    count\n",
-            "    first_name: min .name\n",
-            "  }\n",
-            "}\n",
-            "query GroupedRoot {\n",
-            "  user_groups: users | aggregate by label: .name {\n",
-            "    count\n",
-            "    latest_name: max .name\n",
-            "  }\n",
-            "}\n",
-            "query NestedStats {\n",
-            "  users(limit 1) {\n",
-            "    id\n",
-            "    ...UserStats\n",
-            "  }\n",
-            "}\n",
-            "query FlattenRoot {\n",
-            "  ...users(where .name == $$flat_name) | aggregate {\n",
-            "    user_count: count\n",
-            "    first_name: min .name\n",
-            "  }\n",
-            "}\n",
-            "query FlattenNested {\n",
-            "  accounts: users(limit 1) {\n",
-            "    id\n",
-            "    ...FlatPostStats\n",
-            "  }\n",
-            "}\n",
-            "query FlattenOwner {\n",
-            "  feed: posts(limit 1) {\n",
-            "    id\n",
-            "    ...users(where .name == $$owner_name) {\n",
-            "      owner_name: name\n",
-            "      owner_posts: posts(limit 1) { title }\n",
-            "      ...posts | aggregate { owner_post_count: count }\n",
-            "    }\n",
-            "  }\n",
-            "}\n",
-        ),
-    )
-    .expect("aggregate query fixture");
-    let project = Project::load_from(&dir).await.expect("project reloads");
-    let bowl = open_analysis_bowl(&project).await.expect("bowl opens");
-    let assembled = assemble_project(
+    .await;
+    let assembled = assemble_bowl(
         &bowl,
-        &project,
+        None,
         GenerateOptions {
             collection_limit: Some(10),
         },
@@ -451,8 +535,6 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
     artifacts.sort();
 
     insta::assert_snapshot!(artifacts.join("\n---\n"));
-
-    std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }
 
 /// Two *independent* scopes may each define an operation with the same
@@ -464,23 +546,22 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
 /// the earlier one.
 #[tokio::test]
 async fn colliding_operation_names_refuse_before_writing() {
-    let (dir, _) = fixture_project("collide").await;
-    // An `api` scope with no imports: linguistically independent of
-    // `shared`, colliding only in the flat artifact namespace.
-    let config = dir.join("dsql/dsql.toml");
-    let mut raw = std::fs::read_to_string(&config).expect("config readable");
-    raw.push_str(
-        "\n[resolution.api]\ndocuments = [{ resolver = \"dsql\", paths = [\"queries/api/**/*.dsql\"] }]\n",
-    );
-    std::fs::write(&config, raw).expect("config with api scope");
-    std::fs::create_dir_all(dir.join("queries/api")).expect("api dir");
     let query = "query Collide {\n  title(limit 1) {\n    id\n  }\n}\n";
-    std::fs::write(dir.join("queries/shared/collide.dsql"), query).expect("shared collide");
-    std::fs::write(dir.join("queries/api/collide.dsql"), query).expect("api collide");
-    let project = Project::load_from(&dir).await.expect("project reloads");
-
-    let error = generate_project(
-        &project,
+    let bowl = memory_bowl(
+        scoped_catalog(),
+        vec![
+            document("queries/shared/collide.dsql", query, "shared"),
+            document("queries/api/collide.dsql", query, "api"),
+        ],
+        BTreeMap::from([
+            ("api".to_string(), Vec::new()),
+            ("shared".to_string(), Vec::new()),
+        ]),
+    )
+    .await;
+    let error = assemble_bowl(
+        &bowl,
+        None,
         GenerateOptions {
             collection_limit: Some(10),
         },
@@ -497,41 +578,45 @@ async fn colliding_operation_names_refuse_before_writing() {
         message.contains("shared/collide.dsql") && message.contains("api/collide.dsql"),
         "collision error names both sources, got: {message}"
     );
-    assert!(
-        !project.root.join("build").exists(),
-        "no build tree may be written on collision"
-    );
 }
 
 /// Names differing only by case are distinct to the language but alias
 /// one file on case-insensitive filesystems, so they collide too.
 #[tokio::test]
 async fn case_folded_operation_names_refuse_before_writing() {
-    let (dir, _) = fixture_project("case-collide").await;
-    std::fs::write(
-        dir.join("queries/shared/upper.dsql"),
-        "query Collide {
+    let bowl = memory_bowl(
+        scoped_catalog(),
+        vec![
+            document(
+                "queries/shared/upper.dsql",
+                "query Collide {
   title(limit 1) {
     id
   }
 }
 ",
-    )
-    .expect("shared upper");
-    std::fs::write(
-        dir.join("queries/frontend/lower.dsql"),
-        "query collide {
+                "shared",
+            ),
+            document(
+                "queries/api/lower.dsql",
+                "query collide {
   title(limit 1) {
     id
   }
 }
 ",
+                "api",
+            ),
+        ],
+        BTreeMap::from([
+            ("api".to_string(), Vec::new()),
+            ("shared".to_string(), Vec::new()),
+        ]),
     )
-    .expect("frontend lower");
-    let project = Project::load_from(&dir).await.expect("project reloads");
-
-    let error = generate_project(
-        &project,
+    .await;
+    let error = assemble_bowl(
+        &bowl,
+        None,
         GenerateOptions {
             collection_limit: Some(10),
         },
@@ -543,9 +628,5 @@ async fn case_folded_operation_names_refuse_before_writing() {
     assert!(
         message.contains("Collide") && message.contains("collide"),
         "collision error names both artifacts, got: {message}"
-    );
-    assert!(
-        !project.root.join("build").exists(),
-        "no build tree may be written on collision"
     );
 }

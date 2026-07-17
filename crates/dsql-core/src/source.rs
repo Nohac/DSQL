@@ -2,8 +2,9 @@
 //!
 //! There is one text component, [`SourceText`], and two writers:
 //!
-//! - **Analysis** (CLI, generate, tests) reads a file from disk once via
-//!   [`load_file`] and never touches it again.
+//! - **Analysis** (CLI, generate, tests, browser tools) supplies complete
+//!   in-memory text through [`insert_source_scoped`] and never touches it
+//!   again.
 //! - **LSP** additionally marks the entity with [`OpenBuffer`] and applies
 //!   incremental rope edits through porridge's external mutation
 //!   (`Mut<SourceText>`), bumping the revision per edit.
@@ -22,7 +23,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io;
 use std::path::Path;
 
 use bowl::{Bowl, Component, Entity};
@@ -503,15 +503,6 @@ impl ScopeImports {
         }
         None
     }
-}
-
-/// Analysis-path loader: reads `path` from disk and inserts it as a file
-/// entity in the default scope. The returned [`Entity`] identifies the
-/// file for later scoops.
-pub async fn load_file(bowl: &Bowl, path: impl AsRef<Path>) -> io::Result<Entity> {
-    let path = path.as_ref();
-    let text = std::fs::read_to_string(path)?;
-    Ok(insert_source(bowl, path.display().to_string(), &text).await)
 }
 
 /// Inserts in-memory text as a file entity in the default scope.

@@ -10,6 +10,7 @@ pub mod entity;
 pub mod facts;
 pub mod format;
 pub mod grammar;
+pub mod input;
 pub mod lint;
 pub mod plan;
 pub mod resolution;

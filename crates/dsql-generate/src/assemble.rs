@@ -50,7 +50,7 @@ pub(crate) struct FragmentInputs<'a> {
 
 pub(crate) fn operation_metadata(
     catalog: &Catalog,
-    project_root: &Path,
+    source_root: Option<&Path>,
     inputs: &OperationInputs<'_>,
 ) -> Result<OperationMetadata> {
     Ok(OperationMetadata {
@@ -99,7 +99,7 @@ pub(crate) fn operation_metadata(
         fragment_spreads: fragment_spreads(&inputs.seed.spreads),
         source_map: vec![SourceMapEntry {
             id: inputs.seed.query_name.clone(),
-            file: source_path(project_root, inputs.file),
+            file: source_path(source_root, inputs.file),
             range: source_range(inputs.seed.def_span, inputs.source_offset),
             content_range: inputs.content_range,
         }],
@@ -108,7 +108,7 @@ pub(crate) fn operation_metadata(
 
 pub(crate) fn fragment_metadata(
     catalog: &Catalog,
-    project_root: &Path,
+    source_root: Option<&Path>,
     inputs: &FragmentInputs<'_>,
 ) -> Result<FragmentMetadata> {
     let table = catalog
@@ -133,7 +133,7 @@ pub(crate) fn fragment_metadata(
         fragment_spreads: fragment_spreads(&inputs.plan.spreads),
         source_map: vec![SourceMapEntry {
             id: inputs.plan.name.clone(),
-            file: source_path(project_root, inputs.file),
+            file: source_path(source_root, inputs.file),
             range: source_range(inputs.plan.def_span, inputs.source_offset),
             content_range: inputs.content_range,
         }],
@@ -433,9 +433,9 @@ fn source_range(span: Span, source_offset: usize) -> SourceRange {
     }
 }
 
-pub(crate) fn source_path(project_root: &Path, file: &str) -> String {
-    Path::new(file)
-        .strip_prefix(project_root)
+pub(crate) fn source_path(source_root: Option<&Path>, file: &str) -> String {
+    source_root
+        .and_then(|root| Path::new(file).strip_prefix(root).ok())
         .map(|relative| relative.to_string_lossy().to_string())
-        .unwrap_or_else(|_| file.to_string())
+        .unwrap_or_else(|| file.to_string())
 }

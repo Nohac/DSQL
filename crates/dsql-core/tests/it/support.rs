@@ -2,7 +2,6 @@
 //! snapshot-stable renderers.
 
 use std::fmt::Write;
-use std::path::{Path, PathBuf};
 
 use bowl::{Bowl, Entity, Mut, Query};
 use codespan_reporting::diagnostic::Severity;
@@ -13,18 +12,104 @@ use dsql_core::catalog::{
 use dsql_core::grammar::parser::Diagnostic;
 use dsql_core::source::SourceText;
 
-/// Directory holding the shared `.dsql` fixture queries.
-pub fn queries_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/queries")
+const QUERY_FIXTURES: &[(&str, &str)] = &[
+    (
+        "integration/imdb-boolean-predicate.dsql",
+        include_str!("queries/integration/imdb-boolean-predicate.dsql"),
+    ),
+    (
+        "integration/imdb-rhs-relation-path.dsql",
+        include_str!("queries/integration/imdb-rhs-relation-path.dsql"),
+    ),
+    (
+        "integration/imdb-rhs-same-table.dsql",
+        include_str!("queries/integration/imdb-rhs-same-table.dsql"),
+    ),
+    (
+        "invalid/imdb-duplicate-relation-path.dsql",
+        include_str!("queries/invalid/imdb-duplicate-relation-path.dsql"),
+    ),
+    (
+        "invalid/imdb-scalar-clause-list.dsql",
+        include_str!("queries/invalid/imdb-scalar-clause-list.dsql"),
+    ),
+    (
+        "invalid/imdb-unknown-column.dsql",
+        include_str!("queries/invalid/imdb-unknown-column.dsql"),
+    ),
+    (
+        "valid/imdb-fragment-spread.dsql",
+        include_str!("queries/valid/imdb-fragment-spread.dsql"),
+    ),
+    (
+        "valid/imdb-movie-info-basic.dsql",
+        include_str!("queries/valid/imdb-movie-info-basic.dsql"),
+    ),
+    (
+        "valid/imdb-relation-path-selector.dsql",
+        include_str!("queries/valid/imdb-relation-path-selector.dsql"),
+    ),
+    (
+        "valid/imdb-rhs-relation-path.dsql",
+        include_str!("queries/valid/imdb-rhs-relation-path.dsql"),
+    ),
+    (
+        "valid/imdb-rhs-same-table.dsql",
+        include_str!("queries/valid/imdb-rhs-same-table.dsql"),
+    ),
+    (
+        "valid/imdb-scoped-relation-predicate.dsql",
+        include_str!("queries/valid/imdb-scoped-relation-predicate.dsql"),
+    ),
+    (
+        "valid/imdb-title-basic.dsql",
+        include_str!("queries/valid/imdb-title-basic.dsql"),
+    ),
+];
+
+const IMDB_TABLES: &[&str] = &[
+    include_str!("schema/imdb/public/aka_name.yaml"),
+    include_str!("schema/imdb/public/aka_title.yaml"),
+    include_str!("schema/imdb/public/cast_info.yaml"),
+    include_str!("schema/imdb/public/char_name.yaml"),
+    include_str!("schema/imdb/public/comp_cast_type.yaml"),
+    include_str!("schema/imdb/public/company_name.yaml"),
+    include_str!("schema/imdb/public/company_type.yaml"),
+    include_str!("schema/imdb/public/complete_cast.yaml"),
+    include_str!("schema/imdb/public/info_type.yaml"),
+    include_str!("schema/imdb/public/keyword.yaml"),
+    include_str!("schema/imdb/public/kind_type.yaml"),
+    include_str!("schema/imdb/public/link_type.yaml"),
+    include_str!("schema/imdb/public/movie_companies.yaml"),
+    include_str!("schema/imdb/public/movie_info.yaml"),
+    include_str!("schema/imdb/public/movie_info_idx.yaml"),
+    include_str!("schema/imdb/public/movie_keyword.yaml"),
+    include_str!("schema/imdb/public/movie_link.yaml"),
+    include_str!("schema/imdb/public/name.yaml"),
+    include_str!("schema/imdb/public/person_info.yaml"),
+    include_str!("schema/imdb/public/role_type.yaml"),
+    include_str!("schema/imdb/public/title.yaml"),
+];
+
+/// Returns an embedded query fixture by its repository-relative test path.
+pub fn fixture(relative_path: &str) -> String {
+    QUERY_FIXTURES
+        .iter()
+        .find_map(|(path, text)| (*path == relative_path).then_some(*text))
+        .unwrap_or_else(|| panic!("unknown query fixture {relative_path}"))
+        .to_string()
 }
 
-/// Reads a fixture query by its path relative to [`queries_dir`].
-pub fn fixture(relative_path: &str) -> String {
-    let path = queries_dir().join(relative_path);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) => panic!("failed to read fixture {}: {error}", path.display()),
-    }
+/// Sorted embedded query fixture names within one fixture directory.
+pub fn fixture_names(directory: &str) -> Vec<&'static str> {
+    let prefix = format!("{directory}/");
+    let mut names = QUERY_FIXTURES
+        .iter()
+        .map(|(path, _)| *path)
+        .filter(|path| path.starts_with(&prefix))
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names
 }
 
 /// Replaces one source entity's complete text through the same external
@@ -119,42 +204,19 @@ pub fn render_diagnostics(source: &str, diagnostics: &[Diagnostic]) -> String {
     rendered
 }
 
-/// Loads the imdb schema fixtures into a [`dsql_core::catalog::Catalog`].
-/// The directory loader lives here until `dsql-project` exists.
+/// Builds the imdb catalog from compile-time embedded schema fixtures.
 pub fn imdb_catalog() -> Catalog {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/schema/imdb");
-    let mut schemas = Vec::new();
-    for entry in std::fs::read_dir(&root).expect("schema fixture dir must exist") {
-        let schema_path = entry.expect("schema dir entry").path();
-        if !schema_path.is_dir() {
-            continue;
-        }
-        let Some(schema_name) = schema_path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let mut tables = Vec::<TableMetadata>::new();
-        for table_entry in std::fs::read_dir(&schema_path).expect("table dir") {
-            let table_path = table_entry.expect("table dir entry").path();
-            if table_path.extension().and_then(|ext| ext.to_str()) != Some("yaml") {
-                continue;
-            }
-            let raw = std::fs::read_to_string(&table_path).expect("table yaml readable");
-            let table = match table_metadata_from_yaml(&raw) {
-                Ok(table) => table,
-                Err(error) => panic!("parse {}: {error}", table_path.display()),
-            };
-            tables.push(table);
-        }
-        tables.sort_by(|left, right| left.name.cmp(&right.name));
-        schemas.push(SchemaMetadata {
-            name: schema_name.to_string(),
-            tables,
-        });
-    }
-    schemas.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut tables = IMDB_TABLES
+        .iter()
+        .map(|raw| table_metadata_from_yaml(raw).expect("embedded imdb table must parse"))
+        .collect::<Vec<TableMetadata>>();
+    tables.sort_by(|left, right| left.name.cmp(&right.name));
 
     DatabaseMetadata {
-        schemas,
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables,
+        }],
         types: Vec::new(),
     }
     .into_catalog()

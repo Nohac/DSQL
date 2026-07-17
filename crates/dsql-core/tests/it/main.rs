@@ -8,6 +8,7 @@ mod completions;
 mod definitions;
 mod embedding;
 mod format;
+mod input;
 mod lints;
 mod lowering;
 mod parse;
@@ -23,6 +24,6 @@ mod support;
 mod variables;
 
 pub use support::{
-    fixture, imdb_catalog, numeric_catalog, queries_dir, render_diagnostic_facts,
+    fixture, fixture_names, imdb_catalog, numeric_catalog, render_diagnostic_facts,
     render_diagnostics, replace_source_text, set_source_text,
 };

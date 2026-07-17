@@ -15,80 +15,10 @@ use dsql_metadata::{
 
 use crate::layout::{MANIFEST_FILE, artifact_file_name, generation_manifest_file};
 use crate::pipeline::{GenerateError, Result};
-
-/// Full lowercase-hex SHA-256 — the one protocol hash (artifact hashes,
-/// host content hashes); the engine's fast `SourceText` fingerprint is a
-/// different, internal thing.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        hex.push_str(&format!("{byte:02x}"));
-    }
-    hex
-}
-
-/// The filename address: the hash's first 16 hex characters.
-pub fn artifact_address(hash: &str) -> &str {
-    &hash[..16.min(hash.len())]
-}
-
-/// One assembled artifact, ready to publish: identity, scope, serialized
-/// bytes, and its full content hash.
-#[derive(Debug, Clone)]
-pub struct SnapshotArtifact {
-    /// Stable opaque id: `scope/kind/name`. Consumers key on this.
-    pub id: String,
-    /// `operation` | `fragment` — the artifact family (directory).
-    pub family: ArtifactFamily,
-    /// The metadata's own kind string (`query`, `fragment`).
-    pub kind: String,
-    pub scope: String,
-    pub name: String,
-    /// Serialized metadata JSON, exactly as written to disk.
-    pub serialized: String,
-    /// Full SHA-256 of `serialized`, lowercase hex.
-    pub hash: String,
-    /// Project-relative source path.
-    pub source: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArtifactFamily {
-    Operation,
-    Fragment,
-}
-
-impl ArtifactFamily {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Operation => "operation",
-            Self::Fragment => "fragment",
-        }
-    }
-}
-
-/// One resolution scope's effective view: its imports and the ids of
-/// every artifact visible to it (own plus imported — the closure).
-#[derive(Debug, Clone)]
-pub struct SnapshotGroup {
-    pub name: String,
-    pub imports: Vec<String>,
-    pub artifacts: Vec<String>,
-}
-
-/// The assembled build tree, not yet written — the shared unit both
-/// one-shot generation and the daemon publish and answer from.
-#[derive(Debug, Clone)]
-pub struct GenerationSnapshot {
-    /// Sorted by id.
-    pub artifacts: Vec<SnapshotArtifact>,
-    /// Sorted by name.
-    pub groups: Vec<SnapshotGroup>,
-}
+pub use crate::snapshot::{
+    ArtifactFamily, GenerationSnapshot, SnapshotArtifact, SnapshotGroup, artifact_address,
+    sha256_hex,
+};
 
 /// A committed generation: its id, the immutable manifest (path and
 /// serialized document), the pointer, and what publication wrote.

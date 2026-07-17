@@ -1,14 +1,12 @@
-//! The generate pipeline: settle the project bowl, scoop the derived
-//! facts, assemble metadata, write the `build/` tree, and hand off to the
-//! configured host generator.
+//! Storage-independent generation: settle a bowl and assemble artifact values.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use bowl::{Entity, Query, Singleton};
-use tokio::process::Command;
 
+use dsql_core::catalog::CatalogSnapshot;
 use dsql_core::entities::variable::VariableBinding;
 use dsql_core::facts::{
     BelongsToFile, DefKey, Diagnostic, PlanKey, Severity, Span, arm_generate_demands,
@@ -19,21 +17,19 @@ use dsql_core::source::{
 };
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use dsql_metadata::SourceRange;
-use dsql_project::{Project, ProjectError, open_analysis_bowl};
 
 use crate::assemble::{
     FragmentInputs, OperationInputs, fragment_metadata, operation_metadata, source_path,
 };
-use crate::layout::{BUILD_DIR, artifact_collision_key};
-use crate::publish::{
-    ArtifactFamily, GenerationSnapshot, PublishedGeneration, SnapshotArtifact, SnapshotGroup,
-    prune, publish, sha256_hex,
+use crate::snapshot::{
+    ArtifactFamily, GenerationSnapshot, SnapshotArtifact, SnapshotGroup, artifact_collision_key,
+    sha256_hex,
 };
 
 #[derive(Debug, thiserror::Error)]
 pub enum GenerateError {
-    #[error(transparent)]
-    Project(#[from] ProjectError),
+    #[error("{0}")]
+    Project(String),
     #[error("the project has {count} error diagnostics; fix them before generating:\n{details}")]
     LanguageDiagnostics { count: usize, details: String },
     #[error("failed to assemble `{name}`: {message}")]
@@ -102,73 +98,18 @@ pub struct GenerateOptions {
     pub collection_limit: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
-pub struct GenerateOutput {
-    /// The committed generation.
-    pub generation_id: u64,
-    /// The immutable `manifest.<id>.json` this run committed.
-    pub manifest_path: PathBuf,
-    /// The fixed `manifest.json` pointer.
-    pub current_manifest_path: PathBuf,
-    /// Files written this run (unchanged artifacts are skipped).
-    pub written: Vec<PathBuf>,
-}
-
-/// Generates the project's `build/` tree and runs the configured host
-/// generator command.
-pub async fn generate_project(
-    project: &Project,
-    options: GenerateOptions,
-) -> Result<GenerateOutput> {
-    let bowl = open_analysis_bowl(project).await?;
-    let assembled = assemble_project(&bowl, project, options).await?;
-    let published = publish_snapshot(project, &assembled.snapshot).await?;
-    let generator = run_host_generator(project, project.base(), &published.manifest_path).await;
-    // One-shot generation prunes before exiting — even when the host
-    // generator failed, since the generation itself committed. The
-    // daemon prunes after responding. Best-effort either way.
-    let build_dir = project.root.join(BUILD_DIR);
-    {
-        let published = published.clone();
-        tokio::task::spawn_blocking(move || prune(&build_dir, &published))
-            .await
-            .ok();
-    }
-    generator?;
-    Ok(GenerateOutput {
-        generation_id: published.generation_id,
-        manifest_path: published.manifest_path,
-        current_manifest_path: published.current_manifest_path,
-        written: published.written,
-    })
-}
-
-/// Publishes a snapshot transactionally, off the async runtime (the
-/// publication lock is a blocking OS lock).
-pub async fn publish_snapshot(
-    project: &Project,
-    snapshot: &GenerationSnapshot,
-) -> Result<PublishedGeneration> {
-    let build_dir = project.root.join(BUILD_DIR);
-    let snapshot = snapshot.clone();
-    tokio::task::spawn_blocking(move || publish(&build_dir, &snapshot))
-        .await
-        .map_err(|_| GenerateError::Internal("publication task panicked".to_string()))?
-}
-
-/// Everything generation checks short of writing: language diagnostics,
-/// per-artifact assembly, and build-path collisions. `dsql validate` runs
-/// exactly this over its own bowl.
-pub async fn validate_assembly(
+/// Checks and assembles a settled in-memory bowl without writing artifacts.
+pub async fn validate_bowl(
     bowl: &bowl::Bowl,
-    project: &Project,
+    source_root: Option<&Path>,
     options: GenerateOptions,
 ) -> Result<()> {
-    assemble_project(bowl, project, options).await.map(|_| ())
+    assemble_bowl(bowl, source_root, options).await.map(|_| ())
 }
 
 /// The assembled generation snapshot shared by one-shot generation and
 /// the daemon.
+#[derive(Debug)]
 pub struct AssembledProject {
     pub snapshot: GenerationSnapshot,
 }
@@ -176,14 +117,20 @@ pub struct AssembledProject {
 /// Assembles the settled bowl into a [`GenerationSnapshot`]: per-artifact
 /// metadata with scope identity and full content hashes, per-scope group
 /// closures, and the flat-namespace collision check.
-pub async fn assemble_project(
+pub async fn assemble_bowl(
     bowl: &bowl::Bowl,
-    project: &Project,
+    source_root: Option<&Path>,
     options: GenerateOptions,
 ) -> Result<AssembledProject> {
     let facts = collect_facts(bowl, options).await?;
-    let catalog = project.load_catalog().await?;
-    let project_root = project.base();
+    let catalog_rows = bowl.scoop::<Query<(Entity, &CatalogSnapshot)>>().await;
+    let catalog_rows = catalog_rows.collect();
+    let Some((_, catalog)) = catalog_rows.first() else {
+        return Err(GenerateError::Internal(
+            "language bowl has no catalog snapshot".to_string(),
+        ));
+    };
+    let catalog = catalog.catalog();
 
     let mut artifacts = Vec::new();
     for operation in &facts.operations {
@@ -193,8 +140,8 @@ pub async fn assemble_project(
             .map(Vec::as_slice)
             .unwrap_or_default();
         let metadata = operation_metadata(
-            &catalog,
-            project_root,
+            catalog,
+            source_root,
             &OperationInputs {
                 seed: &operation.seed,
                 plan: &operation.plan.0,
@@ -212,7 +159,7 @@ pub async fn assemble_project(
             metadata.kind.clone(),
             &metadata,
             &operation.scope,
-            project_root,
+            source_root,
             &operation.file,
         )?);
     }
@@ -224,8 +171,8 @@ pub async fn assemble_project(
             .map(Vec::as_slice)
             .unwrap_or_default();
         let metadata = fragment_metadata(
-            &catalog,
-            project_root,
+            catalog,
+            source_root,
             &FragmentInputs {
                 plan: &fragment.plan,
                 bindings,
@@ -240,7 +187,7 @@ pub async fn assemble_project(
             metadata.kind.clone(),
             &metadata,
             &fragment.scope,
-            project_root,
+            source_root,
             &fragment.file,
         )?);
     }
@@ -284,7 +231,7 @@ fn snapshot_artifact<M: facet::Facet<'static>>(
     kind: String,
     metadata: &M,
     scope: &str,
-    project_root: &Path,
+    source_root: Option<&Path>,
     file: &str,
 ) -> Result<SnapshotArtifact> {
     let serialized = facet_json::to_string(metadata).map_err(|error| GenerateError::Serialize {
@@ -300,7 +247,7 @@ fn snapshot_artifact<M: facet::Facet<'static>>(
         name,
         serialized,
         hash,
-        source: source_path(project_root, file),
+        source: source_path(source_root, file),
     })
 }
 
@@ -328,47 +275,6 @@ fn validate_artifact_paths(artifacts: &[SnapshotArtifact]) -> Result<()> {
                 },
             )));
         }
-    }
-    Ok(())
-}
-
-async fn run_host_generator(
-    project: &Project,
-    project_root: &Path,
-    manifest_path: &Path,
-) -> Result<()> {
-    let typescript = &project.config.generate.typescript;
-    if !typescript.enabled || typescript.cmd.is_empty() {
-        return Ok(());
-    }
-    // The generator contract (docs/spec/codegen.md): cwd is the project
-    // base, DSQL_PROJECT_DIR names it absolutely, and DSQL_MANIFEST
-    // points at the manifest just written.
-    let absolute_root = std::path::absolute(project_root).map_err(|source| GenerateError::Io {
-        path: project_root.to_path_buf(),
-        source,
-    })?;
-    let absolute_manifest =
-        std::path::absolute(manifest_path).map_err(|source| GenerateError::Io {
-            path: manifest_path.to_path_buf(),
-            source,
-        })?;
-    let status = Command::new(&typescript.cmd[0])
-        .args(&typescript.cmd[1..])
-        .env("DSQL_PROJECT_DIR", &absolute_root)
-        .env("DSQL_MANIFEST", &absolute_manifest)
-        .current_dir(project_root)
-        .status()
-        .await
-        .map_err(|source| GenerateError::Spawn {
-            cmd: typescript.cmd.clone(),
-            source,
-        })?;
-    if !status.success() {
-        return Err(GenerateError::Generator {
-            cmd: typescript.cmd.clone(),
-            status: status.to_string(),
-        });
     }
     Ok(())
 }

@@ -14,6 +14,10 @@
   iterating.
 - `cargo clippy --workspace --all-targets` must be warning-free; new warnings
   are never pre-existing.
+- Keep the storage-independent compiler surface WASM-compatible. Check it with
+  `cargo check -p dsql-generate --no-default-features --target wasm32-unknown-unknown --lib`;
+  native project loading and publication belong behind the crate's `native`
+  module boundary.
 - Never build with `--release` unless reproducing a performance issue.
 - The parser is generated at build time from `crates/dsql-core/src/grammar/dsql.llw`
   by the vendored lelwel; editing the `.llw` regenerates it on the next build.

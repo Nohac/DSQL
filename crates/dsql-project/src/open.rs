@@ -2,12 +2,12 @@
 
 use bowl::{Bowl, Singleton};
 
-use dsql_core::catalog::{CatalogSourceRoot, insert_catalog};
-use dsql_core::embedding::ExtractionRegistry;
+use dsql_core::catalog::CatalogSourceRoot;
 use dsql_core::facts::Severity;
+use dsql_core::input::{LanguageDocument, LanguageInputs, populate_language_bowl};
 use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
-use dsql_core::source::{ResolutionScope, ScopeDocuments, ScopeImports, insert_source_scoped};
+use dsql_core::source::ResolutionScope;
 
 use super::config::{LintSeverity, Project, Result};
 use super::embedding::extraction_registry;
@@ -52,23 +52,8 @@ pub async fn populate_project_bowl_excluding(
         crate::documents::load_project_documents_excluding(project, extra_reserved).await?;
     let extraction_registry = extraction_registry(project)?;
 
-    insert_catalog(bowl, catalog).await;
-    bowl.insert((
-        Singleton::<CatalogSourceRoot>::new(),
-        CatalogSourceRoot(project.schema.clone()),
-    ))
-    .await;
-
     let imports = project.config.scope_imports();
-    bowl.insert((Singleton::<ScopeImports>::new(), imports))
-        .await;
     let scope_documents = crate::documents::scope_document_assignments(project);
-    bowl.insert((
-        Singleton::<ScopeDocuments>::new(),
-        ScopeDocuments(scope_documents),
-    ))
-    .await;
-
     let lint = match project.config.lint.unindexed_scan_severity {
         None => LintConfig::default(),
         Some(LintSeverity::Off) => LintConfig {
@@ -84,19 +69,31 @@ pub async fn populate_project_bowl_excluding(
             unindexed_scan_severity: Some(Severity::Error),
         },
     };
-    bowl.insert((Singleton::<LintConfig>::new(), lint)).await;
-    bowl.insert((Singleton::<ExtractionRegistry>::new(), extraction_registry))
-        .await;
-
-    for document in documents {
-        insert_source_scoped(
-            bowl,
-            document.path.display().to_string(),
-            &document.text,
-            ResolutionScope(document.scope),
-            document.kind,
-        )
-        .await;
-    }
+    let documents = documents
+        .into_iter()
+        .map(|document| LanguageDocument {
+            path: document.path.display().to_string(),
+            text: document.text,
+            scope: ResolutionScope(document.scope),
+            kind: document.kind,
+        })
+        .collect();
+    populate_language_bowl(
+        bowl,
+        LanguageInputs {
+            catalog,
+            documents,
+            scope_imports: imports,
+            scope_documents: dsql_core::source::ScopeDocuments(scope_documents),
+            extraction_registry,
+            lint: Some(lint),
+        },
+    )
+    .await;
+    bowl.insert((
+        Singleton::<CatalogSourceRoot>::new(),
+        CatalogSourceRoot(project.schema.clone()),
+    ))
+    .await;
     Ok(())
 }
