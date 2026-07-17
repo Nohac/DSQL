@@ -5,6 +5,12 @@ Status: unfinished.
 Pagination is the language surface for slicing ordered collections beyond basic
 `limit` and `offset`.
 
+Basic `limit`/`offset` result cardinality and redundant-limit diagnostics are
+defined by
+[Query Language](query.md#selection-result-cardinality). A runtime pagination
+limit remains collection-valued unless the relationship or predicates provide
+an independent at-most-one proof.
+
 ## Cursor Pagination
 
 ```dsql

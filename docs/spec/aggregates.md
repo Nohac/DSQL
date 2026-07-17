@@ -1,6 +1,6 @@
 # Aggregates
 
-Status: proposed.
+Status: implemented.
 
 Aggregates transform a collection-producing selection into computed output.
 The source may be a root table or a nested relation. The main use case is
@@ -41,9 +41,17 @@ source clauses and then transformed into one aggregate object:
 The output key is the explicit alias when present and otherwise the source
 selection's ordinary output key.
 
-Aggregation requires a collection-producing source. Piping a catalog-proven
-singular relation is a cardinality diagnostic. This is the inverse of ordinary
-relation flattening, which requires a singular object result.
+Aggregation requires a collection-producing source under the general
+[selection cardinality rules](query.md#selection-result-cardinality). Piping a
+catalog-proven singular relation, a selection constrained by a complete unique
+key, or a selection made singular by literal `limit 1` is a cardinality
+diagnostic. This is the inverse of ordinary relation flattening, which requires
+a singular object result.
+
+The catalog-proven relation diagnostic is implemented. The unique-predicate
+form depends on implementing the query language's general cardinality
+inference. Literal `limit 1` is already rejected by the aggregate source-clause
+restriction below.
 
 Only one transform may follow a source selection. General pipe chaining is not
 part of this feature.
@@ -73,10 +81,11 @@ Conceptual output:
 }
 ```
 
-A normal root selection is collection-valued. An ungrouped root aggregate
-changes that root field to one non-null object. SQL generation may still render
-root selections as independent statements; the contract is the assembled
-result object, not a promise that every root shares one SQL statement.
+A root selection without an at-most-one proof is collection-valued. An
+ungrouped root aggregate changes that root field to one non-null object. SQL
+generation may still render root selections as independent statements; the
+contract is the assembled result object, not a promise that every root shares
+one SQL statement.
 
 Grouped root aggregates are keyed arrays:
 
@@ -443,7 +452,7 @@ must not independently re-resolve aggregate names or operands.
 
 ## Scalar Aggregate Predicates
 
-Purpose-built scalar relation aggregates are a planned later extension:
+Purpose-built scalar relation aggregates are supported in predicates:
 
 ```dsql
 query PopularUsers {
@@ -465,9 +474,9 @@ aggregate function, type, empty-input, and null semantics. `min` or `max` over
 an empty scope yields SQL `NULL`; a comparison with that value is unknown and
 excludes the parent row.
 
-This form is reserved in the specification but is not part of the first
-aggregate implementation. Clause-bearing relation paths inside predicates,
-multi-step paths, and their nested variable scopes are separate increments.
+This form is part of the current aggregate contract. Clause-bearing relation
+paths inside predicates, multi-step paths, and their nested variable scopes
+remain separate extensions.
 
 ## Non-Goals
 
@@ -485,20 +494,21 @@ Aggregates do not initially provide:
 - provider-defined aggregate functions;
 - general pipe composition.
 
-## Incremental Delivery
+## Implementation Status
 
-The contract is designed for independently shippable slices:
+The aggregate contract described above is implemented, including:
 
-1. logical numeric/float types and their JSON/host wire representation;
-2. keyed ungrouped root and relation aggregates with
-   `count`/`exists`/`min`/`max`;
-3. general singular-relation flattening and flattened ungrouped aggregates;
-4. grouped root and relation aggregates;
-5. `sum` and `avg` after numeric return types exist;
-6. scalar aggregate predicates.
+- logical numeric and float wire types;
+- keyed ungrouped root and relation aggregates with `count`, `exists`, `min`,
+  and `max`;
+- general object flattening and flattened ungrouped aggregates;
+- grouped root and relation aggregates;
+- `sum` and `avg`;
+- the closed scalar relation-aggregate predicate forms.
 
-The order may vary where slices are independent, but later slices must preserve
-the function and result-shape semantics established by the earlier ones.
+The extensions listed under [Non-Goals](#non-goals) and
+[Open Questions](#open-questions) remain deferred rather than incomplete parts
+of the current contract.
 
 ## Open Questions
 
@@ -508,3 +518,5 @@ the function and result-shape semantics established by the earlier ones.
 - When should aggregate operands and group keys support relationship paths?
 - Which provider capability metadata should replace the initial hard-coded
   function/type allowlists?
+- Should a future explicit transform allow aggregate functions such as `exists`
+  over an otherwise singular source?

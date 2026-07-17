@@ -210,15 +210,17 @@ Conceptual result shape:
 }
 ```
 
-Flattening is valid exactly when the selection result is object-valued. A
-catalog-proven singular relation may flatten; a collection-valued relation may
-not. A collection transform that produces one object, such as an ungrouped
-aggregate, may also flatten. Array-valued transforms, including grouped
-aggregates, may not.
+Flattening is valid exactly when the selection result is object-valued. A root
+or relation selection made singular by catalog metadata, its predicates, or a
+literal `limit 1` may flatten; a collection-valued selection may not. A
+collection transform that produces one object, such as an ungrouped aggregate,
+may also flatten. Array-valued transforms, including grouped aggregates, may
+not. See [Selection Result Cardinality](#selection-result-cardinality).
 
-If the singular relation may be absent because of a nullable foreign key or its
-clauses, every field contributed through the flatten inherits that absence and
-is nullable in the result contract. Otherwise each contributed field keeps its
+If the singular selection may be absent because no row matches, a foreign key
+is nullable, a clause suppresses the row, or an applicable policy filters it
+out, every field contributed through the flatten inherits that absence and is
+nullable in the result contract. Otherwise each contributed field keeps its
 ordinary column or nested-result nullability.
 
 Flattened fields participate in the same output-key length, duplicate, and
@@ -255,9 +257,10 @@ with `$` or `$$`, while relation clauses begin with clause keywords. Empty
 ambiguous parentheses are diagnostics. Once an ellipsis selection is classified
 as a relation, omitting both its selection set and pipe transform is invalid.
 
-At a query root, an ordinary table selection is collection-valued and cannot
-flatten. An ungrouped root aggregate is object-valued and may merge its fields
-into the query result object. See [Aggregates](aggregates.md#flattened-output).
+A query root without an at-most-one proof is collection-valued and cannot
+flatten. A singular root selection or ungrouped root aggregate is object-valued
+and may merge its fields into the query result object. See
+[Aggregates](aggregates.md#flattened-output).
 
 ## Dotted Selection Paths
 
@@ -508,10 +511,11 @@ references do. If the relation target name is ambiguous from the current table,
 use `schema::table` and, when needed, `->edge` to identify the intended
 relationship.
 
-Relation result cardinality also comes from catalog metadata. Relation
-selections are collection-valued unless catalog constraints prove at-most-one
-cardinality, for example through a unique or primary-key constraint over the
-foreign-key column set. See [Catalog Metadata](catalog-metadata.md#relation-cardinality).
+Catalog metadata may prove that a relationship itself is at-most-one, for
+example through a unique or primary-key constraint over the foreign-key column
+set. This is one of the proofs that determines a selection's result shape. See
+[Selection Result Cardinality](#selection-result-cardinality) and
+[Catalog Metadata](catalog-metadata.md#relation-cardinality).
 
 Qualified relation references are allowed:
 
@@ -560,6 +564,60 @@ query Tasks {
 
 When only one relation edge connects the current table to the relation
 target, the selector may be omitted.
+
+## Selection Result Cardinality
+
+Every root and relation selection has a statically determined result
+cardinality. A collection-valued selection produces an array. An at-most-one
+selection produces an object or `null`; it never produces a one-element array.
+At-most-one controls the container shape. The object's nullability still
+reflects whether the selected row may be absent because no row matches, a
+relationship is optional, a clause suppresses it, or an applicable policy
+filters it out.
+
+A selection is at-most-one when any of these independent proofs applies:
+
+1. The selected relationship is catalog-proven at-most-one as described by
+   [Catalog Metadata](catalog-metadata.md#relation-cardinality).
+2. Predicates that are present in every compiled variant constrain every column
+   of one catalog-known primary key, unique constraint, or supported unique
+   index with equality to fixed values or variables. Each proving predicate
+   must be mandatory, and the proof must remain outside alternatives that could
+   bypass it. Additional predicates may narrow the result further.
+3. The selection has the compile-time integer literal `limit 1`.
+
+Otherwise the selection is collection-valued. In particular, `limit $$count`,
+an optional limit, and other runtime limit expressions do not themselves prove
+at-most-one cardinality. A separate relationship or unique-predicate proof
+still applies when such a limit is present.
+
+Unique-predicate proofs are conservative:
+
+- A composite key is covered only when every key column has a proving equality.
+- `or` branches do not prove uniqueness unless the same complete proof is
+  mandatory for every branch.
+- A conditionally omitted predicate does not participate. A caller-omittable
+  variable with a default may participate when the predicate remains present
+  in every compiled variant. See [Variables](variables.md).
+- Equality to another column or another row-dependent expression does not
+  prove uniqueness.
+- For nullable unique-key columns, the compiled equality must not match SQL
+  `NULL`. A null-matching predicate cannot use ordinary PostgreSQL uniqueness
+  semantics as proof because multiple null key values may exist. Catalog
+  metadata does not yet model `NULLS NOT DISTINCT` constraints.
+- Partial and expression unique indexes do not participate until catalog
+  metadata can represent and prove their predicates and expressions.
+
+`limit 1` determines the result shape whether or not the selection has an
+`order by` clause. Without stable ordering, which matching row is selected is
+unspecified. An `offset`, a zero-valued runtime limit, or a policy may turn a
+proven singular result into `null`, but cannot broaden it back into a
+collection.
+
+Inferred cardinality is part of the semantic result shape. Planning, SQL
+generation, result metadata, generated API types, flattening, fragment merging,
+and editor services must consume the same resolved cardinality rather than
+re-deriving it independently.
 
 ## Relationship Ambiguity
 
@@ -719,7 +777,7 @@ Sort direction is `asc` or `desc`.
 
 ### Limit And Offset
 
-`limit` and `offset` slice a collection.
+`limit` and `offset` slice the rows produced by a selection.
 
 ```dsql
 query Page {
@@ -730,7 +788,26 @@ query Page {
 }
 ```
 
-`limit` and `offset` values are integer-compatible.
+`limit` and `offset` values are non-negative and integer-compatible. Their
+effect on the result container is defined by
+[Selection Result Cardinality](#selection-result-cardinality).
+
+Limits on a selection that is independently catalog-proven at-most-one receive
+these diagnostics:
+
+- A positive integer literal is redundant because it cannot reduce the maximum
+  cardinality.
+- A runtime limit cannot further bound the cardinality. Within the valid
+  non-negative domain, it affects only whether the possible row is suppressed
+  when the value is zero.
+
+Literal `limit 0` on any selection is diagnosed as always empty rather than as
+a redundant limit.
+
+Literal `limit 1` on a selection without another at-most-one proof is not
+redundant: it changes the result from an array to a nullable object. A positive
+literal greater than one does not change collection cardinality. `offset` may
+suppress rows but never proves or broadens cardinality.
 
 ## Values
 
@@ -876,6 +953,10 @@ only when they are structurally compatible:
 - same scalar type and nullability for scalar fields;
 - compatible clauses, bindings, directives, and cardinality;
 - compatible subselections for object or relation results.
+
+Inferred selection cardinality participates in this compatibility check. Two
+otherwise identical selections do not merge when one resolves to an array and
+the other to a nullable object.
 
 Scalar selections from multiple fragments therefore merge when they name the
 same output key and resolve to the same catalog field:
@@ -1028,12 +1109,9 @@ query Users {
 }
 ```
 
-This produces the normal relation output shape unless another feature explicitly
-unwraps single-row relation selections.
-
-Open question:
-
-- Whether a relation with `limit 1` should have an opt-in singular output shape.
+The literal `limit 1` makes `latest_post` a nullable object. The `order by`
+clause chooses the latest matching row; without it, the selected row would be
+unspecified. The same cardinality rule applies to root selections.
 
 ### Top-N Related Rows
 
