@@ -32,7 +32,7 @@ use crate::source::{ResolutionScope, ScopeImports};
 
 /// PostgreSQL truncates result aliases beyond this many bytes
 /// (`NAMEDATALEN - 1`), which silently corrupts output keys.
-const POSTGRES_RESULT_ALIAS_MAX_BYTES: usize = 63;
+pub(crate) const POSTGRES_RESULT_ALIAS_MAX_BYTES: usize = 63;
 
 /// One field selection, lowered from `field_selection`. Together with
 /// [`ChildOf`] these facts are the flat encoding of the selection tree;
@@ -52,11 +52,20 @@ pub struct FieldSel {
     pub name_span: Span,
     /// Span of the whole selection including its clauses and children.
     pub span: Span,
-    /// Whether the selection has a nested selection set.
-    pub nested: bool,
+    /// The result-producing body attached to this source selection.
+    pub body: FieldBodyKind,
     /// Whether the selection has a clause list, even an empty one —
     /// scalar fields must not have clauses at all.
     pub has_clause_list: bool,
+}
+
+/// The body attached to a field selection. A pipe transform is distinct from
+/// a nested row selection because it changes collection cardinality.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum FieldBodyKind {
+    None,
+    SelectionSet,
+    Transform,
 }
 
 impl FieldSel {
@@ -66,6 +75,14 @@ impl FieldSel {
         self.alias
             .clone()
             .unwrap_or_else(|| TableRef::parse(&self.name).name.to_string())
+    }
+
+    pub(crate) fn has_selection_set(&self) -> bool {
+        self.body == FieldBodyKind::SelectionSet
+    }
+
+    pub(crate) fn has_transform(&self) -> bool {
+        self.body == FieldBodyKind::Transform
     }
 }
 
@@ -119,9 +136,17 @@ impl LowerStage for FieldSelection {
             .map(|span| text(ctx.source, span).to_string());
 
         let suffix = tail.and_then(|tail| direct_rule(ctx.cst, tail, Rule::FieldSuffix));
-        let nested = suffix
-            .map(|suffix| direct_rule(ctx.cst, suffix, Rule::SelectionSet).is_some())
-            .unwrap_or(false);
+        let body = suffix
+            .map(|suffix| {
+                if direct_rule(ctx.cst, suffix, Rule::SelectionSet).is_some() {
+                    FieldBodyKind::SelectionSet
+                } else if direct_rule(ctx.cst, suffix, Rule::PipeTransform).is_some() {
+                    FieldBodyKind::Transform
+                } else {
+                    FieldBodyKind::None
+                }
+            })
+            .unwrap_or(FieldBodyKind::None);
         let has_clause_list = suffix
             .map(|suffix| direct_rule(ctx.cst, suffix, Rule::ClauseList).is_some())
             .unwrap_or(false);
@@ -133,7 +158,7 @@ impl LowerStage for FieldSelection {
             relation_path,
             name_span,
             span: node_span(ctx.cst, node),
-            nested,
+            body,
             has_clause_list,
         };
 
@@ -394,8 +419,16 @@ impl CheckCtx<'_, '_> {
                             clause,
                             clause_span,
                         );
+                        if field.has_transform() {
+                            crate::entities::aggregate::check_source_clause(
+                                self,
+                                clause_entity,
+                                clause,
+                                clause_span,
+                            );
+                        }
                     }
-                    if !field.nested {
+                    if !field.has_selection_set() && !field.has_transform() {
                         self.error(
                             entity,
                             field.name_span,
@@ -404,7 +437,9 @@ impl CheckCtx<'_, '_> {
                         );
                         continue;
                     }
-                    self.check_set(table_id, entity);
+                    if field.has_selection_set() {
+                        self.check_set(table_id, entity);
+                    }
                 }
                 TableResolution::NotFound { reference } => {
                     self.error(
@@ -479,7 +514,7 @@ impl CheckCtx<'_, '_> {
             match self.catalog.check_field_ref(table, reference) {
                 FieldCheckResult::Column(column) => {
                     let data_type = column.data_type;
-                    if field.nested {
+                    if field.has_selection_set() {
                         self.error(
                             entity,
                             field.name_span,
@@ -519,8 +554,16 @@ impl CheckCtx<'_, '_> {
                             clause,
                             clause_span,
                         );
+                        if field.has_transform() {
+                            crate::entities::aggregate::check_source_clause(
+                                self,
+                                clause_entity,
+                                clause,
+                                clause_span,
+                            );
+                        }
                     }
-                    if !field.nested {
+                    if !field.has_selection_set() && !field.has_transform() {
                         self.error(
                             entity,
                             field.name_span,
@@ -529,7 +572,9 @@ impl CheckCtx<'_, '_> {
                         );
                         continue;
                     }
-                    self.check_set(relation_table, entity);
+                    if field.has_selection_set() {
+                        self.check_set(relation_table, entity);
+                    }
                 }
                 FieldCheckResult::NotFound => {
                     self.error(

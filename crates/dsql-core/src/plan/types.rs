@@ -2,7 +2,8 @@
 
 use bowl::Component;
 
-use crate::catalog::{ColumnId, ForeignKeyId, TableId, TableKey};
+use crate::catalog::{ColumnId, DataType, ForeignKeyId, TableId, TableKey};
+use crate::entities::aggregate::AggregateFunction;
 use crate::entities::expression::ComparisonOp;
 use crate::facts::Span;
 
@@ -159,10 +160,8 @@ pub struct PlanDiagnostic {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct QueryPlan {
-    pub root: TableId,
     pub output_name: String,
-    pub clauses: SelectionClauses,
-    pub selections: SelectionPlan,
+    pub collection: CollectionPlan,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -173,9 +172,38 @@ pub struct FragmentPlan {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SelectionPlan {
+    pub items: Vec<SelectionPlanItem>,
+}
+
+/// One collection source and the cardinality-changing result produced from it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CollectionPlan {
     pub table: TableId,
     pub clauses: SelectionClauses,
-    pub items: Vec<SelectionPlanItem>,
+    pub result: CollectionResultPlan,
+}
+
+/// How one collection source becomes public result data.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CollectionResultPlan {
+    Rows(SelectionPlan),
+    Aggregate(AggregatePlan),
+}
+
+/// One ungrouped aggregate object.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AggregatePlan {
+    pub fields: Vec<AggregateProjection>,
+}
+
+/// One computed scalar inside an [`AggregatePlan`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AggregateProjection {
+    pub function: AggregateFunction,
+    pub operand: Option<ColumnId>,
+    pub output_name: String,
+    pub data_type: DataType,
+    pub nullable: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -276,9 +304,8 @@ pub struct Projection {
 pub struct NestedRelation {
     pub relation_name: String,
     pub output_name: String,
-    pub table: TableId,
     pub foreign_key: ForeignKeyId,
-    pub selections: Box<SelectionPlan>,
+    pub collection: Box<CollectionPlan>,
 }
 
 fn format_table_candidates(candidates: &[TableKey]) -> String {

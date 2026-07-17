@@ -128,6 +128,79 @@ impl<'a> CstFormatter<'a> {
         }
         if let Some(selection_set) = self.direct_rule(node, Rule::SelectionSet) {
             self.selection_set(selection_set);
+        } else if let Some(transform) = self.direct_rule(node, Rule::PipeTransform) {
+            self.format_child(transform);
+        }
+    }
+
+    /// Formats a collection pipe transform and its keyed aggregate body.
+    pub fn aggregate_transform(&mut self, node: NodeRef) {
+        self.out.push_str(" | ");
+        if let Some(name) = self.direct_token_text(node, Token::Name) {
+            self.out.push_str(&name);
+        }
+        let group_keys = self.direct_rules(node, Rule::AggregateGroupKey);
+        if !group_keys.is_empty() {
+            self.out.push_str(" by ");
+            for (index, group_key) in group_keys.into_iter().enumerate() {
+                if index > 0 {
+                    self.out.push_str(", ");
+                }
+                self.aggregate_group_key(group_key);
+            }
+        }
+        if let Some(set) = self.direct_rule(node, Rule::AggregateSet) {
+            self.aggregate_set(set);
+        }
+    }
+
+    fn aggregate_group_key(&mut self, node: NodeRef) {
+        if let Some(alias) = self.direct_token_text(node, Token::Name) {
+            self.out.push_str(&alias);
+            self.out.push_str(": ");
+        }
+        if let Some(path) = self.direct_rule(node, Rule::ScopedPath) {
+            self.write_node_text(path);
+        }
+    }
+
+    fn aggregate_set(&mut self, node: NodeRef) {
+        self.out.push_str(" {\n");
+        self.indent += 1;
+        for child in self.children(node) {
+            match (self.rule(child), self.token(child)) {
+                (Some(Rule::AggregateField), _) => {
+                    self.write_indent(self.indent);
+                    self.aggregate_field(child);
+                    self.out.push('\n');
+                }
+                (_, Some(Token::Comment)) => {
+                    self.write_indent(self.indent);
+                    self.write_node_text(child);
+                    self.out.push('\n');
+                }
+                _ => {}
+            }
+        }
+        self.indent = self.indent.saturating_sub(1);
+        self.write_indent(self.indent);
+        self.out.push('}');
+    }
+
+    fn aggregate_field(&mut self, node: NodeRef) {
+        let names = self.direct_token_texts(node, Token::Name);
+        match names.as_slice() {
+            [function] => self.out.push_str(function),
+            [alias, function, ..] => {
+                self.out.push_str(alias);
+                self.out.push_str(": ");
+                self.out.push_str(function);
+            }
+            [] => {}
+        }
+        if let Some(path) = self.direct_rule(node, Rule::ScopedPath) {
+            self.out.push(' ');
+            self.write_node_text(path);
         }
     }
 

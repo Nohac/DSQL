@@ -4,7 +4,7 @@
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::entities::definition::DefDecl;
-use dsql_core::entities::field_selection::FieldSel;
+use dsql_core::entities::field_selection::{FieldBodyKind, FieldSel};
 use dsql_core::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use dsql_core::facts::{ChildOf, DiagnosticsDemand, NodeKey};
 use dsql_core::source::insert_source;
@@ -65,7 +65,11 @@ async fn render_selection_tree(bowl: &Bowl) -> String {
                         .as_deref()
                         .map(|path| format!("->{path}"))
                         .unwrap_or_default();
-                    let nested = if field.nested { " {...}" } else { "" };
+                    let nested = match field.body {
+                        FieldBodyKind::None => "",
+                        FieldBodyKind::SelectionSet => " {...}",
+                        FieldBodyKind::Transform => " | {...}",
+                    };
                     out.push_str(&format!("{indent}{alias}{}{path}{nested}\n", field.name));
                 }
                 Node::Spread(spread) => {

@@ -1,0 +1,10 @@
+---
+source: crates/dsql-core/tests/it/parse.rs
+expression: rendered
+---
+error[23..24]: invalid syntax, expected one of: '@', ',', '.', '...', '{', '(', <name>, '}' ("|")
+---
+error[28..29]: invalid syntax, expected one of: 'by', '{' ("@")
+error[35..36]: invalid syntax, expected one of: ':', ',', '.', '..', <name>, '}', '~' ("{")
+---
+error[30..31]: invalid syntax, expected one of: <name>, '}' ("@")

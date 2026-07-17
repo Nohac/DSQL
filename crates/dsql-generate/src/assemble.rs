@@ -8,8 +8,8 @@ use dsql_core::entities::variable::VariableBinding;
 use dsql_core::entities::variable_path::{is_input_path, is_params_path};
 use dsql_core::facts::Span;
 use dsql_core::plan::{
-    FragmentPlanFact, OperationSeed, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
-    SpreadUse, SqlValue,
+    CollectionPlan, CollectionResultPlan, FragmentPlanFact, OperationSeed, QueryPlan,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SpreadUse, SqlValue,
 };
 use dsql_core::sql::GeneratedSql;
 use dsql_metadata::{
@@ -120,7 +120,12 @@ pub(crate) fn fragment_metadata(
         name: inputs.plan.name.clone(),
         kind: DefinitionKind::Fragment.as_ref().to_string(),
         table: table.name.clone(),
-        result: fragment_result_shape(catalog, &inputs.plan.selections, &inputs.plan.name)?,
+        result: fragment_result_shape(
+            catalog,
+            inputs.plan.table,
+            &inputs.plan.selections,
+            &inputs.plan.name,
+        )?,
         params: input_fields(inputs.bindings, true),
         input: input_fields(inputs.bindings, false),
         dynamic_inputs: dynamic_inputs(inputs.bindings),
@@ -146,12 +151,12 @@ fn fragment_spreads(spreads: &[SpreadUse]) -> Vec<FragmentSpreadMetadata> {
 
 fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
     let mut fields = Vec::new();
-    collect_result_fields(
+    collect_collection_fields(
         catalog,
         "",
         &plan.output_name,
-        &plan.selections,
-        ResultFieldKind::Array,
+        &plan.collection,
+        collection_result_kind(&plan.collection.result, RelationCardinality::Collection),
         false,
         &mut fields,
     )?;
@@ -160,22 +165,23 @@ fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
 
 fn fragment_result_shape(
     catalog: &Catalog,
+    table: TableId,
     selection: &SelectionPlan,
     name: &str,
 ) -> Result<ResultShape> {
     let mut fields = Vec::new();
     for item in &selection.items {
-        collect_result_item_fields(catalog, selection.table, "", item, &mut fields)
+        collect_result_item_fields(catalog, table, "", item, &mut fields)
             .map_err(|error| error.named(name))?;
     }
     Ok(ResultShape { fields })
 }
 
-fn collect_result_fields(
+fn collect_collection_fields(
     catalog: &Catalog,
     parent_path: &str,
     name: &str,
-    selection: &SelectionPlan,
+    collection: &CollectionPlan,
     kind: ResultFieldKind,
     nullable: bool,
     fields: &mut Vec<ResultField>,
@@ -190,8 +196,24 @@ fn collect_result_fields(
         nullable,
     });
 
-    for item in &selection.items {
-        collect_result_item_fields(catalog, selection.table, &path, item, fields)?;
+    match &collection.result {
+        CollectionResultPlan::Rows(selection) => {
+            for item in &selection.items {
+                collect_result_item_fields(catalog, collection.table, &path, item, fields)?;
+            }
+        }
+        CollectionResultPlan::Aggregate(aggregate) => {
+            for field in &aggregate.fields {
+                fields.push(ResultField {
+                    path: join_path(&path, &field.output_name),
+                    name: field.output_name.clone(),
+                    parent_path: path.clone(),
+                    kind: ResultFieldKind::Scalar.as_ref().to_string(),
+                    data_type: field.data_type.as_str().to_string(),
+                    nullable: field.nullable,
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -222,6 +244,7 @@ fn collect_result_item_fields(
             });
         }
         SelectionPlanItem::Relation(relation) => {
+            let related_table = relation.collection.table;
             let foreign_key = catalog
                 .foreign_key_by_id(relation.foreign_key)
                 .ok_or_else(|| GenerateError::Assembly {
@@ -229,27 +252,24 @@ fn collect_result_item_fields(
                     message: "missing relation foreign key".to_string(),
                 })?;
             let cardinality = catalog
-                .relation_cardinality(current_table, relation.table, foreign_key)
+                .relation_cardinality(current_table, related_table, foreign_key)
                 .ok_or_else(|| GenerateError::Assembly {
                     name: String::new(),
                     message: "invalid relation foreign key".to_string(),
                 })?;
-            let kind = match cardinality {
-                RelationCardinality::Collection => ResultFieldKind::Array,
-                RelationCardinality::Singular => ResultFieldKind::Object,
-            };
-            let nullable = match cardinality {
-                RelationCardinality::Collection => false,
-                RelationCardinality::Singular => {
-                    catalog.relation_is_nullable(current_table, relation.table, foreign_key)
-                        || singular_relation_can_be_absent(&relation.selections.clauses)
+            let kind = collection_result_kind(&relation.collection.result, cardinality);
+            let nullable = match (&relation.collection.result, cardinality) {
+                (CollectionResultPlan::Rows(_), RelationCardinality::Singular) => {
+                    catalog.relation_is_nullable(current_table, related_table, foreign_key)
+                        || singular_relation_can_be_absent(&relation.collection.clauses)
                 }
+                _ => false,
             };
-            collect_result_fields(
+            collect_collection_fields(
                 catalog,
                 parent_path,
                 &relation.output_name,
-                &relation.selections,
+                &relation.collection,
                 kind,
                 nullable,
                 fields,
@@ -257,6 +277,19 @@ fn collect_result_item_fields(
         }
     }
     Ok(())
+}
+
+fn collection_result_kind(
+    result: &CollectionResultPlan,
+    cardinality: RelationCardinality,
+) -> ResultFieldKind {
+    match result {
+        CollectionResultPlan::Aggregate(_) => ResultFieldKind::Object,
+        CollectionResultPlan::Rows(_) => match cardinality {
+            RelationCardinality::Collection => ResultFieldKind::Array,
+            RelationCardinality::Singular => ResultFieldKind::Object,
+        },
+    }
 }
 
 /// A singular relation with its own filter, offset, or a limit that can be

@@ -1,0 +1,15 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+expression: "format!(\"functions:\\n{functions}\\n\\noperands:\\n{operands}\")"
+---
+functions:
+Keyword count (aggregate function)
+Keyword exists (aggregate function)
+Keyword max (aggregate function)
+Keyword min (aggregate function)
+
+operands:
+Column created_at (timestamptz)
+Column email (text)
+Column id (uuid)
+Column name (text)

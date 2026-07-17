@@ -41,6 +41,10 @@ fn formatter_cases_match_expected_output() {
             "long_inline_clauses",
             "query Movies { title(where .aka_title->episode_of_id.episode_nr > 0 order by production_year desc limit 25 offset 12345) { id } }",
         ),
+        (
+            "aggregate_transform",
+            "query Summary { stats: title(where .production_year > 2000) | aggregate { count, earliest:min .production_year latest:max .title } }",
+        ),
         ("comment_trivia", "query Users { # ids\n id }"),
     ];
 
@@ -63,7 +67,7 @@ fn formatter_cases_match_expected_output() {
 
 #[test]
 fn formatting_is_idempotent() {
-    let source = "query Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra } }\nfragment Extra on users {\n  email\n}\n";
+    let source = "query Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra post_stats: posts | aggregate { count latest: max .created_at } } }\nfragment Extra on users {\n  email\n}\n";
     let once = format(source);
     let twice = format(&once.text);
     assert_eq!(once.text, twice.text, "formatting must be idempotent");

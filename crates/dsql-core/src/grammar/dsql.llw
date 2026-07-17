@@ -1,5 +1,5 @@
 token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or';
-token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' Arrow='->' Colon=':' At='@' Comma=',' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$';
+token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' Arrow='->' Colon=':' At='@' Comma=',' Pipe='|' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
 token Whitespace Comment;
@@ -34,7 +34,11 @@ field_selection_tail:
   ':' relation_ref field_suffix
 | field_suffix
 ;
-field_suffix: [clause_list] directive* [selection_set];
+field_suffix: [clause_list] (pipe_transform | directive* [selection_set]);
+pipe_transform: '|' Name ['by' aggregate_group_key (?1 ',' aggregate_group_key)* [',']] aggregate_set;
+aggregate_group_key: [Name ':'] scoped_path;
+aggregate_set: '{' aggregate_field* '}';
+aggregate_field: Name [?1 ':' Name] [scoped_path] [','];
 clause_list: '(' clause* ')';
 clause:
   where_clause

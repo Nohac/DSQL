@@ -38,6 +38,39 @@ fn valid_scoped_relation_predicate() {
 }
 
 #[test]
+fn aggregate_transform_is_contextual_syntax() {
+    let source = concat!(
+        "query Summary {\n",
+        "  stats: title(where .production_year > 2000) | aggregate {\n",
+        "    count\n",
+        "    earliest: min .production_year\n",
+        "  }\n",
+        "}\n",
+    );
+    let (cst, diagnostics) = parse(source);
+    let rendered = render_diagnostics(source, &diagnostics);
+    insta::assert_snapshot!(format!("{cst}---\n{rendered}"));
+}
+
+#[test]
+fn directives_are_rejected_at_aggregate_owned_positions() {
+    let sources = [
+        "query Q { title @audit | aggregate { count } }",
+        "query Q { title | aggregate @audit { count } }",
+        "query Q { title | aggregate { @audit count } }",
+    ];
+    let rendered = sources
+        .iter()
+        .map(|source| {
+            let (_, diagnostics) = parse(source);
+            render_diagnostics(source, &diagnostics)
+        })
+        .collect::<Vec<_>>()
+        .join("---\n");
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
 fn invalid_scalar_clause_list() {
     insta::assert_snapshot!(cst_snapshot("invalid/imdb-scalar-clause-list.dsql"));
 }

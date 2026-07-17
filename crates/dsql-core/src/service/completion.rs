@@ -94,6 +94,8 @@ pub enum CompletionSite {
     OrderBy,
     /// On a `...Name` spread name.
     SpreadName,
+    /// Inside an aggregate result body.
+    AggregateBody,
     /// After `@`, naming a directive namespace (or the `.` shorthand).
     DirectiveName,
     /// After `@namespace.` or `@.`, naming a directive member.
@@ -355,6 +357,7 @@ async fn enrich_completion_requests(
         CompletionSite::RootSelection
             | CompletionSite::SelectionBody
             | CompletionSite::SpreadName
+            | CompletionSite::AggregateBody
             | CompletionSite::DirectiveName
             | CompletionSite::DirectiveMember
             | CompletionSite::DirectiveArgument
@@ -509,7 +512,7 @@ fn spine_stop(
         };
     }
     let (opener, closer) = match rule {
-        Rule::SelectionSet => (Token::LBrace, Token::RBrace),
+        Rule::SelectionSet | Rule::AggregateSet => (Token::LBrace, Token::RBrace),
         Rule::ClauseList => (Token::LPar, Token::RPar),
         Rule::FragmentSpread => (Token::Ellipsis, Token::Name),
         _ => return None,
@@ -669,6 +672,7 @@ fn classify_site(spine: &[(Rule, NodeRef)], stop: Option<SpineStop>) -> Completi
             Rule::OrderByClause => return CompletionSite::OrderBy,
             Rule::ClauseList => return CompletionSite::ClauseList,
             Rule::FragmentSpread => return CompletionSite::SpreadName,
+            Rule::AggregateSet => return CompletionSite::AggregateBody,
             Rule::SelectionSet => {
                 // A selection set directly under a definition lists tables
                 // (queries) or the fragment target's fields; deeper ones
@@ -717,7 +721,11 @@ fn spine_owner(spine: &[(Rule, NodeRef)]) -> Option<SetOwner> {
     let container = spine.iter().rposition(|(rule, _)| {
         matches!(
             rule,
-            Rule::SelectionSet | Rule::ClauseList | Rule::WhereClause | Rule::OrderByClause
+            Rule::SelectionSet
+                | Rule::AggregateSet
+                | Rule::ClauseList
+                | Rule::WhereClause
+                | Rule::OrderByClause
         )
     })?;
     spine[..container]

@@ -1,0 +1,16 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+expression: "format!(\"count: {}\\nalias: {}\\nfunction: {}\\noperand: {}\\n\\ntokens:\\n{tokens}\",\nhover(&bowl, count).await, hover(&bowl, alias).await,\nhover(&bowl, function).await, hover(&bowl, operand).await,)"
+---
+count: aggregate function `count`: int
+alias: aggregate field `first_name`: text (nullable)
+function: aggregate function `min`: text (nullable)
+operand: column `name`: text (not null)
+
+tokens:
+Fragment 6..11 `Stats`
+Alias 16..26 `user_stats`
+Schema 28..34 `public`
+Table 36..41 `users`
+Alias 70..80 `first_name`
+Column 87..91 `name`

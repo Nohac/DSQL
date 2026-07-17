@@ -5,8 +5,9 @@ mod types;
 
 pub use build::register_planning;
 pub use types::{
-    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlan, FragmentPlanFact,
-    NestedRelation, OperationSeed, OrderByPlan, PlanDiagnostic, PlanDiagnosticKind, PlannedFile,
-    Projection, QueryPlan, QueryPlanFact, SelectionClauses, SelectionPlan, SelectionPlanItem,
+    AggregatePlan, AggregateProjection, CollectionPlan, CollectionResultPlan, FilterColumnScope,
+    FilterExpr, FilterLiteral, FilterOp, FragmentPlan, FragmentPlanFact, NestedRelation,
+    OperationSeed, OrderByPlan, PlanDiagnostic, PlanDiagnosticKind, PlannedFile, Projection,
+    QueryPlan, QueryPlanFact, SelectionClauses, SelectionPlan, SelectionPlanItem,
     SortDirectionPlan, SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
 };

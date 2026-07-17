@@ -1,0 +1,17 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: "format!(\"before:\\n{before}\\n\\nafter:\\n{after}\")"
+---
+before:
+-- edge
+select
+  JSON_BUILD_OBJECT('value', MAX("edge_26e19395"."name")) as "edge"
+from
+  "public"."users" as "edge_26e19395"
+
+after:
+-- edge
+select
+  JSON_BUILD_OBJECT('value', MIN("edge_26e19395"."name")) as "edge"
+from
+  "public"."users" as "edge_26e19395"

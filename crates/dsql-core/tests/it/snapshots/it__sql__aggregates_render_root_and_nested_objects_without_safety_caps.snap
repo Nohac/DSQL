@@ -1,0 +1,59 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- stats
+select
+  JSON_BUILD_OBJECT(
+    'count',
+    COUNT(*),
+    'populated_email',
+    COUNT("stats_fdeedab3"."email"),
+    'any',
+    COUNT(*) > 0,
+    'first_name',
+    MIN("stats_fdeedab3"."name"),
+    'latest_signup',
+    MAX("stats_fdeedab3"."created_at")
+  ) as "stats"
+from
+  "public"."users" as "stats_fdeedab3"
+where
+  "stats_fdeedab3"."email" <> (null)
+
+-- users
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'id',
+        "users_99fc7350"."id",
+        'post_stats',
+        "post_stats_json_f1ab13d3"."post_stats_result_f1ab13d3"
+      )
+    ),
+    '[]'
+  ) as "users"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "users_99fc7350"
+    limit
+      2
+  ) as "users_99fc7350"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'count',
+        COUNT(*),
+        'latest',
+        MAX("post_stats_f1ab13d3"."created_at")
+      ) as "post_stats_result_f1ab13d3"
+    from
+      "public"."posts" as "post_stats_f1ab13d3"
+    where
+      "post_stats_f1ab13d3"."user_id" = "users_99fc7350"."id"
+      and ("post_stats_f1ab13d3"."title" like '%x%')
+  ) as "post_stats_json_f1ab13d3" on true

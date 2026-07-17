@@ -81,6 +81,17 @@ query Movies {
 
 ---
 
+aggregate_transform
+query Summary {
+  stats: title(where .production_year > 2000) | aggregate {
+    count
+    earliest: min .production_year
+    latest: max .title
+  }
+}
+
+---
+
 comment_trivia
 query Users {
   # ids

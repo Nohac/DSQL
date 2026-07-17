@@ -11,6 +11,7 @@ use bowl::{DerivedFrom, Singleton};
 
 use crate::catalog::{CatalogSnapshot, CatalogSourceRoot};
 use crate::embedding::ExtractionRegistry;
+use crate::entities::aggregate::{AggregateTransformFact, ResolvedAggregate};
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefIndex, FragmentKey, FragmentTarget};
 use crate::entities::directive::DirectiveFact;
@@ -103,6 +104,13 @@ pub struct DsqlSchema {
         DerivedFrom,
         Option<ChildOf>,
     ),
+    aggregate_transform: (
+        NodeKey,
+        AggregateTransformFact,
+        BelongsToFile,
+        DerivedFrom,
+        Option<ChildOf>,
+    ),
     spread: (
         NodeKey,
         SpreadDecl,
@@ -162,6 +170,7 @@ pub struct DsqlSchema {
     ),
     def_index: (Singleton<DefIndex>, DefIndex),
     resolved_selection: (ResolvedSelection, ResolutionOf, BelongsToFile, DerivedFrom),
+    resolved_aggregate: (ResolvedAggregate, BelongsToFile, DerivedFrom),
     resolved_clause: (ResolvedClause, BelongsToFile, DerivedFrom),
     resolved_fragment_target: (ResolvedFragmentTarget, BelongsToFile, DerivedFrom),
     resolved_spread: (ResolvedSpread, BelongsToFile, DerivedFrom),
@@ -217,6 +226,7 @@ pub struct DsqlSchema {
 pub type AstFacts = (
     dsql_schema::Def,
     dsql_schema::FieldSelection,
+    dsql_schema::AggregateTransform,
     dsql_schema::Spread,
     dsql_schema::Clause,
     dsql_schema::Directive,

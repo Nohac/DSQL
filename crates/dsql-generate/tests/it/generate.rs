@@ -269,6 +269,133 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
     std::fs::remove_dir_all(&dir).expect("fixture cleanup");
 }
 
+#[tokio::test]
+async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
+    let (dir, _) = fixture_project("aggregate-metadata").await;
+    std::fs::write(
+        dir.join("dsql/schema/public/users.yaml"),
+        concat!(
+            "---\n",
+            "schema: public\n",
+            "name: users\n",
+            "object_type: table\n",
+            "columns:\n",
+            "  - name: id\n",
+            "    database_type: uuid\n",
+            "    data_type: uuid\n",
+            "    not_null: true\n",
+            "  - name: name\n",
+            "    database_type: text\n",
+            "    data_type: text\n",
+            "    not_null: true\n",
+            "constraints:\n",
+            "  - name: users_pkey\n",
+            "    kind: primary_key\n",
+            "    columns: [id]\n",
+            "foreign_keys: []\n",
+            "indexes:\n",
+            "  - name: users_pkey\n",
+            "    columns: [id]\n",
+            "    unique: true\n",
+        ),
+    )
+    .expect("users schema fixture");
+    std::fs::write(
+        dir.join("dsql/schema/public/posts.yaml"),
+        concat!(
+            "---\n",
+            "schema: public\n",
+            "name: posts\n",
+            "object_type: table\n",
+            "columns:\n",
+            "  - name: id\n",
+            "    database_type: uuid\n",
+            "    data_type: uuid\n",
+            "    not_null: true\n",
+            "  - name: user_id\n",
+            "    database_type: uuid\n",
+            "    data_type: uuid\n",
+            "    not_null: true\n",
+            "  - name: title\n",
+            "    database_type: text\n",
+            "    data_type: text\n",
+            "    not_null: false\n",
+            "  - name: created_at\n",
+            "    database_type: timestamptz\n",
+            "    data_type: timestamptz\n",
+            "    not_null: true\n",
+            "constraints:\n",
+            "  - name: posts_pkey\n",
+            "    kind: primary_key\n",
+            "    columns: [id]\n",
+            "foreign_keys:\n",
+            "  - name: posts_user_id_fkey\n",
+            "    columns: [user_id]\n",
+            "    references:\n",
+            "      schema: public\n",
+            "      table: users\n",
+            "      columns: [id]\n",
+            "indexes:\n",
+            "  - name: posts_pkey\n",
+            "    columns: [id]\n",
+            "    unique: true\n",
+        ),
+    )
+    .expect("posts schema fixture");
+    std::fs::write(
+        dir.join("queries/frontend/aggregates.dsql"),
+        concat!(
+            "fragment UserStats on users {\n",
+            "  post_stats: posts(where .title == $$title) | aggregate {\n",
+            "    count\n",
+            "    latest: max .created_at\n",
+            "  }\n",
+            "}\n",
+            "query RootStats {\n",
+            "  user_stats: users(where .name == $$name) | aggregate {\n",
+            "    count\n",
+            "    first_name: min .name\n",
+            "  }\n",
+            "}\n",
+            "query NestedStats {\n",
+            "  users(limit 1) {\n",
+            "    id\n",
+            "    ...UserStats\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .expect("aggregate query fixture");
+    let project = Project::load_from(&dir).await.expect("project reloads");
+    let bowl = open_analysis_bowl(&project).await.expect("bowl opens");
+    let assembled = assemble_project(
+        &bowl,
+        &project,
+        GenerateOptions {
+            collection_limit: Some(10),
+        },
+    )
+    .await
+    .expect("assembly succeeds");
+    let mut artifacts = assembled
+        .snapshot
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            matches!(
+                artifact.name.as_str(),
+                "RootStats" | "NestedStats" | "UserStats"
+            )
+        })
+        .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
+        .collect::<Vec<_>>();
+    artifacts.sort();
+
+    insta::assert_snapshot!(artifacts.join("\n---\n"));
+
+    std::fs::remove_dir_all(&dir).expect("fixture cleanup");
+}
+
 /// Two *independent* scopes may each define an operation with the same
 /// public name — resolution namespaces are separate, and without an
 /// import relationship the language checks rightly stay silent (importing

@@ -168,6 +168,50 @@ async fn clause_fields_hover_from_semantic_resolutions() {
 }
 
 #[tokio::test]
+async fn aggregate_fields_hover_and_tokenize_from_semantic_resolutions() {
+    use dsql_core::service::semantic_tokens;
+
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
+    let source = concat!(
+        "query Stats {\n",
+        "  user_stats: public::users | aggregate {\n",
+        "    count\n",
+        "    first_name: min .name\n",
+        "  }\n",
+        "}\n",
+    );
+    insert_source(&bowl, FIXTURE, source).await;
+
+    let count = source.find("count").expect("test text");
+    let alias = source.find("first_name").expect("test text");
+    let function = source.find("min .name").expect("test text");
+    let operand = source.find(".name").expect("test text") + 1;
+    let tokens = semantic_tokens(&bowl, FIXTURE)
+        .await
+        .into_iter()
+        .map(|token| {
+            format!(
+                "{:?} {}..{} `{}`",
+                token.kind,
+                token.span.start,
+                token.span.end,
+                &source[token.span.start..token.span.end],
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    insta::assert_snapshot!(format!(
+        "count: {}\nalias: {}\nfunction: {}\noperand: {}\n\ntokens:\n{tokens}",
+        hover(&bowl, count).await,
+        hover(&bowl, alias).await,
+        hover(&bowl, function).await,
+        hover(&bowl, operand).await,
+    ));
+}
+
+#[tokio::test]
 async fn hover_on_unknown_file_reports_it() {
     let bowl = service_bowl().await;
     let info = bowl

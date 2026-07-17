@@ -22,6 +22,7 @@ use bowl::{
     Bowl, Phase, Plugin, Registrar, Schema, ShapeDesc, Singleton, SystemExt, cleanup_stale_derived,
 };
 
+use crate::entities::aggregate::Aggregate;
 use crate::entities::clause::Clause;
 use crate::entities::definition::Definition;
 use crate::entities::directive::Directive;
@@ -47,6 +48,7 @@ impl Plugin for DsqlPlugin {
         register_entity::<Document>(reg);
         register_entity::<Definition>(reg);
         register_entity::<FieldSelection>(reg);
+        register_entity::<Aggregate>(reg);
         register_entity::<FragmentSpread>(reg);
         register_entity::<Clause>(reg);
         register_entity::<Directive>(reg);

@@ -9,17 +9,18 @@
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
 use crate::resolution::{PathTerminal, ResolvedClause, index_resolved_clauses};
 use crate::schema::dsql_schema;
-use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, View, With};
+use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View, With};
 
 use super::types::{
-    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation,
-    OperationSeed, OrderByPlan, Projection, QueryPlan, QueryPlanFact, SelectionClauses,
-    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter, SqlValue,
-    SqlVariantCase,
+    AggregatePlan, AggregateProjection, CollectionPlan, CollectionResultPlan, FilterColumnScope,
+    FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation, OperationSeed,
+    OrderByPlan, Projection, QueryPlan, QueryPlanFact, SelectionClauses, SelectionPlan,
+    SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
 };
+use crate::entities::aggregate::{AggregateMode, ResolvedAggregate};
 use crate::entities::clause::{ClauseFact, OrderDirection};
 use crate::entities::definition::{DefDecl, DefKind};
 use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, VariableRef};
@@ -56,7 +57,7 @@ async fn plan_queries(
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
-    resolutions: View<'_, (Entity, &ResolvedClause)>,
+    semantic_views: PlanSemanticViews<'_>,
     mut commands: Commands<(
         dsql_schema::QueryPlan,
         dsql_schema::FragmentPlan,
@@ -68,10 +69,17 @@ async fn plan_queries(
     let (_, imports) = imports.item();
 
     let tree = SelectionTree::collect(&views);
-    let resolved_clauses = index_resolved_clauses(resolutions.iter().map(|(_, resolved)| resolved));
+    let resolved_clauses =
+        index_resolved_clauses(semantic_views.clauses.iter().map(|(_, resolved)| resolved));
+    let resolved_aggregates = semantic_views
+        .aggregates
+        .iter()
+        .map(|(_, aggregate)| (aggregate.source, aggregate))
+        .collect();
     let planner = Planner {
         tree: &tree,
         resolved_clauses: &resolved_clauses,
+        resolved_aggregates: &resolved_aggregates,
         catalog: snapshot.catalog(),
         scope: &scope.0,
         imports,
@@ -117,28 +125,31 @@ async fn plan_queries(
                 let clauses =
                     planner.plan_clauses(table_id, &selection_path, &variable_scope, root_entity);
                 let mut spreads = Vec::new();
-                if let Some(selections) = planner.plan_selection_set(
-                    &mut PlanWalk {
-                        result_path: vec![output_name.clone()],
-                        spreads: &mut spreads,
-                        expansion: &mut SpreadExpansion::new(
-                            planner.tree,
-                            planner.scope,
-                            planner.imports,
-                        ),
-                        diagnostics: &mut diagnostics,
-                    },
+                let mut walk = PlanWalk {
+                    result_path: vec![output_name.clone()],
+                    spreads: &mut spreads,
+                    expansion: &mut SpreadExpansion::new(
+                        planner.tree,
+                        planner.scope,
+                        planner.imports,
+                    ),
+                    diagnostics: &mut diagnostics,
+                };
+                if let Some(result) = planner.plan_collection_result(
+                    &mut walk,
                     table_id,
-                    &clauses,
                     SelectionPath::body(selection_path),
                     &variable_scope,
                     root_entity,
+                    field,
                 ) {
                     let plan = QueryPlan {
-                        root: table_id,
                         output_name,
-                        clauses,
-                        selections,
+                        collection: CollectionPlan {
+                            table: table_id,
+                            clauses,
+                            result,
+                        },
                     };
                     let plan_entity = commands.insert((
                         DerivedFrom::many([def_entity, catalog_entity]),
@@ -193,6 +204,14 @@ async fn plan_queries(
         file.0,
         &mut commands,
     );
+}
+
+/// Semantic facts consumed ambiently by the per-definition plan walk,
+/// bundled to stay within porridge's system-parameter arity.
+#[derive(SystemParam)]
+struct PlanSemanticViews<'a> {
+    clauses: View<'a, (Entity, &'a ResolvedClause)>,
+    aggregates: View<'a, (Entity, &'a ResolvedAggregate)>,
 }
 
 fn emit_plan_diagnostics(
@@ -265,7 +284,6 @@ fn plan_fragment_body(
             diagnostics,
         },
         table_id,
-        &SelectionClauses::default(),
         SelectionPath::fragment_root(),
         &VariablePathScope::fragment(),
         def_entity,
@@ -302,17 +320,60 @@ struct PlanWalk<'a> {
 struct Planner<'a> {
     tree: &'a SelectionTree<'a>,
     resolved_clauses: &'a std::collections::HashMap<Entity, &'a ResolvedClause>,
+    resolved_aggregates: &'a std::collections::HashMap<Entity, &'a ResolvedAggregate>,
     catalog: &'a Catalog,
     scope: &'a str,
     imports: &'a ScopeImports,
 }
 
 impl Planner<'_> {
+    fn plan_collection_result(
+        &self,
+        walk: &mut PlanWalk<'_>,
+        table: TableId,
+        selection_path: SelectionPath,
+        variable_scope: &VariablePathScope,
+        source: Entity,
+        field: &FieldSel,
+    ) -> Option<CollectionResultPlan> {
+        if field.has_selection_set() {
+            return self
+                .plan_selection_set(walk, table, selection_path, variable_scope, source)
+                .map(CollectionResultPlan::Rows);
+        }
+        if field.has_transform() {
+            return self
+                .plan_aggregate(source)
+                .map(CollectionResultPlan::Aggregate);
+        }
+        None
+    }
+
+    fn plan_aggregate(&self, source: Entity) -> Option<AggregatePlan> {
+        let aggregate = self.resolved_aggregates.get(&source)?;
+        if !aggregate.is_valid() || aggregate.mode != AggregateMode::Ungrouped {
+            return None;
+        }
+        let fields = aggregate
+            .fields
+            .iter()
+            .map(|field| {
+                Some(AggregateProjection {
+                    function: field.function?,
+                    operand: field.operand,
+                    output_name: field.output_name.clone()?,
+                    data_type: field.data_type?,
+                    nullable: field.nullable,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(AggregatePlan { fields })
+    }
+
     fn plan_selection_set(
         &self,
         walk: &mut PlanWalk<'_>,
         table: TableId,
-        clauses: &SelectionClauses,
         selection_path: SelectionPath,
         variable_scope: &VariablePathScope,
         parent: Entity,
@@ -358,7 +419,6 @@ impl Planner<'_> {
                     if let Some(fragment_plan) = self.plan_selection_set(
                         walk,
                         table,
-                        &SelectionClauses::default(),
                         SelectionPath::fragment_root(),
                         &variable_scope.for_fragment_spread(&selection_path, &name),
                         fragment_entity,
@@ -374,7 +434,7 @@ impl Planner<'_> {
                     };
                     match self.catalog.check_field_ref(table, reference) {
                         FieldCheckResult::Column(column) => {
-                            if !field.nested {
+                            if field.body == crate::entities::field_selection::FieldBodyKind::None {
                                 items.push(SelectionPlanItem::Projection(Projection {
                                     column: column.id,
                                     output_name: field
@@ -400,13 +460,13 @@ impl Planner<'_> {
                             walk.result_path.push(
                                 field.alias.clone().unwrap_or_else(|| relation_name.clone()),
                             );
-                            let nested = self.plan_selection_set(
+                            let nested = self.plan_collection_result(
                                 walk,
                                 relation_table,
-                                &child_clauses,
                                 SelectionPath::body(child_path),
                                 variable_scope,
                                 field_entity,
+                                field,
                             );
                             walk.result_path.pop();
                             if let Some(nested) = nested {
@@ -416,9 +476,12 @@ impl Planner<'_> {
                                         .alias
                                         .clone()
                                         .unwrap_or(relation_name),
-                                    table: relation_table,
                                     foreign_key,
-                                    selections: Box::new(nested),
+                                    collection: Box::new(CollectionPlan {
+                                        table: relation_table,
+                                        clauses: child_clauses,
+                                        result: nested,
+                                    }),
                                 }));
                             }
                         }
@@ -439,11 +502,7 @@ impl Planner<'_> {
             }
         }
 
-        Some(SelectionPlan {
-            table,
-            clauses: clauses.clone(),
-            items,
-        })
+        Some(SelectionPlan { items })
     }
 
     fn plan_clauses(

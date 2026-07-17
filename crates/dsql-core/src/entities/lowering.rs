@@ -9,6 +9,7 @@
 use crate::schema::AstFacts;
 use bowl::{Commands, Entity, Query};
 
+use super::aggregate::Aggregate;
 use super::clause::Clause;
 use super::definition::Definition;
 use super::directive::Directive;
@@ -33,6 +34,7 @@ fn lower_rule(
         Rule::Document => Document::lower(ctx, node, commands),
         Rule::QueryDef | Rule::FragmentDef => Definition::lower(ctx, node, commands),
         Rule::FieldSelection => FieldSelection::lower(ctx, node, commands),
+        Rule::PipeTransform => Aggregate::lower(ctx, node, commands),
         Rule::FragmentSpread => FragmentSpread::lower(ctx, node, commands),
         Rule::WhereClause | Rule::OrderByClause | Rule::LimitClause | Rule::OffsetClause => {
             Clause::lower(ctx, node, commands)
@@ -51,6 +53,8 @@ fn lower_rule(
 
         // Consumed by FieldSelection lowering from the field_selection node.
         Rule::FieldSelectionTail | Rule::FieldSuffix => None,
+        // Consumed by Aggregate lowering from the pipe_transform node.
+        Rule::AggregateField | Rule::AggregateGroupKey | Rule::AggregateSet => None,
         // Consumed by Clause lowering from the clause nodes.
         Rule::Clause | Rule::ClauseList | Rule::OrderItem | Rule::SortDirection => None,
         // Consumed by Directive lowering from the directive node.
@@ -106,6 +110,7 @@ fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands<AstFacts>) {
             Rule::QueryDef
                 | Rule::FragmentDef
                 | Rule::FieldSelection
+                | Rule::PipeTransform
                 | Rule::FragmentSpread
                 | Rule::WhereClause
                 | Rule::OrderByClause
@@ -172,6 +177,7 @@ pub fn format_rule(
         Rule::Document => Document::format(formatter, node),
         Rule::QueryDef | Rule::FragmentDef => Definition::format(formatter, node),
         Rule::FieldSelection => FieldSelection::format(formatter, node),
+        Rule::PipeTransform => Aggregate::format(formatter, node),
         Rule::FragmentSpread => FragmentSpread::format(formatter, node),
         Rule::WhereClause | Rule::OrderByClause | Rule::LimitClause | Rule::OffsetClause => {
             Clause::format(formatter, node)
@@ -188,6 +194,9 @@ pub fn format_rule(
         // Structural rules: laid out by the engine or their owner.
         Rule::FieldSelectionTail
         | Rule::FieldSuffix
+        | Rule::AggregateField
+        | Rule::AggregateGroupKey
+        | Rule::AggregateSet
         | Rule::Clause
         | Rule::ClauseList
         | Rule::OrderItem

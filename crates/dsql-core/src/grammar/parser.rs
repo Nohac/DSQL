@@ -44,4 +44,15 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     fn predicate_directive_2(&self) -> bool {
         matches!(self.peek(1), Token::Name)
     }
+
+    fn predicate_pipe_transform_1(&self) -> bool {
+        matches!(
+            self.peek(1),
+            Token::Name | Token::Dot | Token::DotDot | Token::Tilde
+        )
+    }
+
+    fn predicate_aggregate_field_1(&self) -> bool {
+        matches!(self.peek(1), Token::Name)
+    }
 }

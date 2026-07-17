@@ -1,6 +1,7 @@
 //! Integration test harness for `dsql-core`. One binary, one module per
 //! area, mirroring the layout described in CONTRIBUTING.md.
 
+mod aggregates;
 mod checks;
 mod completions;
 mod definitions;

@@ -9,10 +9,14 @@ use dsql_core::service::{CompletionList, CompletionRequest, Position};
 use dsql_core::source::{FilePath, insert_source};
 
 async fn completions(source_with_cursor: &str) -> String {
+    completions_with_marker(source_with_cursor, '|').await
+}
+
+async fn completions_with_marker(source_with_cursor: &str, marker: char) -> String {
     let offset = source_with_cursor
-        .find('|')
+        .find(marker)
         .expect("test source marks the cursor with |");
-    let source = source_with_cursor.replace('|', "");
+    let source = source_with_cursor.replacen(marker, "", 1);
 
     let bowl = language_bowl().await;
     insert_catalog(&bowl, Catalog::hardcoded()).await;
@@ -104,4 +108,17 @@ async fn order_by_offers_columns_and_directions() {
     insta::assert_snapshot!(
         completions("query Q {\n  users(order by |) {\n    id\n  }\n}\n").await
     );
+}
+
+#[tokio::test]
+async fn aggregate_bodies_offer_contextual_functions_and_operands() {
+    let functions =
+        completions_with_marker("query Q {\n  users | aggregate {\n    ¦\n  }\n}\n", '¦').await;
+    let operands = completions_with_marker(
+        "query Q {\n  users | aggregate {\n    value: min .¦\n  }\n}\n",
+        '¦',
+    )
+    .await;
+
+    insta::assert_snapshot!(format!("functions:\n{functions}\n\noperands:\n{operands}"));
 }

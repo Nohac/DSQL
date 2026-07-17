@@ -129,6 +129,58 @@ async fn exact_and_floating_numbers_use_their_public_wire_types() {
 }
 
 #[tokio::test]
+async fn aggregates_render_root_and_nested_objects_without_safety_caps() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "aggregate-sql.dsql",
+        concat!(
+            "query AggregateSql {\n",
+            "  stats: public::users(where .email != null) | aggregate {\n",
+            "    count\n",
+            "    populated_email: count .email\n",
+            "    any: exists\n",
+            "    first_name: min .name\n",
+            "    latest_signup: max .created_at\n",
+            "  }\n",
+            "  public::users(limit 2) {\n",
+            "    id\n",
+            "    post_stats: posts(where .title like \"%x%\") | aggregate {\n",
+            "      count\n",
+            "      latest: max .created_at\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn same_slot_aggregate_function_edits_rederive_sql() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    let file = insert_source(
+        &bowl,
+        "aggregate-edit.dsql",
+        "query Edge { edge: public::users | aggregate { value: max .name } }\n",
+    )
+    .await;
+    let before = render_sql(&bowl).await;
+
+    set_source_text(
+        &bowl,
+        file,
+        "query Edge { edge: public::users | aggregate { value: min .name } }\n",
+    )
+    .await;
+    let after = render_sql(&bowl).await;
+
+    insta::assert_snapshot!(format!("before:\n{before}\n\nafter:\n{after}"));
+}
+
+#[tokio::test]
 async fn plans_retire_when_demand_is_removed_sources_change() {
     let bowl = sql_bowl(imdb_catalog()).await;
     let file = insert_source(&bowl, "q.dsql", "query Q {\n  title {\n    id\n  }\n}\n").await;

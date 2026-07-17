@@ -2,9 +2,11 @@ use crate::catalog::{
     Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyId, RelationCardinality, Table,
     TableId,
 };
+use crate::entities::aggregate::AggregateFunction;
 use crate::plan::{
-    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, QueryPlan, SelectionClauses,
-    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    AggregatePlan, CollectionPlan, CollectionResultPlan, FilterColumnScope, FilterExpr,
+    FilterLiteral, FilterOp, QueryPlan, SelectionClauses, SelectionPlan, SelectionPlanItem,
+    SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
 };
 use sea_query::{
     Alias, Asterisk, Condition, Expr, ExprTrait, Func, JoinType, Order, PgFunc,
@@ -44,6 +46,8 @@ pub enum SqlGenerationError {
     MissingColumn(usize),
     #[error("foreign key id `{0}` was not found in catalog")]
     MissingForeignKey(usize),
+    #[error("aggregate function requires a planned operand")]
+    MissingAggregateOperand,
     #[error("filter shape is not supported in a text fragment position")]
     UnsupportedFilterFragment,
     #[error(
@@ -161,12 +165,10 @@ pub fn generate_postgres_sql_with_options(
 ) -> Result<GeneratedSql, SqlGenerationError> {
     let mut path = Vec::new();
     let mut template = SqlTemplateContext::default();
-    let root = catalog
-        .table_by_id(plan.root)
-        .ok_or(SqlGenerationError::MissingTable(plan.root.0))?;
+    let root = table(catalog, plan.collection.table)?;
     path.push(path_segment(root, &plan.output_name));
-    let root_query = generate_selection(
-        &plan.selections,
+    let root_query = generate_collection(
+        &plan.collection,
         catalog,
         &plan.output_name,
         &path,
@@ -200,7 +202,38 @@ pub fn generate_postgres_sql_with_options(
     })
 }
 
-fn generate_selection(
+fn generate_collection(
+    collection: &CollectionPlan,
+    catalog: &Catalog,
+    output_name: &str,
+    path: &[String],
+    generation: SelectionGenerationContext<'_>,
+    template: &mut SqlTemplateContext,
+) -> Result<SelectStatement, SqlGenerationError> {
+    match &collection.result {
+        CollectionResultPlan::Rows(selection) => generate_rows(
+            collection,
+            selection,
+            catalog,
+            output_name,
+            path,
+            generation,
+            template,
+        ),
+        CollectionResultPlan::Aggregate(aggregate) => generate_aggregate(
+            collection,
+            aggregate,
+            catalog,
+            output_name,
+            path,
+            generation,
+            template,
+        ),
+    }
+}
+
+fn generate_rows(
+    collection: &CollectionPlan,
     selection: &SelectionPlan,
     catalog: &Catalog,
     output_name: &str,
@@ -208,7 +241,7 @@ fn generate_selection(
     generation: SelectionGenerationContext<'_>,
     template: &mut SqlTemplateContext,
 ) -> Result<SelectStatement, SqlGenerationError> {
-    let current_table = table(catalog, selection.table)?;
+    let current_table = table(catalog, collection.table)?;
     let context = context_for(current_table, output_name, path);
     let root_context = generation.root.unwrap_or(&context);
     let mut query = Query::select();
@@ -219,19 +252,19 @@ fn generate_selection(
             parent,
             &context,
             foreign_key,
-            selection.table,
+            collection.table,
         )?)
     } else {
         None
     };
-    let filter = selection
+    let filter = collection
         .clauses
         .filter
         .as_ref()
         .map(|filter| filter_expr(catalog, &context, root_context, None, filter, template))
         .transpose()?;
     if generation.cardinality == RelationCardinality::Collection
-        && should_use_source_subquery(&selection.clauses, generation.options)
+        && should_use_source_subquery(&collection.clauses, generation.options)
     {
         let source = limited_source_query(
             catalog,
@@ -239,8 +272,8 @@ fn generate_selection(
             &context,
             relation_condition,
             filter,
-            &selection.clauses,
-            effective_limit(&selection.clauses, generation.options),
+            &collection.clauses,
+            effective_limit(&collection.clauses, generation.options),
             template,
         )?;
         query.from_subquery(source, Alias::new(&context.table_alias));
@@ -261,7 +294,7 @@ fn generate_selection(
         apply_order_limit_offset(
             catalog,
             &context,
-            &selection.clauses,
+            &collection.clauses,
             None,
             &mut query,
             template,
@@ -272,20 +305,20 @@ fn generate_selection(
         let SelectionPlanItem::Relation(relation) = item else {
             continue;
         };
-        let related_table = table(catalog, relation.table)?;
+        let related_table = table(catalog, relation.collection.table)?;
         let mut relation_path = path.to_vec();
         relation_path.push(path_segment(related_table, &relation.output_name));
         let foreign_key = foreign_key(catalog, relation.foreign_key)?;
         let relation_cardinality = catalog
-            .relation_cardinality(selection.table, relation.table, foreign_key)
+            .relation_cardinality(collection.table, relation.collection.table, foreign_key)
             .ok_or_else(|| SqlGenerationError::InvalidRelation {
                 foreign_key: relation.foreign_key.0,
                 parent: table_label(current_table),
                 child: table_label(related_table),
             })?;
         let child_context = context_for(related_table, &relation.output_name, &relation_path);
-        let child_query = generate_selection(
-            &relation.selections,
+        let child_query = generate_collection(
+            &relation.collection,
             catalog,
             &relation.output_name,
             &relation_path,
@@ -315,6 +348,86 @@ fn generate_selection(
     };
     query.expr_as(
         expression,
+        Alias::new(
+            generation
+                .public_result_alias
+                .unwrap_or(&context.result_alias),
+        ),
+    );
+    Ok(query.to_owned())
+}
+
+fn generate_aggregate(
+    collection: &CollectionPlan,
+    aggregate: &AggregatePlan,
+    catalog: &Catalog,
+    output_name: &str,
+    path: &[String],
+    generation: SelectionGenerationContext<'_>,
+    template: &mut SqlTemplateContext,
+) -> Result<SelectStatement, SqlGenerationError> {
+    let current_table = table(catalog, collection.table)?;
+    let context = context_for(current_table, output_name, path);
+    let root_context = generation.root.unwrap_or(&context);
+    let mut query = Query::select();
+    query.from_as(
+        (
+            Alias::new(&current_table.schema),
+            Alias::new(&current_table.name),
+        ),
+        Alias::new(&context.table_alias),
+    );
+    if let Some((parent, foreign_key)) = generation.parent {
+        query.cond_where(relation_condition(
+            catalog,
+            parent,
+            &context,
+            foreign_key,
+            collection.table,
+        )?);
+    }
+    if let Some(filter) = &collection.clauses.filter {
+        query.and_where(filter_expr(
+            catalog,
+            &context,
+            root_context,
+            None,
+            filter,
+            template,
+        )?);
+    }
+
+    let mut pairs = Vec::new();
+    for field in &aggregate.fields {
+        let operand = field
+            .operand
+            .map(|column_id| {
+                let column = column(catalog, column_id)?;
+                Ok(Expr::col((
+                    Alias::new(&context.table_alias),
+                    Alias::new(&column.name),
+                )))
+            })
+            .transpose()?;
+        let expression: Expr = match field.function {
+            AggregateFunction::Count => {
+                Func::count(operand.unwrap_or_else(|| Expr::col(Asterisk))).into()
+            }
+            AggregateFunction::Exists => Func::count(Expr::col(Asterisk)).gt(0),
+            AggregateFunction::Min => {
+                Func::min(operand.ok_or(SqlGenerationError::MissingAggregateOperand)?).into()
+            }
+            AggregateFunction::Max => {
+                Func::max(operand.ok_or(SqlGenerationError::MissingAggregateOperand)?).into()
+            }
+        };
+        pairs.push((
+            Expr::value(field.output_name.clone()),
+            public_scalar_expression(expression, field.data_type),
+        ));
+    }
+    query.expr_as(
+        PgFunc::json_build_object(pairs),
         Alias::new(
             generation
                 .public_result_alias
@@ -574,11 +687,14 @@ fn json_build_object(
                 let column = column(catalog, projection.column)?;
                 pairs.push((
                     Expr::value(projection.output_name.clone()),
-                    json_scalar_expression(column, context),
+                    public_scalar_expression(
+                        Expr::col((Alias::new(&context.table_alias), Alias::new(&column.name))),
+                        column.data_type,
+                    ),
                 ));
             }
             SelectionPlanItem::Relation(relation) => {
-                let table = table(catalog, relation.table)?;
+                let table = table(catalog, relation.collection.table)?;
                 let mut relation_path = path.to_vec();
                 relation_path.push(path_segment(table, &relation.output_name));
                 let related_context = context_for(table, &relation.output_name, &relation_path);
@@ -595,12 +711,11 @@ fn json_build_object(
     Ok(PgFunc::json_build_object(pairs).into())
 }
 
-/// Converts one scalar projection to its public JSON wire representation.
+/// Converts one scalar expression to its public JSON wire representation.
 /// Exact numerics cross the JSON boundary as text so host runtimes cannot
 /// silently round them through an IEEE-754 number.
-fn json_scalar_expression(column: &Column, context: &SelectionContext) -> Expr {
-    let expression = Expr::col((Alias::new(&context.table_alias), Alias::new(&column.name)));
-    if column.data_type == DataType::Numeric {
+fn public_scalar_expression(expression: Expr, data_type: DataType) -> Expr {
+    if data_type == DataType::Numeric {
         expression.cast_as(Alias::new("text"))
     } else {
         expression

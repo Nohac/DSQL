@@ -1,6 +1,7 @@
 //! Language entities: one vertical slice per language concept, plus the
 //! shared lowering walk and rule-ownership dispatch (see [`lowering`]).
 
+pub mod aggregate;
 pub mod clause;
 pub mod definition;
 pub mod directive;
