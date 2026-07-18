@@ -390,7 +390,11 @@ async fn enrich_completion_requests(
             // arguments); generic expression keywords would offer `null`.
             | CompletionSite::DirectiveValue
     );
-    for keyword in keywords.iter().filter(|_| !names_only) {
+    for keyword in keywords
+        .iter()
+        .filter(|_| !names_only)
+        .filter(|keyword| policy_keyword_applies(site, keyword))
+    {
         let alphabetic = keyword.chars().all(|c| c.is_ascii_alphabetic());
         let comparison = matches!(keyword.as_str(), "==" | "!=" | ">" | ">=" | "<" | "<=");
         if !alphabetic && !comparison {
@@ -429,6 +433,18 @@ async fn enrich_completion_requests(
         keywords,
         spread_dots,
     });
+}
+
+fn policy_keyword_applies(site: CompletionSite, keyword: &str) -> bool {
+    match keyword {
+        "condition" => site == CompletionSite::DocumentRoot,
+        "filter" => matches!(
+            site,
+            CompletionSite::DocumentRoot | CompletionSite::ClauseList
+        ),
+        "apply" | "field" | "when" => false,
+        _ => true,
+    }
 }
 
 /// The span of the identifier the cursor touches — the range completion

@@ -1,4 +1,4 @@
-token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or' Not='not' In='in' Is='is' Exists='exists';
+token Query='query' Fragment='fragment' Filter='filter' Condition='condition' On='on' Apply='apply' When='when' Field='field' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or' Not='not' In='in' Is='is' Exists='exists';
 token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' Arrow='->' Colon=':' At='@' Comma=',' Pipe='|' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
@@ -9,13 +9,27 @@ skip Whitespace Comment;
 start document;
 
 document: definition*;
-contextual_name: 'not' | 'in' | 'is' | 'exists';
+contextual_name: 'not' | 'in' | 'is' | 'exists' | 'filter' | 'condition' | 'apply' | 'when' | 'field';
 definition^:
   query_def
 | fragment_def
+| filter_def
+| condition_def
 ;
-query_def: 'query' (Name | contextual_name) directive* selection_set;
+query_def: 'query' (Name | contextual_name) [query_filter_header] directive* selection_set;
 fragment_def: 'fragment' (Name | contextual_name) 'on' qualified_name selection_set;
+filter_def: 'filter' (Name | contextual_name) ['on' policy_target] filter_body;
+condition_def: 'condition' (Name | contextual_name) ['on' policy_target] condition_body;
+policy_target: qualified_name | shape_target;
+shape_target: '{' shape_field* '}';
+shape_field: '.' (Name | contextual_name) ':' (Name | contextual_name) [','];
+filter_body: '{' filter_rule* '}';
+filter_rule: apply_rule | where_clause | field_rule;
+condition_body: '{' where_clause '}';
+apply_rule: 'apply' [?1 'where' expr];
+field_rule: 'field' (Name | contextual_name) (?1 ',' (Name | contextual_name))* 'where' expr;
+query_filter_header: '(' filter_assignment+ ')';
+filter_assignment: 'filter' (Name | contextual_name) ['when' expr];
 qualified_name: (Name | contextual_name) [?1 '::' (Name | contextual_name)];
 relation_ref: qualified_name ['->' (Name | contextual_name)];
 scoped_path_segment: qualified_name ['->' (Name | contextual_name)];
@@ -44,7 +58,8 @@ aggregate_field:
 | contextual_name [?1 ':' (Name / contextual_name)] [scoped_path] [','];
 clause_list: '(' clause* ')';
 clause:
-  where_clause
+  filter_assignment
+| where_clause
 | order_by_clause
 | limit_clause
 | offset_clause
@@ -65,22 +80,24 @@ directive_member: Name | contextual_name;
 directive_argument: (Name | contextual_name) ':' expr;
 scalar_aggregate_expr: scoped_path '|' (Name | contextual_name) [scoped_path];
 collection_literal: '[' [expr (?1 ',' expr)* [',']] ']';
-exists_source: (scoped_path | qualified_name) ['(' where_clause ')'];
+exists_source: (scoped_path | qualified_name) ['(' filter_assignment* [where_clause] ')'];
 exists_expr: 'exists' exists_source;
 expr:
   expr (binary_operator | 'in' | 'not' 'in') expr @binary_expr
 | expr 'is' ('not' 'null' / 'null') @null_test_expr
-| 'not' expr @unary_expr
+| ?2 'not' expr @unary_expr
 | expr 'and' expr @binary_expr
 | expr 'or' expr @binary_expr
 | literal
 | collection_literal
-| exists_expr
-| ?1 scalar_aggregate_expr
+| ?1 exists_expr
+| predicate_name
+| ?3 scalar_aggregate_expr
 | scoped_path
 | value_variable
 | '(' expr ')'
 ;
+predicate_name: Name;
 literal:
   String
 | Number

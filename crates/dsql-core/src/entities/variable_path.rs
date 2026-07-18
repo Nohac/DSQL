@@ -19,6 +19,7 @@ pub enum InputPathSegment {
     OrderBy,
     Limit,
     Offset,
+    Filter,
     Value,
     Op,
     Direction,
@@ -119,13 +120,17 @@ impl VariableRole {
             Self::SortDirection => InputPathSegment::OrderBy,
             Self::Limit => InputPathSegment::Limit,
             Self::Offset => InputPathSegment::Offset,
+            Self::FilterAssignment => InputPathSegment::Filter,
         }
     }
 
     fn path_includes_inferred_path(self) -> bool {
         matches!(
             self,
-            Self::WhereValue | Self::ComparisonOperator | Self::SortDirection
+            Self::WhereValue
+                | Self::ComparisonOperator
+                | Self::SortDirection
+                | Self::FilterAssignment
         )
     }
 }

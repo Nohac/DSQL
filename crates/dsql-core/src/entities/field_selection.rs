@@ -306,6 +306,7 @@ fn selection_shape_syntax(ctx: &LowerCtx<'_>, suffix: Option<NodeRef>) -> Select
                 | Expr::NullTest { .. }
                 | Expr::List { .. }
                 | Expr::Exists { .. }
+                | Expr::PredicateRef { .. }
                 | Expr::Error { .. } => SelectionLimitSyntax::None,
             };
         }
@@ -441,7 +442,7 @@ async fn check_selections(
     _: Query<Entity, With<DiagnosticsDemand>>,
     defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
+    policy_index: Query<(Entity, &crate::entities::policy::PolicyIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
     resolutions: View<'_, (Entity, &ResolvedClause)>,
@@ -450,6 +451,7 @@ async fn check_selections(
     let (def_entity, decl, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
     let (_, imports) = imports.item();
+    let (policy_index_entity, policy_index) = policy_index.item();
     let catalog = snapshot.catalog();
 
     let tree = SelectionTree::collect(&views);
@@ -463,15 +465,23 @@ async fn check_selections(
         clause_resolutions: &clause_resolutions,
         catalog,
         catalog_entity,
+        policy_index,
+        policy_index_entity,
         file: file.0,
         scope: &scope.0,
         enclosing_fragment: None,
+        observed_tables: std::collections::HashSet::new(),
+        affected_filters: std::collections::HashSet::new(),
         commands: &mut commands,
         imports,
     };
 
     match decl.kind {
-        DefKind::Query => ctx.check_query_roots(def_entity),
+        DefKind::Query => {
+            ctx.check_query_roots(def_entity);
+            ctx.check_operation_filter_assignments(def_entity);
+            ctx.block_unimplemented_filter_execution(def_entity, decl.name_span);
+        }
         DefKind::Fragment => ctx.check_fragment_body(def_entity),
     }
 }
@@ -484,12 +494,16 @@ pub(crate) struct CheckCtx<'a, 'view> {
     pub(crate) clause_resolutions: &'a std::collections::HashMap<Entity, &'view ResolvedClause>,
     pub(crate) catalog: &'a crate::catalog::Catalog,
     pub(crate) catalog_entity: Entity,
+    pub(crate) policy_index: &'a crate::entities::policy::PolicyIndex,
+    pub(crate) policy_index_entity: Entity,
     pub(crate) file: Entity,
     /// Resolution scope of the definition being checked.
     pub(crate) scope: &'a str,
     /// Name of the fragment whose body is being checked, when any: seeds
     /// spread expansion so self-spreads read as cycles, not duplicates.
     pub(crate) enclosing_fragment: Option<String>,
+    pub(crate) observed_tables: std::collections::HashSet<crate::catalog::TableId>,
+    pub(crate) affected_filters: std::collections::HashSet<Entity>,
     pub(crate) imports: &'a ScopeImports,
     pub(crate) commands: &'a mut Commands<(dsql_schema::Diagnostic,)>,
 }
@@ -502,14 +516,54 @@ impl CheckCtx<'_, '_> {
         code: DiagnosticCode,
         message: String,
     ) {
+        self.diagnostic(
+            anchor,
+            span,
+            Severity::Error,
+            DiagnosticSource::Check,
+            code,
+            message,
+        );
+    }
+
+    pub(crate) fn warning(
+        &mut self,
+        anchor: Entity,
+        span: Span,
+        code: DiagnosticCode,
+        message: String,
+    ) {
+        self.diagnostic(
+            anchor,
+            span,
+            Severity::Warning,
+            DiagnosticSource::Check,
+            code,
+            message,
+        );
+    }
+
+    fn diagnostic(
+        &mut self,
+        anchor: Entity,
+        span: Span,
+        severity: Severity,
+        source: DiagnosticSource,
+        code: DiagnosticCode,
+        message: String,
+    ) {
         emit_diagnostic(
             self.commands,
             DiagnosticFacts {
-                derived_from: DerivedFrom::many([anchor, self.catalog_entity]),
+                derived_from: DerivedFrom::many([
+                    anchor,
+                    self.catalog_entity,
+                    self.policy_index_entity,
+                ]),
                 file: self.file,
                 span,
-                severity: Severity::Error,
-                source: DiagnosticSource::Check,
+                severity,
+                source,
                 code,
                 message,
             },
@@ -531,6 +585,7 @@ impl CheckCtx<'_, '_> {
             {
                 TableResolution::Found(table) => {
                     let table_id = table.id;
+                    self.observed_tables.insert(table_id);
                     let root_clauses: Vec<_> = self
                         .tree
                         .clauses_under(entity)
@@ -623,6 +678,7 @@ impl CheckCtx<'_, '_> {
     /// Checks one selection set (the children of `parent`) against its
     /// context table, then recurses into relation selections.
     pub(crate) fn check_set(&mut self, table: crate::catalog::TableId, parent: Entity) {
+        self.observed_tables.insert(table);
         self.check_output_keys(parent);
 
         let table_name = match self.catalog.table_by_id(table) {
@@ -685,6 +741,7 @@ impl CheckCtx<'_, '_> {
                 }
                 FieldCheckResult::Relation(relation) => {
                     let relation_table = relation.table.id;
+                    self.observed_tables.insert(relation_table);
                     let field_clauses: Vec<_> = self
                         .tree
                         .clauses_under(entity)
@@ -759,6 +816,79 @@ impl CheckCtx<'_, '_> {
             .collect();
         for (entity, spread) in spreads {
             check_spread_site(self, entity, spread, table);
+        }
+    }
+
+    fn check_operation_filter_assignments(&mut self, def_entity: Entity) {
+        let mut expansion = SpreadExpansion::new(self.tree, self.scope, self.imports);
+        collect_operation_tables(
+            self.tree,
+            self.clause_resolutions,
+            self.catalog,
+            self.policy_index,
+            self.imports,
+            def_entity,
+            None,
+            self.scope,
+            &mut expansion,
+            &mut self.observed_tables,
+            &mut self.affected_filters,
+        );
+        let assignments = self
+            .tree
+            .clauses_under(def_entity)
+            .map(|(entity, clause, _, _)| (*entity, (*clause).clone()))
+            .collect::<Vec<_>>();
+        let mut tables = self.observed_tables.iter().copied().collect::<Vec<_>>();
+        tables.sort_by_key(|table| table.0);
+        for (entity, clause) in assignments {
+            crate::entities::policy::check_operation_filter_assignment(
+                self, &tables, entity, &clause,
+            );
+        }
+    }
+
+    fn block_unimplemented_filter_execution(&mut self, query: Entity, name_span: Span) {
+        for filter in &self.policy_index.entries {
+            if filter.kind != crate::entities::policy::PolicyKind::Filter
+                || !filter.default_active
+                || !self
+                    .imports
+                    .visible_from(self.scope)
+                    .any(|visible| visible == filter.scope)
+                || !self
+                    .observed_tables
+                    .iter()
+                    .any(|table| filter.matches.contains(table))
+            {
+                continue;
+            }
+            self.affected_filters.insert(filter.entity);
+        }
+
+        let mut filters = self
+            .affected_filters
+            .iter()
+            .filter_map(|entity| self.policy_index.entry(*entity))
+            .collect::<Vec<_>>();
+        filters.sort_by(|left, right| {
+            left.scope
+                .cmp(&right.scope)
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.entity.cmp(&right.entity))
+        });
+        for filter in filters {
+            self.diagnostic(
+                query,
+                name_span,
+                Severity::Error,
+                DiagnosticSource::Generate,
+                DiagnosticCode::FilterExecutionUnavailable,
+                format!(
+                    "filter `{}` affects this operation but cannot be enforced until filter semantics are applied to generated SQL",
+                    filter.name
+                ),
+            );
         }
     }
 
@@ -868,6 +998,278 @@ impl CheckCtx<'_, '_> {
                     seen.push(output.key);
                 }
             }
+        }
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the operation observation walk carries semantic indexes and its two outputs"
+)]
+fn collect_operation_tables(
+    tree: &SelectionTree<'_>,
+    resolutions: &std::collections::HashMap<Entity, &ResolvedClause>,
+    catalog: &crate::catalog::Catalog,
+    policy_index: &crate::entities::policy::PolicyIndex,
+    imports: &ScopeImports,
+    parent: Entity,
+    context: Option<crate::catalog::TableId>,
+    definition_scope: &str,
+    expansion: &mut SpreadExpansion<'_, '_>,
+    tables: &mut std::collections::HashSet<crate::catalog::TableId>,
+    filters: &mut std::collections::HashSet<Entity>,
+) {
+    let fields = tree
+        .fields_under(parent)
+        .map(|(entity, field, _, _)| (*entity, *field))
+        .collect::<Vec<_>>();
+    for (entity, field) in fields {
+        let table = match context {
+            Some(context) => {
+                let reference = FieldRef {
+                    target: TableRef::parse(&field.name),
+                    selector: field.relation_path.as_deref(),
+                };
+                match catalog.check_field_ref(context, reference) {
+                    FieldCheckResult::Relation(relation) => relation.table.id,
+                    FieldCheckResult::Column(_)
+                    | FieldCheckResult::NotFound
+                    | FieldCheckResult::AmbiguousRelation { .. } => continue,
+                }
+            }
+            None => match catalog.resolve_table_ref_for(TableRef::parse(&field.name)) {
+                TableResolution::Found(table) => table.id,
+                TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => continue,
+            },
+        };
+        tables.insert(table);
+        for (clause_entity, clause, _, _) in tree.clauses_under(entity) {
+            if let ClauseFact::FilterAssignment { name, .. } = clause {
+                collect_assignment_filter(
+                    policy_index,
+                    imports,
+                    definition_scope,
+                    name,
+                    table,
+                    filters,
+                );
+            }
+            if let Some(resolved) = resolutions.get(clause_entity) {
+                collect_resolved_clause_tables(resolved, tables);
+                let expr = match clause {
+                    ClauseFact::Where { expr }
+                    | ClauseFact::Limit { expr }
+                    | ClauseFact::Offset { expr } => Some(expr),
+                    ClauseFact::FilterAssignment { condition, .. } => condition.as_ref(),
+                    ClauseFact::OrderBy { .. } => None,
+                };
+                if let Some(expr) = expr {
+                    collect_expr_assignment_filters(
+                        expr,
+                        resolved,
+                        policy_index,
+                        imports,
+                        definition_scope,
+                        filters,
+                    );
+                }
+            }
+        }
+        if field.has_selection_set() {
+            collect_operation_tables(
+                tree,
+                resolutions,
+                catalog,
+                policy_index,
+                imports,
+                entity,
+                Some(table),
+                definition_scope,
+                expansion,
+                tables,
+                filters,
+            );
+        }
+    }
+
+    let spreads = tree
+        .spreads_under(parent)
+        .map(|(_, spread, _)| spread.name.clone())
+        .collect::<Vec<_>>();
+    for spread in spreads {
+        let ExpandedSpread::Fragment { entity } = expansion.enter(&spread) else {
+            continue;
+        };
+        let fragment_scope = tree
+            .fragments
+            .iter()
+            .find_map(|(fragment, _, _, scope)| (*fragment == entity).then_some(scope.0.as_str()))
+            .unwrap_or(definition_scope);
+        collect_operation_tables(
+            tree,
+            resolutions,
+            catalog,
+            policy_index,
+            imports,
+            entity,
+            context,
+            fragment_scope,
+            expansion,
+            tables,
+            filters,
+        );
+        expansion.leave();
+    }
+}
+
+fn collect_assignment_filter(
+    policy_index: &crate::entities::policy::PolicyIndex,
+    imports: &ScopeImports,
+    scope: &str,
+    name: &str,
+    table: crate::catalog::TableId,
+    filters: &mut std::collections::HashSet<Entity>,
+) {
+    let candidates = policy_index.visible(
+        scope,
+        crate::entities::policy::PolicyKind::Filter,
+        name,
+        imports,
+    );
+    if let [filter] = candidates.as_slice()
+        && filter.matches.contains(&table)
+    {
+        filters.insert(filter.entity);
+    }
+}
+
+fn collect_expr_assignment_filters(
+    expr: &Expr,
+    resolved: &ResolvedClause,
+    policy_index: &crate::entities::policy::PolicyIndex,
+    imports: &ScopeImports,
+    scope: &str,
+    filters: &mut std::collections::HashSet<Entity>,
+) {
+    match expr {
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_expr_assignment_filters(lhs, resolved, policy_index, imports, scope, filters);
+            collect_expr_assignment_filters(rhs, resolved, policy_index, imports, scope, filters);
+        }
+        Expr::Unary { operand, .. } | Expr::NullTest { operand, .. } => {
+            collect_expr_assignment_filters(
+                operand,
+                resolved,
+                policy_index,
+                imports,
+                scope,
+                filters,
+            );
+        }
+        Expr::List { items, .. } => {
+            for item in items {
+                collect_expr_assignment_filters(
+                    item,
+                    resolved,
+                    policy_index,
+                    imports,
+                    scope,
+                    filters,
+                );
+            }
+        }
+        Expr::Exists {
+            filters: assignments,
+            predicate,
+            span,
+            ..
+        } => {
+            let table = resolved
+                .existence_at(*span)
+                .and_then(|existence| existence.source.as_ref())
+                .map(|source| match source {
+                    crate::resolution::ResolvedExistenceSource::Relation(relation) => {
+                        relation.table
+                    }
+                    crate::resolution::ResolvedExistenceSource::Table(table) => *table,
+                });
+            if let Some(table) = table {
+                for assignment in assignments {
+                    collect_assignment_filter(
+                        policy_index,
+                        imports,
+                        scope,
+                        &assignment.name,
+                        table,
+                        filters,
+                    );
+                }
+            }
+            if let Some(predicate) = predicate {
+                collect_expr_assignment_filters(
+                    predicate,
+                    resolved,
+                    policy_index,
+                    imports,
+                    scope,
+                    filters,
+                );
+            }
+        }
+        Expr::Aggregate {
+            source, operand, ..
+        } => {
+            collect_expr_assignment_filters(
+                source,
+                resolved,
+                policy_index,
+                imports,
+                scope,
+                filters,
+            );
+            if let Some(operand) = operand {
+                collect_expr_assignment_filters(
+                    operand,
+                    resolved,
+                    policy_index,
+                    imports,
+                    scope,
+                    filters,
+                );
+            }
+        }
+        Expr::Literal { .. }
+        | Expr::Path { .. }
+        | Expr::Variable { .. }
+        | Expr::PredicateRef { .. }
+        | Expr::Error { .. } => {}
+    }
+}
+
+pub(crate) fn collect_resolved_clause_tables(
+    resolved: &ResolvedClause,
+    tables: &mut std::collections::HashSet<crate::catalog::TableId>,
+) {
+    for path in &resolved.paths {
+        tables.extend(path.relations.iter().map(|relation| relation.table));
+        if let crate::resolution::PathTerminal::Column { table, .. } = path.terminal {
+            tables.insert(table);
+        }
+    }
+    for aggregate in &resolved.aggregates {
+        if let Some(relation) = &aggregate.relation {
+            tables.insert(relation.table);
+        }
+    }
+    for existence in &resolved.existences {
+        match &existence.source {
+            Some(crate::resolution::ResolvedExistenceSource::Relation(relation)) => {
+                tables.insert(relation.table);
+            }
+            Some(crate::resolution::ResolvedExistenceSource::Table(table)) => {
+                tables.insert(*table);
+            }
+            None => {}
         }
     }
 }

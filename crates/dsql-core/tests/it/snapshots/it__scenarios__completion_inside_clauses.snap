@@ -5,6 +5,7 @@ expression: "format!(\"clause list:\\n{clause_list}\\n\\nwhere anchor:\\n{where_
 ---
 clause list:
 context: ClauseList table=title scope=default replace=[18..23]
+Keyword filter
 Keyword limit
 Keyword offset
 Keyword order

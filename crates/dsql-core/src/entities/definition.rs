@@ -89,6 +89,16 @@ pub struct FragmentKey(pub String);
 #[component(hash)]
 pub struct DefIndex(Vec<(String, DefKind, String, Option<u64>)>);
 
+impl DefIndex {
+    pub(crate) fn content_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 /// Owns `query_def` and `fragment_def`.
 pub struct Definition;
 
@@ -445,6 +455,9 @@ impl FormatStage for Definition {
             if let Some(name) = formatter.direct_name_text(node) {
                 formatter.write_str(" ");
                 formatter.write_str(&name);
+            }
+            if let Some(header) = formatter.direct_rule(node, Rule::QueryFilterHeader) {
+                formatter.query_filter_header(header);
             }
             for directive in formatter.direct_rules(node, Rule::Directive) {
                 formatter.format_child(directive);

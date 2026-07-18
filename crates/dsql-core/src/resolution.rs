@@ -733,6 +733,7 @@ fn fixed_value_identity(expr: &Expr) -> Option<FixedValueIdentity> {
         | Expr::NullTest { .. }
         | Expr::List { .. }
         | Expr::Exists { .. }
+        | Expr::PredicateRef { .. }
         | Expr::Error { .. } => None,
     }
 }
@@ -886,6 +887,7 @@ async fn resolve_clauses(
     let mut order_items = Vec::new();
     if let Some(context) = context {
         match clause {
+            ClauseFact::FilterAssignment { .. } => {}
             ClauseFact::Where { expr } => collect_clause_values(
                 catalog,
                 context,
@@ -964,6 +966,7 @@ fn collect_clause_values(
             source,
             predicate,
             span,
+            ..
         } => {
             let existence = resolve_existence(catalog, context, source, *span);
             let nested_table = existence.source.as_ref().map(|source| match source {
@@ -994,7 +997,10 @@ fn collect_clause_values(
         Expr::Aggregate { .. } => {
             aggregates.push(resolve_predicate_aggregate(catalog, context, expr));
         }
-        Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
+        Expr::Literal { .. }
+        | Expr::Variable { .. }
+        | Expr::PredicateRef { .. }
+        | Expr::Error { .. } => {}
     }
 }
 

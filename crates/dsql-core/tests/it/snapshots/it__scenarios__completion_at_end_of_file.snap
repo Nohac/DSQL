@@ -4,5 +4,7 @@ assertion_line: 422
 expression: "scenario.complete(\"s.dsql\", markers[0]).await"
 ---
 context: DocumentRoot table=<unresolved> scope=default replace=<none>
+Keyword condition
+Keyword filter
 Keyword fragment
 Keyword query

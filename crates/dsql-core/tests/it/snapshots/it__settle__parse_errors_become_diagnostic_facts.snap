@@ -2,4 +2,4 @@
 source: crates/dsql-core/tests/it/settle.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[29..30]: invalid syntax, expected one of: '$', '$$', '.', '..', 'exists', 'false', '[', '(', 'not', 'null', <number>, <string>, '~', 'true'
+Error[29..30]: invalid syntax, expected one of: '$', '$$', '.', '..', 'exists', 'false', '[', '(', <name>, 'not', 'null', <number>, <string>, '~', 'true'

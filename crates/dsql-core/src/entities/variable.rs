@@ -134,6 +134,7 @@ pub enum VariableRole {
     SortDirection,
     Limit,
     Offset,
+    FilterAssignment,
 }
 
 impl VariableRole {
@@ -145,6 +146,7 @@ impl VariableRole {
             VariableRole::SortDirection => "sortdirection",
             VariableRole::Limit => "limit",
             VariableRole::Offset => "offset",
+            VariableRole::FilterAssignment => "filterassignment",
         }
     }
 }
@@ -224,6 +226,10 @@ async fn infer_variables(
         catalog: snapshot.catalog(),
         bindings: Vec::new(),
     };
+
+    if decl.kind == DefKind::Query {
+        inference.collect_filter_assignments(def_entity, &[], &VariablePathScope::operation());
+    }
 
     match decl.kind {
         DefKind::Query => {
@@ -392,6 +398,13 @@ impl Inference<'_> {
         for (clause_entity, clause) in clauses {
             let resolved = self.resolved_clauses.get(&clause_entity).copied();
             match clause {
+                ClauseFact::FilterAssignment {
+                    name, condition, ..
+                } => {
+                    if let Some(condition) = condition {
+                        self.collect_assignment_variables(&path.parts, scope, &name, &condition);
+                    }
+                }
                 ClauseFact::Where { expr } => {
                     if let Some(resolved) = resolved {
                         self.collect_where(&path.parts, scope, &expr, resolved, true);
@@ -452,6 +465,95 @@ impl Inference<'_> {
         }
 
         self.collect_selection_set(table, key, path, scope, expansion);
+    }
+
+    fn collect_filter_assignments(
+        &mut self,
+        parent: Entity,
+        selection_path: &[String],
+        scope: &VariablePathScope,
+    ) {
+        let assignments = self
+            .tree
+            .clauses_under(parent)
+            .filter_map(|(_, clause, _, _)| match clause {
+                ClauseFact::FilterAssignment {
+                    name,
+                    condition: Some(condition),
+                    ..
+                } => Some((name.clone(), condition.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (name, condition) in assignments {
+            self.collect_assignment_variables(selection_path, scope, &name, &condition);
+        }
+    }
+
+    fn collect_assignment_variables(
+        &mut self,
+        selection_path: &[String],
+        scope: &VariablePathScope,
+        filter_name: &str,
+        expr: &Expr,
+    ) {
+        match expr {
+            Expr::Variable { variable, .. } => {
+                self.push_binding(
+                    selection_path,
+                    BindingContext {
+                        role: VariableRole::FilterAssignment,
+                        data_type: DataType::Boolean,
+                        collection: false,
+                        scope,
+                        inferred_path: &[lower_snake_case(filter_name)],
+                        anonymous_key: None,
+                        operators: Vec::new(),
+                        enum_values: Vec::new(),
+                    },
+                    variable,
+                );
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.collect_assignment_variables(selection_path, scope, filter_name, lhs);
+                self.collect_assignment_variables(selection_path, scope, filter_name, rhs);
+            }
+            Expr::Unary { operand, .. } | Expr::NullTest { operand, .. } => {
+                self.collect_assignment_variables(selection_path, scope, filter_name, operand);
+            }
+            Expr::List { items, .. } => {
+                for item in items {
+                    self.collect_assignment_variables(selection_path, scope, filter_name, item);
+                }
+            }
+            Expr::Exists {
+                filters, predicate, ..
+            } => {
+                for filter in filters {
+                    if let Some(condition) = &filter.condition {
+                        self.collect_assignment_variables(
+                            selection_path,
+                            scope,
+                            &filter.name,
+                            condition,
+                        );
+                    }
+                }
+                if let Some(predicate) = predicate {
+                    self.collect_assignment_variables(
+                        selection_path,
+                        scope,
+                        filter_name,
+                        predicate,
+                    );
+                }
+            }
+            Expr::Literal { .. }
+            | Expr::Path { .. }
+            | Expr::PredicateRef { .. }
+            | Expr::Aggregate { .. }
+            | Expr::Error { .. } => {}
+        }
     }
 
     fn collect_selection_set(
@@ -596,7 +698,19 @@ impl Inference<'_> {
             Expr::NullTest { operand, .. } => {
                 self.collect_where(selection_path, scope, operand, resolved, false);
             }
-            Expr::Exists { predicate, .. } => {
+            Expr::Exists {
+                filters, predicate, ..
+            } => {
+                for filter in filters {
+                    if let Some(condition) = &filter.condition {
+                        self.collect_assignment_variables(
+                            selection_path,
+                            scope,
+                            &filter.name,
+                            condition,
+                        );
+                    }
+                }
                 if let Some(predicate) = predicate {
                     self.collect_where(selection_path, scope, predicate, resolved, true);
                 }
@@ -622,6 +736,7 @@ impl Inference<'_> {
             | Expr::Path { .. }
             | Expr::Literal { .. }
             | Expr::Variable { .. }
+            | Expr::PredicateRef { .. }
             | Expr::Error { .. } => {}
         }
     }
@@ -661,6 +776,7 @@ impl Inference<'_> {
             | Expr::Exists { .. }
             | Expr::Literal { .. }
             | Expr::Variable { .. }
+            | Expr::PredicateRef { .. }
             | Expr::Error { .. } => None,
         }
     }
@@ -763,6 +879,21 @@ impl Inference<'_> {
             },
         ));
     }
+}
+
+fn lower_snake_case(name: &str) -> String {
+    let mut result = String::new();
+    for (index, character) in name.chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index > 0 {
+                result.push('_');
+            }
+            result.push(character.to_ascii_lowercase());
+        } else {
+            result.push(character);
+        }
+    }
+    result
 }
 
 struct BindingContext<'a> {

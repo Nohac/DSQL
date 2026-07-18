@@ -31,6 +31,7 @@ use crate::entities::document::Document;
 use crate::entities::expression::Expression;
 use crate::entities::field_selection::FieldSelection;
 use crate::entities::fragment_spread::FragmentSpread;
+use crate::entities::policy::Policy;
 use crate::entities::variable::Variable;
 use crate::entity::register_entity;
 
@@ -51,6 +52,7 @@ impl Plugin for DsqlPlugin {
         register_entity::<FieldSelection>(reg);
         register_entity::<Aggregate>(reg);
         register_entity::<FragmentSpread>(reg);
+        register_entity::<Policy>(reg);
         register_entity::<Clause>(reg);
         register_entity::<Directive>(reg);
         register_entity::<Expression>(reg);

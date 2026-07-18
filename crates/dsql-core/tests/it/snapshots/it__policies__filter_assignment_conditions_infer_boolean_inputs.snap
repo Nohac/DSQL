@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+expression: "crate::variables::render_bindings(&bowl).await"
+---
+params.operation TopLevel FilterAssignment Boolean Some("operation") operators=[] enum=[]
+input.title.clause.filter.manual.local Structured FilterAssignment Boolean Some("local") operators=[] enum=[]
+params.nested TopLevel FilterAssignment Boolean Some("nested") operators=[] enum=[]

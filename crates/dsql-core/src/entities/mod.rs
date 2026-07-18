@@ -11,6 +11,7 @@ pub mod expression;
 pub mod field_selection;
 pub mod fragment_spread;
 pub mod lowering;
+pub mod policy;
 pub mod variable;
 pub mod variable_path;
 

@@ -3,8 +3,9 @@ source: crates/dsql-core/tests/it/parse.rs
 expression: "format!(\"diagnostics:\\n{}expected tokens:\\n{}\",\nrender_diagnostics(source, &diagnostics), expected_tokens.join(\"\\n\"),)"
 ---
 diagnostics:
-error[36..37]: invalid syntax, expected one of: '$', '$$', '.', '..', 'exists', 'false', '[', '(', 'not', 'null', <number>, <string>, '~', 'true' ("}")
+error[36..37]: invalid syntax, expected one of: '$', '$$', '.', '..', 'exists', 'false', '[', '(', <name>, 'not', 'null', <number>, <string>, '~', 'true' ("}")
 expected tokens:
+Condition@38..38
 Dollar@36..37
 DollarDollar@36..37
 Dot@36..37
@@ -12,10 +13,13 @@ DotDot@36..37
 EOF@38..38
 Exists@36..37
 False@36..37
+Filter@36..37
+Filter@38..38
 Fragment@38..38
 LBracket@36..37
 LPar@36..37
 Limit@36..37
+Name@36..37
 Not@36..37
 Null@36..37
 Number@36..37

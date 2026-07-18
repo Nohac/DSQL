@@ -9,8 +9,52 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 fn is_name_token(token: Token) -> bool {
     matches!(
         token,
-        Token::Name | Token::Not | Token::In | Token::Is | Token::Exists
+        Token::Name
+            | Token::Not
+            | Token::In
+            | Token::Is
+            | Token::Exists
+            | Token::Filter
+            | Token::Condition
+            | Token::Apply
+            | Token::When
+            | Token::Field
     )
+}
+
+fn starts_expression(token: Token) -> bool {
+    is_name_token(token)
+        || matches!(
+            token,
+            Token::String
+                | Token::Number
+                | Token::True
+                | Token::False
+                | Token::Null
+                | Token::LBracket
+                | Token::Dot
+                | Token::DotDot
+                | Token::Tilde
+                | Token::Dollar
+                | Token::DollarDollar
+                | Token::LPar
+        )
+}
+
+fn current_follows_previous_on_same_line(parser: &Parser<'_>) -> bool {
+    let current_start = parser.span().start;
+    let previous_end = parser
+        .tokens
+        .iter()
+        .enumerate()
+        .take(parser.pos)
+        .rev()
+        .find(|(_, token)| !Parser::is_skipped(**token))
+        .and_then(|(index, _)| parser.cst.data.spans.get(index))
+        .map_or(current_start, |span| span.end);
+    !parser.cst.source[previous_end..current_start]
+        .chars()
+        .any(|character| matches!(character, '\n' | '\r'))
 }
 
 /// A directive can follow either a fragment spread or a relation source.
@@ -100,6 +144,15 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
             .with_message(message)
             .with_label(Label::primary((), span))
     }
+
+    fn predicate_apply_rule_1(&self) -> bool {
+        self.current == Token::Where && current_follows_previous_on_same_line(self)
+    }
+
+    fn predicate_field_rule_1(&self) -> bool {
+        self.current == Token::Comma
+    }
+
     fn predicate_order_by_clause_1(&self) -> bool {
         is_name_token(self.peek(1))
     }
@@ -112,23 +165,7 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     }
 
     fn predicate_collection_literal_1(&self) -> bool {
-        matches!(
-            self.peek(1),
-            Token::String
-                | Token::Number
-                | Token::True
-                | Token::False
-                | Token::Null
-                | Token::LBracket
-                | Token::Exists
-                | Token::Dot
-                | Token::DotDot
-                | Token::Tilde
-                | Token::Dollar
-                | Token::DollarDollar
-                | Token::LPar
-                | Token::Not
-        )
+        starts_expression(self.peek(1))
     }
 
     fn predicate_qualified_name_1(&self) -> bool {
@@ -144,17 +181,8 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     }
 
     fn predicate_pipe_transform_1(&self) -> bool {
-        matches!(
-            self.peek(1),
-            Token::Name
-                | Token::Not
-                | Token::In
-                | Token::Is
-                | Token::Exists
-                | Token::Dot
-                | Token::DotDot
-                | Token::Tilde
-        )
+        is_name_token(self.peek(1))
+            || matches!(self.peek(1), Token::Dot | Token::DotDot | Token::Tilde)
     }
 
     fn predicate_aggregate_field_1(&self) -> bool {
@@ -162,6 +190,15 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     }
 
     fn predicate_expr_1(&self) -> bool {
+        matches!(self.peek(1), Token::Dot | Token::DotDot | Token::Tilde)
+            || is_name_token(self.peek(1))
+    }
+
+    fn predicate_expr_2(&self) -> bool {
+        starts_expression(self.peek(1))
+    }
+
+    fn predicate_expr_3(&self) -> bool {
         scoped_path_ends_in_pipe(self)
     }
 

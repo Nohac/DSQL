@@ -1,0 +1,14 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+expression: "format!(\"initial:\\n{initial}\\n\\nchanged:\\n{changed}\\n\\nrestored:\\n{restored}\\n\\nremoved:\\n{removed}\")"
+---
+initial:
+filter Matching [public::aka_name, public::aka_title, public::cast_info, public::char_name, public::comp_cast_type, public::company_name, public::company_type, public::complete_cast, public::info_type, public::keyword, public::kind_type, public::link_type, public::movie_companies, public::movie_info, public::movie_info_idx, public::movie_keyword, public::movie_link, public::name, public::person_info, public::role_type, public::title] default=false enforced=false
+
+changed:
+filter Matching [] default=false enforced=false
+
+restored:
+filter Matching [public::aka_name, public::aka_title, public::cast_info, public::char_name, public::comp_cast_type, public::company_name, public::company_type, public::complete_cast, public::info_type, public::keyword, public::kind_type, public::link_type, public::movie_companies, public::movie_info, public::movie_info_idx, public::movie_keyword, public::movie_link, public::name, public::person_info, public::role_type, public::title] default=false enforced=false
+
+removed:

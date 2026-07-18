@@ -2,5 +2,7 @@
 source: crates/dsql-core/tests/it/completions.rs
 expression: "completions(\"|\").await"
 ---
+Keyword condition
+Keyword filter
 Keyword fragment
 Keyword query

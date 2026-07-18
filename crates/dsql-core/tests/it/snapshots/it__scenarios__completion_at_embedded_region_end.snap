@@ -4,5 +4,7 @@ assertion_line: 453
 expression: "scenario.complete(\"host.ts\", markers[0]).await"
 ---
 context: DocumentRoot table=<unresolved> scope=default replace=<none>
+Keyword condition
+Keyword filter
 Keyword fragment
 Keyword query

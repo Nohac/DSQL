@@ -575,6 +575,7 @@ impl Planner<'_> {
         for (clause_entity, clause, _, _) in clause_rows {
             let resolved = self.resolved_clauses.get(&clause_entity).copied();
             match clause {
+                ClauseFact::FilterAssignment { .. } => {}
                 ClauseFact::Where { expr } => {
                     clauses.filter = resolved.and_then(|resolved| {
                         self.plan_filter_expr(
@@ -661,6 +662,7 @@ impl Planner<'_> {
     ) -> Option<FilterExpr> {
         match expr {
             Expr::Error { .. } => None,
+            Expr::PredicateRef { .. } => None,
             Expr::Variable { variable, .. } => Some(FilterExpr::Parameter(SqlParameter {
                 path: variable_path(
                     selection_path,
@@ -1075,6 +1077,7 @@ impl Planner<'_> {
             | Expr::Exists { .. }
             | Expr::Literal { .. }
             | Expr::Path { .. }
+            | Expr::PredicateRef { .. }
             | Expr::Error { .. } => self.plan_filter_expr(
                 table,
                 Some(table),
@@ -1185,6 +1188,7 @@ impl Planner<'_> {
             | Expr::Exists { .. }
             | Expr::Literal { .. }
             | Expr::Variable { .. }
+            | Expr::PredicateRef { .. }
             | Expr::Error { .. } => None,
         }
     }

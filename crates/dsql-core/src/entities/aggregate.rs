@@ -1081,7 +1081,7 @@ pub(crate) fn check_source_clause(
     span: Span,
 ) {
     let label = match clause {
-        ClauseFact::Where { .. } => return,
+        ClauseFact::FilterAssignment { .. } | ClauseFact::Where { .. } => return,
         ClauseFact::OrderBy { .. } => "order by",
         ClauseFact::Limit { .. } => "limit",
         ClauseFact::Offset { .. } => "offset",

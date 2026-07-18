@@ -42,6 +42,7 @@ pub enum Expr {
     },
     Exists {
         source: ExistsSource,
+        filters: Vec<FilterAssignmentExpr>,
         predicate: Option<Box<Expr>>,
         span: Span,
     },
@@ -57,6 +58,12 @@ pub enum Expr {
     },
     Variable {
         variable: VariableRef,
+        span: Span,
+    },
+    /// A bare reusable-condition reference. Query predicates reject these;
+    /// filter analysis resolves them against visible condition definitions.
+    PredicateRef {
+        name: String,
         span: Span,
     },
     /// A closed scalar aggregate over one relation inside a predicate.
@@ -84,6 +91,7 @@ impl Expr {
             | Expr::Literal { span, .. }
             | Expr::Path { span, .. }
             | Expr::Variable { span, .. }
+            | Expr::PredicateRef { span, .. }
             | Expr::Aggregate { span, .. }
             | Expr::Error { span } => *span,
         }
@@ -111,6 +119,15 @@ pub enum UnaryOp {
 pub enum ExistsSource {
     Relation(Box<Expr>),
     Table { name: String, span: Span },
+}
+
+/// One filter-state assignment attached to an explicit `exists` source.
+#[derive(Debug, Clone, Hash, PartialEq)]
+pub struct FilterAssignmentExpr {
+    pub name: String,
+    pub name_span: Span,
+    pub condition: Option<Box<Expr>>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -219,7 +236,8 @@ pub(crate) fn expr_child(cst: &CstData, node: NodeRef) -> Option<NodeRef> {
                     | Rule::ExistsExpr
                     | Rule::Literal
                     | Rule::ScopedPath
-                    | Rule::ValueVariable,
+                    | Rule::ValueVariable
+                    | Rule::PredicateName,
                 _
             )
         )
@@ -246,6 +264,10 @@ pub(crate) fn build_expr(cst: &CstData, source: &str, node: NodeRef) -> Expr {
         Node::Rule(Rule::ScopedPath, _) => build_path(cst, source, node, span),
         Node::Rule(Rule::ValueVariable, _) => Expr::Variable {
             variable: build_variable_ref(cst, source, node),
+            span,
+        },
+        Node::Rule(Rule::PredicateName, _) => Expr::PredicateRef {
+            name: text(source, span).to_string(),
             span,
         },
         _ => Expr::Error { span },
@@ -326,11 +348,31 @@ fn build_exists(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr 
     let predicate = direct_rule(cst, source_node, Rule::WhereClause)
         .and_then(|clause| expr_child(cst, clause))
         .map(|predicate| Box::new(build_expr(cst, source, predicate)));
+    let filters = cst
+        .children(source_node)
+        .filter(|child| cst.match_rule(*child, Rule::FilterAssignment))
+        .filter_map(|assignment| build_filter_assignment(cst, source, assignment))
+        .collect();
     Expr::Exists {
         source: exists_source,
+        filters,
         predicate,
         span,
     }
+}
+
+pub(crate) fn build_filter_assignment(
+    cst: &CstData,
+    source: &str,
+    node: NodeRef,
+) -> Option<FilterAssignmentExpr> {
+    let name_span = direct_name(cst, node)?;
+    Some(FilterAssignmentExpr {
+        name: text(source, name_span).to_string(),
+        name_span,
+        condition: expr_child(cst, node).map(|expr| Box::new(build_expr(cst, source, expr))),
+        span: node_span(cst, node),
+    })
 }
 
 fn is_expr_node(cst: &CstData, node: NodeRef) -> bool {
@@ -346,7 +388,8 @@ fn is_expr_node(cst: &CstData, node: NodeRef) -> bool {
                 | Rule::ExistsExpr
                 | Rule::Literal
                 | Rule::ScopedPath
-                | Rule::ValueVariable,
+                | Rule::ValueVariable
+                | Rule::PredicateName,
             _
         )
     )
@@ -555,15 +598,34 @@ impl std::fmt::Display for Expr {
                 write!(f, "[{}]", rendered.join(", "))
             }
             Expr::Exists {
-                source, predicate, ..
+                source,
+                filters,
+                predicate,
+                ..
             } => {
                 f.write_str("exists ")?;
                 match source {
                     ExistsSource::Relation(path) => write!(f, "{path}")?,
                     ExistsSource::Table { name, .. } => f.write_str(name)?,
                 }
-                if let Some(predicate) = predicate {
-                    write!(f, "(where {predicate})")?;
+                if !filters.is_empty() || predicate.is_some() {
+                    f.write_str("(")?;
+                    for (index, filter) in filters.iter().enumerate() {
+                        if index > 0 {
+                            f.write_str(" ")?;
+                        }
+                        write!(f, "filter {}", filter.name)?;
+                        if let Some(condition) = &filter.condition {
+                            write!(f, " when {condition}")?;
+                        }
+                    }
+                    if let Some(predicate) = predicate {
+                        if !filters.is_empty() {
+                            f.write_str(" ")?;
+                        }
+                        write!(f, "where {predicate}")?;
+                    }
+                    f.write_str(")")?;
                 }
                 Ok(())
             }
@@ -594,6 +656,7 @@ impl std::fmt::Display for Expr {
                 Ok(())
             }
             Expr::Variable { variable, .. } => f.write_str(&render_variable(variable)),
+            Expr::PredicateRef { name, .. } => f.write_str(name),
             Expr::Aggregate {
                 source,
                 function,

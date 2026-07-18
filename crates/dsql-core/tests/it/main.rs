@@ -12,6 +12,7 @@ mod input;
 mod lints;
 mod lowering;
 mod parse;
+mod policies;
 mod residency;
 mod scale;
 mod scenarios;

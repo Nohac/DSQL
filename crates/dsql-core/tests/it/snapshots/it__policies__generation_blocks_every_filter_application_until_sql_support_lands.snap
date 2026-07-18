@@ -1,0 +1,20 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+expression: "format!(\"manual:\\n{manual}\\n\\ndefault:\\n{default}\\n\\nopt out:\\n{opt_out}\\n\\naggregate:\\n{aggregate}\\n\\nexists:\\n{exists}\\n\\nunrelated:\\n{unrelated}\")"
+---
+manual:
+Error[47..53]: filter `Manual` affects this operation but cannot be enforced until filter semantics are applied to generated SQL
+
+default:
+Error[58..65]: filter `Default` affects this operation but cannot be enforced until filter semantics are applied to generated SQL
+
+opt out:
+Error[58..64]: filter `Default` affects this operation but cannot be enforced until filter semantics are applied to generated SQL
+
+aggregate:
+Error[47..56]: filter `Manual` affects this operation but cannot be enforced until filter semantics are applied to generated SQL
+
+exists:
+Error[56..62]: filter `Manual` affects this operation but cannot be enforced until filter semantics are applied to generated SQL
+
+unrelated:

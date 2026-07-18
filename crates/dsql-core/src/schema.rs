@@ -18,6 +18,7 @@ use crate::entities::directive::DirectiveFact;
 use crate::entities::document::ParsedFile;
 use crate::entities::field_selection::FieldSel;
 use crate::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
+use crate::entities::policy::{PolicyDecl, PolicyIndex};
 use crate::entities::variable::{
     DefinitionVariables, DuplicateAnonymousBinding, VariableBinding, VariableUse,
 };
@@ -97,6 +98,13 @@ pub struct DsqlSchema {
         Option<FragmentKey>,
         Option<FragmentTarget>,
     ),
+    policy_definition: (
+        NodeKey,
+        PolicyDecl,
+        ResolutionScope,
+        BelongsToFile,
+        DerivedFrom,
+    ),
     field_selection: (
         NodeKey,
         FieldSel,
@@ -170,6 +178,7 @@ pub struct DsqlSchema {
         DerivedFrom,
     ),
     def_index: (Singleton<DefIndex>, DefIndex),
+    policy_index: (Singleton<PolicyIndex>, PolicyIndex),
     resolved_selection: (ResolvedSelection, ResolutionOf, BelongsToFile, DerivedFrom),
     resolved_aggregate: (ResolvedAggregate, BelongsToFile, DerivedFrom),
     resolved_clause: (ResolvedClause, BelongsToFile, DerivedFrom),
@@ -226,6 +235,7 @@ pub struct DsqlSchema {
 /// [`LowerStage`]: crate::entity::LowerStage
 pub type AstFacts = (
     dsql_schema::Def,
+    dsql_schema::PolicyDefinition,
     dsql_schema::FieldSelection,
     dsql_schema::AggregateTransform,
     dsql_schema::Spread,

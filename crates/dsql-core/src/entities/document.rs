@@ -132,7 +132,10 @@ impl FormatStage for Document {
                     formatter.blank_between_definitions(&mut first);
                     formatter.write_node_text(child);
                 }
-                (Some(Rule::QueryDef | Rule::FragmentDef), _) => {
+                (
+                    Some(Rule::QueryDef | Rule::FragmentDef | Rule::FilterDef | Rule::ConditionDef),
+                    _,
+                ) => {
                     formatter.blank_between_definitions(&mut first);
                     formatter.format_child(child);
                 }

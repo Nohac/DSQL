@@ -108,7 +108,7 @@ query Popular {
 predicate_extensions
 query Visible {
   users(where not $$disabled
-    or .id in [1, null, 2] and .deleted_at is not null and exists .posts(where .title not in $$titles)
+    or .id in [1, null, 2] and .deleted_at is not null and exists .posts(filter Published when $$enabled where .title not in $$titles)
   ) {
     id
   }
@@ -127,6 +127,29 @@ query exists {
     in: exists
     is
     not
+  }
+}
+
+---
+
+filters_and_conditions
+condition Admin {
+  where $:is_admin
+}
+
+filter SoftDelete on {
+  .deleted_at: timestamptz
+} {
+  apply
+  where .deleted_at is null
+  field deleted_at, field where Admin
+}
+
+query Users(
+  filter SoftDelete when not $$includeDeleted
+) {
+  users(filter SoftDelete when false) {
+    id
   }
 }
 

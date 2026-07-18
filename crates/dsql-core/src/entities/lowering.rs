@@ -17,6 +17,7 @@ use super::document::{Document, ParsedFile};
 use super::expression::Expression;
 use super::field_selection::FieldSelection;
 use super::fragment_spread::FragmentSpread;
+use super::policy::Policy;
 use super::variable::Variable;
 use crate::entity::{LowerCtx, LowerStage};
 use crate::facts::Span;
@@ -33,12 +34,15 @@ fn lower_rule(
     match rule {
         Rule::Document => Document::lower(ctx, node, commands),
         Rule::QueryDef | Rule::FragmentDef => Definition::lower(ctx, node, commands),
+        Rule::FilterDef | Rule::ConditionDef => Policy::lower(ctx, node, commands),
         Rule::FieldSelection => FieldSelection::lower(ctx, node, commands),
         Rule::PipeTransform => Aggregate::lower(ctx, node, commands),
         Rule::FragmentSpread => FragmentSpread::lower(ctx, node, commands),
-        Rule::WhereClause | Rule::OrderByClause | Rule::LimitClause | Rule::OffsetClause => {
-            Clause::lower(ctx, node, commands)
-        }
+        Rule::FilterAssignment
+        | Rule::WhereClause
+        | Rule::OrderByClause
+        | Rule::LimitClause
+        | Rule::OffsetClause => Clause::lower(ctx, node, commands),
         Rule::Directive => Directive::lower(ctx, node, commands),
         Rule::ValueVariable | Rule::OperatorVariable => Variable::lower(ctx, node, commands),
         // Expression rules lower as part of the clause/directive facts that
@@ -51,6 +55,7 @@ fn lower_rule(
         | Rule::CollectionLiteral
         | Rule::ExistsExpr
         | Rule::ExistsSource
+        | Rule::PredicateName
         | Rule::Literal
         | Rule::BinaryOperator
         | Rule::ComparisonOperator
@@ -59,10 +64,23 @@ fn lower_rule(
 
         // Consumed by FieldSelection lowering from the field_selection node.
         Rule::ContextualName | Rule::FieldSelectionTail | Rule::FieldSuffix => None,
+        // Consumed by Policy lowering from the definition root.
+        Rule::PolicyTarget
+        | Rule::ShapeTarget
+        | Rule::ShapeField
+        | Rule::FilterBody
+        | Rule::FilterRule
+        | Rule::ConditionBody
+        | Rule::ApplyRule
+        | Rule::FieldRule => None,
         // Consumed by Aggregate lowering from the pipe_transform node.
         Rule::AggregateField | Rule::AggregateGroupKey | Rule::AggregateSet => None,
         // Consumed by Clause lowering from the clause nodes.
-        Rule::Clause | Rule::ClauseList | Rule::OrderItem | Rule::SortDirection => None,
+        Rule::Clause
+        | Rule::ClauseList
+        | Rule::QueryFilterHeader
+        | Rule::OrderItem
+        | Rule::SortDirection => None,
         // Consumed by Directive lowering from the directive node.
         Rule::DirectiveName
         | Rule::DirectiveNamespace
@@ -115,6 +133,8 @@ fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands<AstFacts>) {
             rule,
             Rule::QueryDef
                 | Rule::FragmentDef
+                | Rule::FilterDef
+                | Rule::ConditionDef
                 | Rule::FieldSelection
                 | Rule::PipeTransform
                 | Rule::FragmentSpread
@@ -122,6 +142,7 @@ fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands<AstFacts>) {
                 | Rule::OrderByClause
                 | Rule::LimitClause
                 | Rule::OffsetClause
+                | Rule::FilterAssignment
                 | Rule::Directive
         ) {
             let scoped = LowerCtx {
@@ -201,12 +222,15 @@ pub fn format_rule(
     match rule {
         Rule::Document => Document::format(formatter, node),
         Rule::QueryDef | Rule::FragmentDef => Definition::format(formatter, node),
+        Rule::FilterDef | Rule::ConditionDef => Policy::format(formatter, node),
         Rule::FieldSelection => FieldSelection::format(formatter, node),
         Rule::PipeTransform => Aggregate::format(formatter, node),
         Rule::FragmentSpread => FragmentSpread::format(formatter, node),
-        Rule::WhereClause | Rule::OrderByClause | Rule::LimitClause | Rule::OffsetClause => {
-            Clause::format(formatter, node)
-        }
+        Rule::FilterAssignment
+        | Rule::WhereClause
+        | Rule::OrderByClause
+        | Rule::LimitClause
+        | Rule::OffsetClause => Clause::format(formatter, node),
         Rule::Directive => Directive::format(formatter, node),
         Rule::ValueVariable | Rule::OperatorVariable => Variable::format(formatter, node),
         Rule::Expr
@@ -217,6 +241,7 @@ pub fn format_rule(
         | Rule::CollectionLiteral
         | Rule::ExistsExpr
         | Rule::ExistsSource
+        | Rule::PredicateName
         | Rule::Literal
         | Rule::BinaryOperator
         | Rule::ComparisonOperator
@@ -233,6 +258,15 @@ pub fn format_rule(
         | Rule::ClauseList
         | Rule::OrderItem
         | Rule::SortDirection
+        | Rule::QueryFilterHeader
+        | Rule::PolicyTarget
+        | Rule::ShapeTarget
+        | Rule::ShapeField
+        | Rule::FilterBody
+        | Rule::FilterRule
+        | Rule::ConditionBody
+        | Rule::ApplyRule
+        | Rule::FieldRule
         | Rule::DirectiveName
         | Rule::DirectiveNamespace
         | Rule::DirectiveMember

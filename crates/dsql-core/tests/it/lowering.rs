@@ -33,6 +33,12 @@ async fn render_clauses(bowl: &Bowl) -> String {
                 .map(|(_, field, _)| field.name.as_str())
                 .unwrap_or("<no field>");
             let payload = match clause {
+                ClauseFact::FilterAssignment {
+                    name, condition, ..
+                } => condition.as_ref().map_or_else(
+                    || format!("filter {name}"),
+                    |condition| format!("filter {name} when {condition}"),
+                ),
                 ClauseFact::Where { expr } => format!("where {expr}"),
                 ClauseFact::OrderBy { items } => {
                     let items: Vec<String> = items
@@ -181,6 +187,7 @@ async fn variable_occurrences_become_facts() {
                 .iter()
                 .find(|(entity, _, _)| *entity == parent.0)
                 .map(|(_, clause, _)| match clause {
+                    ClauseFact::FilterAssignment { .. } => "filter",
                     ClauseFact::Where { .. } => "where",
                     ClauseFact::OrderBy { .. } => "order by",
                     ClauseFact::Limit { .. } => "limit",

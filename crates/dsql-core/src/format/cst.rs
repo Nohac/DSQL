@@ -111,6 +111,112 @@ impl<'a> CstFormatter<'a> {
         self.out.push('}');
     }
 
+    /// Formats one standalone filter or reusable condition definition.
+    pub fn policy_definition(&mut self, node: NodeRef) {
+        let keyword = if self.rule(node) == Some(Rule::FilterDef) {
+            "filter"
+        } else {
+            "condition"
+        };
+        self.out.push_str(keyword);
+        if let Some(name) = self.direct_name_text(node) {
+            self.out.push(' ');
+            self.out.push_str(&name);
+        }
+        if let Some(target) = self.direct_rule(node, Rule::PolicyTarget) {
+            self.out.push_str(" on ");
+            self.policy_target(target);
+        }
+        let body = self
+            .direct_rule(node, Rule::FilterBody)
+            .or_else(|| self.direct_rule(node, Rule::ConditionBody));
+        let Some(body) = body else {
+            return;
+        };
+        self.out.push_str(" {\n");
+        self.indent += 1;
+        for child in self.children(body) {
+            let rule = if self.rule(child) == Some(Rule::FilterRule) {
+                self.children(child).into_iter().find(|nested| {
+                    matches!(
+                        self.rule(*nested),
+                        Some(Rule::ApplyRule | Rule::WhereClause | Rule::FieldRule)
+                    )
+                })
+            } else {
+                Some(child)
+            };
+            match rule.and_then(|rule| self.rule(rule).map(|kind| (rule, kind))) {
+                Some((rule, Rule::ApplyRule)) => {
+                    self.write_indent(self.indent);
+                    self.out.push_str("apply");
+                    if let Some(value) = self.direct_value_rule(rule)
+                        && self.node_text(value).trim() != "false"
+                    {
+                        self.out.push_str(" where ");
+                        self.expr(value);
+                    }
+                    self.out.push('\n');
+                }
+                Some((rule, Rule::WhereClause)) => {
+                    self.write_indent(self.indent);
+                    self.format_child(rule);
+                    self.out.push('\n');
+                }
+                Some((rule, Rule::FieldRule)) => {
+                    self.write_indent(self.indent);
+                    self.out.push_str("field ");
+                    for (index, name) in self.direct_name_texts(rule).into_iter().enumerate() {
+                        if index > 0 {
+                            self.out.push_str(", ");
+                        }
+                        self.out.push_str(&name);
+                    }
+                    if let Some(value) = self.direct_value_rule(rule) {
+                        self.out.push_str(" where ");
+                        self.expr(value);
+                    }
+                    self.out.push('\n');
+                }
+                _ if self.token(child) == Some(Token::Comment) => {
+                    self.write_indent(self.indent);
+                    self.write_node_text(child);
+                    self.out.push('\n');
+                }
+                _ => {}
+            }
+        }
+        self.indent = self.indent.saturating_sub(1);
+        self.write_indent(self.indent);
+        self.out.push('}');
+    }
+
+    fn policy_target(&mut self, node: NodeRef) {
+        if let Some(name) = self.direct_rule(node, Rule::QualifiedName) {
+            self.write_node_text(name);
+            return;
+        }
+        let Some(shape) = self.direct_rule(node, Rule::ShapeTarget) else {
+            return;
+        };
+        self.out.push_str("{\n");
+        self.indent += 1;
+        for field in self.direct_rules(shape, Rule::ShapeField) {
+            let names = self.direct_name_texts(field);
+            if let [name, data_type, ..] = names.as_slice() {
+                self.write_indent(self.indent);
+                self.out.push('.');
+                self.out.push_str(name);
+                self.out.push_str(": ");
+                self.out.push_str(data_type);
+                self.out.push('\n');
+            }
+        }
+        self.indent = self.indent.saturating_sub(1);
+        self.write_indent(self.indent);
+        self.out.push('}');
+    }
+
     fn selection(&mut self, node: NodeRef) {
         if let Some(field) = self.direct_rule(node, Rule::FieldSelection) {
             self.format_child(field);
@@ -313,7 +419,9 @@ impl<'a> CstFormatter<'a> {
     }
 
     pub fn clause(&mut self, node: NodeRef) {
-        if let Some(where_clause) = self.direct_rule(node, Rule::WhereClause) {
+        if let Some(filter) = self.direct_rule(node, Rule::FilterAssignment) {
+            self.filter_assignment(filter);
+        } else if let Some(where_clause) = self.direct_rule(node, Rule::WhereClause) {
             self.format_child(where_clause);
         } else if let Some(order_by) = self.direct_rule(node, Rule::OrderByClause) {
             self.format_child(order_by);
@@ -322,6 +430,32 @@ impl<'a> CstFormatter<'a> {
         } else if let Some(offset) = self.direct_rule(node, Rule::OffsetClause) {
             self.format_child(offset);
         }
+    }
+
+    pub fn filter_assignment(&mut self, node: NodeRef) {
+        self.out.push_str("filter");
+        if let Some(name) = self.direct_name_text(node) {
+            self.out.push(' ');
+            self.out.push_str(&name);
+        }
+        if let Some(value) = self.direct_value_rule(node) {
+            self.out.push_str(" when ");
+            self.expr(value);
+        }
+    }
+
+    pub fn query_filter_header(&mut self, node: NodeRef) {
+        let assignments = self.direct_rules(node, Rule::FilterAssignment);
+        self.out.push_str("(\n");
+        self.indent += 1;
+        for assignment in assignments {
+            self.write_indent(self.indent);
+            self.filter_assignment(assignment);
+            self.out.push('\n');
+        }
+        self.indent = self.indent.saturating_sub(1);
+        self.write_indent(self.indent);
+        self.out.push(')');
     }
 
     pub fn order_item(&mut self, node: NodeRef) {
@@ -342,6 +476,7 @@ impl<'a> CstFormatter<'a> {
             Some(Rule::CollectionLiteral) => self.collection_literal(node),
             Some(Rule::ExistsExpr) => self.exists_expr(node),
             Some(Rule::Literal) => self.literal(node),
+            Some(Rule::PredicateName) => self.write_node_text(node),
             Some(Rule::ScalarAggregateExpr) => self.scalar_aggregate_expr(node),
             Some(Rule::Expr) => {
                 let grouped = self.is_grouped_expr(node);
@@ -366,6 +501,8 @@ impl<'a> CstFormatter<'a> {
                     self.write_node_text(path);
                 } else if let Some(variable) = self.direct_rule(node, Rule::ValueVariable) {
                     self.write_node_text(variable);
+                } else if let Some(name) = self.direct_rule(node, Rule::PredicateName) {
+                    self.write_node_text(name);
                 } else if let Some(inner) = self.direct_rule(node, Rule::Expr) {
                     self.expr(inner);
                 } else if let Some(name) = self.direct_qualified_name_text(node) {
@@ -429,9 +566,22 @@ impl<'a> CstFormatter<'a> {
         } else if let Some(name) = self.direct_rule(source, Rule::QualifiedName) {
             self.write_node_text(name);
         }
-        if let Some(where_clause) = self.direct_rule(source, Rule::WhereClause) {
+        let filters = self.direct_rules(source, Rule::FilterAssignment);
+        let where_clause = self.direct_rule(source, Rule::WhereClause);
+        if !filters.is_empty() || where_clause.is_some() {
             self.out.push('(');
-            self.format_child(where_clause);
+            for (index, filter) in filters.into_iter().enumerate() {
+                if index > 0 {
+                    self.out.push(' ');
+                }
+                self.filter_assignment(filter);
+            }
+            if let Some(where_clause) = where_clause {
+                if !self.direct_rules(source, Rule::FilterAssignment).is_empty() {
+                    self.out.push(' ');
+                }
+                self.format_child(where_clause);
+            }
             self.out.push(')');
         }
     }
@@ -535,6 +685,7 @@ impl<'a> CstFormatter<'a> {
                     | Rule::Literal
                     | Rule::ScopedPath
                     | Rule::ValueVariable
+                    | Rule::PredicateName
             )
         )
     }

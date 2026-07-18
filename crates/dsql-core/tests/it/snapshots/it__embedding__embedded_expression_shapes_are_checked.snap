@@ -7,4 +7,4 @@ Error[0..0]: embedded dsql expression defines 2 top-level definitions; exactly o
 Error[0..0]: embedded dsql expression defines 2 top-level definitions; exactly one is required
 Error[0..0]: embedded dsql expression defines no top-level definition; exactly one is required
 Error[0..0]: embedded dsql expression defines no top-level definition; exactly one is required
-Error[5..5]: invalid syntax, expected one of: 'exists', 'in', 'is', <name>, 'not'
+Error[5..5]: invalid syntax, expected one of: 'apply', 'condition', 'exists', 'field', 'filter', 'in', 'is', <name>, 'not', 'when'

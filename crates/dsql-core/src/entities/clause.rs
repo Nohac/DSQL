@@ -12,7 +12,8 @@ use bowl::{
 
 use crate::catalog::CatalogSnapshot;
 use crate::entities::expression::{
-    Expr, PathAnchor, VariableRef, build_expr, build_variable_ref, expr_child,
+    Expr, PathAnchor, VariableRef, build_expr, build_filter_assignment, build_variable_ref,
+    expr_child,
 };
 use crate::entities::{direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
@@ -30,10 +31,23 @@ use crate::service::hover::{
 #[derive(Component, Debug, Clone, Hash)]
 #[component(hash)]
 pub enum ClauseFact {
-    Where { expr: Expr },
-    OrderBy { items: Vec<OrderItem> },
-    Limit { expr: Expr },
-    Offset { expr: Expr },
+    FilterAssignment {
+        name: String,
+        name_span: Span,
+        condition: Option<Expr>,
+    },
+    Where {
+        expr: Expr,
+    },
+    OrderBy {
+        items: Vec<OrderItem>,
+    },
+    Limit {
+        expr: Expr,
+    },
+    Offset {
+        expr: Expr,
+    },
 }
 
 /// One `field [asc|desc|$$var]` entry of an `order by` clause.
@@ -157,7 +171,14 @@ impl LowerStage for Clause {
         node: NodeRef,
         commands: &mut Commands<AstFacts>,
     ) -> Option<Entity> {
-        let fact = if ctx.cst.match_rule(node, Rule::WhereClause) {
+        let fact = if ctx.cst.match_rule(node, Rule::FilterAssignment) {
+            let assignment = build_filter_assignment(ctx.cst, ctx.source, node)?;
+            ClauseFact::FilterAssignment {
+                name: assignment.name,
+                name_span: assignment.name_span,
+                condition: assignment.condition.map(|condition| *condition),
+            }
+        } else if ctx.cst.match_rule(node, Rule::WhereClause) {
             ClauseFact::Where {
                 expr: clause_expr(ctx, node),
             }
@@ -259,7 +280,16 @@ pub(crate) fn check_clause(
     use crate::facts::DiagnosticCode;
 
     let resolved = ctx.clause_resolutions.get(&entity).copied();
+    if let Some(resolved) = resolved {
+        crate::entities::field_selection::collect_resolved_clause_tables(
+            resolved,
+            &mut ctx.observed_tables,
+        );
+    }
     match clause {
+        ClauseFact::FilterAssignment { .. } => {
+            crate::entities::policy::check_filter_assignment(ctx, table, entity, clause);
+        }
         ClauseFact::Where { expr } => {
             check_predicate_expr(ctx, resolved, table, entity, expr, true);
         }
@@ -374,7 +404,10 @@ fn check_predicate_expr(
             }
         }
         Expr::Exists {
-            predicate, span, ..
+            filters,
+            predicate,
+            span,
+            ..
         } => {
             let existence = resolved.and_then(|resolved| resolved.existence_at(*span));
             if let Some(existence) = existence {
@@ -432,6 +465,14 @@ fn check_predicate_expr(
                         crate::resolution::ResolvedExistenceSource::Table(table) => *table,
                     })
                 });
+                if let Some(nested_table) = nested_table {
+                    crate::entities::policy::check_exists_filter_assignments(
+                        ctx,
+                        nested_table,
+                        entity,
+                        filters,
+                    );
+                }
                 check_predicate_expr(
                     ctx,
                     resolved,
@@ -439,6 +480,20 @@ fn check_predicate_expr(
                     entity,
                     predicate,
                     true,
+                );
+            } else if let Some(nested_table) = existence.and_then(|existence| {
+                existence.source.as_ref().map(|source| match source {
+                    crate::resolution::ResolvedExistenceSource::Relation(relation) => {
+                        relation.table
+                    }
+                    crate::resolution::ResolvedExistenceSource::Table(table) => *table,
+                })
+            }) {
+                crate::entities::policy::check_exists_filter_assignments(
+                    ctx,
+                    nested_table,
+                    entity,
+                    filters,
                 );
             }
         }
@@ -464,6 +519,14 @@ fn check_predicate_expr(
                 };
                 ctx.error(entity, expr.span(), problem.code(), problem.message());
             }
+        }
+        Expr::PredicateRef { name, span } => {
+            ctx.error(
+                entity,
+                *span,
+                DiagnosticCode::PredicateTypeMismatch,
+                format!("condition `{name}` may only be referenced from a filter definition"),
+            );
         }
         Expr::Literal { value, .. } => {
             if boolean_position
@@ -813,6 +876,7 @@ fn resolved_expr_type(
         | Expr::Exists { .. }
         | Expr::Literal { .. }
         | Expr::Variable { .. }
+        | Expr::PredicateRef { .. }
         | Expr::Error { .. } => None,
     }
 }
@@ -852,7 +916,9 @@ fn check_non_negative_integer(
 
 impl FormatStage for Clause {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
-        if formatter.rule(node) == Some(Rule::WhereClause) {
+        if formatter.rule(node) == Some(Rule::FilterAssignment) {
+            formatter.filter_assignment(node);
+        } else if formatter.rule(node) == Some(Rule::WhereClause) {
             formatter.write_str("where ");
             if let Some(value) = formatter.direct_value_rule(node) {
                 formatter.expr(value);

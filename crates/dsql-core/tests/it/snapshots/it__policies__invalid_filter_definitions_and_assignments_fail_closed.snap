@@ -1,0 +1,24 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[102..115]: filter `MissingTarget` must declare an `on` target
+Error[152..154]: structural targets must declare at least one field
+Error[199..206]: unknown logical type `mystery` in policy target
+Error[267..274]: field `kind_id` must be declared in the structural target
+Error[345..357]: trusted context `minimum_id` cannot be bound until the server-only execution boundary is available
+Error[410..421]: filter rules may use trusted `$:` context but not public or build variables
+Error[475..483]: condition `RowBound` has a row target and cannot be used by `apply where`
+Error[554..558]: `exists` relation source must be a collection
+Error[638..677]: relationship and table traversal require a concrete policy target
+Error[752..767]: filter-authored `exists` sources cannot assign query filters
+Error[777..784]: filter `Enforced` affects this operation but cannot be enforced until filter semantics are applied to generated SQL
+Error[777..784]: filter `InvalidApply` affects this operation but cannot be enforced until filter semantics are applied to generated SQL
+Error[795..802]: filter `Missing` not found
+Error[826..835]: filter `Enforced` is always enforced and cannot be disabled
+Error[86..88]: row paths require an `on` target
+Error[869..874]: filter `Enforced` is always enforced and cannot be disabled
+Error[882..890]: duplicate assignment for filter `Enforced`
+Error[913..921]: filter `Enforced` does not match table `name`
+Warning[882..890]: filter `Enforced` is always enforced; this assignment is redundant
+Warning[913..921]: filter `Enforced` is always enforced; this assignment is redundant

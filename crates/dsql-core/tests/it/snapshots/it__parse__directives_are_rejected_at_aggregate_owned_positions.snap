@@ -2,9 +2,9 @@
 source: crates/dsql-core/tests/it/parse.rs
 expression: rendered
 ---
-error[23..24]: invalid syntax, expected one of: '@', ',', '.', '...', 'exists', 'in', 'is', '{', '(', <name>, 'not', '}' ("|")
+error[23..24]: invalid syntax, expected one of: 'apply', '@', ',', 'condition', '.', '...', 'exists', 'field', 'filter', 'in', 'is', '{', '(', <name>, 'not', '}', 'when' ("|")
 ---
 error[28..29]: invalid syntax, expected one of: 'by', '{' ("@")
-error[35..36]: invalid syntax, expected one of: ':', ',', '.', '..', 'exists', 'in', 'is', <name>, 'not', '}', '~' ("{")
+error[35..36]: invalid syntax, expected one of: 'apply', ':', ',', 'condition', '.', '..', 'exists', 'field', 'filter', 'in', 'is', <name>, 'not', '}', '~', 'when' ("{")
 ---
-error[30..31]: invalid syntax, expected one of: 'exists', 'in', 'is', <name>, 'not', '}' ("@")
+error[30..31]: invalid syntax, expected one of: 'apply', 'condition', 'exists', 'field', 'filter', 'in', 'is', <name>, 'not', '}', 'when' ("@")
