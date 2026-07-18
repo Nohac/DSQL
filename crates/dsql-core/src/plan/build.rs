@@ -7,7 +7,9 @@
 //! Runs per definition, gated on [`PlanDemand`].
 
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
-use crate::resolution::{PathTerminal, ResolvedClause, index_resolved_clauses};
+use crate::resolution::{
+    PathTerminal, ResolvedClause, ResolvedSelection, ResolvedSelectionShape, index_resolved_clauses,
+};
 use crate::schema::dsql_schema;
 use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View, With};
 
@@ -77,10 +79,16 @@ async fn plan_queries(
         .iter()
         .map(|(_, aggregate)| (aggregate.source, aggregate))
         .collect();
+    let resolved_selections = semantic_views
+        .selections
+        .iter()
+        .map(|(_, selection)| (selection.field, selection))
+        .collect();
     let planner = Planner {
         tree: &tree,
         resolved_clauses: &resolved_clauses,
         resolved_aggregates: &resolved_aggregates,
+        resolved_selections: &resolved_selections,
         catalog: snapshot.catalog(),
         scope: &scope.0,
         imports,
@@ -119,6 +127,9 @@ async fn plan_queries(
             .resolve_table_ref_for(TableRef::parse(&field.name))
         {
             TableResolution::Found(table) => {
+                let Some(shape) = planner.selection_shape(root_entity) else {
+                    continue;
+                };
                 let table_id = table.id;
                 let output_name = field.alias.clone().unwrap_or_else(|| table.name.clone());
                 let mut selection_path = vec![field.output_key()];
@@ -156,6 +167,7 @@ async fn plan_queries(
                         flattened: field.flattened,
                         collection: CollectionPlan {
                             table: table_id,
+                            shape,
                             clauses,
                             result,
                         },
@@ -219,6 +231,7 @@ async fn plan_queries(
 /// bundled to stay within porridge's system-parameter arity.
 #[derive(SystemParam)]
 struct PlanSemanticViews<'a> {
+    selections: View<'a, (Entity, &'a ResolvedSelection)>,
     clauses: View<'a, (Entity, &'a ResolvedClause)>,
     aggregates: View<'a, (Entity, &'a ResolvedAggregate)>,
 }
@@ -330,12 +343,17 @@ struct Planner<'a> {
     tree: &'a SelectionTree<'a>,
     resolved_clauses: &'a std::collections::HashMap<Entity, &'a ResolvedClause>,
     resolved_aggregates: &'a std::collections::HashMap<Entity, &'a ResolvedAggregate>,
+    resolved_selections: &'a std::collections::HashMap<Entity, &'a ResolvedSelection>,
     catalog: &'a Catalog,
     scope: &'a str,
     imports: &'a ScopeImports,
 }
 
 impl Planner<'_> {
+    fn selection_shape(&self, field: Entity) -> Option<ResolvedSelectionShape> {
+        self.resolved_selections.get(&field)?.shape.clone()
+    }
+
     fn plan_collection_result(
         &self,
         walk: &mut PlanWalk<'_>,
@@ -468,6 +486,9 @@ impl Planner<'_> {
                             }
                         }
                         FieldCheckResult::Relation(relation) => {
+                            let Some(shape) = self.selection_shape(field_entity) else {
+                                continue;
+                            };
                             let relation_table = relation.table.id;
                             let relation_name = relation.name.to_string();
                             let foreign_key = relation.foreign_key.id;
@@ -510,6 +531,7 @@ impl Planner<'_> {
                                     foreign_key,
                                     collection: Box::new(CollectionPlan {
                                         table: relation_table,
+                                        shape,
                                         clauses: child_clauses,
                                         result: nested,
                                     }),
@@ -544,8 +566,14 @@ impl Planner<'_> {
         field_entity: Entity,
     ) -> SelectionClauses {
         let mut clauses = SelectionClauses::default();
-        for (clause_entity, clause, _, _) in self.tree.clauses_under(field_entity) {
-            let resolved = self.resolved_clauses.get(clause_entity).copied();
+        let mut clause_rows = self
+            .tree
+            .clauses_under(field_entity)
+            .copied()
+            .collect::<Vec<_>>();
+        clause_rows.sort_by_key(|(_, _, span, _)| span.start);
+        for (clause_entity, clause, _, _) in clause_rows {
+            let resolved = self.resolved_clauses.get(&clause_entity).copied();
             match clause {
                 ClauseFact::Where { expr } => {
                     clauses.filter = resolved.and_then(|resolved| {
@@ -798,6 +826,11 @@ impl Planner<'_> {
         inferred_path: &[String],
     ) -> Option<FilterExpr> {
         if let BinaryOp::Variable(variable) = op {
+            let compares_null = matches!(
+                (&left, &right),
+                (FilterExpr::Literal(FilterLiteral::Null), _)
+                    | (_, FilterExpr::Literal(FilterLiteral::Null))
+            );
             return Some(FilterExpr::VariantBinary {
                 left: Box::new(left),
                 path: variable_path(
@@ -811,7 +844,7 @@ impl Planner<'_> {
                     variable.sigil,
                     variable.name.as_deref(),
                 ),
-                variants: operator_variants(variable),
+                variants: operator_variants(variable, compares_null),
                 right: Box::new(right),
             });
         }
@@ -1039,7 +1072,7 @@ fn is_comparison_operator(op: &BinaryOp) -> bool {
     matches!(op, BinaryOp::Comparison(_) | BinaryOp::Variable(_))
 }
 
-fn operator_variants(variable: &VariableRef) -> Vec<SqlVariantCase> {
+fn operator_variants(variable: &VariableRef, compares_null: bool) -> Vec<SqlVariantCase> {
     variable
         .operators
         .iter()
@@ -1048,7 +1081,22 @@ fn operator_variants(variable: &VariableRef) -> Vec<SqlVariantCase> {
             let op = FilterOp::from(*op);
             Some(SqlVariantCase {
                 value: op.dsql_label()?.to_string(),
-                text: op.postgres_text()?.to_string(),
+                text: if compares_null {
+                    match op {
+                        FilterOp::Eq => "is",
+                        FilterOp::Ne => "is not",
+                        FilterOp::Gt
+                        | FilterOp::Ge
+                        | FilterOp::Lt
+                        | FilterOp::Le
+                        | FilterOp::Like
+                        | FilterOp::And
+                        | FilterOp::Or => op.postgres_text()?,
+                    }
+                } else {
+                    op.postgres_text()?
+                }
+                .to_string(),
             })
         })
         .collect()

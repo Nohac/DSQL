@@ -1,22 +1,19 @@
 ---
 source: crates/dsql-core/tests/it/sql.rs
-assertion_line: 214
 expression: after
 ---
 -- title
 select
-  COALESCE(
-    JSON_AGG(
-      JSON_BUILD_OBJECT('title', "title_d4d9f554"."title")
-    ),
-    '[]'
-  ) as "title"
+  "dsql_root"."title" as "title"
 from
   (
     select
-      *
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT('title', "title_d4d9f554"."title") as "title"
     from
       "public"."title" as "title_d4d9f554"
     limit
       1
-  ) as "title_d4d9f554"
+  ) as "dsql_root" on true

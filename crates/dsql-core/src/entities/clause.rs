@@ -205,7 +205,7 @@ impl LowerStage for Clause {
     }
 }
 
-fn clause_expr(ctx: &LowerCtx<'_>, node: NodeRef) -> Expr {
+pub(crate) fn clause_expr(ctx: &LowerCtx<'_>, node: NodeRef) -> Expr {
     match expr_child(ctx.cst, node) {
         Some(expr) => build_expr(ctx.cst, ctx.source, expr),
         None => Expr::Error {
@@ -460,6 +460,38 @@ fn check_operator_variable(
     let Some(allowed) = &operator.operators else {
         return;
     };
+    let compares_null = matches!(
+        (lhs, rhs),
+        (
+            Expr::Literal {
+                value: crate::entities::expression::LiteralValue::Null,
+                ..
+            },
+            _
+        ) | (
+            _,
+            Expr::Literal {
+                value: crate::entities::expression::LiteralValue::Null,
+                ..
+            }
+        )
+    );
+    if compares_null
+        && allowed.iter().any(|operator| {
+            !matches!(
+                operator,
+                crate::entities::expression::ComparisonOp::Eq
+                    | crate::entities::expression::ComparisonOp::Ne
+            )
+        })
+    {
+        ctx.error(
+            entity,
+            operator.span,
+            DiagnosticCode::PredicateTypeMismatch,
+            "operator-variable comparisons against `null` only support `==` and `!=`".to_string(),
+        );
+    }
     for op in allowed {
         if !data_type.operator_ops().contains(op) {
             ctx.error(
@@ -507,7 +539,20 @@ fn check_binary_predicate_types(
         LiteralValue::Number(value) => (LiteralKind::Number, value.as_str()),
         LiteralValue::Bool(true) => (LiteralKind::Boolean, "true"),
         LiteralValue::Bool(false) => (LiteralKind::Boolean, "false"),
-        LiteralValue::Null => return,
+        LiteralValue::Null => {
+            if !matches!(op, ComparisonOp::Eq | ComparisonOp::Ne) {
+                ctx.error(
+                    entity,
+                    literal_span,
+                    DiagnosticCode::PredicateTypeMismatch,
+                    format!(
+                        "comparison with `null` does not support operator `{}`; use `==` or `!=`",
+                        op.as_str()
+                    ),
+                );
+            }
+            return;
+        }
     };
     if op == ComparisonOp::Like && data_type != DataType::Text {
         ctx.error(

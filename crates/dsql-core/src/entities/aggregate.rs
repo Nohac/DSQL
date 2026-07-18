@@ -6,8 +6,7 @@ use bowl::{
 };
 
 use crate::catalog::{
-    Catalog, CatalogSnapshot, ColumnId, DataType, FieldCheckResult, FieldRef, RelationCardinality,
-    TableId, TableRef,
+    Catalog, CatalogSnapshot, ColumnId, DataType, FieldCheckResult, FieldRef, TableId, TableRef,
 };
 use crate::entities::clause::ClauseFact;
 use crate::entities::expression::{Expr, build_expr};
@@ -21,7 +20,9 @@ use crate::facts::{
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
-use crate::resolution::{FieldResolutions, ResolvedSelection, SelectionTarget};
+use crate::resolution::{
+    FieldResolutions, ResolvedSelection, SelectionCardinality, SelectionTarget,
+};
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::completion::{
     CompletionContext, CompletionItem, CompletionKind, CompletionRequest, CompletionSite,
@@ -373,7 +374,7 @@ async fn resolve_aggregates(
         });
     }
 
-    let (table, collection) = aggregate_source(catalog, source_resolution);
+    let (table, collection) = aggregate_source(source_resolution);
     if !collection {
         problems.push(AggregateProblem {
             span: source.name_span,
@@ -508,20 +509,14 @@ fn resolve_group_key(
     })
 }
 
-fn aggregate_source(catalog: &Catalog, resolved: &ResolvedSelection) -> (Option<TableId>, bool) {
+fn aggregate_source(resolved: &ResolvedSelection) -> (Option<TableId>, bool) {
+    let collection = resolved
+        .shape
+        .as_ref()
+        .is_some_and(|shape| shape.cardinality == SelectionCardinality::Collection);
     match resolved.target {
-        SelectionTarget::Table(table) => (Some(table), true),
-        SelectionTarget::Relation {
-            table, foreign_key, ..
-        } => {
-            let cardinality = resolved.context.and_then(|context| {
-                let foreign_key = catalog.foreign_key_by_id(foreign_key)?;
-                catalog.relation_cardinality(context, table, foreign_key)
-            });
-            (
-                Some(table),
-                cardinality == Some(RelationCardinality::Collection),
-            )
+        SelectionTarget::Table(table) | SelectionTarget::Relation { table, .. } => {
+            (Some(table), collection)
         }
         SelectionTarget::Column(_) | SelectionTarget::Unresolved => (None, false),
     }

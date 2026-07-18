@@ -11,57 +11,55 @@ from
 
 -- ordered_title
 select
-  COALESCE(
-    JSON_AGG(
-      JSON_BUILD_OBJECT(
-        'aliases',
-        "aliases_json_5623ec84"."aliases_result_5623ec84"
-      )
-    ),
-    '[]'
-  ) as "ordered_title"
+  "dsql_root"."ordered_title" as "ordered_title"
 from
   (
     select
-      *
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'aliases',
+        "aliases_json_5623ec84"."aliases_result_5623ec84"
+      ) as "ordered_title"
     from
       "public"."title" as "ordered_title_f2d3b1aa"
+      left join LATERAL (
+        select
+          COALESCE(
+            JSON_AGG(
+              JSON_BUILD_OBJECT(
+                'id',
+                "aliases_5623ec84"."id",
+                'kind_id',
+                "aliases_5623ec84"."kind_id"
+              )
+              order by
+                "aliases_5623ec84"."kind_id" desc,
+                "aliases_5623ec84"."id" asc
+            ),
+            '[]'
+          ) as "aliases_result_5623ec84"
+        from
+          (
+            select
+              *
+            from
+              "public"."aka_title" as "aliases_5623ec84"
+            where
+              "aliases_5623ec84"."movie_id" = "ordered_title_f2d3b1aa"."id"
+            order by
+              "aliases_5623ec84"."kind_id" desc,
+              "aliases_5623ec84"."id" asc
+            limit
+              16
+          ) as "aliases_5623ec84"
+      ) as "aliases_json_5623ec84" on true
     where
       "ordered_title_f2d3b1aa"."id" = 943844
     limit
       1
-  ) as "ordered_title_f2d3b1aa"
-  left join LATERAL (
-    select
-      COALESCE(
-        JSON_AGG(
-          JSON_BUILD_OBJECT(
-            'id',
-            "aliases_5623ec84"."id",
-            'kind_id',
-            "aliases_5623ec84"."kind_id"
-          )
-          order by
-            "aliases_5623ec84"."kind_id" desc,
-            "aliases_5623ec84"."id" asc
-        ),
-        '[]'
-      ) as "aliases_result_5623ec84"
-    from
-      (
-        select
-          *
-        from
-          "public"."aka_title" as "aliases_5623ec84"
-        where
-          "aliases_5623ec84"."movie_id" = "ordered_title_f2d3b1aa"."id"
-        order by
-          "aliases_5623ec84"."kind_id" desc,
-          "aliases_5623ec84"."id" asc
-        limit
-          16
-      ) as "aliases_5623ec84"
-  ) as "aliases_json_5623ec84" on true
+  ) as "dsql_root" on true
 
 -- ratings
 select
@@ -96,8 +94,13 @@ from
 
 -- signals
 select
-  COALESCE(
-    JSON_AGG(
+  "dsql_root"."signals" as "signals"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
       JSON_BUILD_OBJECT(
         'id',
         "signals_103b5263"."id",
@@ -105,69 +108,60 @@ select
         "movie_info_idx_json_2fef32cf"."rating",
         'votes',
         "movie_info_idx_json_2d4ebf0f"."votes"
-      )
-    ),
-    '[]'
-  ) as "signals"
-from
-  (
-    select
-      *
+      ) as "signals"
     from
       "public"."title" as "signals_103b5263"
+      left join LATERAL (
+        select
+          MAX("movie_info_idx_2fef32cf"."info") as "rating"
+        from
+          "public"."movie_info_idx" as "movie_info_idx_2fef32cf"
+        where
+          "movie_info_idx_2fef32cf"."movie_id" = "signals_103b5263"."id"
+          and "movie_info_idx_2fef32cf"."info_type_id" = 101
+      ) as "movie_info_idx_json_2fef32cf" on true
+      left join LATERAL (
+        select
+          MAX("movie_info_idx_2d4ebf0f"."info") as "votes"
+        from
+          "public"."movie_info_idx" as "movie_info_idx_2d4ebf0f"
+        where
+          "movie_info_idx_2d4ebf0f"."movie_id" = "signals_103b5263"."id"
+          and "movie_info_idx_2d4ebf0f"."info_type_id" = 100
+      ) as "movie_info_idx_json_2d4ebf0f" on true
     where
       "signals_103b5263"."id" = 2
     limit
       1
-  ) as "signals_103b5263"
-  left join LATERAL (
-    select
-      MAX("movie_info_idx_2fef32cf"."info") as "rating"
-    from
-      "public"."movie_info_idx" as "movie_info_idx_2fef32cf"
-    where
-      "movie_info_idx_2fef32cf"."movie_id" = "signals_103b5263"."id"
-      and "movie_info_idx_2fef32cf"."info_type_id" = 101
-  ) as "movie_info_idx_json_2fef32cf" on true
-  left join LATERAL (
-    select
-      MAX("movie_info_idx_2d4ebf0f"."info") as "votes"
-    from
-      "public"."movie_info_idx" as "movie_info_idx_2d4ebf0f"
-    where
-      "movie_info_idx_2d4ebf0f"."movie_id" = "signals_103b5263"."id"
-      and "movie_info_idx_2d4ebf0f"."info_type_id" = 100
-  ) as "movie_info_idx_json_2d4ebf0f" on true
+  ) as "dsql_root" on true
 
 -- singular
 select
-  COALESCE(
-    JSON_AGG(
+  "dsql_root"."singular" as "singular"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
       JSON_BUILD_OBJECT(
         'id',
         "singular_b1ef7ca7"."id",
         'kind',
         "kind_type_json_39c3eae9"."kind"
-      )
-    ),
-    '[]'
-  ) as "singular"
-from
-  (
-    select
-      *
+      ) as "singular"
     from
       "public"."title" as "singular_b1ef7ca7"
+      left join LATERAL (
+        select
+          "kind_type_39c3eae9"."kind" as "kind"
+        from
+          "public"."kind_type" as "kind_type_39c3eae9"
+        where
+          "kind_type_39c3eae9"."id" = "singular_b1ef7ca7"."kind_id"
+      ) as "kind_type_json_39c3eae9" on true
     where
       "singular_b1ef7ca7"."id" = 2
     limit
       1
-  ) as "singular_b1ef7ca7"
-  left join LATERAL (
-    select
-      "kind_type_39c3eae9"."kind" as "kind"
-    from
-      "public"."kind_type" as "kind_type_39c3eae9"
-    where
-      "kind_type_39c3eae9"."id" = "singular_b1ef7ca7"."kind_id"
-  ) as "kind_type_json_39c3eae9" on true
+  ) as "dsql_root" on true

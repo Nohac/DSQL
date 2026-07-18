@@ -127,9 +127,8 @@ assessment.
 - A selection using only a runtime limit remains array-valued. Redundant limits
   on independently unique selections receive diagnostics instead of changing
   the generated type.
-- The remaining work is implementation across semantic planning, SQL result
-  assembly, metadata, generated APIs, flattening, and editor services rather
-  than a new root-only syntax.
+- This is implemented as one resolved semantic shape consumed by planning, SQL
+  result assembly, metadata, generated APIs, flattening, and editor services.
 
 ### Aggregates
 
@@ -411,7 +410,7 @@ Specification to expand:
 
 #### 6. Inferred singular selections
 
-Infer at-most-one result shape for roots and nested relations when mandatory
+Implemented. dsql infers at-most-one result shape for roots and nested relations when mandatory
 equality predicates cover a primary key or another catalog-proven unique key,
 or when the selection uses literal `limit 1`.
 
@@ -560,8 +559,7 @@ without making those services part of dsql's relational query language.
 1. Settle policies/trusted context and the server-only generated API contract.
 2. Introduce normalized relationship metadata and catalog overlays.
 3. Implement bounded dynamic filters/order plus optional input semantics.
-4. Implement inferred singular selections and the missing
-   predicate/order/distinct features.
+4. Implement the missing predicate/order/distinct features.
 5. Compose page rows and metadata over one bounded collection input.
 6. Generalize provider scalar, enum, and array types.
 7. Add provider-backed computed fields and table-valued functions.

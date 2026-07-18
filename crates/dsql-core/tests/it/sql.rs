@@ -277,6 +277,51 @@ async fn scalar_aggregate_predicates_render_correlated_values() {
 }
 
 #[tokio::test]
+async fn null_comparisons_render_postgres_null_predicates() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "null-predicates.dsql",
+        concat!(
+            "query NullPredicates {\n",
+            "  title(\n",
+            "    where .production_year == null\n",
+            "      or null != .kind_id\n",
+            "      or .production_year $$null_operator[==, !=] null\n",
+            "    limit 2\n",
+            "  ) { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn singular_roots_and_relations_render_nullable_object_envelopes() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "singular-shapes.dsql",
+        concat!(
+            "query SingularShapes {\n",
+            "  by_limit: title(order by id asc limit 1) { id title }\n",
+            "  by_key: title(where .id == $$id) {\n",
+            "    id\n",
+            "    latest_info: movie_info(order by id desc limit 1) { id info }\n",
+            "  }\n",
+            "  runtime: title(limit $$count) { id }\n",
+            "  ...title(where .id == $$flat_id) { flat_id: id flat_title: title }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
 async fn flattened_objects_export_fields_without_wrapper_keys() {
     let bowl = sql_bowl(Catalog::hardcoded()).await;
     insert_source(
@@ -475,6 +520,17 @@ async fn renderer_edge_cases_execute_when_database_url_is_set() {
     let bowl = sql_bowl_with_limit(imdb_catalog(), None).await;
     insert_source(&bowl, "movie-signals.dsql", MOVIE_SIGNALS).await;
     insert_source(&bowl, "renderer-edges.dsql", RENDERER_EDGE_QUERY).await;
+    insert_source(
+        &bowl,
+        "missing-singular.dsql",
+        concat!(
+            "query MissingSingular {\n",
+            "  missing: title(where .id == -1) { id }\n",
+            "  ...title(where .id == -1) { missing_id: id }\n",
+            "}\n",
+        ),
+    )
+    .await;
     let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
     let generated = rows
         .collect()
@@ -510,22 +566,33 @@ async fn renderer_edge_cases_execute_when_database_url_is_set() {
         generated.get("singular").expect("singular SQL exists"),
     )
     .await;
-    let singular = singular
-        .as_array()
-        .and_then(|rows| rows.first())
-        .and_then(serde_json::Value::as_object)
-        .expect("singular result contains one object");
+    let singular = singular.as_object().expect("singular result is an object");
     assert_eq!(singular.len(), 2);
     assert!(singular.contains_key("id") && singular.contains_key("kind"));
 
     let signals = execute_json(&pool, generated.get("signals").expect("signals SQL exists")).await;
-    let signals = signals
-        .as_array()
-        .and_then(|rows| rows.first())
-        .and_then(serde_json::Value::as_object)
-        .expect("signals result contains one object");
+    let signals = signals.as_object().expect("signals result is an object");
     assert_eq!(signals.get("rating"), Some(&serde_json::json!("4.0")));
     assert_eq!(signals.get("votes"), Some(&serde_json::json!("53")));
+
+    let missing = execute_json(&pool, generated.get("missing").expect("missing SQL exists")).await;
+    assert!(missing.is_null(), "an absent singular root is null");
+    let missing_flattened = sqlx::query(AssertSqlSafe(
+        generated
+            .get("title")
+            .expect("missing flattened SQL exists")
+            .clone(),
+    ))
+    .fetch_one(&pool)
+    .await
+    .expect("missing flattened SQL keeps its protocol row");
+    let missing_id: Option<serde_json::Value> = missing_flattened
+        .try_get("missing_id")
+        .expect("missing flattened field decodes as JSON null");
+    assert!(
+        missing_id.is_none(),
+        "an absent flattened root field is null"
+    );
 
     let ratings = execute_json(&pool, generated.get("ratings").expect("ratings SQL exists")).await;
     assert_string_desc_id_asc(
@@ -541,9 +608,7 @@ async fn renderer_edge_cases_execute_when_database_url_is_set() {
     )
     .await;
     let aliases = ordered_title
-        .as_array()
-        .and_then(|rows| rows.first())
-        .and_then(|title| title.get("aliases"))
+        .get("aliases")
         .and_then(serde_json::Value::as_array)
         .expect("ordered title contains aliases");
     assert_number_desc_id_asc(aliases, "kind_id");
@@ -741,8 +806,8 @@ async fn valid_query_fixtures_execute_when_database_url_is_set() {
         for sql in generated {
             let value = execute_json(&pool, &sql).await;
             assert!(
-                value.is_array() || value.is_object(),
-                "{name} generated JSON must be an array or object"
+                value.is_array() || value.is_object() || value.is_null(),
+                "{name} generated JSON must match a collection or singular result"
             );
         }
     }
@@ -838,6 +903,8 @@ async fn execute_json(pool: &PgPool, sql: &str) -> serde_json::Value {
         .fetch_one(pool)
         .await
         .expect("generated SQL executes");
-    let json: String = row.try_get(0).expect("query returns JSON text");
-    serde_json::from_str(&json).expect("generated output is JSON")
+    let json: Option<String> = row.try_get(0).expect("query returns nullable JSON text");
+    json.map_or(serde_json::Value::Null, |json| {
+        serde_json::from_str(&json).expect("generated output is JSON")
+    })
 }

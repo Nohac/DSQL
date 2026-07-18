@@ -72,6 +72,8 @@ pub enum DiagnosticCode {
     AggregateClauseNotAllowed,
     FlattenedSelectionCardinality,
     MissingFlattenedSelectionBody,
+    RedundantLimit,
+    AlwaysEmptySelection,
     FragmentTypeMismatch,
     CircularFragmentSpread,
     ClauseValueTypeMismatch,

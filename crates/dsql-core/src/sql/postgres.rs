@@ -1,6 +1,5 @@
 use crate::catalog::{
-    Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyId, RelationCardinality, Table,
-    TableId,
+    Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyId, Table, TableId,
 };
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
@@ -8,6 +7,7 @@ use crate::plan::{
     FilterLiteral, FilterOp, NestedRelation, QueryPlan, SelectionClauses, SelectionPlan,
     SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
 };
+use crate::resolution::SelectionCardinality;
 use sea_query::{
     Alias, Asterisk, Condition, Expr, ExprTrait, Func, JoinType, Order, PgFunc,
     PostgresQueryBuilder, Query, SelectStatement,
@@ -72,7 +72,6 @@ struct SelectionContext {
 struct SelectionGenerationContext<'a> {
     parent: Option<(&'a SelectionContext, &'a ForeignKey)>,
     root: Option<&'a SelectionContext>,
-    cardinality: RelationCardinality,
     options: PostgresSqlOptions,
     public_result_alias: Option<&'a str>,
     flattened: bool,
@@ -193,13 +192,19 @@ pub fn generate_postgres_sql_with_options(
             SelectionGenerationContext {
                 parent: None,
                 root: None,
-                cardinality: RelationCardinality::Collection,
                 options,
                 public_result_alias: Some(&plan.output_name),
                 flattened: plan.flattened,
             },
             &mut template,
         )?;
+        let root_query = if matches!(plan.collection.result, CollectionResultPlan::Rows(_))
+            && plan.collection.shape.cardinality == SelectionCardinality::AtMostOne
+        {
+            singular_root_envelope(plan, root_query)
+        } else {
+            root_query
+        };
         let formatted = sqlformat::format(
             &root_query.to_string(PostgresQueryBuilder),
             &sqlformat::QueryParams::default(),
@@ -220,6 +225,39 @@ pub fn generate_postgres_sql_with_options(
             variants: template.variants,
         });
     }
+}
+
+fn singular_root_envelope(plan: &QueryPlan, root_query: SelectStatement) -> SelectStatement {
+    const SINGLETON_ALIAS: &str = "dsql_singleton";
+    const ROOT_ALIAS: &str = "dsql_root";
+
+    let mut singleton = Query::select();
+    singleton.expr(Expr::value(1));
+
+    let mut output_names = if plan.flattened {
+        let mut names = Vec::new();
+        collect_collection_output_names(&plan.collection.result, &mut names);
+        names
+    } else {
+        vec![plan.output_name.clone()]
+    };
+    output_names.dedup();
+
+    let mut envelope = Query::select();
+    for output_name in output_names {
+        envelope.expr_as(
+            Expr::col((Alias::new(ROOT_ALIAS), Alias::new(&output_name))),
+            Alias::new(output_name),
+        );
+    }
+    envelope.from_subquery(singleton.to_owned(), Alias::new(SINGLETON_ALIAS));
+    envelope.join_lateral(
+        JoinType::LeftJoin,
+        root_query,
+        Alias::new(ROOT_ALIAS),
+        Expr::cust("true"),
+    );
+    envelope.to_owned()
 }
 
 /// Replaces numeric template markers against their ranges in the original
@@ -316,7 +354,7 @@ fn generate_rows(
         .as_ref()
         .map(|filter| filter_expr(catalog, &context, root_context, None, filter, template))
         .transpose()?;
-    if generation.cardinality == RelationCardinality::Collection
+    if collection.shape.cardinality == SelectionCardinality::Collection
         && should_use_source_subquery(&collection.clauses, generation.options)
     {
         let source = limited_source_query(
@@ -362,13 +400,6 @@ fn generate_rows(
         let relation_path =
             relation_instance_path(selection, item_index, related_table, relation, path);
         let foreign_key = foreign_key(catalog, relation.foreign_key)?;
-        let relation_cardinality = catalog
-            .relation_cardinality(collection.table, relation.collection.table, foreign_key)
-            .ok_or_else(|| SqlGenerationError::InvalidRelation {
-                foreign_key: relation.foreign_key.0,
-                parent: table_label(current_table),
-                child: table_label(related_table),
-            })?;
         let child_context = context_for(related_table, &relation.output_name, &relation_path);
         let child_query = generate_collection(
             &relation.collection,
@@ -378,7 +409,6 @@ fn generate_rows(
             SelectionGenerationContext {
                 parent: Some((&context, foreign_key)),
                 root: Some(root_context),
-                cardinality: relation_cardinality,
                 options: generation.options,
                 public_result_alias: None,
                 flattened: relation.flattened,
@@ -406,13 +436,13 @@ fn generate_rows(
         return Ok(query.to_owned());
     }
     let object = json_build_object(fields);
-    let expression: Expr = match generation.cardinality {
-        RelationCardinality::Collection => Func::coalesce([
+    let expression: Expr = match collection.shape.cardinality {
+        SelectionCardinality::Collection => Func::coalesce([
             ordered_json_agg(object, &collection.clauses, catalog, &context)?,
             Expr::value("[]"),
         ])
         .into(),
-        RelationCardinality::Singular => object,
+        SelectionCardinality::AtMostOne => object,
     };
     query.expr_as(
         expression,
@@ -768,6 +798,20 @@ fn filter_expr(
             FilterLiteral::Null => Expr::cust("null"),
         },
         FilterExpr::Binary { left, op, right } => {
+            if matches!(op, FilterOp::Eq | FilterOp::Ne)
+                && let Some(operand) = null_comparison_operand(left, right)
+            {
+                let operand =
+                    filter_expr(catalog, context, root, outer_current, operand, template)?;
+                return Ok(Expr::cust_with_expr(
+                    if *op == FilterOp::Eq {
+                        "$1 IS NULL"
+                    } else {
+                        "$1 IS NOT NULL"
+                    },
+                    operand,
+                ));
+            }
             if *op == FilterOp::Like {
                 let left = filter_expr(catalog, context, root, outer_current, left, template)?;
                 let right = filter_expr(catalog, context, root, outer_current, right, template)?;
@@ -795,12 +839,22 @@ fn filter_expr(
             path,
             variants,
             right,
-        } => Expr::cust(format!(
-            "{} {} {}",
-            filter_expr_fragment(catalog, context, root, outer_current, left, template)?,
-            template.variant(path, variants),
-            filter_expr_fragment(catalog, context, root, outer_current, right, template)?
-        )),
+        } => {
+            if let Some(operand) = null_comparison_operand(left, right) {
+                Expr::cust(format!(
+                    "{} {} null",
+                    filter_expr_fragment(catalog, context, root, outer_current, operand, template)?,
+                    template.variant(path, variants),
+                ))
+            } else {
+                Expr::cust(format!(
+                    "{} {} {}",
+                    filter_expr_fragment(catalog, context, root, outer_current, left, template)?,
+                    template.variant(path, variants),
+                    filter_expr_fragment(catalog, context, root, outer_current, right, template)?
+                ))
+            }
+        }
         FilterExpr::Exists {
             foreign_key: foreign_key_id,
             table: table_id,
@@ -880,6 +934,19 @@ fn filter_expr(
             }
         }
     })
+}
+
+fn null_comparison_operand<'a>(
+    left: &'a FilterExpr,
+    right: &'a FilterExpr,
+) -> Option<&'a FilterExpr> {
+    if matches!(left, FilterExpr::Literal(FilterLiteral::Null)) {
+        Some(right)
+    } else if matches!(right, FilterExpr::Literal(FilterLiteral::Null)) {
+        Some(left)
+    } else {
+        None
+    }
 }
 
 fn filter_expr_fragment(

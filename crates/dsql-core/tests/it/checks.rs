@@ -168,6 +168,10 @@ async fn valid_singular_and_aggregate_flattening_check_cleanly() {
             "    ...posts(where .title like $$title) | aggregate { post_count: count }\n",
             "  }\n",
             "  ...public::users(where .name == $$root_name) | aggregate { user_count: count }\n",
+            "  ...public::users(limit 1) { flattened_user_id: id }\n",
+            "  one_account: public::users(limit 1) {\n",
+            "    ...posts(limit 1) { latest_post_title: title }\n",
+            "  }\n",
             "}\n",
         ),
     )
@@ -175,6 +179,31 @@ async fn valid_singular_and_aggregate_flattening_check_cleanly() {
 
     let diagnostics = render_diagnostic_facts(&bowl).await;
     assert_eq!(diagnostics, "", "valid flattening must check clean");
+}
+
+#[tokio::test]
+async fn selection_shape_warnings_and_null_operator_errors_are_typed() {
+    let bowl = checked_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "shape-diagnostics.dsql",
+        concat!(
+            "query ShapeDiagnostics {\n",
+            "  empty: title(limit 0) { id }\n",
+            "  redundant_literal: title(where .id == $$id limit 1) { id }\n",
+            "  redundant_runtime: title(where .id == $$other_id limit $$cap) { id }\n",
+            "  valid_limit_proof: title(limit 1) { id }\n",
+            "  invalid_null_order: title(where .id > null) { id }\n",
+            "  invalid_null_variant: title(where .title $$operator[==, like] null) { id }\n",
+            "  parent: title(limit 1) {\n",
+            "    kind_type(limit 1) { id }\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
 #[tokio::test]
@@ -358,7 +387,7 @@ async fn content_roundtrip_edits_rederive_cleanly_for_hosts() {
             "fragment CompactBits on title {\n  id\n}\n\nfragment HeroBits on title {\n  ...CompactBits\n  cast: cast_info(order by nr_order asc limit 5) {\n    nr_order\n  }\n}\n",
         )
         .await;
-    let original = "export const Q = dsql(`\nquery Roundtrip {\n  title(where .id == $$movieId limit 1) {\n    ...HeroBits\n    keywords: movie_keyword(order by id asc limit 14) {\n      keyword {\n        keyword\n      }\n    }\n    full_cast: cast_info(order by nr_order asc limit 14) {\n      id\n      nr_order\n    }\n  }\n}\n`);\n";
+    let original = "export const Q = dsql(`\nquery Roundtrip {\n  title(where .id == $$movieId) {\n    ...HeroBits\n    keywords: movie_keyword(order by id asc limit 14) {\n      keyword {\n        keyword\n      }\n    }\n    full_cast: cast_info(order by nr_order asc limit 14) {\n      id\n      nr_order\n    }\n  }\n}\n`);\n";
     let file = insert_embedding_source(&bowl, "roundtrip.host", original, "typescript").await;
     assert_eq!(
         render_diagnostic_facts(&bowl).await,

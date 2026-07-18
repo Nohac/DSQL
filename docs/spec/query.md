@@ -594,8 +594,9 @@ still applies when such a limit is present.
 Unique-predicate proofs are conservative:
 
 - A composite key is covered only when every key column has a proving equality.
-- `or` branches do not prove uniqueness unless the same complete proof is
-  mandatory for every branch.
+- `or` branches do not prove uniqueness unless every branch constrains the
+  complete key to the same fixed values. Covering the same key columns with
+  different values can return one row per alternative and is not at-most-one.
 - A conditionally omitted predicate does not participate. A caller-omittable
   variable with a default may participate when the predicate remains present
   in every compiled variant. See [Variables](variables.md).
@@ -618,6 +619,13 @@ Inferred cardinality is part of the semantic result shape. Planning, SQL
 generation, result metadata, generated API types, flattening, fragment merging,
 and editor services must consume the same resolved cardinality rather than
 re-deriving it independently.
+
+The SQL artifact for an at-most-one root still returns exactly one protocol
+row. An object-valued root projects its wrapper key as `null` when no source row
+matches. A flattened at-most-one root projects one row with each contributed
+field set to `null` when no source row matches. This envelope is an artifact
+transport detail; generated result types expose the nullable object or nullable
+flattened fields described above, not the envelope itself.
 
 ## Relationship Ambiguity
 

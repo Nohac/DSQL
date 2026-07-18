@@ -1,0 +1,26 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- title
+select
+  COALESCE(
+    JSON_AGG(JSON_BUILD_OBJECT('id', "title_d4d9f554"."id")),
+    '[]'
+  ) as "title"
+from
+  (
+    select
+      *
+    from
+      "public"."title" as "title_d4d9f554"
+    where
+      ("title_d4d9f554"."production_year" is null)
+      or ("title_d4d9f554"."kind_id" is not null)
+      or (
+        "title_d4d9f554"."production_year" {{params.null_operator}} null
+      )
+    limit
+      2
+  ) as "title_d4d9f554"
+-- variant params.null_operator: ===>is, !==>is not

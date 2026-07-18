@@ -1,5 +1,5 @@
 query MovieRelationPathSelector {
-  movie_info(where .id == 1811435 limit 1) {
+  movie_info(where .id == 1811435) {
     id
     title {
       aliases: aka_title->movie_id {

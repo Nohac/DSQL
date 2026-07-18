@@ -1,0 +1,100 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- by_key
+select
+  "dsql_root"."by_key" as "by_key"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'id',
+        "by_key_e6eec04b"."id",
+        'latest_info',
+        "latest_info_json_9fb9d44e"."latest_info_result_9fb9d44e"
+      ) as "by_key"
+    from
+      "public"."title" as "by_key_e6eec04b"
+      left join LATERAL (
+        select
+          JSON_BUILD_OBJECT(
+            'id',
+            "latest_info_9fb9d44e"."id",
+            'info',
+            "latest_info_9fb9d44e"."info"
+          ) as "latest_info_result_9fb9d44e"
+        from
+          "public"."movie_info" as "latest_info_9fb9d44e"
+        where
+          "latest_info_9fb9d44e"."movie_id" = "by_key_e6eec04b"."id"
+        order by
+          "latest_info_9fb9d44e"."id" desc
+        limit
+          1
+      ) as "latest_info_json_9fb9d44e" on true
+    where
+      "by_key_e6eec04b"."id" = ($1)
+  ) as "dsql_root" on true
+-- parameters: params.id
+
+-- by_limit
+select
+  "dsql_root"."by_limit" as "by_limit"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'id',
+        "by_limit_31385e1f"."id",
+        'title',
+        "by_limit_31385e1f"."title"
+      ) as "by_limit"
+    from
+      "public"."title" as "by_limit_31385e1f"
+    order by
+      "by_limit_31385e1f"."id" asc
+    limit
+      1
+  ) as "dsql_root" on true
+
+-- runtime
+select
+  COALESCE(
+    JSON_AGG(JSON_BUILD_OBJECT('id', "runtime_8d1f47ea"."id")),
+    '[]'
+  ) as "runtime"
+from
+  (
+    select
+      *
+    from
+      "public"."title" as "runtime_8d1f47ea"
+    limit
+      10
+  ) as "runtime_8d1f47ea"
+
+-- title
+select
+  "dsql_root"."flat_id" as "flat_id",
+  "dsql_root"."flat_title" as "flat_title"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
+      TO_JSON("title_d4d9f554"."id") as "flat_id",
+      TO_JSON("title_d4d9f554"."title") as "flat_title"
+    from
+      "public"."title" as "title_d4d9f554"
+    where
+      "title_d4d9f554"."id" = ($1)
+  ) as "dsql_root" on true
+-- parameters: params.flat_id

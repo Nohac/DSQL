@@ -99,6 +99,33 @@ indexes:
     columns: [id]
     unique: true
 "#;
+const MEMBERSHIPS_SCHEMA: &str = r#"---
+schema: public
+name: memberships
+object_type: table
+columns:
+  - name: tenant_id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: user_id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: locale
+    database_type: text
+    data_type: text
+    not_null: true
+constraints:
+  - name: memberships_pkey
+    kind: primary_key
+    columns: [tenant_id, user_id]
+foreign_keys: []
+indexes:
+  - name: memberships_pkey
+    columns: [tenant_id, user_id]
+    unique: true
+"#;
 
 fn document(path: &str, text: &str, scope: &str) -> LanguageDocument {
     LanguageDocument {
@@ -428,6 +455,47 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
         .artifacts
         .iter()
         .filter(|artifact| matches!(artifact.name.as_str(), "NumericMetrics" | "NumericSummary"))
+        .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
+        .collect::<Vec<_>>();
+    artifacts.sort();
+
+    insta::assert_snapshot!(artifacts.join("\n---\n"));
+}
+
+#[tokio::test]
+async fn singular_selection_shapes_flow_through_sql_and_metadata() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA, MEMBERSHIPS_SCHEMA]),
+        vec![document(
+            "queries/frontend/singular.dsql",
+            concat!(
+                "query ByLimit { users(limit 1) { id name } }\n",
+                "query ByKey { users(where .id == $$id) { id name } }\n",
+                "query ByCompositeKey {\n",
+                "  memberships(where .tenant_id == $$tenant and .user_id == $$user) { locale }\n",
+                "}\n",
+                "query RuntimeLimit { users(limit $$count) { id } }\n",
+                "query NestedLimit {\n",
+                "  users(limit 1) {\n",
+                "    id\n",
+                "    latest_post: posts(order by created_at desc limit 1) { title }\n",
+                "  }\n",
+                "}\n",
+                "query FlattenedSingular { ...users(limit 1) { user_id: id name } }\n",
+            ),
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("assembly succeeds");
+    let mut artifacts = assembled
+        .snapshot
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "query")
         .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
         .collect::<Vec<_>>();
     artifacts.sort();

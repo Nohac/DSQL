@@ -1,0 +1,12 @@
+---
+source: crates/dsql-core/tests/it/selections.rs
+expression: "format!(\"collection:\\n{collection}\\n\\nsingular:\\n{singular}\\n\\nrestored:\\n{restored}\")"
+---
+collection:
+table title: Collection proof=none nullable=false limit=literal 2
+
+singular:
+table title: AtMostOne proof=limit 1 nullable=true limit=literal 1
+
+restored:
+table title: Collection proof=none nullable=false limit=literal 2

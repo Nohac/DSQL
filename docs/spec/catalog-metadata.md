@@ -197,11 +197,9 @@ profile for each user. The referenced direction, `profiles { users { ... } }`,
 also points at one user row when the local foreign-key column is non-null. If the
 foreign-key column is nullable, the referenced relation may be absent.
 
-Current implementation note: generated relation results are conservative and
-collection-valued. The catalog metadata is sufficient to infer at-most-one
-cardinality for single-column unique foreign keys, but planning and result
-generation still need to consume that metadata before emitting singular result
-types.
+Resolved selections, planning, SQL generation, and result metadata consume this
+catalog proof as one shared at-most-one result shape. Composite foreign keys use
+the same proof rules described below.
 
 ## Composite Constraints
 
@@ -277,10 +275,7 @@ deterministically.
 
 ## Open Gaps
 
-- Implement table-level composite constraint metadata in catalog loading and
-  introspection.
-- Add explicit relation cardinality helper methods on catalog relationships.
-- Update planning and result generation to emit singular nullable relation
-  result types where uniqueness proves at-most-one.
-- Decide whether relation cardinality affects SQL JSON aggregation shape,
-  TypeScript result types, or both.
+- Represent partial and expression unique indexes, including the predicates and
+  expressions needed to prove when they establish at-most-one cardinality.
+- Represent `NULLS NOT DISTINCT` uniqueness so nullable keys can participate in
+  singular-selection proofs when their exact null semantics are known.

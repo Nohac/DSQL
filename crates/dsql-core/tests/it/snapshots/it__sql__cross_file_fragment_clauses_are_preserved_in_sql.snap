@@ -4,40 +4,24 @@ expression: render_sql(&bowl).await
 ---
 -- title
 select
-  COALESCE(
-    JSON_AGG(
+  "dsql_root"."title" as "title"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
       JSON_BUILD_OBJECT(
         'id',
         "title_d4d9f554"."id",
         'ratings',
         "ratings_json_7214f337"."ratings_result_7214f337"
-      )
-    ),
-    '[]'
-  ) as "title"
-from
-  (
-    select
-      *
+      ) as "title"
     from
       "public"."title" as "title_d4d9f554"
-    limit
-      1
-  ) as "title_d4d9f554"
-  left join LATERAL (
-    select
-      COALESCE(
-        JSON_AGG(
-          JSON_BUILD_OBJECT('info', "ratings_7214f337"."info")
-          order by
-            "ratings_7214f337"."id" asc
-        ),
-        '[]'
-      ) as "ratings_result_7214f337"
-    from
-      (
+      left join LATERAL (
         select
-          *
+          JSON_BUILD_OBJECT('info', "ratings_7214f337"."info") as "ratings_result_7214f337"
         from
           "public"."movie_info_idx" as "ratings_7214f337"
         where
@@ -47,5 +31,7 @@ from
           "ratings_7214f337"."id" asc
         limit
           1
-      ) as "ratings_7214f337"
-  ) as "ratings_json_7214f337" on true
+      ) as "ratings_json_7214f337" on true
+    limit
+      1
+  ) as "dsql_root" on true

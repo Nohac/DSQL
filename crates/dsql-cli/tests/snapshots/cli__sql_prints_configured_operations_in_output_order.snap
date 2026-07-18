@@ -4,26 +4,24 @@ expression: stdout
 ---
 -- actors
 select
-  COALESCE(
-    JSON_AGG(
+  "dsql_root"."actors" as "actors"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
       JSON_BUILD_OBJECT(
         'id',
         "actors_cb3f0a30"."id",
         'title',
         "actors_cb3f0a30"."title"
-      )
-    ),
-    '[]'
-  ) as "actors"
-from
-  (
-    select
-      *
+      ) as "actors"
     from
       "public"."title" as "actors_cb3f0a30"
     limit
       1
-  ) as "actors_cb3f0a30"
+  ) as "dsql_root" on true
 
 -- title
 select

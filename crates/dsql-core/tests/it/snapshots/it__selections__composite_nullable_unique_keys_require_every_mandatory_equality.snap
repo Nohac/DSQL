@@ -1,0 +1,9 @@
+---
+source: crates/dsql-core/tests/it/selections.rs
+expression: render_selection_shapes(&bowl).await
+---
+table complete: AtMostOne proof=unique(tenant_id, user_id) nullable=true limit=none
+table incomplete: Collection proof=none nullable=false limit=none
+table different_value_or: Collection proof=none nullable=false limit=none
+table same_values_or: AtMostOne proof=unique(tenant_id, user_id) nullable=true limit=none
+table bypass_or: Collection proof=none nullable=false limit=none

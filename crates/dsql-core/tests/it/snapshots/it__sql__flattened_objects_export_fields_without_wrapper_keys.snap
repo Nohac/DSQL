@@ -4,8 +4,13 @@ expression: render_sql(&bowl).await
 ---
 -- accounts
 select
-  COALESCE(
-    JSON_AGG(
+  "dsql_root"."accounts" as "accounts"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
       JSON_BUILD_OBJECT(
         'id',
         "accounts_c1b9ad84"."id",
@@ -13,35 +18,33 @@ select
         "posts_json_cd19cb80"."post_count",
         'latest_post',
         "posts_json_cd19cb80"."latest_post"
-      )
-    ),
-    '[]'
-  ) as "accounts"
-from
-  (
-    select
-      *
+      ) as "accounts"
     from
       "public"."users" as "accounts_c1b9ad84"
+      left join LATERAL (
+        select
+          COUNT(*) as "post_count",
+          MAX("posts_cd19cb80"."created_at") as "latest_post"
+        from
+          "public"."posts" as "posts_cd19cb80"
+        where
+          "posts_cd19cb80"."user_id" = "accounts_c1b9ad84"."id"
+          and ("posts_cd19cb80"."title" like $1)
+      ) as "posts_json_cd19cb80" on true
     limit
       1
-  ) as "accounts_c1b9ad84"
-  left join LATERAL (
-    select
-      COUNT(*) as "post_count",
-      MAX("posts_cd19cb80"."created_at") as "latest_post"
-    from
-      "public"."posts" as "posts_cd19cb80"
-    where
-      "posts_cd19cb80"."user_id" = "accounts_c1b9ad84"."id"
-      and ("posts_cd19cb80"."title" like $1)
-  ) as "posts_json_cd19cb80" on true
+  ) as "dsql_root" on true
 -- parameters: params.title
 
 -- feed
 select
-  COALESCE(
-    JSON_AGG(
+  "dsql_root"."feed" as "feed"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
       JSON_BUILD_OBJECT(
         'id',
         "feed_ed7b7225"."id",
@@ -49,49 +52,32 @@ select
         "users_json_df293de7"."owner_name",
         'recent',
         "users_json_df293de7"."recent"
-      )
-    ),
-    '[]'
-  ) as "feed"
-from
-  (
-    select
-      *
+      ) as "feed"
     from
       "public"."posts" as "feed_ed7b7225"
-    limit
-      1
-  ) as "feed_ed7b7225"
-  left join LATERAL (
-    select
-      "users_df293de7"."name" as "owner_name",
-      "recent_json_29571ef9"."recent_result_29571ef9" as "recent"
-    from
-      "public"."users" as "users_df293de7"
       left join LATERAL (
         select
-          COALESCE(
-            JSON_AGG(
-              JSON_BUILD_OBJECT('title', "recent_29571ef9"."title")
-            ),
-            '[]'
-          ) as "recent_result_29571ef9"
+          "users_df293de7"."name" as "owner_name",
+          "recent_json_29571ef9"."recent_result_29571ef9" as "recent"
         from
-          (
+          "public"."users" as "users_df293de7"
+          left join LATERAL (
             select
-              *
+              JSON_BUILD_OBJECT('title', "recent_29571ef9"."title") as "recent_result_29571ef9"
             from
               "public"."posts" as "recent_29571ef9"
             where
               "recent_29571ef9"."user_id" = "users_df293de7"."id"
             limit
               1
-          ) as "recent_29571ef9"
-      ) as "recent_json_29571ef9" on true
-    where
-      "users_df293de7"."id" = "feed_ed7b7225"."user_id"
-      and ("users_df293de7"."name" like $1)
-  ) as "users_json_df293de7" on true
+          ) as "recent_json_29571ef9" on true
+        where
+          "users_df293de7"."id" = "feed_ed7b7225"."user_id"
+          and ("users_df293de7"."name" like $1)
+      ) as "users_json_df293de7" on true
+    limit
+      1
+  ) as "dsql_root" on true
 -- parameters: params.owner
 
 -- users

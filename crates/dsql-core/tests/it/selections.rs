@@ -2,14 +2,22 @@
 //! parent-keyed encoding of the selection tree, and spreads resolve to their
 //! fragment definitions through the bound join.
 
+use std::collections::HashMap;
+
 use bowl::{Bowl, Entity, Query, Singleton};
+use dsql_core::catalog::{
+    CatalogSnapshot, DatabaseMetadata, SchemaMetadata, insert_catalog, table_metadata_from_yaml,
+};
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::field_selection::{FieldBodyKind, FieldSel};
 use dsql_core::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use dsql_core::facts::{ChildOf, DiagnosticsDemand, NodeKey};
+use dsql_core::resolution::{
+    ResolvedSelection, ResolvedSelectionLimit, SelectionCardinalityProof, SelectionTarget,
+};
 use dsql_core::source::insert_source;
 
-use crate::{fixture, render_diagnostic_facts, set_source_text};
+use crate::{fixture, imdb_catalog, render_diagnostic_facts, set_source_text};
 
 async fn language_bowl() -> Bowl {
     dsql_core::language_bowl().await
@@ -157,6 +165,190 @@ async fn render_resolutions(bowl: &Bowl) -> Vec<String> {
         .collect();
     lines.sort();
     lines
+}
+
+async fn render_selection_shapes(bowl: &Bowl) -> String {
+    let resolutions = bowl.scoop::<Query<(Entity, &ResolvedSelection)>>().await;
+    let fields = bowl.scoop::<Query<(Entity, &FieldSel)>>().await;
+    let output_names = fields
+        .collect()
+        .into_iter()
+        .map(|(entity, field)| {
+            (
+                entity,
+                field.alias.clone().unwrap_or_else(|| field.name.clone()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let catalogs = bowl.scoop::<Query<(Entity, &CatalogSnapshot)>>().await;
+    let catalog_rows = catalogs.collect();
+    let Some((_, snapshot)) = catalog_rows.first() else {
+        return String::new();
+    };
+    let catalog = snapshot.catalog();
+    let mut rows = resolutions
+        .collect()
+        .into_iter()
+        .filter_map(|(_, resolved)| {
+            let shape = resolved.shape.as_ref()?;
+            let target = match resolved.target {
+                SelectionTarget::Table(_) => "table",
+                SelectionTarget::Relation { .. } => "relation",
+                SelectionTarget::Column(_) | SelectionTarget::Unresolved => return None,
+            };
+            let proof = match &shape.proof {
+                Some(SelectionCardinalityProof::Relation) => "relation".to_string(),
+                Some(SelectionCardinalityProof::LimitOne) => "limit 1".to_string(),
+                Some(SelectionCardinalityProof::UniqueKey(columns)) => format!(
+                    "unique({})",
+                    columns
+                        .iter()
+                        .filter_map(|column| catalog.column_by_id(*column))
+                        .map(|column| column.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                None => "none".to_string(),
+            };
+            let limit = match shape.limit {
+                ResolvedSelectionLimit::None => "none".to_string(),
+                ResolvedSelectionLimit::Literal { value, .. } => format!("literal {value}"),
+                ResolvedSelectionLimit::Runtime { .. } => "runtime".to_string(),
+            };
+            let output_name = output_names
+                .get(&resolved.field)
+                .map_or(resolved.written.as_str(), String::as_str);
+            Some((
+                resolved.name_span.start,
+                format!(
+                    "{target} {output_name}: {:?} proof={proof} nullable={} limit={limit}",
+                    shape.cardinality, shape.nullable,
+                ),
+            ))
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|(start, _)| *start);
+    rows.into_iter()
+        .map(|(_, row)| row)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn resolved_selection_shapes_cover_catalog_predicate_and_limit_proofs() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "shapes.dsql",
+        concat!(
+            "query Shapes {\n",
+            "  collection: title { id }\n",
+            "  literal: title(limit 1) { id }\n",
+            "  runtime: title(limit $$count) { id }\n",
+            "  primary: title(where .id == $$id) { id }\n",
+            "  anonymous: title(where .id == $$) { id }\n",
+            "  equality_operator: title(where .id $$key_op[==] $$operator_id) { id }\n",
+            "  extra: title(where .id == 1 and .production_year > 2000) { id }\n",
+            "  different_literal_or: title(where (.id == 1 and .title == \"a\") or .id == 2) { id }\n",
+            "  same_literal_or: title(where (.id == 1 and .title == \"a\") or .id == 1) { id }\n",
+            "  different_variable_or: title(where .id == $$left or .id == $$right) { id }\n",
+            "  same_variable_or: title(where (.id == $$same and .title == \"a\") or .id == $$same) { id }\n",
+            "  anonymous_or: title(where .id == $$ or .id == $$) { id }\n",
+            "  bypass_or: title(where .id == 1 or .title == \"a\") { id }\n",
+            "  null_key: title(where .id == null) { id }\n",
+            "  row_value: title(where .id == .kind_id) { id }\n",
+            "  parent: title(limit 1) {\n",
+            "    kind_type { id }\n",
+            "    latest_info: movie_info(limit 1) { id }\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_selection_shapes(&bowl).await);
+}
+
+#[tokio::test]
+async fn selection_shape_edits_rederive_without_stale_cardinality() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, imdb_catalog()).await;
+    let file = insert_source(
+        &bowl,
+        "shape-edit.dsql",
+        "query ShapeEdit { title(limit 2) { id } }",
+    )
+    .await;
+    let collection = render_selection_shapes(&bowl).await;
+
+    set_source_text(&bowl, file, "query ShapeEdit { title(limit 1) { id } }").await;
+    let singular = render_selection_shapes(&bowl).await;
+
+    set_source_text(&bowl, file, "query ShapeEdit { title(limit 2) { id } }").await;
+    let restored = render_selection_shapes(&bowl).await;
+
+    insta::assert_snapshot!(format!(
+        "collection:\n{collection}\n\nsingular:\n{singular}\n\nrestored:\n{restored}"
+    ));
+}
+
+#[tokio::test]
+async fn composite_nullable_unique_keys_require_every_mandatory_equality() {
+    let table = table_metadata_from_yaml(
+        r#"---
+schema: public
+name: memberships
+object_type: table
+columns:
+  - name: tenant_id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: user_id
+    database_type: int4
+    data_type: int
+    not_null: false
+  - name: locale
+    database_type: text
+    data_type: text
+    not_null: true
+constraints:
+  - name: memberships_tenant_user_key
+    kind: unique
+    columns: [tenant_id, user_id]
+foreign_keys: []
+indexes: []
+"#,
+    )
+    .expect("embedded table metadata parses");
+    let catalog = DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![table],
+        }],
+        types: Vec::new(),
+    }
+    .into_catalog()
+    .expect("embedded catalog builds");
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, catalog).await;
+    insert_source(
+        &bowl,
+        "composite-shapes.dsql",
+        concat!(
+            "query CompositeShapes {\n",
+            "  complete: memberships(where .tenant_id == $$tenant and .user_id == $$user) { locale }\n",
+            "  incomplete: memberships(where .tenant_id == $$tenant) { locale }\n",
+            "  different_value_or: memberships(where (.tenant_id == 1 and .user_id == 2) or (.user_id == 3 and .tenant_id == 1)) { locale }\n",
+            "  same_values_or: memberships(where (.tenant_id == 1 and .user_id == 2) or (.user_id == 2 and .tenant_id == 1 and .locale == \"en\")) { locale }\n",
+            "  bypass_or: memberships(where (.tenant_id == 1 and .user_id == 2) or .tenant_id == 1) { locale }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_selection_shapes(&bowl).await);
 }
 
 #[tokio::test]

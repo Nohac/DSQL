@@ -3,15 +3,16 @@
 
 use std::path::Path;
 
-use dsql_core::catalog::{Catalog, RelationCardinality, TableId};
+use dsql_core::catalog::{Catalog, TableId};
 use dsql_core::entities::aggregate::AggregateMode;
 use dsql_core::entities::variable::VariableBinding;
 use dsql_core::entities::variable_path::{is_input_path, is_params_path};
 use dsql_core::facts::Span;
 use dsql_core::plan::{
     CollectionPlan, CollectionResultPlan, FragmentPlanFact, OperationSeed, QueryPlan,
-    SelectionClauses, SelectionPlan, SelectionPlanItem, SpreadUse, SqlValue,
+    SelectionPlan, SelectionPlanItem, SpreadUse,
 };
+use dsql_core::resolution::SelectionCardinality;
 use dsql_core::sql::GeneratedSql;
 use dsql_metadata::{
     DefinitionKind, DynamicInputMetadata, FragmentMetadata, FragmentSpreadMetadata, InputField,
@@ -152,13 +153,14 @@ fn fragment_spreads(spreads: &[SpreadUse]) -> Vec<FragmentSpreadMetadata> {
 
 fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
     let mut fields = Vec::new();
+    let nullable = collection_result_nullable(&plan.collection);
     if plan.flattened {
         collect_collection_children(
             catalog,
             plan.collection.table,
             "",
             &plan.collection.result,
-            false,
+            nullable,
             &mut fields,
         )?;
     } else {
@@ -167,8 +169,8 @@ fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
             "",
             &plan.output_name,
             &plan.collection,
-            collection_result_kind(&plan.collection.result, RelationCardinality::Collection),
-            false,
+            collection_result_kind(&plan.collection.result, plan.collection.shape.cardinality),
+            nullable,
             &mut fields,
         )?;
     }
@@ -268,7 +270,7 @@ fn collect_collection_children(
 
 fn collect_result_item_fields(
     catalog: &Catalog,
-    current_table: TableId,
+    _current_table: TableId,
     parent_path: &str,
     item: &SelectionPlanItem,
     inherited_nullable: bool,
@@ -294,26 +296,9 @@ fn collect_result_item_fields(
         }
         SelectionPlanItem::Relation(relation) => {
             let related_table = relation.collection.table;
-            let foreign_key = catalog
-                .foreign_key_by_id(relation.foreign_key)
-                .ok_or_else(|| GenerateError::Assembly {
-                    name: String::new(),
-                    message: "missing relation foreign key".to_string(),
-                })?;
-            let cardinality = catalog
-                .relation_cardinality(current_table, related_table, foreign_key)
-                .ok_or_else(|| GenerateError::Assembly {
-                    name: String::new(),
-                    message: "invalid relation foreign key".to_string(),
-                })?;
+            let cardinality = relation.collection.shape.cardinality;
             let kind = collection_result_kind(&relation.collection.result, cardinality);
-            let nullable = match (&relation.collection.result, cardinality) {
-                (CollectionResultPlan::Rows(_), RelationCardinality::Singular) => {
-                    catalog.relation_is_nullable(current_table, related_table, foreign_key)
-                        || singular_relation_can_be_absent(&relation.collection.clauses)
-                }
-                _ => false,
-            };
+            let nullable = collection_result_nullable(&relation.collection);
             if relation.flattened {
                 collect_collection_children(
                     catalog,
@@ -341,7 +326,7 @@ fn collect_result_item_fields(
 
 fn collection_result_kind(
     result: &CollectionResultPlan,
-    cardinality: RelationCardinality,
+    cardinality: SelectionCardinality,
 ) -> ResultFieldKind {
     match result {
         CollectionResultPlan::Aggregate(aggregate) => match aggregate.mode {
@@ -349,21 +334,16 @@ fn collection_result_kind(
             AggregateMode::Grouped => ResultFieldKind::Array,
         },
         CollectionResultPlan::Rows(_) => match cardinality {
-            RelationCardinality::Collection => ResultFieldKind::Array,
-            RelationCardinality::Singular => ResultFieldKind::Object,
+            SelectionCardinality::Collection => ResultFieldKind::Array,
+            SelectionCardinality::AtMostOne => ResultFieldKind::Object,
         },
     }
 }
 
-/// A singular relation with its own filter, offset, or a limit that can be
-/// zero may produce no row even when the foreign key would.
-fn singular_relation_can_be_absent(clauses: &SelectionClauses) -> bool {
-    clauses.filter.is_some()
-        || clauses.offset.is_some()
-        || matches!(
-            clauses.limit,
-            Some(SqlValue::Literal(0) | SqlValue::Parameter(_))
-        )
+fn collection_result_nullable(collection: &CollectionPlan) -> bool {
+    matches!(collection.result, CollectionResultPlan::Rows(_))
+        && collection.shape.cardinality == SelectionCardinality::AtMostOne
+        && collection.shape.nullable
 }
 
 fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField> {

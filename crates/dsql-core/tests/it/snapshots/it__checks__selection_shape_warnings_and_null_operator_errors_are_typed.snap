@@ -1,0 +1,10 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[271..275]: comparison with `null` does not support operator `>`; use `==` or `!=`
+Error[327..347]: operator-variable comparisons against `null` only support `==` and `!=`
+Warning[107..108]: literal `limit 1` is redundant because this selection is already at-most-one
+Warning[174..179]: runtime limit cannot further bound this at-most-one selection; it can only suppress the row when zero
+Warning[408..409]: literal `limit 1` is redundant because this selection is already at-most-one
+Warning[46..47]: literal `limit 0` makes this selection always empty

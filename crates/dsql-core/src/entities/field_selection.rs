@@ -5,16 +5,16 @@
 use std::collections::HashMap;
 
 use bowl::{
-    Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View, With,
+    Commands, Component, DerivedFrom, Entity, In, Query, Registrar, SystemExt, SystemParam, View,
+    Where, With,
 };
 
-use crate::catalog::{
-    CatalogSnapshot, FieldCheckResult, FieldRef, RelationCardinality, TableRef, TableResolution,
-};
+use crate::catalog::{CatalogSnapshot, FieldCheckResult, FieldRef, TableRef, TableResolution};
 use crate::entities::aggregate::aggregate_output_keys;
-use crate::entities::clause::ClauseFact;
+use crate::entities::clause::{ClauseFact, clause_expr};
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
+use crate::entities::expression::{Expr, LiteralValue};
 use crate::entities::fragment_spread::{SpreadDecl, check_spread_site};
 use crate::entities::{direct_rule, direct_token, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
@@ -25,7 +25,10 @@ use crate::facts::{
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
-use crate::resolution::{ResolvedClause, ResolvedSelection};
+use crate::resolution::{
+    FieldResolutions, ResolvedClause, ResolvedSelection, ResolvedSelectionLimit,
+    SelectionCardinality, SelectionCardinalityProof, SelectionTarget,
+};
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::completion::{CompletionContext, CompletionRequest};
 use crate::service::hover::{
@@ -64,6 +67,34 @@ pub struct FieldSel {
     pub has_clause_list: bool,
     /// Normalized output keys contributed by a flattened aggregate body.
     pub aggregate_output_keys: Vec<(String, Span)>,
+    /// Shape-affecting clauses summarized from this selection's own CST.
+    /// Name resolution turns this syntax into the authoritative semantic
+    /// result shape on [`ResolvedSelection`].
+    pub shape_syntax: SelectionShapeSyntax,
+}
+
+/// The subset of a selection's clauses that can change its row cardinality
+/// or nullability. The ordinary [`ClauseFact`] entities remain authoritative
+/// for clause checks, variables, planning, and editor services.
+#[derive(Debug, Clone, Hash, PartialEq)]
+pub struct SelectionShapeSyntax {
+    /// The effective `where` expression, when written.
+    pub predicate: Option<Expr>,
+    /// Whether an `offset` may suppress an otherwise singular row.
+    pub has_offset: bool,
+    /// The effective `limit`, when its syntax can affect shape diagnostics.
+    pub limit: SelectionLimitSyntax,
+}
+
+/// Shape-relevant syntax of the effective `limit` clause.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum SelectionLimitSyntax {
+    /// No valid shape-relevant limit was written.
+    None,
+    /// A non-negative integer literal.
+    Literal { value: u64, span: Span },
+    /// A required runtime variable.
+    Runtime { span: Span },
 }
 
 /// The body attached to a field selection. A pipe transform is distinct from
@@ -103,6 +134,7 @@ impl LanguageEntity for FieldSelection {
     fn register(reg: &mut Registrar<'_>) {
         // Views lowered facts ambiently: behind the Complete barrier.
         reg.system(check_selections.run_during(bowl::Phase::Complete));
+        reg.system(check_selection_shape);
         reg.system(hover_fields);
         reg.system(complete_selections.run_during(bowl::Phase::Complete));
     }
@@ -166,6 +198,7 @@ impl LowerStage for FieldSelection {
         } else {
             Vec::new()
         };
+        let shape_syntax = selection_shape_syntax(ctx, suffix);
 
         let selection = FieldSel {
             flattened,
@@ -178,6 +211,7 @@ impl LowerStage for FieldSelection {
             body,
             has_clause_list,
             aggregate_output_keys,
+            shape_syntax,
         };
 
         let key = NodeKey {
@@ -208,6 +242,75 @@ impl LowerStage for FieldSelection {
                 .untyped(),
         };
         Some(entity)
+    }
+}
+
+fn selection_shape_syntax(ctx: &LowerCtx<'_>, suffix: Option<NodeRef>) -> SelectionShapeSyntax {
+    let Some(clause_list) =
+        suffix.and_then(|suffix| direct_rule(ctx.cst, suffix, Rule::ClauseList))
+    else {
+        return SelectionShapeSyntax {
+            predicate: None,
+            has_offset: false,
+            limit: SelectionLimitSyntax::None,
+        };
+    };
+
+    let mut clauses = ctx
+        .cst
+        .children(clause_list)
+        .filter(|child| ctx.cst.match_rule(*child, Rule::Clause))
+        .filter_map(|wrapper| {
+            ctx.cst
+                .children(wrapper)
+                .find(|child| {
+                    matches!(
+                        ctx.cst.get(*child),
+                        crate::grammar::parser::Node::Rule(
+                            Rule::WhereClause | Rule::LimitClause | Rule::OffsetClause,
+                            _,
+                        )
+                    )
+                })
+                .map(|clause| (node_span(ctx.cst, clause).start, clause))
+        })
+        .collect::<Vec<_>>();
+    clauses.sort_by_key(|(start, _)| *start);
+
+    let mut predicate = None;
+    let mut has_offset = false;
+    let mut limit = SelectionLimitSyntax::None;
+    for (_, clause) in clauses {
+        if ctx.cst.match_rule(clause, Rule::WhereClause) {
+            predicate = Some(clause_expr(ctx, clause));
+        } else if ctx.cst.match_rule(clause, Rule::OffsetClause) {
+            has_offset = true;
+        } else if ctx.cst.match_rule(clause, Rule::LimitClause) {
+            let expr = clause_expr(ctx, clause);
+            limit = match &expr {
+                Expr::Literal {
+                    value: LiteralValue::Number(value),
+                    span,
+                } => value
+                    .parse()
+                    .ok()
+                    .map_or(SelectionLimitSyntax::None, |value| {
+                        SelectionLimitSyntax::Literal { value, span: *span }
+                    }),
+                Expr::Variable { span, .. } => SelectionLimitSyntax::Runtime { span: *span },
+                Expr::Literal { .. }
+                | Expr::Path { .. }
+                | Expr::Aggregate { .. }
+                | Expr::Binary { .. }
+                | Expr::Error { .. } => SelectionLimitSyntax::None,
+            };
+        }
+    }
+
+    SelectionShapeSyntax {
+        predicate,
+        has_offset,
+        limit,
     }
 }
 
@@ -446,22 +549,9 @@ impl CheckCtx<'_, '_> {
                             );
                         }
                     }
-                    if field.flattened {
-                        if field.body == FieldBodyKind::None {
-                            self.missing_flattened_body(entity, field);
-                            continue;
-                        }
-                        if field.has_selection_set() {
-                            self.error(
-                                entity,
-                                field.name_span,
-                                DiagnosticCode::FlattenedSelectionCardinality,
-                                format!(
-                                    "table `{}` is collection-valued and can only flatten through an object-producing transform",
-                                    field.name
-                                ),
-                            );
-                        }
+                    if field.flattened && field.body == FieldBodyKind::None {
+                        self.missing_flattened_body(entity, field);
+                        continue;
                     }
                     if !field.has_selection_set() && !field.has_transform() {
                         self.error(
@@ -613,29 +703,9 @@ impl CheckCtx<'_, '_> {
                             );
                         }
                     }
-                    if field.flattened {
-                        if field.body == FieldBodyKind::None {
-                            self.missing_flattened_body(entity, field);
-                            continue;
-                        }
-                        let cardinality = self.catalog.relation_cardinality(
-                            table,
-                            relation_table,
-                            relation.foreign_key,
-                        );
-                        if field.has_selection_set()
-                            && cardinality == Some(RelationCardinality::Collection)
-                        {
-                            self.error(
-                                entity,
-                                field.name_span,
-                                DiagnosticCode::FlattenedSelectionCardinality,
-                                format!(
-                                    "relation `{}` is collection-valued and can only flatten through an object-producing transform",
-                                    reference.display_text()
-                                ),
-                            );
-                        }
+                    if field.flattened && field.body == FieldBodyKind::None {
+                        self.missing_flattened_body(entity, field);
+                        continue;
                     }
                     if !field.has_selection_set() && !field.has_transform() {
                         self.error(
@@ -796,6 +866,103 @@ impl CheckCtx<'_, '_> {
             }
         }
     }
+}
+
+/// Checks shape-dependent flattening and limit warnings from the tracked
+/// [`ResolvedSelection`] fact rather than re-inferring cardinality in the
+/// definition walk.
+async fn check_selection_shape(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    fields: Query<(Entity, &FieldSel, &FieldResolutions, &BelongsToFile)>,
+    resolutions: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (field_entity, field, _, file) = fields.item();
+    let (resolution_entity, resolved) = resolutions.item();
+    let Some(shape) = &resolved.shape else {
+        return;
+    };
+
+    if field.flattened
+        && field.has_selection_set()
+        && shape.cardinality == SelectionCardinality::Collection
+    {
+        let (noun, written) = match &resolved.target {
+            SelectionTarget::Table(_) => ("table", field.name.as_str()),
+            SelectionTarget::Relation { .. } => ("relation", resolved.written.as_str()),
+            SelectionTarget::Column(_) | SelectionTarget::Unresolved => return,
+        };
+        emit_diagnostic(
+            &mut commands,
+            DiagnosticFacts {
+                derived_from: DerivedFrom::many([field_entity, resolution_entity]),
+                file: file.0,
+                span: field.name_span,
+                severity: Severity::Error,
+                source: DiagnosticSource::Check,
+                code: DiagnosticCode::FlattenedSelectionCardinality,
+                message: format!(
+                    "{noun} `{written}` is collection-valued and can only flatten through an object-producing transform"
+                ),
+            },
+        );
+    }
+
+    let (span, code, message) = match shape.limit {
+        ResolvedSelectionLimit::Literal { value: 0, span } => (
+            span,
+            DiagnosticCode::AlwaysEmptySelection,
+            "literal `limit 0` makes this selection always empty".to_string(),
+        ),
+        ResolvedSelectionLimit::Literal { value, span }
+            if matches!(
+                shape.proof,
+                Some(
+                    SelectionCardinalityProof::Relation
+                        | SelectionCardinalityProof::UniqueKey(_)
+                )
+            ) =>
+        {
+            (
+                span,
+                DiagnosticCode::RedundantLimit,
+                format!(
+                    "literal `limit {value}` is redundant because this selection is already at-most-one"
+                ),
+            )
+        }
+        ResolvedSelectionLimit::Runtime { span }
+            if matches!(
+                shape.proof,
+                Some(
+                    SelectionCardinalityProof::Relation
+                        | SelectionCardinalityProof::UniqueKey(_)
+                )
+            ) =>
+        {
+            (
+                span,
+                DiagnosticCode::RedundantLimit,
+                "runtime limit cannot further bound this at-most-one selection; it can only suppress the row when zero"
+                    .to_string(),
+            )
+        }
+        ResolvedSelectionLimit::None
+        | ResolvedSelectionLimit::Literal { .. }
+        | ResolvedSelectionLimit::Runtime { .. } => return,
+    };
+    emit_diagnostic(
+        &mut commands,
+        DiagnosticFacts {
+            derived_from: DerivedFrom::many([field_entity, resolution_entity]),
+            file: file.0,
+            span,
+            severity: Severity::Warning,
+            source: DiagnosticSource::Check,
+            code,
+            message,
+        },
+    );
 }
 
 struct OutputKey {

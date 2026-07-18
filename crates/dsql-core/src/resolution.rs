@@ -19,6 +19,8 @@
 //! [`ResolutionOf`] edge back to its field so the nested step can join
 //! through the engine-maintained inverse.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::schema::dsql_schema;
 use bowl::{Commands, Component, DerivedFrom, Entity, In, Query, Registrar, Where};
 
@@ -32,8 +34,8 @@ use crate::entities::aggregate::{
 };
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
-use crate::entities::expression::{Expr, PathAnchor, PathSegment};
-use crate::entities::field_selection::FieldSel;
+use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, PathSegment, Sigil};
+use crate::entities::field_selection::{FieldSel, SelectionLimitSyntax};
 use crate::facts::{BelongsToFile, Children, Span};
 
 /// What one selection's name means in its context: a derived fact entity
@@ -58,6 +60,60 @@ pub struct ResolvedSelection {
     /// never resolved.
     pub context: Option<TableId>,
     pub target: SelectionTarget,
+    /// The authoritative row shape for table and relation selections.
+    pub shape: Option<ResolvedSelectionShape>,
+}
+
+/// The semantic row cardinality of a resolved table or relation selection.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum SelectionCardinality {
+    /// Zero or more rows, represented as an array.
+    Collection,
+    /// Zero or one row, represented as an object or `null`.
+    AtMostOne,
+}
+
+/// The proof that made a selection at-most-one.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum SelectionCardinalityProof {
+    /// Catalog relationship metadata proves the edge singular.
+    Relation,
+    /// Mandatory equality predicates cover this catalog unique key.
+    UniqueKey(Vec<ColumnId>),
+    /// The selection has the compile-time literal `limit 1`.
+    LimitOne,
+}
+
+/// The effective limit used by cardinality and limit diagnostics.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum ResolvedSelectionLimit {
+    /// No valid shape-relevant limit was written.
+    None,
+    /// A non-negative integer literal.
+    Literal { value: u64, span: Span },
+    /// A required runtime variable.
+    Runtime { span: Span },
+}
+
+impl ResolvedSelectionLimit {
+    /// Whether this limit may suppress an otherwise available singular row.
+    pub fn may_suppress(self) -> bool {
+        matches!(self, Self::Literal { value: 0, .. } | Self::Runtime { .. })
+    }
+}
+
+/// Cardinality, nullability, proof, and limit semantics shared by checks,
+/// aggregate resolution, planning, SQL, metadata, and generated types.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ResolvedSelectionShape {
+    /// The public row container shape.
+    pub cardinality: SelectionCardinality,
+    /// The winning at-most-one proof, when one applies.
+    pub proof: Option<SelectionCardinalityProof>,
+    /// Whether an at-most-one row may be absent.
+    pub nullable: bool,
+    /// The effective written limit.
+    pub limit: ResolvedSelectionLimit,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -222,7 +278,7 @@ impl ResolvedPredicateAggregate {
 /// semantic fact paired with its owning clause without re-resolving names.
 pub(crate) fn index_resolved_clauses<'a>(
     resolutions: impl IntoIterator<Item = &'a ResolvedClause>,
-) -> std::collections::HashMap<Entity, &'a ResolvedClause> {
+) -> HashMap<Entity, &'a ResolvedClause> {
     resolutions
         .into_iter()
         .map(|resolution| (resolution.clause, resolution))
@@ -364,6 +420,7 @@ async fn resolve_fragment_targets(
 #[expect(clippy::too_many_arguments, reason = "one emission site, all context")]
 fn emit(
     commands: &mut Commands<(dsql_schema::ResolvedSelection,)>,
+    catalog: &crate::catalog::Catalog,
     catalog_entity: Entity,
     file: Entity,
     field: Entity,
@@ -376,6 +433,7 @@ fn emit(
         Some(path) => format!("{}->{path}", selection.name),
         None => selection.name.clone(),
     };
+    let shape = resolve_selection_shape(catalog, selection, context, &target);
     commands.insert((
         DerivedFrom::many([field, catalog_entity]),
         BelongsToFile(file),
@@ -389,8 +447,242 @@ fn emit(
             root,
             context,
             target,
+            shape,
         },
     ));
+}
+
+fn resolve_selection_shape(
+    catalog: &crate::catalog::Catalog,
+    selection: &FieldSel,
+    context: Option<TableId>,
+    target: &SelectionTarget,
+) -> Option<ResolvedSelectionShape> {
+    let table = target.child_context()?;
+    let relation = match target {
+        SelectionTarget::Relation { foreign_key, .. } => {
+            context.zip(catalog.foreign_key_by_id(*foreign_key))
+        }
+        SelectionTarget::Table(_) => None,
+        SelectionTarget::Column(_) | SelectionTarget::Unresolved => return None,
+    };
+    let relation_is_singular = relation.is_some_and(|(context, foreign_key)| {
+        catalog.relation_cardinality(context, table, foreign_key)
+            == Some(RelationCardinality::Singular)
+    });
+    let unique_key = selection
+        .shape_syntax
+        .predicate
+        .as_ref()
+        .and_then(|predicate| unique_key_for_predicate(catalog, table, predicate));
+    let limit = match selection.shape_syntax.limit {
+        SelectionLimitSyntax::None => ResolvedSelectionLimit::None,
+        SelectionLimitSyntax::Literal { value, span } => {
+            ResolvedSelectionLimit::Literal { value, span }
+        }
+        SelectionLimitSyntax::Runtime { span } => ResolvedSelectionLimit::Runtime { span },
+    };
+    let proof = if relation_is_singular {
+        Some(SelectionCardinalityProof::Relation)
+    } else if let Some(columns) = unique_key {
+        Some(SelectionCardinalityProof::UniqueKey(columns))
+    } else if matches!(limit, ResolvedSelectionLimit::Literal { value: 1, .. }) {
+        Some(SelectionCardinalityProof::LimitOne)
+    } else {
+        None
+    };
+    let cardinality = if proof.is_some() {
+        SelectionCardinality::AtMostOne
+    } else {
+        SelectionCardinality::Collection
+    };
+    let nullable = if cardinality == SelectionCardinality::AtMostOne {
+        match target {
+            SelectionTarget::Table(_) => true,
+            SelectionTarget::Relation { .. } if !relation_is_singular => true,
+            SelectionTarget::Relation { .. } => relation.is_none_or(|(context, foreign_key)| {
+                catalog.relation_is_nullable(context, table, foreign_key)
+                    || selection.shape_syntax.predicate.is_some()
+                    || selection.shape_syntax.has_offset
+                    || limit.may_suppress()
+            }),
+            SelectionTarget::Column(_) | SelectionTarget::Unresolved => false,
+        }
+    } else {
+        false
+    };
+
+    Some(ResolvedSelectionShape {
+        cardinality,
+        proof,
+        nullable,
+        limit,
+    })
+}
+
+fn unique_key_for_predicate(
+    catalog: &crate::catalog::Catalog,
+    table: TableId,
+    predicate: &Expr,
+) -> Option<Vec<ColumnId>> {
+    let equalities = guaranteed_equalities(catalog, table, predicate);
+    let table = catalog.table_by_id(table)?;
+    if !table.primary_key.is_empty()
+        && table
+            .primary_key
+            .iter()
+            .all(|column| equalities.contains_key(column))
+    {
+        return Some(table.primary_key.clone());
+    }
+    table
+        .unique_constraints
+        .iter()
+        .find(|columns| {
+            !columns.is_empty() && columns.iter().all(|column| equalities.contains_key(column))
+        })
+        .cloned()
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+enum FixedValueIdentity {
+    String(String),
+    Number(String),
+    Bool(bool),
+    NamedVariable { sigil: Sigil, name: String },
+    AnonymousVariable { sigil: Sigil, span: Span },
+}
+
+type GuaranteedEqualities = HashMap<ColumnId, HashSet<FixedValueIdentity>>;
+
+fn guaranteed_equalities(
+    catalog: &crate::catalog::Catalog,
+    table: TableId,
+    expr: &Expr,
+) -> GuaranteedEqualities {
+    let Expr::Binary { op, lhs, rhs, .. } = expr else {
+        return GuaranteedEqualities::new();
+    };
+    match op {
+        BinaryOp::And => {
+            let mut equalities = guaranteed_equalities(catalog, table, lhs);
+            for (column, identities) in guaranteed_equalities(catalog, table, rhs) {
+                equalities.entry(column).or_default().extend(identities);
+            }
+            equalities
+        }
+        BinaryOp::Or => {
+            let mut equalities = guaranteed_equalities(catalog, table, lhs);
+            let right = guaranteed_equalities(catalog, table, rhs);
+            equalities.retain(|column, identities| {
+                let Some(right_identities) = right.get(column) else {
+                    return false;
+                };
+                identities.retain(|identity| right_identities.contains(identity));
+                !identities.is_empty()
+            });
+            equalities
+        }
+        BinaryOp::Comparison(crate::entities::expression::ComparisonOp::Eq) => {
+            equality(catalog, table, lhs, rhs)
+                .map(|(column, identity)| (column, HashSet::from([identity])))
+                .into_iter()
+                .collect()
+        }
+        BinaryOp::Variable(variable)
+            if variable.operators.as_ref().is_some_and(|operators| {
+                !operators.is_empty()
+                    && operators
+                        .iter()
+                        .all(|operator| *operator == crate::entities::expression::ComparisonOp::Eq)
+            }) =>
+        {
+            equality(catalog, table, lhs, rhs)
+                .map(|(column, identity)| (column, HashSet::from([identity])))
+                .into_iter()
+                .collect()
+        }
+        BinaryOp::Comparison(_) | BinaryOp::Variable(_) => GuaranteedEqualities::new(),
+    }
+}
+
+fn equality(
+    catalog: &crate::catalog::Catalog,
+    table: TableId,
+    left: &Expr,
+    right: &Expr,
+) -> Option<(ColumnId, FixedValueIdentity)> {
+    direct_current_column(catalog, table, left)
+        .zip(fixed_value_identity(right))
+        .or_else(|| direct_current_column(catalog, table, right).zip(fixed_value_identity(left)))
+}
+
+fn direct_current_column(
+    catalog: &crate::catalog::Catalog,
+    table: TableId,
+    expr: &Expr,
+) -> Option<ColumnId> {
+    let Expr::Path {
+        anchor: PathAnchor::Current,
+        segments,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    let [segment] = segments.as_slice() else {
+        return None;
+    };
+    if segment.relation_path.is_some() {
+        return None;
+    }
+    match catalog.check_field_ref(
+        table,
+        FieldRef {
+            target: TableRef::parse(&segment.name),
+            selector: None,
+        },
+    ) {
+        FieldCheckResult::Column(column) => Some(column.id),
+        FieldCheckResult::Relation(_)
+        | FieldCheckResult::NotFound
+        | FieldCheckResult::AmbiguousRelation { .. } => None,
+    }
+}
+
+fn fixed_value_identity(expr: &Expr) -> Option<FixedValueIdentity> {
+    match expr {
+        Expr::Variable { variable, .. } => match &variable.name {
+            Some(name) => Some(FixedValueIdentity::NamedVariable {
+                sigil: variable.sigil,
+                name: name.clone(),
+            }),
+            None => Some(FixedValueIdentity::AnonymousVariable {
+                sigil: variable.sigil,
+                span: variable.span,
+            }),
+        },
+        Expr::Literal {
+            value: LiteralValue::String(value),
+            ..
+        } => Some(FixedValueIdentity::String(value.clone())),
+        Expr::Literal {
+            value: LiteralValue::Number(value),
+            ..
+        } => Some(FixedValueIdentity::Number(value.clone())),
+        Expr::Literal {
+            value: LiteralValue::Bool(value),
+            ..
+        } => Some(FixedValueIdentity::Bool(*value)),
+        Expr::Literal {
+            value: LiteralValue::Null,
+            ..
+        }
+        | Expr::Path { .. }
+        | Expr::Aggregate { .. }
+        | Expr::Binary { .. }
+        | Expr::Error { .. } => None,
+    }
 }
 
 /// Resolves the direct children of each definition: query roots name
@@ -424,6 +716,7 @@ async fn resolve_roots(
             };
             emit(
                 &mut commands,
+                catalog,
                 catalog_entity,
                 file.0,
                 field_entity,
@@ -448,6 +741,7 @@ async fn resolve_roots(
             };
             emit(
                 &mut commands,
+                catalog,
                 catalog_entity,
                 file.0,
                 field_entity,
@@ -490,6 +784,7 @@ async fn resolve_nested(
     let root = parent_resolved.root.filter(|_| context.is_some());
     emit(
         &mut commands,
+        catalog,
         catalog_entity,
         file.0,
         field_entity,

@@ -1,0 +1,22 @@
+---
+source: crates/dsql-core/tests/it/selections.rs
+expression: render_selection_shapes(&bowl).await
+---
+table collection: Collection proof=none nullable=false limit=none
+table literal: AtMostOne proof=limit 1 nullable=true limit=literal 1
+table runtime: Collection proof=none nullable=false limit=runtime
+table primary: AtMostOne proof=unique(id) nullable=true limit=none
+table anonymous: AtMostOne proof=unique(id) nullable=true limit=none
+table equality_operator: AtMostOne proof=unique(id) nullable=true limit=none
+table extra: AtMostOne proof=unique(id) nullable=true limit=none
+table different_literal_or: Collection proof=none nullable=false limit=none
+table same_literal_or: AtMostOne proof=unique(id) nullable=true limit=none
+table different_variable_or: Collection proof=none nullable=false limit=none
+table same_variable_or: AtMostOne proof=unique(id) nullable=true limit=none
+table anonymous_or: Collection proof=none nullable=false limit=none
+table bypass_or: Collection proof=none nullable=false limit=none
+table null_key: Collection proof=none nullable=false limit=none
+table row_value: Collection proof=none nullable=false limit=none
+table parent: AtMostOne proof=limit 1 nullable=true limit=literal 1
+relation kind_type: AtMostOne proof=relation nullable=false limit=none
+relation latest_info: AtMostOne proof=limit 1 nullable=true limit=literal 1

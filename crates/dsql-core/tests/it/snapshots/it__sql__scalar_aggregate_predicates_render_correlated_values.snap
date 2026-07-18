@@ -1,6 +1,5 @@
 ---
 source: crates/dsql-core/tests/it/sql.rs
-assertion_line: 276
 expression: render_sql(&bowl).await
 ---
 -- title
@@ -86,13 +85,15 @@ from
         ) like '4.%'
       )
       and (
-        select
-          MAX("movie_info_idx_ed3b5ab2"."info")
-        from
-          "public"."movie_info_idx" as "movie_info_idx_ed3b5ab2"
-        where
-          "movie_info_idx_ed3b5ab2"."movie_id" = "title_d4d9f554"."id"
-      ) <> (null)
+        (
+          select
+            MAX("movie_info_idx_ed3b5ab2"."info")
+          from
+            "public"."movie_info_idx" as "movie_info_idx_ed3b5ab2"
+          where
+            "movie_info_idx_ed3b5ab2"."movie_id" = "title_d4d9f554"."id"
+        ) is not null
+      )
       and (
         select
           SUM("movie_info_idx_3323c8f7"."info_type_id")

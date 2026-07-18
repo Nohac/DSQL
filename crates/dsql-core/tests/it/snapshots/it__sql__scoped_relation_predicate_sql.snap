@@ -4,21 +4,19 @@ expression: "fixture_sql(\"valid/imdb-scoped-relation-predicate.dsql\").await"
 ---
 -- title
 select
-  COALESCE(
-    JSON_AGG(
+  "dsql_root"."title" as "title"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
       JSON_BUILD_OBJECT(
         'id',
         "title_d4d9f554"."id",
         'title',
         "title_d4d9f554"."title"
-      )
-    ),
-    '[]'
-  ) as "title"
-from
-  (
-    select
-      *
+      ) as "title"
     from
       "public"."title" as "title_d4d9f554"
     where
@@ -33,4 +31,4 @@ from
       )
     limit
       1
-  ) as "title_d4d9f554"
+  ) as "dsql_root" on true

@@ -46,7 +46,7 @@ select
 from
   "public"."users" as "stats_fdeedab3"
 where
-  "stats_fdeedab3"."email" <> (null)
+  "stats_fdeedab3"."email" is not null
 
 -- users
 select

@@ -152,6 +152,66 @@ test("renders exact numeric and finite/non-finite float wire types", async () =>
   );
 });
 
+test("renders singular selections as nullable objects while runtime limits stay arrays", async () => {
+  const root = createRoot();
+  const operation = {
+    ...operationMetadata("SelectionShapes"),
+    result: {
+      fields: [
+        {
+          path: "singular",
+          name: "singular",
+          parent_path: "",
+          kind: "object",
+          data_type: "object",
+          nullable: true,
+        },
+        {
+          path: "singular.id",
+          name: "id",
+          parent_path: "singular",
+          kind: "scalar",
+          data_type: "int",
+          nullable: false,
+        },
+        {
+          path: "runtime",
+          name: "runtime",
+          parent_path: "",
+          kind: "array",
+          data_type: "object",
+          nullable: false,
+        },
+        {
+          path: "runtime.id",
+          name: "id",
+          parent_path: "runtime",
+          kind: "scalar",
+          data_type: "int",
+          nullable: false,
+        },
+      ],
+    },
+  };
+  const artifacts = {
+    ...createArtifacts(root, { operationNames: [operation.name] }),
+    operations: [operation],
+    operationsByName: new Map([[operation.name, operation]]),
+  } as BuildArtifacts;
+
+  await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+  const rendered = readFileSync(
+    join(root, "src/generated/dsql/queries/SelectionShapes.ts"),
+    "utf8",
+  );
+
+  expect(rendered).toMatch(/singular:\s+\{\s+id: number;\s+\} \| null;/);
+  expect(rendered).toMatch(/runtime: Array<\{\s+id: number;\s+\}>;/);
+});
+
 test("renders split query and execution modules with matching filenames", async () => {
   const root = createRoot();
   const artifacts = createArtifacts(root);

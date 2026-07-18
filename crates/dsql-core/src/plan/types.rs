@@ -6,6 +6,7 @@ use crate::catalog::{ColumnId, DataType, ForeignKeyId, TableId, TableKey};
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::entities::expression::ComparisonOp;
 use crate::facts::Span;
+use crate::resolution::ResolvedSelectionShape;
 
 /// One planned query root as a fact, derived per query definition by the
 /// planning system, gated on [`PlanDemand`].
@@ -180,6 +181,8 @@ pub struct SelectionPlan {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CollectionPlan {
     pub table: TableId,
+    /// Semantic row shape of the source selection.
+    pub shape: ResolvedSelectionShape,
     pub clauses: SelectionClauses,
     pub result: CollectionResultPlan,
 }

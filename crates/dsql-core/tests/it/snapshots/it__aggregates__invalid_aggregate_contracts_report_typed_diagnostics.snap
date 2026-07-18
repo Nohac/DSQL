@@ -17,6 +17,7 @@ Error[518..523]: aggregate function `sum` does not support `text` operands
 Error[53..62]: unknown selection transform `summarize`
 Error[538..543]: aggregate output key `count` is ambiguous; use a distinct alias
 Error[548..612]: aggregate output key `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` is 64 bytes; PostgreSQL result aliases must be at most 63 bytes
+Error[634..647]: aggregate source `public::users` must be a collection; singular and scalar sources cannot be aggregated
 Error[648..661]: aggregate sources do not support `order by` clauses
 Error[662..669]: aggregate sources do not support `limit` clauses
 Error[670..678]: aggregate sources do not support `offset` clauses
