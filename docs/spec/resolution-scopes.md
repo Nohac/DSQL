@@ -3,8 +3,8 @@
 Status: in progress.
 
 Resolution scopes let one project contain multiple independent DSQL surfaces
-that share the same catalog but resolve queries and fragments through separate
-definition maps.
+that share the same catalog but resolve queries, fragments, filters, and
+conditions through separate definition maps.
 
 This is a project configuration feature, not language-level namespacing. DSQL
 source continues to use plain query and fragment names. There is no syntax such
@@ -68,14 +68,20 @@ daemon.
 
 Each scope has local definitions and an effective resolver.
 
-Local definitions are the queries and fragments owned directly by that scope.
-The effective resolver contains the local definitions plus definitions imported
-from other scopes, copied by value. Importing does not create a separate runtime
-surface dependency.
+Local definitions are the queries, fragments, filters, and conditions owned
+directly by that scope. The effective resolver contains the local definitions
+plus definitions imported from other scopes, copied by value. Importing does
+not create a separate runtime surface dependency.
+
+Filters and conditions are standalone-only definitions. An embedding resolver
+that extracts either form reports a diagnostic because it has no host-language
+runtime value to substitute. Imported filters participate in the importing
+scope's operation analysis and match lock even when no query names them
+explicitly.
 
 Rules:
 
-- The same query or fragment name may exist in different independent scopes.
+- The same definition name may exist in different independent scopes.
 - Duplicate local names inside one scope are diagnostics.
 - A local definition that collides with an imported definition is a diagnostic.
 - Two imported scopes that provide the same definition name to one importing
@@ -95,6 +101,7 @@ The compiler should expose enough scope metadata for host integrations:
 - the list of generated scopes and their imports
 - source-file ownership entries for embedded and standalone documents
 - per-scope operation and fragment artifact groups
+- effective filter and condition provenance used by each scope
 
 Vite and other embedding transforms use source-file ownership to select the
 right generated query barrel for a transformed file. In multi-scope projects,

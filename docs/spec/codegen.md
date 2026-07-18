@@ -24,21 +24,21 @@ more polished than others.
 ## Frontend Metadata
 
 ```dsql
-query UsersTable($limit: int, $offset: int)
-  @ui.table(total: "users_total")
-{
-  users(limit $limit offset $offset) {
+query UsersTable @ui.table(total: "users_total") {
+  users(limit $$limit offset $$offset) {
     id @ui.column(hidden: true)
     name @ui.column(label: "Name")
     email @ui.column(label: "Email")
   }
 
-  users_total: users.count()
+  users_total: users | aggregate {
+    count
+  }
 }
 ```
 
-Metadata directives should not change SQL semantics unless they are explicitly
-defined as planning or policy directives.
+Metadata directives do not change SQL semantics unless they are explicitly
+defined as semantic system directives.
 
 ## TypeScript Inline Queries
 
@@ -70,10 +70,13 @@ const UsersPage = defineDsqlQuery({
   sql: "...",
   result: {} as UsersPageResult,
   params: {} as UsersPageParams,
-  context: {} as UsersPageContext,
+  contextRequirements: {} as UsersPageContextRequirements,
   metadata: {}
 });
 ```
+
+`contextRequirements` describes server binding requirements; it is not a value
+accepted from the generated client.
 
 This should be a host integration target, not a requirement of the core
 language. The compiler should expose enough metadata that different adapters can
@@ -103,13 +106,26 @@ The generated helper can use DSQL metadata for:
 
 - stable query keys
 - public params and dynamic inputs
-- required provider context
-- result types and policy-driven nullability
+- required trusted context
+- result types and filter-driven nullability
 - endpoint or RPC target information
 - source maps back to the inline DSQL template
 
-Provider context such as `$:tenant_id` should usually be bound by the framework
-adapter once per request or app boundary, rather than passed as public params.
+Trusted context such as `$:tenant_id` is bound only by a server-side framework
+adapter or request boundary. It is never passed as a public param, emitted as a
+browser-client input, or accepted from an untrusted operation payload.
+
+The generated server boundary should preserve the separation explicitly:
+
+```ts
+materialize(operation, publicInput, trustedContext)
+```
+
+The concrete API is integration-specific, but the contract is not: public input
+is validated against the compiled operation surface, trusted context is
+validated against the operation's required context metadata, and execution is
+refused if required context is missing. The resulting SQL parameter binding may
+combine both sources internally while retaining their provenance.
 
 ### Compiler-Erased Inline Templates
 
@@ -168,6 +184,12 @@ important:
 - fragments as source syntax are reusable compile-time composition units
 - generated fragment handles may be query/path scoped runtime artifacts
 
+A split-fetch handoff also carries the compiler-checked parent authorization
+chain and trusted-context requirements. Those fields are descriptive inputs to
+cache and transport adapters, not client-provided authorization evidence. The
+generated child operation re-authorizes the chain server-side and binds current
+trusted context at its own request boundary.
+
 Open questions:
 
 - Whether standalone fragment handles should exist for fragments that do not
@@ -207,6 +229,17 @@ receive compiler-owned paths through environment variables:
 The manifest should be written to project-local build state such as
 `dsql/build/manifest.json` so users and tools can inspect, debug, and rerun
 generators without recompiling the project every time.
+
+Filter match locking is resolved by DSQL before artifact publication. Unlocked
+`dsql generate` may update `<project-root>/dsql/dsql.lock` from the same
+successfully checked snapshot used for generation. `dsql generate --locked`
+requires an exact existing lock and never modifies it.
+
+Host integrations select the mode but do not interpret the lock. The Vite
+option `locked: true | false | "build"` defaults to `"build"`; that mode uses
+unlocked generation during development and locked generation for the Vite
+build command. The daemon remains responsible for comparison, semantic diff
+diagnostics, and any lock update.
 
 ## TypeScript Render Contract
 
@@ -306,6 +339,16 @@ Generated runtimes and adapters should not rewrite raw database rows into a
 different public shape. Nested relation SQL aliases should remain internal and
 continue to be hidden behind JSON object keys selected by the DSQL query shape.
 
+Filters are part of the public result contract. A conditionally filtered scalar
+or to-one relation is nullable. A filtered to-many relation remains an array and
+may be empty. SQL lowering must apply the same logical readable value in
+projection, predicates, ordering, grouping, and aggregate operands; a runtime
+adapter must not implement filtering as a post-query output mask.
+
+The initial result contract intentionally does not distinguish database `NULL`
+from a value masked by a filter. Metadata may classify the field as conditional
+without adding a per-result access mask.
+
 ## Embedded Language Tooling
 
 Inline DSQL in tagged template literals should be treated as virtual DSQL
@@ -381,8 +424,15 @@ Generated metadata may need stable identity information:
 - result paths
 - relation parent-child keys
 - variables participating in cache identity
-- policy context values participating in cache identity
+- trusted context values or context-scope identities participating in cache
+  identity
 - split-fetch cache keys
+
+A cache shared across trusted-context scopes must include a stable scope
+discriminator or hashes of the relevant context values. A client cache may rely
+on a server-defined session boundary, but its adapter must invalidate or change
+scope when authentication context changes. Public variables alone are not a
+safe identity for results affected by context-dependent filters.
 
 ## Metadata Shape
 
@@ -398,7 +448,7 @@ Possible high-level shape:
   "input": {},
   "params": {},
   "context": {},
-  "policies": [],
+  "filters": [],
   "dynamic_inputs": {},
   "handoffs": [],
   "sql": {},
@@ -415,9 +465,13 @@ Useful metadata areas:
 - public query inputs and top-level params
 - required host context keys
 - result field types and nullability
-- policy-driven field visibility
-- dynamic filter and order input surfaces
-- split-fetch handoffs and cache key inputs
+- applicable filters and resolved target provenance
+- declaration defaults, trusted enforcement conditions, and query filter
+  assignments
+- filter-driven conditional fields, classified as context-only or row-dependent
+- parameter binding provenance: public input or trusted context
+- bounded dynamic predicate and order input surfaces
+- split-fetch handoffs, checked parent authorization chains, and cache key inputs
 - SQL variants for dynamic operators
 - source spans for diagnostics, hovers, and explain output
 - provider-specific hints that consumers can safely ignore

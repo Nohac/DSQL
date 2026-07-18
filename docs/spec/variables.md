@@ -157,8 +157,14 @@ Host-provided global context uses a separate form:
 $:name   # host-provided context value
 ```
 
-Context values are not public query inputs. They are declared in policy/provider
-metadata and provided by the host/runtime.
+Context values are not public query inputs. They are declared by filters,
+conditions, project configuration, or provider metadata and supplied by a trusted
+server-side adapter or request boundary. A generated client cannot bind or
+override them. Execution refuses to start when required context is missing.
+
+Context values may be scalars or typed collections. For example,
+`.tenant_id in $:tenant_ids` infers or validates `tenant_ids` as a collection of
+the logical type of `.tenant_id`.
 
 Top-level params still infer type from usage:
 
@@ -166,6 +172,8 @@ Top-level params still infer type from usage:
 - `where .id > $$` creates `params.id`.
 - `limit $$` creates `params.limit` with integer type.
 - `offset $$` creates `params.offset` with integer type.
+- `filter SoftDelete when $$` creates boolean `params.soft_delete`, inferred by
+  converting the filter name to the normal generated lower-snake-case form.
 - `where .posts.comments.created_at > $$` creates `params.created_at` by
   default.
 
@@ -513,7 +521,7 @@ from the current query's inferred variables. Context values are not bound here:
 `$:name` values are global host context and are supplied by the runtime through
 the normal context mechanism.
 
-## Bounded Dynamic Filters And Ordering
+## Bounded Dynamic Predicates And Ordering
 
 Some generated API surfaces need programmatic, type-safe filtering and ordering
 where the exact field choice is made by application code. This should not use an
@@ -521,13 +529,13 @@ unrestricted `where $$` placeholder. A raw predicate placeholder hides the
 capability surface, makes relationship depth unclear, and can turn a fixed DSQL
 query into a broad dynamic query builder.
 
-Instead, dynamic filters and order inputs should be bounded by the DSQL document.
+Instead, dynamic predicates and order inputs are bounded by the DSQL document.
 
 ```dsql
 query Fields {
   fields(
     where .context_id == $$context_id
-      and filter $$search on selected
+      and $$search on selected
     order by $$order on selected
     limit $$limit
     offset $$offset
@@ -540,10 +548,10 @@ query Fields {
 }
 ```
 
-`filter $$search on selected` means:
+`$$search on selected` is one predicate atom. It means:
 
 - `$$search` is a top-level generated parameter.
-- The allowed filter fields are scalar fields selected directly in the current
+- The allowed predicate fields are scalar fields selected directly in the current
   selection body.
 - Available operators are inferred from each field's catalog type.
 - Nested relation fields are not included by default.
@@ -584,6 +592,12 @@ The main design rule is that dynamic inputs expose a static capability surface.
 The query author chooses which fields and relationship paths are available, and
 the generated API only allows those choices.
 
+Dynamic predicates and ordering operate on the same filtered logical fields as
+static query clauses. A conditionally hidden scalar behaves as `NULL`, and a
+conditionally hidden relation behaves as absent. Generated metadata must mark
+dynamic fields whose readable value is conditional so UI and server tooling can
+describe the surface accurately, but a dynamic input never bypasses a filter.
+
 `selected` should be treated as a built-in dynamic input preset, not a special
 case in the grammar. It expands to scalar fields selected directly in the current
 selection body.
@@ -600,7 +614,7 @@ searchable        text-like fields marked searchable by config/catalog
 Using a preset:
 
 ```dsql
-filter $$search on selected_indexed
+where $$search on selected_indexed
 order by $$order on selected_indexed
 ```
 
@@ -615,11 +629,11 @@ or narrow the surface explicitly.
 ```dsql
 query ProjectTaskCounts {
   project_task_count(
-    filter $$search {
+    where $$search on {
       selected
       .task.legacy_template_id ilike
     }
-    order by $$order {
+    order by $$order on {
       selected
       .task.legacy_template_id
     }
@@ -638,14 +652,14 @@ query ProjectTaskCounts {
 ```
 
 `selected` inside an allowlist expands to scalar fields selected directly in the
-current body. Additional paths must be listed explicitly. Operators in filter
+current body. Additional paths must be listed explicitly. Operators in predicate
 allowlists may be explicit when a field should expose only a subset of its
 type-compatible operators.
 
 Presets can also be composed inside an explicit allowlist.
 
 ```dsql
-filter $$search {
+where $$search on {
   preset selected
   preset indexed
   .task.legacy_template_id ilike
@@ -696,7 +710,7 @@ filter or order API.
 Possible future shorthand:
 
 ```dsql
-filter $$search on selected deep
+where $$search on selected deep
 order by $$order on selected deep
 ```
 
@@ -714,7 +728,7 @@ decide which branches to send.
 query Fields {
   fields(
     where .context_id == $$context_id
-      and filter $$search {
+      and $$search on {
         .name ilike
         .display ilike
         .id ==
@@ -731,16 +745,28 @@ query Fields {
 Application code may then construct an `or` filter containing `name`, `display`,
 and, only when the text is a valid UUID, `id`.
 
+The `on` surface is mandatory for dynamic-predicate interpretation. Without it,
+a variable in predicate position is an ordinary boolean atom:
+
+```dsql
+where $$search
+```
+
+This creates a boolean `params.search`; it does not create a dynamic predicate
+object. A variable followed by `on <preset>` or `on { ... }` is instead a
+bounded dynamic predicate. The `on` token is the disambiguator, and both forms
+compose with `and`, `or`, `not`, and parentheses.
+
 Open questions:
 
-- Exact grammar for `filter $$search on selected` inside a `where` clause.
-- Exact grammar for `order by $$order on selected`.
 - Whether dynamic order inputs are arrays, objects, or both in generated
   TypeScript.
-- Whether dynamic filters support only `and`/`or` composition or also `not`.
+- Whether generated dynamic predicate objects support only `and`/`or`
+  composition or also `not`.
 - How null ordering options are represented.
 - Whether `on selected deep` should exist or explicit paths are always better.
-- How dynamic filter/order inputs should appear in hover and generated metadata.
+- How dynamic predicate/order inputs should appear in hover and generated
+  metadata.
 - Whether project-defined presets belong in DSQL files, project config, or
   provider metadata.
 - Whether preset names should be case-sensitive and how they avoid collisions
@@ -772,7 +798,7 @@ Possible shape:
   },
   "dynamic_inputs": {
     "search": {
-      "kind": "filter",
+      "kind": "predicate",
       "preset": "selected",
       "fields": ["id", "name", "display"]
     },
@@ -785,11 +811,12 @@ Possible shape:
 }
 ```
 
-`$:<name>` context values should appear as required host context, not public
-query variables. A provider or generated client may bind those once per request
-or require them per call.
+`$:<name>` context values appear as required trusted host context, not public
+query variables. Only a server-side adapter or request boundary may bind them.
+Generated browser clients do not expose context setters or merge context into
+the public operation input.
 
-Dynamic filters and order inputs should expose their expanded field/operator
+Dynamic predicate and order inputs should expose their expanded field/operator
 surface so application code can generate type-safe UI controls without knowing
 DSQL internals.
 
@@ -1146,10 +1173,21 @@ $
 $name
 ```
 
-Compound values may be useful later:
+Typed list values are also required for `in` and `not in` predicates:
 
 ```dsql
 [1, 2, 3]
+```
+
+The field use infers the collection element type for a literal or variable.
+Membership collections permit `null` elements even when the compared field is
+not nullable, matching PostgreSQL array and `IN` behavior. Generated collection
+inputs therefore admit `null` elements and preserve the three-valued semantics
+defined by [Membership](query.md#membership).
+
+Object values and general collection expressions may be useful later:
+
+```dsql
 { id: 1 }
 ```
 
@@ -1157,8 +1195,8 @@ Open questions:
 
 - Whether variable defaults allow only literals or richer expressions.
 - How variable nullability should be represented.
-- Whether compound values belong in the query language or only in filter/input
-  positions.
+- Whether object values and general collection expressions belong in the query
+  language or only in filter/input positions.
 - How provider-specific scalar types are named.
 - Whether operator-qualified anonymous names should be inferred for repeated
   comparisons against the same field.

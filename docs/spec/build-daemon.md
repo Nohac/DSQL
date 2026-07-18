@@ -1,6 +1,6 @@
 # Build Daemon & Host-Tool Integration
 
-Status: draft v5 (2026-07-13, revised after four review rounds).
+Status: draft v6 (2026-07-18, revised after filter match-lock review).
 
 The build daemon is a persistent compile service that host build tools —
 Vite, other bundlers, file watchers, task runners — drive over stdio to
@@ -36,8 +36,8 @@ publication lock under Transactionality.
 ## Transport and framing
 
 Line-delimited JSON over the daemon's stdin/stdout, spawned as
-`dsql daemon`. Each request is exactly one UTF-8 encoded JSON object on
-one line; each response likewise. Blank lines are ignored. stderr is
+`dsql daemon [--locked]`. Each request is exactly one UTF-8 encoded JSON object
+on one line; each response likewise. Blank lines are ignored. stderr is
 reserved for human-readable logging and MUST NOT carry protocol data.
 
 ```json
@@ -61,6 +61,32 @@ reserved for human-readable logging and MUST NOT carry protocol data.
 - The daemon never initiates messages. Server-initiated events (e.g.
   push diagnostics from daemon-side watching) are out of scope for
   version 1; consumers own file watching.
+
+### Filter match lock mode
+
+The optional `--locked` process flag fixes filter match-lock behavior for the
+daemon's entire lifetime. It is deliberately not an `initialize` or `compile`
+parameter, so it does not alter protocol framing or version negotiation.
+
+The lock path is always `<projectBase>/dsql/dsql.lock`.
+
+- A locked daemon requires the current resolved filter matches to equal the
+  existing lock. A missing or stale lock produces a `Diagnostics` error before
+  artifact publication or host generation and never modifies the lock.
+- An unlocked daemon updates the lock from a successfully checked compile
+  snapshot before publishing artifacts. A lock write failure is `Io` and no
+  generation is published.
+- A project with no effective filters does not require an empty lock. An
+  unlocked compile removes a lock that contains no remaining pinned decisions.
+
+Validation, update, or removal occurs under the same publication advisory lock
+as artifact publication. Updates use a flushed temporary file, `fsync`, and
+atomic rename; removal is serialized in the same critical section. Concurrent
+daemon and one-shot writers therefore cannot pair a lock snapshot with another
+writer's generation.
+
+This mode changes compiler input handling and publication prerequisites, not
+the line-JSON request or response shapes.
 
 ### Errors
 
@@ -174,6 +200,10 @@ resident bowl —
   operations and directory-level watcher events stay expressible;
 - a **missing** path removes the file, or every project file under that
   prefix (a deleted directory needs no type discovery);
+- `dsql/dsql.lock` is a relevant compiler input even though it is outside
+  document scopes. In unlocked mode, a watcher event for the daemon's own
+  byte-identical lock write is a no-op; in locked mode, edits or deletion are
+  reconciled before the next compile outcome;
 - a path lexically outside the project is `InvalidPath`; a path inside
   the project that matches no configured scope is silently ignored (the
   daemon, not the consumer, knows what is relevant).
@@ -427,9 +457,9 @@ Manifests are two files:
   manifest**; never rewritten once committed.
 - `manifest.json` — the fixed-path **current-generation pointer**, whose
   content is the same document; committing means atomically renaming a
-  flushed temporary file over it. Every file write in publication
-  (artifacts included) goes through temp-file + rename so an interrupted
-  write can never strand a partial file at its final address.
+  flushed and `fsync`ed temporary file over it. Every file write in publication
+  (artifacts included) goes through temp-file + `fsync` + rename so an
+  interrupted write can never strand a partial file at its final address.
 
 Together with the manifest's new `generationId` field this is an
 explicit **manifest format version bump**; manifest consumers follow
@@ -446,22 +476,27 @@ Publication order for every changed successful compile:
    and `dsql generate` alike). Bounded wait; on timeout the request
    fails with `PublicationLocked` and nothing is written. Concurrent
    *processes* are allowed; concurrent *publication* is not.
-4. Allocate this generation's id under the lock as
+4. Resolve the current filter matches from the in-memory snapshot. In locked
+   mode, compare them with `<projectBase>/dsql/dsql.lock` and fail with
+   `Diagnostics` on a missing or stale lock. In unlocked mode, atomically
+   update the lock, or remove it when no pinned decisions remain. This entire
+   step occurs under the publication lock; an `Io` failure writes no artifacts.
+5. Allocate this generation's id under the lock as
    `max(committed manifest.json generationId, every manifest.<id>.json
    present) + 1`. A crash between writing an immutable manifest and
    committing the pointer strands a manifest file; scanning existing ids
    makes the stranded id skipped, never reused — skipped ids are
    harmless, reused ids are not. Project-monotonic regardless of how
    many writers exist.
-5. Write the generation's content-addressed artifact files, then
+6. Write the generation's content-addressed artifact files, then
    `manifest.<generationId>.json`, then commit by renaming over
    `manifest.json`.
-6. Release the lock; run the configured host generator command (if
+7. Release the lock; run the configured host generator command (if
    any), with `DSQL_MANIFEST` pointing at the **immutable
    per-generation manifest** — so a concurrent publication replacing
    `manifest.json` mid-generator is invisible to it.
-7. Respond.
-8. Maintenance, best-effort and strictly post-commit: the publisher
+8. Respond.
+9. Maintenance, best-effort and strictly post-commit: the publisher
    records which generation `manifest.json` referenced immediately
    before its own commit (its predecessor), **re-acquires the
    publication lock**, and — only if `manifest.json` still points at
@@ -477,11 +512,11 @@ Publication order for every changed successful compile:
 
 Consequences, stated explicitly:
 
-- An `Io` failure during step 5 leaves the previous `manifest.json` —
+- An `Io` failure during step 6 leaves the previous `manifest.json` —
   and every file it references — fully intact: the previous generation
   remains current by construction (content-addressing + atomic rename),
   not by luck.
-- A host generator failure (step 6) happens **after** the build tree
+- A host generator failure (step 7) happens **after** the build tree
   committed: the response is `GeneratorFailed` with the new
   `generationId` and its per-generation manifest path in `data`. The
   build tree on disk is the *new* generation; only the generator's own
@@ -562,8 +597,9 @@ bump, independent of this protocol.
   editors (positions, hovers, streams of keystrokes); the daemon serves
   build tools (compiles, artifacts, file-granular changes). They do not
   share a process in version 1.
-- **CLI**: `dsql generate` remains the one-shot equivalent of `compile`,
-  and participates in the same publication lock; CI needs no daemon.
+- **CLI**: `dsql generate` remains the one-shot equivalent of an unlocked
+  `compile`, while `dsql generate --locked` corresponds to a locked daemon.
+  Both participate in the same publication lock; CI needs no daemon.
 
 ## Open questions
 

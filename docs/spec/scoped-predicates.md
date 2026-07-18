@@ -123,26 +123,46 @@ query Users {
 }
 ```
 
+SQL-style `exists` makes the related source and its clause scope explicit:
+
+```dsql
+query Users {
+  users(where exists .posts(where .published == true)) {
+    id
+  }
+}
+```
+
+An unrelated qualified table may be correlated back to the enclosing row with
+the same parent and root prefixes:
+
+```dsql
+projects(
+  where exists public::administrators(
+    where .tenant_id == ..tenant_id
+      and .user_id == $:user_id
+  )
+) {
+  id
+}
+```
+
+The source introduced by `exists` becomes the current `.` scope inside its
+clauses. `..` refers to the row whose predicate contains the existence test.
+
 The predicate selects `users` rows based on related comment text, but the
 selected body still controls the returned shape independently.
 
 ## Operators
 
-Scoped predicates use the same comparison operators as local predicates and add
-`like` for text pattern matching.
+Scoped predicates use the complete core predicate operator set, including
+membership, null tests, unary negation, and `like` for text pattern matching.
+The grammar and empty-collection behavior are defined in [Query
+Clauses](query.md#where).
 
-```text
-==
-!=
->
->=
-<
-<=
-like
-```
-
-The operator set should stay type-aware. For example, `like` is valid for text
-fields and invalid for integer fields.
+The operator set stays type-aware. For example, `like` is valid for text fields
+and invalid for integer fields, while an `in` collection must have an element
+type compatible with its resolved field path.
 
 ## Field-To-Field Predicates
 
@@ -217,6 +237,12 @@ conditions must hold for the filtered root row. If those paths target the same
 relationship chain, the compiler should prefer SQL that applies both conditions
 inside the same relationship predicate when that preserves the user-visible
 semantics.
+
+Query-authored relationship paths observe the filtered logical relation. Row
+filters constrain traversed rows, and a conditionally hidden relation behaves
+as empty. Filter-rule predicates deliberately resolve against raw catalog rows
+instead; that evaluation boundary is defined in [Filters And Access
+Rules](policies.md#rule-evaluation-boundary).
 
 ## Computed Predicate Values
 

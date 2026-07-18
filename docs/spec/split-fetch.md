@@ -116,17 +116,29 @@ params, and any required context.
 The generated child fetch should target the relation scope directly instead of
 refetching the full parent query.
 
-Conceptual child predicate:
+Conceptual child correlation:
 
 ```sql
 where posts.user_id = $parent_user_id
+  and exists (
+    select 1
+    from users
+    where users.id = posts.user_id
+      and <active users filters>
+  )
 ```
+
+The generated child operation must derive its correlation through the filtered
+parent source, not trust the supplied parent identity by itself. For a nested
+handoff, it re-verifies every source in the complete parent chain under the
+filters that an equivalent inline selection would apply. A parent row that is
+no longer readable therefore cannot be used to reach its child rows.
 
 ## Query-Scoped Fragment Handles
 
 Fetchable fragments may need to be context aware. The same fragment source can
 be spread from different query paths, and each use can imply different parent
-identity, result path, policy context, selected hidden fields, or handoff
+identity, result path, trusted context, conditionally filtered fields, or handoff
 metadata. Because of that, generated runtime handles may need to be scoped to
 the query/path where the fragment is used.
 
@@ -149,11 +161,24 @@ query-scoped handle that knows:
 - the result path where the fragment was spread
 - the parent identity required to fetch the child branch
 - local params for the child branch
-- required provider context and policy inputs
+- required trusted context and applicable filter metadata
 
 This keeps split fetches tied to a concrete handoff contract. A plain
 `UserPosts` handle may still be useful for truly standalone fragments, but it
 should not be the default assumption for fragments that depend on parent data.
+
+An independently executed child preserves the operation-wide filter assignments
+and trusted-context requirements of the operation that produced its handoff.
+Source-local assignments on the child source remain part of that checked
+handoff. At execution time, the server boundary re-binds current trusted context
+instead of replaying values captured by the parent fetch. A client cannot alter
+the assignments, requirements, or checked parent authorization chain through
+split-fetch params.
+
+Handoff metadata describes that compiler-checked chain so integrations can
+identify and cache the child operation. It is not an authorization claim from
+the client: enforcement is encoded in the generated child operation and
+re-evaluated server-side.
 
 ## Handoff Metadata
 
@@ -172,9 +197,10 @@ Possible shape:
       "parent_identity": ["id"],
       "relation": "posts",
       "child_params": ["first", "after"],
-      "provided_context": {
+      "parent_bindings": {
         "user_id": "users[].id"
-      }
+      },
+      "authorization_chain": ["users", "users.posts"]
     }
   ]
 }
@@ -204,7 +230,6 @@ Open questions:
 - Whether split fetch syntax is directive-based or declaration-based.
 - How split fetches inherit variables from the parent operation.
 - Whether a split fetch can be executed independently of the original query.
-- How policy/context requirements are carried into split fetches.
 - How cache keys are generated.
 - How SSR hydration should seed child query caches from master query results.
 - Whether fetchable fragments should be explicit declarations, directives, or

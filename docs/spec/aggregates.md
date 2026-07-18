@@ -1,6 +1,7 @@
 # Aggregates
 
-Status: implemented.
+Status: implemented. Filter-aware source semantics and SQL-style predicate
+`exists` are RFC extensions pending the filter system and predicate work.
 
 Aggregates transform a collection-producing selection into computed output.
 The source may be a root table or a nested relation. The main use case is
@@ -24,8 +25,9 @@ query Users {
 }
 ```
 
-`posts` resolves normally from `users`. Its rows are filtered by any permitted
-source clauses and then transformed into one aggregate object:
+`posts` resolves normally from `users`. Active row and relation filters first
+form its readable source, permitted source clauses further constrain those
+rows, and the result is transformed into one aggregate object:
 
 ```json
 {
@@ -233,7 +235,7 @@ Empty `aggregate {}` bodies are diagnostics.
 
 ## Source Clauses
 
-The initial aggregate source permits only `where`:
+The aggregate source permits named `filter` assignments and `where`:
 
 ```dsql
 query Users {
@@ -248,7 +250,20 @@ query Users {
 }
 ```
 
-The filter is scoped to the source collection and applies before aggregation.
+The explicit `where` predicate is scoped to the source collection and applies
+before aggregation. A named filter assignment controls desired application for
+this source under the normal enforcement rules:
+
+```dsql
+query UserStats {
+  all_user_stats: users(
+    filter SoftDelete when not $$includeDeleted
+  ) | aggregate {
+    count
+  }
+}
+```
+
 `order by`, `limit`, and `offset` are diagnostics in this first contract:
 ordering alone does not affect an aggregate, while slicing would define a
 different source-subquery feature.
@@ -450,7 +465,22 @@ The semantic plan should represent aggregate outputs directly. SQL generation,
 metadata assembly, services, and generated types consume that checked plan and
 must not independently re-resolve aggregate names or operands.
 
-## Scalar Aggregate Predicates
+Filters participate in that checked plan rather than being appended during SQL
+rendering:
+
+- aggregate sources contain only rows visible through active row and relation
+  filters;
+- a conditionally hidden scalar operand behaves as `NULL`;
+- a conditionally hidden group key groups as `NULL`;
+- a conditionally hidden relation has `exists == false` and `count == 0`;
+- assigning a filter on the aggregate source uses the same `filter Name when
+  <condition>` clause and trusted enforcement rules as an ordinary collection
+  selection.
+
+This makes aggregate output consistent with projection, query predicates, and
+bounded dynamic inputs over the same logical readable view.
+
+## Scalar Aggregate Predicates And Exists
 
 Purpose-built scalar relation aggregates are supported in predicates:
 
@@ -463,27 +493,33 @@ query PopularUsers {
 }
 
 query UsersWithPosts {
-  users(where .posts | exists) {
+  users(where exists .posts) {
     id
   }
 }
 ```
 
-The aggregate transform binds before comparison and shares the output
+The scalar aggregate transform binds before comparison and shares the output
 aggregate function, type, empty-input, and null semantics. `min` or `max` over
 an empty scope yields SQL `NULL`; a comparison with that value is unknown and
 excludes the parent row.
 
-This form is part of the current aggregate contract. Clause-bearing relation
-paths inside predicates, multi-step paths, and their nested variable scopes
-remain separate extensions.
+Existence uses a dedicated SQL-style predicate because it does not need a
+scalar result or aggregate body. `exists .posts` has the same empty-source and
+filter semantics as selecting `exists` in an aggregate body. It may accept a
+clause-bearing relation or correlated qualified table source as defined in
+[Query Clauses](query.md#existence).
+
+The scalar aggregate pipe form is part of the current aggregate contract.
+SQL-style `exists`, including clause-bearing and unrelated sources, is a
+predicate-language extension rather than a general aggregate pipeline.
 
 ## Non-Goals
 
 Aggregate blocks are selection transforms. Object-producing pipe blocks and
 general relational pipelines are not valid inside `where`, `order by`,
-`limit`, or `offset`. The reserved scalar predicate forms above are a closed
-allowlist, not a general clause pipeline facility.
+`limit`, or `offset`. Scalar aggregate predicates remain a closed allowlist;
+SQL-style `exists` does not make arbitrary collection expressions valid there.
 
 Aggregates do not initially provide:
 
@@ -506,9 +542,17 @@ The aggregate contract described above is implemented, including:
 - `sum` and `avg`;
 - the closed scalar relation-aggregate predicate forms.
 
+The current implementation spells predicate existence as a scalar pipe. The
+accepted SQL-style spelling above replaces that syntax when the predicate
+extensions are implemented.
+
 The extensions listed under [Non-Goals](#non-goals) and
 [Open Questions](#open-questions) remain deferred rather than incomplete parts
 of the current contract.
+
+The filter-aware logical-source behavior, named source assignment, and
+SQL-style predicate `exists` specified above depend on their RFCs and are not
+part of the current implementation.
 
 ## Open Questions
 

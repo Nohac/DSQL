@@ -111,6 +111,25 @@ query Users {
 
 Anonymous queries are not part of the language.
 
+A query header may assign named filters recursively across the operation:
+
+```dsql
+query Administration(
+  filter SoftDelete when not $$includeDeleted
+) {
+  users {
+    id
+  }
+}
+```
+
+Operation assignments, source-local overrides, and enforcement conditions are
+defined in [Filters And Access Rules](policies.md#operation-wide-assignments).
+The parenthesized header contains one or more `filter` assignments separated by
+normal DSQL whitespace. Query variables remain inferred rather than declared in
+this list. Directives, when present, follow the closing parenthesis. Empty
+parentheses are invalid and omitted by the formatter.
+
 ## Selection Sets
 
 A selection set is a brace-delimited list of selections.
@@ -218,8 +237,8 @@ may also flatten. Array-valued transforms, including grouped aggregates, may
 not. See [Selection Result Cardinality](#selection-result-cardinality).
 
 If the singular selection may be absent because no row matches, a foreign key
-is nullable, a clause suppresses the row, or an applicable policy filters it
-out, every field contributed through the flatten inherits that absence and is
+is nullable, a clause suppresses the row, or an active filter removes it,
+every field contributed through the flatten inherits that absence and is
 nullable in the result contract. Otherwise each contributed field keeps its
 ordinary column or nested-result nullability.
 
@@ -572,7 +591,7 @@ cardinality. A collection-valued selection produces an array. An at-most-one
 selection produces an object or `null`; it never produces a one-element array.
 At-most-one controls the container shape. The object's nullability still
 reflects whether the selected row may be absent because no row matches, a
-relationship is optional, a clause suppresses it, or an applicable policy
+relationship is optional, a clause suppresses it, or an active filter
 filters it out.
 
 A selection is at-most-one when any of these independent proofs applies:
@@ -611,8 +630,8 @@ Unique-predicate proofs are conservative:
 
 `limit 1` determines the result shape whether or not the selection has an
 `order by` clause. Without stable ordering, which matching row is selected is
-unspecified. An `offset`, a zero-valued runtime limit, or a policy may turn a
-proven singular result into `null`, but cannot broaden it back into a
+unspecified. An `offset`, a zero-valued runtime limit, or an active filter may
+turn a proven singular result into `null`, but cannot broaden it back into a
 collection.
 
 Inferred cardinality is part of the semantic result shape. Planning, SQL
@@ -699,10 +718,17 @@ query Posts {
 
 Core clauses:
 
+- `filter <filter-name> [when <boolean-value>]`
 - `where <predicate>`
 - `order by <field> <direction>[, ...]`
 - `limit <integer>`
 - `offset <integer>`
+
+Active filters form the readable source before these explicit clauses are
+evaluated. `filter` assigns the desired state of one named filter; `where`,
+`order by`, `limit`, and `offset` then operate on the resulting readable source.
+Canonical clause order is zero or more `filter` assignments followed by
+`where`, `order by`, `limit`, and `offset`.
 
 ### Where
 
@@ -722,6 +748,10 @@ Predicates resolve field names against the selected table or relation target.
 Scoped predicate paths for relationship filters and parent/root references are
 tracked separately in [Scoped Predicates](scoped-predicates.md).
 
+Comparison, `like`, and `and`/`or` composition are implemented. Membership,
+unary `not`, dedicated null tests, and SQL-style `exists` below are accepted
+predicate extensions but are not part of the current implementation.
+
 Core predicate operators:
 
 ```text
@@ -731,9 +761,12 @@ Core predicate operators:
 >=
 <
 <=
+in
+not in
 ```
 
-Predicates may be combined with boolean `and` and `or`.
+Text-like fields additionally support `like`. Predicates may be combined with
+boolean `and`, `or`, and unary `not`.
 
 ```dsql
 query ActiveRecentUsers {
@@ -749,7 +782,7 @@ query ActiveRecentUsers {
 
 ```dsql
 query Users {
-  users(where (.active == true or .trial == true) and .deleted_at == null) {
+  users(where (.active == true or .trial == true) and .deleted_at is null) {
     id
   }
 }
@@ -760,13 +793,173 @@ The predicate grammar should follow this shape:
 ```text
 predicate_expr = or_expr
 or_expr        = and_expr ("or" and_expr)*
-and_expr       = primary_expr ("and" primary_expr)*
-primary_expr   = comparison | "(" predicate_expr ")"
-comparison     = field_path operator value_or_field_path
+and_expr       = unary_expr ("and" unary_expr)*
+unary_expr     = "not" unary_expr | primary_expr
+primary_expr   = predicate | "(" predicate_expr ")"
+predicate      = comparison
+               | membership
+               | null_test
+               | exists_predicate
+               | scalar_aggregate_predicate
+               | boolean_value
+comparison     = field_path comparison_operator value_or_field_path
+membership     = field_path ("in" | "not" "in") collection_value
+null_test      = field_path "is" ["not"] "null"
+exists_predicate = "exists" collection_source
+boolean_value  = boolean_literal | public_boolean_variable | context_boolean
 ```
 
 Each side of a boolean operator must be a predicate expression. Bare field paths
-are not valid boolean predicates by themselves.
+are not valid boolean predicates by themselves. Boolean literals and boolean-
+typed public or trusted values are valid predicate atoms, which permits forms
+such as `$:is_admin or .owner_id == $:user_id` and `not $$includeDeleted`.
+
+`not` binds more tightly than `and`, which binds more tightly than `or`.
+Parentheses may always make the intended grouping explicit.
+
+### Membership
+
+Membership accepts a typed literal collection, a public array input, or trusted
+context collection:
+
+```dsql
+query ActiveOrInvitedUsers {
+  users(where .status in ["active", "invited"]) {
+    id
+  }
+}
+
+query UsersById {
+  users(where .id in $$userIds) {
+    id
+    name
+  }
+}
+```
+
+The variable `$$userIds` is inferred as an array of the logical type of `.id`.
+Filter declarations use the same predicate language and may consume trusted
+collections:
+
+```dsql
+filter AllowedTenants on {
+  .tenant_id: uuid
+} {
+  apply where true
+  where .tenant_id in $:tenant_ids
+}
+```
+
+Exclusion uses `not in`:
+
+```dsql
+documents(where .state not in ["deleted", "archived"]) {
+  id
+}
+```
+
+For an empty collection, `x in []` is false and `x not in []` is true.
+Duplicate collection values do not change predicate truth. The collection
+element type must be compatible with the field type.
+
+Nullable collection elements are valid and follow PostgreSQL three-valued
+membership semantics:
+
+- `x in [x, null]` is true for a non-null matching `x`;
+- `x in [y, null]` is unknown when non-null `x` does not equal `y`;
+- `x not in [x, null]` is false;
+- `x not in [y, null]` is unknown when non-null `x` does not equal `y`;
+- a null left operand produces unknown for a non-empty collection;
+- unknown excludes the row when used by `where`.
+
+SQL lowering through an `IN` list, `ANY`/`ALL`, or another strategy must
+preserve these results. Empty collections retain the explicit false/true
+semantics above, including for a null left operand.
+
+### Negation And Null Tests
+
+Unary `not` negates a predicate expression while preserving SQL three-valued
+logic:
+
+```dsql
+documents(where not (.embargoed and .owner_id != $:user_id)) {
+  id
+}
+```
+
+Null checks use dedicated syntax:
+
+```dsql
+users(where .deleted_at is null) {
+  id
+}
+
+users(where .deleted_at is not null) {
+  id
+}
+```
+
+The equality spellings are also valid null-test aliases:
+
+```dsql
+users(where .deleted_at == null) {
+  id
+}
+
+users(where .deleted_at != null) {
+  id
+}
+```
+
+`== null` has exactly the semantics of `is null`, and `!= null` has exactly the
+semantics of `is not null`; neither lowers to ordinary SQL equality or
+inequality with `NULL`. This alias applies only when `null` is written as the
+source literal. A comparison to a variable that contains `NULL` at runtime uses
+ordinary PostgreSQL three-valued equality or inequality. The formatter
+preserves the accepted spelling rather than forcing one style.
+
+### Existence
+
+Related-row existence uses SQL-style prefix syntax:
+
+```dsql
+projects(where exists .project_users) {
+  id
+}
+```
+
+The relation is observed through the filtered logical view, so a row filter or
+relation-field filter may make `exists` false. The source may carry clauses:
+
+```dsql
+projects(
+  where exists .project_users(where .user_id == $:user_id)
+) {
+  id
+}
+```
+
+It may also be an unrelated qualified table source correlated through normal
+scope prefixes:
+
+```dsql
+projects(
+  where exists public::administrators(
+    where .user_id == $:user_id
+      and .tenant_id == ..tenant_id
+  )
+) {
+  id
+}
+```
+
+`not exists <source>` follows from unary `not`; it is not a separate aggregate
+function. Query-authored sources observe the filtered logical view, while
+filter-authored sources use the raw rule-evaluation boundary.
+
+The initial `exists` source permits named `filter` assignments and `where`.
+`order by` is irrelevant to existence, while `limit` and `offset` would add
+slicing semantics; all three are diagnostics in the initial contract.
 
 ### Order By
 
@@ -817,6 +1010,47 @@ redundant: it changes the result from an array to a nullable object. A positive
 literal greater than one does not change collection cardinality. `offset` may
 suppress rows but never proves or broadens cardinality.
 
+### Filter Assignment
+
+`filter` assigns the desired state of a named filter for the current collection
+source. Without `when`, it assigns `true` and therefore activates a manual
+filter:
+
+```dsql
+query PublishedPosts {
+  posts(filter Published) {
+    id
+  }
+}
+```
+
+The assigned state may be a row-independent public or trusted boolean:
+
+```dsql
+query Users {
+  users(filter SoftDelete when not $$includeDeleted) {
+    id
+    deleted_at
+  }
+}
+```
+
+This assignment is `false` when deleted rows are requested. A static opt-out
+uses the ordinary boolean literal:
+
+```dsql
+users(filter SoftDelete when false) {
+  id
+  deleted_at
+}
+```
+
+The assignment controls desired state, while `apply where` may still enforce
+the filter from trusted context. Unknown names, nonmatching filters, duplicate
+assignments at one scope, and an assignment that can be false for `apply where
+true` are diagnostics. A statically true assignment to that filter is merely
+redundant. See [Query Filter Assignments](policies.md#query-filter-assignments).
+
 ## Values
 
 Core literal values:
@@ -828,7 +1062,14 @@ true
 false
 null
 "text"
+[1, 2, 3]
+["active", "invited"]
 ```
+
+List literals are homogeneous typed collection values used by membership
+predicates. Empty lists infer their element type from the field on the other
+side of `in` or `not in`. General list-valued expressions and object literals
+are outside the initial predicate contract.
 
 ## Fragments
 
