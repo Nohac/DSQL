@@ -22,9 +22,11 @@ use super::types::{
     AggregateGroupProjection, AggregatePlan, AggregateProjection, CollectionPlan,
     CollectionResultPlan, ExistsKind, FilterCollection, FilterColumnScope, FilterExpr,
     FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation, OperationSeed, OrderByPlan,
-    PolicyContextRequirement, PolicyFieldFilter, PolicyFieldTarget, Projection, QueryPlan,
-    QueryPlanFact, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
-    SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
+    PolicyAccess, PolicyApplicationField, PolicyApplicationPlan, PolicyAssignmentState,
+    PolicyContextRequirement, PolicyEnforcement, PolicyFieldAccess, PolicyFieldFilter,
+    PolicyFieldTarget, PolicyIdentity, Projection, QueryPlan, QueryPlanFact, SelectionClauses,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter, SqlValue,
+    SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
@@ -188,6 +190,7 @@ async fn plan_queries(
                     &[],
                     walk.policy_context,
                 );
+                let mut policy_applications = policies.applications;
                 let clauses = planner.plan_clauses(
                     table_id,
                     &selection_path,
@@ -195,6 +198,7 @@ async fn plan_queries(
                     root_entity,
                     &scope.0,
                     walk.policy_context,
+                    &mut policy_applications,
                 );
                 if let Some(result) = planner.plan_collection_result(
                     &mut walk,
@@ -222,6 +226,8 @@ async fn plan_queries(
                             policy_filter: policies.row_filter,
                             field_filters: policies.field_filters,
                             policy_nullable_fields: planner.policy_nullable_fields(table_id),
+                            policy_field_access: planner.policy_field_access(table_id),
+                            policy_applications,
                             result,
                         },
                         policy_context,
@@ -470,6 +476,7 @@ fn plan_fragment_body(
             table: table_id,
             selections,
             policy_nullable_fields: planner.policy_nullable_fields(table_id),
+            policy_field_access: planner.policy_field_access(table_id),
             def_span: decl.span,
             scope: scope.to_string(),
             spreads,
@@ -514,11 +521,13 @@ struct PlannedPolicyAssignment {
 struct SourcePolicyPlan {
     row_filter: Option<FilterExpr>,
     field_filters: Vec<PolicyFieldFilter>,
+    applications: Vec<PolicyApplicationPlan>,
 }
 
 struct PolicyPlanningContext<'a> {
     definition_scope: &'a str,
     context: &'a mut Vec<PolicyContextRequirement>,
+    applications: &'a mut Vec<PolicyApplicationPlan>,
 }
 
 struct CollectionSource<'a> {
@@ -551,6 +560,37 @@ impl Planner<'_> {
         {
             if !fields.contains(&field) {
                 fields.push(field);
+            }
+        }
+        fields
+    }
+
+    fn policy_field_access(&self, table: TableId) -> Vec<PolicyFieldAccess> {
+        let mut fields = Vec::<PolicyFieldAccess>::new();
+        for rule in self
+            .compiled_policies
+            .entries
+            .iter()
+            .flat_map(|entry| &entry.targets)
+            .filter(|target| target.table == table)
+            .flat_map(|target| &target.field_rules)
+        {
+            let access = PolicyAccess::for_guard(&rule.condition);
+            if access == PolicyAccess::Unconditional {
+                continue;
+            }
+            for field in &rule.fields {
+                let target = match field {
+                    CompiledPolicyField::Column(column) => PolicyFieldTarget::Column(*column),
+                    CompiledPolicyField::Relation(relation) => {
+                        PolicyFieldTarget::Relation(*relation)
+                    }
+                };
+                if let Some(existing) = fields.iter_mut().find(|field| field.target == target) {
+                    existing.access = existing.access.combine(access);
+                } else {
+                    fields.push(PolicyFieldAccess { target, access });
+                }
             }
         }
         fields
@@ -788,18 +828,60 @@ impl Planner<'_> {
             let desired = assignment
                 .map(|assignment| assignment.desired.clone())
                 .unwrap_or_else(|| boolean_filter(compiled.default_active));
+            let assignment_state = assignment.map_or(PolicyAssignmentState::Default, |_| {
+                match filter_boolean(&desired) {
+                    Some(true) => PolicyAssignmentState::Enabled,
+                    Some(false) => PolicyAssignmentState::Disabled,
+                    None => PolicyAssignmentState::Conditional,
+                }
+            });
+            let enforcement = match target.enforcement.as_ref().and_then(filter_boolean) {
+                Some(true) => PolicyEnforcement::Always,
+                Some(false) | None if target.enforcement.is_none() => PolicyEnforcement::None,
+                Some(false) => PolicyEnforcement::None,
+                None => PolicyEnforcement::Conditional,
+            };
             let active = target
                 .enforcement
                 .clone()
                 .map_or(desired.clone(), |enforcement| {
                     or_filter(enforcement, desired)
                 });
+            let mut application = PolicyApplicationPlan {
+                filter: identity,
+                identity: PolicyIdentity {
+                    scope: compiled.scope.clone(),
+                    name: compiled.name.clone(),
+                },
+                conditions: compiled
+                    .conditions
+                    .iter()
+                    .map(|condition| PolicyIdentity {
+                        scope: condition.scope.clone(),
+                        name: condition.name.clone(),
+                    })
+                    .collect(),
+                path: selection_path.join("."),
+                target: table,
+                default_active: compiled.default_active,
+                enforcement,
+                assignment: assignment_state,
+                rows_filtered: false,
+                fields: Vec::new(),
+                context: Vec::new(),
+            };
             if filter_boolean(&active) == Some(false) {
+                policies.applications.push(application);
                 continue;
             }
             if let Some(rule) = target.row_rule.clone() {
                 let guard = active_policy_guard(&active, rule);
-                collect_policy_context(target, assignment, &guard, context);
+                let mut rule_context = Vec::new();
+                collect_policy_context(target, assignment, &guard, &mut rule_context);
+                extend_unique_context(context, &rule_context);
+                extend_unique_context(&mut application.context, &rule_context);
+                application.rows_filtered =
+                    PolicyAccess::for_guard(&guard) != PolicyAccess::Unconditional;
                 policies.row_filter = Some(
                     policies
                         .row_filter
@@ -808,8 +890,10 @@ impl Planner<'_> {
             }
             for rule in &target.field_rules {
                 let guard = active_policy_guard(&active, rule.condition.clone());
+                let access = PolicyAccess::for_guard(&guard);
                 let mut field_context = Vec::new();
                 collect_policy_context(target, assignment, &guard, &mut field_context);
+                extend_unique_context(&mut application.context, &field_context);
                 for field in &rule.fields {
                     let target = match field {
                         CompiledPolicyField::Column(column) => PolicyFieldTarget::Column(*column),
@@ -817,6 +901,19 @@ impl Planner<'_> {
                             PolicyFieldTarget::Relation(*relation)
                         }
                     };
+                    if access != PolicyAccess::Unconditional {
+                        if let Some(existing) = application
+                            .fields
+                            .iter_mut()
+                            .find(|field| field.target == target)
+                        {
+                            existing.access = existing.access.combine(access);
+                        } else {
+                            application
+                                .fields
+                                .push(PolicyApplicationField { target, access });
+                        }
+                    }
                     if let Some(existing) = policies
                         .field_filters
                         .iter_mut()
@@ -837,7 +934,20 @@ impl Planner<'_> {
                     }
                 }
             }
+            application
+                .fields
+                .sort_by_key(|field| policy_field_target_sort_key(field.target));
+            application
+                .context
+                .sort_by(|left, right| left.path.cmp(&right.path));
+            policies.applications.push(application);
         }
+        policies.applications.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.identity.cmp(&right.identity))
+                .then_with(|| left.target.0.cmp(&right.target.0))
+        });
         policies
     }
 
@@ -1003,6 +1113,7 @@ impl Planner<'_> {
                                 &[],
                                 walk.policy_context,
                             );
+                            let mut policy_applications = child_policies.applications;
                             let child_clauses = self.plan_clauses(
                                 relation_table,
                                 &child_path,
@@ -1010,6 +1121,7 @@ impl Planner<'_> {
                                 field_entity,
                                 definition_scope,
                                 walk.policy_context,
+                                &mut policy_applications,
                             );
                             if !field.flattened {
                                 walk.result_path.push(
@@ -1047,6 +1159,9 @@ impl Planner<'_> {
                                         field_filters: child_policies.field_filters,
                                         policy_nullable_fields: self
                                             .policy_nullable_fields(relation_table),
+                                        policy_field_access: self
+                                            .policy_field_access(relation_table),
+                                        policy_applications,
                                         result: nested,
                                     }),
                                 }));
@@ -1072,6 +1187,10 @@ impl Planner<'_> {
         Some(SelectionPlan { items })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "clause planning carries both query and policy resolution context"
+    )]
     fn plan_clauses(
         &self,
         table: TableId,
@@ -1080,11 +1199,13 @@ impl Planner<'_> {
         field_entity: Entity,
         definition_scope: &str,
         policy_context: &mut Vec<PolicyContextRequirement>,
+        policy_applications: &mut Vec<PolicyApplicationPlan>,
     ) -> SelectionClauses {
         let mut clauses = SelectionClauses::default();
         let mut policy = PolicyPlanningContext {
             definition_scope,
             context: policy_context,
+            applications: policy_applications,
         };
         let mut clause_rows = self
             .tree
@@ -1250,6 +1371,7 @@ impl Planner<'_> {
                     filters,
                     policy.context,
                 );
+                policy.applications.extend(policies.applications);
                 let filter = predicate
                     .as_deref()
                     .and_then(|predicate| {
@@ -1617,6 +1739,7 @@ impl Planner<'_> {
             &[],
             policy.context,
         );
+        policy.applications.extend(policies.applications);
         Some(FilterExpr::RelationAggregate {
             foreign_key: relation.foreign_key,
             table: relation.table,
@@ -1753,6 +1876,7 @@ impl Planner<'_> {
                         &[],
                         policy.context,
                     );
+                    policy.applications.extend(policies.applications);
                     FilterExpr::Exists {
                         foreign_key: Some(relation.foreign_key),
                         table: relation.table,
@@ -1929,6 +2053,24 @@ fn collect_policy_context(
                 .filter(|requirement| parameter_paths.contains(requirement.path.as_str()))
                 .cloned(),
         );
+    }
+}
+
+fn extend_unique_context(
+    context: &mut Vec<PolicyContextRequirement>,
+    requirements: &[PolicyContextRequirement],
+) {
+    for requirement in requirements {
+        if !context.contains(requirement) {
+            context.push(requirement.clone());
+        }
+    }
+}
+
+fn policy_field_target_sort_key(target: PolicyFieldTarget) -> (u8, usize) {
+    match target {
+        PolicyFieldTarget::Column(column) => (0, column.0),
+        PolicyFieldTarget::Relation(relation) => (1, relation.0),
     }
 }
 

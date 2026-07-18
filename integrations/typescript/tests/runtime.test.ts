@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   applyDsqlVariants,
   collectDsqlParameterValues,
+  dsqlQueryKey,
   getDsqlPath,
   materializeDsqlQuery,
   type DsqlExecutionPayload,
@@ -30,6 +31,7 @@ const MovieInfoOperation = {
   id: "movie-info-hash",
   name: "MovieInfo",
   kind: "query",
+  requiresContext: true,
 } satisfies MovieOperation;
 
 const payload = {
@@ -85,6 +87,24 @@ test("requires trusted context separately from public variables", () => {
       {} as { readonly tenant_id: string },
     ),
   ).toThrow("missing trusted dsql context at context.tenant_id");
+});
+
+test("requires an opaque context scope for context-dependent cache keys", () => {
+  expect(() => dsqlQueryKey(MovieInfoOperation, variables)).toThrow(
+    "dsql operation MovieInfo requires contextScope for cache identity",
+  );
+  expect(dsqlQueryKey(MovieInfoOperation, variables, "authorization-v7")).toEqual([
+    "dsql",
+    "MovieInfo",
+    "authorization-v7",
+    variables,
+  ]);
+  expect(
+    dsqlQueryKey(
+      { ...MovieInfoOperation, requiresContext: false },
+      variables,
+    ),
+  ).toEqual(["dsql", "MovieInfo", null, variables]);
 });
 
 test("rejects null trusted context instead of binding SQL null", () => {

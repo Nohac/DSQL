@@ -7,8 +7,10 @@ export type {
   FragmentSpreadMetadata,
   HandoffMetadata,
   InputField,
-  OperationMetadata,
   OperationManifestEntry,
+  OperationMetadata,
+  PolicyApplicationMetadata,
+  PolicyFieldAccessMetadata,
   PolicyMetadata,
   ProvidedContextMetadata,
   ResultField,
@@ -25,7 +27,7 @@ import type { OperationMetadata } from "./generated/metadata.ts";
 
 export type DsqlQueryDefinition<
   TParams = unknown,
-  TContext = unknown,
+  TContext = Record<string, never>,
   TResult = unknown,
 > = OperationMetadata & {
   readonly types?: {
@@ -37,31 +39,57 @@ export type DsqlQueryDefinition<
 
 export type DsqlQuery<
   TParams = unknown,
-  TContext = unknown,
+  TContext = Record<string, never>,
   TResult = unknown,
 > = DsqlQueryDefinition<TParams, TContext, TResult> & {
-  key(params: TParams): readonly ["dsql", string, TParams];
-  queryOptions(params: TParams): {
-    readonly queryKey: readonly ["dsql", string, TParams];
+  key(
+    params: TParams,
+    ...contextScope: DsqlContextScopeArgument<TContext>
+  ): readonly ["dsql", string, string | null, TParams];
+  queryOptions(
+    params: TParams,
+    ...contextScope: DsqlContextScopeArgument<TContext>
+  ): {
+    readonly queryKey: readonly ["dsql", string, string | null, TParams];
   };
 };
 
+type DsqlContextScopeArgument<Context> =
+  [Context] extends [Record<string, never>]
+    ? readonly [contextScope?: string]
+    : readonly [contextScope: string];
+
 export function defineDsqlQuery<
   TParams = unknown,
-  TContext = unknown,
+  TContext = Record<string, never>,
   TResult = unknown,
 >(
   definition: DsqlQueryDefinition<TParams, TContext, TResult>,
 ): DsqlQuery<TParams, TContext, TResult> {
   return {
     ...definition,
-    key(params) {
-      return ["dsql", definition.name, params] as const;
+    key(params, ...contextScope) {
+      const [scope] = contextScope;
+      requireContextScope(definition, scope);
+      return ["dsql", definition.name, scope ?? null, params] as const;
     },
-    queryOptions(params) {
+    queryOptions(params, ...contextScope) {
+      const [scope] = contextScope;
+      requireContextScope(definition, scope);
       return {
-        queryKey: ["dsql", definition.name, params] as const,
+        queryKey: ["dsql", definition.name, scope ?? null, params] as const,
       };
     },
   };
+}
+
+function requireContextScope(
+  definition: OperationMetadata,
+  contextScope: string | undefined,
+): void {
+  if (definition.context.length > 0 && contextScope === undefined) {
+    throw new Error(
+      `dsql operation ${definition.name} requires contextScope for cache identity`,
+    );
+  }
 }

@@ -356,7 +356,7 @@ async fn semantic_tokens_advertise_and_encode_the_host_wire_contract() {
     assert_eq!(
         session.initialize["result"]["capabilities"]["semanticTokensProvider"]["legend"],
         json!({
-            "tokenTypes": ["namespace", "class", "relation", "property", "fragment", "alias"],
+            "tokenTypes": ["namespace", "class", "relation", "property", "fragment", "alias", "policy"],
             "tokenModifiers": [],
         })
     );

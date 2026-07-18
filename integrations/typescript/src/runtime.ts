@@ -7,6 +7,8 @@ export type DsqlOperation<
   readonly id: string;
   readonly name: string;
   readonly kind: "query";
+  /** Whether server execution binds at least one trusted-context value. */
+  readonly requiresContext: boolean;
   readonly result?: Result;
   readonly params?: Params;
   readonly input?: Input;
@@ -37,6 +39,26 @@ export type DsqlVariables<
   readonly params: DsqlOperationParams<Operation>;
   readonly input: DsqlOperationInput<Operation>;
 };
+
+export type DsqlQueryKey<Variables> = readonly [
+  "dsql",
+  string,
+  string | null,
+  Variables,
+];
+
+export function dsqlQueryKey<Variables>(
+  operation: DsqlOperation<any, any, any, any>,
+  variables: Variables,
+  contextScope?: string,
+): DsqlQueryKey<Variables> {
+  if (operation.requiresContext && contextScope === undefined) {
+    throw new Error(
+      `dsql operation ${operation.name} requires contextScope for cache identity`,
+    );
+  }
+  return ["dsql", operation.name, contextScope ?? null, variables] as const;
+}
 
 export type DsqlFragmentDefinition<
   Result = unknown,

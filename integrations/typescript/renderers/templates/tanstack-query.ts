@@ -8,6 +8,7 @@ import type {
   DsqlOperation,
   DsqlOperationResult,
 } from "@dsql/typescript/runtime";
+import { dsqlQueryKey } from "@dsql/typescript/runtime";
 import type { DsqlServerVariables } from "./tanstack-start";
 
 export type DsqlQueryVariables<
@@ -31,25 +32,37 @@ type DsqlOptionalInput<Input> =
 type DsqlVariableOptions<Params, Input> =
   DsqlOptionalParams<Params> & DsqlOptionalInput<Input>;
 
-type DsqlOptionsArgument<Params, Input, Options> =
-  [Params] extends [Record<string, never>]
-    ? [Input] extends [Record<string, never>]
-      ? readonly [options?: Options]
+type DsqlOptionsArgument<Params, Input, Context, Options> =
+  [Context] extends [Record<string, never>]
+    ? [Params] extends [Record<string, never>]
+      ? [Input] extends [Record<string, never>]
+        ? readonly [options?: Options]
+        : readonly [options: Options]
       : readonly [options: Options]
     : readonly [options: Options];
 
-export type DsqlQueryKey<Variables> = readonly ["dsql", string, Variables];
+type DsqlContextScopeOptions<Context> =
+  [Context] extends [Record<string, never>]
+    ? { readonly contextScope?: string }
+    : { readonly contextScope: string };
+
+export type DsqlQueryKey<Variables> = readonly [
+  "dsql",
+  string,
+  string | null,
+  Variables,
+];
 
 /**
- * DSQL operations may depend on trusted context that intentionally never
- * reaches the client. Applications must clear or invalidate DSQL queries when
- * that authentication context changes; public variables alone cannot
- * distinguish those result scopes.
+ * `contextScope` is an opaque, non-secret identity for the trusted server
+ * context. It participates only in the client cache key and is never sent to
+ * the server function.
  */
 
 export type DsqlQueryOptions<
   Params,
   Input,
+  Context,
   Result,
 > = Omit<
   UseQueryOptions<
@@ -60,7 +73,7 @@ export type DsqlQueryOptions<
   >,
   "queryKey" | "queryFn"
 > & {
-} & DsqlVariableOptions<Params, Input>;
+} & DsqlVariableOptions<Params, Input> & DsqlContextScopeOptions<Context>;
 
 export type DsqlExecuteOptions<
   Params,
@@ -76,8 +89,9 @@ type DsqlServerFunction<Operation extends DsqlOperation<any, any, any, any>> = (
 export function queryKey<Variables>(
   operation: DsqlOperation<any, any, any, any>,
   variables: Variables,
+  contextScope?: string,
 ): DsqlQueryKey<Variables> {
-  return ["dsql", operation.name, variables] as const;
+  return dsqlQueryKey(operation, variables, contextScope);
 }
 
 export function queryOptions<Result, Params, Input, Context>(
@@ -85,11 +99,13 @@ export function queryOptions<Result, Params, Input, Context>(
   ...args: DsqlOptionsArgument<
     NoInfer<Params>,
     NoInfer<Input>,
-    DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>
+    NoInfer<Context>,
+    DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Context>, NoInfer<Result>>
   >
 ) {
-  const [options = {} as DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>] = args;
+  const [options = {} as DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Context>, NoInfer<Result>>] = args;
   const {
+    contextScope,
     params = {} as Params,
     input = {} as Input,
     ...tanStackOptions
@@ -98,7 +114,7 @@ export function queryOptions<Result, Params, Input, Context>(
   const serverFn = serverFunctionFor(operation);
   return tanStackQueryOptions({
     ...tanStackOptions,
-    queryKey: queryKey(operation, variables),
+    queryKey: queryKey(operation, variables, contextScope),
     queryFn: () => serverFn({ data: variables }),
   });
 }
@@ -108,6 +124,7 @@ export function executeQuery<Result, Params, Input, Context>(
   ...args: DsqlOptionsArgument<
     NoInfer<Params>,
     NoInfer<Input>,
+    Record<string, never>,
     DsqlExecuteOptions<NoInfer<Params>, NoInfer<Input>>
   >
 ): Promise<Result> {
@@ -125,11 +142,13 @@ export function useQuery<Result, Params, Input, Context>(
   ...args: DsqlOptionsArgument<
     NoInfer<Params>,
     NoInfer<Input>,
-    DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>
+    NoInfer<Context>,
+    DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Context>, NoInfer<Result>>
   >
 ): UseQueryResult<Result, Error> {
-  const [options = {} as DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Result>>] = args;
+  const [options = {} as DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Context>, NoInfer<Result>>] = args;
   const {
+    contextScope,
     params = {} as Params,
     input = {} as Input,
     ...tanStackOptions
@@ -139,7 +158,7 @@ export function useQuery<Result, Params, Input, Context>(
   return useTanStackQuery(
     tanStackQueryOptions({
       ...tanStackOptions,
-      queryKey: queryKey(operation, variables),
+      queryKey: queryKey(operation, variables, contextScope),
       queryFn: () => serverFn({ data: variables }),
     }),
   ) as UseQueryResult<Result, Error>;

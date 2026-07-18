@@ -60,6 +60,7 @@ pub enum CompletionKind {
     Table,
     Fragment,
     Directive,
+    Policy,
     Scope,
     Operator,
     Keyword,
@@ -104,6 +105,8 @@ pub enum CompletionSite {
     PredicateAggregateFunction,
     /// Naming a direct related-table operand after its `.` anchor.
     PredicateAggregateOperand,
+    /// Naming a filter after the `filter` keyword.
+    FilterAssignment,
     /// After `@`, naming a directive namespace (or the `.` shorthand).
     DirectiveName,
     /// After `@namespace.` or `@.`, naming a directive member.
@@ -442,7 +445,8 @@ fn policy_keyword_applies(site: CompletionSite, keyword: &str) -> bool {
             site,
             CompletionSite::DocumentRoot | CompletionSite::ClauseList
         ),
-        "apply" | "field" | "when" => false,
+        "apply" | "field" => false,
+        "when" => site == CompletionSite::FilterAssignment,
         _ => true,
     }
 }
@@ -710,11 +714,33 @@ fn classify_site(
     spine: &[(Rule, NodeRef)],
     stop: Option<SpineStop>,
 ) -> CompletionSite {
+    if stop == Some(SpineStop::Unstarted(Rule::SelectionSet))
+        && let Some((Rule::QueryDef, query)) = spine.last()
+        && let Some(header) = cst
+            .children(*query)
+            .find(|child| cst.match_rule(*child, Rule::QueryFilterHeader))
+        && !cst
+            .children(header)
+            .any(|child| cst.match_token(child, Token::RPar).is_some())
+        && cst
+            .children(header)
+            .filter(|child| cst.match_rule(*child, Rule::FilterAssignment))
+            .last()
+            .is_some_and(|assignment| {
+                !cst.children(assignment)
+                    .any(|part| cst.match_token(part, Token::When).is_some())
+            })
+    {
+        return CompletionSite::FilterAssignment;
+    }
     // A cursor in the gap after a field's `(...)` or in a definition
     // header (before its `{`) has no meaningful completions of its own:
     // the next token is structural.
     if stop == Some(SpineStop::Finished(Rule::ClauseList))
         || stop == Some(SpineStop::Unstarted(Rule::SelectionSet))
+            && !spine
+                .iter()
+                .any(|(rule, _)| *rule == Rule::FilterAssignment)
     {
         return CompletionSite::Other;
     }
@@ -734,6 +760,25 @@ fn classify_site(
         match rule {
             Rule::WhereClause => return CompletionSite::WhereExpr,
             Rule::OrderByClause => return CompletionSite::OrderBy,
+            Rule::FilterAssignment
+                if !cst
+                    .children(*node)
+                    .any(|child| cst.match_token(child, Token::When).is_some()) =>
+            {
+                return CompletionSite::FilterAssignment;
+            }
+            Rule::QueryFilterHeader
+                if cst
+                    .children(*node)
+                    .filter(|child| cst.match_rule(*child, Rule::FilterAssignment))
+                    .last()
+                    .is_some_and(|assignment| {
+                        !cst.children(assignment)
+                            .any(|part| cst.match_token(part, Token::When).is_some())
+                    }) =>
+            {
+                return CompletionSite::FilterAssignment;
+            }
             Rule::ClauseList => return CompletionSite::ClauseList,
             Rule::FragmentSpread => return CompletionSite::SpreadName,
             Rule::AggregateSet => return CompletionSite::AggregateBody,

@@ -8,8 +8,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bowl::{
-    Commands, Component, DerivedFrom, Entity, Phase, Query, Registrar, Singleton, SystemExt, View,
-    With,
+    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Registrar, Singleton,
+    SystemExt, View, Where, With,
 };
 
 use crate::catalog::{
@@ -35,6 +35,13 @@ use crate::plan::{
     PolicyContextRequirement, SqlParameter,
 };
 use crate::schema::{AstFacts, dsql_schema};
+use crate::service::completion::{
+    CompletionContext, CompletionItem, CompletionKind, CompletionRequest, CompletionSite,
+    emit_completion_candidate,
+};
+use crate::service::definition::{DefinitionRequest, DefinitionTarget};
+use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
+use crate::service::semantic_tokens::{SemanticToken, SemanticTokenKind, TokenChunk, TokensDemand};
 use crate::source::{BelongsToHost, ResolutionScope, ScopeImports};
 
 /// Whether one policy declaration defines an applicable filter or a reusable
@@ -506,6 +513,420 @@ fn assignment_expr_is_row_independent(expr: &Expr) -> bool {
     }
 }
 
+fn unique_visible_policy<'a>(
+    index: &'a PolicyIndex,
+    imports: &'a ScopeImports,
+    scope: &str,
+    kind: PolicyKind,
+    name: &str,
+) -> Option<&'a PolicyEntry> {
+    let visible = index.visible(scope, kind, name, imports);
+    let [entry] = visible.as_slice() else {
+        return None;
+    };
+    Some(*entry)
+}
+
+fn policy_description(
+    entry: &PolicyEntry,
+    compiled: &CompiledPolicyIndex,
+    catalog: &Catalog,
+    consumer_scope: &str,
+) -> String {
+    let mut lines = vec![format!("{} `{}`", entry.kind, entry.name)];
+    lines.push(format!("defined in scope `{}`", entry.scope));
+    if entry.kind == PolicyKind::Filter {
+        lines.push(format!(
+            "default: {}",
+            if entry.default_active {
+                "active"
+            } else {
+                "inactive"
+            }
+        ));
+        let enforcement = compiled
+            .entry(entry.entity)
+            .and_then(|filter| filter.targets.first())
+            .and_then(|target| target.enforcement.as_ref())
+            .map_or("none", |guard| {
+                if matches!(guard, FilterExpr::Literal(FilterLiteral::Bool(true))) {
+                    "always"
+                } else if matches!(guard, FilterExpr::Literal(FilterLiteral::Bool(false))) {
+                    "none"
+                } else {
+                    "conditional"
+                }
+            });
+        lines.push(format!("enforcement: {enforcement}"));
+        lines.push(format!(
+            "lock: `{consumer_scope} <- {}::{}`",
+            entry.scope, entry.name
+        ));
+    }
+    if !entry.matches.is_empty() {
+        let mut matches = entry
+            .matches
+            .iter()
+            .filter_map(|table| catalog.table_by_id(*table))
+            .map(|table| format!("{}.{}", table.schema, table.name))
+            .collect::<Vec<_>>();
+        matches.sort();
+        lines.push(format!("matches: {}", matches.join(", ")));
+    }
+    lines.join("\n")
+}
+
+fn collect_expr_policy_references(
+    expr: &Expr,
+    conditions: &mut Vec<(String, Span)>,
+    filters: &mut Vec<(String, Span)>,
+) {
+    match expr {
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_expr_policy_references(lhs, conditions, filters);
+            collect_expr_policy_references(rhs, conditions, filters);
+        }
+        Expr::Unary { operand, .. } | Expr::NullTest { operand, .. } => {
+            collect_expr_policy_references(operand, conditions, filters);
+        }
+        Expr::List { items, .. } => {
+            for item in items {
+                collect_expr_policy_references(item, conditions, filters);
+            }
+        }
+        Expr::Exists {
+            source,
+            filters: assignments,
+            predicate,
+            ..
+        } => {
+            if let ExistsSource::Relation(source) = source {
+                collect_expr_policy_references(source, conditions, filters);
+            }
+            for assignment in assignments {
+                filters.push((assignment.name.clone(), assignment.name_span));
+                if let Some(condition) = &assignment.condition {
+                    collect_expr_policy_references(condition, conditions, filters);
+                }
+            }
+            if let Some(predicate) = predicate {
+                collect_expr_policy_references(predicate, conditions, filters);
+            }
+        }
+        Expr::PredicateRef { name, span } => conditions.push((name.clone(), *span)),
+        Expr::Aggregate {
+            source, operand, ..
+        } => {
+            collect_expr_policy_references(source, conditions, filters);
+            if let Some(operand) = operand {
+                collect_expr_policy_references(operand, conditions, filters);
+            }
+        }
+        Expr::Literal { .. } | Expr::Path { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
+    }
+}
+
+fn declaration_references(declaration: &PolicyDecl) -> Vec<(PolicyKind, String, Span)> {
+    let mut conditions = Vec::new();
+    let mut filters = Vec::new();
+    if let Some(condition) = declaration
+        .apply
+        .as_ref()
+        .and_then(|apply| apply.condition.as_ref())
+    {
+        collect_expr_policy_references(condition, &mut conditions, &mut filters);
+    }
+    for expression in &declaration.row_rules {
+        collect_expr_policy_references(expression, &mut conditions, &mut filters);
+    }
+    for rule in &declaration.field_rules {
+        collect_expr_policy_references(&rule.condition, &mut conditions, &mut filters);
+    }
+    conditions
+        .into_iter()
+        .map(|(name, span)| (PolicyKind::Condition, name, span))
+        .chain(
+            filters
+                .into_iter()
+                .map(|(name, span)| (PolicyKind::Filter, name, span)),
+        )
+        .collect()
+}
+
+fn clause_filter_references(clause: &crate::entities::clause::ClauseFact) -> Vec<(String, Span)> {
+    let mut conditions = Vec::new();
+    let mut filters = Vec::new();
+    match clause {
+        crate::entities::clause::ClauseFact::FilterAssignment {
+            name,
+            name_span,
+            condition,
+        } => {
+            filters.push((name.clone(), *name_span));
+            if let Some(condition) = condition {
+                collect_expr_policy_references(condition, &mut conditions, &mut filters);
+            }
+        }
+        crate::entities::clause::ClauseFact::Where { expr }
+        | crate::entities::clause::ClauseFact::Limit { expr }
+        | crate::entities::clause::ClauseFact::Offset { expr } => {
+            collect_expr_policy_references(expr, &mut conditions, &mut filters);
+        }
+        crate::entities::clause::ClauseFact::OrderBy { .. } => {}
+    }
+    filters
+}
+
+async fn hover_policy_declarations(
+    request: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
+    declaration: Query<(Entity, &PolicyDecl, &ResolutionScope), Where<BowlEq<BelongsToFile>>>,
+    policies: Query<(Entity, &PolicyIndex, &CompiledPolicyIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::HoverCandidate,)>,
+) {
+    let (request, _, cursor) = request.item();
+    let (entity, declaration, scope) = declaration.item();
+    let (_, index, compiled) = policies.item();
+    let (_, imports) = imports.item();
+    let (_, snapshot) = catalog.item();
+    let entry = if declaration.name_span.contains(cursor.0) {
+        index.entry(entity)
+    } else {
+        declaration_references(declaration)
+            .into_iter()
+            .find(|(_, _, span)| span.contains(cursor.0))
+            .and_then(|(kind, name, _)| {
+                unique_visible_policy(index, imports, &scope.0, kind, &name)
+            })
+    };
+    if let Some(entry) = entry {
+        emit_hover_candidate(
+            &mut commands,
+            request,
+            priority::POLICY,
+            policy_description(entry, compiled, snapshot.catalog(), &scope.0),
+        );
+    }
+}
+
+async fn hover_filter_assignments(
+    request: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
+    clause: Query<
+        (
+            Entity,
+            &crate::entities::clause::ClauseFact,
+            &ResolutionScope,
+        ),
+        Where<BowlEq<BelongsToFile>>,
+    >,
+    policies: Query<(Entity, &PolicyIndex, &CompiledPolicyIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::HoverCandidate,)>,
+) {
+    let (request, _, cursor) = request.item();
+    let (_, clause, scope) = clause.item();
+    let (_, index, compiled) = policies.item();
+    let (_, imports) = imports.item();
+    let (_, snapshot) = catalog.item();
+    let Some((name, _)) = clause_filter_references(clause)
+        .into_iter()
+        .find(|(_, span)| span.contains(cursor.0))
+    else {
+        return;
+    };
+    if let Some(entry) = unique_visible_policy(index, imports, &scope.0, PolicyKind::Filter, &name)
+    {
+        emit_hover_candidate(
+            &mut commands,
+            request,
+            priority::POLICY,
+            policy_description(entry, compiled, snapshot.catalog(), &scope.0),
+        );
+    }
+}
+
+async fn complete_filter_assignments(
+    request: Query<(Entity, &CompletionContext), With<CompletionRequest>>,
+    policies: Query<(Entity, &PolicyIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
+) {
+    let (request, context) = request.item();
+    if context.site != CompletionSite::FilterAssignment {
+        return;
+    }
+    let (_, index) = policies.item();
+    let (_, imports) = imports.item();
+    let (_, snapshot) = catalog.item();
+    let catalog = snapshot.catalog();
+    let mut by_name = BTreeMap::<&str, Vec<&PolicyEntry>>::new();
+    for entry in index.entries.iter().filter(|entry| {
+        entry.kind == PolicyKind::Filter
+            && imports
+                .visible_from(&context.scope)
+                .any(|scope| scope == entry.scope)
+            && context
+                .table
+                .is_none_or(|table| entry.matches.contains(&table))
+    }) {
+        by_name.entry(&entry.name).or_default().push(entry);
+    }
+    let items = by_name
+        .into_values()
+        .filter_map(|entries| {
+            let [entry] = entries.as_slice() else {
+                return None;
+            };
+            let targets = entry
+                .matches
+                .iter()
+                .filter_map(|table| catalog.table_by_id(*table))
+                .map(|table| format!("{}.{}", table.schema, table.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(CompletionItem {
+                label: entry.name.clone(),
+                kind: CompletionKind::Policy,
+                detail: Some(format!(
+                    "filter {}::{} on {targets}",
+                    entry.scope, entry.name
+                )),
+                insert_text: None,
+            })
+        })
+        .collect();
+    emit_completion_candidate(&mut commands, request, items);
+}
+
+async fn define_policy_references(
+    request: Query<(Entity, &BelongsToFile, &Cursor), With<DefinitionRequest>>,
+    declaration: Query<(Entity, &PolicyDecl, &ResolutionScope), Where<BowlEq<BelongsToFile>>>,
+    index: Query<(Entity, &PolicyIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    mut commands: Commands<(dsql_schema::DefinitionAnswer,)>,
+) {
+    let (request, _, cursor) = request.item();
+    let (_, declaration, scope) = declaration.item();
+    let (_, index) = index.item();
+    let (_, imports) = imports.item();
+    let Some((kind, name, _)) = declaration_references(declaration)
+        .into_iter()
+        .find(|(_, _, span)| span.contains(cursor.0))
+    else {
+        return;
+    };
+    if let Some(entry) = unique_visible_policy(index, imports, &scope.0, kind, &name) {
+        commands.entity(request).insert(DefinitionTarget::Source {
+            file: entry.file,
+            span: entry.name_span,
+        });
+    }
+}
+
+async fn define_filter_assignments(
+    request: Query<(Entity, &BelongsToFile, &Cursor), With<DefinitionRequest>>,
+    clause: Query<
+        (
+            Entity,
+            &crate::entities::clause::ClauseFact,
+            &ResolutionScope,
+        ),
+        Where<BowlEq<BelongsToFile>>,
+    >,
+    index: Query<(Entity, &PolicyIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    mut commands: Commands<(dsql_schema::DefinitionAnswer,)>,
+) {
+    let (request, _, cursor) = request.item();
+    let (_, clause, scope) = clause.item();
+    let (_, index) = index.item();
+    let (_, imports) = imports.item();
+    let Some((name, _)) = clause_filter_references(clause)
+        .into_iter()
+        .find(|(_, span)| span.contains(cursor.0))
+    else {
+        return;
+    };
+    if let Some(entry) = unique_visible_policy(index, imports, &scope.0, PolicyKind::Filter, &name)
+    {
+        commands.entity(request).insert(DefinitionTarget::Source {
+            file: entry.file,
+            span: entry.name_span,
+        });
+    }
+}
+
+async fn policy_declaration_tokens(
+    demand: Query<Entity, With<TokensDemand>>,
+    declaration: Query<(Entity, &PolicyDecl, &BelongsToFile, &ResolutionScope)>,
+    index: Query<(Entity, &PolicyIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    mut commands: Commands<(dsql_schema::TokenChunk,)>,
+) {
+    let demand = demand.item();
+    let (entity, declaration, file, scope) = declaration.item();
+    let (index_entity, index) = index.item();
+    let (_, imports) = imports.item();
+    let mut tokens = vec![SemanticToken {
+        span: declaration.name_span,
+        kind: SemanticTokenKind::Policy,
+    }];
+    tokens.extend(
+        declaration_references(declaration)
+            .into_iter()
+            .filter(|(kind, name, _)| {
+                unique_visible_policy(index, imports, &scope.0, *kind, name).is_some()
+            })
+            .map(|(_, _, span)| SemanticToken {
+                span,
+                kind: SemanticTokenKind::Policy,
+            }),
+    );
+    commands.insert((
+        DerivedFrom::many([entity, index_entity, demand]),
+        BelongsToFile(file.0),
+        TokenChunk(tokens),
+    ));
+}
+
+async fn policy_assignment_tokens(
+    demand: Query<Entity, With<TokensDemand>>,
+    clause: Query<(
+        Entity,
+        &crate::entities::clause::ClauseFact,
+        &BelongsToFile,
+        &ResolutionScope,
+    )>,
+    index: Query<(Entity, &PolicyIndex)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    mut commands: Commands<(dsql_schema::TokenChunk,)>,
+) {
+    let demand = demand.item();
+    let (entity, clause, file, scope) = clause.item();
+    let (index_entity, index) = index.item();
+    let (_, imports) = imports.item();
+    let tokens = clause_filter_references(clause)
+        .into_iter()
+        .filter(|(name, _)| {
+            unique_visible_policy(index, imports, &scope.0, PolicyKind::Filter, name).is_some()
+        })
+        .map(|(_, span)| SemanticToken {
+            span,
+            kind: SemanticTokenKind::Policy,
+        })
+        .collect::<Vec<_>>();
+    if !tokens.is_empty() {
+        commands.insert((
+            DerivedFrom::many([entity, index_entity, demand]),
+            BelongsToFile(file.0),
+            TokenChunk(tokens),
+        ));
+    }
+}
+
 /// Owns filter and condition definition rules.
 pub struct Policy;
 
@@ -518,6 +939,13 @@ impl LanguageEntity for Policy {
         registrar.system(compile_policies.run_during(Phase::Complete));
         registrar.system(check_policy_definitions.run_during(Phase::Complete));
         registrar.system(check_import_ambiguities.run_during(Phase::Complete));
+        registrar.system(hover_policy_declarations.run_during(Phase::Complete));
+        registrar.system(hover_filter_assignments.run_during(Phase::Complete));
+        registrar.system(complete_filter_assignments.run_during(Phase::Complete));
+        registrar.system(define_policy_references.run_during(Phase::Complete));
+        registrar.system(define_filter_assignments.run_during(Phase::Complete));
+        registrar.system(policy_declaration_tokens.run_during(Phase::Complete));
+        registrar.system(policy_assignment_tokens.run_during(Phase::Complete));
     }
 }
 

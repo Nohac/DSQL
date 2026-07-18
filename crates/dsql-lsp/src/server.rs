@@ -580,6 +580,7 @@ impl LanguageServer for Backend {
                     CompletionKind::Table => CompletionItemKind::CLASS,
                     CompletionKind::Fragment => CompletionItemKind::SNIPPET,
                     CompletionKind::Directive => CompletionItemKind::FUNCTION,
+                    CompletionKind::Policy => CompletionItemKind::REFERENCE,
                     CompletionKind::Scope => CompletionItemKind::OPERATOR,
                     CompletionKind::Operator => CompletionItemKind::OPERATOR,
                     CompletionKind::Keyword => CompletionItemKind::KEYWORD,

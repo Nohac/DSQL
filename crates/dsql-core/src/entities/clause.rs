@@ -24,6 +24,7 @@ use crate::resolution::{PathTerminal, ResolvedClause};
 use crate::service::hover::{
     Cursor, HoverEnriched, describe_column, describe_relation, emit_hover_candidate, priority,
 };
+use crate::source::ResolutionScope;
 
 /// One clause, lowered from `where_clause` / `order_by_clause` /
 /// `limit_clause` / `offset_clause`. [`ChildOf`] links it to the field
@@ -208,6 +209,7 @@ impl LowerStage for Clause {
                     BelongsToFile(ctx.file),
                     key,
                     node_span(ctx.cst, node),
+                    ResolutionScope(ctx.scope.to_string()),
                     fact,
                     ChildOf(parent),
                 ))
@@ -218,6 +220,7 @@ impl LowerStage for Clause {
                     BelongsToFile(ctx.file),
                     key,
                     node_span(ctx.cst, node),
+                    ResolutionScope(ctx.scope.to_string()),
                     fact,
                 ))
                 .untyped(),

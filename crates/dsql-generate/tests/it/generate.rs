@@ -562,6 +562,55 @@ async fn trusted_context_flows_through_sql_and_operation_metadata() {
 }
 
 #[tokio::test]
+async fn policy_metadata_explains_composed_access_and_disabled_assignments() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
+        vec![document(
+            "queries/frontend/access.dsql",
+            concat!(
+                "filter ContextName on users {\n",
+                "  apply\n",
+                "  field name where $:is_admin\n",
+                "}\n",
+                "filter RowName on users {\n",
+                "  apply\n",
+                "  field name where .id == $:user_id\n",
+                "}\n",
+                "filter UserPosts on users {\n",
+                "  apply\n",
+                "  field posts where .id == $:user_id\n",
+                "}\n",
+                "filter VisiblePosts on posts {\n",
+                "  apply\n",
+                "  where $:can_read_posts\n",
+                "}\n",
+                "filter Manual on users { where .id == .id }\n",
+                "query PolicyAudit(filter Manual when false) {\n",
+                "  users(limit 1) {\n",
+                "    name\n",
+                "    posts { title }\n",
+                "  }\n",
+                "}\n",
+            ),
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("policy metadata assembles");
+    let artifact = assembled
+        .snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "PolicyAudit")
+        .expect("policy audit operation");
+
+    insta::assert_snapshot!(artifact.serialized);
+}
+
+#[tokio::test]
 async fn singular_selection_shapes_flow_through_sql_and_metadata() {
     let bowl = memory_bowl(
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA, MEMBERSHIPS_SCHEMA]),

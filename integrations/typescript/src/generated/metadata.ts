@@ -81,10 +81,35 @@ export interface ProvidedContextMetadata {
 }
 
 export interface PolicyMetadata {
+  /** Effective consumer scope, matching one `dsql.lock` record. */
+  scope: string;
+  /** Scope that owns the filter declaration. */
+  defined_in: string;
   name: string;
-  kind: string;
-  targets: string[];
+  default_active: boolean;
+  /** `none`, `always`, or `conditional`. */
+  enforcement: string;
+  conditions: string[];
   context: string[];
+  source: SourceMapEntry;
+  applications: PolicyApplicationMetadata[];
+}
+
+export interface PolicyApplicationMetadata {
+  path: string;
+  target: string;
+  /** `default`, `enabled`, `disabled`, or `conditional`. */
+  assignment: string;
+  rows_filtered: boolean;
+  fields: PolicyFieldAccessMetadata[];
+}
+
+export interface PolicyFieldAccessMetadata {
+  name: string;
+  /** `column` or `relation`. */
+  kind: string;
+  /** `context_only` or `row_dependent`. */
+  access: string;
 }
 
 export interface DynamicInputMetadata {
@@ -120,6 +145,8 @@ export interface ResultField {
   kind: string;
   data_type: string;
   nullable: boolean;
+  /** `unconditional`, `context_only`, or `row_dependent`. */
+  access: string;
 }
 
 export interface SqlMetadata {
@@ -219,4 +246,6 @@ export interface ResultField {
   kind: string;
   data_type: string;
   nullable: boolean;
+  /** `unconditional`, `context_only`, or `row_dependent`. */
+  access: string;
 }

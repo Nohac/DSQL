@@ -1,0 +1,53 @@
+---
+source: crates/dsql-core/tests/it/scenarios.rs
+expression: "format!(\"condition declaration hover:\\n{}\\n\\ncondition reference hover:\\n{}\\n\\nfilter assignment hover:\\n{}\\n\\ncondition definition:\\n{}\\n\\nfilter definition:\\n{}\\n\\nheader completion:\\n{}\\n\\nnested completion:\\n{}\\n\\npolicy tokens:\\n{tokens}\",\nscenario.hover(\"policies.dsql\", markers[0]).await,\nscenario.hover(\"policies.dsql\", markers[2]).await,\nscenario.hover(\"policies.dsql\", markers[5]).await,\nscenario.definition(\"policies.dsql\", markers[3]).await,\nscenario.definition(\"policies.dsql\", markers[4]).await,\nscenario.complete(\"header.dsql\", header_completion[0]).await,\nscenario.complete(\"nested.dsql\", nested_completion[0]).await,)"
+---
+condition declaration hover:
+condition `Admin`
+defined in scope `default`
+
+condition reference hover:
+condition `Admin`
+defined in scope `default`
+
+filter assignment hover:
+filter `TitleAccess`
+defined in scope `default`
+default: active
+enforcement: conditional
+lock: `default <- default::TitleAccess`
+matches: public.title
+
+condition definition:
+policies.dsql[10..15] -> `Admin`
+
+filter definition:
+policies.dsql[44..55] -> `TitleAccess`
+
+header completion:
+context: FilterAssignment table=<unresolved> scope=default replace=[20..21]
+Policy NameAccess — filter default::NameAccess on public.name
+Policy TitleAccess — filter default::TitleAccess on public.title
+Keyword exists
+Keyword in
+Keyword is
+Keyword not
+Keyword when
+
+nested completion:
+context: FilterAssignment table=title scope=default replace=<none>
+Policy TitleAccess — filter default::TitleAccess on public.title
+Keyword exists
+Keyword in
+Keyword is
+Keyword not
+Keyword when
+
+policy tokens:
+10..15 `Admin`
+44..55 `TitleAccess`
+81..86 `Admin`
+117..122 `Admin`
+132..142 `NameAccess`
+184..195 `TitleAccess`
+225..236 `TitleAccess`

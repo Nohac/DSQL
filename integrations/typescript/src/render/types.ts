@@ -275,7 +275,8 @@ function renderOperationModule(
     `export const ${name}Operation: DsqlOperation<${resultType}, ${paramsType}, ${inputType}, ${contextType}> = {
   id: ${JSON.stringify(manifestEntry.hash)},
   name: ${JSON.stringify(operation.name)},
-  kind: ${JSON.stringify(DEFINITION_KIND_QUERY)}
+  kind: ${JSON.stringify(DEFINITION_KIND_QUERY)},
+  requiresContext: ${operation.context.length > 0}
 };`,
     "",
     renderSourceRegistryAugmentation(options.embeddedSource, `${name}Operation`),

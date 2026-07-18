@@ -134,6 +134,7 @@ pub struct DsqlSchema {
         NodeKey,
         ClauseFact,
         Span,
+        ResolutionScope,
         BelongsToFile,
         DerivedFrom,
         Option<ChildOf>,

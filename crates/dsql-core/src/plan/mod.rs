@@ -8,7 +8,9 @@ pub use types::{
     AggregatePlan, AggregateProjection, CollectionPlan, CollectionResultPlan, ExistsKind,
     FilterCollection, FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlan,
     FragmentPlanFact, NestedRelation, OperationSeed, OrderByPlan, PlanDiagnostic,
-    PlanDiagnosticKind, PlannedFile, PolicyContextRequirement, PolicyFieldFilter,
-    PolicyFieldTarget, Projection, QueryPlan, QueryPlanFact, SelectionClauses, SelectionPlan,
-    SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
+    PlanDiagnosticKind, PlannedFile, PolicyAccess, PolicyApplicationField, PolicyApplicationPlan,
+    PolicyAssignmentState, PolicyContextRequirement, PolicyEnforcement, PolicyFieldAccess,
+    PolicyFieldFilter, PolicyFieldTarget, PolicyIdentity, Projection, QueryPlan, QueryPlanFact,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter,
+    SqlValue, SqlVariantCase,
 };

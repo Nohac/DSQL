@@ -1,6 +1,7 @@
 # Filters And Access Rules
 
-Status: RFC.
+Status: implemented for the initial scope. Result access masks and the open
+extensions at the end remain deferred.
 
 Filters provide reusable, compiler-enforced data constraints and
 runtime-dependent readable views for generated operations. They protect
@@ -528,13 +529,44 @@ conditional: context-only
 conditional: row-dependent
 ```
 
+Each operation policy record is identified by its effective consumer `scope`,
+declaration `defined_in`, and `name`, matching the identity shown in
+`dsql.lock`. It includes the declaration default and enforcement class,
+referenced conditions, required context paths, declaration source map, and its
+effective applications. Applications record the result/source `path`, resolved
+catalog `target`, assignment state (`default`, `enabled`, `disabled`, or
+`conditional`), whether rows are filtered, and affected fields. A disabled
+application has `rows_filtered: false` and no affected fields.
+
+Every generated result field has a required `access` value:
+
+- `unconditional`;
+- `context_only`;
+- `row_dependent`.
+
+This pre-alpha contract replaces the earlier placeholder policy metadata and
+makes result access required. There is no compatibility reader for those
+prototype artifact shapes; maintained consumers must regenerate metadata and
+the generated TypeScript mirror together.
+
+When multiple rules or wrapper effects apply, metadata records the most
+restrictive classification (`row_dependent` over `context_only` over
+`unconditional`). Policy records sort first by their earliest application path
+and then by declaration identity; applications sort by path, target, and
+assignment so identical compiler inputs serialize identically.
+
 Framework-specific access helpers are code-generation decisions. Metadata may
 support context-only helpers or table-column descriptions without making such
 helpers part of the core runtime. A row-dependent rule generally cannot be
 answered before querying, especially when it traverses database relations.
 
-LSP hover and explain output show which filters affect a selection or field and
-link them to their declaration and lock entry.
+LSP hover on a filter or condition shows its declaration scope, resolved
+targets, default/enforcement state, and the lock identity in the form
+`consumer <- defined_in::name`. Go-to-definition follows references in policy
+declarations and query assignments. Completion offers all visible filters in a
+query header and only filters matching the current collection in a collection
+clause. Generated metadata is the initial machine-readable explain surface; a
+separate explain command may be added if consumers need one.
 
 ### Deferred Result Access Masks
 

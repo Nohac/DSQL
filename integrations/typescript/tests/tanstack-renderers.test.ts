@@ -58,6 +58,16 @@ test("tanstack start uses imported validator expressions when provided", async (
   expect(querySource).toContain(
     '"MovieInfoLookup": MovieInfoLookupServerFn as DsqlServerFunction<typeof MovieInfoLookupOperation>',
   );
+  expect(querySource).toContain("readonly contextScope: string");
+  expect(querySource).toContain(
+    "queryKey: queryKey(operation, variables, contextScope)",
+  );
+  expect(querySource).not.toContain("data: { contextScope");
+  const operationSource = readFileSync(
+    join(root, "src/generated/dsql/queries/MovieInfoLookup.ts"),
+    "utf8",
+  );
+  expect(operationSource).toContain("requiresContext: true");
 });
 
 function createRoot(): string {
@@ -120,6 +130,7 @@ function operationMetadata(): BuildArtifacts["operations"][number] {
           kind: "array",
           data_type: "json",
           nullable: false,
+          access: "unconditional",
         },
       ],
     },
@@ -133,7 +144,15 @@ function operationMetadata(): BuildArtifacts["operations"][number] {
       },
     ],
     input: [],
-    context: [],
+    context: [
+      {
+        path: "context.tenant_id",
+        data_type: "uuid",
+        enum_values: [],
+        required: true,
+        nullable: false,
+      },
+    ],
     dynamic_inputs: [],
     policies: [],
     handoffs: [],

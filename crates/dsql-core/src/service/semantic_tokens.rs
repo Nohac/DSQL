@@ -42,6 +42,7 @@ pub enum SemanticTokenKind {
     Column,
     Fragment,
     Alias,
+    Policy,
 }
 
 /// One classified span.

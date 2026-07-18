@@ -1,6 +1,6 @@
 //! Plan representation.
 
-use bowl::Component;
+use bowl::{Component, Entity};
 
 use crate::catalog::{ColumnId, DataType, ForeignKeyId, TableId, TableKey};
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
@@ -63,6 +63,9 @@ pub struct FragmentPlanFact {
     /// contract is deliberately conservative even when a filter is not
     /// visible from the fragment's declaring scope.
     pub policy_nullable_fields: Vec<PolicyFieldTarget>,
+    /// Project-wide conservative access classes for fields this reusable
+    /// fragment may expose in any importing scope.
+    pub policy_field_access: Vec<PolicyFieldAccess>,
     pub def_span: Span,
     pub scope: String,
     /// Fragment spreads the body expanded, with the result path each sat
@@ -200,6 +203,12 @@ pub struct CollectionPlan {
     /// conservative set drives generated nullability contracts so one shared
     /// fragment artifact remains sound in every importing scope.
     pub policy_nullable_fields: Vec<PolicyFieldTarget>,
+    /// Conservative project-wide access classes used by shared fragment
+    /// result contracts.
+    pub policy_field_access: Vec<PolicyFieldAccess>,
+    /// Identity-preserving audit data for every filter observed while
+    /// planning this source and its predicate-only traversals.
+    pub policy_applications: Vec<PolicyApplicationPlan>,
     pub result: CollectionResultPlan,
 }
 
@@ -212,10 +221,122 @@ pub struct PolicyFieldFilter {
     pub context: Vec<PolicyContextRequirement>,
 }
 
+/// Consumer-facing access classification ordered by increasing dependence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PolicyAccess {
+    Unconditional,
+    ContextOnly,
+    RowDependent,
+}
+
+impl PolicyAccess {
+    /// Classifies one final readable-view guard. A literal `true` cannot mask;
+    /// catalog observations make the result row-dependent; other guards are
+    /// decidable from execution inputs and trusted context.
+    pub fn for_guard(filter: &FilterExpr) -> Self {
+        if matches!(filter, FilterExpr::Literal(FilterLiteral::Bool(true))) {
+            Self::Unconditional
+        } else if filter_observes_rows(filter) {
+            Self::RowDependent
+        } else {
+            Self::ContextOnly
+        }
+    }
+
+    /// Composes independent guards conservatively: row dependence dominates
+    /// context-only access, which dominates unconditional access.
+    pub fn combine(self, other: Self) -> Self {
+        self.max(other)
+    }
+}
+
+/// One project-wide field target and its most dependent possible guard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PolicyFieldAccess {
+    pub target: PolicyFieldTarget,
+    pub access: PolicyAccess,
+}
+
+/// How query source selected a filter's desired state at one source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PolicyAssignmentState {
+    Default,
+    Enabled,
+    Disabled,
+    Conditional,
+}
+
+/// Whether trusted context can force one filter active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PolicyEnforcement {
+    None,
+    Always,
+    Conditional,
+}
+
+/// Stable scope-qualified policy identity carried from resolution into audit
+/// metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PolicyIdentity {
+    pub scope: String,
+    pub name: String,
+}
+
+/// One logical field affected by an active policy application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PolicyApplicationField {
+    pub target: PolicyFieldTarget,
+    pub access: PolicyAccess,
+}
+
+/// One filter's effective state at one observed catalog source.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PolicyApplicationPlan {
+    /// Bowl identity retained only to join declaration provenance during
+    /// metadata assembly.
+    pub filter: Entity,
+    pub identity: PolicyIdentity,
+    pub conditions: Vec<PolicyIdentity>,
+    pub path: String,
+    pub target: TableId,
+    pub default_active: bool,
+    pub enforcement: PolicyEnforcement,
+    pub assignment: PolicyAssignmentState,
+    pub rows_filtered: bool,
+    pub fields: Vec<PolicyApplicationField>,
+    pub context: Vec<PolicyContextRequirement>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PolicyFieldTarget {
     Column(ColumnId),
     Relation(ForeignKeyId),
+}
+
+fn filter_observes_rows(filter: &FilterExpr) -> bool {
+    match filter {
+        FilterExpr::Column { .. }
+        | FilterExpr::Exists { .. }
+        | FilterExpr::RelationAggregate { .. } => true,
+        FilterExpr::Binary { left, right, .. } | FilterExpr::VariantBinary { left, right, .. } => {
+            filter_observes_rows(left) || filter_observes_rows(right)
+        }
+        FilterExpr::Not(operand) | FilterExpr::NullTest { operand, .. } => {
+            filter_observes_rows(operand)
+        }
+        FilterExpr::Membership {
+            operand,
+            collection,
+            ..
+        } => {
+            filter_observes_rows(operand)
+                || match collection {
+                    FilterCollection::List(items) => items.iter().any(filter_observes_rows),
+                    FilterCollection::Parameter(_) => false,
+                }
+        }
+        FilterExpr::Literal(_) | FilterExpr::Parameter(_) => false,
+    }
 }
 
 /// One trusted context value inferred while compiling a policy expression.

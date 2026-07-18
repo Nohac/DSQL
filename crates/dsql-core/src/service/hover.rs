@@ -111,6 +111,8 @@ pub(crate) fn emit_hover_candidate(
 pub mod priority {
     /// A variable occurrence under the cursor.
     pub const VARIABLE: u8 = 40;
+    /// A filter or reusable-condition definition/reference.
+    pub const POLICY: u8 = 35;
     /// A fragment spread name under the cursor.
     pub const SPREAD: u8 = 30;
     /// A field selection name under the cursor.

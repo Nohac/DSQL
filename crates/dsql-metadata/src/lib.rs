@@ -157,6 +157,8 @@ pub struct ResultField {
     pub kind: String,
     pub data_type: String,
     pub nullable: bool,
+    /// `unconditional`, `context_only`, or `row_dependent`.
+    pub access: String,
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -187,10 +189,37 @@ pub struct DynamicInputField {
 
 #[derive(Clone, Debug, Facet)]
 pub struct PolicyMetadata {
+    /// Effective consumer scope, matching one `dsql.lock` record.
+    pub scope: String,
+    /// Scope that owns the filter declaration.
+    pub defined_in: String,
     pub name: String,
-    pub kind: String,
-    pub targets: Vec<String>,
+    pub default_active: bool,
+    /// `none`, `always`, or `conditional`.
+    pub enforcement: String,
+    pub conditions: Vec<String>,
     pub context: Vec<String>,
+    pub source: SourceMapEntry,
+    pub applications: Vec<PolicyApplicationMetadata>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct PolicyApplicationMetadata {
+    pub path: String,
+    pub target: String,
+    /// `default`, `enabled`, `disabled`, or `conditional`.
+    pub assignment: String,
+    pub rows_filtered: bool,
+    pub fields: Vec<PolicyFieldAccessMetadata>,
+}
+
+#[derive(Clone, Debug, Facet)]
+pub struct PolicyFieldAccessMetadata {
+    pub name: String,
+    /// `column` or `relation`.
+    pub kind: String,
+    /// `context_only` or `row_dependent`.
+    pub access: String,
 }
 
 #[derive(Clone, Debug, Facet)]

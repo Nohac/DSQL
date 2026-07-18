@@ -50,6 +50,7 @@ pub(crate) fn semantic_tokens_legend() -> SemanticTokensLegend {
             SemanticTokenType::PROPERTY,
             SemanticTokenType::new("fragment"),
             SemanticTokenType::new("alias"),
+            SemanticTokenType::new("policy"),
         ],
         token_modifiers: Vec::new(),
     }
@@ -63,6 +64,7 @@ fn semantic_token_type(kind: SemanticTokenKind) -> u32 {
         SemanticTokenKind::Column => 3,
         SemanticTokenKind::Fragment => 4,
         SemanticTokenKind::Alias => 5,
+        SemanticTokenKind::Policy => 6,
     }
 }
 

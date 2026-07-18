@@ -227,6 +227,58 @@ async fn completion_at_selection_start() {
     insta::assert_snapshot!(scenario.complete("s.dsql", markers[0]).await);
 }
 
+#[tokio::test]
+async fn policy_services_follow_scope_and_collection_targets() {
+    use dsql_core::service::semantic_tokens;
+
+    let scenario = Scenario::new().await;
+    let policy_source = concat!(
+        "condition <|>Admin { where $:is_admin }\n",
+        "filter <|>TitleAccess on title {\n",
+        "  apply where <|>Admin\n",
+        "  field production_year where <|>Admin\n",
+        "}\n",
+        "filter NameAccess on name { where .id > 0 }\n",
+        "query Q(filter <|>TitleAccess when false) {\n",
+        "  title(filter <|>TitleAccess) { id }\n",
+        "}\n",
+    );
+    let markers = scenario.open("policies.dsql", policy_source).await;
+    let (clean, _) = marked(policy_source);
+    let tokens = semantic_tokens(&scenario.bowl, "policies.dsql")
+        .await
+        .into_iter()
+        .filter(|token| token.kind == dsql_core::service::SemanticTokenKind::Policy)
+        .map(|token| {
+            format!(
+                "{}..{} `{}`",
+                token.span.start,
+                token.span.end,
+                &clean[token.span.start..token.span.end]
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let header_completion = scenario
+        .open("header.dsql", "query Header(filter T<|>) { title { id } }")
+        .await;
+    let nested_completion = scenario
+        .open("nested.dsql", "query Nested { title(filter <|>) { id } }")
+        .await;
+
+    insta::assert_snapshot!(format!(
+        "condition declaration hover:\n{}\n\ncondition reference hover:\n{}\n\nfilter assignment hover:\n{}\n\ncondition definition:\n{}\n\nfilter definition:\n{}\n\nheader completion:\n{}\n\nnested completion:\n{}\n\npolicy tokens:\n{tokens}",
+        scenario.hover("policies.dsql", markers[0]).await,
+        scenario.hover("policies.dsql", markers[2]).await,
+        scenario.hover("policies.dsql", markers[5]).await,
+        scenario.definition("policies.dsql", markers[3]).await,
+        scenario.definition("policies.dsql", markers[4]).await,
+        scenario.complete("header.dsql", header_completion[0]).await,
+        scenario.complete("nested.dsql", nested_completion[0]).await,
+    ));
+}
+
 /// Completion between and after sibling fields resolves the enclosing
 /// set's table — containment is decided by the selection set's braces,
 /// not the preceding field's span (which swallows trailing trivia).

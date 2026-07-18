@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use bowl::{Entity, Query, Singleton};
 
 use dsql_core::catalog::CatalogSnapshot;
-use dsql_core::entities::policy::{CompiledPolicyIndex, PolicyIndex};
+use dsql_core::entities::policy::{CompiledPolicyIndex, PolicyDecl, PolicyIndex};
 use dsql_core::entities::variable::VariableBinding;
 use dsql_core::facts::{
     BelongsToFile, DefKey, Diagnostic, PlanKey, Severity, Span, arm_generate_demands,
@@ -20,7 +20,8 @@ use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use dsql_metadata::SourceRange;
 
 use crate::assemble::{
-    FragmentInputs, OperationInputs, fragment_metadata, operation_metadata, source_path,
+    FragmentInputs, OperationInputs, PolicySourceInput, fragment_metadata, operation_metadata,
+    source_path,
 };
 use crate::match_lock::assemble_filter_match_lock;
 use crate::snapshot::{
@@ -154,6 +155,7 @@ pub async fn assemble_bowl(
                 file: &operation.file,
                 source_offset: operation.source_offset,
                 content_range: operation.content_range,
+                policy_sources: &facts.policy_sources,
             },
         )
         .map_err(|error| error.named(&operation.seed.query_name))?;
@@ -302,6 +304,7 @@ struct CollectedFacts {
     imports: BTreeMap<String, Vec<String>>,
     policy_index: PolicyIndex,
     compiled_policies: CompiledPolicyIndex,
+    policy_sources: Vec<PolicySourceInput>,
 }
 
 struct CollectedOperation {
@@ -500,6 +503,19 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
             "language bowl has no compiled policy index".to_string(),
         ));
     };
+    let policy_sources = bowl
+        .scoop::<Query<(Entity, &PolicyDecl, &BelongsToFile)>>()
+        .await
+        .collect()
+        .into_iter()
+        .map(|(entity, declaration, file)| PolicySourceInput {
+            entity,
+            file: path_of(file.0),
+            source_offset: offset_of(file.0),
+            content_range: content_of(file.0),
+            span: declaration.span,
+        })
+        .collect();
 
     Ok(CollectedFacts {
         operations,
@@ -508,5 +524,6 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
         imports,
         policy_index: (*policy_index).clone(),
         compiled_policies: (*compiled_policies).clone(),
+        policy_sources,
     })
 }

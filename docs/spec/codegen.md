@@ -115,6 +115,20 @@ Trusted context such as `$:tenant_id` is bound only by a server-side framework
 adapter or request boundary. It is never passed as a public param, emitted as a
 browser-client input, or accepted from an untrusted operation payload.
 
+Client cache identity uses a separate opaque `contextScope`. Generated query
+helpers require it whenever an operation has trusted-context inputs and include
+it in the cache key, but never send it in the execution payload. A scope may be
+a non-secret user/session identifier, authorization version, or a derived hash;
+it must not contain raw trusted-context values. Applications must change the
+scope whenever the trusted context can change the operation result.
+
+```ts
+useQuery(VisibleProjects, {
+  contextScope: session.authorizationVersion,
+  params: { limit: 20 },
+});
+```
+
 The generated server boundary should preserve the separation explicitly:
 
 ```ts
