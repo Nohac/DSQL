@@ -22,9 +22,9 @@ use super::types::{
     AggregateGroupProjection, AggregatePlan, AggregateProjection, CollectionPlan,
     CollectionResultPlan, ExistsKind, FilterCollection, FilterColumnScope, FilterExpr,
     FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation, OperationSeed, OrderByPlan,
-    PolicyContextRequirement, Projection, QueryPlan, QueryPlanFact, SelectionClauses,
-    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter, SqlValue,
-    SqlVariantCase,
+    PolicyContextRequirement, PolicyFieldFilter, PolicyFieldTarget, Projection, QueryPlan,
+    QueryPlanFact, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
+    SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
@@ -34,7 +34,10 @@ use crate::entities::clause::{ClauseFact, OrderDirection};
 use crate::entities::definition::{DefDecl, DefKind};
 use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, VariableRef};
 use crate::entities::field_selection::{FieldSel, SelectionTree, TreeViews};
-use crate::entities::policy::{CompiledPolicyIndex, PolicyIndex, PolicyKind, PolicyPlanIndex};
+use crate::entities::policy::{
+    CompiledPolicyField, CompiledPolicyIndex, CompiledPolicyTarget, PolicyIndex, PolicyKind,
+    PolicyPlanIndex,
+};
 use crate::entities::variable::{VariableBinding, VariableRole, VariableSource, lower_snake_case};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
@@ -176,7 +179,7 @@ async fn plan_queries(
                     diagnostics: &mut diagnostics,
                     policy_context: &mut policy_context,
                 };
-                let policy_filter = planner.plan_source_policy_filter(
+                let policies = planner.plan_source_policies(
                     table_id,
                     Some(root_entity),
                     &selection_path,
@@ -216,7 +219,9 @@ async fn plan_queries(
                             table: table_id,
                             shape,
                             clauses,
-                            policy_filter,
+                            policy_filter: policies.row_filter,
+                            field_filters: policies.field_filters,
+                            policy_nullable_fields: planner.policy_nullable_fields(table_id),
                             result,
                         },
                         policy_context,
@@ -464,6 +469,7 @@ fn plan_fragment_body(
             name: decl.name.clone(),
             table: table_id,
             selections,
+            policy_nullable_fields: planner.policy_nullable_fields(table_id),
             def_span: decl.span,
             scope: scope.to_string(),
             spreads,
@@ -504,6 +510,12 @@ struct PlannedPolicyAssignment {
     context: Vec<PolicyContextRequirement>,
 }
 
+#[derive(Clone, Default)]
+struct SourcePolicyPlan {
+    row_filter: Option<FilterExpr>,
+    field_filters: Vec<PolicyFieldFilter>,
+}
+
 struct PolicyPlanningContext<'a> {
     definition_scope: &'a str,
     context: &'a mut Vec<PolicyContextRequirement>,
@@ -522,6 +534,28 @@ struct FilterTableScope {
 }
 
 impl Planner<'_> {
+    fn policy_nullable_fields(&self, table: TableId) -> Vec<PolicyFieldTarget> {
+        let mut fields = Vec::new();
+        for field in self
+            .compiled_policies
+            .entries
+            .iter()
+            .flat_map(|entry| &entry.targets)
+            .filter(|target| target.table == table)
+            .flat_map(|target| &target.field_rules)
+            .flat_map(|rule| &rule.fields)
+            .map(|field| match field {
+                CompiledPolicyField::Column(column) => PolicyFieldTarget::Column(*column),
+                CompiledPolicyField::Relation(relation) => PolicyFieldTarget::Relation(*relation),
+            })
+        {
+            if !fields.contains(&field) {
+                fields.push(field);
+            }
+        }
+        fields
+    }
+
     fn selection_shape(&self, field: Entity) -> Option<ResolvedSelectionShape> {
         self.resolved_selections.get(&field)?.shape.clone()
     }
@@ -691,7 +725,7 @@ impl Planner<'_> {
         clippy::too_many_arguments,
         reason = "effective policy state carries source-local variable and resolution context"
     )]
-    fn plan_source_policy_filter(
+    fn plan_source_policies(
         &self,
         table: TableId,
         source: Option<Entity>,
@@ -700,7 +734,7 @@ impl Planner<'_> {
         definition_scope: &str,
         explicit: &[crate::entities::expression::FilterAssignmentExpr],
         context: &mut Vec<PolicyContextRequirement>,
-    ) -> Option<FilterExpr> {
+    ) -> SourcePolicyPlan {
         let mut assignments = self
             .operation_assignments
             .iter()
@@ -742,7 +776,7 @@ impl Planner<'_> {
             .collect::<BTreeSet<_>>();
         identities.extend(assignments.keys().copied());
 
-        let mut row_filter = None;
+        let mut policies = SourcePolicyPlan::default();
         for identity in identities {
             let Some(compiled) = self.compiled_policies.entry(identity) else {
                 continue;
@@ -763,35 +797,48 @@ impl Planner<'_> {
             if filter_boolean(&active) == Some(false) {
                 continue;
             }
-            let Some(rule) = target.row_rule.clone() else {
-                continue;
-            };
-            let guard = if filter_boolean(&active) == Some(true) {
-                rule
-            } else {
-                or_filter(not_filter(active), rule)
-            };
-            let parameter_paths = filter_parameter_paths(&guard);
-            context.extend(
-                target
-                    .context
-                    .iter()
-                    .filter(|requirement| parameter_paths.contains(requirement.path.as_str()))
-                    .cloned(),
-            );
-            if let Some(assignment) = assignment {
-                context.extend(
-                    assignment
-                        .context
-                        .iter()
-                        .filter(|requirement| parameter_paths.contains(requirement.path.as_str()))
-                        .cloned(),
+            if let Some(rule) = target.row_rule.clone() {
+                let guard = active_policy_guard(&active, rule);
+                collect_policy_context(target, assignment, &guard, context);
+                policies.row_filter = Some(
+                    policies
+                        .row_filter
+                        .map_or(guard.clone(), |current| and_filter(current, guard)),
                 );
             }
-            row_filter =
-                Some(row_filter.map_or(guard.clone(), |current| and_filter(current, guard)));
+            for rule in &target.field_rules {
+                let guard = active_policy_guard(&active, rule.condition.clone());
+                let mut field_context = Vec::new();
+                collect_policy_context(target, assignment, &guard, &mut field_context);
+                for field in &rule.fields {
+                    let target = match field {
+                        CompiledPolicyField::Column(column) => PolicyFieldTarget::Column(*column),
+                        CompiledPolicyField::Relation(relation) => {
+                            PolicyFieldTarget::Relation(*relation)
+                        }
+                    };
+                    if let Some(existing) = policies
+                        .field_filters
+                        .iter_mut()
+                        .find(|filter| filter.target == target)
+                    {
+                        existing.filter = and_filter(existing.filter.clone(), guard.clone());
+                        for requirement in &field_context {
+                            if !existing.context.contains(requirement) {
+                                existing.context.push(requirement.clone());
+                            }
+                        }
+                    } else {
+                        policies.field_filters.push(PolicyFieldFilter {
+                            target,
+                            filter: guard.clone(),
+                            context: field_context.clone(),
+                        });
+                    }
+                }
+            }
         }
-        row_filter
+        policies
     }
 
     fn plan_collection_result(
@@ -947,7 +994,7 @@ impl Planner<'_> {
                             if field.flattened && field.has_transform() {
                                 child_path.push(InputPathSegment::Aggregate.as_ref().to_string());
                             }
-                            let child_policy_filter = self.plan_source_policy_filter(
+                            let child_policies = self.plan_source_policies(
                                 relation_table,
                                 Some(field_entity),
                                 &child_path,
@@ -996,7 +1043,10 @@ impl Planner<'_> {
                                         table: relation_table,
                                         shape,
                                         clauses: child_clauses,
-                                        policy_filter: child_policy_filter,
+                                        policy_filter: child_policies.row_filter,
+                                        field_filters: child_policies.field_filters,
+                                        policy_nullable_fields: self
+                                            .policy_nullable_fields(relation_table),
                                         result: nested,
                                     }),
                                 }));
@@ -1191,7 +1241,7 @@ impl Planner<'_> {
                     }
                     crate::resolution::ResolvedExistenceSource::Table(table) => (None, *table),
                 };
-                let policy_filter = self.plan_source_policy_filter(
+                let policies = self.plan_source_policies(
                     exists_table,
                     None,
                     selection_path,
@@ -1221,7 +1271,8 @@ impl Planner<'_> {
                     table: exists_table,
                     kind: ExistsKind::Explicit,
                     source_scope: FilterColumnScope::Current,
-                    policy_filter: policy_filter.map(Box::new),
+                    policy_filter: policies.row_filter.map(Box::new),
+                    field_filters: policies.field_filters,
                     filter,
                 })
             }
@@ -1557,22 +1608,22 @@ impl Planner<'_> {
             return None;
         }
         let relation = aggregate.relation.as_ref()?;
+        let policies = self.plan_source_policies(
+            relation.table,
+            None,
+            selection_path,
+            variable_scope,
+            policy.definition_scope,
+            &[],
+            policy.context,
+        );
         Some(FilterExpr::RelationAggregate {
             foreign_key: relation.foreign_key,
             table: relation.table,
             function: aggregate.function?,
             operand: aggregate.operand,
-            policy_filter: self
-                .plan_source_policy_filter(
-                    relation.table,
-                    None,
-                    selection_path,
-                    variable_scope,
-                    policy.definition_scope,
-                    &[],
-                    policy.context,
-                )
-                .map(Box::new),
+            policy_filter: policies.row_filter.map(Box::new),
+            field_filters: policies.field_filters,
         })
     }
 
@@ -1692,23 +1743,25 @@ impl Planner<'_> {
                 .relations
                 .iter()
                 .rev()
-                .fold(filter, |filter, relation| FilterExpr::Exists {
-                    foreign_key: Some(relation.foreign_key),
-                    table: relation.table,
-                    kind: ExistsKind::RelationshipPredicate,
-                    source_scope: FilterColumnScope::Current,
-                    policy_filter: self
-                        .plan_source_policy_filter(
-                            relation.table,
-                            None,
-                            &[],
-                            &VariablePathScope::operation(),
-                            policy.definition_scope,
-                            &[],
-                            policy.context,
-                        )
-                        .map(Box::new),
-                    filter: Some(Box::new(filter)),
+                .fold(filter, |filter, relation| {
+                    let policies = self.plan_source_policies(
+                        relation.table,
+                        None,
+                        &[],
+                        &VariablePathScope::operation(),
+                        policy.definition_scope,
+                        &[],
+                        policy.context,
+                    );
+                    FilterExpr::Exists {
+                        foreign_key: Some(relation.foreign_key),
+                        table: relation.table,
+                        kind: ExistsKind::RelationshipPredicate,
+                        source_scope: FilterColumnScope::Current,
+                        policy_filter: policies.row_filter.map(Box::new),
+                        field_filters: policies.field_filters,
+                        filter: Some(Box::new(filter)),
+                    }
                 }),
         )
     }
@@ -1846,6 +1899,39 @@ fn filter_boolean(filter: &FilterExpr) -> Option<bool> {
     }
 }
 
+fn active_policy_guard(active: &FilterExpr, condition: FilterExpr) -> FilterExpr {
+    if filter_boolean(active) == Some(true) {
+        condition
+    } else {
+        or_filter(not_filter(active.clone()), condition)
+    }
+}
+
+fn collect_policy_context(
+    target: &CompiledPolicyTarget,
+    assignment: Option<&PlannedPolicyAssignment>,
+    filter: &FilterExpr,
+    context: &mut Vec<PolicyContextRequirement>,
+) {
+    let parameter_paths = filter_parameter_paths(filter);
+    context.extend(
+        target
+            .context
+            .iter()
+            .filter(|requirement| parameter_paths.contains(requirement.path.as_str()))
+            .cloned(),
+    );
+    if let Some(assignment) = assignment {
+        context.extend(
+            assignment
+                .context
+                .iter()
+                .filter(|requirement| parameter_paths.contains(requirement.path.as_str()))
+                .cloned(),
+        );
+    }
+}
+
 fn not_filter(filter: FilterExpr) -> FilterExpr {
     match filter {
         FilterExpr::Literal(FilterLiteral::Bool(value)) => boolean_filter(!value),
@@ -1962,6 +2048,7 @@ fn filter_parameter_paths(filter: &FilterExpr) -> BTreeSet<&str> {
             }
             FilterExpr::Exists {
                 policy_filter,
+                field_filters,
                 filter,
                 ..
             } => {
@@ -1971,10 +2058,20 @@ fn filter_parameter_paths(filter: &FilterExpr) -> BTreeSet<&str> {
                 if let Some(filter) = filter {
                     collect(filter, paths);
                 }
+                for field_filter in field_filters {
+                    collect(&field_filter.filter, paths);
+                }
             }
-            FilterExpr::RelationAggregate { policy_filter, .. } => {
+            FilterExpr::RelationAggregate {
+                policy_filter,
+                field_filters,
+                ..
+            } => {
                 if let Some(policy_filter) = policy_filter {
                     collect(policy_filter, paths);
+                }
+                for field_filter in field_filters {
+                    collect(&field_filter.filter, paths);
                 }
             }
             FilterExpr::Column { .. } | FilterExpr::Literal(_) => {}

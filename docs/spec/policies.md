@@ -367,6 +367,15 @@ A conditionally readable scalar or to-one relation is nullable in the generated
 result type. A to-many relation remains an array but may be empty. Multiple
 active rules for the same field compose with `and`.
 
+The initial metadata contract is deliberately conservative across resolution
+scopes. Fragment artifacts have one project-wide identity and may be reused by
+consumers whose visible filters differ, so a scalar or to-one relation is
+nullable when any compiled project filter can mask it on that target. SQL
+enforcement and trusted-context parameters remain precise to the operation's
+effective scope. A future scope-specific artifact model may safely narrow such
+`T | null` contracts back to `T`; this is a non-breaking refinement for
+read-only results.
+
 ## Rule Evaluation Boundary
 
 Query-authored expressions operate on the filtered logical readable view. This

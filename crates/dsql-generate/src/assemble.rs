@@ -10,8 +10,8 @@ use dsql_core::entities::variable::{VariableBinding, VariableSource};
 use dsql_core::entities::variable_path::{is_input_path, is_params_path};
 use dsql_core::facts::Span;
 use dsql_core::plan::{
-    CollectionPlan, CollectionResultPlan, FragmentPlanFact, OperationSeed, QueryPlan,
-    SelectionPlan, SelectionPlanItem, SpreadUse,
+    CollectionPlan, CollectionResultPlan, FragmentPlanFact, OperationSeed, PolicyFieldTarget,
+    QueryPlan, SelectionPlan, SelectionPlanItem, SpreadUse,
 };
 use dsql_core::resolution::SelectionCardinality;
 use dsql_core::sql::GeneratedSql;
@@ -97,6 +97,7 @@ pub(crate) fn operation_metadata(
         context: context_fields(
             inputs.bindings,
             &inputs.plan.policy_context,
+            &inputs.sql.policy_context,
             &inputs.seed.query_name,
         )?,
         dynamic_inputs: dynamic_inputs(inputs.bindings),
@@ -131,6 +132,7 @@ pub(crate) fn fragment_metadata(
             catalog,
             inputs.plan.table,
             &inputs.plan.selections,
+            &inputs.plan.policy_nullable_fields,
             &inputs.plan.name,
         )?,
         params: input_fields(inputs.bindings, true),
@@ -166,6 +168,7 @@ fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
             "",
             &plan.collection.result,
             nullable,
+            &plan.collection.policy_nullable_fields,
             &mut fields,
         )?;
     } else {
@@ -186,12 +189,21 @@ fn fragment_result_shape(
     catalog: &Catalog,
     table: TableId,
     selection: &SelectionPlan,
+    policy_nullable_fields: &[PolicyFieldTarget],
     name: &str,
 ) -> Result<ResultShape> {
     let mut fields = Vec::new();
     for item in &selection.items {
-        collect_result_item_fields(catalog, table, "", item, false, &mut fields)
-            .map_err(|error| error.named(name))?;
+        collect_result_item_fields(
+            catalog,
+            table,
+            "",
+            item,
+            false,
+            policy_nullable_fields,
+            &mut fields,
+        )
+        .map_err(|error| error.named(name))?;
     }
     Ok(ResultShape { fields })
 }
@@ -221,6 +233,7 @@ fn collect_collection_fields(
         &path,
         &collection.result,
         false,
+        &collection.policy_nullable_fields,
         fields,
     )?;
     Ok(())
@@ -232,6 +245,7 @@ fn collect_collection_children(
     parent_path: &str,
     result: &CollectionResultPlan,
     inherited_nullable: bool,
+    policy_nullable_fields: &[PolicyFieldTarget],
     fields: &mut Vec<ResultField>,
 ) -> Result<()> {
     match result {
@@ -243,6 +257,7 @@ fn collect_collection_children(
                     parent_path,
                     item,
                     inherited_nullable,
+                    policy_nullable_fields,
                     fields,
                 )?;
             }
@@ -255,7 +270,9 @@ fn collect_collection_children(
                     parent_path: parent_path.to_string(),
                     kind: ResultFieldKind::Scalar.as_ref().to_string(),
                     data_type: key.data_type.as_str().to_string(),
-                    nullable: inherited_nullable || key.nullable,
+                    nullable: inherited_nullable
+                        || key.nullable
+                        || policy_filters_column(policy_nullable_fields, key.column),
                 });
             }
             for field in &aggregate.fields {
@@ -279,6 +296,7 @@ fn collect_result_item_fields(
     parent_path: &str,
     item: &SelectionPlanItem,
     inherited_nullable: bool,
+    policy_nullable_fields: &[PolicyFieldTarget],
     fields: &mut Vec<ResultField>,
 ) -> Result<()> {
     match item {
@@ -296,14 +314,23 @@ fn collect_result_item_fields(
                 parent_path: parent_path.to_string(),
                 kind: ResultFieldKind::Scalar.as_ref().to_string(),
                 data_type: column.data_type.as_str().to_string(),
-                nullable: inherited_nullable || !column.not_null,
+                nullable: inherited_nullable
+                    || !column.not_null
+                    || policy_filters_column(policy_nullable_fields, projection.column),
             });
         }
         SelectionPlanItem::Relation(relation) => {
             let related_table = relation.collection.table;
             let cardinality = relation.collection.shape.cardinality;
             let kind = collection_result_kind(&relation.collection.result, cardinality);
-            let nullable = collection_result_nullable(&relation.collection);
+            // A masked to-many relation is an empty array and a masked
+            // aggregate keeps its non-null object/array shape. Only a
+            // singular row relation becomes an absent object.
+            let policy_nullable =
+                policy_filters_relation(policy_nullable_fields, relation.foreign_key)
+                    && matches!(relation.collection.result, CollectionResultPlan::Rows(_))
+                    && cardinality == SelectionCardinality::AtMostOne;
+            let nullable = collection_result_nullable(&relation.collection) || policy_nullable;
             if relation.flattened {
                 collect_collection_children(
                     catalog,
@@ -311,6 +338,7 @@ fn collect_result_item_fields(
                     parent_path,
                     &relation.collection.result,
                     inherited_nullable || nullable,
+                    &relation.collection.policy_nullable_fields,
                     fields,
                 )?;
             } else {
@@ -351,6 +379,20 @@ fn collection_result_nullable(collection: &CollectionPlan) -> bool {
         && (collection.shape.nullable || collection.policy_filter.is_some())
 }
 
+fn policy_filters_column(
+    fields: &[PolicyFieldTarget],
+    column: dsql_core::catalog::ColumnId,
+) -> bool {
+    fields.contains(&PolicyFieldTarget::Column(column))
+}
+
+fn policy_filters_relation(
+    fields: &[PolicyFieldTarget],
+    relation: dsql_core::catalog::ForeignKeyId,
+) -> bool {
+    fields.contains(&PolicyFieldTarget::Relation(relation))
+}
+
 fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField> {
     bindings
         .iter()
@@ -372,6 +414,7 @@ fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField
 fn context_fields(
     bindings: &[VariableBinding],
     policy_context: &[dsql_core::plan::PolicyContextRequirement],
+    rendered_policy_context: &[dsql_core::plan::PolicyContextRequirement],
     operation_name: &str,
 ) -> Result<Vec<InputField>> {
     let mut fields = BTreeMap::new();
@@ -392,7 +435,7 @@ fn context_fields(
             },
         )?;
     }
-    for requirement in policy_context {
+    for requirement in policy_context.iter().chain(rendered_policy_context) {
         insert_context_field(
             &mut fields,
             operation_name,

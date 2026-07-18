@@ -884,7 +884,7 @@ impl CheckCtx<'_, '_> {
                 .then_with(|| left.entity.cmp(&right.entity))
         });
         for filter in filters {
-            let Some(compiled) = self.compiled_policies.entry(filter.entity) else {
+            let Some(_compiled) = self.compiled_policies.entry(filter.entity) else {
                 self.emit_filter_compilation_unavailable(query, name_span, filter);
                 continue;
             };
@@ -901,10 +901,6 @@ impl CheckCtx<'_, '_> {
                 self.emit_filter_compilation_unavailable(query, name_span, filter);
                 continue;
             }
-            if !compiled.has_field_rules {
-                continue;
-            }
-            self.emit_filter_execution_unavailable(query, name_span, filter);
         }
     }
 
@@ -925,25 +921,6 @@ impl CheckCtx<'_, '_> {
                 filter.name
             ),
         );
-    }
-
-    fn emit_filter_execution_unavailable(
-        &mut self,
-        query: Entity,
-        name_span: Span,
-        filter: &crate::entities::policy::PolicyEntry,
-    ) {
-        self.diagnostic(
-                query,
-                name_span,
-                Severity::Error,
-                DiagnosticSource::Generate,
-                DiagnosticCode::FilterExecutionUnavailable,
-                format!(
-                    "filter `{}` affects this operation but cannot be enforced until filter semantics are applied to generated SQL",
-                    filter.name
-                ),
-            );
     }
 
     fn missing_flattened_body(&mut self, entity: Entity, field: &FieldSel) {

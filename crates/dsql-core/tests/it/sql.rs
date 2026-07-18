@@ -287,6 +287,53 @@ async fn row_filters_execute_when_database_url_is_set() {
 }
 
 #[tokio::test]
+async fn field_filters_mask_every_query_authored_read_and_relation_traversal() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "field-policies.dsql",
+        concat!(
+            "condition CanReadTitle { where $:can_read_title }\n",
+            "filter TitlePrivacy on title {\n",
+            "  apply\n",
+            "  field title, movie_info_idx where CanReadTitle\n",
+            "}\n",
+            "filter InfoPrivacy on movie_info_idx {\n",
+            "  apply\n",
+            "  field info where $:can_read_info\n",
+            "}\n",
+            "filter Unused on title {\n",
+            "  apply\n",
+            "  field production_year where $:unused\n",
+            "}\n",
+            "query MaskedReads {\n",
+            "  title(\n",
+            "    where .title == $$guess\n",
+            "      and .movie_info_idx.info in $$infos\n",
+            "      and exists .movie_info_idx(where .info == $$info_guess)\n",
+            "      and (.movie_info_idx | count .info) > 0\n",
+            "    order by title $$direction\n",
+            "    limit 1\n",
+            "  ) {\n",
+            "    id\n",
+            "    title\n",
+            "    movie_info_idx { id info }\n",
+            "    info_stats: movie_info_idx | aggregate {\n",
+            "      count\n",
+            "      visible: count .info\n",
+            "      first: min .info\n",
+            "    }\n",
+            "  }\n",
+            "  grouped: title | aggregate by title_group: .title { count }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
 async fn predicate_keywords_remain_valid_catalog_identifiers() {
     let bowl = sql_bowl(numeric_catalog()).await;
     insert_source(
@@ -432,6 +479,268 @@ async fn scalar_aggregate_predicates_render_correlated_values() {
     .await;
 
     insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn field_filters_enforce_readable_views_when_database_url_is_set() {
+    let Ok(database_url) = env::var("DSQL_TEST_DATABASE_URL") else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("reference database connects");
+    let reference = sqlx::query(concat!(
+        "select title.id, title.title from public.title ",
+        "where title.id > 0 and title.title is not null ",
+        "and exists (select 1 from public.movie_info_idx ",
+        "where movie_info_idx.movie_id = title.id) ",
+        "order by title.id limit 1",
+    ))
+    .fetch_one(&pool)
+    .await
+    .expect("reference title with related rows exists");
+    let reference_id: i32 = reference.try_get(0).expect("reference id is int4");
+    let reference_title: String = reference.try_get(1).expect("reference title is text");
+    let unknown = sqlx::query(concat!(
+        "select id from public.title where id > 0 ",
+        "and title is not null and production_year is null order by id limit 1",
+    ))
+    .fetch_one(&pool)
+    .await
+    .expect("reference title with unknown policy condition exists");
+    let unknown_id: i32 = unknown.try_get(0).expect("unknown-condition id is int4");
+
+    let bowl = sql_bowl_with_limit(imdb_catalog(), None).await;
+    insert_source(
+        &bowl,
+        "field-policy-live.dsql",
+        &format!(
+            concat!(
+                "filter PositiveRows on title {{ apply where .id > 0 }}\n",
+                "filter TitlePrivacy on title {{\n",
+                "  apply\n",
+                "  field title, movie_info_idx where $:can_read_title\n",
+                "}}\n",
+                "filter UnknownTitle on title {{ field title where .production_year > 0 }}\n",
+                "filter HideId on title {{ field id where false }}\n",
+                "query Probe {{\n",
+                "  probe: title(where .id == {reference_id} and .title == $$guess limit 1) {{ id }}\n",
+                "}}\n",
+                "query Membership {{\n",
+                "  membership: title(where .id == {reference_id} and .title in $$titles limit 1) {{ id }}\n",
+                "}}\n",
+                "query Relation {{\n",
+                "  relation: title(where .id == {reference_id} limit 1) {{\n",
+                "    title\n",
+                "    movie_info_idx {{ id }}\n",
+                "    info_stats: movie_info_idx | aggregate {{ count }}\n",
+                "  }}\n",
+                "}}\n",
+                "query Exists {{\n",
+                "  related: title(where .id == {reference_id} and exists .movie_info_idx limit 1) {{ id }}\n",
+                "}}\n",
+                "query Grouped {{\n",
+                "  grouped: title | aggregate by .title {{ count }}\n",
+                "}}\n",
+                "query Unknown(filter UnknownTitle) {{\n",
+                "  unknown: title(where .id == {unknown_id} limit 1) {{ title }}\n",
+                "}}\n",
+                "query RawBoundary(filter HideId) {{ raw: title(limit 1) {{ production_year }} }}\n",
+            ),
+            reference_id = reference_id,
+            unknown_id = unknown_id,
+        ),
+    )
+    .await;
+    let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+    let generated = rows
+        .collect()
+        .into_iter()
+        .map(|(_, fact)| {
+            (
+                fact.0.output_name.clone(),
+                (
+                    fact.0.sql.clone(),
+                    fact.0
+                        .parameters
+                        .iter()
+                        .map(|parameter| parameter.path.clone())
+                        .collect::<Vec<_>>(),
+                ),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let (probe_sql, probe_parameters) = generated.get("probe").expect("probe SQL exists");
+    assert_eq!(
+        probe_parameters,
+        &["context.can_read_title", "params.guess"]
+    );
+    let probe_sql = format!("select ({})::text", probe_sql.trim().trim_end_matches(';'));
+    let visible = sqlx::query(AssertSqlSafe(probe_sql.clone()))
+        .bind(true)
+        .bind(&reference_title)
+        .fetch_one(&pool)
+        .await
+        .expect("visible exact-match probe executes");
+    assert!(
+        visible
+            .try_get::<Option<String>, _>(0)
+            .expect("visible probe returns JSON text")
+            .is_some(),
+        "an authorized exact match returns the row",
+    );
+    for guess in [Some(reference_title.as_str()), None] {
+        let hidden = sqlx::query(AssertSqlSafe(probe_sql.clone()))
+            .bind(false)
+            .bind(guess)
+            .fetch_one(&pool)
+            .await
+            .expect("hidden probe executes");
+        assert!(
+            hidden
+                .try_get::<Option<String>, _>(0)
+                .expect("hidden probe returns nullable JSON text")
+                .is_none(),
+            "a hidden value cannot be discovered by equality or NULL probes",
+        );
+    }
+
+    let (membership_sql, membership_parameters) =
+        generated.get("membership").expect("membership SQL exists");
+    assert_eq!(
+        membership_parameters,
+        &["context.can_read_title", "params.titles"]
+    );
+    let membership = sqlx::query(AssertSqlSafe(format!(
+        "select ({})::text",
+        membership_sql.trim().trim_end_matches(';')
+    )))
+    .bind(false)
+    .bind(vec![reference_title])
+    .fetch_one(&pool)
+    .await
+    .expect("hidden membership probe executes");
+    assert!(
+        membership
+            .try_get::<Option<String>, _>(0)
+            .expect("membership returns nullable JSON text")
+            .is_none(),
+        "membership cannot probe a hidden value",
+    );
+
+    let (relation_sql, relation_parameters) = generated
+        .get("relation")
+        .expect("relation projection SQL exists");
+    assert_eq!(relation_parameters, &["context.can_read_title"]);
+    let relation_sql = format!(
+        "select ({})::text",
+        relation_sql.trim().trim_end_matches(';')
+    );
+    let hidden_relation = sqlx::query(AssertSqlSafe(relation_sql.clone()))
+        .bind(false)
+        .fetch_one(&pool)
+        .await
+        .expect("hidden relation query executes");
+    let hidden_relation: String = hidden_relation
+        .try_get::<Option<String>, _>(0)
+        .expect("relation returns nullable JSON text")
+        .expect("the parent row remains visible");
+    let hidden_relation: serde_json::Value =
+        serde_json::from_str(&hidden_relation).expect("relation result is JSON");
+    assert!(hidden_relation["title"].is_null());
+    assert_eq!(hidden_relation["movie_info_idx"], serde_json::json!([]));
+    assert_eq!(hidden_relation["info_stats"]["count"], serde_json::json!(0));
+    let visible_relation = sqlx::query(AssertSqlSafe(relation_sql))
+        .bind(true)
+        .fetch_one(&pool)
+        .await
+        .expect("visible relation query executes");
+    let visible_relation: String = visible_relation
+        .try_get::<Option<String>, _>(0)
+        .expect("visible relation returns nullable JSON text")
+        .expect("the visible parent row exists");
+    let visible_relation: serde_json::Value =
+        serde_json::from_str(&visible_relation).expect("visible relation result is JSON");
+    assert!(
+        visible_relation["movie_info_idx"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()),
+        "authorized relation traversal retains related rows",
+    );
+
+    let (related_sql, related_parameters) = generated.get("related").expect("exists SQL exists");
+    assert_eq!(related_parameters, &["context.can_read_title"]);
+    let related = sqlx::query(AssertSqlSafe(format!(
+        "select ({})::text",
+        related_sql.trim().trim_end_matches(';')
+    )))
+    .bind(false)
+    .fetch_one(&pool)
+    .await
+    .expect("hidden exists probe executes");
+    assert!(
+        related
+            .try_get::<Option<String>, _>(0)
+            .expect("exists probe returns nullable JSON text")
+            .is_none(),
+        "a masked relation behaves as empty in exists",
+    );
+
+    let (grouped_sql, grouped_parameters) = generated.get("grouped").expect("grouped SQL exists");
+    assert_eq!(grouped_parameters, &["context.can_read_title"]);
+    let grouped = sqlx::query(AssertSqlSafe(format!(
+        "select ({})::text",
+        grouped_sql.trim().trim_end_matches(';')
+    )))
+    .bind(false)
+    .fetch_one(&pool)
+    .await
+    .expect("masked grouped query executes");
+    let grouped: String = grouped.try_get(0).expect("grouped query returns JSON text");
+    let grouped: serde_json::Value =
+        serde_json::from_str(&grouped).expect("grouped result is JSON");
+    let groups = grouped.as_array().expect("grouped result is an array");
+    assert_eq!(
+        groups.len(),
+        1,
+        "hidden values collapse into one NULL group"
+    );
+    assert!(groups[0]["title"].is_null());
+
+    let (unknown_sql, unknown_parameters) =
+        generated.get("unknown").expect("unknown guard SQL exists");
+    assert_eq!(unknown_parameters, &["context.can_read_title"]);
+    let unknown = sqlx::query(AssertSqlSafe(format!(
+        "select ({})::text",
+        unknown_sql.trim().trim_end_matches(';')
+    )))
+    .bind(true)
+    .fetch_one(&pool)
+    .await
+    .expect("unknown-condition query executes");
+    let unknown: String = unknown
+        .try_get::<Option<String>, _>(0)
+        .expect("unknown-condition query returns nullable JSON text")
+        .expect("unknown-condition parent row exists");
+    let unknown: serde_json::Value =
+        serde_json::from_str(&unknown).expect("unknown-condition result is JSON");
+    assert!(
+        unknown["title"].is_null(),
+        "an unknown field guard masks the value",
+    );
+
+    let (raw_sql, raw_parameters) = generated.get("raw").expect("raw-boundary SQL exists");
+    assert!(
+        raw_parameters.is_empty(),
+        "an unused mask does not add a context parameter",
+    );
+    assert!(
+        execute_json(&pool, raw_sql).await.is_object(),
+        "row policy conditions read raw fields even when query reads mask them",
+    );
 }
 
 #[tokio::test]

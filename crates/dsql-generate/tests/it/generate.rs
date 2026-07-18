@@ -569,6 +569,169 @@ async fn row_filtered_singular_relations_make_object_and_flattened_fields_nullab
 }
 
 #[tokio::test]
+async fn field_filter_types_are_conservative_across_fragment_consumers() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
+        vec![
+            document(
+                "queries/shared/fragments.dsql",
+                concat!(
+                    "fragment UserFields on users {\n",
+                    "  id\n",
+                    "  name\n",
+                    "  posts { id title }\n",
+                    "  post_stats: posts | aggregate { count latest: max .created_at }\n",
+                    "}\n",
+                    "fragment PostFields on posts {\n",
+                    "  id\n",
+                    "  users { id name }\n",
+                    "  ...users { owner_name: name }\n",
+                    "}\n",
+                ),
+                "shared",
+            ),
+            document(
+                "queries/frontend/filtered.dsql",
+                concat!(
+                    "filter UserPrivacy on users {\n",
+                    "  apply where true\n",
+                    "  field name, posts where $:can_read_users\n",
+                    "}\n",
+                    "filter PostPrivacy on posts {\n",
+                    "  apply where true\n",
+                    "  field users where $:can_read_users\n",
+                    "}\n",
+                    "query FilteredUsers { users { ...UserFields } }\n",
+                    "query FilteredPosts { posts { ...PostFields } }\n",
+                ),
+                "frontend",
+            ),
+            document(
+                "queries/backend/unfiltered.dsql",
+                concat!(
+                    "query UnfilteredUsers { users { ...UserFields } }\n",
+                    "query UnfilteredPosts { posts { ...PostFields } }\n",
+                ),
+                "backend",
+            ),
+        ],
+        BTreeMap::from([
+            ("frontend".to_string(), vec!["shared".to_string()]),
+            ("backend".to_string(), vec!["shared".to_string()]),
+            ("shared".to_string(), Vec::new()),
+        ]),
+    )
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("field-filtered fragment consumers assemble");
+    let mut artifacts = assembled
+        .snapshot
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            matches!(
+                artifact.name.as_str(),
+                "UserFields"
+                    | "PostFields"
+                    | "FilteredUsers"
+                    | "FilteredPosts"
+                    | "UnfilteredUsers"
+                    | "UnfilteredPosts"
+            )
+        })
+        .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
+        .collect::<Vec<_>>();
+    artifacts.sort();
+
+    insta::assert_snapshot!(artifacts.join("\n---\n"));
+}
+
+#[tokio::test]
+async fn field_filter_context_conflicts_only_fail_when_both_guards_are_reached() {
+    const FILTERS: &str = concat!(
+        "filter NameAccess on users {\n",
+        "  apply\n",
+        "  field name where .name == $:shared\n",
+        "}\n",
+        "filter IdAccess on users {\n",
+        "  apply\n",
+        "  field id where .id == $:shared\n",
+        "}\n",
+    );
+
+    let unused = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
+        vec![document(
+            "queries/frontend/unused-context.dsql",
+            &format!("{FILTERS}query Unused {{ users(limit 1) {{ posts {{ title }} }} }}\n"),
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let unused = assemble_bowl(&unused, None, GenerateOptions::default())
+        .await
+        .expect("unused field guards do not conflict");
+    let unused = unused
+        .snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "Unused")
+        .expect("unused operation artifact");
+    let unused: dsql_metadata::OperationMetadata =
+        facet_json::from_str(&unused.serialized).expect("unused metadata parses");
+    assert!(unused.context.is_empty());
+
+    let one = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA]),
+        vec![document(
+            "queries/frontend/one-context.dsql",
+            &format!("{FILTERS}query One {{ users(limit 1) {{ name }} }}\n"),
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let one = assemble_bowl(&one, None, GenerateOptions::default())
+        .await
+        .expect("one reached field guard has one context type");
+    let one = one
+        .snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "One")
+        .expect("single-guard operation artifact");
+    let one: dsql_metadata::OperationMetadata =
+        facet_json::from_str(&one.serialized).expect("single-guard metadata parses");
+    assert_eq!(one.context.len(), 1);
+    assert_eq!(one.context[0].path, "context.shared");
+    assert_eq!(one.context[0].data_type, "text");
+
+    let both = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA]),
+        vec![document(
+            "queries/frontend/conflicting-context.dsql",
+            &format!("{FILTERS}query Both {{ users(limit 1) {{ id name }} }}\n"),
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let error = assemble_bowl(&both, None, GenerateOptions::default())
+        .await
+        .expect_err("two reached incompatible guards fail generation");
+    let message = error.to_string();
+    assert!(
+        message.contains("context.shared")
+            && message.contains("incompatible")
+            && message.contains("uuid")
+            && message.contains("text"),
+        "unexpected context conflict: {message}",
+    );
+}
+
+#[tokio::test]
 async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
     let bowl = memory_bowl(
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),

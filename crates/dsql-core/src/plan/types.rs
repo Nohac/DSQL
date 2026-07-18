@@ -58,6 +58,11 @@ pub struct FragmentPlanFact {
     /// The catalog table the fragment is declared on.
     pub table: TableId,
     pub selections: SelectionPlan,
+    /// Project-wide field targets that can be masked on this table. Fragment
+    /// artifacts are shared across resolution scopes, so their public type
+    /// contract is deliberately conservative even when a filter is not
+    /// visible from the fragment's declaring scope.
+    pub policy_nullable_fields: Vec<PolicyFieldTarget>,
     pub def_span: Span,
     pub scope: String,
     /// Fragment spreads the body expanded, with the result path each sat
@@ -188,7 +193,29 @@ pub struct CollectionPlan {
     pub clauses: SelectionClauses,
     /// Raw-view row constraint composed from the effective policy state.
     pub policy_filter: Option<FilterExpr>,
+    /// Effective, scope-specific readable-view guards. These drive SQL
+    /// enforcement and its trusted-context parameters.
+    pub field_filters: Vec<PolicyFieldFilter>,
+    /// Project-wide field targets that can be masked. This separate,
+    /// conservative set drives generated nullability contracts so one shared
+    /// fragment artifact remains sound in every importing scope.
+    pub policy_nullable_fields: Vec<PolicyFieldTarget>,
     pub result: CollectionResultPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PolicyFieldFilter {
+    pub target: PolicyFieldTarget,
+    pub filter: FilterExpr,
+    /// Trusted context required when this guard is actually rendered. SQL
+    /// generation carries only reached requirements into artifact metadata.
+    pub context: Vec<PolicyContextRequirement>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PolicyFieldTarget {
+    Column(ColumnId),
+    Relation(ForeignKeyId),
 }
 
 /// One trusted context value inferred while compiling a policy expression.
@@ -293,6 +320,8 @@ pub enum FilterExpr {
         source_scope: FilterColumnScope,
         /// Effective raw-view row policies for the observed source.
         policy_filter: Option<Box<FilterExpr>>,
+        /// Effective readable-view field policies for the observed source.
+        field_filters: Vec<PolicyFieldFilter>,
         filter: Option<Box<FilterExpr>>,
     },
     /// One correlated scalar aggregate over a direct relation.
@@ -303,6 +332,8 @@ pub enum FilterExpr {
         operand: Option<ColumnId>,
         /// Effective raw-view row policies for the aggregate source.
         policy_filter: Option<Box<FilterExpr>>,
+        /// Effective readable-view field policies for the aggregate source.
+        field_filters: Vec<PolicyFieldFilter>,
     },
 }
 

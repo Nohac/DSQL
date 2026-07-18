@@ -4,9 +4,9 @@ use crate::catalog::{
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
     AggregatePlan, CollectionPlan, CollectionResultPlan, ExistsKind, FilterCollection,
-    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, NestedRelation, QueryPlan,
-    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue,
-    SqlVariantCase,
+    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, NestedRelation,
+    PolicyContextRequirement, PolicyFieldFilter, PolicyFieldTarget, QueryPlan, SelectionClauses,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
 };
 use crate::resolution::SelectionCardinality;
 use sea_query::{
@@ -20,6 +20,8 @@ pub struct GeneratedSql {
     pub output_name: String,
     pub sql: String,
     pub parameters: Vec<GeneratedSqlParameter>,
+    /// Trusted policy context reached while rendering readable-view guards.
+    pub policy_context: Vec<PolicyContextRequirement>,
     pub variants: Vec<GeneratedSqlVariant>,
 }
 
@@ -70,9 +72,51 @@ struct SelectionContext {
     result_alias: String,
 }
 
+#[derive(Clone, Copy)]
+struct SqlRowView<'a> {
+    context: &'a SelectionContext,
+    field_filters: &'a [PolicyFieldFilter],
+}
+
+impl<'a> SqlRowView<'a> {
+    fn readable(context: &'a SelectionContext, field_filters: &'a [PolicyFieldFilter]) -> Self {
+        Self {
+            context,
+            field_filters,
+        }
+    }
+
+    fn raw(context: &'a SelectionContext) -> Self {
+        Self {
+            context,
+            field_filters: &[],
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FilterSqlScope<'a> {
+    current: SqlRowView<'a>,
+    root: SqlRowView<'a>,
+    predicate_source: SqlRowView<'a>,
+    parent: Option<SqlRowView<'a>>,
+}
+
+impl<'a> FilterSqlScope<'a> {
+    fn raw(context: &'a SelectionContext) -> Self {
+        let raw = SqlRowView::raw(context);
+        Self {
+            current: raw,
+            root: raw,
+            predicate_source: raw,
+            parent: None,
+        }
+    }
+}
+
 struct SelectionGenerationContext<'a> {
-    parent: Option<(&'a SelectionContext, &'a ForeignKey)>,
-    root: Option<&'a SelectionContext>,
+    parent: Option<(SqlRowView<'a>, &'a ForeignKey)>,
+    root: Option<SqlRowView<'a>>,
     options: PostgresSqlOptions,
     public_result_alias: Option<&'a str>,
     flattened: bool,
@@ -80,6 +124,7 @@ struct SelectionGenerationContext<'a> {
 
 struct SqlTemplateContext {
     parameters: Vec<GeneratedSqlParameter>,
+    policy_context: Vec<PolicyContextRequirement>,
     variants: Vec<GeneratedSqlVariant>,
     replacements: Vec<(String, String)>,
     numeric_replacements: Vec<(String, String)>,
@@ -92,6 +137,7 @@ impl SqlTemplateContext {
     fn new(next_sentinel: u64) -> Self {
         Self {
             parameters: Vec::new(),
+            policy_context: Vec::new(),
             variants: Vec::new(),
             replacements: Vec::new(),
             numeric_replacements: Vec::new(),
@@ -111,6 +157,14 @@ impl SqlTemplateContext {
             path: parameter.path.clone(),
         });
         format!("${}", self.parameters.len())
+    }
+
+    fn require_policy_context(&mut self, requirements: &[PolicyContextRequirement]) {
+        for requirement in requirements {
+            if !self.policy_context.contains(requirement) {
+                self.policy_context.push(requirement.clone());
+            }
+        }
     }
 
     fn variant(&mut self, path: &str, cases: &[SqlVariantCase]) -> String {
@@ -223,6 +277,7 @@ pub fn generate_postgres_sql_with_options(
             output_name: plan.output_name.clone(),
             sql,
             parameters: template.parameters,
+            policy_context: template.policy_context,
             variants: template.variants,
         });
     }
@@ -333,7 +388,8 @@ fn generate_rows(
 ) -> Result<SelectStatement, SqlGenerationError> {
     let current_table = table(catalog, collection.table)?;
     let context = context_for(current_table, output_name, path);
-    let root_context = generation.root.unwrap_or(&context);
+    let current_view = SqlRowView::readable(&context, &collection.field_filters);
+    let root_view = generation.root.unwrap_or(current_view);
     let export_fields = generation.flattened;
     let encode_exported_fields = generation.parent.is_none();
     let mut query = Query::select();
@@ -341,7 +397,7 @@ fn generate_rows(
     let relation_condition = if let Some((parent, foreign_key)) = generation.parent {
         Some(relation_condition(
             catalog,
-            parent,
+            parent.context,
             &context,
             foreign_key,
             collection.table,
@@ -349,14 +405,20 @@ fn generate_rows(
     } else {
         None
     };
+    let relation_filter = generation
+        .parent
+        .and_then(|(parent, foreign_key)| {
+            policy_field_filter(
+                parent.field_filters,
+                PolicyFieldTarget::Relation(foreign_key.id),
+            )
+            .map(|filter| render_policy_field_filter(catalog, parent.context, filter, template))
+        })
+        .transpose()?;
     let policy_filter = collection
         .policy_filter
         .as_ref()
-        .map(|filter| {
-            filter_expr(
-                catalog, &context, &context, &context, None, filter, template,
-            )
-        })
+        .map(|filter| filter_expr(catalog, FilterSqlScope::raw(&context), filter, template))
         .transpose()?;
     let query_filter = collection
         .clauses
@@ -365,23 +427,28 @@ fn generate_rows(
         .map(|filter| {
             filter_expr(
                 catalog,
-                &context,
-                root_context,
-                &context,
-                None,
+                FilterSqlScope {
+                    current: current_view,
+                    root: root_view,
+                    predicate_source: current_view,
+                    parent: generation.parent.map(|(parent, _)| parent),
+                },
                 filter,
                 template,
             )
         })
         .transpose()?;
-    let filter = combine_filters(policy_filter, query_filter);
+    let filter = combine_filters(
+        combine_filters(relation_filter, policy_filter),
+        query_filter,
+    );
     if collection.shape.cardinality == SelectionCardinality::Collection
         && should_use_source_subquery(&collection.clauses, generation.options)
     {
         let source = limited_source_query(
             catalog,
             current_table,
-            &context,
+            current_view,
             relation_condition,
             filter,
             &collection.clauses,
@@ -405,7 +472,7 @@ fn generate_rows(
         }
         apply_order_limit_offset(
             catalog,
-            &context,
+            current_view,
             &collection.clauses,
             None,
             &mut query,
@@ -428,8 +495,8 @@ fn generate_rows(
             &relation.output_name,
             &relation_path,
             SelectionGenerationContext {
-                parent: Some((&context, foreign_key)),
-                root: Some(root_context),
+                parent: Some((current_view, foreign_key)),
+                root: Some(root_view),
                 options: generation.options,
                 public_result_alias: None,
                 flattened: relation.flattened,
@@ -444,7 +511,7 @@ fn generate_rows(
         );
     }
 
-    let fields = selection_field_expressions(selection, catalog, &context, path)?;
+    let fields = selection_field_expressions(selection, catalog, current_view, path, template)?;
     if export_fields {
         for (output_name, expression) in fields {
             let expression = if encode_exported_fields {
@@ -459,7 +526,7 @@ fn generate_rows(
     let object = json_build_object(fields);
     let expression: Expr = match collection.shape.cardinality {
         SelectionCardinality::Collection => Func::coalesce([
-            ordered_json_agg(object, &collection.clauses, catalog, &context)?,
+            ordered_json_agg(object, &collection.clauses, catalog, current_view, template)?,
             Expr::value("[]"),
         ])
         .into(),
@@ -480,7 +547,8 @@ fn ordered_json_agg(
     object: Expr,
     clauses: &SelectionClauses,
     catalog: &Catalog,
-    context: &SelectionContext,
+    context: SqlRowView<'_>,
+    template: &mut SqlTemplateContext,
 ) -> Result<Expr, SqlGenerationError> {
     if clauses.order_by.is_empty() {
         return Ok(PgFunc::json_agg(object).into());
@@ -489,16 +557,30 @@ fn ordered_json_agg(
     let mut expressions = vec![object];
     let mut order_items = Vec::with_capacity(clauses.order_by.len());
     for order in &clauses.order_by {
-        let column = column(catalog, order.column)?;
-        expressions.push(Expr::col((
-            Alias::new(&context.table_alias),
-            Alias::new(&column.name),
-        )));
-        let direction = match &order.direction {
-            SortDirectionPlan::Asc | SortDirectionPlan::Variant { .. } => "ASC",
-            SortDirectionPlan::Desc => "DESC",
-        };
-        order_items.push(format!("${} {direction}", expressions.len()));
+        let expression = masked_column_expression(catalog, context, order.column, template)?;
+        match &order.direction {
+            SortDirectionPlan::Asc => {
+                expressions.push(expression);
+                order_items.push(format!("${} ASC", expressions.len()));
+            }
+            SortDirectionPlan::Desc => {
+                expressions.push(expression);
+                order_items.push(format!("${} DESC", expressions.len()));
+            }
+            SortDirectionPlan::Variant { path, variants } => {
+                let placeholder = template.variant(path, variants);
+                expressions.push(expression.clone());
+                order_items.push(format!(
+                    "CASE WHEN '{placeholder}' = 'asc' THEN ${} END ASC",
+                    expressions.len()
+                ));
+                expressions.push(expression);
+                order_items.push(format!(
+                    "CASE WHEN '{placeholder}' = 'desc' THEN ${} END DESC",
+                    expressions.len()
+                ));
+            }
+        }
     }
     Ok(Expr::cust_with_exprs(
         format!("JSON_AGG($1 ORDER BY {})", order_items.join(", ")),
@@ -517,7 +599,8 @@ fn generate_aggregate(
 ) -> Result<SelectStatement, SqlGenerationError> {
     let current_table = table(catalog, collection.table)?;
     let context = context_for(current_table, output_name, path);
-    let root_context = generation.root.unwrap_or(&context);
+    let current_view = SqlRowView::readable(&context, &collection.field_filters);
+    let root_view = generation.root.unwrap_or(current_view);
     let export_fields = generation.flattened;
     let encode_exported_fields = generation.parent.is_none();
     let mut query = Query::select();
@@ -531,24 +614,40 @@ fn generate_aggregate(
     if let Some((parent, foreign_key)) = generation.parent {
         query.cond_where(relation_condition(
             catalog,
-            parent,
+            parent.context,
             &context,
             foreign_key,
             collection.table,
         )?);
+        if let Some(filter) = policy_field_filter(
+            parent.field_filters,
+            PolicyFieldTarget::Relation(foreign_key.id),
+        ) {
+            query.and_where(render_policy_field_filter(
+                catalog,
+                parent.context,
+                filter,
+                template,
+            )?);
+        }
     }
     if let Some(filter) = &collection.policy_filter {
         query.and_where(filter_expr(
-            catalog, &context, &context, &context, None, filter, template,
+            catalog,
+            FilterSqlScope::raw(&context),
+            filter,
+            template,
         )?);
     }
     if let Some(filter) = &collection.clauses.filter {
         query.and_where(filter_expr(
             catalog,
-            &context,
-            root_context,
-            &context,
-            None,
+            FilterSqlScope {
+                current: current_view,
+                root: root_view,
+                predicate_source: current_view,
+                parent: generation.parent.map(|(parent, _)| parent),
+            },
             filter,
             template,
         )?);
@@ -559,8 +658,9 @@ fn generate_aggregate(
             query,
             aggregate,
             catalog,
-            &context,
+            current_view,
             generation.public_result_alias,
+            template,
         );
     }
 
@@ -569,7 +669,7 @@ fn generate_aggregate(
         fields.push((
             field.output_name.clone(),
             public_scalar_expression(
-                aggregate_expression(field, catalog, &context)?,
+                aggregate_expression(field, catalog, current_view, template)?,
                 field.data_type,
             ),
         ));
@@ -600,23 +700,22 @@ fn generate_grouped_aggregate(
     mut grouped: SelectStatement,
     aggregate: &AggregatePlan,
     catalog: &Catalog,
-    context: &SelectionContext,
+    context: SqlRowView<'_>,
     public_result_alias: Option<&str>,
+    template: &mut SqlTemplateContext,
 ) -> Result<SelectStatement, SqlGenerationError> {
     for key in &aggregate.group_keys {
-        let column = column(catalog, key.column)?;
-        let grouped_column =
-            || Expr::col((Alias::new(&context.table_alias), Alias::new(&column.name)));
+        let grouped_column = masked_column_expression(catalog, context, key.column, template)?;
         grouped.expr_as(
-            public_scalar_expression(grouped_column(), key.data_type),
+            public_scalar_expression(grouped_column.clone(), key.data_type),
             Alias::new(&key.output_name),
         );
-        grouped.add_group_by([grouped_column()]);
+        grouped.add_group_by([grouped_column]);
     }
     for field in &aggregate.fields {
         grouped.expr_as(
             public_scalar_expression(
-                aggregate_expression(field, catalog, context)?,
+                aggregate_expression(field, catalog, context, template)?,
                 field.data_type,
             ),
             Alias::new(&field.output_name),
@@ -624,9 +723,9 @@ fn generate_grouped_aggregate(
     }
 
     let grouped_alias = generated_identifier(
-        &context.table_alias,
+        &context.context.table_alias,
         "_groups_",
-        &short_hash(&context.table_alias),
+        &short_hash(&context.context.table_alias),
     );
     let fields = aggregate
         .group_keys
@@ -652,7 +751,7 @@ fn generate_grouped_aggregate(
             PgFunc::json_agg(json_build_object(fields)).into(),
             Expr::value("[]"),
         ]),
-        Alias::new(public_result_alias.unwrap_or(&context.result_alias)),
+        Alias::new(public_result_alias.unwrap_or(&context.context.result_alias)),
     );
     Ok(query.to_owned())
 }
@@ -660,25 +759,21 @@ fn generate_grouped_aggregate(
 fn aggregate_expression(
     field: &crate::plan::AggregateProjection,
     catalog: &Catalog,
-    context: &SelectionContext,
+    context: SqlRowView<'_>,
+    template: &mut SqlTemplateContext,
 ) -> Result<Expr, SqlGenerationError> {
-    aggregate_value_expression(field.function, field.operand, catalog, context)
+    aggregate_value_expression(field.function, field.operand, catalog, context, template)
 }
 
 fn aggregate_value_expression(
     function: AggregateFunction,
     operand: Option<ColumnId>,
     catalog: &Catalog,
-    context: &SelectionContext,
+    context: SqlRowView<'_>,
+    template: &mut SqlTemplateContext,
 ) -> Result<Expr, SqlGenerationError> {
     let operand = operand
-        .map(|column_id| {
-            let column = column(catalog, column_id)?;
-            Ok(Expr::col((
-                Alias::new(&context.table_alias),
-                Alias::new(&column.name),
-            )))
-        })
+        .map(|column_id| masked_column_expression(catalog, context, column_id, template))
         .transpose()?;
     Ok(match function {
         AggregateFunction::Count => {
@@ -704,7 +799,7 @@ fn aggregate_value_expression(
 fn limited_source_query(
     catalog: &Catalog,
     table: &Table,
-    context: &SelectionContext,
+    context: SqlRowView<'_>,
     relation_condition: Option<Condition>,
     filter: Option<Expr>,
     clauses: &SelectionClauses,
@@ -714,7 +809,7 @@ fn limited_source_query(
     let mut query = Query::select();
     query.column(Asterisk).from_as(
         (Alias::new(&table.schema), Alias::new(&table.name)),
-        Alias::new(&context.table_alias),
+        Alias::new(&context.context.table_alias),
     );
     if let Some(relation_condition) = relation_condition {
         query.cond_where(relation_condition);
@@ -743,30 +838,66 @@ fn should_use_source_subquery(clauses: &SelectionClauses, options: PostgresSqlOp
 
 fn apply_order_limit_offset(
     catalog: &Catalog,
-    context: &SelectionContext,
+    context: SqlRowView<'_>,
     clauses: &SelectionClauses,
     limit_override: Option<u64>,
     query: &mut SelectStatement,
     template: &mut SqlTemplateContext,
 ) -> Result<(), SqlGenerationError> {
     for order in &clauses.order_by {
-        let column = column(catalog, order.column)?;
-        query.order_by(
-            (Alias::new(&context.table_alias), Alias::new(&column.name)),
-            match &order.direction {
-                SortDirectionPlan::Asc => Order::Asc,
-                SortDirectionPlan::Desc => Order::Desc,
-                SortDirectionPlan::Variant { path, variants } => {
+        match &order.direction {
+            SortDirectionPlan::Asc => {
+                let expression =
+                    masked_column_expression(catalog, context, order.column, template)?;
+                query.order_by_expr(expression, Order::Asc);
+            }
+            SortDirectionPlan::Desc => {
+                let expression =
+                    masked_column_expression(catalog, context, order.column, template)?;
+                query.order_by_expr(expression, Order::Desc);
+            }
+            SortDirectionPlan::Variant { path, variants } => {
+                if policy_field_filter(
+                    context.field_filters,
+                    PolicyFieldTarget::Column(order.column),
+                )
+                .is_none()
+                {
+                    let column = column(catalog, order.column)?;
+                    query.order_by(
+                        (
+                            Alias::new(&context.context.table_alias),
+                            Alias::new(&column.name),
+                        ),
+                        Order::Asc,
+                    );
                     template.replace_order_direction(
-                        &context.table_alias,
+                        &context.context.table_alias,
                         &column.name,
                         path,
                         variants,
                     );
-                    Order::Asc
+                    continue;
                 }
-            },
-        );
+                let expression =
+                    masked_column_expression(catalog, context, order.column, template)?;
+                let placeholder = template.variant(path, variants);
+                query.order_by_expr(
+                    Expr::cust_with_expr(
+                        format!("CASE WHEN '{placeholder}' = 'asc' THEN $1 END"),
+                        expression.clone(),
+                    ),
+                    Order::Asc,
+                );
+                query.order_by_expr(
+                    Expr::cust_with_expr(
+                        format!("CASE WHEN '{placeholder}' = 'desc' THEN $1 END"),
+                        expression,
+                    ),
+                    Order::Desc,
+                );
+            }
+        }
     }
     if let Some(limit) = limit_override.or_else(|| sql_value_u64(&clauses.limit)) {
         query.limit(limit);
@@ -796,28 +927,66 @@ fn combine_filters(left: Option<Expr>, right: Option<Expr>) -> Option<Expr> {
     }
 }
 
+fn policy_field_filter(
+    filters: &[PolicyFieldFilter],
+    target: PolicyFieldTarget,
+) -> Option<&PolicyFieldFilter> {
+    filters.iter().find(|filter| filter.target == target)
+}
+
+fn render_policy_field_filter(
+    catalog: &Catalog,
+    source: &SelectionContext,
+    filter: &PolicyFieldFilter,
+    template: &mut SqlTemplateContext,
+) -> Result<Expr, SqlGenerationError> {
+    template.require_policy_context(&filter.context);
+    filter_expr(
+        catalog,
+        FilterSqlScope::raw(source),
+        &filter.filter,
+        template,
+    )
+}
+
+fn masked_column_expression(
+    catalog: &Catalog,
+    source: SqlRowView<'_>,
+    column_id: ColumnId,
+    template: &mut SqlTemplateContext,
+) -> Result<Expr, SqlGenerationError> {
+    let column = column(catalog, column_id)?;
+    let raw = Expr::col((
+        Alias::new(&source.context.table_alias),
+        Alias::new(&column.name),
+    ));
+    let Some(filter) =
+        policy_field_filter(source.field_filters, PolicyFieldTarget::Column(column_id))
+    else {
+        return Ok(raw);
+    };
+    let guard = render_policy_field_filter(catalog, source.context, filter, template)?;
+    Ok(Expr::case(guard, raw).finally(Expr::null()).into())
+}
+
 fn filter_expr(
     catalog: &Catalog,
-    context: &SelectionContext,
-    root: &SelectionContext,
-    predicate_source: &SelectionContext,
-    parent: Option<&SelectionContext>,
+    scope: FilterSqlScope<'_>,
     filter: &FilterExpr,
     template: &mut SqlTemplateContext,
 ) -> Result<Expr, SqlGenerationError> {
     Ok(match filter {
         FilterExpr::Column {
-            scope,
+            scope: column_scope,
             column: column_id,
         } => {
-            let column = column(catalog, *column_id)?;
-            let source = match scope {
-                FilterColumnScope::Current => context,
-                FilterColumnScope::Root => root,
-                FilterColumnScope::PredicateSource => predicate_source,
-                FilterColumnScope::Parent => parent.unwrap_or(context),
+            let source = match column_scope {
+                FilterColumnScope::Current => scope.current,
+                FilterColumnScope::Root => scope.root,
+                FilterColumnScope::PredicateSource => scope.predicate_source,
+                FilterColumnScope::Parent => scope.parent.unwrap_or(scope.current),
             };
-            Expr::col((Alias::new(&source.table_alias), Alias::new(&column.name)))
+            masked_column_expression(catalog, source, *column_id, template)?
         }
         FilterExpr::Parameter(parameter) => Expr::cust(template.parameter(parameter)),
         FilterExpr::Literal(literal) => match literal {
@@ -838,15 +1007,7 @@ fn filter_expr(
             if matches!(op, FilterOp::Eq | FilterOp::Ne)
                 && let Some(operand) = null_comparison_operand(left, right)
             {
-                let operand = filter_expr(
-                    catalog,
-                    context,
-                    root,
-                    predicate_source,
-                    parent,
-                    operand,
-                    template,
-                )?;
+                let operand = filter_expr(catalog, scope, operand, template)?;
                 return Ok(Expr::cust_with_expr(
                     if *op == FilterOp::Eq {
                         "$1 IS NULL"
@@ -857,44 +1018,12 @@ fn filter_expr(
                 ));
             }
             if *op == FilterOp::Like {
-                let left = filter_expr(
-                    catalog,
-                    context,
-                    root,
-                    predicate_source,
-                    parent,
-                    left,
-                    template,
-                )?;
-                let right = filter_expr(
-                    catalog,
-                    context,
-                    root,
-                    predicate_source,
-                    parent,
-                    right,
-                    template,
-                )?;
+                let left = filter_expr(catalog, scope, left, template)?;
+                let right = filter_expr(catalog, scope, right, template)?;
                 return Ok(Expr::cust_with_exprs("$1 like $2", [left, right]));
             }
-            let left = filter_expr(
-                catalog,
-                context,
-                root,
-                predicate_source,
-                parent,
-                left,
-                template,
-            )?;
-            let right = filter_expr(
-                catalog,
-                context,
-                root,
-                predicate_source,
-                parent,
-                right,
-                template,
-            )?;
+            let left = filter_expr(catalog, scope, left, template)?;
+            let right = filter_expr(catalog, scope, right, template)?;
             match op {
                 FilterOp::Eq => left.eq(right),
                 FilterOp::Ne => left.ne(right),
@@ -910,78 +1039,55 @@ fn filter_expr(
                 FilterOp::Or => left.or(right),
             }
         }
-        FilterExpr::Not(operand) => Expr::cust_with_expr(
-            "NOT ($1)",
-            filter_expr(
-                catalog,
-                context,
-                root,
-                predicate_source,
-                parent,
-                operand,
-                template,
-            )?,
-        ),
+        FilterExpr::Not(operand) => {
+            Expr::cust_with_expr("NOT ($1)", filter_expr(catalog, scope, operand, template)?)
+        }
         FilterExpr::NullTest { operand, negated } => Expr::cust_with_expr(
             if *negated {
                 "$1 IS NOT NULL"
             } else {
                 "$1 IS NULL"
             },
-            filter_expr(
-                catalog,
-                context,
-                root,
-                predicate_source,
-                parent,
-                operand,
-                template,
-            )?,
+            filter_expr(catalog, scope, operand, template)?,
         ),
         FilterExpr::Membership {
             operand,
             collection,
             negated,
         } => {
-            let operand = filter_expr_fragment(
-                catalog,
-                context,
-                root,
-                predicate_source,
-                parent,
-                operand,
-                template,
-            )?;
+            let operand = filter_expr(catalog, scope, operand, template)?;
             match collection {
                 FilterCollection::List(items) if items.is_empty() => {
                     Expr::cust(if *negated { "TRUE" } else { "FALSE" })
                 }
                 FilterCollection::List(items) => {
-                    let items = items
-                        .iter()
-                        .map(|item| {
-                            filter_expr_fragment(
-                                catalog,
-                                context,
-                                root,
-                                predicate_source,
-                                parent,
-                                item,
-                                template,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Expr::cust(format!(
-                        "{operand} {} ({})",
-                        if *negated { "NOT IN" } else { "IN" },
-                        items.join(", ")
-                    ))
+                    let mut expressions = vec![operand];
+                    expressions.extend(
+                        items
+                            .iter()
+                            .map(|item| filter_expr(catalog, scope, item, template))
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                    let placeholders = (2..=expressions.len())
+                        .map(|index| format!("${index}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Expr::cust_with_exprs(
+                        format!(
+                            "$1 {} ({placeholders})",
+                            if *negated { "NOT IN" } else { "IN" }
+                        ),
+                        expressions,
+                    )
                 }
-                FilterCollection::Parameter(parameter) => Expr::cust(format!(
-                    "{operand} {}({})",
-                    if *negated { "<> ALL" } else { "= ANY" },
-                    template.parameter(parameter)
-                )),
+                FilterCollection::Parameter(parameter) => Expr::cust_with_expr(
+                    format!(
+                        "$1 {}({})",
+                        if *negated { "<> ALL" } else { "= ANY" },
+                        template.parameter(parameter).replace('$', "$$")
+                    ),
+                    operand,
+                ),
             }
         }
         FilterExpr::VariantBinary {
@@ -991,42 +1097,20 @@ fn filter_expr(
             right,
         } => {
             if let Some(operand) = null_comparison_operand(left, right) {
-                Expr::cust(format!(
-                    "{} {} null",
-                    filter_expr_fragment(
-                        catalog,
-                        context,
-                        root,
-                        predicate_source,
-                        parent,
-                        operand,
-                        template,
-                    )?,
-                    template.variant(path, variants),
-                ))
+                let operator = template.variant(path, variants);
+                Expr::cust_with_expr(
+                    format!("$1 {operator} null"),
+                    filter_expr(catalog, scope, operand, template)?,
+                )
             } else {
-                Expr::cust(format!(
-                    "{} {} {}",
-                    filter_expr_fragment(
-                        catalog,
-                        context,
-                        root,
-                        predicate_source,
-                        parent,
-                        left,
-                        template,
-                    )?,
-                    template.variant(path, variants),
-                    filter_expr_fragment(
-                        catalog,
-                        context,
-                        root,
-                        predicate_source,
-                        parent,
-                        right,
-                        template,
-                    )?
-                ))
+                let operator = template.variant(path, variants);
+                Expr::cust_with_exprs(
+                    format!("$1 {operator} $2"),
+                    [
+                        filter_expr(catalog, scope, left, template)?,
+                        filter_expr(catalog, scope, right, template)?,
+                    ],
+                )
             }
         }
         FilterExpr::Exists {
@@ -1035,6 +1119,7 @@ fn filter_expr(
             kind,
             source_scope,
             policy_filter,
+            field_filters,
             filter,
         } => {
             let related_table = table(catalog, *table_id)?;
@@ -1043,6 +1128,7 @@ fn filter_expr(
                 &related_table.name,
                 &[table_label(related_table)],
             );
+            let exists_view = SqlRowView::readable(&exists_context, field_filters);
             let mut query = Query::select();
             query.expr(Expr::value(1)).from_as(
                 (
@@ -1052,42 +1138,53 @@ fn filter_expr(
                 Alias::new(&exists_context.table_alias),
             );
             let relation_source = match source_scope {
-                FilterColumnScope::Current => context,
-                FilterColumnScope::Root => root,
-                FilterColumnScope::PredicateSource => predicate_source,
-                FilterColumnScope::Parent => parent.unwrap_or(context),
+                FilterColumnScope::Current => scope.current,
+                FilterColumnScope::Root => scope.root,
+                FilterColumnScope::PredicateSource => scope.predicate_source,
+                FilterColumnScope::Parent => scope.parent.unwrap_or(scope.current),
             };
             if let Some(foreign_key_id) = foreign_key_id {
+                let foreign_key = foreign_key(catalog, *foreign_key_id)?;
                 query.cond_where(relation_condition(
                     catalog,
-                    relation_source,
+                    relation_source.context,
                     &exists_context,
-                    foreign_key(catalog, *foreign_key_id)?,
+                    foreign_key,
                     *table_id,
                 )?);
+                if let Some(filter) = policy_field_filter(
+                    relation_source.field_filters,
+                    PolicyFieldTarget::Relation(foreign_key.id),
+                ) {
+                    query.and_where(render_policy_field_filter(
+                        catalog,
+                        relation_source.context,
+                        filter,
+                        template,
+                    )?);
+                }
             }
             if let Some(policy_filter) = policy_filter {
                 query.and_where(filter_expr(
                     catalog,
-                    &exists_context,
-                    &exists_context,
-                    &exists_context,
-                    Some(relation_source),
+                    FilterSqlScope::raw(&exists_context),
                     policy_filter,
                     template,
                 )?);
             }
             if let Some(filter) = filter {
                 let (filter_predicate_source, filter_parent) = match kind {
-                    ExistsKind::Explicit => (&exists_context, Some(relation_source)),
-                    ExistsKind::RelationshipPredicate => (predicate_source, parent),
+                    ExistsKind::Explicit => (exists_view, Some(relation_source)),
+                    ExistsKind::RelationshipPredicate => (scope.predicate_source, scope.parent),
                 };
                 query.and_where(filter_expr(
                     catalog,
-                    &exists_context,
-                    root,
-                    filter_predicate_source,
-                    filter_parent,
+                    FilterSqlScope {
+                        current: exists_view,
+                        root: scope.root,
+                        predicate_source: filter_predicate_source,
+                        parent: filter_parent,
+                    },
                     filter,
                     template,
                 )?);
@@ -1100,6 +1197,7 @@ fn filter_expr(
             function,
             operand,
             policy_filter,
+            field_filters,
         } => {
             let related_table = table(catalog, *table_id)?;
             let foreign_key = foreign_key(catalog, *foreign_key_id)?;
@@ -1108,6 +1206,7 @@ fn filter_expr(
                 &related_table.name,
                 &[table_label(related_table), function.label().to_string()],
             );
+            let aggregate_view = SqlRowView::readable(&aggregate_context, field_filters);
             let mut query = Query::select();
             query.from_as(
                 (
@@ -1118,18 +1217,26 @@ fn filter_expr(
             );
             query.cond_where(relation_condition(
                 catalog,
-                context,
+                scope.current.context,
                 &aggregate_context,
                 foreign_key,
                 *table_id,
             )?);
+            if let Some(filter) = policy_field_filter(
+                scope.current.field_filters,
+                PolicyFieldTarget::Relation(foreign_key.id),
+            ) {
+                query.and_where(render_policy_field_filter(
+                    catalog,
+                    scope.current.context,
+                    filter,
+                    template,
+                )?);
+            }
             if let Some(policy_filter) = policy_filter {
                 query.and_where(filter_expr(
                     catalog,
-                    &aggregate_context,
-                    &aggregate_context,
-                    &aggregate_context,
-                    Some(context),
+                    FilterSqlScope::raw(&aggregate_context),
                     policy_filter,
                     template,
                 )?);
@@ -1142,7 +1249,8 @@ fn filter_expr(
                     *function,
                     *operand,
                     catalog,
-                    &aggregate_context,
+                    aggregate_view,
+                    template,
                 )?);
                 Expr::SubQuery(None, Box::new(query.to_owned().into()))
             }
@@ -1161,50 +1269,6 @@ fn null_comparison_operand<'a>(
     } else {
         None
     }
-}
-
-fn filter_expr_fragment(
-    catalog: &Catalog,
-    context: &SelectionContext,
-    root: &SelectionContext,
-    predicate_source: &SelectionContext,
-    parent: Option<&SelectionContext>,
-    filter: &FilterExpr,
-    template: &mut SqlTemplateContext,
-) -> Result<String, SqlGenerationError> {
-    Ok(match filter {
-        FilterExpr::Column {
-            scope,
-            column: column_id,
-        } => {
-            let column = column(catalog, *column_id)?;
-            let source = match scope {
-                FilterColumnScope::Current => context,
-                FilterColumnScope::Root => root,
-                FilterColumnScope::PredicateSource => predicate_source,
-                FilterColumnScope::Parent => parent.unwrap_or(context),
-            };
-            format!("\"{}\".\"{}\"", source.table_alias, column.name)
-        }
-        FilterExpr::Parameter(parameter) => template.parameter(parameter),
-        FilterExpr::Literal(FilterLiteral::String(value)) => sql_string(value),
-        FilterExpr::Literal(FilterLiteral::Number(value)) => value.clone(),
-        FilterExpr::Literal(FilterLiteral::Bool(value)) => value.to_string(),
-        FilterExpr::Literal(FilterLiteral::Null) => "null".to_string(),
-        FilterExpr::Binary { .. }
-        | FilterExpr::Not(_)
-        | FilterExpr::NullTest { .. }
-        | FilterExpr::Membership { .. }
-        | FilterExpr::VariantBinary { .. }
-        | FilterExpr::Exists { .. }
-        | FilterExpr::RelationAggregate { .. } => {
-            return Err(SqlGenerationError::UnsupportedFilterFragment);
-        }
-    })
-}
-
-fn sql_string(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
 }
 
 /// Extends a semantic result path with one nested selection instance.
@@ -1241,8 +1305,9 @@ fn relation_instance_path(
 fn selection_field_expressions(
     selection: &SelectionPlan,
     catalog: &Catalog,
-    context: &SelectionContext,
+    context: SqlRowView<'_>,
     path: &[String],
+    template: &mut SqlTemplateContext,
 ) -> Result<Vec<(String, Expr)>, SqlGenerationError> {
     let mut fields = Vec::new();
     for (item_index, item) in selection.items.iter().enumerate() {
@@ -1252,7 +1317,7 @@ fn selection_field_expressions(
                 fields.push((
                     projection.output_name.clone(),
                     public_scalar_expression(
-                        Expr::col((Alias::new(&context.table_alias), Alias::new(&column.name))),
+                        masked_column_expression(catalog, context, projection.column, template)?,
                         column.data_type,
                     ),
                 ));

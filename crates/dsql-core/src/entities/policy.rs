@@ -166,7 +166,20 @@ pub struct CompiledPolicyTarget {
     pub table: TableId,
     pub enforcement: Option<FilterExpr>,
     pub row_rule: Option<FilterExpr>,
+    pub field_rules: Vec<CompiledPolicyFieldRule>,
     pub context: Vec<PolicyContextRequirement>,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum CompiledPolicyField {
+    Column(crate::catalog::ColumnId),
+    Relation(crate::catalog::ForeignKeyId),
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct CompiledPolicyFieldRule {
+    pub fields: Vec<CompiledPolicyField>,
+    pub condition: FilterExpr,
 }
 
 /// Query-planning semantics for one filter identity.
@@ -718,6 +731,18 @@ async fn compile_policies(
                 .row_rules
                 .first()
                 .and_then(|rule| compiler.expr(rule, Some(row), Some(DataType::Boolean)));
+            let mut field_rules = Vec::new();
+            for rule in &declaration.field_rules {
+                let condition = compiler.expr(&rule.condition, Some(row), Some(DataType::Boolean));
+                let fields = rule
+                    .fields
+                    .iter()
+                    .map(|(name, _)| compiler.field(*table, name))
+                    .collect::<Option<Vec<_>>>();
+                if let (Some(condition), Some(fields)) = (condition, fields) {
+                    field_rules.push(CompiledPolicyFieldRule { fields, condition });
+                }
+            }
             if compiler.failed {
                 continue;
             }
@@ -728,6 +753,7 @@ async fn compile_policies(
                 table: *table,
                 enforcement,
                 row_rule,
+                field_rules,
                 context: compiler.context,
             });
         }
@@ -769,6 +795,20 @@ struct CompiledPath {
 }
 
 impl PolicyCompiler<'_> {
+    fn field(&mut self, table: TableId, name: &str) -> Option<CompiledPolicyField> {
+        let reference = FieldRef {
+            target: TableRef::parse(name),
+            selector: None,
+        };
+        match self.catalog.check_field_ref(table, reference) {
+            FieldCheckResult::Column(column) => Some(CompiledPolicyField::Column(column.id)),
+            FieldCheckResult::Relation(relation) => {
+                Some(CompiledPolicyField::Relation(relation.foreign_key.id))
+            }
+            FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => self.fail(),
+        }
+    }
+
     fn expr(
         &mut self,
         expr: &Expr,
@@ -837,6 +877,7 @@ impl PolicyCompiler<'_> {
                     kind: ExistsKind::Explicit,
                     source_scope: FilterColumnScope::Current,
                     policy_filter: None,
+                    field_filters: Vec::new(),
                     filter,
                 })
             }
@@ -1040,6 +1081,7 @@ impl PolicyCompiler<'_> {
                     FilterColumnScope::Current
                 },
                 policy_filter: None,
+                field_filters: Vec::new(),
                 filter: Some(Box::new(filter)),
             },
         )

@@ -293,7 +293,7 @@ async fn structural_matches_rederive_across_source_revisits() {
 }
 
 #[tokio::test]
-async fn row_filters_execute_while_field_filters_remain_blocked() {
+async fn compiled_filters_execute_across_supported_sources() {
     async fn case(policy: &str, query: &str) -> String {
         let bowl = language_bowl().await;
         insert_catalog(&bowl, imdb_catalog()).await;

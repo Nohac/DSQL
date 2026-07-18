@@ -21,4 +21,3 @@ unrelated:
 
 
 field:
-Error[70..75]: filter `HiddenYear` affects this operation but cannot be enforced until filter semantics are applied to generated SQL
