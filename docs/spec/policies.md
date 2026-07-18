@@ -406,8 +406,9 @@ Rules:
 - Context is never part of public generated operation input.
 - Missing required context refuses execution rather than binding `NULL` or a
   caller-provided fallback.
-- Explicit query predicates may use context when the project exposes it to
-  query source.
+- Explicit query predicates may use context. Every `$:` binding crosses the
+  same server-only boundary whether it originates in a filter or directly in
+  query source; no project switch can turn it into public operation input.
 
 Roles and capabilities do not need a second policy language. When useful, they
 are typed trusted context consumed by filter expressions and conditions.

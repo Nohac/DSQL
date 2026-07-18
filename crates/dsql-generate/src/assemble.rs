@@ -5,7 +5,7 @@ use std::path::Path;
 
 use dsql_core::catalog::{Catalog, TableId};
 use dsql_core::entities::aggregate::AggregateMode;
-use dsql_core::entities::variable::VariableBinding;
+use dsql_core::entities::variable::{VariableBinding, VariableSource};
 use dsql_core::entities::variable_path::{is_input_path, is_params_path};
 use dsql_core::facts::Span;
 use dsql_core::plan::{
@@ -93,7 +93,7 @@ pub(crate) fn operation_metadata(
         result: result_shape(catalog, inputs.plan)?,
         params: input_fields(inputs.bindings, true),
         input: input_fields(inputs.bindings, false),
-        context: Vec::new(),
+        context: context_fields(inputs.bindings),
         dynamic_inputs: dynamic_inputs(inputs.bindings),
         policies: Vec::new(),
         handoffs: Vec::new(),
@@ -353,6 +353,21 @@ fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField
             (top_level && is_params_path(&binding.path))
                 || (!top_level && is_input_path(&binding.path))
         })
+        .map(|binding| InputField {
+            path: binding.path.clone(),
+            data_type: binding.data_type.as_str().to_string(),
+            collection: binding.collection.then_some(true),
+            enum_values: binding.enum_values.clone(),
+            required: true,
+            nullable: false,
+        })
+        .collect()
+}
+
+fn context_fields(bindings: &[VariableBinding]) -> Vec<InputField> {
+    bindings
+        .iter()
+        .filter(|binding| binding.source == VariableSource::Context)
         .map(|binding| InputField {
             path: binding.path.clone(),
             data_type: binding.data_type.as_str().to_string(),

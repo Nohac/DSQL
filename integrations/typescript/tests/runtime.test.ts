@@ -22,7 +22,8 @@ type MovieOperation = DsqlOperation<
         };
       };
     };
-  }
+  },
+  { readonly tenant_id: string }
 >;
 
 const MovieInfoOperation = {
@@ -33,8 +34,11 @@ const MovieInfoOperation = {
 
 const payload = {
   operation: MovieInfoOperation,
-  sql: "select * from movie_info where id {{input.movie_info.clause.where.id.op}} $1",
-  parameters: [{ path: "input.movie_info.clause.where.id.value" }],
+  sql: "select * from movie_info where id {{input.movie_info.clause.where.id.op}} $1 and tenant_id = $2",
+  parameters: [
+    { path: "input.movie_info.clause.where.id.value" },
+    { path: "context.tenant_id" },
+  ],
   variants: {
     "input.movie_info.clause.where.id.op": {
       eq: "=",
@@ -60,10 +64,35 @@ const variables = {
 } as const;
 
 test("materializes sql variants and ordered parameter values", () => {
-  expect(materializeDsqlQuery(payload, variables)).toEqual({
-    sql: "select * from movie_info where id = $1",
-    values: [42],
+  expect(
+    materializeDsqlQuery(payload, variables, { tenant_id: "tenant-7" }),
+  ).toEqual({
+    sql: "select * from movie_info where id = $1 and tenant_id = $2",
+    values: [42, "tenant-7"],
   });
+});
+
+test("requires trusted context separately from public variables", () => {
+  const forgedVariables = {
+    ...variables,
+    context: { tenant_id: "attacker-controlled" },
+  };
+
+  expect(() =>
+    materializeDsqlQuery(
+      payload,
+      forgedVariables,
+      {} as { readonly tenant_id: string },
+    ),
+  ).toThrow("missing trusted dsql context at context.tenant_id");
+});
+
+test("rejects null trusted context instead of binding SQL null", () => {
+  expect(() =>
+    materializeDsqlQuery(payload, variables, {
+      tenant_id: null,
+    } as unknown as { readonly tenant_id: string }),
+  ).toThrow("missing trusted dsql context at context.tenant_id");
 });
 
 test("reads dotted paths from nested values", () => {

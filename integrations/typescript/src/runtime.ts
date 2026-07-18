@@ -2,6 +2,7 @@ export type DsqlOperation<
   Result = unknown,
   Params = Record<string, never>,
   Input = Record<string, never>,
+  Context = Record<string, never>,
 > = {
   readonly id: string;
   readonly name: string;
@@ -9,23 +10,29 @@ export type DsqlOperation<
   readonly result?: Result;
   readonly params?: Params;
   readonly input?: Input;
+  readonly context?: Context;
 };
 
 export type DsqlOperationResult<Operation> =
-  Operation extends DsqlOperation<infer Result, any, any> ? Result : never;
+  Operation extends DsqlOperation<infer Result, any, any, any> ? Result : never;
 
 export type DsqlOperationParams<Operation> =
-  Operation extends DsqlOperation<any, infer Params, any>
+  Operation extends DsqlOperation<any, infer Params, any, any>
     ? Params
     : Record<string, never>;
 
 export type DsqlOperationInput<Operation> =
-  Operation extends DsqlOperation<any, any, infer Input>
+  Operation extends DsqlOperation<any, any, infer Input, any>
     ? Input
     : Record<string, never>;
 
+export type DsqlOperationContext<Operation> =
+  Operation extends DsqlOperation<any, any, any, infer Context>
+    ? Context
+    : Record<string, never>;
+
 export type DsqlVariables<
-  Operation extends DsqlOperation<any, any, any>,
+  Operation extends DsqlOperation<any, any, any, any>,
 > = {
   readonly params: DsqlOperationParams<Operation>;
   readonly input: DsqlOperationInput<Operation>;
@@ -83,7 +90,7 @@ export type DsqlSqlParameter = {
 export type DsqlSqlVariants = Record<string, Record<string, string>>;
 
 export type DsqlExecutionPayload<
-  Operation extends DsqlOperation<any, any, any> = DsqlOperation<any, any, any>,
+  Operation extends DsqlOperation<any, any, any, any> = DsqlOperation<any, any, any, any>,
 > = {
   readonly operation: Operation;
   readonly sql: string;
@@ -116,15 +123,25 @@ export function dsql(): DsqlDefinition {
 }
 
 export function materializeDsqlQuery<
-  Operation extends DsqlOperation<any, any, any>,
+  Operation extends DsqlOperation<any, any, any, any>,
 >(
   payload: DsqlExecutionPayload<Operation>,
   variables: DsqlVariables<Operation>,
+  context: DsqlOperationContext<Operation>,
 ): DsqlMaterializedQuery {
-  const sql = applyDsqlVariants(payload.sql, payload.variants, variables);
+  const bindings = { ...variables, context };
+  const sql = applyDsqlVariants(payload.sql, payload.variants, bindings);
+  for (const parameter of payload.parameters) {
+    if (
+      parameter.path.startsWith("context.") &&
+      getDsqlPath(bindings, parameter.path) == null
+    ) {
+      throw new Error(`missing trusted dsql context at ${parameter.path}`);
+    }
+  }
   return {
     sql,
-    values: collectDsqlParameterValues(payload.parameters, variables),
+    values: collectDsqlParameterValues(payload.parameters, bindings),
   };
 }
 

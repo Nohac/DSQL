@@ -463,6 +463,31 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
 }
 
 #[tokio::test]
+async fn trusted_context_flows_through_sql_and_operation_metadata() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA]),
+        vec![document(
+            "queries/frontend/context.dsql",
+            "query CurrentUser { users(where .id == $:user_id) { id name } }\n",
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("server-bound trusted context is valid query input");
+    let artifact = assembled
+        .snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "CurrentUser")
+        .expect("current-user operation");
+
+    insta::assert_snapshot!(artifact.serialized);
+}
+
+#[tokio::test]
 async fn singular_selection_shapes_flow_through_sql_and_metadata() {
     let bowl = memory_bowl(
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA, MEMBERSHIPS_SCHEMA]),

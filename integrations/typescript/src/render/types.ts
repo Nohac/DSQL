@@ -77,12 +77,16 @@ const RESULT_KIND_SCALAR = "scalar";
 const RESULT_KIND_ARRAY = "array";
 const PARAMS_PREFIX = "params";
 const INPUT_PREFIX = "input";
+const CONTEXT_PREFIX = "context";
 const FLOAT_TS_TYPE = 'number | "NaN" | "Infinity" | "-Infinity"';
 const UNKNOWN_TS_TYPE = "unknown";
 const RENDER_DSQL_VERSION = 1;
 const RENDER_MANIFEST_NAME = ".dsql-render-manifest.json";
 
-type InputRoot = typeof PARAMS_PREFIX | typeof INPUT_PREFIX;
+type InputRoot =
+  | typeof PARAMS_PREFIX
+  | typeof INPUT_PREFIX
+  | typeof CONTEXT_PREFIX;
 
 export async function renderDsql(
   artifacts: BuildArtifacts,
@@ -239,6 +243,7 @@ function renderOperationModule(
   const resultType = `${name}Result`;
   const paramsType = `${name}Params`;
   const inputType = `${name}Input`;
+  const contextType = `${name}Context`;
   const runtimeImports = ["DsqlOperation"];
   if (options.includeExecutionPayload) {
     runtimeImports.unshift("DsqlExecutionPayload");
@@ -265,7 +270,9 @@ function renderOperationModule(
       artifacts.fragments,
     )};`,
     "",
-    `export const ${name}Operation: DsqlOperation<${resultType}, ${paramsType}, ${inputType}> = {
+    `export type ${contextType} = ${contextTypeLiteral(operation.context)};`,
+    "",
+    `export const ${name}Operation: DsqlOperation<${resultType}, ${paramsType}, ${inputType}, ${contextType}> = {
   id: ${JSON.stringify(manifestEntry.hash)},
   name: ${JSON.stringify(operation.name)},
   kind: ${JSON.stringify(DEFINITION_KIND_QUERY)}
@@ -540,7 +547,7 @@ function renderBarrel(
   const runtimeExports = options.includeRuntime
     ? [
         'export { dsql } from "@dsql/typescript/runtime";',
-        'export type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlVariables } from "@dsql/typescript/runtime";',
+        'export type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationContext, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlVariables } from "@dsql/typescript/runtime";',
       ]
     : [];
   return `${[...runtimeExports, ...[...exports].sort()].join("\n")}\n`;
@@ -839,6 +846,10 @@ function inputTypeLiteral(
   fragments: readonly FragmentMetadata[] = [],
 ): string {
   return inputFieldsTypeLiteral(fields, INPUT_PREFIX, fragmentSpreads, fragments);
+}
+
+function contextTypeLiteral(fields: readonly InputField[]): string {
+  return inputFieldsTypeLiteral(fields, CONTEXT_PREFIX);
 }
 
 function inputFieldsTypeLiteral(

@@ -60,21 +60,21 @@ export type DsqlExecuteOptions<
   Input,
 > = DsqlVariableOptions<Params, Input>;
 
-type DsqlServerFunction<Operation extends DsqlOperation<any, any, any>> = (
+type DsqlServerFunction<Operation extends DsqlOperation<any, any, any, any>> = (
   options: {
     readonly data: DsqlServerVariables<Operation>;
   },
 ) => Promise<DsqlOperationResult<Operation>>;
 
 export function queryKey<Variables>(
-  operation: DsqlOperation<any, any, any>,
+  operation: DsqlOperation<any, any, any, any>,
   variables: Variables,
 ): DsqlQueryKey<Variables> {
   return ["dsql", operation.name, variables] as const;
 }
 
-export function queryOptions<Result, Params, Input>(
-  operation: DsqlOperation<Result, Params, Input>,
+export function queryOptions<Result, Params, Input, Context>(
+  operation: DsqlOperation<Result, Params, Input, Context>,
   ...args: DsqlOptionsArgument<
     NoInfer<Params>,
     NoInfer<Input>,
@@ -96,8 +96,8 @@ export function queryOptions<Result, Params, Input>(
   });
 }
 
-export function executeQuery<Result, Params, Input>(
-  operation: DsqlOperation<Result, Params, Input>,
+export function executeQuery<Result, Params, Input, Context>(
+  operation: DsqlOperation<Result, Params, Input, Context>,
   ...args: DsqlOptionsArgument<
     NoInfer<Params>,
     NoInfer<Input>,
@@ -113,8 +113,8 @@ export function executeQuery<Result, Params, Input>(
   return serverFn({ data: { params, input } });
 }
 
-export function useQuery<Result, Params, Input>(
-  operation: DsqlOperation<Result, Params, Input>,
+export function useQuery<Result, Params, Input, Context>(
+  operation: DsqlOperation<Result, Params, Input, Context>,
   ...args: DsqlOptionsArgument<
     NoInfer<Params>,
     NoInfer<Input>,
@@ -138,7 +138,7 @@ export function useQuery<Result, Params, Input>(
   ) as UseQueryResult<Result, Error>;
 }
 
-function serverFunctionFor<Operation extends DsqlOperation<any, any, any>>(
+function serverFunctionFor<Operation extends DsqlOperation<any, any, any, any>>(
   operation: Operation,
 ): DsqlServerFunction<Operation> {
   const serverFn = serverFunctions[operation.name];

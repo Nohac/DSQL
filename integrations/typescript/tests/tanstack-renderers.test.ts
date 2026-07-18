@@ -47,6 +47,10 @@ test("tanstack start uses imported validator expressions when provided", async (
   expect(source).toContain(
     ".inputValidator(MovieInfoVariablesSchema.parse as (variables: DsqlServerVariables<typeof MovieInfoLookupOperation>) => DsqlServerVariables<typeof MovieInfoLookupOperation>)",
   );
+  expect(source).toContain("readonly provideContext?: DsqlContextProvider;");
+  expect(source).toContain(
+    "await context.dsql.provideContext({ operation, variables })",
+  );
   const querySource = readFileSync(
     join(root, "src/generated/dsql/tanstack-query.ts"),
     "utf8",

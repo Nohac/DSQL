@@ -61,10 +61,6 @@ impl LanguageEntity for Variable {
         // Fully tracked on the duplicate facts: the engine replans the pair
         // after inference commits them at Complete, like variable hover.
         reg.system(diagnose_duplicate_anonymous_bindings);
-        // Temporary fail-closed boundary: trusted-context syntax may be
-        // analyzed before the server-only binder lands, but it must never
-        // produce a runnable artifact without that boundary.
-        reg.system(diagnose_unbound_trusted_context);
         // Fully tracked (a per-file bound join, no views), so it needs no
         // phase barrier: pairs replan as bindings commit at Complete.
         reg.system(hover_variables);
@@ -339,32 +335,6 @@ async fn diagnose_duplicate_anonymous_bindings(
             message: format!(
                 "{} `{}` has multiple anonymous variables for `{}`; name one of them to disambiguate",
                 binding.definition_kind, binding.definition_name, binding.path
-            ),
-        },
-    );
-}
-
-async fn diagnose_unbound_trusted_context(
-    _: Query<Entity, With<DiagnosticsDemand>>,
-    bindings: Query<(Entity, &VariableBinding, &Span, &BelongsToFile)>,
-    mut commands: Commands<(dsql_schema::Diagnostic,)>,
-) {
-    let (binding_entity, binding, span, file) = bindings.item();
-    if binding.source != VariableSource::Context {
-        return;
-    }
-    emit_diagnostic(
-        &mut commands,
-        DiagnosticFacts {
-            derived_from: DerivedFrom::new(binding_entity),
-            file: file.0,
-            span: *span,
-            severity: Severity::Error,
-            source: DiagnosticSource::Generate,
-            code: DiagnosticCode::TrustedContextBindingUnavailable,
-            message: format!(
-                "trusted context `{}` cannot be bound until the server-only execution boundary is available",
-                binding.path
             ),
         },
     );

@@ -47,6 +47,9 @@ test("renders inline per-definition dsql modules", async () => {
     "utf8",
   );
   expect(operation).toContain("export type MovieInfoLookupResult");
+  expect(operation).toContain(
+    "export type MovieInfoLookupContext = {\n  user_id: string;\n};",
+  );
   expect(operation).toContain("export const MovieInfoLookupOperation");
   expect(operation).toContain("export const MovieInfoLookupExecutionPayload");
   expect(operation).toContain("declare module \"@dsql/typescript/runtime\"");
@@ -74,7 +77,7 @@ test("renders inline per-definition dsql modules", async () => {
     "utf8",
   );
   expect(index).toBe(
-    'export { dsql } from "@dsql/typescript/runtime";\nexport type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlVariables } from "@dsql/typescript/runtime";\nexport * from "./MovieFields.fragment";\nexport * from "./MovieInfoLookup";\n',
+    'export { dsql } from "@dsql/typescript/runtime";\nexport type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationContext, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlVariables } from "@dsql/typescript/runtime";\nexport * from "./MovieFields.fragment";\nexport * from "./MovieInfoLookup";\n',
   );
 });
 
@@ -741,8 +744,8 @@ function operationMetadata(name: string): BuildArtifacts["operations"][number] {
     kind: "query",
     sql: {
       dialect: "postgres",
-      text: "select * from movie_info where id = $1",
-      parameters: [{ path: "params.id" }],
+      text: "select * from movie_info where id = $1 and user_id = $2",
+      parameters: [{ path: "params.id" }, { path: "context.user_id" }],
       variants: [],
     },
     result: {
@@ -775,7 +778,15 @@ function operationMetadata(name: string): BuildArtifacts["operations"][number] {
       },
     ],
     input: [],
-    context: [],
+    context: [
+      {
+        path: "context.user_id",
+        data_type: "uuid",
+        enum_values: [],
+        required: true,
+        nullable: false,
+      },
+    ],
     dynamic_inputs: [],
     policies: [],
     handoffs: [],
