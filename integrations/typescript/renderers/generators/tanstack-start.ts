@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { artifactKey } from "@dsql/typescript/node";
 import type { BuildArtifacts, DsqlRenderResult } from "@dsql/typescript/node";
 import { VariableDeclarationKind } from "@dsql/typescript/renderer";
 import {
@@ -55,7 +56,7 @@ export async function renderTanStackStart(
       ),
     });
     for (const operation of artifacts.operations) {
-      const definition = dsql.definitions[operation.name];
+      const definition = dsql.definitions[artifactKey("operation", operation.name)];
       if (!definition?.executionModule) {
         throw new Error(`missing DSQL execution module for ${operation.name}`);
       }

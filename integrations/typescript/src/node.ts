@@ -21,7 +21,6 @@ export type {
   DsqlArtifact,
   DsqlArtifactGroup,
   DsqlCallsite,
-  DsqlCallsiteDefinition,
   DsqlCallsiteExpression,
   DsqlCompileResult,
   DsqlContentHash,
@@ -174,6 +173,12 @@ export type EmbeddedSourceResolution = {
   readonly mismatches: readonly string[];
 };
 
+type EmbeddedDefinition = {
+  readonly kind: "operation" | "fragment";
+  readonly metadata: OperationMetadata | FragmentMetadata;
+  readonly id?: string;
+};
+
 /**
  * Slices embedded definitions' template content from their host files
  * using the Rust-owned `content_range` — no detection, no scanning.
@@ -185,29 +190,28 @@ export type EmbeddedSourceResolution = {
  * after a compile and has no hash to check against.
  */
 export function resolveEmbeddedSources(
-  definitions: readonly {
-    readonly kind: "operation" | "fragment";
-    readonly metadata: OperationMetadata | FragmentMetadata;
-  }[],
+  definitions: readonly EmbeddedDefinition[],
   options: {
     readonly projectBase: string;
     readonly callsites?: readonly DsqlCallsite[];
   },
 ): EmbeddedSourceResolution {
-  const verify = options.callsites !== undefined;
-  const hashes = new Map(
-    (options.callsites ?? []).map((callsite) => [callsite.path, callsite.contentHash.value]),
-  );
   const files = new Map<string, Buffer | null>();
   const mismatches = new Set<string>();
   const sources = new Map<string, string>();
-
-  for (const definition of definitions) {
+  const sourceEntry = (definition: (typeof definitions)[number]) =>
+    definition.metadata.source_map.find(
+      (candidate) => candidate.id === definition.metadata.name,
+    );
+  const slice = (
+    definition: (typeof definitions)[number],
+    expectedHash?: string,
+  ): void => {
     const entry = definition.metadata.source_map.find(
       (candidate) => candidate.id === definition.metadata.name,
     );
     if (!entry?.content_range) {
-      continue;
+      return;
     }
     let bytes = files.get(entry.file);
     if (bytes === undefined) {
@@ -220,23 +224,16 @@ export function resolveEmbeddedSources(
     }
     if (bytes === null) {
       mismatches.add(entry.file);
-      continue;
+      return;
     }
-    const expected = hashes.get(entry.file);
-    if (verify && expected === undefined) {
-      // An embedded artifact whose host has no callsite entry is an
-      // inconsistent result — never silently downgrade to bounds-only.
+    if (expectedHash !== undefined && sha256Hex(bytes) !== expectedHash) {
       mismatches.add(entry.file);
-      continue;
-    }
-    if (expected !== undefined && sha256Hex(bytes) !== expected) {
-      mismatches.add(entry.file);
-      continue;
+      return;
     }
     const { start, end } = entry.content_range;
     if (start > end || end > bytes.length) {
       mismatches.add(entry.file);
-      continue;
+      return;
     }
     const slice = bytes.subarray(start, end);
     const text = slice.toString("utf8");
@@ -244,9 +241,39 @@ export function resolveEmbeddedSources(
       // Not a code-point boundary: the file on disk diverged from the
       // compiled state.
       mismatches.add(entry.file);
-      continue;
+      return;
     }
     sources.set(artifactKey(definition.kind, definition.metadata.name), text);
+  };
+
+  if (options.callsites !== undefined) {
+    // Successful daemon results give every artifact an id and every target an artifact.
+    const byId = new Map(
+      definitions.map((definition) => [definition.id!, definition] as const),
+    );
+    for (const callsite of options.callsites) {
+      for (const expression of callsite.expressions) {
+        const definition = byId.get(expression.target)!;
+        slice(definition, callsite.contentHash.value);
+      }
+    }
+  } else {
+    const groups = new Map<string, Array<(typeof definitions)[number]>>();
+    for (const definition of definitions) {
+      const entry = sourceEntry(definition);
+      if (!entry?.content_range) {
+        continue;
+      }
+      const key = `${entry.file}\0${entry.content_range.start}\0${entry.content_range.end}`;
+      const group = groups.get(key) ?? [];
+      group.push(definition);
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      if (group.length === 1 && group[0]) {
+        slice(group[0]);
+      }
+    }
   }
   return { sources, mismatches: [...mismatches].sort() };
 }
@@ -254,13 +281,17 @@ export function resolveEmbeddedSources(
 /** [`resolveEmbeddedSources`] over a [`BuildArtifacts`]. */
 export function embeddedDefinitionsOf(
   artifacts: BuildArtifacts,
-): Array<{
-  readonly kind: "operation" | "fragment";
-  readonly metadata: OperationMetadata | FragmentMetadata;
-}> {
+): EmbeddedDefinition[] {
+  const definition = (
+    kind: EmbeddedDefinition["kind"],
+    metadata: EmbeddedDefinition["metadata"],
+  ): EmbeddedDefinition => {
+    const id = artifacts.artifactIds.get(artifactKey(kind, metadata.name));
+    return id ? { kind, metadata, id } : { kind, metadata };
+  };
   return [
-    ...artifacts.operations.map((metadata) => ({ kind: "operation" as const, metadata })),
-    ...artifacts.fragments.map((metadata) => ({ kind: "fragment" as const, metadata })),
+    ...artifacts.operations.map((metadata) => definition("operation", metadata)),
+    ...artifacts.fragments.map((metadata) => definition("fragment", metadata)),
   ];
 }
 
@@ -362,8 +393,8 @@ export function validateDsqlRenderMap(
 
 /**
  * Composes a render map from [`renderDsql`] results plus any extra files
- * other generators wrote. Fragments need no expression rewrite, so only
- * queries produce module mappings.
+ * other generators wrote. Every rendered definition can be the opaque
+ * target of one embedded expression.
  */
 export function renderMapFromResults(
   results: readonly DsqlRenderResult[],
@@ -383,9 +414,6 @@ export function renderMapFromResults(
       files.add(relativize(file.path));
     }
     for (const definition of Object.values(result.definitions)) {
-      if (definition.kind !== "query") {
-        continue;
-      }
       if (!definition.id) {
         throw new Error(
           `render result for ${definition.name} carries no artifact id; ` +

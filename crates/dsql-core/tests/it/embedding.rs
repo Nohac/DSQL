@@ -7,7 +7,11 @@ use std::collections::BTreeMap;
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::insert_catalog;
-use dsql_core::embedding::{ExtractionRegistry, ExtractionStrategy};
+use dsql_core::embedding::{
+    EmbeddedExpressionResolution, ExtractionRegistry, ExtractionStrategy,
+    ResolvedEmbeddedExpression,
+};
+use dsql_core::entities::definition::{DefDecl, DefKind};
 use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand};
 use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
@@ -382,9 +386,42 @@ async fn regions_record_their_callsite_expressions() {
     }
 }
 
-/// The rewrite contract rejects embedded expressions that define several
-/// queries or only fragments; exactly-one-query (with helper fragments in
-/// .dsql files) stays clean.
+/// Every region resolves to its one definition, regardless of whether that
+/// definition is a query or fragment.
+#[tokio::test]
+async fn embedded_expressions_resolve_query_and_fragment_targets() {
+    let (bowl, _) = host_bowl().await;
+    let resolutions = bowl.scoop::<Query<&ResolvedEmbeddedExpression>>().await;
+    let definitions = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
+    let definitions = definitions.collect();
+
+    let mut targets = resolutions
+        .collect()
+        .into_iter()
+        .filter_map(|resolved| match resolved.0 {
+            EmbeddedExpressionResolution::Target(target) => definitions
+                .iter()
+                .find(|(entity, _)| *entity == target)
+                .map(|(_, definition)| (definition.kind, definition.name.clone())),
+            EmbeddedExpressionResolution::Empty
+            | EmbeddedExpressionResolution::MultipleDefinitions(_) => None,
+        })
+        .collect::<Vec<_>>();
+    targets.sort();
+
+    assert_eq!(
+        targets,
+        vec![
+            (DefKind::Query, "Kinds".to_string()),
+            (DefKind::Query, "Panel".to_string()),
+            (DefKind::Query, "Titles".to_string()),
+            (DefKind::Fragment, "TitleBits".to_string()),
+        ]
+    );
+}
+
+/// The rewrite contract accepts exactly one query or fragment and rejects
+/// empty expressions and every combination of multiple definitions.
 #[tokio::test]
 async fn embedded_expression_shapes_are_checked() {
     let bowl = language_bowl().await;
@@ -405,6 +442,34 @@ async fn embedded_expression_shapes_are_checked() {
         "typescript",
     )
     .await;
+    insert_embedding_source(
+        &bowl,
+        "src/multi-frags.ts",
+        "export const c = dsql`\nfragment Id on title {\n  id\n}\nfragment Name on title {\n  title\n}\n`;\n",
+        "typescript",
+    )
+    .await;
+    insert_embedding_source(
+        &bowl,
+        "src/mixed.ts",
+        "export const d = dsql`\nquery Titles {\n  title(limit 1) {\n    id\n  }\n}\nfragment MixedId on title {\n  id\n}\n`;\n",
+        "typescript",
+    )
+    .await;
+    insert_embedding_source(
+        &bowl,
+        "src/empty.ts",
+        "export const e = dsql``;\n",
+        "typescript",
+    )
+    .await;
+    insert_embedding_source(
+        &bowl,
+        "src/broken.ts",
+        "export const f = dsql`query`;\n",
+        "typescript",
+    )
+    .await;
 
     insta::assert_snapshot!(crate::render_diagnostic_facts(&bowl).await);
 }
@@ -414,8 +479,6 @@ async fn embedded_expression_shapes_are_checked() {
 /// expressions reject too — no rewrite target.
 #[tokio::test]
 async fn embedded_expression_shapes_follow_edits() {
-    // A host of its own: the shared fixture contains a deliberate
-    // fragment-only region, which this check rejects by design.
     let bowl = language_bowl().await;
     insert_catalog(&bowl, imdb_catalog()).await;
     let host = insert_embedding_source(
@@ -443,7 +506,7 @@ async fn embedded_expression_shapes_follow_edits() {
     .await;
     let reported = crate::render_diagnostic_facts(&bowl).await;
     assert!(
-        reported.contains("defines 2 queries"),
+        reported.contains("defines 2 top-level definitions"),
         "the shape check follows the edit, got: {reported:?}"
     );
 
@@ -471,7 +534,7 @@ async fn embedded_expression_shapes_follow_edits() {
     .await;
     let reported = crate::render_diagnostic_facts(&bowl).await;
     assert!(
-        reported.contains("defines no query"),
+        reported.contains("defines no top-level definition"),
         "empty expressions reject, got: {reported:?}"
     );
 }

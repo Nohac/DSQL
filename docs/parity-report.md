@@ -33,8 +33,9 @@ is either a correctness improvement or an explicit owner-level design choice.
 - Metadata v2, transactional content-addressed publication, immutable
   generations, daemon reconciliation, and the TypeScript renderer/Vite binding
   go beyond the POC. Callsite expression ranges come from the Rust extractor;
-  the consumer verifies the host SHA-256 and requests one fresh compile before
-  refusing a stale rewrite.
+  semantic analysis supplies one opaque operation-or-fragment target, and the
+  consumer verifies the host SHA-256 before rewriting without rediscovering
+  source ownership or definition kinds.
 - LSP format-on-save is region-granular and driven by derived DSQL regions, not
   host file extensions. Open buffers, diagnostics, navigation, and residency
   remain bowl-owned.
@@ -59,16 +60,16 @@ so ordinary workspace tests remain hermetic.
 - `@dsql.include_if` is recognized and type-checked but remains an error because
   the POC's empty planner implementation emitted silently unconditional SQL.
   Enabling it requires an owner-approved conditional-selection design.
-- Embedded expressions currently require exactly one query. Query callsite
-  rewriting is complete; fragment-only values and multi-query expressions need
-  an owner-approved typed runtime contract before `EmbeddedExpressionShape` can
-  be relaxed.
+- Embedded expressions require exactly one top-level definition. Query and
+  fragment expressions both rewrite to generated typed handles; empty and
+  multi-definition expressions are rejected as ambiguous.
 - `@dsql.deprecated` is accepted without artifact metadata, matching the POC.
 - The LSP is a dedicated binary, and project-aware single-file analysis replaces
   the POC's hardcoded-catalog fallback.
 - CLI `fmt` still refuses embedding hosts; editor formatting safely edits their
   individual DSQL content regions.
 
-There are no accidental POC-parity blockers left. The two semantic items above
-are deliberately blocked on product design rather than missing implementation.
+There are no accidental POC-parity blockers left. The remaining semantic item
+above is deliberately blocked on product design rather than missing
+implementation.
 Other performance and engine follow-ups remain tracked in `docs/issues.md`.

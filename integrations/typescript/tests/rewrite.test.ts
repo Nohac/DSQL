@@ -22,15 +22,14 @@ function callsiteFor(
 ): DsqlCallsite {
   return {
     path,
+    resolver: "typescript",
     contentHash: { algorithm: "sha256", value: "unused-by-rewrite" },
     expressions: expressions
       .map(({ needle, id }) => {
         const start = byteIndexOf(code, needle);
         return {
           range: { start, end: start + Buffer.byteLength(needle, "utf8") },
-          definitions: [
-            { kind: "query" as const, name: id.split("/")[2] ?? "Q", id },
-          ],
+          target: id,
         };
       })
       .sort((left, right) => left.range.start - right.range.start),
@@ -52,6 +51,14 @@ const MODULES: ReadonlyMap<string, DsqlRenderModule> = new Map([
       id: "frontend/operation/HeroPanel",
       module: "src/generated/dsql/queries/HeroPanel.ts",
       export: "HeroPanelOperation",
+    },
+  ],
+  [
+    "frontend/fragment/HeroBits",
+    {
+      id: "frontend/fragment/HeroBits",
+      module: "src/generated/dsql/queries/HeroBits.fragment.ts",
+      export: "HeroBitsFragment",
     },
   ],
 ]);
@@ -119,6 +126,7 @@ test("multiple expressions splice descending and share hoisted imports", () => {
   // a and c share the TitlePanel mapping.
   const callsite: DsqlCallsite = {
     path: "src/x.ts",
+    resolver: "typescript",
     contentHash: { algorithm: "sha256", value: "unused" },
     expressions: [
       {
@@ -126,28 +134,21 @@ test("multiple expressions splice descending and share hoisted imports", () => {
           start: byteIndexOf(code, first),
           end: byteIndexOf(code, first) + Buffer.byteLength(first),
         },
-        definitions: [
-          { kind: "query", name: "TitlePanel", id: "frontend/operation/TitlePanel" },
-        ],
+        target: "frontend/operation/TitlePanel",
       },
       {
         range: {
           start: byteIndexOf(code, second),
           end: byteIndexOf(code, second) + Buffer.byteLength(second),
         },
-        definitions: [
-          { kind: "query", name: "HeroPanel", id: "frontend/operation/HeroPanel" },
-          { kind: "fragment", name: "HeroBits", id: "frontend/fragment/HeroBits" },
-        ],
+        target: "frontend/operation/HeroPanel",
       },
       {
         range: {
           start: code.lastIndexOf(first),
           end: code.lastIndexOf(first) + Buffer.byteLength(first),
         },
-        definitions: [
-          { kind: "query", name: "TitlePanel", id: "frontend/operation/TitlePanel" },
-        ],
+        target: "frontend/operation/TitlePanel",
       },
     ],
   };
@@ -162,9 +163,53 @@ test("multiple expressions splice descending and share hoisted imports", () => {
   expect(rewritten).toContain("const a = __dsql_TitlePanelOperation;");
   expect(rewritten).toContain("const b = __dsql_HeroPanelOperation;");
   expect(rewritten).toContain("const c = __dsql_TitlePanelOperation;");
-  // One import per (module, export) pair, fragments need none.
+  // One import per (module, export) pair.
   expect(rewritten.match(/import \{ TitlePanelOperation/g)).toHaveLength(1);
   expect(rewritten.match(/import \{ HeroPanelOperation/g)).toHaveLength(1);
+});
+
+test("fragment targets rewrite on nonstandard host extensions", () => {
+  const expression = "dsql`fragment HeroBits on title { id }`";
+  const code = `export const bits = ${expression};\n`;
+  const rewritten = rewriteCallsites({
+    code,
+    path: "src/components/Panel.component",
+    callsite: callsiteFor(
+      code,
+      [{ needle: expression, id: "frontend/fragment/HeroBits" }],
+      "src/components/Panel.component",
+    ),
+    modules: MODULES,
+    specifierFor,
+  });
+
+  expect(rewritten).toContain(
+    'import { HeroBitsFragment as __dsql_HeroBitsFragment } from "/src/generated/dsql/queries/HeroBits.fragment.ts";',
+  );
+  expect(rewritten).toContain("export const bits = __dsql_HeroBitsFragment;");
+});
+
+test("real TSX and JSX paths preserve JSX while locating imports", () => {
+  const expression = "dsql`query TitlePanel { title { id } }`";
+  const code = `"use client";\nconst view = <div />;\nconst query = ${expression};\n`;
+  for (const path of ["src/components/Panel.tsx", "src/components/Panel.jsx"]) {
+    const rewritten = rewriteCallsites({
+      code,
+      path,
+      callsite: callsiteFor(
+        code,
+        [{ needle: expression, id: "frontend/operation/TitlePanel" }],
+        path,
+      ),
+      modules: MODULES,
+      specifierFor,
+    });
+
+    expect(rewritten).toContain("const view = <div />;");
+    expect(rewritten.indexOf("import { TitlePanelOperation")).toBeLessThan(
+      rewritten.indexOf("const view"),
+    );
+  }
 });
 
 test("local names avoid textual collisions", () => {
@@ -214,13 +259,12 @@ test("out-of-bounds ranges are rejected instead of silently clamped", () => {
   const code = "const q = 1;\n";
   const callsite: DsqlCallsite = {
     path: "src/x.ts",
+    resolver: "typescript",
     contentHash: { algorithm: "sha256", value: "unused" },
     expressions: [
       {
         range: { start: 5, end: 5000 },
-        definitions: [
-          { kind: "query", name: "TitlePanel", id: "frontend/operation/TitlePanel" },
-        ],
+        target: "frontend/operation/TitlePanel",
       },
     ],
   };
@@ -233,4 +277,18 @@ test("out-of-bounds ranges are rejected instead of silently clamped", () => {
       specifierFor,
     }),
   ).toThrow("exceeds the module's");
+});
+
+test("unsupported resolvers fail with remediation", () => {
+  const expression = "dsql`query TitlePanel { title { id } }`";
+  const code = `const query = ${expression};\n`;
+  const valid = callsiteFor(code, [
+    { needle: expression, id: "frontend/operation/TitlePanel" },
+  ]);
+  const rewrite = (callsite: DsqlCallsite) =>
+    rewriteCallsites({ code, path: valid.path, callsite, modules: MODULES, specifierFor });
+
+  expect(() => rewrite({ ...valid, resolver: "custom" })).toThrow(
+    'resolver "custom" is not supported',
+  );
 });

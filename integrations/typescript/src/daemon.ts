@@ -20,22 +20,18 @@ export type DsqlContentHash = {
   readonly value: string;
 };
 
-export type DsqlCallsiteDefinition = {
-  readonly kind: "query" | "fragment";
-  readonly name: string;
-  /** Stable artifact id (`scope/kind/name`); consumers key on this. */
-  readonly id: string;
-};
-
 export type DsqlCallsiteExpression = {
   /** The whole `dsql(...)` expression in host UTF-8 byte offsets. */
   readonly range: DsqlRange;
-  readonly definitions: readonly DsqlCallsiteDefinition[];
+  /** Stable opaque artifact id selected by the compiler. */
+  readonly target: string;
 };
 
 export type DsqlCallsite = {
   /** Project-base-relative host file path. */
   readonly path: string;
+  /** The binding responsible for rewriting this host. */
+  readonly resolver: string;
   /** SHA-256 over the exact bytes the extractor read. */
   readonly contentHash: DsqlContentHash;
   readonly expressions: readonly DsqlCallsiteExpression[];

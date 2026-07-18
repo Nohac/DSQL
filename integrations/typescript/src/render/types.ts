@@ -66,6 +66,7 @@ export type DsqlRenderResult = {
   readonly modules: {
     readonly queries: string;
   };
+  /** `family/name` → rendered definition result. */
   readonly definitions: Record<string, DsqlRenderDefinitionResult>;
   readonly files: readonly DsqlRenderedFile[];
 };
@@ -107,10 +108,17 @@ export async function renderDsql(
     }
 
     const filePath = join(queriesDir, `${plan.fileStem}.ts`);
-    files.set(filePath, renderFragmentModule(artifacts, fragment));
+    files.set(
+      filePath,
+      renderFragmentModule(artifacts, fragment, {
+        embeddedSource: options.embeddedSources?.get(
+          artifactKey("fragment", fragment.name),
+        ),
+      }),
+    );
     queryExports.push(exportStatement(plan.fileStem));
     const id = artifacts.artifactIds.get(artifactKey("fragment", fragment.name));
-    definitions[fragment.name] = {
+    definitions[artifactKey("fragment", fragment.name)] = {
       name: fragment.name,
       kind: "fragment",
       ...(id ? { id } : {}),
@@ -152,7 +160,7 @@ export async function renderDsql(
     }
 
     const id = artifacts.artifactIds.get(artifactKey("operation", operation.name));
-    definitions[operation.name] = {
+    definitions[artifactKey("operation", operation.name)] = {
       name: operation.name,
       kind: "query",
       ...(id ? { id } : {}),
@@ -358,6 +366,9 @@ function renderExecutionPayload(
 function renderFragmentModule(
   artifacts: BuildArtifacts,
   fragment: FragmentMetadata,
+  options: {
+    readonly embeddedSource?: string | undefined;
+  },
 ): string {
   const name = toPascalCase(fragment.name);
   const resultType = fragmentResultTypeName(fragment.name);
@@ -397,14 +408,15 @@ function renderFragmentModule(
   table: ${JSON.stringify(fragment.table)}
 };`,
     "",
+    renderSourceRegistryAugmentation(options.embeddedSource, `${name}Fragment`),
+    "",
   ].join("\n");
 }
 
 /**
  * Keys the source-string registry by exact embedded content. Only the
- * query of an expression gets a key (every co-resident definition
- * sharing the key would produce conflicting interface properties), and
- * only when the raw bytes equal the cooked template-literal type
+ * resolved definition of an expression gets a key, and only when the raw
+ * bytes equal the cooked template-literal type
  * TypeScript infers: backslashes and `${` cook differently, and `\r`
  * is normalized out of cooked template lines — such content gets no
  * registry key rather than a wrong one.

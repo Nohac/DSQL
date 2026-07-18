@@ -6,13 +6,14 @@ use std::path::{Path, PathBuf};
 
 use bowl::{Bowl, Entity, Mut, Query};
 
+use dsql_core::embedding::{EmbeddedExpressionResolution, ResolvedEmbeddedExpression};
 use dsql_core::entities::definition::{DefDecl, DefKind};
 use dsql_core::facts::{
     BelongsToFile, Diagnostic, DiagnosticCode, DiagnosticSource, Severity, Span,
 };
 use dsql_core::source::{
-    BelongsToHost, CallsiteSpan, FilePath, ResolutionScope, SourceOffset, SourceText,
-    insert_source_scoped,
+    BelongsToHost, CallsiteSpan, ExtractionResolver, FilePath, ResolutionScope, SourceOffset,
+    SourceText, insert_source_scoped,
 };
 use dsql_generate::publish::{PublishedGeneration, sha256_hex};
 use dsql_generate::{GenerateError, GenerateOptions};
@@ -637,6 +638,18 @@ impl Session {
                 Ok(assembled) => assembled,
                 Err(error) => return generate_outcome_error(error),
             };
+        let callsites = match collect_callsites(bowl, &self.project_base).await {
+            Ok(callsites) => callsites,
+            Err(message) => {
+                return Outcome::Error {
+                    code: "Internal".into(),
+                    message,
+                    data: "null".into(),
+                    published: None,
+                };
+            }
+        };
+        let scopes = collect_source_scopes(bowl, &self.project_base).await;
         let published =
             match dsql_generate::publish_snapshot(&self.project, &assembled.snapshot).await {
                 Ok(published) => published,
@@ -659,8 +672,6 @@ impl Session {
             };
         }
 
-        let callsites = collect_callsites(bowl, &self.project_base).await;
-        let scopes = collect_source_scopes(bowl, &self.project_base).await;
         let manifest = published.manifest_json.clone();
 
         let artifacts: Vec<String> = assembled
@@ -934,9 +945,9 @@ async fn collect_diagnostics(bowl: &Bowl, base: &Path) -> Vec<WireDiagnostic> {
     diagnostics
 }
 
-/// Callsites, grouped per host file: content hash plus every expression
-/// with its definitions (docs/spec/build-daemon.md, Compile result).
-async fn collect_callsites(bowl: &Bowl, base: &Path) -> String {
+/// Callsites grouped per host file, with one semantically resolved artifact
+/// target per expression (docs/spec/build-daemon.md, Compile result).
+async fn collect_callsites(bowl: &Bowl, base: &Path) -> Result<String, String> {
     let regions = bowl
         .scoop::<Query<(Entity, &BelongsToHost, &CallsiteSpan)>>()
         .await;
@@ -945,12 +956,18 @@ async fn collect_callsites(bowl: &Bowl, base: &Path) -> String {
     let paths = paths.collect();
     let texts = bowl.scoop::<Query<(Entity, &SourceText)>>().await;
     let texts = texts.collect();
+    let resolvers = bowl.scoop::<Query<(Entity, &ExtractionResolver)>>().await;
+    let resolvers = resolvers.collect();
+    let resolved = bowl
+        .scoop::<Query<(Entity, &ResolvedEmbeddedExpression, &BelongsToFile)>>()
+        .await;
+    let resolved = resolved.collect();
     let defs = bowl
-        .scoop::<Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>>()
+        .scoop::<Query<(Entity, &DefDecl, &ResolutionScope)>>()
         .await;
     let defs = defs.collect();
 
-    type HostExpressions = (Entity, Vec<(usize, usize, Entity)>);
+    type HostExpressions = (Entity, String, Vec<(usize, usize, Entity)>);
     let mut hosts: std::collections::BTreeMap<String, HostExpressions> =
         std::collections::BTreeMap::new();
     for (region, host, callsite) in &regions {
@@ -958,15 +975,20 @@ async fn collect_callsites(bowl: &Bowl, base: &Path) -> String {
             continue;
         };
         let relative = relative_to(base, Path::new(&path.0));
+        let Some((_, resolver)) = resolvers.iter().find(|(entity, _)| entity == &host.0) else {
+            return Err(format!(
+                "embedding host `{relative}` has no extraction resolver"
+            ));
+        };
         hosts
             .entry(relative)
-            .or_insert_with(|| (host.0, Vec::new()))
-            .1
+            .or_insert_with(|| (host.0, resolver.0.clone(), Vec::new()))
+            .2
             .push((callsite.0.start, callsite.0.end, *region));
     }
 
     let mut rendered = Vec::new();
-    for (path, (host, mut expressions)) in hosts {
+    for (path, (host, resolver, mut expressions)) in hosts {
         expressions.sort();
         let content_hash = texts
             .iter()
@@ -974,42 +996,45 @@ async fn collect_callsites(bowl: &Bowl, base: &Path) -> String {
             .and_then(|(_, text)| text.to_text())
             .map(|text| sha256_hex(text.as_bytes()))
             .unwrap_or_default();
-        let expression_json: Vec<String> = expressions
-            .into_iter()
-            .map(|(start, end, region)| {
-                let definitions: Vec<String> = defs
-                    .iter()
-                    .filter(|(_, _, file, _)| file.0 == region)
-                    .map(|(_, decl, _, scope)| {
-                        let family = match decl.kind {
-                            DefKind::Query => "operation",
-                            DefKind::Fragment => "fragment",
-                        };
-                        format!(
-                            "{{\"kind\":{},\"name\":{},\"id\":{}}}",
-                            json_string(match decl.kind {
-                                DefKind::Query => "query",
-                                DefKind::Fragment => "fragment",
-                            }),
-                            json_string(&decl.name),
-                            json_string(&format!("{}/{family}/{}", scope.0, decl.name)),
-                        )
-                    })
-                    .collect();
-                format!(
-                    "{{\"range\":{{\"start\":{start},\"end\":{end}}},\"definitions\":[{}]}}",
-                    definitions.join(","),
-                )
-            })
-            .collect();
+        let mut expression_json = Vec::new();
+        for (start, end, region) in expressions {
+            let Some((_, resolution, _)) = resolved.iter().find(|(_, _, file)| file.0 == region)
+            else {
+                return Err(format!(
+                    "embedded expression `{path}` at {start}..{end} has no semantic target fact"
+                ));
+            };
+            let EmbeddedExpressionResolution::Target(target) = resolution.0 else {
+                return Err(format!(
+                    "embedded expression `{path}` at {start}..{end} has no rewrite target after diagnostics passed"
+                ));
+            };
+            let Some((_, decl, scope)) =
+                defs.iter().find(|(definition, _, _)| definition == &target)
+            else {
+                return Err(format!(
+                    "embedded expression `{path}` at {start}..{end} targets a missing definition"
+                ));
+            };
+            let family = match decl.kind {
+                DefKind::Query => "operation",
+                DefKind::Fragment => "fragment",
+            };
+            let target = format!("{}/{family}/{}", scope.0, decl.name);
+            expression_json.push(format!(
+                "{{\"range\":{{\"start\":{start},\"end\":{end}}},\"target\":{}}}",
+                json_string(&target),
+            ));
+        }
         rendered.push(format!(
-            "{{\"path\":{},\"contentHash\":{{\"algorithm\":\"sha256\",\"value\":{}}},\"expressions\":[{}]}}",
+            "{{\"path\":{},\"resolver\":{},\"contentHash\":{{\"algorithm\":\"sha256\",\"value\":{}}},\"expressions\":[{}]}}",
             json_string(&path),
+            json_string(&resolver),
             json_string(&content_hash),
             expression_json.join(","),
         ));
     }
-    format!("[{}]", rendered.join(","))
+    Ok(format!("[{}]", rendered.join(",")))
 }
 
 /// Which scope owns each source file (informational, per the spec).

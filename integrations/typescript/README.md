@@ -185,7 +185,7 @@ directory configured in your application.
   scope: { name: "frontend", imports: ["shared"] },
   modules: { queries: "./src/generated/dsql/queries/index" },
   definitions: {
-    MovieInfoLookup: {
+    "operation/MovieInfoLookup": {
       operationModule: "./src/generated/dsql/queries/MovieInfoLookup",
       executionModule: "./src/generated/dsql/queries.server/MovieInfoLookup",
     },
@@ -234,6 +234,12 @@ expressions **exclusively from daemon-provided ranges** - there is no
 detection logic in this package. Before splicing, the buffer is verified
 against the compile result's SHA-256 `contentHash`; a mismatch triggers
 exactly one refresh, then fails deterministically.
+
+Source ownership comes entirely from the daemon. The plugin has no host-file
+extension allowlist: it transforms a normalized module only when the compile
+result contains a callsite owned by the `typescript` resolver. Other resolver
+identities fail with a configuration error instead of being guessed from the
+path.
 
 Projects own a renderer descriptor: `ownedRoots` are known before any
 invocation (they become `initialize` excludeRoots), and `render` maps
@@ -306,14 +312,16 @@ import { MovieInfoLookupOperation as __dsql_MovieInfoLookupOperation } from "/sr
 const MovieInfo = __dsql_MovieInfoLookupOperation;
 ```
 
-Embedded expressions must define exactly one query; multi-query and
-fragment-only expressions are daemon-side errors (fragment-only
-*documents* in plain `.dsql` files remain fully supported).
+Embedded expressions must define exactly one top-level definition. A query
+rewrites to its generated operation handle and a fragment rewrites to its
+generated typed fragment handle. Empty expressions and expressions containing
+multiple definitions are daemon-side errors; shared definitions can live in
+plain `.dsql` documents or separate embedded expressions in an imported scope.
 
 The registry augmentation that types `dsql(`...`)` by its exact source
-string is keyed by the extractor-owned `content_range` recorded in
-artifact metadata - the renderer slices host bytes by that range after
-verifying the compile's content hash, never by scanning.
+string is keyed only to the daemon-selected target and the extractor-owned
+`content_range` recorded in artifact metadata. The renderer slices host bytes
+by that range after verifying the compile's content hash, never by scanning.
 
 ## TanStack Start And Query
 

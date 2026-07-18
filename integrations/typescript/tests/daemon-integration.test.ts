@@ -48,9 +48,8 @@ integration("the real daemon serves compile results this package understands", a
       entry.path.endsWith("TitlePanel.ts"),
     );
     expect(callsite).toBeDefined();
-    expect(callsite?.expressions[0]?.definitions[0]?.id).toBe(
-      "frontend/operation/TitlePanel",
-    );
+    expect(callsite?.resolver).toBe("typescript");
+    expect(callsite?.expressions[0]?.target).toBe("frontend/operation/TitlePanel");
 
     // A no-op batch replays the outcome without a new generation.
     const replay = await client.filesChanged(["README.md"]);

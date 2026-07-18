@@ -10,7 +10,7 @@
 use bowl::{DerivedFrom, Singleton};
 
 use crate::catalog::{CatalogSnapshot, CatalogSourceRoot};
-use crate::embedding::ExtractionRegistry;
+use crate::embedding::{ExtractionRegistry, ResolvedEmbeddedExpression};
 use crate::entities::aggregate::{AggregateTransformFact, ResolvedAggregate};
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefIndex, FragmentKey, FragmentTarget};
@@ -159,6 +159,7 @@ pub struct DsqlSchema {
     ),
     /// Stamped onto the document entity by the parse system.
     parsed_file: (ParsedFile,),
+    resolved_embedded_expression: (ResolvedEmbeddedExpression, BelongsToFile, DerivedFrom),
     diagnostic: (
         Diagnostic,
         Span,

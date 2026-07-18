@@ -254,13 +254,12 @@ The `result` of `compile`/`filesChanged`:
   "callsites": [
     {
       "path": "src/components/TitlePanel.ts",
+      "resolver": "typescript",
       "contentHash": { "algorithm": "sha256", "value": "…lowercase hex…" },
       "expressions": [
         {
           "range": { "start": 54, "end": 213 },   // the whole dsql(`…`)
-          "definitions": [
-            { "kind": "query", "name": "TitlePanel", "id": "frontend/operation/TitlePanel" }
-          ]
+          "target": "frontend/operation/TitlePanel"
         }
       ]
     }
@@ -289,10 +288,11 @@ The `result` of `compile`/`filesChanged`:
   manifest's `generationId`.
 - `callsites` lists, per embedding host file, each **expression** the
   extractor found — the range spans the entire callsite (the whole
-  `` dsql(`…`) ``, not the content between the backticks) — and the
-  definitions its embedded document declares. Expression ranges within
-  a file never overlap; definitions share their expression's range by
-  construction. Rewrite rules live under Callsites and freshness.
+  `` dsql(`…`) ``, not the content between the backticks). `resolver`
+  identifies the configured embedding/binding contract for the host;
+  `target` is the one opaque artifact id selected by language analysis.
+  Expression ranges within a file never overlap. Rewrite rules live
+  under Callsites and freshness.
   Embedded definitions' *artifact metadata* additionally records
   `content_range` on their source-map entry — the exact byte range of
   the document content between the backticks — so renderers that key
@@ -345,8 +345,9 @@ no scanning, no regexes in the consumer.
 
 ### Rewrite contract
 
-The daemon supplies *where* (expression ranges) and *what exists*
-(definition ids); the **renderer** supplies *what to write there*. The
+The daemon supplies *where* (expression ranges) and *what to replace them
+with* (opaque target ids); the **renderer** supplies the target's generated
+module and export. The
 renderer is consumer-side host-language code generation (the POC's TS
 renderers being the model): the binding invokes it after every changed
 successful compile with the full compile result, and it returns a
@@ -376,18 +377,17 @@ render map:
   exists in the transformed module. How the import is materialized
   (hoisted import statement, require, etc.) is binding-specific; the
   *mapping* `id → (module, export)` is the renderer's contract.
-- **Definition rules per expression** (v1):
-  - exactly one `query` → rewrite to that query's export reference
-    (accompanying fragments in the same document are fine — they need
-    no expression-level rewrite of their own);
-  - more than one `query` → daemon-side `Diagnostics` error (ambiguous
-    rewrite target);
-  - fragments only → daemon-side `Diagnostics` error. Leaving the raw
-    `dsql(…)` expression in shipped code is not sound (it evaluates
-    against a runtime that may not exist), and the fragment-handle
-    runtime contract is undecided — rejected until the T2 runtime
-    design settles it. Fragment-only *documents* remain fully supported
-    in plain `.dsql` files.
+- **Definition rule per expression**: an embedded expression must contain
+  exactly one top-level definition. That definition may be a query or a
+  fragment; its operation/fragment artifact id becomes `target`, and the
+  binding rewrites to the renderer's mapped export without inspecting the
+  definition kind. Zero or multiple definitions are daemon-side
+  `Diagnostics` errors. Shared helpers belong in plain `.dsql` documents or
+  separate fragment-only embedded expressions visible through the resolution
+  scope.
+- A binding transforms only callsites whose `resolver` it implements. It MUST
+  reject an unsupported resolver deterministically rather than guessing from
+  the host extension. Files with no daemon callsite pass through untouched.
 - `ownedRoots` is **renderer configuration, known before any
   invocation** (the render result repeats it as a consistency check,
   not as the source of truth) — otherwise the initial full compile
@@ -571,8 +571,6 @@ bump, independent of this protocol.
   consumers that transform pre-save? Version 1 says no — build tools
   operate on saved files; the stale-buffer error makes the boundary
   visible instead of silent.
-- The fragment-handle runtime contract (would relax the fragment-only
-  expression rejection) — T2 design session.
 - Cancellation: a long compile cannot be aborted by a newer
   `filesChanged` in v1 (strict FIFO). If compile latency ever warrants
   it, cancellation needs an explicit protocol addition, not implicit

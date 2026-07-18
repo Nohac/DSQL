@@ -1,7 +1,10 @@
 ---
 source: crates/dsql-core/tests/it/embedding.rs
-assertion_line: 400
 expression: "crate::render_diagnostic_facts(&bowl).await"
 ---
-Error[0..0]: embedded dsql expression defines 2 queries; a callsite rewrites to exactly one
-Error[0..0]: embedded dsql expression defines only fragments; move shared fragments into a .dsql document
+Error[0..0]: embedded dsql expression defines 2 top-level definitions; exactly one is required
+Error[0..0]: embedded dsql expression defines 2 top-level definitions; exactly one is required
+Error[0..0]: embedded dsql expression defines 2 top-level definitions; exactly one is required
+Error[0..0]: embedded dsql expression defines no top-level definition; exactly one is required
+Error[0..0]: embedded dsql expression defines no top-level definition; exactly one is required
+Error[5..5]: invalid syntax, expected: <name>

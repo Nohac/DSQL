@@ -43,15 +43,6 @@
   providers into independently tracked inputs if projects accumulate many
   extractors or live extractor reconfiguration becomes common.
 
-- **Embedded fragment-handle runtime contract.** The T2 query-callsite
-  contract is implemented: Rust-owned whole-expression ranges and content
-  hashes flow through the daemon, and the Vite integration verifies freshness
-  before rewriting. The remaining design decision is what a fragment-only
-  embedded expression evaluates to at runtime (and whether an expression may
-  define multiple queries). Until a typed fragment-handle contract exists,
-  `EmbeddedExpressionShape` deliberately requires exactly one query so raw
-  `dsql(…)` values cannot reach shipped JavaScript.
-
 - **Source residency & representation** (review High 5, and the eviction
   brainstorm from 2026-07-09): split identity from parse materialization —
   cheap revision fingerprints for editor-owned ropes vs content

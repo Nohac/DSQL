@@ -1,6 +1,6 @@
 # Decouple TypeScript rewriting from dsql internals
 
-**ID:** e795c48b | **Status:** Open | **Created:** 2026-07-18T00:13:24+02:00
+**ID:** e795c48b | **Status:** Done | **Created:** 2026-07-18T00:13:24+02:00
 
 The TypeScript/Vite binding currently knows more about source ownership and
 dsql definition semantics than a build adapter should:
@@ -65,3 +65,10 @@ Acceptance coverage should include:
   query-only restriction;
 - stale-buffer hashing, multibyte byte ranges, renderer mappings, import-name
   collisions, and Vite specifier behavior retain their existing coverage.
+
+Resolved by making the compiler derive one query-or-fragment target for every
+valid embedded expression and publishing that opaque id with the configured
+resolver. The TypeScript binding now transforms only daemon-owned callsites,
+maps targets directly through renderer output, and leaves filename parsing to
+TypeScript. Query and fragment targets both receive generated module mappings
+and source-registry types; ambiguous legacy source ranges are skipped.

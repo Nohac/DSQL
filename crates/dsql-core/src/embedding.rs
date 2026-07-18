@@ -18,7 +18,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use bowl::{
-    Commands, Component, DerivedFrom, Entity, MutRef, Query, Registrar, SystemExt, View, With,
+    Commands, Component, DerivedFrom, Entity, MutRef, Phase, Query, Registrar, SystemExt, View,
+    With,
 };
 use regex::Regex;
 
@@ -41,6 +42,25 @@ pub enum ExtractionStrategy {
 #[derive(Component, Hash, Debug, Clone, PartialEq, Eq)]
 #[component(hash)]
 pub struct ExtractionRegistry(pub BTreeMap<String, ExtractionStrategy>);
+
+/// The semantic value of one embedded host expression.
+///
+/// This fact is the single owner of the exactly-one-definition rule consumed
+/// by diagnostics and build-daemon callsite publication.
+#[derive(Component, Debug, Hash)]
+#[component(hash)]
+pub struct ResolvedEmbeddedExpression(pub EmbeddedExpressionResolution);
+
+/// Resolution outcome for one [`ResolvedEmbeddedExpression`].
+#[derive(Debug, Hash)]
+pub enum EmbeddedExpressionResolution {
+    /// The sole top-level definition, which may be a query or fragment.
+    Target(Entity),
+    /// The embedded document contains no top-level definition.
+    Empty,
+    /// The embedded document contains more than one top-level definition.
+    MultipleDefinitions(usize),
+}
 
 impl Default for ExtractionRegistry {
     fn default() -> Self {
@@ -74,20 +94,14 @@ pub fn compile_embedding_pattern(pattern: &str) -> Result<Regex, String> {
 /// loading install the provider registry singleton.
 pub(crate) fn register_embedding(reg: &mut Registrar<'_>) {
     reg.system(extract_embedded_documents);
+    reg.system(resolve_embedded_expressions.run_during(Phase::Complete));
     reg.system(check_embedded_expressions.run_during(bowl::Phase::Complete));
 }
 
-/// The rewrite contract's language rules (docs/spec/build-daemon.md,
-/// Callsites): an embedded expression must define exactly one query —
-/// more are an ambiguous rewrite target, and fragment-only expressions
-/// would leave a raw `dsql(…)` value in shipped code (fragment-only
-/// *documents* remain fully supported in plain `.dsql` files).
-async fn check_embedded_expressions(
-    _: Query<Entity, With<crate::facts::DiagnosticsDemand>>,
-    regions: Query<(Entity, &BelongsToHost, &CallsiteSpan), With<DsqlDocument>>,
-    // The definition index is the tracked input that re-runs this check
-    // when definitions appear, change kind, or vanish; the ambient view
-    // alone would go stale after the first settle.
+/// Resolves an embedded expression to its sole top-level definition.
+async fn resolve_embedded_expressions(
+    regions: Query<(Entity, &CallsiteSpan, &SourceText), With<DsqlDocument>>,
+    // The index moves when definitions appear, change kind/name, or vanish.
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
     defs: View<
         '_,
@@ -97,53 +111,62 @@ async fn check_embedded_expressions(
             &crate::facts::BelongsToFile,
         ),
     >,
+    mut commands: Commands<(crate::schema::dsql_schema::ResolvedEmbeddedExpression,)>,
+) {
+    let (region, _callsite, _source) = regions.item();
+    let definitions: Vec<Entity> = defs
+        .iter()
+        .filter(|(_, _, file)| file.0 == region)
+        .map(|(definition, _, _)| definition)
+        .collect();
+    let resolution = match definitions.as_slice() {
+        [] => EmbeddedExpressionResolution::Empty,
+        [definition] => EmbeddedExpressionResolution::Target(*definition),
+        definitions => EmbeddedExpressionResolution::MultipleDefinitions(definitions.len()),
+    };
+    let derived_from = match resolution {
+        EmbeddedExpressionResolution::Target(definition) => DerivedFrom::many([region, definition]),
+        EmbeddedExpressionResolution::Empty
+        | EmbeddedExpressionResolution::MultipleDefinitions(_) => DerivedFrom::new(region),
+    };
+    commands.insert((
+        ResolvedEmbeddedExpression(resolution),
+        crate::facts::BelongsToFile(region),
+        derived_from,
+    ));
+}
+
+/// Emits diagnostics for embedded expressions without exactly one definition.
+async fn check_embedded_expressions(
+    _: Query<Entity, With<crate::facts::DiagnosticsDemand>>,
+    resolved: Query<(
+        Entity,
+        &ResolvedEmbeddedExpression,
+        &crate::facts::BelongsToFile,
+    )>,
     mut commands: Commands<(crate::schema::dsql_schema::Diagnostic,)>,
 ) {
-    use crate::entities::definition::DefKind;
     use crate::facts::{
         DiagnosticCode, DiagnosticFacts, DiagnosticSource, Severity, emit_diagnostic,
     };
 
-    // The CallsiteSpan join is the gate: plain documents have none.
-    let (region, _, _callsite) = regions.item();
-    let queries = defs
-        .iter()
-        .filter(|(_, decl, file)| file.0 == region && decl.kind == DefKind::Query)
-        .count();
-    let fragments = defs
-        .iter()
-        .filter(|(_, decl, file)| file.0 == region && decl.kind == DefKind::Fragment)
-        .count();
-
-    // Diagnostics on regions project onto the host; the callsite span is
-    // already in host coordinates, so anchor at the region's own origin
-    // (span relative to the region = callsite minus the region offset is
-    // not needed — report at the region start, offset 0..0 projected).
-    let message = if queries > 1 {
-        Some(format!(
-            "embedded dsql expression defines {queries} queries; a callsite rewrites to exactly one"
-        ))
-    } else if queries == 0 && fragments > 0 {
-        Some(
-            "embedded dsql expression defines only fragments; move shared fragments into a \
-             .dsql document"
+    let (resolution, resolved, file) = resolved.item();
+    let message = match resolved.0 {
+        EmbeddedExpressionResolution::Target(_) => None,
+        EmbeddedExpressionResolution::Empty => Some(
+            "embedded dsql expression defines no top-level definition; exactly one is required"
                 .to_string(),
-        )
-    } else if queries == 0 {
-        // Empty expressions have no rewrite target either.
-        Some(
-            "embedded dsql expression defines no query; a callsite rewrites to exactly one"
-                .to_string(),
-        )
-    } else {
-        None
+        ),
+        EmbeddedExpressionResolution::MultipleDefinitions(count) => Some(format!(
+            "embedded dsql expression defines {count} top-level definitions; exactly one is required"
+        )),
     };
     if let Some(message) = message {
         emit_diagnostic(
             &mut commands,
             DiagnosticFacts {
-                derived_from: DerivedFrom::new(region),
-                file: region,
+                derived_from: DerivedFrom::new(resolution),
+                file: file.0,
                 span: crate::facts::Span { start: 0, end: 0 },
                 severity: Severity::Error,
                 source: DiagnosticSource::Check,

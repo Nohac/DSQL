@@ -59,19 +59,6 @@ function probeOffsetConverter(): OffsetConverter {
   return offsetConverter;
 }
 
-function scriptKindOf(path: string): ts.ScriptKind {
-  if (path.endsWith(".tsx")) {
-    return ts.ScriptKind.TSX;
-  }
-  if (path.endsWith(".jsx")) {
-    return ts.ScriptKind.JSX;
-  }
-  if (path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs")) {
-    return ts.ScriptKind.JS;
-  }
-  return ts.ScriptKind.TS;
-}
-
 /**
  * The byte offset where hoisted imports belong: after the shebang and
  * the directive prologue (`"use client"` and friends), before the first
@@ -80,11 +67,10 @@ function scriptKindOf(path: string): ts.ScriptKind {
 export function importInsertionByteOffset(code: string, path: string): number {
   const convert = probeOffsetConverter();
   const parsed = ts.createSourceFile(
-    "module.ts",
+    path,
     code,
     ts.ScriptTarget.Latest,
     false,
-    scriptKindOf(path),
   );
   for (const statement of parsed.statements) {
     if (
@@ -101,7 +87,7 @@ export function importInsertionByteOffset(code: string, path: string): number {
 export type RewriteOptions = {
   /** The raw module source — the exact bytes `contentHash` covers. */
   readonly code: string;
-  /** Vite-cleaned module path, for messages and script-kind detection. */
+  /** Vite-cleaned module path, for messages and TypeScript parsing. */
   readonly path: string;
   readonly callsite: DsqlCallsite;
   /** Render mappings by artifact id. */
@@ -112,11 +98,17 @@ export type RewriteOptions = {
 
 /**
  * Replaces every callsite expression with a hoisted-import reference.
- * The daemon guarantees exactly one query per expression; a violation
- * here is defensive, not expected.
+ * The daemon supplies one opaque artifact target per expression.
  */
 export function rewriteCallsites(options: RewriteOptions): string {
   const { code, path, callsite } = options;
+  if (callsite.resolver !== "typescript") {
+    throw new DsqlRewriteError(
+      `${path}: dsql resolver ${JSON.stringify(callsite.resolver)} is not ` +
+        "supported by @dsql/typescript; assign the host to resolver " +
+        '"typescript" or install the matching binding',
+    );
+  }
   let bytes = Buffer.from(code, "utf8");
 
   // Collision-free local bindings: any textual occurrence disqualifies
@@ -141,20 +133,10 @@ export function rewriteCallsites(options: RewriteOptions): string {
   const splices: Array<{ start: number; end: number; text: string }> = [];
   const used = new Map<string, DsqlRenderModule>();
   for (const expression of callsite.expressions) {
-    const queries = expression.definitions.filter(
-      (definition) => definition.kind === "query",
-    );
-    const query = queries[0];
-    if (queries.length !== 1 || !query) {
-      throw new DsqlRewriteError(
-        `${path}: expression at ${expression.range.start} defines ` +
-          `${queries.length} queries; the daemon rewrites exactly one`,
-      );
-    }
-    const module = options.modules.get(query.id);
+    const module = options.modules.get(expression.target);
     if (!module) {
       throw new DsqlRewriteError(
-        `${path}: no render mapping for artifact ${query.id} — the renderer ` +
+        `${path}: no render mapping for artifact ${expression.target} — the renderer ` +
           "did not produce a module for it",
       );
     }

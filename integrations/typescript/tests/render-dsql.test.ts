@@ -8,7 +8,13 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
-import { renderDsql, type BuildArtifacts } from "../src/node";
+import {
+  renderDsql,
+  renderMapFromResults,
+  resolveEmbeddedSources,
+  sha256Hex,
+  type BuildArtifacts,
+} from "../src/node";
 
 test("renders inline per-definition dsql modules", async () => {
   const root = createRoot();
@@ -26,7 +32,7 @@ test("renders inline per-definition dsql modules", async () => {
   });
 
   expect(result.modules.queries).toBe("./src/generated/dsql/queries/index");
-  expect(result.definitions.MovieInfoLookup).toEqual({
+  expect(result.definitions["operation/MovieInfoLookup"]).toEqual({
     name: "MovieInfoLookup",
     kind: "query",
     id: "default/operation/MovieInfoLookup",
@@ -53,6 +59,15 @@ test("renders inline per-definition dsql modules", async () => {
     "utf8",
   );
   expect(fragment).toContain("export const MovieFieldsFragment");
+
+  const renderMap = renderMapFromResults([result], {
+    projectBase: root,
+    ownedRoots: ["src/generated/dsql"],
+  });
+  expect(renderMap.modules.map((module) => module.id)).toEqual([
+    "default/fragment/MovieFields",
+    "default/operation/MovieInfoLookup",
+  ]);
 
   const index = readFileSync(
     join(root, "src/generated/dsql/queries/index.ts"),
@@ -147,7 +162,7 @@ test("renders split query and execution modules with matching filenames", async 
     executionDir: "src/generated/dsql/queries.server",
   });
 
-  expect(result.definitions.MovieInfoLookup?.executionModule).toBe(
+  expect(result.definitions["operation/MovieInfoLookup"]?.executionModule).toBe(
     "./src/generated/dsql/queries.server/MovieInfoLookup",
   );
 
@@ -193,7 +208,7 @@ test("registry keys skip content whose cooked value differs from raw bytes", asy
   }
 });
 
-test("only the query of an expression gets a registry key", async () => {
+test("query and fragment expressions get their selected registry keys", async () => {
   const root = createRoot();
   const artifacts = createArtifacts(root);
 
@@ -202,14 +217,121 @@ test("only the query of an expression gets a registry key", async () => {
     queriesDir: "src/generated/dsql/queries",
     embeddedSources: new Map([
       ["operation/MovieInfoLookup", "query MovieInfoLookup { movie_info { id } }"],
-      ["fragment/MovieFields", "query MovieInfoLookup { movie_info { id } }"],
+      ["fragment/MovieFields", "fragment MovieFields on movie_info { id }"],
     ]),
   });
+  const operation = readFileSync(
+    join(root, "src/generated/dsql/queries/MovieInfoLookup.ts"),
+    "utf8",
+  );
   const fragment = readFileSync(
     join(root, "src/generated/dsql/queries/MovieFields.fragment.ts"),
     "utf8",
   );
-  expect(fragment).not.toContain("declare module");
+  expect(operation).toContain("declare module");
+  expect(fragment).toContain("declare module");
+  expect(fragment).toContain("fragment MovieFields on movie_info { id }");
+  expect(fragment).toContain("typeof MovieFieldsFragment");
+});
+
+test("same-named queries and fragments keep distinct render mappings", async () => {
+  const root = createRoot();
+  const result = await renderDsql(createArtifacts(root, { operationNames: ["MovieFields"] }), {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+
+  expect(Object.keys(result.definitions).sort()).toEqual([
+    "fragment/MovieFields",
+    "operation/MovieFields",
+  ]);
+  const renderMap = renderMapFromResults([result], {
+    projectBase: root,
+    ownedRoots: ["src/generated/dsql"],
+  });
+  expect(renderMap.modules.map((module) => module.id)).toEqual([
+    "default/fragment/MovieFields",
+    "default/operation/MovieFields",
+  ]);
+});
+
+test("embedded sources follow daemon targets and legacy ambiguity stays untyped", () => {
+  const root = createRoot();
+  const hostPath = "embedded.component";
+  const querySource = "query MovieInfoLookup { movie_info { id } }";
+  const fragmentSource = "fragment MovieFields on movie_info { id }";
+  const host = `const query = dsql\`${querySource}\`;\nconst fragment = dsql\`${fragmentSource}\`;\n`;
+  const queryStart = host.indexOf(querySource);
+  const fragmentStart = host.indexOf(fragmentSource);
+  writeFileSync(join(root, hostPath), host);
+
+  const query = {
+    ...operationMetadata("MovieInfoLookup"),
+    source_map: [
+      {
+        id: "MovieInfoLookup",
+        file: hostPath,
+        range: { start: queryStart, end: queryStart + querySource.length },
+        content_range: { start: queryStart, end: queryStart + querySource.length },
+      },
+    ],
+  };
+  const fragment = {
+    ...fragmentMetadata("MovieFields"),
+    source_map: [
+      {
+        id: "MovieFields",
+        file: hostPath,
+        range: { start: fragmentStart, end: fragmentStart + fragmentSource.length },
+        content_range: {
+          start: fragmentStart,
+          end: fragmentStart + fragmentSource.length,
+        },
+      },
+    ],
+  };
+  const definitions = [
+    { kind: "operation" as const, metadata: query, id: "frontend/operation/MovieInfoLookup" },
+    { kind: "fragment" as const, metadata: fragment, id: "frontend/fragment/MovieFields" },
+  ];
+  const resolved = resolveEmbeddedSources(definitions, {
+    projectBase: root,
+    callsites: [
+      {
+        path: hostPath,
+        resolver: "typescript",
+        contentHash: { algorithm: "sha256", value: sha256Hex(Buffer.from(host)) },
+        expressions: [
+          { range: { start: 14, end: queryStart + querySource.length + 1 }, target: definitions[0].id },
+          {
+            range: { start: fragmentStart - 5, end: fragmentStart + fragmentSource.length + 1 },
+            target: definitions[1].id,
+          },
+        ],
+      },
+    ],
+  });
+  expect(resolved.mismatches).toEqual([]);
+  expect([...resolved.sources]).toEqual([
+    ["operation/MovieInfoLookup", querySource],
+    ["fragment/MovieFields", fragmentSource],
+  ]);
+
+  const ambiguous = resolveEmbeddedSources(
+    [
+      { kind: "operation", metadata: query },
+      {
+        kind: "fragment",
+        metadata: {
+          ...fragment,
+          source_map: query.source_map.map((entry) => ({ ...entry, id: "MovieFields" })),
+        },
+      },
+    ],
+    { projectBase: root },
+  );
+  expect([...ambiguous.sources]).toEqual([]);
+  expect(ambiguous.mismatches).toEqual([]);
 });
 
 test("fragment composition: subtraction, reuse, dedup, and path sensitivity", async () => {

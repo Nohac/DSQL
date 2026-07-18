@@ -214,8 +214,9 @@ async fn compile_answers_the_result_shape() {
         "\"id\":\"shared/fragment/TitleBits\"",
         "\"name\":\"frontend\",\"imports\":[\"shared\"]",
         "\"path\":\"src/components/TitlePanel.ts\"",
+        "\"resolver\":\"typescript\"",
         "\"algorithm\":\"sha256\"",
-        "\"definitions\":[{\"kind\":\"query\",\"name\":\"TitlePanel\"",
+        "\"target\":\"frontend/operation/TitlePanel\"",
         "\"diagnostics\":[]",
     ] {
         assert!(
@@ -253,6 +254,44 @@ async fn compile_answers_the_result_shape() {
         .expect("pointer committed");
     assert!(manifest.contains("\"generationId\":1"));
     assert!(session.root.join("dsql/build/manifest.1.json").exists());
+    assert!(
+        !response.contains("\"definitions\""),
+        "callsites expose one opaque target, got {response}"
+    );
+}
+
+/// A configured TypeScript extractor owns rewriting independently of the
+/// host extension, and fragment-only expressions resolve to fragment
+/// artifacts just like queries resolve to operations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn callsites_expose_resolver_and_fragment_target() {
+    let mut session = Session::start("fragment-callsite").await;
+    let config_path = session.root.join("dsql/dsql.toml");
+    let config = std::fs::read_to_string(&config_path).expect("config readable");
+    std::fs::write(
+        &config_path,
+        config.replace(
+            "{ resolver = \"custom\", paths = [\"src/**/*.component\"] }",
+            "{ resolver = \"typescript\", paths = [\"src/**/*.component\"] }",
+        ),
+    )
+    .expect("config writable");
+    std::fs::write(
+        session.root.join("src/components/Bits.component"),
+        "export const bits = dsql`fragment PanelBits on title { id }`;\n",
+    )
+    .expect("host writable");
+    let initialized = session.initialize().await;
+    assert!(initialized.contains("\"result\""), "got {initialized}");
+
+    let response = session.compile().await;
+    assert!(
+        response.contains("\"path\":\"src/components/Bits.component\"")
+            && response.contains("\"resolver\":\"typescript\"")
+            && response.contains("\"target\":\"frontend/fragment/PanelBits\""),
+        "got {response}"
+    );
+    assert!(!response.contains("\"definitions\""), "got {response}");
 }
 
 /// filesChanged: an edited file recompiles into a new generation, an

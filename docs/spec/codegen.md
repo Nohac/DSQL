@@ -325,6 +325,13 @@ The LSP should eventually support diagnostics, completion, hover, formatting,
 and go-to-definition inside the template content. The source map should retain
 both the TypeScript file span and the DSQL virtual document span.
 
+Each embedded expression contains exactly one top-level query or fragment.
+Semantic analysis publishes that definition's opaque artifact id as the
+rewrite target; build adapters map the id to a generated export without
+counting definitions or inspecting query/fragment kinds. Host ownership and
+extractor identity come from project configuration and the build daemon, never
+from an adapter-side extension list.
+
 ## Rust Integration
 
 Rust could consume DSQL through a build step, generated modules, or a procedural

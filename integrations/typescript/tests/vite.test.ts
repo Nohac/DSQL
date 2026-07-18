@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { expect, test } from "bun:test";
 import { DsqlDaemonError } from "../src/daemon";
 import { sha256Hex, type DsqlRenderer, type DsqlRendererContext } from "../src/node";
@@ -34,9 +34,12 @@ function resultFor(
     generationId?: number;
     changed?: boolean;
     withCallsite?: boolean;
+    path?: string;
+    resolver?: string;
   } = {},
 ): Record<string, unknown> {
   const withCallsite = options.withCallsite ?? true;
+  const path = options.path ?? HOST_PATH;
   const expressionStart = withCallsite ? byteIndexOf(hostCode, "dsql(`") : 0;
   const expressionEnd = withCallsite
     ? byteIndexOf(hostCode, "`)", expressionStart) + Buffer.byteLength("`)")
@@ -58,7 +61,7 @@ function resultFor(
     source_map: [
       {
         id: "TitlePanel",
-        file: HOST_PATH,
+        file: path,
         range: { start: expressionStart, end: expressionEnd },
         ...(withCallsite
           ? { content_range: { start: contentStart, end: contentEnd } }
@@ -80,7 +83,7 @@ function resultFor(
           kind: "query",
           path: "operations/TitlePanel.0000000000000000.json",
           hash: "0".repeat(64),
-          source: HOST_PATH,
+          source: path,
         },
       ],
       fragments: [],
@@ -104,11 +107,12 @@ function resultFor(
           },
         ]
       : [],
-    sourceFileScopes: withCallsite ? [{ path: HOST_PATH, scope: "frontend" }] : [],
+    sourceFileScopes: withCallsite ? [{ path, scope: "frontend" }] : [],
     callsites: withCallsite
       ? [
           {
-            path: HOST_PATH,
+            path,
+            resolver: options.resolver ?? "typescript",
             contentHash: {
               algorithm: "sha256",
               value: sha256Hex(Buffer.from(hostCode, "utf8")),
@@ -116,13 +120,7 @@ function resultFor(
             expressions: [
               {
                 range: { start: expressionStart, end: expressionEnd },
-                definitions: [
-                  {
-                    kind: "query",
-                    name: "TitlePanel",
-                    id: "frontend/operation/TitlePanel",
-                  },
-                ],
+                target: "frontend/operation/TitlePanel",
               },
             ],
           },
@@ -146,10 +144,11 @@ type Harness = {
 function harness(
   makeSteps: (base: string) => unknown[],
   hostCode: string = HOST,
+  hostPath: string = HOST_PATH,
 ): Harness {
   const base = mkdtempSync(join(tmpdir(), "dsql-vite-test-"));
-  mkdirSync(join(base, "src/components"), { recursive: true });
-  const hostAbsolute = join(base, HOST_PATH);
+  const hostAbsolute = join(base, hostPath);
+  mkdirSync(dirname(hostAbsolute), { recursive: true });
   writeFileSync(hostAbsolute, hostCode);
 
   const scriptPath = join(base, "script.json");
@@ -297,6 +296,38 @@ test("transforms callsites from daemon ranges after compile and render", async (
     "query TitlePanel {\n  title {\n    id\n  }\n}",
   );
   expect(h.renders[0]?.command).toBe("serve");
+}, 30_000);
+
+test("transforms configured TypeScript callsites on nonstandard extensions", async () => {
+  const hostPath = "src/components/Panel.component";
+  const h = harness(
+    (base) => [
+      initializeStep(base),
+      {
+        expectMethod: "compile",
+        response: { result: resultFor(HOST, { path: hostPath }) },
+      },
+    ],
+    HOST,
+    hostPath,
+  );
+
+  const output = await transform(h, HOST);
+  expect(output?.code).toContain("__dsql_TitlePanelOperation");
+}, 30_000);
+
+test("rejects callsites owned by another resolver", async () => {
+  const h = harness((base) => [
+    initializeStep(base),
+    {
+      expectMethod: "compile",
+      response: { result: resultFor(HOST, { resolver: "custom" }) },
+    },
+  ]);
+
+  const error = await transform(h, HOST).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(DsqlRewriteError);
+  expect((error as Error).message).toContain('resolver "custom" is not supported');
 }, 30_000);
 
 test("successful diagnostics stay quiet while generation errors surface", async () => {

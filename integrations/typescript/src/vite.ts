@@ -42,8 +42,6 @@ type ReadyState = {
   readonly callsitesByPath: ReadonlyMap<string, DsqlCallsite>;
 };
 
-const TRANSFORMABLE = /\.[cm]?[jt]sx?$/;
-
 export function dsql(options: DsqlVitePluginOptions): Plugin {
   const fullReload = options.fullReload ?? true;
   let config: ResolvedConfig | null = null;
@@ -368,8 +366,8 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
     },
 
     async transform(code, id) {
-      const clean = id.split("?")[0] ?? id;
-      if (!TRANSFORMABLE.test(clean)) {
+      const path = normalizeId(id);
+      if (!path) {
         return null;
       }
       await ensureInitial();
@@ -379,10 +377,6 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
         // state is worse than leaving the module alone — the compile
         // error is surfaced already, and the runtime dsql() throw names
         // any file that slips through.
-        return null;
-      }
-      const path = normalizeId(id);
-      if (!path) {
         return null;
       }
       let callsite = current.callsitesByPath.get(path);
