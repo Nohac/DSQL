@@ -511,6 +511,7 @@ dependencies = [
  "dsql-project",
  "facet",
  "facet-json",
+ "facet-yaml",
  "fd-lock",
  "insta",
  "sha2 0.10.9",

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use bowl::{Entity, Query, Singleton};
 
 use dsql_core::catalog::CatalogSnapshot;
+use dsql_core::entities::policy::{CompiledPolicyIndex, PolicyIndex};
 use dsql_core::entities::variable::VariableBinding;
 use dsql_core::facts::{
     BelongsToFile, DefKey, Diagnostic, PlanKey, Severity, Span, arm_generate_demands,
@@ -21,6 +22,7 @@ use dsql_metadata::SourceRange;
 use crate::assemble::{
     FragmentInputs, OperationInputs, fragment_metadata, operation_metadata, source_path,
 };
+use crate::match_lock::assemble_filter_match_lock;
 use crate::snapshot::{
     ArtifactFamily, GenerationSnapshot, SnapshotArtifact, SnapshotGroup, artifact_collision_key,
     sha256_hex,
@@ -45,6 +47,8 @@ pub enum GenerateError {
     AddressCollision { path: String, id: String },
     #[error("another process held the publication lock past the wait bound")]
     PublicationLocked,
+    #[error("filter match lock `{path}` is not usable: {message}")]
+    MatchLock { path: PathBuf, message: String },
     #[error("internal failure: {0}")]
     Internal(String),
     #[error("failed to write {path}: {source}")]
@@ -219,9 +223,19 @@ pub async fn assemble_bowl(
             }
         })
         .collect();
+    let filter_match_lock = assemble_filter_match_lock(
+        catalog,
+        &facts.policy_index,
+        &facts.compiled_policies,
+        &scope_imports,
+    );
 
     Ok(AssembledProject {
-        snapshot: GenerationSnapshot { artifacts, groups },
+        snapshot: GenerationSnapshot {
+            artifacts,
+            groups,
+            filter_match_lock,
+        },
     })
 }
 
@@ -286,6 +300,8 @@ struct CollectedFacts {
     bindings: BTreeMap<u64, Vec<VariableBinding>>,
     /// The scope import graph, for group closures.
     imports: BTreeMap<String, Vec<String>>,
+    policy_index: PolicyIndex,
+    compiled_policies: CompiledPolicyIndex,
 }
 
 struct CollectedOperation {
@@ -475,11 +491,22 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
         .next()
         .map(|(_, imports)| imports.0.clone())
         .unwrap_or_default();
+    let policies = bowl
+        .scoop::<Query<(Entity, &PolicyIndex, &CompiledPolicyIndex)>>()
+        .await;
+    let policies = policies.collect();
+    let Some((_, policy_index, compiled_policies)) = policies.first() else {
+        return Err(GenerateError::Internal(
+            "language bowl has no compiled policy index".to_string(),
+        ));
+    };
 
     Ok(CollectedFacts {
         operations,
         fragments,
         bindings,
         imports,
+        policy_index: (*policy_index).clone(),
+        compiled_policies: (*compiled_policies).clone(),
     })
 }

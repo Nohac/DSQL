@@ -19,6 +19,7 @@ pub use crate::snapshot::{
     ArtifactFamily, GenerationSnapshot, SnapshotArtifact, SnapshotGroup, artifact_address,
     sha256_hex,
 };
+use crate::{FILTER_MATCH_LOCK_VERSION, FilterMatchLock};
 
 /// A committed generation: its id, the immutable manifest (path and
 /// serialized document), the pointer, and what publication wrote.
@@ -35,8 +36,34 @@ pub struct PublishedGeneration {
     pub current_manifest_path: PathBuf,
     /// Files written this publication (unchanged artifacts are skipped).
     pub written: Vec<PathBuf>,
+    /// SHA-256 of the accepted lock bytes, or `None` when the canonical lock
+    /// state is an absent file.
+    pub filter_match_lock_hash: Option<String>,
     /// The generation the pointer named before this commit.
     predecessor: Option<u64>,
+}
+
+/// Native filter match-lock behavior selected by a production writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchLockMode {
+    /// Canonicalize the current resolved matches onto disk.
+    Update,
+    /// Require an existing semantic match without modifying it.
+    Locked,
+}
+
+/// Result of reconciling one canonical match lock under the publication lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchLockStatus {
+    /// Whether the lock file was written, replaced, or removed.
+    pub changed: bool,
+    /// Hash of the accepted bytes, or `None` for an absent empty lock.
+    pub content_hash: Option<String>,
+}
+
+#[derive(facet::Facet)]
+struct MatchLockVersion {
+    version: u32,
 }
 
 /// Pointer reader tolerating version-1 manifests (no `generationId`);
@@ -134,7 +161,8 @@ fn atomic_write(path: &Path, content: &str) -> Result<()> {
         file.flush()?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&temp, path)
+        std::fs::rename(&temp, path)?;
+        sync_parent(path)
     };
     write().map_err(|source| {
         let _ = std::fs::remove_file(&temp);
@@ -143,6 +171,10 @@ fn atomic_write(path: &Path, content: &str) -> Result<()> {
             source,
         }
     })
+}
+
+fn sync_parent(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path.parent().unwrap_or(Path::new(".")))?.sync_all()
 }
 
 /// Reads the pointer's generation id; a missing or malformed pointer
@@ -188,6 +220,169 @@ fn generation_ids_on_disk(build_dir: &Path) -> Result<Vec<u64>> {
     Ok(ids)
 }
 
+fn read_match_lock(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(GenerateError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn newer_match_lock_version(bytes: &[u8]) -> Option<u32> {
+    let input = std::str::from_utf8(bytes).ok()?;
+    let version: MatchLockVersion = facet_yaml::from_str(input).ok()?;
+    (version.version > FILTER_MATCH_LOCK_VERSION).then_some(version.version)
+}
+
+fn stale_match_lock_message(
+    current: Option<&FilterMatchLock>,
+    desired: &FilterMatchLock,
+    detail: &str,
+) -> String {
+    let mut lines = vec![detail.to_string()];
+    if let Some(current) = current {
+        if current.version != desired.version {
+            lines.push(format!("- version {}", current.version));
+            lines.push(format!("+ version {}", desired.version));
+        }
+        let old = current.semantic_lines();
+        let new = desired.semantic_lines();
+        lines.extend(old.difference(&new).map(|line| format!("- {line}")));
+        lines.extend(new.difference(&old).map(|line| format!("+ {line}")));
+    } else {
+        lines.extend(
+            desired
+                .semantic_lines()
+                .into_iter()
+                .map(|line| format!("+ {line}")),
+        );
+    }
+    lines.push("run `dsql lock` to review and accept the current matches".to_string());
+    lines.join("\n")
+}
+
+fn reconcile_match_lock_inner(
+    path: &Path,
+    desired: &FilterMatchLock,
+    mode: MatchLockMode,
+) -> Result<MatchLockStatus> {
+    if desired.version != FILTER_MATCH_LOCK_VERSION {
+        return Err(GenerateError::Internal(format!(
+            "assembled filter match lock has unsupported version {}",
+            desired.version
+        )));
+    }
+    let existing = read_match_lock(path)?;
+    if let Some(version) = existing.as_deref().and_then(newer_match_lock_version) {
+        return Err(GenerateError::MatchLock {
+            path: path.to_path_buf(),
+            message: format!(
+                "version {version} is newer than supported version {FILTER_MATCH_LOCK_VERSION}; refusing to overwrite it"
+            ),
+        });
+    }
+
+    match mode {
+        MatchLockMode::Update if desired.is_empty() => {
+            let Some(_) = existing else {
+                return Ok(MatchLockStatus {
+                    changed: false,
+                    content_hash: None,
+                });
+            };
+            std::fs::remove_file(path).map_err(|source| GenerateError::Write {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            sync_parent(path).map_err(|source| GenerateError::Write {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            Ok(MatchLockStatus {
+                changed: true,
+                content_hash: None,
+            })
+        }
+        MatchLockMode::Update => {
+            let serialized = desired
+                .to_yaml()
+                .map_err(|message| GenerateError::Serialize {
+                    name: path.to_string_lossy().to_string(),
+                    message,
+                })?;
+            let changed = existing.as_deref() != Some(serialized.as_bytes());
+            if changed {
+                atomic_write(path, &serialized)?;
+            }
+            Ok(MatchLockStatus {
+                changed,
+                content_hash: Some(sha256_hex(serialized.as_bytes())),
+            })
+        }
+        MatchLockMode::Locked if desired.is_empty() && existing.is_none() => Ok(MatchLockStatus {
+            changed: false,
+            content_hash: None,
+        }),
+        MatchLockMode::Locked if desired.is_empty() => Err(GenerateError::MatchLock {
+            path: path.to_path_buf(),
+            message: stale_match_lock_message(
+                None,
+                desired,
+                "the lock file should be absent because the project has no effective filters",
+            ),
+        }),
+        MatchLockMode::Locked => {
+            let Some(existing) = existing else {
+                return Err(GenerateError::MatchLock {
+                    path: path.to_path_buf(),
+                    message: stale_match_lock_message(None, desired, "the lock file is missing"),
+                });
+            };
+            let raw = std::str::from_utf8(&existing).map_err(|error| GenerateError::MatchLock {
+                path: path.to_path_buf(),
+                message: format!("the lock is not UTF-8: {error}\nrun `dsql lock` to replace it"),
+            })?;
+            let current =
+                FilterMatchLock::from_yaml(raw).map_err(|error| GenerateError::MatchLock {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "the lock is malformed: {error}\nrun `dsql lock` to replace it"
+                    ),
+                })?;
+            if current != *desired {
+                return Err(GenerateError::MatchLock {
+                    path: path.to_path_buf(),
+                    message: stale_match_lock_message(
+                        Some(&current),
+                        desired,
+                        "the accepted filter matches are stale",
+                    ),
+                });
+            }
+            Ok(MatchLockStatus {
+                changed: false,
+                content_hash: Some(sha256_hex(&existing)),
+            })
+        }
+    }
+}
+
+/// Reconciles only `dsql.lock` while holding the same advisory lock used by
+/// artifact publication.
+pub fn reconcile_match_lock(
+    build_dir: &Path,
+    path: &Path,
+    desired: &FilterMatchLock,
+    mode: MatchLockMode,
+) -> Result<MatchLockStatus> {
+    with_publication_lock(build_dir, || {
+        reconcile_match_lock_inner(path, desired, mode)
+    })
+}
+
 /// Builds the manifest document for `snapshot` at `generation_id`.
 fn manifest_for(snapshot: &GenerationSnapshot, generation_id: u64) -> BuildManifest {
     let mut operations = Vec::new();
@@ -224,17 +419,26 @@ fn manifest_for(snapshot: &GenerationSnapshot, generation_id: u64) -> BuildManif
 /// stranded ids are skipped, never reused), writes content-addressed
 /// artifact files (byte-comparing collisions), the immutable manifest,
 /// and finally the pointer.
-pub fn publish(build_dir: &Path, snapshot: &GenerationSnapshot) -> Result<PublishedGeneration> {
-    publish_with_deadline(build_dir, snapshot, LOCK_DEADLINE)
+pub fn publish(
+    build_dir: &Path,
+    match_lock_path: &Path,
+    snapshot: &GenerationSnapshot,
+    mode: MatchLockMode,
+) -> Result<PublishedGeneration> {
+    publish_with_deadline(build_dir, match_lock_path, snapshot, mode, LOCK_DEADLINE)
 }
 
 /// [`publish`] with an explicit lock-wait bound (tests keep it short).
 pub fn publish_with_deadline(
     build_dir: &Path,
+    match_lock_path: &Path,
     snapshot: &GenerationSnapshot,
+    mode: MatchLockMode,
     wait: Duration,
 ) -> Result<PublishedGeneration> {
     with_publication_lock_deadline(build_dir, wait, || {
+        let match_lock =
+            reconcile_match_lock_inner(match_lock_path, &snapshot.filter_match_lock, mode)?;
         let predecessor = pointer_generation(build_dir);
         let generation_id = generation_ids_on_disk(build_dir)?
             .into_iter()
@@ -298,6 +502,7 @@ pub fn publish_with_deadline(
             manifest_json: serialized,
             current_manifest_path,
             written,
+            filter_match_lock_hash: match_lock.content_hash,
             predecessor,
         })
     })

@@ -20,8 +20,8 @@ enum Frame {
 }
 
 /// Serves the daemon over stdio until the consumer disconnects.
-pub async fn run_stdio() {
-    serve(tokio::io::stdin(), tokio::io::stdout()).await;
+pub async fn run_stdio(locked: bool) {
+    serve_with_lock_mode(tokio::io::stdin(), tokio::io::stdout(), locked).await;
 }
 
 /// Serves the protocol over any byte streams (tests drive a duplex).
@@ -34,10 +34,20 @@ where
     I: AsyncRead + Unpin + Send + 'static,
     O: AsyncWrite + Unpin,
 {
+    serve_with_lock_mode(input, output, false).await;
+}
+
+/// Serves the protocol with process-wide match-lock behavior. Tests use this
+/// entrypoint to exercise `dsql daemon --locked` without changing framing.
+pub async fn serve_with_lock_mode<I, O>(input: I, output: O, locked: bool)
+where
+    I: AsyncRead + Unpin + Send + 'static,
+    O: AsyncWrite + Unpin,
+{
     let (lines, mut eof) = spawn_reader(input);
     let mut lines = lines;
     let mut output = output;
-    let mut daemon = Daemon::new();
+    let mut daemon = Daemon::new(locked);
 
     while let Some(frame) = lines.recv().await {
         let line = match frame {

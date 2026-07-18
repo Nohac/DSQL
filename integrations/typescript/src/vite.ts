@@ -3,6 +3,7 @@ import type { Plugin, ResolvedConfig, ViteDevServer } from "vite";
 import {
   DsqlDaemonClient,
   DsqlDaemonError,
+  withDaemonArgument,
   type DsqlCallsite,
   type DsqlCompileResult,
   type DsqlDaemonOptions,
@@ -27,6 +28,9 @@ export type DsqlVitePluginOptions = {
   readonly root?: string;
   /** Send a full reload after changed recompiles (default true). */
   readonly fullReload?: boolean;
+  /** Enforce `dsql.lock`: always, never, or only for production builds
+   * (default `"build"`). */
+  readonly locked?: boolean | "build";
 };
 
 type CompileOutcome =
@@ -89,10 +93,15 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
 
   const ensureClient = (): DsqlDaemonClient => {
     if (!client) {
+      const command = env?.command ?? config?.command;
+      const locked =
+        options.locked === true ||
+        ((options.locked ?? "build") === "build" && command === "build");
+      const daemon = withDaemonArgument(options.daemon, "--locked", locked);
       client = new DsqlDaemonClient({
         root: projectRoot(),
         excludeRoots: options.renderer.ownedRoots,
-        ...(options.daemon ? { daemon: options.daemon } : {}),
+        ...(daemon ? { daemon } : {}),
         onInvalidate: invalidate,
       });
     }

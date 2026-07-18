@@ -137,6 +137,7 @@ type Harness = {
   renders: DsqlRendererContext[];
   logs: { error: string[]; info: string[]; warn: string[] };
   scriptPath: string;
+  daemonArgs: () => string[];
   setRendererFailure: (message: string | null) => void;
   requests: () => Array<{ method: string; params?: { paths?: string[] } }>;
 };
@@ -145,6 +146,11 @@ function harness(
   makeSteps: (base: string) => unknown[],
   hostCode: string = HOST,
   hostPath: string = HOST_PATH,
+  options: {
+    readonly command?: "build" | "serve";
+    readonly locked?: boolean | "build";
+    readonly lockAlreadyPresent?: boolean;
+  } = {},
 ): Harness {
   const base = mkdtempSync(join(tmpdir(), "dsql-vite-test-"));
   const hostAbsolute = join(base, hostPath);
@@ -179,16 +185,21 @@ function harness(
       };
     },
   };
+  const daemonArgs = [FAKE, scriptPath, logPath];
+  if (options.lockAlreadyPresent) {
+    daemonArgs.push("--locked");
+  }
   const plugin = dsqlPlugin({
     renderer,
     root: base,
-    daemon: { command: "bun", args: [FAKE, scriptPath, logPath], cwd: base },
+    daemon: { command: "bun", args: daemonArgs, cwd: base },
     fullReload: false,
+    ...(options.locked === undefined ? {} : { locked: options.locked }),
   });
   const fakeConfig = {
     root: base,
     mode: "development",
-    command: "serve" as const,
+    command: options.command ?? "serve",
     logger: {
       error(message: string) {
         logs.error.push(message);
@@ -209,6 +220,7 @@ function harness(
     logs,
     renders,
     scriptPath,
+    daemonArgs: () => JSON.parse(readFileSync(`${logPath}.args`, "utf8")),
     setRendererFailure: (message) => {
       failure = message;
     },
@@ -273,6 +285,50 @@ const hotUpdate = (h: Harness, file: string) =>
   (h.plugin.handleHotUpdate as (context: unknown) => Promise<unknown[] | undefined>)({
     file,
   });
+
+const lockSteps = (base: string) => [
+  initializeStep(base),
+  { expectMethod: "compile", response: { result: resultFor(HOST) } },
+];
+
+test("development does not enforce the match lock by default", async () => {
+  const development = harness(lockSteps);
+  await transform(development, HOST);
+  expect(development.daemonArgs()).toEqual([]);
+}, 30_000);
+
+test("production builds enforce the match lock by default", async () => {
+  const production = harness(lockSteps, HOST, HOST_PATH, { command: "build" });
+  await transform(production, HOST);
+  expect(production.daemonArgs()).toEqual(["--locked"]);
+  await production.plugin.closeBundle?.();
+}, 30_000);
+
+test("production lock enforcement can be disabled", async () => {
+  const explicitUnlocked = harness(lockSteps, HOST, HOST_PATH, {
+    command: "build",
+    locked: false,
+  });
+  await transform(explicitUnlocked, HOST);
+  expect(explicitUnlocked.daemonArgs()).toEqual([]);
+  await explicitUnlocked.plugin.closeBundle?.();
+}, 30_000);
+
+test("custom locked daemon args are not duplicated", async () => {
+  const alreadyLocked = harness(
+    (base) => [
+    initializeStep(base),
+    { expectMethod: "compile", response: { result: resultFor(HOST) } },
+      { expectMethod: "shutdown", response: { result: true } },
+    ],
+    HOST,
+    HOST_PATH,
+    { command: "build", lockAlreadyPresent: true },
+  );
+  await transform(alreadyLocked, HOST);
+  expect(alreadyLocked.daemonArgs()).toEqual(["--locked"]);
+  await alreadyLocked.plugin.closeBundle?.();
+}, 30_000);
 
 test("transforms callsites from daemon ranges after compile and render", async () => {
   const h = harness((base) => [

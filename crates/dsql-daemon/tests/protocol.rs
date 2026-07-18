@@ -17,6 +17,14 @@ impl Session {
     /// Starts the daemon against a temp copy of the scoped fixture,
     /// without initializing.
     async fn start(test: &str) -> Session {
+        Self::start_with_lock_mode(test, false).await
+    }
+
+    async fn start_locked(test: &str) -> Session {
+        Self::start_with_lock_mode(test, true).await
+    }
+
+    async fn start_with_lock_mode(test: &str, locked: bool) -> Session {
         let source =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../dsql-project/tests/it/fixture/scoped");
         let root = std::env::temp_dir().join(format!("dsql-daemon-{test}-{}", std::process::id()));
@@ -25,10 +33,14 @@ impl Session {
         }
         copy_tree(&source, &root);
 
+        Self::at_root(root, locked)
+    }
+
+    fn at_root(root: PathBuf, locked: bool) -> Session {
         let (client_in, server_in) = tokio::io::duplex(1 << 20);
         let (server_out, client_out) = tokio::io::duplex(1 << 20);
         tokio::spawn(async move {
-            dsql_daemon::serve(server_in, server_out).await;
+            dsql_daemon::serve_with_lock_mode(server_in, server_out, locked).await;
         });
         Session {
             input: client_in,
@@ -41,6 +53,16 @@ impl Session {
     /// Starts and initializes.
     async fn ready(test: &str) -> Session {
         let mut session = Session::start(test).await;
+        let response = session.initialize().await;
+        assert!(
+            response.contains("\"result\""),
+            "initialize succeeds, got {response}"
+        );
+        session
+    }
+
+    async fn ready_locked(test: &str) -> Session {
+        let mut session = Session::start_locked(test).await;
         let response = session.initialize().await;
         assert!(
             response.contains("\"result\""),
@@ -755,6 +777,109 @@ async fn publication_contention_surfaces() {
     drop(guard);
     let unlocked = session.compile().await;
     assert!(unlocked.contains("\"generationId\":1"), "got {unlocked}");
+}
+
+fn add_filter(session: &Session) {
+    std::fs::write(
+        session.root.join("queries/shared/access.dsql"),
+        "filter VisibleTitles on title { where .id > 0 }\n",
+    )
+    .expect("filter document written");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unlocked_daemon_maintains_match_lock_and_ignores_its_own_write() {
+    let mut session = Session::start("match-lock-unlocked").await;
+    add_filter(&session);
+    let initialized = session.initialize().await;
+    assert!(initialized.contains("\"result\""), "got {initialized}");
+
+    let first = session.compile().await;
+    assert!(first.contains("\"generationId\":1"), "got {first}");
+    let lock_path = session.root.join("dsql/dsql.lock");
+    let canonical = std::fs::read_to_string(&lock_path).expect("compile writes dsql.lock");
+    assert!(canonical.contains("VisibleTitles"));
+
+    let own_event = session.files_changed("dsql/dsql.lock").await;
+    assert!(
+        own_event.contains("\"generationId\":1") && own_event.contains("\"changed\":false"),
+        "the daemon's byte-identical write is a no-op replay: {own_event}",
+    );
+    assert!(!session.root.join("dsql/build/manifest.2.json").exists());
+
+    std::fs::write(&lock_path, "version: 1\nfilters: []\n").expect("stale lock written");
+    let repaired = session.files_changed("dsql/dsql.lock").await;
+    assert!(repaired.contains("\"generationId\":2"), "got {repaired}");
+    assert_eq!(
+        std::fs::read_to_string(&lock_path).expect("repaired lock readable"),
+        canonical,
+    );
+
+    std::fs::remove_file(&lock_path).expect("lock removed externally");
+    let restored = session.files_changed("dsql/dsql.lock").await;
+    assert!(restored.contains("\"generationId\":3"), "got {restored}");
+    assert_eq!(
+        std::fs::read_to_string(&lock_path).expect("restored lock readable"),
+        canonical,
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn locked_daemon_requires_match_and_initializes_watcher_hash() {
+    let mut missing = Session::ready_locked("match-lock-missing").await;
+    add_filter(&missing);
+    let missing_response = missing.compile().await;
+    assert!(
+        missing_response.contains("\"Diagnostics\"")
+            && missing_response.contains("FilterMatchLock")
+            && missing_response.contains("dsql/dsql.lock"),
+        "missing locked state is a diagnostic: {missing_response}",
+    );
+    assert!(!missing.root.join("dsql/build/manifest.json").exists());
+
+    let mut unlocked = Session::start("match-lock-restart").await;
+    add_filter(&unlocked);
+    let initialized = unlocked.initialize().await;
+    assert!(initialized.contains("\"result\""), "got {initialized}");
+    let first = unlocked.compile().await;
+    assert!(first.contains("\"generationId\":1"), "got {first}");
+    let root = unlocked.root.clone();
+    let lock_path = root.join("dsql/dsql.lock");
+    let accepted = std::fs::read_to_string(&lock_path).expect("accepted lock readable");
+    drop(unlocked);
+
+    let mut locked = Session::at_root(root.clone(), true);
+    let initialized = locked.initialize().await;
+    assert!(initialized.contains("\"result\""), "got {initialized}");
+    let compiled = locked.compile().await;
+    assert!(compiled.contains("\"generationId\":2"), "got {compiled}");
+
+    let restart_event = locked.files_changed("dsql/dsql.lock").await;
+    assert!(
+        restart_event.contains("\"generationId\":2") && restart_event.contains("\"changed\":false"),
+        "initialization hashes the accepted lock for watcher replay: {restart_event}",
+    );
+    assert!(!root.join("dsql/build/manifest.3.json").exists());
+
+    std::fs::write(&lock_path, "version: 1\nfilters: []\n").expect("stale lock written");
+    let stale = locked.files_changed("dsql/dsql.lock").await;
+    assert!(
+        stale.contains("\"Diagnostics\"") && stale.contains("FilterMatchLock"),
+        "stale locked state is a diagnostic: {stale}",
+    );
+    assert!(!root.join("dsql/build/manifest.3.json").exists());
+
+    std::fs::write(&lock_path, accepted).expect("accepted lock restored");
+    let recovered = locked.files_changed("dsql/dsql.lock").await;
+    assert!(recovered.contains("\"generationId\":3"), "got {recovered}");
+
+    std::fs::remove_file(&lock_path).expect("accepted lock deleted");
+    let deleted = locked.files_changed("dsql/dsql.lock").await;
+    assert!(
+        deleted.contains("\"Diagnostics\"") && deleted.contains("FilterMatchLock"),
+        "deleted locked state is a diagnostic: {deleted}",
+    );
+    assert!(!root.join("dsql/build/manifest.4.json").exists());
 }
 
 /// EOF while a compile is in flight: the daemon finishes the transaction

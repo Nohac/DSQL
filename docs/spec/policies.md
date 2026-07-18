@@ -434,14 +434,17 @@ Illustrative shape:
 ```yaml
 version: 1
 filters:
-  SoftDelete:
+  - scope: frontend
+    defined_in: shared
+    name: SoftDelete
+    conditions:
+      - scope: shared
+        name: PreventReadDeleted
     matches:
-      - scope: frontend
-        target: public.projects
+      - target: public.projects
         fields:
           deleted_at: timestamptz
-      - scope: frontend
-        target: public.users
+      - target: public.users
         fields:
           deleted_at: timestamptz
 ```
@@ -455,9 +458,13 @@ hash of the entire schema:
 - referenced conditions;
 - matched relationships when structural relation matching is supported.
 
-Entries are deterministic and sorted. All filters, including concrete-target
-filters, are recorded so the file remains one audit manifest for resolved
-filter application. Unrelated catalog changes do not invalidate it.
+`filters` is a sorted list rather than a map because independent scopes may
+declare the same filter name. `scope` is the consumer scope whose effective
+import closure exposes the filter; `defined_in` preserves the provider
+identity. Entries are deterministic and sorted. All filters, including
+concrete-target filters, are recorded so the file remains one audit manifest
+for resolved filter application. Unrelated catalog changes do not invalidate
+it.
 
 A project with no effective filters does not require an empty lock file. An
 existing lock that still records removed filters is stale and must be updated.

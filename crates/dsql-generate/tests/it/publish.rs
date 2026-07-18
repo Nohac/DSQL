@@ -5,11 +5,16 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use dsql_generate::GenerateError;
 use dsql_generate::publish::{
-    ArtifactFamily, GenerationSnapshot, SnapshotArtifact, SnapshotGroup, prune, publish,
-    publish_with_deadline, sha256_hex,
+    ArtifactFamily, GenerationSnapshot, MatchLockMode, PublishedGeneration, SnapshotArtifact,
+    SnapshotGroup, prune, publish as publish_generation,
+    publish_with_deadline as publish_generation_with_deadline, sha256_hex,
 };
+use dsql_generate::{
+    FilterMatchLock, GenerateError, LockedFilter, LockedFilterMatch, LockedPolicyReference,
+};
+
+type Result<T> = std::result::Result<T, GenerateError>;
 
 fn artifact(name: &str, body: &str) -> SnapshotArtifact {
     let serialized = format!("{{\"name\":\"{name}\",\"body\":\"{body}\"}}");
@@ -37,7 +42,29 @@ fn snapshot(artifacts: Vec<SnapshotArtifact>) -> GenerationSnapshot {
                 .collect(),
         }],
         artifacts,
+        filter_match_lock: dsql_generate::FilterMatchLock::empty(),
     }
+}
+
+fn snapshot_with_filter(name: &str, target: &str) -> GenerationSnapshot {
+    let mut snapshot = snapshot(vec![artifact("A", "one")]);
+    snapshot.filter_match_lock = FilterMatchLock {
+        version: 1,
+        filters: vec![LockedFilter {
+            scope: "frontend".to_string(),
+            defined_in: "shared".to_string(),
+            name: name.to_string(),
+            conditions: vec![LockedPolicyReference {
+                scope: "shared".to_string(),
+                name: "Allowed".to_string(),
+            }],
+            matches: vec![LockedFilterMatch {
+                target: target.to_string(),
+                fields: std::collections::BTreeMap::new(),
+            }],
+        }],
+    };
+    snapshot
 }
 
 fn build_dir(test: &str) -> PathBuf {
@@ -46,6 +73,29 @@ fn build_dir(test: &str) -> PathBuf {
         std::fs::remove_dir_all(&dir).expect("clean stale dir");
     }
     dir
+}
+
+fn publish(build_dir: &Path, snapshot: &GenerationSnapshot) -> Result<PublishedGeneration> {
+    publish_generation(
+        build_dir,
+        &build_dir.join("dsql.lock"),
+        snapshot,
+        MatchLockMode::Update,
+    )
+}
+
+fn publish_with_deadline(
+    build_dir: &Path,
+    snapshot: &GenerationSnapshot,
+    wait: Duration,
+) -> Result<PublishedGeneration> {
+    publish_generation_with_deadline(
+        build_dir,
+        &build_dir.join("dsql.lock"),
+        snapshot,
+        MatchLockMode::Update,
+        wait,
+    )
 }
 
 fn no_temp_files(dir: &Path) {
@@ -134,7 +184,7 @@ fn contended_publication_fails_bounded_and_writes_nothing() {
 
     let error = publish_with_deadline(
         &dir,
-        &snapshot(vec![artifact("A", "one")]),
+        &snapshot_with_filter("Visible", "public.users"),
         Duration::from_millis(200),
     )
     .expect_err("contended publication fails");
@@ -143,12 +193,131 @@ fn contended_publication_fails_bounded_and_writes_nothing() {
         "got {error}"
     );
     assert!(
-        !dir.join("manifest.json").exists() && !dir.join("operations").exists(),
+        !dir.join("manifest.json").exists()
+            && !dir.join("operations").exists()
+            && !dir.join("dsql.lock").exists(),
         "a timed-out publication writes nothing"
     );
 
     drop(guard);
     publish(&dir, &snapshot(vec![artifact("A", "one")])).expect("publishes once released");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn match_lock_update_and_locked_modes_are_transactional() {
+    let dir = build_dir("match-lock");
+    let lock_path = dir.join("dsql.lock");
+    let desired = snapshot_with_filter("Visible", "public.users");
+
+    let first = publish_generation(&dir, &lock_path, &desired, MatchLockMode::Update)
+        .expect("unlocked publication writes the match lock");
+    let canonical = std::fs::read_to_string(&lock_path).expect("lock written");
+    assert_eq!(
+        first.filter_match_lock_hash,
+        Some(sha256_hex(canonical.as_bytes()))
+    );
+
+    let noncanonical = concat!(
+        "version: 1\n",
+        "filters:\n",
+        "  - name: Visible\n",
+        "    scope: frontend\n",
+        "    defined_in: shared\n",
+        "    matches:\n",
+        "      - target: public.users\n",
+        "    conditions:\n",
+        "      - name: Allowed\n",
+        "        scope: shared\n",
+    );
+    std::fs::write(&lock_path, noncanonical).expect("write semantically equal lock");
+    let accepted = publish_generation(&dir, &lock_path, &desired, MatchLockMode::Locked)
+        .expect("locked mode compares canonical semantics");
+    assert_eq!(
+        accepted.filter_match_lock_hash,
+        Some(sha256_hex(noncanonical.as_bytes()))
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lock_path).expect("accepted lock remains"),
+        noncanonical,
+        "locked mode never canonicalizes the file",
+    );
+
+    let stale = snapshot_with_filter("Visible", "public.posts");
+    let error = publish_generation(&dir, &lock_path, &stale, MatchLockMode::Locked)
+        .expect_err("stale lock blocks publication");
+    assert!(
+        matches!(error, GenerateError::MatchLock { .. })
+            && error
+                .to_string()
+                .contains("- frontend <- shared::Visible: public.users")
+            && error
+                .to_string()
+                .contains("+ frontend <- shared::Visible: public.posts"),
+        "unexpected stale-lock error: {error}",
+    );
+    assert!(
+        !dir.join(format!("manifest.{}.json", accepted.generation_id + 1))
+            .exists(),
+        "a stale lock writes no next generation",
+    );
+    no_temp_files(&dir);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn match_lock_empty_and_newer_version_edges_fail_closed() {
+    let dir = build_dir("match-lock-edges");
+    let lock_path = dir.join("dsql.lock");
+    let empty = snapshot(Vec::new());
+
+    publish_generation(&dir, &lock_path, &empty, MatchLockMode::Locked)
+        .expect("locked empty state accepts an absent lock");
+    assert!(!lock_path.exists());
+
+    std::fs::write(&lock_path, "version: 1\nfilters: []\n").expect("write empty lock");
+    let error = publish_generation(&dir, &lock_path, &empty, MatchLockMode::Locked)
+        .expect_err("an empty lock file is stale; canonical state is absence");
+    assert!(matches!(error, GenerateError::MatchLock { .. }));
+    publish_generation(&dir, &lock_path, &empty, MatchLockMode::Update)
+        .expect("unlocked mode removes the empty lock");
+    assert!(!lock_path.exists());
+
+    let desired = snapshot_with_filter("Visible", "public.users");
+    std::fs::write(&lock_path, "this: is: not: yaml\n").expect("write malformed lock");
+    let error = publish_generation(&dir, &lock_path, &desired, MatchLockMode::Locked)
+        .expect_err("locked mode refuses a malformed lock");
+    assert!(
+        matches!(error, GenerateError::MatchLock { .. })
+            && error.to_string().contains("lock is malformed"),
+        "unexpected malformed-lock error: {error}",
+    );
+    publish_generation(&dir, &lock_path, &desired, MatchLockMode::Update)
+        .expect("update mode replaces a malformed supported-version lock");
+    assert!(
+        std::fs::read_to_string(&lock_path)
+            .expect("replacement lock readable")
+            .contains("Visible")
+    );
+
+    let newer = "version: 2\nfilters: []\n";
+    std::fs::write(&lock_path, newer).expect("write newer lock");
+    let error = publish_generation(&dir, &lock_path, &desired, MatchLockMode::Update)
+        .expect_err("an older updater must not overwrite a newer lock");
+    assert!(
+        matches!(error, GenerateError::MatchLock { .. })
+            && error.to_string().contains("version 2 is newer"),
+        "unexpected newer-version error: {error}",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lock_path).expect("newer lock remains"),
+        newer,
+    );
+    assert!(
+        !dir.join("manifest.4.json").exists(),
+        "newer-version refusal happens before generation allocation",
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

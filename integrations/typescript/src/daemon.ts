@@ -96,6 +96,22 @@ export type DsqlDaemonOptions = {
   readonly cwd?: string;
 };
 
+/** Adds one daemon CLI argument without changing explicit spawn settings. */
+export function withDaemonArgument(
+  options: DsqlDaemonOptions | undefined,
+  argument: string,
+  enabled: boolean,
+): DsqlDaemonOptions | undefined {
+  if (!enabled) {
+    return options;
+  }
+  const args = [...(options?.args ?? ["daemon"])];
+  if (!args.includes(argument)) {
+    args.push(argument);
+  }
+  return { ...options, args };
+}
+
 export type DsqlDaemonClientOptions = {
   /** Absolute path the daemon discovers the project from. */
   readonly root: string;

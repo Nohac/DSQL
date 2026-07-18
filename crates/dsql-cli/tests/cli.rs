@@ -75,6 +75,44 @@ fn validate_fails_on_error_diagnostics() {
 }
 
 #[test]
+fn lock_updates_matches_and_locked_validation_refuses_drift() {
+    let dir = scratch_copy("match-lock");
+    std::fs::write(
+        dir.join("dsql/queries/access.dsql"),
+        "filter VisibleTitles on title { where .id > 0 }\n",
+    )
+    .expect("filter document");
+
+    let update = dsql(&dir, &["lock"]);
+    assert!(update.status.success(), "stderr: {}", stderr(&update));
+    assert!(stdout(&update).contains("dsql.lock: updated"));
+    let lock_path = dir.join("dsql/dsql.lock");
+    assert!(
+        std::fs::read_to_string(&lock_path)
+            .expect("match lock written")
+            .contains("VisibleTitles")
+    );
+
+    let accepted = dsql(&dir, &["validate", "--locked"]);
+    assert!(accepted.status.success(), "stderr: {}", stderr(&accepted));
+
+    std::fs::write(&lock_path, "version: 1\nfilters: []\n").expect("stale lock");
+    let stale = dsql(&dir, &["validate", "--locked"]);
+    assert!(
+        !stale.status.success(),
+        "stale matches must fail validation"
+    );
+    assert!(
+        stderr(&stale).contains("accepted filter matches are stale")
+            && stderr(&stale).contains("run `dsql lock`"),
+        "got {}",
+        stderr(&stale),
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn sql_prints_configured_operations_in_output_order() {
     let dir = scratch_copy("sql");
     std::fs::write(
@@ -273,6 +311,13 @@ fn generate_rejects_mismatched_target_arguments() {
     );
     assert!(!limit.status.success());
     assert!(stderr(&limit).contains("--collection-limit only applies"));
+
+    let locked = dsql(
+        &dir,
+        &["generate", "--target", "typescript-metadata", "--locked"],
+    );
+    assert!(!locked.status.success());
+    assert!(stderr(&locked).contains("--locked only applies"));
 }
 
 fn scoped_fixture() -> PathBuf {

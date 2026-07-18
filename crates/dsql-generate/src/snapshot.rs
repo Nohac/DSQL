@@ -105,4 +105,6 @@ pub struct GenerationSnapshot {
     pub artifacts: Vec<SnapshotArtifact>,
     /// Sorted by name.
     pub groups: Vec<SnapshotGroup>,
+    /// Canonical filter match decisions paired with these artifacts.
+    pub filter_match_lock: crate::FilterMatchLock,
 }

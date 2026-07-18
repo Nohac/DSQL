@@ -7,8 +7,12 @@ use tokio::process::Command;
 
 use crate::layout::BUILD_DIR;
 use crate::pipeline::{AssembledProject, GenerateError, GenerateOptions, Result, assemble_bowl};
-use crate::publish::{PublishedGeneration, prune, publish};
+use crate::publish::{
+    MatchLockMode, MatchLockStatus, PublishedGeneration, prune, publish, reconcile_match_lock,
+};
 use crate::snapshot::GenerationSnapshot;
+
+const MATCH_LOCK_FILE: &str = "dsql.lock";
 
 /// Filesystem paths committed by one native generation.
 #[derive(Debug, Clone)]
@@ -27,10 +31,11 @@ pub struct GenerateOutput {
 pub async fn generate_project(
     project: &Project,
     options: GenerateOptions,
+    lock_mode: MatchLockMode,
 ) -> Result<GenerateOutput> {
     let bowl = open_analysis_bowl(project).await.map_err(project_error)?;
     let assembled = assemble_project(&bowl, project, options).await?;
-    let published = publish_snapshot(project, &assembled.snapshot).await?;
+    let published = publish_snapshot(project, &assembled.snapshot, lock_mode).await?;
     let generator = run_host_generator(project, project.base(), &published.manifest_path).await;
     // A committed generation is pruned even when the host generator fails.
     let build_dir = project.root.join(BUILD_DIR);
@@ -71,12 +76,31 @@ pub async fn validate_assembly(
 pub async fn publish_snapshot(
     project: &Project,
     snapshot: &GenerationSnapshot,
+    lock_mode: MatchLockMode,
 ) -> Result<PublishedGeneration> {
     let build_dir = project.root.join(BUILD_DIR);
+    let match_lock_path = project.root.join(MATCH_LOCK_FILE);
     let snapshot = snapshot.clone();
-    tokio::task::spawn_blocking(move || publish(&build_dir, &snapshot))
+    tokio::task::spawn_blocking(move || publish(&build_dir, &match_lock_path, &snapshot, lock_mode))
         .await
         .map_err(|_| GenerateError::Internal("publication task panicked".to_string()))?
+}
+
+/// Updates or validates only the project's match lock under the publication
+/// advisory lock, without writing artifact generations.
+pub async fn reconcile_project_match_lock(
+    project: &Project,
+    lock: &crate::FilterMatchLock,
+    mode: MatchLockMode,
+) -> Result<MatchLockStatus> {
+    let build_dir = project.root.join(BUILD_DIR);
+    let match_lock_path = project.root.join(MATCH_LOCK_FILE);
+    let lock = lock.clone();
+    tokio::task::spawn_blocking(move || {
+        reconcile_match_lock(&build_dir, &match_lock_path, &lock, mode)
+    })
+    .await
+    .map_err(|_| GenerateError::Internal("match-lock task panicked".to_string()))?
 }
 
 fn project_error(error: ProjectError) -> GenerateError {

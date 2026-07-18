@@ -13,6 +13,7 @@ use dsql_core::grammar::parse;
 use dsql_core::grammar::parser::{Node, NodeRef, Rule};
 use dsql_core::source::{FilePath, SourceKind};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
+use dsql_generate::publish::MatchLockMode;
 use dsql_project::{Project, ProjectError, load_project_documents, open_analysis_bowl};
 
 /// The command layer's error: each failure keeps its own type instead of
@@ -117,7 +118,7 @@ fn count_query_defs(cst: &dsql_core::grammar::parser::CstData) -> usize {
 /// diagnostics, counts documents and queries, and dry-runs artifact
 /// assembly (path collisions included). Fails only on errors — warnings
 /// and infos report without failing the build.
-pub async fn validate() -> Outcome {
+pub async fn validate(locked: bool) -> Outcome {
     let project = Project::load().await?;
     {
         let bowl = open_analysis_bowl(&project).await?;
@@ -145,7 +146,16 @@ pub async fn validate() -> Outcome {
         if errors == 0 {
             // Language facts are clean; the remaining failure modes are
             // assembly ones (artifact path collisions, metadata mapping).
-            dsql_generate::validate_assembly(&bowl, &project, Default::default()).await?;
+            let assembled =
+                dsql_generate::assemble_project(&bowl, &project, Default::default()).await?;
+            if locked {
+                dsql_generate::reconcile_project_match_lock(
+                    &project,
+                    &assembled.snapshot.filter_match_lock,
+                    MatchLockMode::Locked,
+                )
+                .await?;
+            }
         }
         println!(
             "{documents} document{}, {queries} quer{}",
@@ -271,17 +281,46 @@ pub async fn fmt_project(project: &Project, check_only: bool, only: Option<PathB
 }
 
 /// Writes the artifact tree and runs the configured host generator.
-pub async fn generate(collection_limit: Option<u64>) -> Outcome {
+pub async fn generate(collection_limit: Option<u64>, locked: bool) -> Outcome {
     let project = Project::load().await?;
     let output = dsql_generate::generate_project(
         &project,
         dsql_generate::GenerateOptions { collection_limit },
+        if locked {
+            MatchLockMode::Locked
+        } else {
+            MatchLockMode::Update
+        },
     )
     .await?;
     for path in &output.written {
         println!("{}: written", path.display());
     }
     println!("manifest: {}", output.manifest_path.display());
+    Ok(true)
+}
+
+/// Resolves and atomically updates only `dsql/dsql.lock`.
+pub async fn lock() -> Outcome {
+    let project = Project::load().await?;
+    let bowl = open_analysis_bowl(&project).await?;
+    let assembled = dsql_generate::assemble_project(&bowl, &project, Default::default()).await?;
+    let status = dsql_generate::reconcile_project_match_lock(
+        &project,
+        &assembled.snapshot.filter_match_lock,
+        MatchLockMode::Update,
+    )
+    .await?;
+    let path = project.root.join("dsql.lock");
+    if status.changed {
+        if status.content_hash.is_some() {
+            println!("{}: updated", path.display());
+        } else {
+            println!("{}: removed", path.display());
+        }
+    } else {
+        println!("{}: unchanged", path.display());
+    }
     Ok(true)
 }
 

@@ -29,7 +29,13 @@ enum Command {
         file: Option<PathBuf>,
     },
     /// Validate everything generation needs, without writing anything.
-    Validate,
+    Validate {
+        /// Require the current resolved filter matches to equal dsql.lock.
+        #[arg(long)]
+        locked: bool,
+    },
+    /// Resolve filters and update only dsql/dsql.lock.
+    Lock,
     /// Parse one file and print its lossless syntax tree.
     Parse { file: PathBuf },
     /// Generate PostgreSQL for every query in the project.
@@ -58,6 +64,10 @@ enum Command {
         /// Output directory for the typescript-metadata target.
         #[arg(long)]
         out_dir: Option<PathBuf>,
+        /// Require the current resolved filter matches to equal dsql.lock
+        /// (project target only).
+        #[arg(long)]
+        locked: bool,
     },
     /// Print the build manifest's JSON Schema.
     MetadataSchema,
@@ -65,7 +75,11 @@ enum Command {
     MetadataTypescript,
     /// Serve the build daemon protocol over stdio
     /// (docs/spec/build-daemon.md).
-    Daemon,
+    Daemon {
+        /// Require every compile to match dsql.lock without modifying it.
+        #[arg(long)]
+        locked: bool,
+    },
     /// Introspect the project database into the schema/ directory.
     Introspect {
         /// Print the metadata as YAML instead of writing schema/.
@@ -112,7 +126,8 @@ async fn main() -> std::process::ExitCode {
     let outcome = match cli.command {
         Command::Init { path, database_url } => commands::init(path, database_url).await,
         Command::Check { file } => commands::check(file).await,
-        Command::Validate => commands::validate().await,
+        Command::Validate { locked } => commands::validate(locked).await,
+        Command::Lock => commands::lock().await,
         Command::Parse { file } => commands::parse_file(&file).await,
         Command::Sql { collection_limit } => commands::sql(collection_limit).await,
         Command::Fmt { check, file } => commands::fmt(check, file).await,
@@ -120,13 +135,22 @@ async fn main() -> std::process::ExitCode {
             target: GenerateTarget::Project,
             collection_limit,
             out_dir: None,
-        } => commands::generate(collection_limit).await,
+            locked,
+        } => commands::generate(collection_limit, locked).await,
         Command::Generate {
             target: GenerateTarget::Project,
             out_dir: Some(_),
             ..
         } => {
             eprintln!("error: --out-dir only applies to --target typescript-metadata");
+            return std::process::ExitCode::FAILURE;
+        }
+        Command::Generate {
+            target: GenerateTarget::TypescriptMetadata,
+            locked: true,
+            ..
+        } => {
+            eprintln!("error: --locked only applies to --target project");
             return std::process::ExitCode::FAILURE;
         }
         Command::Generate {
@@ -147,8 +171,8 @@ async fn main() -> std::process::ExitCode {
         }
         Command::MetadataSchema => commands::metadata_schema(),
         Command::MetadataTypescript => commands::metadata_typescript(),
-        Command::Daemon => {
-            dsql_daemon::run_stdio().await;
+        Command::Daemon { locked } => {
+            dsql_daemon::run_stdio(locked).await;
             return std::process::ExitCode::SUCCESS;
         }
         Command::Introspect { dry_run } => commands::introspect(dry_run).await,

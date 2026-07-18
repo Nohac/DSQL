@@ -2,7 +2,7 @@
 // script file per request and answers with its canned response. Used by
 // the client and Vite-binding tests; the real daemon is exercised by the
 // DSQL_BIN-gated integration test.
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 type Step = {
@@ -23,6 +23,9 @@ if (!scriptPath) {
   process.exit(3);
 }
 const logPath = process.argv[3];
+if (logPath) {
+  writeFileSync(`${logPath}.args`, JSON.stringify(process.argv.slice(4)));
+}
 const steps = JSON.parse(readFileSync(scriptPath, "utf8")) as Step[];
 let cursor = 0;
 

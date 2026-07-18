@@ -190,7 +190,16 @@ pub struct CompiledPolicyEntry {
     pub name: String,
     pub default_active: bool,
     pub has_field_rules: bool,
+    /// Resolved reusable-condition identities referenced by this filter.
+    pub conditions: Vec<CompiledPolicyReference>,
     pub targets: Vec<CompiledPolicyTarget>,
+}
+
+/// Stable policy-definition identity used by generated audit data.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CompiledPolicyReference {
+    pub scope: String,
+    pub name: String,
 }
 
 /// Body-sensitive, catalog-resolved policy semantics consumed by planning.
@@ -711,6 +720,7 @@ async fn compile_policies(
             continue;
         };
         let mut targets = Vec::new();
+        let mut conditions = BTreeSet::new();
         for table in &entry.matches {
             let mut compiler = PolicyCompiler {
                 catalog: snapshot.catalog(),
@@ -719,6 +729,7 @@ async fn compile_policies(
                 imports,
                 scope: &entry.scope,
                 context: Vec::new(),
+                conditions: BTreeSet::new(),
                 failed: false,
             };
             let row = PolicyRowContext::root(*table);
@@ -749,6 +760,7 @@ async fn compile_policies(
             compiler
                 .context
                 .sort_by(|left, right| left.path.cmp(&right.path));
+            conditions.extend(compiler.conditions);
             targets.push(CompiledPolicyTarget {
                 table: *table,
                 enforcement,
@@ -763,6 +775,7 @@ async fn compile_policies(
             name: entry.name.clone(),
             default_active: entry.default_active,
             has_field_rules: !declaration.field_rules.is_empty(),
+            conditions: conditions.into_iter().collect(),
             targets,
         });
     }
@@ -783,6 +796,7 @@ struct PolicyCompiler<'a> {
     imports: &'a ScopeImports,
     scope: &'a str,
     context: Vec<PolicyContextRequirement>,
+    conditions: BTreeSet<CompiledPolicyReference>,
     failed: bool,
 }
 
@@ -824,6 +838,10 @@ impl PolicyCompiler<'_> {
                 let [condition] = candidates.as_slice() else {
                     return self.fail();
                 };
+                self.conditions.insert(CompiledPolicyReference {
+                    scope: condition.scope.clone(),
+                    name: condition.name.clone(),
+                });
                 let Some(declaration) = self.declarations.get(&condition.entity).copied() else {
                     return self.fail();
                 };

@@ -1,0 +1,56 @@
+---
+source: crates/dsql-generate/tests/it/generate.rs
+expression: yaml
+---
+---
+version: 1
+filters:
+  - scope: backend
+    defined_in: backend
+    name: Same
+    matches:
+      - target: public.posts
+  - scope: backend
+    defined_in: shared
+    name: SharedStructural
+    conditions:
+      - scope: shared
+        name: Allowed
+    matches:
+      - target: public.posts
+        fields:
+          id: uuid
+      - target: public.users
+        fields:
+          id: uuid
+  - scope: frontend
+    defined_in: frontend
+    name: Same
+    matches:
+      - target: public.users
+  - scope: frontend
+    defined_in: shared
+    name: SharedStructural
+    conditions:
+      - scope: shared
+        name: Allowed
+    matches:
+      - target: public.posts
+        fields:
+          id: uuid
+      - target: public.users
+        fields:
+          id: uuid
+  - scope: shared
+    defined_in: shared
+    name: SharedStructural
+    conditions:
+      - scope: shared
+        name: Allowed
+    matches:
+      - target: public.posts
+        fields:
+          id: uuid
+      - target: public.users
+        fields:
+          id: uuid

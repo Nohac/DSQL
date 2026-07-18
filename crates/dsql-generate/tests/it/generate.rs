@@ -9,6 +9,7 @@ use dsql_core::embedding::ExtractionRegistry;
 use dsql_core::input::{LanguageDocument, LanguageInputs, populate_language_bowl};
 use dsql_core::language_bowl;
 use dsql_core::source::{ResolutionScope, ScopeDocuments, ScopeImports, SourceKind};
+use dsql_generate::publish::MatchLockMode;
 use dsql_generate::{GenerateOptions, assemble_bowl, generate_project};
 use dsql_project::Project;
 
@@ -264,6 +265,7 @@ async fn generates_manifest_and_artifacts() {
         GenerateOptions {
             collection_limit: Some(10),
         },
+        MatchLockMode::Update,
     )
     .await
     .expect("generation succeeds");
@@ -327,6 +329,7 @@ async fn generates_manifest_and_artifacts() {
         GenerateOptions {
             collection_limit: Some(10),
         },
+        MatchLockMode::Update,
     )
     .await
     .expect("rerun succeeds");
@@ -421,6 +424,71 @@ async fn generated_scope_groups_include_transitive_import_artifacts() {
         "frontend closure includes shared artifacts: {:?}",
         frontend.artifacts
     );
+}
+
+#[tokio::test]
+async fn filter_match_lock_records_effective_scopes_and_resolved_identities() {
+    let documents = vec![
+        document(
+            "queries/shared/policies.dsql",
+            concat!(
+                "condition Allowed { where $:allowed }\n",
+                "filter SharedStructural on { .id: uuid } {\n",
+                "  apply where Allowed\n",
+                "  field id where Allowed\n",
+                "}\n",
+            ),
+            "shared",
+        ),
+        document(
+            "queries/frontend/policies.dsql",
+            "filter Same on users { where .id == .id }\n",
+            "frontend",
+        ),
+        document(
+            "queries/backend/policies.dsql",
+            "filter Same on posts { where .id == .id }\n",
+            "backend",
+        ),
+    ];
+    let imports = BTreeMap::from([
+        ("frontend".to_string(), vec!["shared".to_string()]),
+        ("backend".to_string(), vec!["shared".to_string()]),
+        ("shared".to_string(), Vec::new()),
+    ]);
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
+        documents.clone(),
+        imports.clone(),
+    )
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("filter lock assembles");
+    let yaml = assembled
+        .snapshot
+        .filter_match_lock
+        .to_yaml()
+        .expect("filter lock serializes");
+
+    let mut reversed = documents;
+    reversed.reverse();
+    let reversed = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
+        reversed,
+        imports,
+    )
+    .await;
+    let reversed = assemble_bowl(&reversed, None, GenerateOptions::default())
+        .await
+        .expect("reordered inputs assemble")
+        .snapshot
+        .filter_match_lock
+        .to_yaml()
+        .expect("reordered lock serializes");
+    assert_eq!(yaml, reversed, "input ordering cannot change the lock");
+
+    insta::assert_snapshot!(yaml);
 }
 
 #[tokio::test]

@@ -15,7 +15,7 @@ use dsql_core::source::{
     BelongsToHost, CallsiteSpan, ExtractionResolver, FilePath, ResolutionScope, SourceOffset,
     SourceText, insert_source_scoped,
 };
-use dsql_generate::publish::{PublishedGeneration, sha256_hex};
+use dsql_generate::publish::{MatchLockMode, PublishedGeneration, sha256_hex};
 use dsql_generate::{GenerateError, GenerateOptions};
 use dsql_project::Project;
 
@@ -51,6 +51,7 @@ enum Outcome {
 
 pub struct Daemon {
     state: State,
+    locked: bool,
     /// Pruning deferred until after the response is flushed.
     pending_prune: Option<(PathBuf, PublishedGeneration)>,
 }
@@ -68,12 +69,16 @@ struct Session {
     /// the full load until it succeeds.
     bowl: Option<Bowl>,
     last: Option<Outcome>,
+    locked: bool,
+    /// Hash of the last bytes observed or accepted at `dsql/dsql.lock`.
+    filter_match_lock_hash: Option<String>,
 }
 
 impl Daemon {
-    pub fn new() -> Self {
+    pub fn new(locked: bool) -> Self {
         Self {
             state: State::Uninitialized,
+            locked,
             pending_prune: None,
         }
     }
@@ -169,6 +174,9 @@ impl Daemon {
             }
         }
         let generator_outputs = project.config.generate.typescript.outputs.clone();
+        let filter_match_lock_hash = std::fs::read(project.root.join("dsql.lock"))
+            .ok()
+            .map(|bytes| sha256_hex(&bytes));
 
         let body = format!(
             "{{\"protocolVersion\":{PROTOCOL_VERSION},\"projectBase\":{},\"configPath\":\"dsql/dsql.toml\",\"schemaDir\":\"dsql/schema\",\"buildDir\":\"dsql/build\",\"generatorOutputs\":{}}}",
@@ -181,6 +189,8 @@ impl Daemon {
             exclude_roots,
             bowl: None,
             last: None,
+            locked: self.locked,
+            filter_match_lock_hash,
         }));
         result_line(request.id, &body)
     }
@@ -193,7 +203,7 @@ impl Daemon {
 
         // Classify the batch (filesChanged) or force a full pass (compile).
         let plan = match request.method {
-            Method::Compile => BatchPlan::FullReload,
+            Method::Compile => BatchPlan::FullReload(None),
             Method::FilesChanged => match session.classify_batch(&request).await {
                 Ok(plan) => plan,
                 Err(response) => return respond_error_for(id, response),
@@ -232,6 +242,7 @@ impl Daemon {
             Outcome::Error { published, .. } => published.clone(),
         };
         if let Some(published) = published {
+            session.filter_match_lock_hash = published.filter_match_lock_hash.clone();
             self.pending_prune = Some((session.project.root.join("build"), published));
         }
         session.last = Some(outcome);
@@ -253,9 +264,11 @@ enum BatchPlan {
     NoOp,
     /// Apply these file upserts — the exact bytes classification read —
     /// to the resident bowl. Application never re-reads disk.
-    Incremental(Vec<(PathBuf, String)>),
+    Incremental(Vec<(PathBuf, String)>, Option<Option<String>>),
+    /// Only the on-disk match lock changed; the bowl stays resident.
+    MatchLockChanged(Option<String>),
     /// Config/schema/deletion or no resident bowl: reload from disk.
-    FullReload,
+    FullReload(Option<Option<String>>),
 }
 
 /// How one relevant file's on-disk bytes relate to the resident bowl.
@@ -303,10 +316,11 @@ impl Session {
             ));
         };
         if self.bowl.is_none() {
-            return Ok(BatchPlan::FullReload);
+            return Ok(BatchPlan::FullReload(None));
         }
         let mut upserts = Vec::new();
         let mut reload = false;
+        let mut lock_change = None;
         for raw in paths {
             let relative = match self.normalize(raw) {
                 Ok(relative) => relative,
@@ -319,6 +333,24 @@ impl Session {
                 }
             };
             let text = relative.to_string_lossy().replace('\\', "/");
+            if text == "dsql/dsql.lock" {
+                let absolute = self.project_base.join(&relative);
+                let observed = match std::fs::read(&absolute) {
+                    Ok(bytes) => Some(sha256_hex(&bytes)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => {
+                        return Err((
+                            "Io".into(),
+                            format!("failed to read {}: {error}", absolute.display()),
+                            format!("{{\"path\":{}}}", json_string(raw)),
+                        ));
+                    }
+                };
+                if observed != self.filter_match_lock_hash {
+                    lock_change = Some(observed);
+                }
+                continue;
+            }
             if self.is_reserved(&text) {
                 continue;
             }
@@ -380,12 +412,15 @@ impl Session {
             }
         }
         if reload {
-            return Ok(BatchPlan::FullReload);
+            return Ok(BatchPlan::FullReload(lock_change));
         }
-        if upserts.is_empty() {
-            return Ok(BatchPlan::NoOp);
+        if !upserts.is_empty() {
+            return Ok(BatchPlan::Incremental(upserts, lock_change));
         }
-        Ok(BatchPlan::Incremental(upserts))
+        match lock_change {
+            Some(hash) => Ok(BatchPlan::MatchLockChanged(hash)),
+            None => Ok(BatchPlan::NoOp),
+        }
     }
 
     /// Whether the bowl holds the file itself or anything under it as a
@@ -575,14 +610,24 @@ impl Session {
     async fn apply(&mut self, plan: BatchPlan) -> Result<(), String> {
         match plan {
             BatchPlan::NoOp => Ok(()),
-            BatchPlan::Incremental(paths) => {
+            BatchPlan::MatchLockChanged(hash) => {
+                self.filter_match_lock_hash = hash;
+                Ok(())
+            }
+            BatchPlan::Incremental(paths, lock_hash) => {
+                if let Some(lock_hash) = lock_hash {
+                    self.filter_match_lock_hash = lock_hash;
+                }
                 let bowl = self.bowl.as_ref().expect("classified against a bowl");
                 for (absolute, content) in paths {
                     upsert(bowl, &absolute, &content).await;
                 }
                 Ok(())
             }
-            BatchPlan::FullReload => {
+            BatchPlan::FullReload(lock_hash) => {
+                if let Some(lock_hash) = lock_hash {
+                    self.filter_match_lock_hash = lock_hash;
+                }
                 // Re-read config + schema too: a transparent full reload.
                 let project = Project::load_from(&self.project_base)
                     .await
@@ -650,11 +695,20 @@ impl Session {
             }
         };
         let scopes = collect_source_scopes(bowl, &self.project_base).await;
-        let published =
-            match dsql_generate::publish_snapshot(&self.project, &assembled.snapshot).await {
-                Ok(published) => published,
-                Err(error) => return generate_outcome_error(error),
-            };
+        let published = match dsql_generate::publish_snapshot(
+            &self.project,
+            &assembled.snapshot,
+            if self.locked {
+                MatchLockMode::Locked
+            } else {
+                MatchLockMode::Update
+            },
+        )
+        .await
+        {
+            Ok(published) => published,
+            Err(error) => return generate_outcome_error(error),
+        };
 
         let generator = self.run_generator(&published).await;
         if let Err(status) = generator {
@@ -796,6 +850,22 @@ fn generate_outcome_error(error: GenerateError) -> Outcome {
                 json_string(message),
             ),
         ),
+        GenerateError::MatchLock { .. } => {
+            let diagnostic = WireDiagnostic {
+                file: "dsql/dsql.lock".to_string(),
+                start: 0,
+                end: 0,
+                embedded: None,
+                severity: "Error".to_string(),
+                source: "dsql".to_string(),
+                code: "FilterMatchLock".to_string(),
+                message: error.to_string(),
+            };
+            (
+                "Diagnostics",
+                format!("{{\"diagnostics\":{}}}", render_diagnostics(&[diagnostic])),
+            )
+        }
         GenerateError::LanguageDiagnostics { .. } => (
             // collect_diagnostics answered first in the normal path; this
             // arm covers races where new errors appeared mid-assembly.

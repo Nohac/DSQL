@@ -13,7 +13,7 @@ import type {
   DsqlCompileResult,
   DsqlDaemonOptions,
 } from "./daemon.ts";
-import { DsqlDaemonClient } from "./daemon.ts";
+import { DsqlDaemonClient, withDaemonArgument } from "./daemon.ts";
 import type { DsqlRenderResult } from "./render/types.ts";
 
 export { DsqlDaemonClient, DsqlDaemonError, DsqlDaemonSessionError } from "./daemon.ts";
@@ -507,13 +507,16 @@ export async function runDsqlRendererFromProject(
     readonly root?: string;
     readonly daemon?: DsqlDaemonOptions;
     readonly mode?: string;
+    /** Enforce the project's `dsql.lock` for this one-shot run. */
+    readonly locked?: boolean;
   } = {},
 ): Promise<DsqlRenderMap> {
   const root = resolve(options.root ?? process.cwd());
+  const daemon = withDaemonArgument(options.daemon, "--locked", options.locked ?? false);
   const client = new DsqlDaemonClient({
     root,
     excludeRoots: renderer.ownedRoots,
-    ...(options.daemon ? { daemon: options.daemon } : {}),
+    ...(daemon ? { daemon } : {}),
   });
   try {
     const result = await client.compile();
