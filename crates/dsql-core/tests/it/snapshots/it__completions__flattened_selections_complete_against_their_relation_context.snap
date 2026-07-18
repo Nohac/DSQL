@@ -17,6 +17,10 @@ Column name (text)
 Scope . (current scope)
 Scope .. (parent scope)
 Scope ~ (root scope)
+Keyword exists
+Keyword in
+Keyword is
+Keyword not
 
 aggregate body:
 Keyword avg (aggregate function)

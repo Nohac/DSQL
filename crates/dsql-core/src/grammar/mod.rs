@@ -11,6 +11,10 @@
 pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
 }
+#[expect(
+    clippy::single_match,
+    reason = "lelwel emits a one-arm CST cleanup match when error nodes have delete hooks"
+)]
 pub mod parser;
 
 use parser::{Cst, Diagnostic, Parser};

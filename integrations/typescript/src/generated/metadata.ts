@@ -103,6 +103,7 @@ export interface DynamicInputField {
 export interface InputField {
   path: string;
   data_type: string;
+  collection?: boolean;
   enum_values: string[];
   required: boolean;
   nullable: boolean;
@@ -201,6 +202,7 @@ export interface DynamicInputField {
 export interface InputField {
   path: string;
   data_type: string;
+  collection?: boolean;
   enum_values: string[];
   required: boolean;
   nullable: boolean;

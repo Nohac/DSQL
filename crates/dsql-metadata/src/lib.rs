@@ -163,6 +163,8 @@ pub struct ResultField {
 pub struct InputField {
     pub path: String,
     pub data_type: String,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub collection: Option<bool>,
     pub enum_values: Vec<String>,
     pub required: bool,
     pub nullable: bool,

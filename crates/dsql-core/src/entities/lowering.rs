@@ -45,7 +45,12 @@ fn lower_rule(
         // contain them (expression::build_expr); the claim is a no-op.
         Rule::Expr
         | Rule::BinaryExpr
+        | Rule::UnaryExpr
+        | Rule::NullTestExpr
         | Rule::ScalarAggregateExpr
+        | Rule::CollectionLiteral
+        | Rule::ExistsExpr
+        | Rule::ExistsSource
         | Rule::Literal
         | Rule::BinaryOperator
         | Rule::ComparisonOperator
@@ -53,7 +58,7 @@ fn lower_rule(
         | Rule::ScopedPathSegment => Expression::lower(ctx, node, commands),
 
         // Consumed by FieldSelection lowering from the field_selection node.
-        Rule::FieldSelectionTail | Rule::FieldSuffix => None,
+        Rule::ContextualName | Rule::FieldSelectionTail | Rule::FieldSuffix => None,
         // Consumed by Aggregate lowering from the pipe_transform node.
         Rule::AggregateField | Rule::AggregateGroupKey | Rule::AggregateSet => None,
         // Consumed by Clause lowering from the clause nodes.
@@ -147,6 +152,25 @@ pub(crate) fn direct_token(cst: &CstData, node: NodeRef, token: Token) -> Option
         .find_map(|child| cst.match_token(child, token).map(Span::from))
 }
 
+/// Spans of direct children accepted as source identifiers. Ordinary names
+/// remain tokens; predicate keywords use [`Rule::ContextualName`].
+pub(crate) fn direct_names(cst: &CstData, node: NodeRef) -> Vec<Span> {
+    cst.children(node)
+        .filter_map(|child| match cst.get(child) {
+            crate::grammar::parser::Node::Token(Token::Name, _) => Some(node_span(cst, child)),
+            crate::grammar::parser::Node::Rule(Rule::ContextualName, _) => {
+                Some(node_span(cst, child))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Span of the first direct source identifier under `node`.
+pub(crate) fn direct_name(cst: &CstData, node: NodeRef) -> Option<Span> {
+    direct_names(cst, node).into_iter().next()
+}
+
 /// First direct child of `node` that is a `rule` node.
 pub(crate) fn direct_rule(cst: &CstData, node: NodeRef, rule: Rule) -> Option<NodeRef> {
     cst.children(node)
@@ -187,7 +211,12 @@ pub fn format_rule(
         Rule::ValueVariable | Rule::OperatorVariable => Variable::format(formatter, node),
         Rule::Expr
         | Rule::BinaryExpr
+        | Rule::UnaryExpr
+        | Rule::NullTestExpr
         | Rule::ScalarAggregateExpr
+        | Rule::CollectionLiteral
+        | Rule::ExistsExpr
+        | Rule::ExistsSource
         | Rule::Literal
         | Rule::BinaryOperator
         | Rule::ComparisonOperator
@@ -195,6 +224,7 @@ pub fn format_rule(
         | Rule::ScopedPathSegment => Expression::format(formatter, node),
         // Structural rules: laid out by the engine or their owner.
         Rule::FieldSelectionTail
+        | Rule::ContextualName
         | Rule::FieldSuffix
         | Rule::AggregateField
         | Rule::AggregateGroupKey

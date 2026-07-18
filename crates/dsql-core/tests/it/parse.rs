@@ -70,6 +70,24 @@ fn scalar_aggregate_predicates_bind_before_comparisons_and_clauses() {
 }
 
 #[test]
+fn predicate_extensions_preserve_boolean_precedence_and_sources() {
+    let source = concat!(
+        "query PredicateExtensions {\n",
+        "  users(\n",
+        "    where not $$disabled or .id in [1, null, 2,]\n",
+        "      and .deleted_at is not null\n",
+        "      and exists .posts(where .title not in $$titles and .user_id == ..id)\n",
+        "  ) { id }\n",
+        "}\n",
+    );
+    let (cst, diagnostics) = parse(source);
+    insta::assert_snapshot!(format!(
+        "{cst}---\n{}",
+        render_diagnostics(source, &diagnostics)
+    ));
+}
+
+#[test]
 fn spreads_and_flattened_selections_are_disambiguated_by_the_suffix() {
     let source = concat!(
         "fragment Bits on users { id }\n",

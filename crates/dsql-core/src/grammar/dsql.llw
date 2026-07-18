@@ -1,4 +1,4 @@
-token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or';
+token Query='query' Fragment='fragment' On='on' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or' Not='not' In='in' Is='is' Exists='exists';
 token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' Arrow='->' Colon=':' At='@' Comma=',' Pipe='|' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
@@ -9,17 +9,18 @@ skip Whitespace Comment;
 start document;
 
 document: definition*;
+contextual_name: 'not' | 'in' | 'is' | 'exists';
 definition^:
   query_def
 | fragment_def
 ;
-query_def: 'query' Name directive* selection_set;
-fragment_def: 'fragment' Name 'on' qualified_name selection_set;
-qualified_name: Name [?1 '::' Name];
-relation_ref: qualified_name ['->' Name];
-scoped_path_segment: qualified_name ['->' Name];
+query_def: 'query' (Name | contextual_name) directive* selection_set;
+fragment_def: 'fragment' (Name | contextual_name) 'on' qualified_name selection_set;
+qualified_name: (Name | contextual_name) [?1 '::' (Name | contextual_name)];
+relation_ref: qualified_name ['->' (Name | contextual_name)];
+scoped_path_segment: qualified_name ['->' (Name | contextual_name)];
 scoped_path: ('.' | '..' | '~') scoped_path_segment ('.' scoped_path_segment)*;
-value_variable: ('$' | '$$') [Name];
+value_variable: '$$' [Name] | '$' (':' Name / [Name]);
 comparison_operator: '==' | '!=' | '>' | '>=' | '<' | '<=' | 'like';
 operator_variable: ('$' | '$$') [Name] '[' comparison_operator (?1 ',' comparison_operator)* [','] ']';
 binary_operator: comparison_operator | operator_variable;
@@ -28,17 +29,19 @@ selection:
   ?1 field_selection [',']
 | fragment_spread [',']
 ;
-fragment_spread: '...' Name directive*;
+fragment_spread: '...' (Name | contextual_name) directive*;
 field_selection: ['...'] relation_ref field_selection_tail;
 field_selection_tail:
   ':' relation_ref field_suffix
 | field_suffix
 ;
 field_suffix: [clause_list] (pipe_transform | directive* [selection_set]);
-pipe_transform: '|' Name ['by' aggregate_group_key (?1 ',' aggregate_group_key)* [',']] aggregate_set;
-aggregate_group_key: [Name ':'] scoped_path;
+pipe_transform: '|' (Name | contextual_name) ['by' aggregate_group_key (?1 ',' aggregate_group_key)* [',']] aggregate_set;
+aggregate_group_key: [(Name | contextual_name) ':'] scoped_path;
 aggregate_set: '{' aggregate_field* '}';
-aggregate_field: Name [?1 ':' Name] [scoped_path] [','];
+aggregate_field:
+  Name [?1 ':' (Name / contextual_name)] [scoped_path] [',']
+| contextual_name [?1 ':' (Name / contextual_name)] [scoped_path] [','];
 clause_list: '(' clause* ')';
 clause:
   where_clause
@@ -57,15 +60,22 @@ directive_name:
   '.' directive_member
 | directive_namespace ['.' directive_member]
 ;
-directive_namespace: Name;
-directive_member: Name;
-directive_argument: Name ':' expr;
-scalar_aggregate_expr: scoped_path '|' Name [scoped_path];
+directive_namespace: Name | contextual_name;
+directive_member: Name | contextual_name;
+directive_argument: (Name | contextual_name) ':' expr;
+scalar_aggregate_expr: scoped_path '|' (Name | contextual_name) [scoped_path];
+collection_literal: '[' [expr (?1 ',' expr)* [',']] ']';
+exists_source: (scoped_path | qualified_name) ['(' where_clause ')'];
+exists_expr: 'exists' exists_source;
 expr:
-  expr binary_operator expr @binary_expr
+  expr (binary_operator | 'in' | 'not' 'in') expr @binary_expr
+| expr 'is' ('not' 'null' / 'null') @null_test_expr
+| 'not' expr @unary_expr
 | expr 'and' expr @binary_expr
 | expr 'or' expr @binary_expr
 | literal
+| collection_literal
+| exists_expr
 | ?1 scalar_aggregate_expr
 | scoped_path
 | value_variable

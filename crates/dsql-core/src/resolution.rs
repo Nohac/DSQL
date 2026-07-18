@@ -34,7 +34,9 @@ use crate::entities::aggregate::{
 };
 use crate::entities::clause::ClauseFact;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
-use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, PathSegment, Sigil};
+use crate::entities::expression::{
+    BinaryOp, ExistsSource, Expr, LiteralValue, PathAnchor, PathSegment, Sigil,
+};
 use crate::entities::field_selection::{FieldSel, SelectionLimitSyntax};
 use crate::facts::{BelongsToFile, Children, Span};
 
@@ -202,6 +204,8 @@ pub struct ResolvedClause {
     pub paths: Vec<ResolvedPath>,
     /// Every scalar relation aggregate in expression order, keyed by span.
     pub aggregates: Vec<ResolvedPredicateAggregate>,
+    /// Every SQL-style existence predicate, keyed by its full span.
+    pub existences: Vec<ResolvedExistence>,
     /// Order-by items, in written order.
     pub order_items: Vec<ResolvedOrderItem>,
 }
@@ -223,6 +227,46 @@ impl ResolvedClause {
             .iter()
             .find(|aggregate| aggregate.span == span)
     }
+
+    pub fn existence_at(&self, span: Span) -> Option<&ResolvedExistence> {
+        self.existences
+            .iter()
+            .find(|existence| existence.span == span)
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ResolvedExistence {
+    pub span: Span,
+    pub source: Option<ResolvedExistenceSource>,
+    pub problems: Vec<ExistenceProblem>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum ResolvedExistenceSource {
+    Relation(ResolvedRelationStep),
+    Table(TableId),
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ExistenceProblem {
+    pub span: Span,
+    pub kind: ExistenceProblemKind,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum ExistenceProblemKind {
+    SourceMustBeCollection,
+    FieldNotFound(String),
+    AmbiguousRelation {
+        reference: String,
+        candidates: Vec<String>,
+    },
+    TableNotFound(String),
+    AmbiguousTable {
+        reference: String,
+        candidates: Vec<TableKey>,
+    },
 }
 
 /// One direct relation aggregate resolved inside a clause expression.
@@ -375,6 +419,8 @@ pub struct ClauseContext {
     pub root: TableId,
     /// The clause's own table (`.` paths anchor here).
     pub table: TableId,
+    /// The immediately enclosing source for `..` inside an existence source.
+    pub parent: Option<TableId>,
 }
 
 pub fn register_resolution(reg: &mut Registrar<'_>) {
@@ -602,7 +648,9 @@ fn guaranteed_equalities(
                 .into_iter()
                 .collect()
         }
-        BinaryOp::Comparison(_) | BinaryOp::Variable(_) => GuaranteedEqualities::new(),
+        BinaryOp::Comparison(_) | BinaryOp::Variable(_) | BinaryOp::In | BinaryOp::NotIn => {
+            GuaranteedEqualities::new()
+        }
     }
 }
 
@@ -681,6 +729,10 @@ fn fixed_value_identity(expr: &Expr) -> Option<FixedValueIdentity> {
         | Expr::Path { .. }
         | Expr::Aggregate { .. }
         | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::NullTest { .. }
+        | Expr::List { .. }
+        | Expr::Exists { .. }
         | Expr::Error { .. } => None,
     }
 }
@@ -820,18 +872,28 @@ async fn resolve_clauses(
     let catalog = snapshot.catalog();
 
     let context = match (parent_resolved.root, parent_resolved.target.child_context()) {
-        (Some(root), Some(table)) => Some(ClauseContext { root, table }),
+        (Some(root), Some(table)) => Some(ClauseContext {
+            root,
+            table,
+            parent: None,
+        }),
         _ => None,
     };
 
     let mut paths = Vec::new();
     let mut aggregates = Vec::new();
+    let mut existences = Vec::new();
     let mut order_items = Vec::new();
     if let Some(context) = context {
         match clause {
-            ClauseFact::Where { expr } => {
-                collect_clause_values(catalog, context, expr, &mut paths, &mut aggregates)
-            }
+            ClauseFact::Where { expr } => collect_clause_values(
+                catalog,
+                context,
+                expr,
+                &mut paths,
+                &mut aggregates,
+                &mut existences,
+            ),
             ClauseFact::OrderBy { items } => {
                 order_items.extend(items.iter().map(|item| {
                     let reference = FieldRef {
@@ -849,7 +911,14 @@ async fn resolve_clauses(
                 }));
             }
             ClauseFact::Limit { expr } | ClauseFact::Offset { expr } => {
-                collect_clause_values(catalog, context, expr, &mut paths, &mut aggregates);
+                collect_clause_values(
+                    catalog,
+                    context,
+                    expr,
+                    &mut paths,
+                    &mut aggregates,
+                    &mut existences,
+                );
             }
         }
     }
@@ -862,6 +931,7 @@ async fn resolve_clauses(
             context,
             paths,
             aggregates,
+            existences,
             order_items,
         },
     ));
@@ -875,11 +945,48 @@ fn collect_clause_values(
     expr: &Expr,
     paths: &mut Vec<ResolvedPath>,
     aggregates: &mut Vec<ResolvedPredicateAggregate>,
+    existences: &mut Vec<ResolvedExistence>,
 ) {
     match expr {
         Expr::Binary { lhs, rhs, .. } => {
-            collect_clause_values(catalog, context, lhs, paths, aggregates);
-            collect_clause_values(catalog, context, rhs, paths, aggregates);
+            collect_clause_values(catalog, context, lhs, paths, aggregates, existences);
+            collect_clause_values(catalog, context, rhs, paths, aggregates, existences);
+        }
+        Expr::Unary { operand, .. } | Expr::NullTest { operand, .. } => {
+            collect_clause_values(catalog, context, operand, paths, aggregates, existences);
+        }
+        Expr::List { items, .. } => {
+            for item in items {
+                collect_clause_values(catalog, context, item, paths, aggregates, existences);
+            }
+        }
+        Expr::Exists {
+            source,
+            predicate,
+            span,
+        } => {
+            let existence = resolve_existence(catalog, context, source, *span);
+            let nested_table = existence.source.as_ref().map(|source| match source {
+                ResolvedExistenceSource::Relation(relation) => relation.table,
+                ResolvedExistenceSource::Table(table) => *table,
+            });
+            existences.push(existence);
+            if let Some(predicate) = predicate
+                && let Some(table) = nested_table
+            {
+                collect_clause_values(
+                    catalog,
+                    ClauseContext {
+                        root: context.root,
+                        table,
+                        parent: Some(context.table),
+                    },
+                    predicate,
+                    paths,
+                    aggregates,
+                    existences,
+                );
+            }
         }
         Expr::Path {
             anchor, segments, ..
@@ -888,6 +995,142 @@ fn collect_clause_values(
             aggregates.push(resolve_predicate_aggregate(catalog, context, expr));
         }
         Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
+    }
+}
+
+fn resolve_existence(
+    catalog: &crate::catalog::Catalog,
+    context: ClauseContext,
+    source: &ExistsSource,
+    span: Span,
+) -> ResolvedExistence {
+    let mut problems = Vec::new();
+    let source = match source {
+        ExistsSource::Relation(path) => {
+            let Expr::Path {
+                anchor: PathAnchor::Current,
+                segments,
+                ..
+            } = path.as_ref()
+            else {
+                problems.push(ExistenceProblem {
+                    span: path.span(),
+                    kind: ExistenceProblemKind::SourceMustBeCollection,
+                });
+                return ResolvedExistence {
+                    span,
+                    source: None,
+                    problems,
+                };
+            };
+            let [segment] = segments.as_slice() else {
+                problems.push(ExistenceProblem {
+                    span: path.span(),
+                    kind: ExistenceProblemKind::SourceMustBeCollection,
+                });
+                return ResolvedExistence {
+                    span,
+                    source: None,
+                    problems,
+                };
+            };
+            let reference = FieldRef {
+                target: TableRef::parse(&segment.name),
+                selector: segment.relation_path.as_deref(),
+            };
+            let relation = match catalog.check_field_ref(context.table, reference) {
+                FieldCheckResult::Relation(relation) => relation,
+                FieldCheckResult::Column(_) => {
+                    problems.push(ExistenceProblem {
+                        span: segment.span,
+                        kind: ExistenceProblemKind::SourceMustBeCollection,
+                    });
+                    return ResolvedExistence {
+                        span,
+                        source: None,
+                        problems,
+                    };
+                }
+                FieldCheckResult::NotFound => {
+                    problems.push(ExistenceProblem {
+                        span: segment.span,
+                        kind: ExistenceProblemKind::FieldNotFound(reference.display_text()),
+                    });
+                    return ResolvedExistence {
+                        span,
+                        source: None,
+                        problems,
+                    };
+                }
+                FieldCheckResult::AmbiguousRelation {
+                    reference,
+                    candidates,
+                } => {
+                    problems.push(ExistenceProblem {
+                        span: segment.span,
+                        kind: ExistenceProblemKind::AmbiguousRelation {
+                            reference,
+                            candidates,
+                        },
+                    });
+                    return ResolvedExistence {
+                        span,
+                        source: None,
+                        problems,
+                    };
+                }
+            };
+            let collection =
+                catalog
+                    .foreign_key_by_id(relation.foreign_key.id)
+                    .and_then(|foreign_key| {
+                        catalog.relation_cardinality(context.table, relation.table.id, foreign_key)
+                    })
+                    == Some(RelationCardinality::Collection);
+            if !collection {
+                problems.push(ExistenceProblem {
+                    span: segment.span,
+                    kind: ExistenceProblemKind::SourceMustBeCollection,
+                });
+            }
+            Some(ResolvedExistenceSource::Relation(ResolvedRelationStep {
+                span: segment.span,
+                written: segment.name.clone(),
+                display: reference.display_text(),
+                foreign_key: relation.foreign_key.id,
+                table: relation.table.id,
+            }))
+        }
+        ExistsSource::Table { name, span } => {
+            match catalog.resolve_table_ref_for(TableRef::parse(name)) {
+                TableResolution::Found(table) => Some(ResolvedExistenceSource::Table(table.id)),
+                TableResolution::NotFound { reference } => {
+                    problems.push(ExistenceProblem {
+                        span: *span,
+                        kind: ExistenceProblemKind::TableNotFound(reference),
+                    });
+                    None
+                }
+                TableResolution::Ambiguous {
+                    reference,
+                    candidates,
+                } => {
+                    problems.push(ExistenceProblem {
+                        span: *span,
+                        kind: ExistenceProblemKind::AmbiguousTable {
+                            reference,
+                            candidates,
+                        },
+                    });
+                    None
+                }
+            }
+        }
+    };
+    ResolvedExistence {
+        span,
+        source,
+        problems,
     }
 }
 
@@ -1013,15 +1256,18 @@ fn resolve_path(
     let mut current = match anchor {
         PathAnchor::Current => context.table,
         PathAnchor::Root => context.root,
-        PathAnchor::Parent => {
-            return ResolvedPath {
-                span,
-                anchor: *anchor,
-                written,
-                relations: Vec::new(),
-                terminal: PathTerminal::OutOfScope,
-            };
-        }
+        PathAnchor::Parent => match context.parent {
+            Some(parent) => parent,
+            None => {
+                return ResolvedPath {
+                    span,
+                    anchor: *anchor,
+                    written,
+                    relations: Vec::new(),
+                    terminal: PathTerminal::OutOfScope,
+                };
+            }
+        },
     };
 
     let mut relations = Vec::new();

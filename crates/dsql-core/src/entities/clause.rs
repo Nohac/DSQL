@@ -309,13 +309,21 @@ fn check_predicate_expr(
 
     match expr {
         Expr::Path { .. } => {
-            if resolved_path_type(ctx, resolved, expr).is_none() {
+            let data_type = resolved_path_type(ctx, resolved, expr);
+            if data_type.is_none() {
                 let table_name = table_name(ctx, table);
                 ctx.error(
                     entity,
                     expr.span(),
                     DiagnosticCode::FieldNotFound,
                     format!("field `{expr}` not found on table `{table_name}`"),
+                );
+            } else if boolean_position {
+                ctx.error(
+                    entity,
+                    expr.span(),
+                    DiagnosticCode::PredicateTypeMismatch,
+                    format!("bare field `{expr}` is not a predicate; compare or test it"),
                 );
             }
         }
@@ -329,11 +337,110 @@ fn check_predicate_expr(
                 BinaryOp::Variable(operator) => {
                     check_operator_variable(ctx, resolved, entity, lhs, rhs, operator);
                 }
+                BinaryOp::In | BinaryOp::NotIn => {
+                    check_membership_types(ctx, resolved, entity, lhs, rhs);
+                }
                 BinaryOp::And | BinaryOp::Or => {}
             }
             let child_boolean = matches!(op, BinaryOp::And | BinaryOp::Or);
             check_predicate_expr(ctx, resolved, table, entity, lhs, child_boolean);
             check_predicate_expr(ctx, resolved, table, entity, rhs, child_boolean);
+        }
+        Expr::Unary { operand, .. } => {
+            check_predicate_expr(ctx, resolved, table, entity, operand, true);
+        }
+        Expr::NullTest { operand, .. } => {
+            if !matches!(operand.as_ref(), Expr::Path { .. }) {
+                ctx.error(
+                    entity,
+                    operand.span(),
+                    DiagnosticCode::PredicateTypeMismatch,
+                    "null-test operand must be a field path".to_string(),
+                );
+            }
+            check_predicate_expr(ctx, resolved, table, entity, operand, false);
+        }
+        Expr::List { items, .. } => {
+            if boolean_position {
+                ctx.error(
+                    entity,
+                    expr.span(),
+                    DiagnosticCode::PredicateTypeMismatch,
+                    "collection literal is not a boolean predicate".to_string(),
+                );
+            }
+            for item in items {
+                check_predicate_expr(ctx, resolved, table, entity, item, false);
+            }
+        }
+        Expr::Exists {
+            predicate, span, ..
+        } => {
+            let existence = resolved.and_then(|resolved| resolved.existence_at(*span));
+            if let Some(existence) = existence {
+                for problem in &existence.problems {
+                    use crate::resolution::ExistenceProblemKind;
+                    let (code, message) = match &problem.kind {
+                        ExistenceProblemKind::SourceMustBeCollection => (
+                            DiagnosticCode::PredicateTypeMismatch,
+                            "`exists` source must be a to-many relation or table".to_string(),
+                        ),
+                        ExistenceProblemKind::FieldNotFound(reference) => (
+                            DiagnosticCode::FieldNotFound,
+                            format!("field `{reference}` not found"),
+                        ),
+                        ExistenceProblemKind::AmbiguousRelation {
+                            reference,
+                            candidates,
+                        } => (
+                            DiagnosticCode::AmbiguousRelation,
+                            format!(
+                                "relation `{reference}` is ambiguous; candidates: {}",
+                                candidates.join(", ")
+                            ),
+                        ),
+                        ExistenceProblemKind::TableNotFound(reference) => (
+                            DiagnosticCode::TableNotFound,
+                            format!("table `{reference}` not found"),
+                        ),
+                        ExistenceProblemKind::AmbiguousTable {
+                            reference,
+                            candidates,
+                        } => (
+                            DiagnosticCode::AmbiguousTable,
+                            format!(
+                                "table `{reference}` is ambiguous; candidates: {}",
+                                candidates
+                                    .iter()
+                                    .map(|candidate| {
+                                        format!("{}::{}", candidate.schema, candidate.table)
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        ),
+                    };
+                    ctx.error(entity, problem.span, code, message);
+                }
+            }
+            if let Some(predicate) = predicate {
+                let nested_table = existence.and_then(|existence| {
+                    existence.source.as_ref().map(|source| match source {
+                        crate::resolution::ResolvedExistenceSource::Relation(relation) => {
+                            relation.table
+                        }
+                        crate::resolution::ResolvedExistenceSource::Table(table) => *table,
+                    })
+                });
+                check_predicate_expr(
+                    ctx,
+                    resolved,
+                    nested_table.unwrap_or(table),
+                    entity,
+                    predicate,
+                    true,
+                );
+            }
         }
         Expr::Aggregate { .. } => {
             let Some(aggregate) = resolved.and_then(|resolved| resolved.aggregate_at(expr.span()))
@@ -358,7 +465,98 @@ fn check_predicate_expr(
                 ctx.error(entity, expr.span(), problem.code(), problem.message());
             }
         }
-        Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
+        Expr::Literal { value, .. } => {
+            if boolean_position
+                && !matches!(value, crate::entities::expression::LiteralValue::Bool(_))
+            {
+                ctx.error(
+                    entity,
+                    expr.span(),
+                    DiagnosticCode::PredicateTypeMismatch,
+                    "predicate atom must have type boolean".to_string(),
+                );
+            }
+        }
+        Expr::Variable { .. } | Expr::Error { .. } => {}
+    }
+}
+
+fn check_membership_types(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    resolved: Option<&crate::resolution::ResolvedClause>,
+    entity: bowl::Entity,
+    lhs: &Expr,
+    rhs: &Expr,
+) {
+    use crate::facts::DiagnosticCode;
+
+    if !matches!(lhs, Expr::Path { .. }) {
+        ctx.error(
+            entity,
+            lhs.span(),
+            DiagnosticCode::PredicateTypeMismatch,
+            "membership left operand must be a field path".to_string(),
+        );
+        return;
+    }
+    let Some(data_type) = resolved_expr_type(ctx, resolved, lhs) else {
+        return;
+    };
+    let Expr::List { items, .. } = rhs else {
+        if !matches!(rhs, Expr::Variable { .. }) {
+            ctx.error(
+                entity,
+                rhs.span(),
+                DiagnosticCode::PredicateTypeMismatch,
+                "membership expects a list literal or collection variable".to_string(),
+            );
+        }
+        return;
+    };
+    for item in items {
+        if let Expr::Literal { value, span } = item {
+            check_literal_for_data_type(ctx, entity, data_type, lhs, value, *span);
+        } else {
+            ctx.error(
+                entity,
+                item.span(),
+                DiagnosticCode::PredicateTypeMismatch,
+                "membership list items must be literals".to_string(),
+            );
+        }
+    }
+}
+
+fn check_literal_for_data_type(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    entity: bowl::Entity,
+    data_type: crate::catalog::DataType,
+    path: &Expr,
+    value: &crate::entities::expression::LiteralValue,
+    span: Span,
+) {
+    use crate::catalog::LiteralKind;
+    use crate::entities::expression::LiteralValue;
+    use crate::facts::DiagnosticCode;
+
+    let (actual, raw_value) = match value {
+        LiteralValue::String(value) => (LiteralKind::String, value.as_str()),
+        LiteralValue::Number(value) => (LiteralKind::Number, value.as_str()),
+        LiteralValue::Bool(true) => (LiteralKind::Boolean, "true"),
+        LiteralValue::Bool(false) => (LiteralKind::Boolean, "false"),
+        LiteralValue::Null => return,
+    };
+    if !data_type.accepts_literal_value(actual, raw_value) {
+        ctx.error(
+            entity,
+            span,
+            DiagnosticCode::PredicateTypeMismatch,
+            format!(
+                "field `{path}` expects {} but membership uses {}",
+                data_type.expected_literal_description(),
+                actual.as_str()
+            ),
+        );
     }
 }
 
@@ -608,9 +806,14 @@ fn resolved_expr_type(
             }
             aggregate.data_type
         }
-        Expr::Binary { .. } | Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. } => {
-            None
-        }
+        Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::NullTest { .. }
+        | Expr::List { .. }
+        | Expr::Exists { .. }
+        | Expr::Literal { .. }
+        | Expr::Variable { .. }
+        | Expr::Error { .. } => None,
     }
 }
 
@@ -624,7 +827,7 @@ fn check_non_negative_integer(
     use crate::entities::expression::LiteralValue;
     use crate::facts::DiagnosticCode;
 
-    if matches!(expr, Expr::Aggregate { .. }) {
+    if matches!(expr, Expr::Aggregate { .. } | Expr::Exists { .. }) {
         ctx.error(
             entity,
             expr.span(),

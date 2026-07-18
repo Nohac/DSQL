@@ -50,6 +50,14 @@ fn formatter_cases_match_expected_output() {
             "query Popular { title(where .movie_info_idx|exists and .movie_info_idx|count>=$$minimum limit 10) { id } }",
         ),
         (
+            "predicate_extensions",
+            "query Visible { users(where not $$disabled or .id in [1,null,2,] and .deleted_at is not null and exists .posts(where .title not in $$titles)) { id } }",
+        ),
+        (
+            "contextual_identifiers",
+            "query exists { metrics(where .exists == 1 and .in == 2 and .is == 3 and .not == 4 order by exists asc) { in:exists is not } }",
+        ),
+        (
             "flattened_selections",
             "query Summary { users(limit 1) { id ...posts(where .title like $$title)|aggregate{post_count:count} } ...public::users|aggregate{user_count:count} }",
         ),

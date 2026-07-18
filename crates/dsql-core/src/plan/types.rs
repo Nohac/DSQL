@@ -257,6 +257,16 @@ pub enum FilterExpr {
         op: FilterOp,
         right: Box<FilterExpr>,
     },
+    Not(Box<FilterExpr>),
+    NullTest {
+        operand: Box<FilterExpr>,
+        negated: bool,
+    },
+    Membership {
+        operand: Box<FilterExpr>,
+        collection: FilterCollection,
+        negated: bool,
+    },
     VariantBinary {
         left: Box<FilterExpr>,
         path: String,
@@ -264,9 +274,10 @@ pub enum FilterExpr {
         right: Box<FilterExpr>,
     },
     Exists {
-        foreign_key: ForeignKeyId,
+        foreign_key: Option<ForeignKeyId>,
         table: TableId,
-        filter: Box<FilterExpr>,
+        kind: ExistsKind,
+        filter: Option<Box<FilterExpr>>,
     },
     /// One correlated scalar aggregate over a direct relation.
     RelationAggregate {
@@ -277,11 +288,26 @@ pub enum FilterExpr {
     },
 }
 
+/// Whether an existence node was written explicitly or introduced while
+/// lowering a relationship-qualified predicate path.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum ExistsKind {
+    Explicit,
+    RelationshipPredicate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FilterCollection {
+    List(Vec<FilterExpr>),
+    Parameter(SqlParameter),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FilterColumnScope {
     Current,
     Root,
-    OuterCurrent,
+    PredicateSource,
+    Parent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

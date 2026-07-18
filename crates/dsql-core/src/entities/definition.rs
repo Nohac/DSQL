@@ -15,14 +15,13 @@ use bowl::{
 
 use crate::entities::document::ParsedFile;
 use crate::entities::variable::{DefinitionVariables, VariableBinding, VariableRole};
-use crate::entities::{direct_rule, direct_token, node_span, text};
+use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
     Severity, Span, emit_diagnostic,
 };
 use crate::format::CstFormatter;
-use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 use crate::resolution::{ResolvedFragmentTarget, ResolvedTableTarget};
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
@@ -172,7 +171,7 @@ impl LowerStage for Definition {
     ) -> Option<Entity> {
         // The name is a direct child token; nested Names (inside the
         // selection set) belong to other entities.
-        let Some(name_span) = direct_token(ctx.cst, node, Token::Name) else {
+        let Some(name_span) = direct_name(ctx.cst, node) else {
             // Error recovery can leave a def without a name; the parse
             // diagnostics already cover it.
             return None;
@@ -443,7 +442,7 @@ impl FormatStage for Definition {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         if formatter.rule(node) == Some(Rule::QueryDef) {
             formatter.write_str("query");
-            if let Some(name) = formatter.direct_token_text(node, Token::Name) {
+            if let Some(name) = formatter.direct_name_text(node) {
                 formatter.write_str(" ");
                 formatter.write_str(&name);
             }
@@ -452,7 +451,7 @@ impl FormatStage for Definition {
             }
         } else {
             formatter.write_str("fragment");
-            if let Some(name) = formatter.direct_token_text(node, Token::Name) {
+            if let Some(name) = formatter.direct_name_text(node) {
                 formatter.write_str(" ");
                 formatter.write_str(&name);
             }
@@ -590,5 +589,9 @@ fn variable_type_label(binding: &VariableBinding) -> String {
                 .join(", ")
         );
     }
-    binding.data_type.as_str().to_string()
+    if binding.collection {
+        format!("{}[]", binding.data_type.as_str())
+    } else {
+        binding.data_type.as_str().to_string()
+    }
 }

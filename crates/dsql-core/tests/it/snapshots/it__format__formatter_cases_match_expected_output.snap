@@ -105,6 +105,33 @@ query Popular {
 
 ---
 
+predicate_extensions
+query Visible {
+  users(where not $$disabled
+    or .id in [1, null, 2] and .deleted_at is not null and exists .posts(where .title not in $$titles)
+  ) {
+    id
+  }
+}
+
+---
+
+contextual_identifiers
+query exists {
+  metrics(where .exists == 1
+    and .in == 2
+    and .is == 3
+    and .not == 4
+    order by exists asc
+  ) {
+    in: exists
+    is
+    not
+  }
+}
+
+---
+
 flattened_selections
 query Summary {
   users(limit 1) {

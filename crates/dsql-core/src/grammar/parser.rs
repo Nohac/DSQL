@@ -6,6 +6,13 @@ pub type Diagnostic = codespan_reporting::diagnostic::Diagnostic<()>;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
+fn is_name_token(token: Token) -> bool {
+    matches!(
+        token,
+        Token::Name | Token::Not | Token::In | Token::Is | Token::Exists
+    )
+}
+
 /// A directive can follow either a fragment spread or a relation source.
 /// Only a following selection set commits the ellipsis form to flattening.
 fn directives_end_in_selection_set(parser: &Parser<'_>) -> bool {
@@ -15,13 +22,13 @@ fn directives_end_in_selection_set(parser: &Parser<'_>) -> bool {
         if parser.peek(lookahead) == Token::Dot {
             lookahead += 1;
         }
-        if parser.peek(lookahead) != Token::Name {
+        if !is_name_token(parser.peek(lookahead)) {
             return false;
         }
         lookahead += 1;
         if parser.peek(lookahead) == Token::Dot {
             lookahead += 1;
-            if parser.peek(lookahead) != Token::Name {
+            if !is_name_token(parser.peek(lookahead)) {
                 return false;
             }
             lookahead += 1;
@@ -52,20 +59,20 @@ fn scoped_path_ends_in_pipe(parser: &Parser<'_>) -> bool {
     }
     let mut lookahead = 1;
     loop {
-        if parser.peek(lookahead) != Token::Name {
+        if !is_name_token(parser.peek(lookahead)) {
             return false;
         }
         lookahead += 1;
         if parser.peek(lookahead) == Token::ColonColon {
             lookahead += 1;
-            if parser.peek(lookahead) != Token::Name {
+            if !is_name_token(parser.peek(lookahead)) {
                 return false;
             }
             lookahead += 1;
         }
         if parser.peek(lookahead) == Token::Arrow {
             lookahead += 1;
-            if parser.peek(lookahead) != Token::Name {
+            if !is_name_token(parser.peek(lookahead)) {
                 return false;
             }
             lookahead += 1;
@@ -94,7 +101,7 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
             .with_label(Label::primary((), span))
     }
     fn predicate_order_by_clause_1(&self) -> bool {
-        matches!(self.peek(1), Token::Name)
+        is_name_token(self.peek(1))
     }
 
     fn predicate_operator_variable_1(&self) -> bool {
@@ -104,8 +111,28 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
         )
     }
 
+    fn predicate_collection_literal_1(&self) -> bool {
+        matches!(
+            self.peek(1),
+            Token::String
+                | Token::Number
+                | Token::True
+                | Token::False
+                | Token::Null
+                | Token::LBracket
+                | Token::Exists
+                | Token::Dot
+                | Token::DotDot
+                | Token::Tilde
+                | Token::Dollar
+                | Token::DollarDollar
+                | Token::LPar
+                | Token::Not
+        )
+    }
+
     fn predicate_qualified_name_1(&self) -> bool {
-        matches!(self.peek(1), Token::Name)
+        is_name_token(self.peek(1))
     }
 
     fn predicate_directive_1(&self) -> bool {
@@ -113,18 +140,25 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     }
 
     fn predicate_directive_2(&self) -> bool {
-        matches!(self.peek(1), Token::Name)
+        is_name_token(self.peek(1))
     }
 
     fn predicate_pipe_transform_1(&self) -> bool {
         matches!(
             self.peek(1),
-            Token::Name | Token::Dot | Token::DotDot | Token::Tilde
+            Token::Name
+                | Token::Not
+                | Token::In
+                | Token::Is
+                | Token::Exists
+                | Token::Dot
+                | Token::DotDot
+                | Token::Tilde
         )
     }
 
     fn predicate_aggregate_field_1(&self) -> bool {
-        matches!(self.peek(1), Token::Name)
+        is_name_token(self.peek(1))
     }
 
     fn predicate_expr_1(&self) -> bool {

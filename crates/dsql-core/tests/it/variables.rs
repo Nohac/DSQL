@@ -40,8 +40,13 @@ async fn render_bindings(bowl: &Bowl) -> String {
                 .map(|operator| format!("{operator:?}"))
                 .collect::<Vec<_>>()
                 .join("|");
+            let collection = if binding.collection {
+                " collection"
+            } else {
+                ""
+            };
             format!(
-                "{} {:?} {:?} {:?} {:?} operators=[{}] enum=[{}]",
+                "{} {:?} {:?} {:?} {:?}{collection} operators=[{}] enum=[{}]",
                 binding.path,
                 binding.source,
                 binding.role,
@@ -153,6 +158,30 @@ async fn aggregate_predicate_inputs_use_resolved_result_types_and_paths() {
     .await;
 
     insta::assert_snapshot!(render_bindings(&bowl).await);
+}
+
+#[tokio::test]
+async fn predicate_extensions_infer_boolean_scalar_and_collection_bindings() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, imdb_catalog()).await;
+    arm_editor_demands(&bowl).await;
+    insert_source(
+        &bowl,
+        "predicate-bindings.dsql",
+        concat!(
+            "query PredicateBindings {\n",
+            "  title(where not $$disabled and .id in $$ids\n",
+            "    and exists .movie_info_idx(where .info_type_id in $:allowed_types)) { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(format!(
+        "diagnostics:\n{}\n\nbindings:\n{}",
+        render_diagnostic_facts(&bowl).await,
+        render_bindings(&bowl).await,
+    ));
 }
 
 #[tokio::test]

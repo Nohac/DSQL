@@ -5,14 +5,13 @@ use crate::schema::AstFacts;
 use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, View, With};
 
 use crate::entities::expression::{Expr, build_expr, expr_child};
-use crate::entities::{direct_rule, direct_token, node_span, text};
+use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
     NodeKey, Severity, Span, emit_diagnostic,
 };
 use crate::format::CstFormatter;
-use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 use crate::schema::dsql_schema;
 
@@ -447,10 +446,10 @@ impl LowerStage for Directive {
         let name_node = direct_rule(ctx.cst, node, Rule::DirectiveName)?;
 
         let namespace = direct_rule(ctx.cst, name_node, Rule::DirectiveNamespace)
-            .and_then(|namespace| direct_token(ctx.cst, namespace, Token::Name))
+            .and_then(|namespace| direct_name(ctx.cst, namespace))
             .map(|span| text(ctx.source, span).to_string());
         let member = direct_rule(ctx.cst, name_node, Rule::DirectiveMember)
-            .and_then(|member| direct_token(ctx.cst, member, Token::Name))
+            .and_then(|member| direct_name(ctx.cst, member))
             .map(|span| text(ctx.source, span).to_string());
         let shorthand = namespace.is_none() && member.is_some();
 
@@ -459,7 +458,7 @@ impl LowerStage for Directive {
             .children(node)
             .filter(|child| ctx.cst.match_rule(*child, Rule::DirectiveArgument))
             .filter_map(|argument| {
-                let name_span = direct_token(ctx.cst, argument, Token::Name)?;
+                let name_span = direct_name(ctx.cst, argument)?;
                 let value = match expr_child(ctx.cst, argument) {
                     Some(expr) => build_expr(ctx.cst, ctx.source, expr),
                     None => Expr::Error {

@@ -79,6 +79,7 @@ pub enum DiagnosticCode {
     ClauseValueTypeMismatch,
     PredicateTypeMismatch,
     DuplicateAnonymousVariable,
+    TrustedContextBindingUnavailable,
     UnindexedJoinColumn,
     UnindexedScanColumn,
     UnindexedPredicateJoinColumn,

@@ -15,10 +15,10 @@ use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemPar
 
 use super::types::{
     AggregateGroupProjection, AggregatePlan, AggregateProjection, CollectionPlan,
-    CollectionResultPlan, FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact,
-    NestedRelation, OperationSeed, OrderByPlan, Projection, QueryPlan, QueryPlanFact,
-    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter,
-    SqlValue, SqlVariantCase,
+    CollectionResultPlan, ExistsKind, FilterCollection, FilterColumnScope, FilterExpr,
+    FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation, OperationSeed, OrderByPlan,
+    Projection, QueryPlan, QueryPlanFact, SelectionClauses, SelectionPlan, SelectionPlanItem,
+    SortDirectionPlan, SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
@@ -675,6 +675,59 @@ impl Planner<'_> {
                 ),
             })),
             Expr::Path { .. } => self.plan_filter_path(resolved, outer_current_table, expr),
+            Expr::Unary { operand, .. } => self
+                .plan_filter_expr(
+                    table,
+                    outer_current_table,
+                    selection_path,
+                    variable_scope,
+                    operand,
+                    resolved,
+                )
+                .map(|operand| FilterExpr::Not(Box::new(operand))),
+            Expr::NullTest {
+                operand, negated, ..
+            } => {
+                let planned =
+                    self.plan_predicate_operand_path(outer_current_table, operand, resolved)?;
+                let test = FilterExpr::NullTest {
+                    operand: Box::new(planned),
+                    negated: *negated,
+                };
+                self.wrap_relation_predicate(operand, test, resolved)
+            }
+            Expr::List { .. } => None,
+            Expr::Exists {
+                predicate, span, ..
+            } => {
+                let existence = resolved.existence_at(*span)?;
+                let source = existence.source.as_ref()?;
+                let (foreign_key, exists_table) = match source {
+                    crate::resolution::ResolvedExistenceSource::Relation(relation) => {
+                        (Some(relation.foreign_key), relation.table)
+                    }
+                    crate::resolution::ResolvedExistenceSource::Table(table) => (None, *table),
+                };
+                let filter = predicate
+                    .as_deref()
+                    .and_then(|predicate| {
+                        self.plan_filter_expr(
+                            exists_table,
+                            None,
+                            selection_path,
+                            variable_scope,
+                            predicate,
+                            resolved,
+                        )
+                    })
+                    .map(Box::new);
+                Some(FilterExpr::Exists {
+                    foreign_key,
+                    table: exists_table,
+                    kind: ExistsKind::Explicit,
+                    filter,
+                })
+            }
             Expr::Literal { value, .. } => Some(FilterExpr::Literal(match value {
                 LiteralValue::String(value) => FilterLiteral::String(value.clone()),
                 LiteralValue::Number(value) => FilterLiteral::Number(value.clone()),
@@ -690,6 +743,46 @@ impl Planner<'_> {
                 self.plan_predicate_aggregate(expr, resolved)
             }
             Expr::Binary { op, lhs, rhs, .. } => {
+                if matches!(op, BinaryOp::In | BinaryOp::NotIn) {
+                    let field_path = self.predicate_path(resolved, lhs)?;
+                    let operand =
+                        self.plan_predicate_operand_path(outer_current_table, lhs, resolved)?;
+                    let collection = match rhs.as_ref() {
+                        Expr::List { items, .. } => FilterCollection::List(
+                            items
+                                .iter()
+                                .map(|item| {
+                                    self.plan_filter_expr(
+                                        table,
+                                        outer_current_table,
+                                        selection_path,
+                                        variable_scope,
+                                        item,
+                                        resolved,
+                                    )
+                                })
+                                .collect::<Option<Vec<_>>>()?,
+                        ),
+                        Expr::Variable { variable, .. } => {
+                            FilterCollection::Parameter(SqlParameter {
+                                path: where_value_path(
+                                    selection_path,
+                                    variable_scope,
+                                    &field_path,
+                                    op,
+                                    variable,
+                                ),
+                            })
+                        }
+                        _ => return None,
+                    };
+                    let membership = FilterExpr::Membership {
+                        operand: Box::new(operand),
+                        collection,
+                        negated: matches!(op, BinaryOp::NotIn),
+                    };
+                    return self.wrap_relation_predicate(lhs, membership, resolved);
+                }
                 let aggregate = match (lhs.as_ref(), rhs.as_ref()) {
                     (aggregate @ Expr::Aggregate { .. }, _)
                     | (_, aggregate @ Expr::Aggregate { .. }) => Some(aggregate),
@@ -850,6 +943,7 @@ impl Planner<'_> {
         }
         let op = match op {
             BinaryOp::Comparison(op) => FilterOp::from(*op),
+            BinaryOp::In | BinaryOp::NotIn => return None,
             BinaryOp::And => FilterOp::And,
             BinaryOp::Or => FilterOp::Or,
             BinaryOp::Variable(_) => return None,
@@ -900,13 +994,40 @@ impl Planner<'_> {
             return None;
         }
         let scope = match anchor {
-            PathAnchor::Current if outer_current_table.is_some() => FilterColumnScope::OuterCurrent,
+            PathAnchor::Current if outer_current_table.is_some() => {
+                FilterColumnScope::PredicateSource
+            }
             PathAnchor::Current => FilterColumnScope::Current,
             PathAnchor::Root => FilterColumnScope::Root,
-            PathAnchor::Parent => return None,
+            PathAnchor::Parent => FilterColumnScope::Parent,
         };
         let resolved = resolved_clause.path_at(path.span())?;
         let column = resolved.terminal.column()?;
+        Some(FilterExpr::Column { scope, column })
+    }
+
+    fn plan_predicate_operand_path(
+        &self,
+        outer_current_table: Option<TableId>,
+        path: &Expr,
+        resolved_clause: &ResolvedClause,
+    ) -> Option<FilterExpr> {
+        let Expr::Path {
+            anchor, segments, ..
+        } = path
+        else {
+            return None;
+        };
+        let resolved = resolved_clause.path_at(path.span())?;
+        let column = resolved.terminal.column()?;
+        let scope = match (anchor, segments.len()) {
+            (PathAnchor::Current, 1) if outer_current_table.is_some() => {
+                FilterColumnScope::PredicateSource
+            }
+            (PathAnchor::Current, _) => FilterColumnScope::Current,
+            (PathAnchor::Root, _) => FilterColumnScope::Root,
+            (PathAnchor::Parent, _) => FilterColumnScope::Parent,
+        };
         Some(FilterExpr::Column { scope, column })
     }
 
@@ -947,16 +1068,21 @@ impl Planner<'_> {
             Expr::Variable { variable, .. } => Some(FilterExpr::Parameter(SqlParameter {
                 path: where_value_path(selection_path, variable_scope, inferred_path, op, variable),
             })),
-            Expr::Binary { .. } | Expr::Literal { .. } | Expr::Path { .. } | Expr::Error { .. } => {
-                self.plan_filter_expr(
-                    table,
-                    Some(table),
-                    selection_path,
-                    variable_scope,
-                    expr,
-                    resolved,
-                )
-            }
+            Expr::Binary { .. }
+            | Expr::Unary { .. }
+            | Expr::NullTest { .. }
+            | Expr::List { .. }
+            | Expr::Exists { .. }
+            | Expr::Literal { .. }
+            | Expr::Path { .. }
+            | Expr::Error { .. } => self.plan_filter_expr(
+                table,
+                Some(table),
+                selection_path,
+                variable_scope,
+                expr,
+                resolved,
+            ),
         }
     }
 
@@ -1005,15 +1131,32 @@ impl Planner<'_> {
             operator_path.map_or_else(|| vec![display.clone()], |path| path_parts(&path));
         let filter =
             self.binary_or_variant(left, op, right, selection_path, variable_scope, &inferred)?;
+        self.wrap_relation_predicate(path, filter, resolved_clause)
+    }
+
+    fn wrap_relation_predicate(
+        &self,
+        path: &Expr,
+        filter: FilterExpr,
+        resolved_clause: &ResolvedClause,
+    ) -> Option<FilterExpr> {
+        let Expr::Path { segments, .. } = path else {
+            return Some(filter);
+        };
+        if segments.len() < 2 {
+            return Some(filter);
+        }
+        let resolved = resolved_clause.path_at(path.span())?;
         Some(
             resolved
                 .relations
                 .iter()
                 .rev()
                 .fold(filter, |filter, relation| FilterExpr::Exists {
-                    foreign_key: relation.foreign_key,
+                    foreign_key: Some(relation.foreign_key),
                     table: relation.table,
-                    filter: Box::new(filter),
+                    kind: ExistsKind::RelationshipPredicate,
+                    filter: Some(Box::new(filter)),
                 }),
         )
     }
@@ -1036,6 +1179,10 @@ impl Planner<'_> {
                 .aggregate_at(expr.span())?
                 .display_path(self.catalog),
             Expr::Binary { .. }
+            | Expr::Unary { .. }
+            | Expr::NullTest { .. }
+            | Expr::List { .. }
+            | Expr::Exists { .. }
             | Expr::Literal { .. }
             | Expr::Variable { .. }
             | Expr::Error { .. } => None,

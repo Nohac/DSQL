@@ -18,8 +18,12 @@ Operator >=
 Keyword and
 Keyword asc
 Keyword desc
+Keyword exists
+Keyword in
+Keyword is
 Keyword like
 Keyword limit
+Keyword not
 Keyword offset
 Keyword or
 Keyword order

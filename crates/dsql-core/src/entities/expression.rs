@@ -10,7 +10,7 @@
 use crate::schema::AstFacts;
 use bowl::{Commands, Entity, Registrar};
 
-use crate::entities::{direct_rule, direct_token, node_span, text};
+use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::Span;
 use crate::format::CstFormatter;
@@ -24,6 +24,25 @@ pub enum Expr {
         op: BinaryOp,
         lhs: Box<Expr>,
         rhs: Box<Expr>,
+        span: Span,
+    },
+    Unary {
+        op: UnaryOp,
+        operand: Box<Expr>,
+        span: Span,
+    },
+    NullTest {
+        operand: Box<Expr>,
+        negated: bool,
+        span: Span,
+    },
+    List {
+        items: Vec<Expr>,
+        span: Span,
+    },
+    Exists {
+        source: ExistsSource,
+        predicate: Option<Box<Expr>>,
         span: Span,
     },
     Literal {
@@ -58,6 +77,10 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Binary { span, .. }
+            | Expr::Unary { span, .. }
+            | Expr::NullTest { span, .. }
+            | Expr::List { span, .. }
+            | Expr::Exists { span, .. }
             | Expr::Literal { span, .. }
             | Expr::Path { span, .. }
             | Expr::Variable { span, .. }
@@ -72,9 +95,22 @@ impl Expr {
 #[derive(Debug, Clone, Hash, PartialEq)]
 pub enum BinaryOp {
     Comparison(ComparisonOp),
+    In,
+    NotIn,
     And,
     Or,
     Variable(VariableRef),
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum UnaryOp {
+    Not,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq)]
+pub enum ExistsSource {
+    Relation(Box<Expr>),
+    Table { name: String, span: Span },
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -176,7 +212,11 @@ pub(crate) fn expr_child(cst: &CstData, node: NodeRef) -> Option<NodeRef> {
             Node::Rule(
                 Rule::Expr
                     | Rule::BinaryExpr
+                    | Rule::UnaryExpr
+                    | Rule::NullTestExpr
                     | Rule::ScalarAggregateExpr
+                    | Rule::CollectionLiteral
+                    | Rule::ExistsExpr
                     | Rule::Literal
                     | Rule::ScopedPath
                     | Rule::ValueVariable,
@@ -192,6 +232,10 @@ pub(crate) fn build_expr(cst: &CstData, source: &str, node: NodeRef) -> Expr {
     let span = node_span(cst, node);
     match cst.get(node) {
         Node::Rule(Rule::BinaryExpr, _) => build_binary(cst, source, node, span),
+        Node::Rule(Rule::UnaryExpr, _) => build_unary(cst, source, node, span),
+        Node::Rule(Rule::NullTestExpr, _) => build_null_test(cst, source, node, span),
+        Node::Rule(Rule::CollectionLiteral, _) => build_list(cst, source, node, span),
+        Node::Rule(Rule::ExistsExpr, _) => build_exists(cst, source, node, span),
         Node::Rule(Rule::ScalarAggregateExpr, _) => build_scalar_aggregate(cst, source, node, span),
         Node::Rule(Rule::Expr, _) => match expr_child(cst, node) {
             // `expr` wraps one alternative, or parenthesizes another expr.
@@ -209,20 +253,7 @@ pub(crate) fn build_expr(cst: &CstData, source: &str, node: NodeRef) -> Expr {
 }
 
 fn build_binary(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr {
-    let mut operands = cst.children(node).filter(|child| {
-        matches!(
-            cst.get(*child),
-            Node::Rule(
-                Rule::Expr
-                    | Rule::BinaryExpr
-                    | Rule::ScalarAggregateExpr
-                    | Rule::Literal
-                    | Rule::ScopedPath
-                    | Rule::ValueVariable,
-                _
-            )
-        )
-    });
+    let mut operands = cst.children(node).filter(|child| is_expr_node(cst, *child));
     let lhs = operands.next();
     let rhs = operands.next();
 
@@ -242,13 +273,92 @@ fn build_binary(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr 
     }
 }
 
+fn build_unary(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr {
+    match cst.children(node).find(|child| is_expr_node(cst, *child)) {
+        Some(operand) => Expr::Unary {
+            op: UnaryOp::Not,
+            operand: Box::new(build_expr(cst, source, operand)),
+            span,
+        },
+        None => Expr::Error { span },
+    }
+}
+
+fn build_null_test(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr {
+    match cst.children(node).find(|child| is_expr_node(cst, *child)) {
+        Some(operand) => Expr::NullTest {
+            operand: Box::new(build_expr(cst, source, operand)),
+            negated: cst
+                .children(node)
+                .any(|child| cst.match_token(child, Token::Not).is_some()),
+            span,
+        },
+        None => Expr::Error { span },
+    }
+}
+
+fn build_list(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr {
+    Expr::List {
+        items: cst
+            .children(node)
+            .filter(|child| is_expr_node(cst, *child))
+            .map(|item| build_expr(cst, source, item))
+            .collect(),
+        span,
+    }
+}
+
+fn build_exists(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr {
+    let Some(source_node) = direct_rule(cst, node, Rule::ExistsSource) else {
+        return Expr::Error { span };
+    };
+    let exists_source = if let Some(path) = direct_rule(cst, source_node, Rule::ScopedPath) {
+        ExistsSource::Relation(Box::new(build_expr(cst, source, path)))
+    } else if let Some(table) = direct_rule(cst, source_node, Rule::QualifiedName) {
+        let table_span = node_span(cst, table);
+        ExistsSource::Table {
+            name: text(source, table_span).to_string(),
+            span: table_span,
+        }
+    } else {
+        return Expr::Error { span };
+    };
+    let predicate = direct_rule(cst, source_node, Rule::WhereClause)
+        .and_then(|clause| expr_child(cst, clause))
+        .map(|predicate| Box::new(build_expr(cst, source, predicate)));
+    Expr::Exists {
+        source: exists_source,
+        predicate,
+        span,
+    }
+}
+
+fn is_expr_node(cst: &CstData, node: NodeRef) -> bool {
+    matches!(
+        cst.get(node),
+        Node::Rule(
+            Rule::Expr
+                | Rule::BinaryExpr
+                | Rule::UnaryExpr
+                | Rule::NullTestExpr
+                | Rule::ScalarAggregateExpr
+                | Rule::CollectionLiteral
+                | Rule::ExistsExpr
+                | Rule::Literal
+                | Rule::ScopedPath
+                | Rule::ValueVariable,
+            _
+        )
+    )
+}
+
 fn build_scalar_aggregate(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr {
     let mut paths = cst
         .children(node)
         .filter(|child| cst.match_rule(*child, Rule::ScopedPath));
     let source_path = paths.next();
     let operand = paths.next();
-    let function_span = direct_token(cst, node, Token::Name);
+    let function_span = direct_name(cst, node);
     match (source_path, function_span) {
         (Some(source_path), Some(function_span)) => Expr::Aggregate {
             source: Box::new(build_expr(cst, source, source_path)),
@@ -264,6 +374,7 @@ fn build_scalar_aggregate(cst: &CstData, source: &str, node: NodeRef, span: Span
 /// Extracts the operator of a `binary_expr`: a `binary_operator` child
 /// (comparison or operator variable) or a bare `and`/`or` token.
 fn binary_operator(cst: &CstData, source: &str, node: NodeRef) -> Option<BinaryOp> {
+    let mut membership_negated = false;
     for child in cst.children(node) {
         match cst.get(child) {
             Node::Rule(Rule::BinaryOperator, _) => {
@@ -275,6 +386,14 @@ fn binary_operator(cst: &CstData, source: &str, node: NodeRef) -> Option<BinaryO
                         cst, source, variable,
                     )));
                 }
+            }
+            Node::Token(Token::Not, _) => membership_negated = true,
+            Node::Token(Token::In, _) => {
+                return Some(if membership_negated {
+                    BinaryOp::NotIn
+                } else {
+                    BinaryOp::In
+                });
             }
             Node::Token(Token::And, _) => return Some(BinaryOp::And),
             Node::Token(Token::Or, _) => return Some(BinaryOp::Or),
@@ -341,14 +460,8 @@ fn build_path(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr {
                 .unwrap_or_else(|| node_span(cst, segment));
             // `->column` puts a Name token directly under the segment; the
             // relation name's own tokens are nested inside qualified_name.
-            let relation_path = cst
-                .children(segment)
-                .find_map(|child| match cst.get(child) {
-                    Node::Token(Token::Name, _) => {
-                        Some(text(source, node_span(cst, child)).to_string())
-                    }
-                    _ => None,
-                });
+            let relation_path =
+                direct_name(cst, segment).map(|span| text(source, span).to_string());
             PathSegment {
                 name: text(source, name_span).to_string(),
                 relation_path,
@@ -367,6 +480,9 @@ fn build_path(cst: &CstData, source: &str, node: NodeRef, span: Span) -> Expr {
 /// Builds a [`VariableRef`] from a `value_variable` or `operator_variable`
 /// node. Shared with the `variable` entity's fact lowering.
 pub(crate) fn build_variable_ref(cst: &CstData, source: &str, node: NodeRef) -> VariableRef {
+    let context = cst
+        .children(node)
+        .any(|child| cst.match_token(child, Token::Colon).is_some());
     let sigil = cst
         .children(node)
         .find_map(|child| match cst.get(child) {
@@ -374,6 +490,7 @@ pub(crate) fn build_variable_ref(cst: &CstData, source: &str, node: NodeRef) -> 
             Node::Token(Token::DollarDollar, _) => Some(Sigil::Query),
             _ => None,
         })
+        .map(|sigil| if context { Sigil::Context } else { sigil })
         .unwrap_or(Sigil::Query);
 
     let name = cst.children(node).find_map(|child| match cst.get(child) {
@@ -401,6 +518,7 @@ pub(crate) fn build_variable_ref(cst: &CstData, source: &str, node: NodeRef) -> 
 pub enum Sigil {
     Build,
     Query,
+    Context,
 }
 
 impl Sigil {
@@ -408,6 +526,7 @@ impl Sigil {
         match self {
             Sigil::Build => "$",
             Sigil::Query => "$$",
+            Sigil::Context => "$:",
         }
     }
 }
@@ -419,11 +538,34 @@ impl std::fmt::Display for Expr {
             Expr::Binary { op, lhs, rhs, .. } => {
                 let op = match op {
                     BinaryOp::Comparison(comparison) => comparison.as_str().to_string(),
+                    BinaryOp::In => "in".to_string(),
+                    BinaryOp::NotIn => "not in".to_string(),
                     BinaryOp::And => "and".to_string(),
                     BinaryOp::Or => "or".to_string(),
                     BinaryOp::Variable(variable) => render_variable(variable),
                 };
                 write!(f, "({lhs} {op} {rhs})")
+            }
+            Expr::Unary { operand, .. } => write!(f, "not {operand}"),
+            Expr::NullTest {
+                operand, negated, ..
+            } => write!(f, "{operand} is {}null", if *negated { "not " } else { "" }),
+            Expr::List { items, .. } => {
+                let rendered: Vec<String> = items.iter().map(ToString::to_string).collect();
+                write!(f, "[{}]", rendered.join(", "))
+            }
+            Expr::Exists {
+                source, predicate, ..
+            } => {
+                f.write_str("exists ")?;
+                match source {
+                    ExistsSource::Relation(path) => write!(f, "{path}")?,
+                    ExistsSource::Table { name, .. } => f.write_str(name)?,
+                }
+                if let Some(predicate) = predicate {
+                    write!(f, "(where {predicate})")?;
+                }
+                Ok(())
             }
             Expr::Literal { value, .. } => match value {
                 LiteralValue::String(inner) => write!(f, "{inner:?}"),

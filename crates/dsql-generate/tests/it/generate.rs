@@ -431,7 +431,7 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
             "queries/frontend/numeric.dsql",
             concat!(
                 "query NumericMetrics {\n",
-                "  metrics(where .amount >= $$minimum) { amount ratio }\n",
+                "  metrics(where .amount >= $$minimum and .amount in $$amounts) { amount ratio }\n",
                 "}\n",
                 "query NumericSummary {\n",
                 "  summary: metrics | aggregate {\n",

@@ -166,6 +166,7 @@ pub(crate) fn variable_path(
             key,
         ),
         Sigil::Query => join_prefixed_key(&variable_scope.top_level_prefix, &key),
+        Sigil::Context => join_prefixed_key(&["context".to_string()], &key),
     }
 }
 

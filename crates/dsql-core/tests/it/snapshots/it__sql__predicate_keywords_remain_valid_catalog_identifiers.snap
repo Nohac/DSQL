@@ -1,0 +1,39 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- metrics
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'exists',
+        "metrics_b773e828"."exists",
+        'in',
+        "metrics_b773e828"."exists",
+        'is',
+        "metrics_b773e828"."is",
+        'not',
+        "metrics_b773e828"."not"
+      )
+      order by
+        "metrics_b773e828"."exists" asc
+    ),
+    '[]'
+  ) as "metrics"
+from
+  (
+    select
+      *
+    from
+      "public"."metrics" as "metrics_b773e828"
+    where
+      "metrics_b773e828"."exists" = 1
+      and "metrics_b773e828"."in" = 2
+      and "metrics_b773e828"."is" = 3
+      and "metrics_b773e828"."not" = 4
+    order by
+      "metrics_b773e828"."exists" asc
+    limit
+      10
+  ) as "metrics_b773e828"

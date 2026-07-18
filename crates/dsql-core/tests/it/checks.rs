@@ -79,6 +79,44 @@ async fn numeric_and_float_literals_follow_their_logical_types() {
 }
 
 #[tokio::test]
+async fn predicate_extensions_report_invalid_shapes_and_types() {
+    let bowl = checked_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "invalid-predicates.dsql",
+        concat!(
+            "query InvalidPredicates {\n",
+            "  title(where .id in [\"wrong\"]\n",
+            "    or 1 in [1]\n",
+            "    or exists .id\n",
+            "    or exists .missing\n",
+            "    or $$value is null\n",
+            "    or [1]\n",
+            "    or not [2]\n",
+            "    or .production_year\n",
+            "    or .movie_info_idx.info_type_id\n",
+            "    or \"not boolean\") { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    let numeric_bowl = checked_bowl(numeric_catalog()).await;
+    insert_source(
+        &numeric_bowl,
+        "bare-boolean-field.dsql",
+        "query BareBooleanField { metrics(where .enabled) { amount } }",
+    )
+    .await;
+
+    insta::assert_snapshot!(format!(
+        "mixed predicates:\n{}\n\nboolean field:\n{}",
+        render_diagnostic_facts(&bowl).await,
+        render_diagnostic_facts(&numeric_bowl).await,
+    ));
+}
+
+#[tokio::test]
 async fn invalid_fixtures_report_diagnostics_against_imdb() {
     let bowl = checked_bowl(imdb_catalog()).await;
 

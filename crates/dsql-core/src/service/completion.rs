@@ -511,6 +511,13 @@ fn last_token(cst: &crate::grammar::parser::CstData, node: NodeRef) -> Option<To
     last.map(|(_, token)| token)
 }
 
+fn is_source_name_token(token: Token) -> bool {
+    matches!(
+        token,
+        Token::Name | Token::Not | Token::In | Token::Is | Token::Exists
+    )
+}
+
 /// Whether the walk must stop before `node` instead of entering it.
 fn spine_stop(
     cst: &crate::grammar::parser::CstData,
@@ -532,14 +539,25 @@ fn spine_stop(
         // token is a member/namespace Name is complete; a bare `@` or a
         // trailing `.` is still being typed.
         return match last_token(cst, node) {
-            Some(Token::Name) => Some(SpineStop::Finished(rule)),
+            Some(token) if is_source_name_token(token) => Some(SpineStop::Finished(rule)),
             _ => None,
+        };
+    }
+    if rule == Rule::FragmentSpread {
+        let has_ellipsis = cst
+            .children(node)
+            .any(|child| cst.match_token(child, Token::Ellipsis).is_some());
+        return if last_token(cst, node).is_some_and(is_source_name_token) {
+            Some(SpineStop::Finished(rule))
+        } else if !has_ellipsis {
+            Some(SpineStop::Unstarted(rule))
+        } else {
+            None
         };
     }
     let (opener, closer) = match rule {
         Rule::SelectionSet | Rule::AggregateSet => (Token::LBrace, Token::RBrace),
         Rule::ClauseList => (Token::LPar, Token::RPar),
-        Rule::FragmentSpread => (Token::Ellipsis, Token::Name),
         _ => return None,
     };
     let has = |token: Token| {
@@ -601,13 +619,8 @@ fn directive_completion(
     };
     let name_text = |parent: NodeRef, rule: Rule| {
         child_rule(parent, rule).and_then(|node| {
-            cst.children(node).find_map(|child| match cst.get(child) {
-                Node::Token(Token::Name, _) => {
-                    let span = cst.span(child);
-                    Some(prefix[span.start..span.end].to_string())
-                }
-                _ => None,
-            })
+            crate::entities::direct_name(cst, node)
+                .map(|span| prefix[span.start..span.end].to_string())
         })
     };
 
@@ -646,14 +659,8 @@ fn directive_completion(
         }
         let argument = last_argument
             .and_then(|argument| {
-                cst.children(argument)
-                    .find_map(|child| match cst.get(child) {
-                        Node::Token(Token::Name, _) => {
-                            let span = cst.span(child);
-                            Some(prefix[span.start..span.end].to_string())
-                        }
-                        _ => None,
-                    })
+                crate::entities::direct_name(cst, argument)
+                    .map(|span| prefix[span.start..span.end].to_string())
             })
             .unwrap_or_default();
         return Some((
@@ -716,9 +723,7 @@ fn classify_site(
             Rule::AggregateSet => return CompletionSite::AggregateBody,
             Rule::AggregateGroupKey => return CompletionSite::AggregateGroupKey,
             Rule::ScalarAggregateExpr => {
-                let has_function = cst
-                    .children(*node)
-                    .any(|child| cst.match_token(child, Token::Name).is_some());
+                let has_function = crate::entities::direct_name(cst, *node).is_some();
                 if !has_function {
                     return CompletionSite::PredicateAggregateFunction;
                 }
@@ -735,11 +740,7 @@ fn classify_site(
                     return CompletionSite::PredicateAggregateOperand;
                 }
             }
-            Rule::PipeTransform
-                if !cst
-                    .children(*node)
-                    .any(|child| cst.match_token(child, Token::Name).is_some()) =>
-            {
+            Rule::PipeTransform if crate::entities::direct_name(cst, *node).is_none() => {
                 return CompletionSite::PipeTransform;
             }
             Rule::SelectionSet => {
@@ -795,15 +796,8 @@ fn predicate_aggregate_operand_table(
     }
     let name = crate::entities::direct_rule(cst, segment, Rule::QualifiedName)
         .map(|name| crate::entities::node_span(cst, name))?;
-    let selector = cst
-        .children(segment)
-        .find_map(|child| match cst.get(child) {
-            Node::Token(Token::Name, _) => {
-                let span = cst.span(child);
-                Some(&source[span.start..span.end])
-            }
-            _ => None,
-        });
+    let selector =
+        crate::entities::direct_name(cst, segment).map(|span| &source[span.start..span.end]);
     let reference = FieldRef {
         target: TableRef::parse(&source[name.start..name.end]),
         selector,

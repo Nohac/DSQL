@@ -356,6 +356,7 @@ fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField
         .map(|binding| InputField {
             path: binding.path.clone(),
             data_type: binding.data_type.as_str().to_string(),
+            collection: binding.collection.then_some(true),
             enum_values: binding.enum_values.clone(),
             required: true,
             nullable: false,

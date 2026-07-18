@@ -3,9 +3,10 @@ use crate::catalog::{
 };
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
-    AggregatePlan, CollectionPlan, CollectionResultPlan, FilterColumnScope, FilterExpr,
-    FilterLiteral, FilterOp, NestedRelation, QueryPlan, SelectionClauses, SelectionPlan,
-    SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    AggregatePlan, CollectionPlan, CollectionResultPlan, ExistsKind, FilterCollection,
+    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, NestedRelation, QueryPlan,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue,
+    SqlVariantCase,
 };
 use crate::resolution::SelectionCardinality;
 use sea_query::{
@@ -352,7 +353,17 @@ fn generate_rows(
         .clauses
         .filter
         .as_ref()
-        .map(|filter| filter_expr(catalog, &context, root_context, None, filter, template))
+        .map(|filter| {
+            filter_expr(
+                catalog,
+                &context,
+                root_context,
+                &context,
+                None,
+                filter,
+                template,
+            )
+        })
         .transpose()?;
     if collection.shape.cardinality == SelectionCardinality::Collection
         && should_use_source_subquery(&collection.clauses, generation.options)
@@ -521,6 +532,7 @@ fn generate_aggregate(
             catalog,
             &context,
             root_context,
+            &context,
             None,
             filter,
             template,
@@ -765,7 +777,8 @@ fn filter_expr(
     catalog: &Catalog,
     context: &SelectionContext,
     root: &SelectionContext,
-    outer_current: Option<&SelectionContext>,
+    predicate_source: &SelectionContext,
+    parent: Option<&SelectionContext>,
     filter: &FilterExpr,
     template: &mut SqlTemplateContext,
 ) -> Result<Expr, SqlGenerationError> {
@@ -778,7 +791,8 @@ fn filter_expr(
             let source = match scope {
                 FilterColumnScope::Current => context,
                 FilterColumnScope::Root => root,
-                FilterColumnScope::OuterCurrent => outer_current.unwrap_or(context),
+                FilterColumnScope::PredicateSource => predicate_source,
+                FilterColumnScope::Parent => parent.unwrap_or(context),
             };
             Expr::col((Alias::new(&source.table_alias), Alias::new(&column.name)))
         }
@@ -801,8 +815,15 @@ fn filter_expr(
             if matches!(op, FilterOp::Eq | FilterOp::Ne)
                 && let Some(operand) = null_comparison_operand(left, right)
             {
-                let operand =
-                    filter_expr(catalog, context, root, outer_current, operand, template)?;
+                let operand = filter_expr(
+                    catalog,
+                    context,
+                    root,
+                    predicate_source,
+                    parent,
+                    operand,
+                    template,
+                )?;
                 return Ok(Expr::cust_with_expr(
                     if *op == FilterOp::Eq {
                         "$1 IS NULL"
@@ -813,12 +834,44 @@ fn filter_expr(
                 ));
             }
             if *op == FilterOp::Like {
-                let left = filter_expr(catalog, context, root, outer_current, left, template)?;
-                let right = filter_expr(catalog, context, root, outer_current, right, template)?;
+                let left = filter_expr(
+                    catalog,
+                    context,
+                    root,
+                    predicate_source,
+                    parent,
+                    left,
+                    template,
+                )?;
+                let right = filter_expr(
+                    catalog,
+                    context,
+                    root,
+                    predicate_source,
+                    parent,
+                    right,
+                    template,
+                )?;
                 return Ok(Expr::cust_with_exprs("$1 like $2", [left, right]));
             }
-            let left = filter_expr(catalog, context, root, outer_current, left, template)?;
-            let right = filter_expr(catalog, context, root, outer_current, right, template)?;
+            let left = filter_expr(
+                catalog,
+                context,
+                root,
+                predicate_source,
+                parent,
+                left,
+                template,
+            )?;
+            let right = filter_expr(
+                catalog,
+                context,
+                root,
+                predicate_source,
+                parent,
+                right,
+                template,
+            )?;
             match op {
                 FilterOp::Eq => left.eq(right),
                 FilterOp::Ne => left.ne(right),
@@ -834,6 +887,80 @@ fn filter_expr(
                 FilterOp::Or => left.or(right),
             }
         }
+        FilterExpr::Not(operand) => Expr::cust_with_expr(
+            "NOT ($1)",
+            filter_expr(
+                catalog,
+                context,
+                root,
+                predicate_source,
+                parent,
+                operand,
+                template,
+            )?,
+        ),
+        FilterExpr::NullTest { operand, negated } => Expr::cust_with_expr(
+            if *negated {
+                "$1 IS NOT NULL"
+            } else {
+                "$1 IS NULL"
+            },
+            filter_expr(
+                catalog,
+                context,
+                root,
+                predicate_source,
+                parent,
+                operand,
+                template,
+            )?,
+        ),
+        FilterExpr::Membership {
+            operand,
+            collection,
+            negated,
+        } => {
+            let operand = filter_expr_fragment(
+                catalog,
+                context,
+                root,
+                predicate_source,
+                parent,
+                operand,
+                template,
+            )?;
+            match collection {
+                FilterCollection::List(items) if items.is_empty() => {
+                    Expr::cust(if *negated { "TRUE" } else { "FALSE" })
+                }
+                FilterCollection::List(items) => {
+                    let items = items
+                        .iter()
+                        .map(|item| {
+                            filter_expr_fragment(
+                                catalog,
+                                context,
+                                root,
+                                predicate_source,
+                                parent,
+                                item,
+                                template,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Expr::cust(format!(
+                        "{operand} {} ({})",
+                        if *negated { "NOT IN" } else { "IN" },
+                        items.join(", ")
+                    ))
+                }
+                FilterCollection::Parameter(parameter) => Expr::cust(format!(
+                    "{operand} {}({})",
+                    if *negated { "<> ALL" } else { "= ANY" },
+                    template.parameter(parameter)
+                )),
+            }
+        }
         FilterExpr::VariantBinary {
             left,
             path,
@@ -843,25 +970,49 @@ fn filter_expr(
             if let Some(operand) = null_comparison_operand(left, right) {
                 Expr::cust(format!(
                     "{} {} null",
-                    filter_expr_fragment(catalog, context, root, outer_current, operand, template)?,
+                    filter_expr_fragment(
+                        catalog,
+                        context,
+                        root,
+                        predicate_source,
+                        parent,
+                        operand,
+                        template,
+                    )?,
                     template.variant(path, variants),
                 ))
             } else {
                 Expr::cust(format!(
                     "{} {} {}",
-                    filter_expr_fragment(catalog, context, root, outer_current, left, template)?,
+                    filter_expr_fragment(
+                        catalog,
+                        context,
+                        root,
+                        predicate_source,
+                        parent,
+                        left,
+                        template,
+                    )?,
                     template.variant(path, variants),
-                    filter_expr_fragment(catalog, context, root, outer_current, right, template)?
+                    filter_expr_fragment(
+                        catalog,
+                        context,
+                        root,
+                        predicate_source,
+                        parent,
+                        right,
+                        template,
+                    )?
                 ))
             }
         }
         FilterExpr::Exists {
             foreign_key: foreign_key_id,
             table: table_id,
+            kind,
             filter,
         } => {
             let related_table = table(catalog, *table_id)?;
-            let foreign_key = foreign_key(catalog, *foreign_key_id)?;
             let exists_context = context_for(
                 related_table,
                 &related_table.name,
@@ -875,21 +1026,30 @@ fn filter_expr(
                 ),
                 Alias::new(&exists_context.table_alias),
             );
-            query.cond_where(relation_condition(
-                catalog,
-                context,
-                &exists_context,
-                foreign_key,
-                *table_id,
-            )?);
-            query.and_where(filter_expr(
-                catalog,
-                &exists_context,
-                root,
-                outer_current.or(Some(context)),
-                filter,
-                template,
-            )?);
+            if let Some(foreign_key_id) = foreign_key_id {
+                query.cond_where(relation_condition(
+                    catalog,
+                    context,
+                    &exists_context,
+                    foreign_key(catalog, *foreign_key_id)?,
+                    *table_id,
+                )?);
+            }
+            if let Some(filter) = filter {
+                let (filter_predicate_source, filter_parent) = match kind {
+                    ExistsKind::Explicit => (&exists_context, Some(context)),
+                    ExistsKind::RelationshipPredicate => (predicate_source, parent),
+                };
+                query.and_where(filter_expr(
+                    catalog,
+                    &exists_context,
+                    root,
+                    filter_predicate_source,
+                    filter_parent,
+                    filter,
+                    template,
+                )?);
+            }
             Expr::exists(query.to_owned())
         }
         FilterExpr::RelationAggregate {
@@ -953,7 +1113,8 @@ fn filter_expr_fragment(
     catalog: &Catalog,
     context: &SelectionContext,
     root: &SelectionContext,
-    outer_current: Option<&SelectionContext>,
+    predicate_source: &SelectionContext,
+    parent: Option<&SelectionContext>,
     filter: &FilterExpr,
     template: &mut SqlTemplateContext,
 ) -> Result<String, SqlGenerationError> {
@@ -966,7 +1127,8 @@ fn filter_expr_fragment(
             let source = match scope {
                 FilterColumnScope::Current => context,
                 FilterColumnScope::Root => root,
-                FilterColumnScope::OuterCurrent => outer_current.unwrap_or(context),
+                FilterColumnScope::PredicateSource => predicate_source,
+                FilterColumnScope::Parent => parent.unwrap_or(context),
             };
             format!("\"{}\".\"{}\"", source.table_alias, column.name)
         }
@@ -976,6 +1138,9 @@ fn filter_expr_fragment(
         FilterExpr::Literal(FilterLiteral::Bool(value)) => value.to_string(),
         FilterExpr::Literal(FilterLiteral::Null) => "null".to_string(),
         FilterExpr::Binary { .. }
+        | FilterExpr::Not(_)
+        | FilterExpr::NullTest { .. }
+        | FilterExpr::Membership { .. }
         | FilterExpr::VariantBinary { .. }
         | FilterExpr::Exists { .. }
         | FilterExpr::RelationAggregate { .. } => {

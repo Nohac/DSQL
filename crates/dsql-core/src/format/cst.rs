@@ -136,7 +136,7 @@ impl<'a> CstFormatter<'a> {
     /// Formats a collection pipe transform and its keyed aggregate body.
     pub fn aggregate_transform(&mut self, node: NodeRef) {
         self.out.push_str(" | ");
-        if let Some(name) = self.direct_token_text(node, Token::Name) {
+        if let Some(name) = self.direct_name_text(node) {
             self.out.push_str(&name);
         }
         let group_keys = self.direct_rules(node, Rule::AggregateGroupKey);
@@ -155,7 +155,7 @@ impl<'a> CstFormatter<'a> {
     }
 
     fn aggregate_group_key(&mut self, node: NodeRef) {
-        if let Some(alias) = self.direct_token_text(node, Token::Name) {
+        if let Some(alias) = self.direct_name_text(node) {
             self.out.push_str(&alias);
             self.out.push_str(": ");
         }
@@ -188,7 +188,7 @@ impl<'a> CstFormatter<'a> {
     }
 
     fn aggregate_field(&mut self, node: NodeRef) {
-        let names = self.direct_token_texts(node, Token::Name);
+        let names = self.direct_name_texts(node);
         match names.as_slice() {
             [function] => self.out.push_str(function),
             [alias, function, ..] => {
@@ -337,6 +337,10 @@ impl<'a> CstFormatter<'a> {
     pub fn expr(&mut self, node: NodeRef) {
         match self.rule(node) {
             Some(Rule::BinaryExpr) => self.binary_expr(node),
+            Some(Rule::UnaryExpr) => self.unary_expr(node),
+            Some(Rule::NullTestExpr) => self.null_test_expr(node),
+            Some(Rule::CollectionLiteral) => self.collection_literal(node),
+            Some(Rule::ExistsExpr) => self.exists_expr(node),
             Some(Rule::Literal) => self.literal(node),
             Some(Rule::ScalarAggregateExpr) => self.scalar_aggregate_expr(node),
             Some(Rule::Expr) => {
@@ -346,6 +350,14 @@ impl<'a> CstFormatter<'a> {
                 }
                 if let Some(binary) = self.direct_rule(node, Rule::BinaryExpr) {
                     self.binary_expr(binary);
+                } else if let Some(unary) = self.direct_rule(node, Rule::UnaryExpr) {
+                    self.unary_expr(unary);
+                } else if let Some(null_test) = self.direct_rule(node, Rule::NullTestExpr) {
+                    self.null_test_expr(null_test);
+                } else if let Some(collection) = self.direct_rule(node, Rule::CollectionLiteral) {
+                    self.collection_literal(collection);
+                } else if let Some(exists) = self.direct_rule(node, Rule::ExistsExpr) {
+                    self.exists_expr(exists);
                 } else if let Some(aggregate) = self.direct_rule(node, Rule::ScalarAggregateExpr) {
                     self.scalar_aggregate_expr(aggregate);
                 } else if let Some(literal) = self.direct_rule(node, Rule::Literal) {
@@ -373,18 +385,65 @@ impl<'a> CstFormatter<'a> {
         }
     }
 
+    fn unary_expr(&mut self, node: NodeRef) {
+        self.out.push_str("not ");
+        if let Some(operand) = self.direct_value_rule(node) {
+            self.expr(operand);
+        }
+    }
+
+    fn null_test_expr(&mut self, node: NodeRef) {
+        if let Some(operand) = self.direct_value_rule(node) {
+            self.expr(operand);
+        }
+        self.out.push_str(" is ");
+        if self
+            .children(node)
+            .into_iter()
+            .any(|child| self.token(child) == Some(Token::Not))
+        {
+            self.out.push_str("not ");
+        }
+        self.out.push_str("null");
+    }
+
+    fn collection_literal(&mut self, node: NodeRef) {
+        self.out.push('[');
+        let items = self.direct_expr_operands(node);
+        for (index, item) in items.into_iter().enumerate() {
+            if index > 0 {
+                self.out.push_str(", ");
+            }
+            self.expr(item);
+        }
+        self.out.push(']');
+    }
+
+    fn exists_expr(&mut self, node: NodeRef) {
+        self.out.push_str("exists ");
+        let Some(source) = self.direct_rule(node, Rule::ExistsSource) else {
+            return;
+        };
+        if let Some(path) = self.direct_rule(source, Rule::ScopedPath) {
+            self.write_node_text(path);
+        } else if let Some(name) = self.direct_rule(source, Rule::QualifiedName) {
+            self.write_node_text(name);
+        }
+        if let Some(where_clause) = self.direct_rule(source, Rule::WhereClause) {
+            self.out.push('(');
+            self.format_child(where_clause);
+            self.out.push(')');
+        }
+    }
+
     fn scalar_aggregate_expr(&mut self, node: NodeRef) {
         let paths = self.direct_rules(node, Rule::ScopedPath);
         if let Some(source) = paths.first().copied() {
             self.write_node_text(source);
         }
         self.out.push_str(" | ");
-        if let Some(function) = self
-            .children(node)
-            .into_iter()
-            .find(|child| self.token(*child) == Some(Token::Name))
-        {
-            self.write_node_text(function);
+        if let Some(function) = self.direct_name_text(node) {
+            self.out.push_str(&function);
         }
         if let Some(operand) = paths.get(1).copied() {
             self.out.push(' ');
@@ -438,7 +497,16 @@ impl<'a> CstFormatter<'a> {
         }
         if let Some(op) = self.direct_operator(node) {
             self.out.push(' ');
-            self.write_node_text(op);
+            if self.token(op) == Some(Token::In)
+                && self
+                    .children(node)
+                    .into_iter()
+                    .any(|child| self.token(child) == Some(Token::Not))
+            {
+                self.out.push_str("not in");
+            } else {
+                self.write_node_text(op);
+            }
             self.out.push(' ');
         }
         if let Some(right) = exprs.get(1).copied() {
@@ -449,8 +517,26 @@ impl<'a> CstFormatter<'a> {
     fn direct_expr_operands(&self, node: NodeRef) -> Vec<NodeRef> {
         self.children(node)
             .into_iter()
-            .filter(|child| matches!(self.rule(*child), Some(Rule::Expr | Rule::BinaryExpr)))
+            .filter(|child| self.is_expression_rule(*child))
             .collect()
+    }
+
+    fn is_expression_rule(&self, node: NodeRef) -> bool {
+        matches!(
+            self.rule(node),
+            Some(
+                Rule::Expr
+                    | Rule::BinaryExpr
+                    | Rule::UnaryExpr
+                    | Rule::NullTestExpr
+                    | Rule::CollectionLiteral
+                    | Rule::ExistsExpr
+                    | Rule::ScalarAggregateExpr
+                    | Rule::Literal
+                    | Rule::ScopedPath
+                    | Rule::ValueVariable
+            )
+        )
     }
 
     fn is_complex_predicate(&self, node: NodeRef) -> bool {
@@ -570,6 +656,23 @@ impl<'a> CstFormatter<'a> {
             .collect()
     }
 
+    /// Text of the first direct ordinary or contextual identifier.
+    pub fn direct_name_text(&self, node: NodeRef) -> Option<String> {
+        self.direct_name_texts(node).into_iter().next()
+    }
+
+    /// Text of every direct ordinary or contextual identifier.
+    pub fn direct_name_texts(&self, node: NodeRef) -> Vec<String> {
+        self.children(node)
+            .into_iter()
+            .filter(|child| {
+                self.token(*child) == Some(Token::Name)
+                    || self.rule(*child) == Some(Rule::ContextualName)
+            })
+            .map(|child| self.node_text(child))
+            .collect()
+    }
+
     pub fn node_text(&self, node: NodeRef) -> String {
         let span = self.node_span(node);
         self.source[span.start..span.end].to_string()
@@ -590,7 +693,7 @@ impl<'a> CstFormatter<'a> {
     }
 
     fn qualified_name_text(&self, name: NodeRef) -> Option<String> {
-        let parts = self.direct_token_texts(name, Token::Name);
+        let parts = self.direct_name_texts(name);
         if parts.is_empty() {
             None
         } else {
@@ -607,7 +710,9 @@ impl<'a> CstFormatter<'a> {
             .skip_while(|child| self.token(*child) != Some(Token::Arrow))
             .skip(1)
             .find_map(|child| {
-                (self.token(child) == Some(Token::Name)).then(|| self.node_text(child))
+                (self.token(child) == Some(Token::Name)
+                    || self.rule(child) == Some(Rule::ContextualName))
+                .then(|| self.node_text(child))
             });
         selector.map_or(Some(qualified.clone()), |selector| {
             Some(format!("{qualified}->{selector}"))
@@ -616,17 +721,8 @@ impl<'a> CstFormatter<'a> {
 
     pub fn direct_value_rule(&self, node: NodeRef) -> Option<NodeRef> {
         self.children(node).into_iter().find(|child| {
-            matches!(
-                self.rule(*child),
-                Some(
-                    Rule::Expr
-                        | Rule::BinaryExpr
-                        | Rule::Literal
-                        | Rule::QualifiedName
-                        | Rule::ScopedPath
-                        | Rule::ValueVariable
-                )
-            )
+            self.is_expression_rule(*child)
+                || matches!(self.rule(*child), Some(Rule::QualifiedName))
         })
     }
 
@@ -648,6 +744,7 @@ impl<'a> CstFormatter<'a> {
                         | Token::Lt
                         | Token::Le
                         | Token::Like
+                        | Token::In
                         | Token::And
                         | Token::Or
                 )

@@ -11,14 +11,13 @@ use crate::catalog::{
 use crate::entities::clause::ClauseFact;
 use crate::entities::expression::{Expr, build_expr};
 use crate::entities::field_selection::FieldSel;
-use crate::entities::{direct_rule, direct_token, node_span, text};
+use crate::entities::{direct_name, direct_names, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, Children, DiagnosticCode, DiagnosticFacts, DiagnosticSource,
     DiagnosticsDemand, NodeKey, Severity, Span, emit_diagnostic,
 };
 use crate::format::CstFormatter;
-use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 use crate::resolution::{
     FieldResolutions, ResolvedSelection, SelectionCardinality, SelectionTarget,
@@ -229,7 +228,7 @@ impl LowerStage for Aggregate {
         node: NodeRef,
         commands: &mut Commands<AstFacts>,
     ) -> Option<Entity> {
-        let name_span = direct_token(ctx.cst, node, Token::Name)?;
+        let name_span = direct_name(ctx.cst, node)?;
         let group_keys = ctx
             .cst
             .children(node)
@@ -298,7 +297,7 @@ fn lower_fields(ctx: &LowerCtx<'_>, node: NodeRef) -> Vec<AggregateFieldSyntax> 
 }
 
 fn lower_group_key(ctx: &LowerCtx<'_>, node: NodeRef) -> Option<AggregateGroupKeySyntax> {
-    let alias_span = direct_token(ctx.cst, node, Token::Name);
+    let alias_span = direct_name(ctx.cst, node);
     let path = direct_rule(ctx.cst, node, Rule::ScopedPath)?;
     Some(AggregateGroupKeySyntax {
         alias: alias_span.map(|span| text(ctx.source, span).to_string()),
@@ -309,11 +308,7 @@ fn lower_group_key(ctx: &LowerCtx<'_>, node: NodeRef) -> Option<AggregateGroupKe
 }
 
 fn lower_field(ctx: &LowerCtx<'_>, node: NodeRef) -> Option<AggregateFieldSyntax> {
-    let names: Vec<Span> = ctx
-        .cst
-        .children(node)
-        .filter_map(|child| ctx.cst.match_token(child, Token::Name).map(Span::from))
-        .collect();
+    let names = direct_names(ctx.cst, node);
     let (alias_span, function_span) = match names.as_slice() {
         [function] => (None, *function),
         [alias, function, ..] => (Some(*alias), *function),

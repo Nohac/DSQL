@@ -932,10 +932,11 @@ function operationFragmentInputBranches(
 }
 
 function inputFieldType(field: InputField): string {
-  const type =
+  const elementType =
     field.enum_values.length > 0
       ? field.enum_values.map((value) => JSON.stringify(value)).join(" | ")
       : dataType(field.data_type);
+  const type = field.collection === true ? `Array<${elementType} | null>` : elementType;
   return withNullability(type, field.nullable);
 }
 

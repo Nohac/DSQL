@@ -20,13 +20,21 @@ async fn completions_with_marker(source_with_cursor: &str, marker: char) -> Stri
 }
 
 async fn completion_list(source_with_cursor: &str, marker: char) -> Arc<CompletionList> {
+    completion_list_with_catalog(source_with_cursor, marker, Catalog::hardcoded()).await
+}
+
+async fn completion_list_with_catalog(
+    source_with_cursor: &str,
+    marker: char,
+    catalog: Catalog,
+) -> Arc<CompletionList> {
     let offset = source_with_cursor
         .find(marker)
         .expect("test source marks the cursor with |");
     let source = source_with_cursor.replacen(marker, "", 1);
 
     let bowl = language_bowl().await;
-    insert_catalog(&bowl, Catalog::hardcoded()).await;
+    insert_catalog(&bowl, catalog).await;
     insert_source(&bowl, "test.dsql", &source).await;
 
     bowl.insert((
@@ -39,6 +47,25 @@ async fn completion_list(source_with_cursor: &str, marker: char) -> Arc<Completi
     .take::<CompletionList>()
     .await
     .expect("completion requests with a known file are answered")
+}
+
+#[tokio::test]
+async fn contextual_identifier_columns_complete_and_keep_predicate_context() {
+    let fields =
+        completion_list_with_catalog("query Q { metrics { | } }", '|', crate::numeric_catalog())
+            .await;
+    let operators = completion_list_with_catalog(
+        "query Q { metrics(where .exists |) { exists } }",
+        '|',
+        crate::numeric_catalog(),
+    )
+    .await;
+
+    insta::assert_snapshot!(format!(
+        "fields:\n{}\n\nafter .exists:\n{}",
+        render_completion_items(&fields),
+        render_completion_items(&operators),
+    ));
 }
 
 fn render_completion_items(list: &CompletionList) -> String {

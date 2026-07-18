@@ -61,6 +61,10 @@ impl LanguageEntity for Variable {
         // Fully tracked on the duplicate facts: the engine replans the pair
         // after inference commits them at Complete, like variable hover.
         reg.system(diagnose_duplicate_anonymous_bindings);
+        // Temporary fail-closed boundary: trusted-context syntax may be
+        // analyzed before the server-only binder lands, but it must never
+        // produce a runnable artifact without that boundary.
+        reg.system(diagnose_unbound_trusted_context);
         // Fully tracked (a per-file bound join, no views), so it needs no
         // phase barrier: pairs replan as bindings commit at Complete.
         reg.system(hover_variables);
@@ -109,6 +113,7 @@ impl LowerStage for Variable {
 pub enum VariableSource {
     Structured,
     TopLevel,
+    Context,
 }
 
 impl From<Sigil> for VariableSource {
@@ -116,6 +121,7 @@ impl From<Sigil> for VariableSource {
         match sigil {
             Sigil::Build => Self::Structured,
             Sigil::Query => Self::TopLevel,
+            Sigil::Context => Self::Context,
         }
     }
 }
@@ -154,6 +160,7 @@ pub struct VariableBinding {
     pub source: VariableSource,
     pub name: Option<String>,
     pub data_type: DataType,
+    pub collection: bool,
     pub role: VariableRole,
     pub operators: Vec<ComparisonOp>,
     pub enum_values: Vec<String>,
@@ -331,6 +338,32 @@ async fn diagnose_duplicate_anonymous_bindings(
     );
 }
 
+async fn diagnose_unbound_trusted_context(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    bindings: Query<(Entity, &VariableBinding, &Span, &BelongsToFile)>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (binding_entity, binding, span, file) = bindings.item();
+    if binding.source != VariableSource::Context {
+        return;
+    }
+    emit_diagnostic(
+        &mut commands,
+        DiagnosticFacts {
+            derived_from: DerivedFrom::new(binding_entity),
+            file: file.0,
+            span: *span,
+            severity: Severity::Error,
+            source: DiagnosticSource::Generate,
+            code: DiagnosticCode::TrustedContextBindingUnavailable,
+            message: format!(
+                "trusted context `{}` cannot be bound until the server-only execution boundary is available",
+                binding.path
+            ),
+        },
+    );
+}
+
 struct Inference<'a> {
     resolved_clauses: &'a std::collections::HashMap<Entity, &'a ResolvedClause>,
     tree: &'a SelectionTree<'a>,
@@ -361,7 +394,7 @@ impl Inference<'_> {
             match clause {
                 ClauseFact::Where { expr } => {
                     if let Some(resolved) = resolved {
-                        self.collect_where(&path.parts, scope, &expr, resolved);
+                        self.collect_where(&path.parts, scope, &expr, resolved, true);
                     }
                 }
                 ClauseFact::Limit { expr } => self.push_clause_variable(
@@ -404,6 +437,7 @@ impl Inference<'_> {
                             BindingContext {
                                 role: VariableRole::SortDirection,
                                 data_type: DataType::Unknown,
+                                collection: false,
                                 scope,
                                 inferred_path: &inferred_path,
                                 anonymous_key: None,
@@ -494,58 +528,102 @@ impl Inference<'_> {
         scope: &VariablePathScope,
         expr: &Expr,
         resolved: &ResolvedClause,
+        expected_boolean: bool,
     ) {
-        let Expr::Binary { op, lhs, rhs, .. } = expr else {
-            return;
-        };
+        match expr {
+            Expr::Binary { op, lhs, rhs, .. } => {
+                match (lhs.as_ref(), rhs.as_ref()) {
+                    (
+                        value @ (Expr::Path { .. } | Expr::Aggregate { .. }),
+                        Expr::Variable { variable, .. },
+                    )
+                    | (
+                        Expr::Variable { variable, .. },
+                        value @ (Expr::Path { .. } | Expr::Aggregate { .. }),
+                    ) => {
+                        if let Some((data_type, field_path)) =
+                            self.resolve_predicate_value(value, resolved)
+                        {
+                            let anonymous_key = (variable.name.is_none()
+                                && matches!(op, BinaryOp::Variable(_)))
+                            .then_some(InputPathSegment::Value.as_ref());
+                            self.push_binding(
+                                selection_path,
+                                BindingContext {
+                                    role: VariableRole::WhereValue,
+                                    data_type,
+                                    collection: matches!(op, BinaryOp::In | BinaryOp::NotIn),
+                                    scope,
+                                    inferred_path: &field_path,
+                                    anonymous_key,
+                                    operators: Vec::new(),
+                                    enum_values: Vec::new(),
+                                },
+                                variable,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
 
-        match (lhs.as_ref(), rhs.as_ref()) {
-            (
-                value @ (Expr::Path { .. } | Expr::Aggregate { .. }),
-                Expr::Variable { variable, .. },
-            )
-            | (
-                Expr::Variable { variable, .. },
-                value @ (Expr::Path { .. } | Expr::Aggregate { .. }),
-            ) => {
-                if let Some((data_type, field_path)) = self.resolve_predicate_value(value, resolved)
-                {
-                    let anonymous_key = (variable.name.is_none()
-                        && matches!(op, BinaryOp::Variable(_)))
-                    .then_some(InputPathSegment::Value.as_ref());
-                    self.push_binding(
-                        selection_path,
-                        BindingContext {
-                            role: VariableRole::WhereValue,
-                            data_type,
+                if let BinaryOp::Variable(operator) = op {
+                    let path = match (lhs.as_ref(), rhs.as_ref()) {
+                        (value @ (Expr::Path { .. } | Expr::Aggregate { .. }), _)
+                        | (_, value @ (Expr::Path { .. } | Expr::Aggregate { .. })) => Some(value),
+                        _ => None,
+                    };
+                    if let Some(path) = path
+                        && let Some((data_type, field_path)) =
+                            self.resolve_predicate_value(path, resolved)
+                    {
+                        self.push_operator_binding(
+                            selection_path,
                             scope,
-                            inferred_path: &field_path,
-                            anonymous_key,
-                            operators: Vec::new(),
-                            enum_values: Vec::new(),
-                        },
-                        variable,
-                    );
+                            data_type,
+                            &field_path,
+                            operator,
+                        );
+                    }
+                }
+
+                let child_boolean = matches!(op, BinaryOp::And | BinaryOp::Or);
+                self.collect_where(selection_path, scope, lhs, resolved, child_boolean);
+                self.collect_where(selection_path, scope, rhs, resolved, child_boolean);
+            }
+            Expr::Unary { operand, .. } => {
+                self.collect_where(selection_path, scope, operand, resolved, true);
+            }
+            Expr::NullTest { operand, .. } => {
+                self.collect_where(selection_path, scope, operand, resolved, false);
+            }
+            Expr::Exists { predicate, .. } => {
+                if let Some(predicate) = predicate {
+                    self.collect_where(selection_path, scope, predicate, resolved, true);
                 }
             }
-            _ => {}
-        }
-
-        if let BinaryOp::Variable(operator) = op {
-            let path = match (lhs.as_ref(), rhs.as_ref()) {
-                (value @ (Expr::Path { .. } | Expr::Aggregate { .. }), _)
-                | (_, value @ (Expr::Path { .. } | Expr::Aggregate { .. })) => Some(value),
-                _ => None,
-            };
-            if let Some(path) = path
-                && let Some((data_type, field_path)) = self.resolve_predicate_value(path, resolved)
-            {
-                self.push_operator_binding(selection_path, scope, data_type, &field_path, operator);
+            Expr::Variable { variable, .. } if expected_boolean => {
+                self.push_binding(
+                    selection_path,
+                    BindingContext {
+                        role: VariableRole::WhereValue,
+                        data_type: DataType::Boolean,
+                        collection: false,
+                        scope,
+                        inferred_path: &["value".to_string()],
+                        anonymous_key: None,
+                        operators: Vec::new(),
+                        enum_values: Vec::new(),
+                    },
+                    variable,
+                );
             }
+            Expr::List { .. }
+            | Expr::Aggregate { .. }
+            | Expr::Path { .. }
+            | Expr::Literal { .. }
+            | Expr::Variable { .. }
+            | Expr::Error { .. } => {}
         }
-
-        self.collect_where(selection_path, scope, lhs, resolved);
-        self.collect_where(selection_path, scope, rhs, resolved);
     }
 
     /// Terminal column type and display path of a predicate path, read
@@ -577,6 +655,10 @@ impl Inference<'_> {
                 Some((aggregate.data_type?, aggregate.display_path(self.catalog)?))
             }
             Expr::Binary { .. }
+            | Expr::Unary { .. }
+            | Expr::NullTest { .. }
+            | Expr::List { .. }
+            | Expr::Exists { .. }
             | Expr::Literal { .. }
             | Expr::Variable { .. }
             | Expr::Error { .. } => None,
@@ -599,6 +681,7 @@ impl Inference<'_> {
             BindingContext {
                 role,
                 data_type: DataType::Int,
+                collection: false,
                 scope,
                 inferred_path: &[inferred_key.as_ref().to_string()],
                 anonymous_key: None,
@@ -640,6 +723,7 @@ impl Inference<'_> {
                 source: operator.sigil.into(),
                 name,
                 data_type,
+                collection: false,
                 role: VariableRole::ComparisonOperator,
                 enum_values: allowed.iter().map(|op| op.as_str().to_string()).collect(),
                 operators: allowed,
@@ -672,6 +756,7 @@ impl Inference<'_> {
                 source: variable.sigil.into(),
                 name,
                 data_type: context.data_type,
+                collection: context.collection,
                 role: context.role,
                 operators: context.operators,
                 enum_values: context.enum_values,
@@ -683,6 +768,7 @@ impl Inference<'_> {
 struct BindingContext<'a> {
     role: VariableRole,
     data_type: DataType,
+    collection: bool,
     scope: &'a VariablePathScope,
     inferred_path: &'a [String],
     anonymous_key: Option<&'a str>,
@@ -716,6 +802,7 @@ async fn hover_variables(
     let binding_time = match binding.source {
         VariableSource::Structured => "build-time",
         VariableSource::TopLevel => "query-time",
+        VariableSource::Context => "trusted context",
     };
     let text = format!(
         "{} — `{}`: {} ({binding_time})",
@@ -725,7 +812,11 @@ async fn hover_variables(
             .map(|name| format!("`{name}`"))
             .unwrap_or_else(|| "anonymous variable".to_string()),
         binding.path,
-        binding.data_type.as_str(),
+        if binding.collection {
+            format!("{}[]", binding.data_type.as_str())
+        } else {
+            binding.data_type.as_str().to_string()
+        },
     );
 
     emit_hover_candidate(&mut commands, request, priority::VARIABLE, text);

@@ -50,6 +50,8 @@ Column title — text
 Scope . — current scope
 Scope .. — parent scope
 Scope ~ — root scope
+Keyword exists
 Keyword false
+Keyword not
 Keyword null
 Keyword true

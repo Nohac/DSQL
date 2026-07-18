@@ -1,0 +1,95 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- title
+select
+  COALESCE(
+    JSON_AGG(JSON_BUILD_OBJECT('id', "title_d4d9f554"."id")),
+    '[]'
+  ) as "title"
+from
+  (
+    select
+      *
+    from
+      "public"."title" as "title_d4d9f554"
+    where
+      (not ($1))
+      or (
+        ("title_d4d9f554"."id" = ANY($2))
+        and (
+          "title_d4d9f554"."production_year" not in (1956, null)
+        )
+        and ("title_d4d9f554"."episode_nr" is null)
+        and exists (
+          select
+            1
+          from
+            "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+          where
+            "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
+            and "movie_info_idx_15314ac3"."info_type_id" = "title_d4d9f554"."kind_id"
+        )
+        and exists (
+          select
+            1
+          from
+            "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+          where
+            "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
+            and exists (
+              select
+                1
+              from
+                "public"."info_type" as "info_type_352d952f"
+              where
+                "info_type_352d952f"."id" = "movie_info_idx_15314ac3"."info_type_id"
+                and "info_type_352d952f"."info" = "movie_info_idx_15314ac3"."info"
+            )
+        )
+        and exists (
+          select
+            1
+          from
+            "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+          where
+            "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
+            and exists (
+              select
+                1
+              from
+                "public"."info_type" as "info_type_352d952f"
+              where
+                "info_type_352d952f"."id" = "movie_info_idx_15314ac3"."info_type_id"
+                and "info_type_352d952f"."id" = "title_d4d9f554"."kind_id"
+            )
+        )
+        and exists (
+          select
+            1
+          from
+            "public"."info_type" as "info_type_352d952f"
+          where
+            "info_type_352d952f"."id" = "title_d4d9f554"."kind_id"
+        )
+        and exists (
+          select
+            1
+          from
+            "public"."info_type" as "info_type_352d952f"
+          where
+            exists (
+              select
+                1
+              from
+                "public"."kind_type" as "kind_type_2bfa7ce1"
+              where
+                "kind_type_2bfa7ce1"."id" = "info_type_352d952f"."id"
+            )
+        )
+      )
+    limit
+      10
+  ) as "title_d4d9f554"
+-- parameters: params.disabled, params.ids

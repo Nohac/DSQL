@@ -16,7 +16,7 @@ use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
 use crate::entities::expression::{Expr, LiteralValue};
 use crate::entities::fragment_spread::{SpreadDecl, check_spread_site};
-use crate::entities::{direct_rule, direct_token, node_span, text};
+use crate::entities::{direct_name, direct_rule, direct_token, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
@@ -172,8 +172,8 @@ impl LowerStage for FieldSelection {
         let name_span = node_span(ctx.cst, name_node);
         // The `->column` selector Name is a direct child of relation_ref;
         // the relation name's own tokens sit nested inside qualified_name.
-        let relation_path = direct_token(ctx.cst, target, Token::Name)
-            .map(|span| text(ctx.source, span).to_string());
+        let relation_path =
+            direct_name(ctx.cst, target).map(|span| text(ctx.source, span).to_string());
 
         let suffix = tail.and_then(|tail| direct_rule(ctx.cst, tail, Rule::FieldSuffix));
         let body = suffix
@@ -302,6 +302,10 @@ fn selection_shape_syntax(ctx: &LowerCtx<'_>, suffix: Option<NodeRef>) -> Select
                 | Expr::Path { .. }
                 | Expr::Aggregate { .. }
                 | Expr::Binary { .. }
+                | Expr::Unary { .. }
+                | Expr::NullTest { .. }
+                | Expr::List { .. }
+                | Expr::Exists { .. }
                 | Expr::Error { .. } => SelectionLimitSyntax::None,
             };
         }

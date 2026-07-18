@@ -6,14 +6,13 @@ use bowl::{
 };
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
-use crate::entities::{direct_token, node_span, text};
+use crate::entities::{direct_name, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
     NodeKey, Severity, Span, emit_diagnostic,
 };
 use crate::format::CstFormatter;
-use crate::grammar::lexer::Token;
 use crate::grammar::parser::NodeRef;
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
@@ -82,7 +81,7 @@ impl LowerStage for FragmentSpread {
         node: NodeRef,
         commands: &mut Commands<AstFacts>,
     ) -> Option<Entity> {
-        let Some(name_span) = direct_token(ctx.cst, node, Token::Name) else {
+        let Some(name_span) = direct_name(ctx.cst, node) else {
             // `...` without a name; parse diagnostics cover it.
             return None;
         };
@@ -376,7 +375,7 @@ impl FormatStage for FragmentSpread {
     fn format(formatter: &mut CstFormatter<'_>, node: NodeRef) {
         use crate::grammar::parser::Rule;
 
-        if let Some(name) = formatter.direct_token_text(node, Token::Name) {
+        if let Some(name) = formatter.direct_name_text(node) {
             formatter.write_str("...");
             formatter.write_str(&name);
         }

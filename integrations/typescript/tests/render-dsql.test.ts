@@ -125,6 +125,14 @@ test("renders exact numeric and finite/non-finite float wire types", async () =>
         required: true,
         nullable: false,
       },
+      {
+        path: "params.amounts",
+        data_type: "numeric",
+        collection: true,
+        enum_values: [],
+        required: true,
+        nullable: false,
+      },
     ],
   };
   const artifacts = {
@@ -150,6 +158,7 @@ test("renders exact numeric and finite/non-finite float wire types", async () =>
   expect(rendered).toContain(
     'threshold: number | "NaN" | "Infinity" | "-Infinity";',
   );
+  expect(rendered).toContain("amounts: Array<string | null>;");
 });
 
 test("renders singular selections as nullable objects while runtime limits stay arrays", async () => {

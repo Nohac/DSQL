@@ -6,3 +6,7 @@ Column created_at (timestamptz)
 Column email (text)
 Column id (uuid)
 Column name (text)
+Keyword exists
+Keyword in
+Keyword is
+Keyword not

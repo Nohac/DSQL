@@ -1,0 +1,11 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+expression: "format!(\"diagnostics:\\n{}\\n\\nbindings:\\n{}\",\nrender_diagnostic_facts(&bowl).await, render_bindings(&bowl).await,)"
+---
+diagnostics:
+Error[126..141]: trusted context `context.allowed_types` cannot be bound until the server-only execution boundary is available
+
+bindings:
+params.disabled TopLevel WhereValue Boolean Some("disabled") operators=[] enum=[]
+params.ids TopLevel WhereValue Int Some("ids") collection operators=[] enum=[]
+context.allowed_types Context WhereValue Int Some("allowed_types") collection operators=[] enum=[]

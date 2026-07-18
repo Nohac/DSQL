@@ -155,6 +155,61 @@ async fn variables_render_as_parameters_and_variants() {
 }
 
 #[tokio::test]
+async fn predicate_extensions_render_with_postgres_semantics() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "predicate-extensions.dsql",
+        concat!(
+            "query PredicateExtensions {\n",
+            "  title(\n",
+            "    where not $$disabled\n",
+            "      or .id in $$ids\n",
+            "      and .production_year not in [1956, null]\n",
+            "      and .episode_nr is null\n",
+            "      and exists .movie_info_idx(where .info_type_id == ..kind_id)\n",
+            "      and exists .movie_info_idx(where .info_type.info == .info)\n",
+            "      and exists .movie_info_idx(where .info_type.id == ..kind_id)\n",
+            "      and exists public::info_type(where .id == ..kind_id)\n",
+            "      and exists public::info_type(\n",
+            "        where exists public::kind_type(where .id == ..id)\n",
+            "      )\n",
+            "  ) { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn predicate_keywords_remain_valid_catalog_identifiers() {
+    let bowl = sql_bowl(numeric_catalog()).await;
+    insert_source(
+        &bowl,
+        "contextual-identifiers.dsql",
+        concat!(
+            "fragment not on metrics { exists }\n",
+            "query exists {\n",
+            "  metrics(\n",
+            "    where .exists == 1 and .in == 2 and .is == 3 and .not == 4\n",
+            "    order by exists asc\n",
+            "  ) {\n",
+            "    ...not\n",
+            "    in: exists\n",
+            "    is\n",
+            "    not\n",
+            "  }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
 async fn exact_and_floating_numbers_use_their_public_wire_types() {
     let bowl = sql_bowl(numeric_catalog()).await;
     insert_source(
