@@ -6,19 +6,25 @@
 //! parameters with the same structured paths the variables stage infers.
 //! Runs per definition, gated on [`PlanDemand`].
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
 use crate::resolution::{
     PathTerminal, ResolvedClause, ResolvedSelection, ResolvedSelectionShape, index_resolved_clauses,
 };
 use crate::schema::dsql_schema;
-use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View, With};
+use bowl::{
+    Commands, DerivedFrom, Entity, Eq as BowlEq, Query, Registrar, SystemExt, SystemParam, View,
+    Where, With,
+};
 
 use super::types::{
     AggregateGroupProjection, AggregatePlan, AggregateProjection, CollectionPlan,
     CollectionResultPlan, ExistsKind, FilterCollection, FilterColumnScope, FilterExpr,
     FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation, OperationSeed, OrderByPlan,
-    Projection, QueryPlan, QueryPlanFact, SelectionClauses, SelectionPlan, SelectionPlanItem,
-    SortDirectionPlan, SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
+    PolicyContextRequirement, Projection, QueryPlan, QueryPlanFact, SelectionClauses,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter, SqlValue,
+    SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
@@ -28,13 +34,14 @@ use crate::entities::clause::{ClauseFact, OrderDirection};
 use crate::entities::definition::{DefDecl, DefKind};
 use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, VariableRef};
 use crate::entities::field_selection::{FieldSel, SelectionTree, TreeViews};
-use crate::entities::variable::VariableRole;
+use crate::entities::policy::{CompiledPolicyIndex, PolicyIndex, PolicyKind, PolicyPlanIndex};
+use crate::entities::variable::{VariableBinding, VariableRole, VariableSource, lower_snake_case};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
 use crate::facts::{
-    BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, PlanDemand, PlanKey,
-    Severity, emit_diagnostic,
+    BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
+    PlanDemand, PlanKey, Severity, Span, emit_diagnostic,
 };
 use crate::source::{ResolutionScope, ScopeImports};
 
@@ -43,6 +50,8 @@ use crate::source::{ResolutionScope, ScopeImports};
 pub fn register_planning(reg: &mut Registrar<'_>) {
     // Views lowered facts ambiently: behind the Complete barrier.
     reg.system(plan_queries.run_during(bowl::Phase::Complete));
+    reg.system(diagnose_policy_query_context_conflicts);
+    reg.system(diagnose_cross_root_context_conflicts);
 }
 
 /// Plans every root selection of each query definition. Root spreads are
@@ -57,7 +66,11 @@ async fn plan_queries(
     _: Query<Entity, With<PlanDemand>>,
     defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
+    planning_index: Query<(
+        Entity,
+        &crate::entities::definition::DefIndex,
+        &PolicyPlanIndex,
+    )>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
     semantic_views: PlanSemanticViews<'_>,
@@ -69,6 +82,9 @@ async fn plan_queries(
 ) {
     let (def_entity, decl, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
+    let (_, _, planning_index) = planning_index.item();
+    let policy_index = &planning_index.resolution;
+    let compiled_policies = &planning_index.compiled;
     let (_, imports) = imports.item();
 
     let tree = SelectionTree::collect(&views);
@@ -84,7 +100,7 @@ async fn plan_queries(
         .iter()
         .map(|(_, selection)| (selection.field, selection))
         .collect();
-    let planner = Planner {
+    let mut planner = Planner {
         tree: &tree,
         resolved_clauses: &resolved_clauses,
         resolved_aggregates: &resolved_aggregates,
@@ -92,6 +108,9 @@ async fn plan_queries(
         catalog: snapshot.catalog(),
         scope: &scope.0,
         imports,
+        policy_index,
+        compiled_policies,
+        operation_assignments: Vec::new(),
     };
     let mut diagnostics = Vec::new();
 
@@ -116,6 +135,9 @@ async fn plan_queries(
         return;
     }
 
+    planner.operation_assignments =
+        planner.plan_assignments(def_entity, &[], &VariablePathScope::operation(), &scope.0);
+
     let roots: Vec<_> = tree
         .fields_under(def_entity)
         .map(|(entity, field, _, _)| (*entity, *field))
@@ -137,9 +159,8 @@ async fn plan_queries(
                     selection_path.push(InputPathSegment::Aggregate.as_ref().to_string());
                 }
                 let variable_scope = VariablePathScope::operation();
-                let clauses =
-                    planner.plan_clauses(table_id, &selection_path, &variable_scope, root_entity);
                 let mut spreads = Vec::new();
+                let mut policy_context = Vec::new();
                 let mut walk = PlanWalk {
                     result_path: if field.flattened {
                         Vec::new()
@@ -153,15 +174,41 @@ async fn plan_queries(
                         planner.imports,
                     ),
                     diagnostics: &mut diagnostics,
+                    policy_context: &mut policy_context,
                 };
-                if let Some(result) = planner.plan_collection_result(
-                    &mut walk,
+                let policy_filter = planner.plan_source_policy_filter(
                     table_id,
-                    SelectionPath::body(selection_path),
+                    Some(root_entity),
+                    &selection_path,
+                    &variable_scope,
+                    &scope.0,
+                    &[],
+                    walk.policy_context,
+                );
+                let clauses = planner.plan_clauses(
+                    table_id,
+                    &selection_path,
                     &variable_scope,
                     root_entity,
-                    field,
+                    &scope.0,
+                    walk.policy_context,
+                );
+                if let Some(result) = planner.plan_collection_result(
+                    &mut walk,
+                    SelectionPath::body(selection_path),
+                    &variable_scope,
+                    CollectionSource {
+                        table: table_id,
+                        entity: root_entity,
+                        field,
+                    },
+                    &scope.0,
                 ) {
+                    let policy_context = deduplicate_policy_context(
+                        policy_context,
+                        field.name_span,
+                        &mut diagnostics,
+                    );
                     let plan = QueryPlan {
                         output_name,
                         flattened: field.flattened,
@@ -169,8 +216,10 @@ async fn plan_queries(
                             table: table_id,
                             shape,
                             clauses,
+                            policy_filter,
                             result,
                         },
+                        policy_context,
                     };
                     let plan_entity = commands.insert((
                         DerivedFrom::many([def_entity, catalog_entity]),
@@ -263,6 +312,98 @@ fn emit_plan_diagnostics(
     }
 }
 
+/// Rejects one trusted-context path whose query predicate and active policy
+/// require incompatible value shapes. The bound [`DefKey`] join keeps the
+/// diagnostic tracked on both semantic inputs, so fixing either side retires
+/// it.
+async fn diagnose_policy_query_context_conflicts(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    plans: Query<(Entity, &QueryPlanFact, &DefKey, &BelongsToFile)>,
+    bindings: Query<(Entity, &VariableBinding, &DefKey, &Span), Where<BowlEq<DefKey>>>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (plan_entity, plan, _, file) = plans.item();
+    let (binding_entity, binding, _, span) = bindings.item();
+    if binding.source != VariableSource::Context {
+        return;
+    }
+    let Some(requirement) = plan
+        .0
+        .policy_context
+        .iter()
+        .find(|requirement| requirement.path == binding.path)
+    else {
+        return;
+    };
+    let binding_requirement = PolicyContextRequirement {
+        path: binding.path.clone(),
+        data_type: binding.data_type,
+        collection: binding.collection,
+    };
+    if !context_requirements_conflict(requirement, &binding_requirement) {
+        return;
+    }
+    emit_diagnostic(
+        &mut commands,
+        DiagnosticFacts {
+            derived_from: DerivedFrom::many([plan_entity, binding_entity]),
+            file: file.0,
+            span: *span,
+            severity: Severity::Error,
+            source: DiagnosticSource::Plan,
+            code: DiagnosticCode::TrustedContextTypeConflict,
+            message: context_conflict_message(requirement, &binding_requirement),
+        },
+    );
+}
+
+/// Rejects requirements that are individually valid for separate roots of
+/// one query but become incompatible when that query's server contract is
+/// considered as a whole.
+async fn diagnose_cross_root_context_conflicts(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    plans: Query<(
+        Entity,
+        &QueryPlanFact,
+        &OperationSeed,
+        &DefKey,
+        &BelongsToFile,
+    )>,
+    others: Query<(Entity, &QueryPlanFact, &DefKey), Where<BowlEq<DefKey>>>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (plan_entity, plan, seed, _, file) = plans.item();
+    let (other_entity, other, _) = others.item();
+    if plan_entity >= other_entity {
+        return;
+    }
+    for requirement in &plan.0.policy_context {
+        let Some(other_requirement) = other
+            .0
+            .policy_context
+            .iter()
+            .find(|other| other.path == requirement.path)
+        else {
+            continue;
+        };
+        if !context_requirements_conflict(requirement, other_requirement) {
+            continue;
+        }
+        emit_diagnostic(
+            &mut commands,
+            DiagnosticFacts {
+                derived_from: DerivedFrom::many([plan_entity, other_entity]),
+                file: file.0,
+                span: seed.def_span,
+                severity: Severity::Error,
+                source: DiagnosticSource::Plan,
+                code: DiagnosticCode::TrustedContextTypeConflict,
+                message: context_conflict_message(requirement, other_requirement),
+            },
+        );
+    }
+}
+
 /// Plans a fragment body against its declared table: no SQL renders from
 /// it, but generated artifacts derive the fragment's result shape from
 /// the plan.
@@ -298,17 +439,20 @@ fn plan_fragment_body(
     // empty result path is the fragment root): renderers compose
     // fragment types by reuse from it.
     let mut spreads = Vec::new();
+    let mut policy_context = Vec::new();
     let Some(selections) = planner.plan_selection_set(
         &mut PlanWalk {
             result_path: Vec::new(),
             spreads: &mut spreads,
             expansion: &mut SpreadExpansion::new(planner.tree, planner.scope, planner.imports),
             diagnostics,
+            policy_context: &mut policy_context,
         },
         table_id,
         SelectionPath::fragment_root(),
         &VariablePathScope::fragment(),
         def_entity,
+        scope,
     ) else {
         return;
     };
@@ -337,6 +481,7 @@ struct PlanWalk<'a> {
     spreads: &'a mut Vec<SpreadUse>,
     expansion: &'a mut SpreadExpansion<'a, 'a>,
     diagnostics: &'a mut PlanDiagnostics,
+    policy_context: &'a mut Vec<PolicyContextRequirement>,
 }
 
 struct Planner<'a> {
@@ -347,6 +492,33 @@ struct Planner<'a> {
     catalog: &'a Catalog,
     scope: &'a str,
     imports: &'a ScopeImports,
+    policy_index: &'a PolicyIndex,
+    compiled_policies: &'a CompiledPolicyIndex,
+    operation_assignments: Vec<PlannedPolicyAssignment>,
+}
+
+#[derive(Clone)]
+struct PlannedPolicyAssignment {
+    filter: Entity,
+    desired: FilterExpr,
+    context: Vec<PolicyContextRequirement>,
+}
+
+struct PolicyPlanningContext<'a> {
+    definition_scope: &'a str,
+    context: &'a mut Vec<PolicyContextRequirement>,
+}
+
+struct CollectionSource<'a> {
+    table: TableId,
+    entity: Entity,
+    field: &'a FieldSel,
+}
+
+#[derive(Clone, Copy)]
+struct FilterTableScope {
+    table: TableId,
+    outer_current_table: Option<TableId>,
 }
 
 impl Planner<'_> {
@@ -354,23 +526,297 @@ impl Planner<'_> {
         self.resolved_selections.get(&field)?.shape.clone()
     }
 
+    fn fragment_scope(&self, fragment: Entity) -> Option<&str> {
+        self.tree
+            .fragments
+            .iter()
+            .find(|(entity, _, _, _)| *entity == fragment)
+            .map(|(_, _, _, scope)| scope.0.as_str())
+    }
+
+    fn plan_assignments(
+        &self,
+        parent: Entity,
+        selection_path: &[String],
+        variable_scope: &VariablePathScope,
+        definition_scope: &str,
+    ) -> Vec<PlannedPolicyAssignment> {
+        self.tree
+            .clauses_under(parent)
+            .filter_map(|(_, clause, _, _)| {
+                let ClauseFact::FilterAssignment {
+                    name, condition, ..
+                } = clause
+                else {
+                    return None;
+                };
+                self.plan_assignment(
+                    name,
+                    condition.as_ref(),
+                    selection_path,
+                    variable_scope,
+                    definition_scope,
+                )
+            })
+            .collect()
+    }
+
+    fn plan_assignment(
+        &self,
+        name: &str,
+        condition: Option<&Expr>,
+        selection_path: &[String],
+        variable_scope: &VariablePathScope,
+        definition_scope: &str,
+    ) -> Option<PlannedPolicyAssignment> {
+        let candidates =
+            self.policy_index
+                .visible(definition_scope, PolicyKind::Filter, name, self.imports);
+        let [filter] = candidates.as_slice() else {
+            return None;
+        };
+        let mut context = Vec::new();
+        let desired = condition.map_or_else(
+            || Some(boolean_filter(true)),
+            |condition| {
+                self.plan_assignment_expr(
+                    condition,
+                    name,
+                    selection_path,
+                    variable_scope,
+                    &mut context,
+                )
+            },
+        )?;
+        Some(PlannedPolicyAssignment {
+            filter: filter.entity,
+            desired,
+            context,
+        })
+    }
+
+    fn plan_assignment_expr(
+        &self,
+        expr: &Expr,
+        filter_name: &str,
+        selection_path: &[String],
+        variable_scope: &VariablePathScope,
+        context: &mut Vec<PolicyContextRequirement>,
+    ) -> Option<FilterExpr> {
+        match expr {
+            Expr::Variable { variable, .. } => {
+                let path = variable_path(
+                    selection_path,
+                    VariablePathContext {
+                        role: VariableRole::FilterAssignment,
+                        inferred_path: &[lower_snake_case(filter_name)],
+                        anonymous_key: None,
+                    },
+                    variable_scope,
+                    variable.sigil,
+                    variable.name.as_deref(),
+                );
+                if variable.sigil == crate::entities::expression::Sigil::Context {
+                    context.push(PolicyContextRequirement {
+                        path: path.clone(),
+                        data_type: crate::catalog::DataType::Boolean,
+                        collection: false,
+                    });
+                }
+                Some(FilterExpr::Parameter(SqlParameter { path }))
+            }
+            Expr::Literal {
+                value: LiteralValue::Bool(value),
+                ..
+            } => Some(boolean_filter(*value)),
+            Expr::Unary { operand, .. } => self
+                .plan_assignment_expr(
+                    operand,
+                    filter_name,
+                    selection_path,
+                    variable_scope,
+                    context,
+                )
+                .map(not_filter),
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let left = self.plan_assignment_expr(
+                    lhs,
+                    filter_name,
+                    selection_path,
+                    variable_scope,
+                    context,
+                )?;
+                let right = self.plan_assignment_expr(
+                    rhs,
+                    filter_name,
+                    selection_path,
+                    variable_scope,
+                    context,
+                )?;
+                let op = match op {
+                    BinaryOp::And => FilterOp::And,
+                    BinaryOp::Or => FilterOp::Or,
+                    BinaryOp::Comparison(op) => FilterOp::from(*op),
+                    BinaryOp::In | BinaryOp::NotIn | BinaryOp::Variable(_) => return None,
+                };
+                Some(FilterExpr::Binary {
+                    left: Box::new(left),
+                    op,
+                    right: Box::new(right),
+                })
+            }
+            Expr::NullTest {
+                operand, negated, ..
+            } => Some(FilterExpr::NullTest {
+                operand: Box::new(self.plan_assignment_expr(
+                    operand,
+                    filter_name,
+                    selection_path,
+                    variable_scope,
+                    context,
+                )?),
+                negated: *negated,
+            }),
+            Expr::List { .. }
+            | Expr::Exists { .. }
+            | Expr::Literal { .. }
+            | Expr::Path { .. }
+            | Expr::PredicateRef { .. }
+            | Expr::Aggregate { .. }
+            | Expr::Error { .. } => None,
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "effective policy state carries source-local variable and resolution context"
+    )]
+    fn plan_source_policy_filter(
+        &self,
+        table: TableId,
+        source: Option<Entity>,
+        selection_path: &[String],
+        variable_scope: &VariablePathScope,
+        definition_scope: &str,
+        explicit: &[crate::entities::expression::FilterAssignmentExpr],
+        context: &mut Vec<PolicyContextRequirement>,
+    ) -> Option<FilterExpr> {
+        let mut assignments = self
+            .operation_assignments
+            .iter()
+            .cloned()
+            .map(|assignment| (assignment.filter, assignment))
+            .collect::<BTreeMap<_, _>>();
+        if let Some(source) = source {
+            for assignment in
+                self.plan_assignments(source, selection_path, variable_scope, definition_scope)
+            {
+                assignments.insert(assignment.filter, assignment);
+            }
+        }
+        for assignment in explicit {
+            if let Some(planned) = self.plan_assignment(
+                &assignment.name,
+                assignment.condition.as_deref(),
+                selection_path,
+                variable_scope,
+                definition_scope,
+            ) {
+                assignments.insert(planned.filter, planned);
+            }
+        }
+
+        let mut identities = self
+            .policy_index
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.kind == PolicyKind::Filter
+                    && entry.matches.contains(&table)
+                    && self
+                        .imports
+                        .visible_from(self.scope)
+                        .any(|scope| scope == entry.scope.as_str())
+            })
+            .map(|entry| entry.entity)
+            .collect::<BTreeSet<_>>();
+        identities.extend(assignments.keys().copied());
+
+        let mut row_filter = None;
+        for identity in identities {
+            let Some(compiled) = self.compiled_policies.entry(identity) else {
+                continue;
+            };
+            let Some(target) = self.compiled_policies.target(identity, table) else {
+                continue;
+            };
+            let assignment = assignments.get(&identity);
+            let desired = assignment
+                .map(|assignment| assignment.desired.clone())
+                .unwrap_or_else(|| boolean_filter(compiled.default_active));
+            let active = target
+                .enforcement
+                .clone()
+                .map_or(desired.clone(), |enforcement| {
+                    or_filter(enforcement, desired)
+                });
+            if filter_boolean(&active) == Some(false) {
+                continue;
+            }
+            let Some(rule) = target.row_rule.clone() else {
+                continue;
+            };
+            let guard = if filter_boolean(&active) == Some(true) {
+                rule
+            } else {
+                or_filter(not_filter(active), rule)
+            };
+            let parameter_paths = filter_parameter_paths(&guard);
+            context.extend(
+                target
+                    .context
+                    .iter()
+                    .filter(|requirement| parameter_paths.contains(requirement.path.as_str()))
+                    .cloned(),
+            );
+            if let Some(assignment) = assignment {
+                context.extend(
+                    assignment
+                        .context
+                        .iter()
+                        .filter(|requirement| parameter_paths.contains(requirement.path.as_str()))
+                        .cloned(),
+                );
+            }
+            row_filter =
+                Some(row_filter.map_or(guard.clone(), |current| and_filter(current, guard)));
+        }
+        row_filter
+    }
+
     fn plan_collection_result(
         &self,
         walk: &mut PlanWalk<'_>,
-        table: TableId,
         selection_path: SelectionPath,
         variable_scope: &VariablePathScope,
-        source: Entity,
-        field: &FieldSel,
+        source: CollectionSource<'_>,
+        definition_scope: &str,
     ) -> Option<CollectionResultPlan> {
-        if field.has_selection_set() {
+        if source.field.has_selection_set() {
             return self
-                .plan_selection_set(walk, table, selection_path, variable_scope, source)
+                .plan_selection_set(
+                    walk,
+                    source.table,
+                    selection_path,
+                    variable_scope,
+                    source.entity,
+                    definition_scope,
+                )
                 .map(CollectionResultPlan::Rows);
         }
-        if field.has_transform() {
+        if source.field.has_transform() {
             return self
-                .plan_aggregate(source)
+                .plan_aggregate(source.entity)
                 .map(CollectionResultPlan::Aggregate);
         }
         None
@@ -418,6 +864,7 @@ impl Planner<'_> {
         selection_path: SelectionPath,
         variable_scope: &VariablePathScope,
         parent: Entity,
+        definition_scope: &str,
     ) -> Option<SelectionPlan> {
         let mut items = Vec::new();
 
@@ -463,6 +910,8 @@ impl Planner<'_> {
                         SelectionPath::fragment_root(),
                         &variable_scope.for_fragment_spread(&selection_path, &name),
                         fragment_entity,
+                        self.fragment_scope(fragment_entity)
+                            .unwrap_or(definition_scope),
                     ) {
                         items.extend(fragment_plan.items);
                     }
@@ -498,11 +947,22 @@ impl Planner<'_> {
                             if field.flattened && field.has_transform() {
                                 child_path.push(InputPathSegment::Aggregate.as_ref().to_string());
                             }
+                            let child_policy_filter = self.plan_source_policy_filter(
+                                relation_table,
+                                Some(field_entity),
+                                &child_path,
+                                variable_scope,
+                                definition_scope,
+                                &[],
+                                walk.policy_context,
+                            );
                             let child_clauses = self.plan_clauses(
                                 relation_table,
                                 &child_path,
                                 variable_scope,
                                 field_entity,
+                                definition_scope,
+                                walk.policy_context,
                             );
                             if !field.flattened {
                                 walk.result_path.push(
@@ -511,11 +971,14 @@ impl Planner<'_> {
                             }
                             let nested = self.plan_collection_result(
                                 walk,
-                                relation_table,
                                 SelectionPath::body(child_path),
                                 variable_scope,
-                                field_entity,
-                                field,
+                                CollectionSource {
+                                    table: relation_table,
+                                    entity: field_entity,
+                                    field,
+                                },
+                                definition_scope,
                             );
                             if !field.flattened {
                                 walk.result_path.pop();
@@ -533,6 +996,7 @@ impl Planner<'_> {
                                         table: relation_table,
                                         shape,
                                         clauses: child_clauses,
+                                        policy_filter: child_policy_filter,
                                         result: nested,
                                     }),
                                 }));
@@ -564,8 +1028,14 @@ impl Planner<'_> {
         selection_path: &[String],
         variable_scope: &VariablePathScope,
         field_entity: Entity,
+        definition_scope: &str,
+        policy_context: &mut Vec<PolicyContextRequirement>,
     ) -> SelectionClauses {
         let mut clauses = SelectionClauses::default();
+        let mut policy = PolicyPlanningContext {
+            definition_scope,
+            context: policy_context,
+        };
         let mut clause_rows = self
             .tree
             .clauses_under(field_entity)
@@ -579,12 +1049,15 @@ impl Planner<'_> {
                 ClauseFact::Where { expr } => {
                     clauses.filter = resolved.and_then(|resolved| {
                         self.plan_filter_expr(
-                            table,
-                            None,
+                            FilterTableScope {
+                                table,
+                                outer_current_table: None,
+                            },
                             selection_path,
                             variable_scope,
                             expr,
                             resolved,
+                            &mut policy,
                         )
                     });
                 }
@@ -653,12 +1126,12 @@ impl Planner<'_> {
 
     fn plan_filter_expr(
         &self,
-        table: TableId,
-        outer_current_table: Option<TableId>,
+        table_scope: FilterTableScope,
         selection_path: &[String],
         variable_scope: &VariablePathScope,
         expr: &Expr,
         resolved: &ResolvedClause,
+        policy: &mut PolicyPlanningContext<'_>,
     ) -> Option<FilterExpr> {
         match expr {
             Expr::Error { .. } => None,
@@ -676,31 +1149,39 @@ impl Planner<'_> {
                     variable.name.as_deref(),
                 ),
             })),
-            Expr::Path { .. } => self.plan_filter_path(resolved, outer_current_table, expr),
+            Expr::Path { .. } => {
+                self.plan_filter_path(resolved, table_scope.outer_current_table, expr)
+            }
             Expr::Unary { operand, .. } => self
                 .plan_filter_expr(
-                    table,
-                    outer_current_table,
+                    table_scope,
                     selection_path,
                     variable_scope,
                     operand,
                     resolved,
+                    policy,
                 )
                 .map(|operand| FilterExpr::Not(Box::new(operand))),
             Expr::NullTest {
                 operand, negated, ..
             } => {
-                let planned =
-                    self.plan_predicate_operand_path(outer_current_table, operand, resolved)?;
+                let planned = self.plan_predicate_operand_path(
+                    table_scope.outer_current_table,
+                    operand,
+                    resolved,
+                )?;
                 let test = FilterExpr::NullTest {
                     operand: Box::new(planned),
                     negated: *negated,
                 };
-                self.wrap_relation_predicate(operand, test, resolved)
+                self.wrap_relation_predicate(operand, test, resolved, policy)
             }
             Expr::List { .. } => None,
             Expr::Exists {
-                predicate, span, ..
+                filters,
+                predicate,
+                span,
+                ..
             } => {
                 let existence = resolved.existence_at(*span)?;
                 let source = existence.source.as_ref()?;
@@ -710,16 +1191,28 @@ impl Planner<'_> {
                     }
                     crate::resolution::ResolvedExistenceSource::Table(table) => (None, *table),
                 };
+                let policy_filter = self.plan_source_policy_filter(
+                    exists_table,
+                    None,
+                    selection_path,
+                    variable_scope,
+                    policy.definition_scope,
+                    filters,
+                    policy.context,
+                );
                 let filter = predicate
                     .as_deref()
                     .and_then(|predicate| {
                         self.plan_filter_expr(
-                            exists_table,
-                            None,
+                            FilterTableScope {
+                                table: exists_table,
+                                outer_current_table: None,
+                            },
                             selection_path,
                             variable_scope,
                             predicate,
                             resolved,
+                            policy,
                         )
                     })
                     .map(Box::new);
@@ -727,6 +1220,8 @@ impl Planner<'_> {
                     foreign_key,
                     table: exists_table,
                     kind: ExistsKind::Explicit,
+                    source_scope: FilterColumnScope::Current,
+                    policy_filter: policy_filter.map(Box::new),
                     filter,
                 })
             }
@@ -742,25 +1237,34 @@ impl Planner<'_> {
                 {
                     return None;
                 }
-                self.plan_predicate_aggregate(expr, resolved)
+                self.plan_predicate_aggregate(
+                    expr,
+                    resolved,
+                    selection_path,
+                    variable_scope,
+                    policy,
+                )
             }
             Expr::Binary { op, lhs, rhs, .. } => {
                 if matches!(op, BinaryOp::In | BinaryOp::NotIn) {
                     let field_path = self.predicate_path(resolved, lhs)?;
-                    let operand =
-                        self.plan_predicate_operand_path(outer_current_table, lhs, resolved)?;
+                    let operand = self.plan_predicate_operand_path(
+                        table_scope.outer_current_table,
+                        lhs,
+                        resolved,
+                    )?;
                     let collection = match rhs.as_ref() {
                         Expr::List { items, .. } => FilterCollection::List(
                             items
                                 .iter()
                                 .map(|item| {
                                     self.plan_filter_expr(
-                                        table,
-                                        outer_current_table,
+                                        table_scope,
                                         selection_path,
                                         variable_scope,
                                         item,
                                         resolved,
+                                        policy,
                                     )
                                 })
                                 .collect::<Option<Vec<_>>>()?,
@@ -783,7 +1287,7 @@ impl Planner<'_> {
                         collection,
                         negated: matches!(op, BinaryOp::NotIn),
                     };
-                    return self.wrap_relation_predicate(lhs, membership, resolved);
+                    return self.wrap_relation_predicate(lhs, membership, resolved, policy);
                 }
                 let aggregate = match (lhs.as_ref(), rhs.as_ref()) {
                     (aggregate @ Expr::Aggregate { .. }, _)
@@ -799,21 +1303,23 @@ impl Planner<'_> {
                 {
                     let left = self.plan_aggregate_comparison_operand(
                         lhs,
-                        table,
+                        table_scope.table,
                         selection_path,
                         variable_scope,
                         &field_path,
                         op,
                         resolved,
+                        policy,
                     )?;
                     let right = self.plan_aggregate_comparison_operand(
                         rhs,
-                        table,
+                        table_scope.table,
                         selection_path,
                         variable_scope,
                         &field_path,
                         op,
                         resolved,
+                        policy,
                     )?;
                     return self.binary_or_variant(
                         left,
@@ -839,12 +1345,15 @@ impl Planner<'_> {
                             ),
                         }),
                         _ => self.plan_filter_expr(
-                            table,
-                            Some(table),
+                            FilterTableScope {
+                                table: table_scope.table,
+                                outer_current_table: Some(table_scope.table),
+                            },
                             selection_path,
                             variable_scope,
                             rhs,
                             resolved,
+                            policy,
                         )?,
                     };
                     if let Some(filter) = self.relation_predicate_filter(
@@ -855,6 +1364,7 @@ impl Planner<'_> {
                         right,
                         variable_scope,
                         resolved,
+                        policy,
                     ) {
                         return Some(filter);
                     }
@@ -863,7 +1373,8 @@ impl Planner<'_> {
                     (lhs.as_ref(), rhs.as_ref())
                     && let Some(field_path) = self.predicate_path(resolved, path)
                 {
-                    let left = self.plan_filter_path(resolved, outer_current_table, path)?;
+                    let left =
+                        self.plan_filter_path(resolved, table_scope.outer_current_table, path)?;
                     let right = FilterExpr::Parameter(SqlParameter {
                         path: where_value_path(
                             selection_path,
@@ -883,20 +1394,20 @@ impl Planner<'_> {
                     );
                 }
                 let (left, left_path) = self.plan_filter_expr_with_path(
-                    table,
-                    outer_current_table,
+                    table_scope,
                     selection_path,
                     variable_scope,
                     lhs,
                     resolved,
+                    policy,
                 )?;
                 let (right, right_path) = self.plan_filter_expr_with_path(
-                    table,
-                    outer_current_table,
+                    table_scope,
                     selection_path,
                     variable_scope,
                     rhs,
                     resolved,
+                    policy,
                 )?;
                 let inferred = path_parts(
                     left_path
@@ -959,23 +1470,23 @@ impl Planner<'_> {
 
     fn plan_filter_expr_with_path(
         &self,
-        table: TableId,
-        outer_current_table: Option<TableId>,
+        table_scope: FilterTableScope,
         selection_path: &[String],
         variable_scope: &VariablePathScope,
         expr: &Expr,
         resolved: &ResolvedClause,
+        policy: &mut PolicyPlanningContext<'_>,
     ) -> Option<(FilterExpr, Option<String>)> {
         let field_path = self
             .predicate_value_path(resolved, expr)
             .map(|parts| parts.join("."));
         self.plan_filter_expr(
-            table,
-            outer_current_table,
+            table_scope,
             selection_path,
             variable_scope,
             expr,
             resolved,
+            policy,
         )
         .map(|expr| (expr, field_path))
     }
@@ -1037,6 +1548,9 @@ impl Planner<'_> {
         &self,
         expr: &Expr,
         resolved_clause: &ResolvedClause,
+        selection_path: &[String],
+        variable_scope: &VariablePathScope,
+        policy: &mut PolicyPlanningContext<'_>,
     ) -> Option<FilterExpr> {
         let aggregate = resolved_clause.aggregate_at(expr.span())?;
         if !aggregate.is_valid() {
@@ -1048,6 +1562,17 @@ impl Planner<'_> {
             table: relation.table,
             function: aggregate.function?,
             operand: aggregate.operand,
+            policy_filter: self
+                .plan_source_policy_filter(
+                    relation.table,
+                    None,
+                    selection_path,
+                    variable_scope,
+                    policy.definition_scope,
+                    &[],
+                    policy.context,
+                )
+                .map(Box::new),
         })
     }
 
@@ -1064,9 +1589,16 @@ impl Planner<'_> {
         inferred_path: &[String],
         op: &BinaryOp,
         resolved: &ResolvedClause,
+        policy: &mut PolicyPlanningContext<'_>,
     ) -> Option<FilterExpr> {
         match expr {
-            Expr::Aggregate { .. } => self.plan_predicate_aggregate(expr, resolved),
+            Expr::Aggregate { .. } => self.plan_predicate_aggregate(
+                expr,
+                resolved,
+                selection_path,
+                variable_scope,
+                policy,
+            ),
             Expr::Variable { variable, .. } => Some(FilterExpr::Parameter(SqlParameter {
                 path: where_value_path(selection_path, variable_scope, inferred_path, op, variable),
             })),
@@ -1079,12 +1611,15 @@ impl Planner<'_> {
             | Expr::Path { .. }
             | Expr::PredicateRef { .. }
             | Expr::Error { .. } => self.plan_filter_expr(
-                table,
-                Some(table),
+                FilterTableScope {
+                    table,
+                    outer_current_table: Some(table),
+                },
                 selection_path,
                 variable_scope,
                 expr,
                 resolved,
+                policy,
             ),
         }
     }
@@ -1104,6 +1639,7 @@ impl Planner<'_> {
         right: FilterExpr,
         variable_scope: &VariablePathScope,
         resolved_clause: &ResolvedClause,
+        policy: &mut PolicyPlanningContext<'_>,
     ) -> Option<FilterExpr> {
         let Expr::Path {
             anchor: PathAnchor::Current,
@@ -1134,7 +1670,7 @@ impl Planner<'_> {
             operator_path.map_or_else(|| vec![display.clone()], |path| path_parts(&path));
         let filter =
             self.binary_or_variant(left, op, right, selection_path, variable_scope, &inferred)?;
-        self.wrap_relation_predicate(path, filter, resolved_clause)
+        self.wrap_relation_predicate(path, filter, resolved_clause, policy)
     }
 
     fn wrap_relation_predicate(
@@ -1142,6 +1678,7 @@ impl Planner<'_> {
         path: &Expr,
         filter: FilterExpr,
         resolved_clause: &ResolvedClause,
+        policy: &mut PolicyPlanningContext<'_>,
     ) -> Option<FilterExpr> {
         let Expr::Path { segments, .. } = path else {
             return Some(filter);
@@ -1159,6 +1696,18 @@ impl Planner<'_> {
                     foreign_key: Some(relation.foreign_key),
                     table: relation.table,
                     kind: ExistsKind::RelationshipPredicate,
+                    source_scope: FilterColumnScope::Current,
+                    policy_filter: self
+                        .plan_source_policy_filter(
+                            relation.table,
+                            None,
+                            &[],
+                            &VariablePathScope::operation(),
+                            policy.definition_scope,
+                            &[],
+                            policy.context,
+                        )
+                        .map(Box::new),
                     filter: Some(Box::new(filter)),
                 }),
         )
@@ -1284,4 +1833,155 @@ fn plan_u64_value(
 
 fn path_parts(path: &str) -> Vec<String> {
     path.split('.').map(ToString::to_string).collect()
+}
+
+fn boolean_filter(value: bool) -> FilterExpr {
+    FilterExpr::Literal(FilterLiteral::Bool(value))
+}
+
+fn filter_boolean(filter: &FilterExpr) -> Option<bool> {
+    match filter {
+        FilterExpr::Literal(FilterLiteral::Bool(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn not_filter(filter: FilterExpr) -> FilterExpr {
+    match filter {
+        FilterExpr::Literal(FilterLiteral::Bool(value)) => boolean_filter(!value),
+        FilterExpr::Not(operand) => *operand,
+        filter => FilterExpr::Not(Box::new(filter)),
+    }
+}
+
+fn or_filter(left: FilterExpr, right: FilterExpr) -> FilterExpr {
+    match (filter_boolean(&left), filter_boolean(&right)) {
+        (Some(true), _) | (_, Some(true)) => boolean_filter(true),
+        (Some(false), _) => right,
+        (_, Some(false)) => left,
+        _ => FilterExpr::Binary {
+            left: Box::new(left),
+            op: FilterOp::Or,
+            right: Box::new(right),
+        },
+    }
+}
+
+fn and_filter(left: FilterExpr, right: FilterExpr) -> FilterExpr {
+    match (filter_boolean(&left), filter_boolean(&right)) {
+        (Some(false), _) | (_, Some(false)) => boolean_filter(false),
+        (Some(true), _) => right,
+        (_, Some(true)) => left,
+        _ => FilterExpr::Binary {
+            left: Box::new(left),
+            op: FilterOp::And,
+            right: Box::new(right),
+        },
+    }
+}
+
+fn deduplicate_policy_context(
+    context: Vec<PolicyContextRequirement>,
+    span: Span,
+    diagnostics: &mut PlanDiagnostics,
+) -> Vec<PolicyContextRequirement> {
+    let mut by_path: BTreeMap<String, PolicyContextRequirement> = BTreeMap::new();
+    for requirement in context {
+        if let Some(existing) = by_path.get(&requirement.path) {
+            if context_requirements_conflict(existing, &requirement) {
+                diagnostics.push((
+                    span,
+                    DiagnosticCode::TrustedContextTypeConflict,
+                    context_conflict_message(existing, &requirement),
+                ));
+            }
+        } else {
+            by_path.insert(requirement.path.clone(), requirement);
+        }
+    }
+    by_path.into_values().collect()
+}
+
+fn context_requirements_conflict(
+    left: &PolicyContextRequirement,
+    right: &PolicyContextRequirement,
+) -> bool {
+    left.data_type != right.data_type || left.collection != right.collection
+}
+
+fn context_conflict_message(
+    left: &PolicyContextRequirement,
+    right: &PolicyContextRequirement,
+) -> String {
+    format!(
+        "trusted context `{}` is required as both {} and {}",
+        left.path,
+        context_requirement_shape(left),
+        context_requirement_shape(right)
+    )
+}
+
+fn context_requirement_shape(requirement: &PolicyContextRequirement) -> String {
+    if requirement.collection {
+        format!("a collection of `{}`", requirement.data_type.as_str())
+    } else {
+        format!("`{}`", requirement.data_type.as_str())
+    }
+}
+
+fn filter_parameter_paths(filter: &FilterExpr) -> BTreeSet<&str> {
+    fn collect<'a>(filter: &'a FilterExpr, paths: &mut BTreeSet<&'a str>) {
+        match filter {
+            FilterExpr::Parameter(parameter) => {
+                paths.insert(&parameter.path);
+            }
+            FilterExpr::Binary { left, right, .. }
+            | FilterExpr::VariantBinary { left, right, .. } => {
+                collect(left, paths);
+                collect(right, paths);
+            }
+            FilterExpr::Not(operand) | FilterExpr::NullTest { operand, .. } => {
+                collect(operand, paths);
+            }
+            FilterExpr::Membership {
+                operand,
+                collection,
+                ..
+            } => {
+                collect(operand, paths);
+                match collection {
+                    FilterCollection::List(items) => {
+                        for item in items {
+                            collect(item, paths);
+                        }
+                    }
+                    FilterCollection::Parameter(parameter) => {
+                        paths.insert(&parameter.path);
+                    }
+                }
+            }
+            FilterExpr::Exists {
+                policy_filter,
+                filter,
+                ..
+            } => {
+                if let Some(policy_filter) = policy_filter {
+                    collect(policy_filter, paths);
+                }
+                if let Some(filter) = filter {
+                    collect(filter, paths);
+                }
+            }
+            FilterExpr::RelationAggregate { policy_filter, .. } => {
+                if let Some(policy_filter) = policy_filter {
+                    collect(policy_filter, paths);
+                }
+            }
+            FilterExpr::Column { .. } | FilterExpr::Literal(_) => {}
+        }
+    }
+
+    let mut paths = BTreeSet::new();
+    collect(filter, &mut paths);
+    paths
 }

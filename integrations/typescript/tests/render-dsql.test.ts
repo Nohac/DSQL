@@ -164,7 +164,7 @@ test("renders exact numeric and finite/non-finite float wire types", async () =>
   expect(rendered).toContain("amounts: Array<string | null>;");
 });
 
-test("renders singular selections as nullable objects while runtime limits stay arrays", async () => {
+test("renders policy-nullable singular and flattened results while runtime limits stay arrays", async () => {
   const root = createRoot();
   const operation = {
     ...operationMetadata("SelectionShapes"),
@@ -202,6 +202,14 @@ test("renders singular selections as nullable objects while runtime limits stay 
           data_type: "int",
           nullable: false,
         },
+        {
+          path: "owner_name",
+          name: "owner_name",
+          parent_path: "",
+          kind: "scalar",
+          data_type: "text",
+          nullable: true,
+        },
       ],
     },
   };
@@ -222,6 +230,7 @@ test("renders singular selections as nullable objects while runtime limits stay 
 
   expect(rendered).toMatch(/singular:\s+\{\s+id: number;\s+\} \| null;/);
   expect(rendered).toMatch(/runtime: Array<\{\s+id: number;\s+\}>;/);
+  expect(rendered).toContain("owner_name: string | null;");
 });
 
 test("renders split query and execution modules with matching filenames", async () => {

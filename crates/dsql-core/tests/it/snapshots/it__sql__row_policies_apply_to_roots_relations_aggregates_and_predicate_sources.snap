@@ -1,0 +1,134 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- movie_info_idx
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT('id', "movie_info_idx_1b1fd7c6"."id")
+    ),
+    '[]'
+  ) as "movie_info_idx"
+from
+  (
+    select
+      *
+    from
+      "public"."movie_info_idx" as "movie_info_idx_1b1fd7c6"
+    where
+      "movie_info_idx_1b1fd7c6"."info_type_id" = 101
+      and (
+        (not ($1))
+        or "movie_info_idx_1b1fd7c6"."id" > 0
+      )
+    limit
+      10
+  ) as "movie_info_idx_1b1fd7c6"
+-- parameters: params.positive_only
+
+-- title
+select
+  "dsql_root"."title" as "title"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'id',
+        "title_d4d9f554"."id",
+        'movie_info_idx',
+        "movie_info_idx_json_3575fa4a"."movie_info_idx_result_3575fa4a",
+        'info_count',
+        "info_count_json_545a6d83"."info_count_result_545a6d83"
+      ) as "title"
+    from
+      "public"."title" as "title_d4d9f554"
+      left join LATERAL (
+        select
+          COALESCE(
+            JSON_AGG(
+              JSON_BUILD_OBJECT('id', "movie_info_idx_3575fa4a"."id")
+            ),
+            '[]'
+          ) as "movie_info_idx_result_3575fa4a"
+        from
+          (
+            select
+              *
+            from
+              "public"."movie_info_idx" as "movie_info_idx_3575fa4a"
+            where
+              "movie_info_idx_3575fa4a"."movie_id" = "title_d4d9f554"."id"
+              and "movie_info_idx_3575fa4a"."info_type_id" = 101
+            limit
+              10
+          ) as "movie_info_idx_3575fa4a"
+      ) as "movie_info_idx_json_3575fa4a" on true
+      left join LATERAL (
+        select
+          JSON_BUILD_OBJECT('count', COUNT(*)) as "info_count_result_545a6d83"
+        from
+          "public"."movie_info_idx" as "info_count_545a6d83"
+        where
+          "info_count_545a6d83"."movie_id" = "title_d4d9f554"."id"
+          and "info_count_545a6d83"."info_type_id" = 101
+      ) as "info_count_json_545a6d83" on true
+    where
+      "title_d4d9f554"."kind_id" = ($1)
+      and exists (
+        select
+          1
+        from
+          "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+        where
+          "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
+          and "movie_info_idx_15314ac3"."info_type_id" = "title_d4d9f554"."kind_id"
+      )
+    limit
+      1
+  ) as "dsql_root" on true
+-- parameters: context.kind_id
+
+-- title
+select
+  COALESCE(
+    JSON_AGG(JSON_BUILD_OBJECT('id', "title_d4d9f554"."id")),
+    '[]'
+  ) as "title"
+from
+  (
+    select
+      *
+    from
+      "public"."title" as "title_d4d9f554"
+    where
+      (
+        ($1)
+        or (
+          "title_d4d9f554"."kind_id" = ($2)
+          and exists (
+            select
+              1
+            from
+              "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+            where
+              "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
+              and "movie_info_idx_15314ac3"."info_type_id" = "title_d4d9f554"."kind_id"
+          )
+        )
+      )
+      and exists (
+        select
+          1
+        from
+          "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+        where
+          "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
+      )
+    limit
+      10
+  ) as "title_d4d9f554"
+-- parameters: context.can_bypass_titles, context.kind_id

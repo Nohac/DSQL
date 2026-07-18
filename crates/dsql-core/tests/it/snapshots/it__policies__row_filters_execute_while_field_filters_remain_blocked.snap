@@ -1,0 +1,24 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+expression: "format!(\"manual:\\n{manual}\\n\\ndefault:\\n{default}\\n\\nopt out:\\n{opt_out}\\n\\naggregate:\\n{aggregate}\\n\\nexists:\\n{exists}\\n\\nunrelated:\\n{unrelated}\\n\\nfield:\\n{field}\")"
+---
+manual:
+
+
+default:
+
+
+opt out:
+
+
+aggregate:
+
+
+exists:
+
+
+unrelated:
+
+
+field:
+Error[70..75]: filter `HiddenYear` affects this operation but cannot be enforced until filter semantics are applied to generated SQL

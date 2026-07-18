@@ -80,6 +80,7 @@ pub enum DiagnosticCode {
     PredicateTypeMismatch,
     DuplicateAnonymousVariable,
     TrustedContextBindingUnavailable,
+    TrustedContextTypeConflict,
     FilterExecutionUnavailable,
     InvalidPolicyDefinition,
     UnknownFilter,

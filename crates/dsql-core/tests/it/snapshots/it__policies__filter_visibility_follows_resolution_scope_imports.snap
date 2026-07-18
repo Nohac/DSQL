@@ -3,7 +3,7 @@ source: crates/dsql-core/tests/it/policies.rs
 expression: "format!(\"imported:\\n{}\\n\\nisolated:\\n{}\\n\\nambiguous:\\n{}\",\nrender_diagnostic_facts(&imported).await,\nrender_diagnostic_facts(&isolated).await,\nrender_diagnostic_facts(&ambiguous).await,)"
 ---
 imported:
-Error[6..7]: filter `Visible` affects this operation but cannot be enforced until filter semantics are applied to generated SQL
+
 
 isolated:
 Error[23..30]: filter `Visible` not found

@@ -40,6 +40,13 @@ type DsqlOptionsArgument<Params, Input, Options> =
 
 export type DsqlQueryKey<Variables> = readonly ["dsql", string, Variables];
 
+/**
+ * DSQL operations may depend on trusted context that intentionally never
+ * reaches the client. Applications must clear or invalidate DSQL queries when
+ * that authentication context changes; public variables alone cannot
+ * distinguish those result scopes.
+ */
+
 export type DsqlQueryOptions<
   Params,
   Input,

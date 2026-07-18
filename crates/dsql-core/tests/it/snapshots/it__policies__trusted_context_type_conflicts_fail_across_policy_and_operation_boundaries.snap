@@ -1,0 +1,13 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+assertion_line: 263
+expression: "format!(\"policy-policy:\\n{policies}\\n\\npolicy-query:\\n{query}\\n\\ncross-root:\\n{roots}\")"
+---
+policy-policy:
+Error[148..153]: trusted context `context.shared` is required as both `int` and `text`
+
+policy-query:
+Error[101..109]: trusted context `context.shared` is required as both `int` and `text`
+
+cross-root:
+Error[149..202]: trusted context `context.shared` is required as both `int` and `text`

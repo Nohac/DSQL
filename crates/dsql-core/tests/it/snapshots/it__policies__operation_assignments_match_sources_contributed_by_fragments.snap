@@ -2,5 +2,3 @@
 source: crates/dsql-core/tests/it/policies.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[178..179]: filter `InfoRows` affects this operation but cannot be enforced until filter semantics are applied to generated SQL
-Error[178..179]: filter `LocalInfo` affects this operation but cannot be enforced until filter semantics are applied to generated SQL

@@ -349,7 +349,16 @@ fn generate_rows(
     } else {
         None
     };
-    let filter = collection
+    let policy_filter = collection
+        .policy_filter
+        .as_ref()
+        .map(|filter| {
+            filter_expr(
+                catalog, &context, &context, &context, None, filter, template,
+            )
+        })
+        .transpose()?;
+    let query_filter = collection
         .clauses
         .filter
         .as_ref()
@@ -365,6 +374,7 @@ fn generate_rows(
             )
         })
         .transpose()?;
+    let filter = combine_filters(policy_filter, query_filter);
     if collection.shape.cardinality == SelectionCardinality::Collection
         && should_use_source_subquery(&collection.clauses, generation.options)
     {
@@ -525,6 +535,11 @@ fn generate_aggregate(
             &context,
             foreign_key,
             collection.table,
+        )?);
+    }
+    if let Some(filter) = &collection.policy_filter {
+        query.and_where(filter_expr(
+            catalog, &context, &context, &context, None, filter, template,
         )?);
     }
     if let Some(filter) = &collection.clauses.filter {
@@ -773,6 +788,14 @@ fn sql_value_u64(value: &Option<SqlValue>) -> Option<u64> {
     }
 }
 
+fn combine_filters(left: Option<Expr>, right: Option<Expr>) -> Option<Expr> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.and(right)),
+        (Some(filter), None) | (None, Some(filter)) => Some(filter),
+        (None, None) => None,
+    }
+}
+
 fn filter_expr(
     catalog: &Catalog,
     context: &SelectionContext,
@@ -1010,6 +1033,8 @@ fn filter_expr(
             foreign_key: foreign_key_id,
             table: table_id,
             kind,
+            source_scope,
+            policy_filter,
             filter,
         } => {
             let related_table = table(catalog, *table_id)?;
@@ -1026,18 +1051,35 @@ fn filter_expr(
                 ),
                 Alias::new(&exists_context.table_alias),
             );
+            let relation_source = match source_scope {
+                FilterColumnScope::Current => context,
+                FilterColumnScope::Root => root,
+                FilterColumnScope::PredicateSource => predicate_source,
+                FilterColumnScope::Parent => parent.unwrap_or(context),
+            };
             if let Some(foreign_key_id) = foreign_key_id {
                 query.cond_where(relation_condition(
                     catalog,
-                    context,
+                    relation_source,
                     &exists_context,
                     foreign_key(catalog, *foreign_key_id)?,
                     *table_id,
                 )?);
             }
+            if let Some(policy_filter) = policy_filter {
+                query.and_where(filter_expr(
+                    catalog,
+                    &exists_context,
+                    &exists_context,
+                    &exists_context,
+                    Some(relation_source),
+                    policy_filter,
+                    template,
+                )?);
+            }
             if let Some(filter) = filter {
                 let (filter_predicate_source, filter_parent) = match kind {
-                    ExistsKind::Explicit => (&exists_context, Some(context)),
+                    ExistsKind::Explicit => (&exists_context, Some(relation_source)),
                     ExistsKind::RelationshipPredicate => (predicate_source, parent),
                 };
                 query.and_where(filter_expr(
@@ -1057,6 +1099,7 @@ fn filter_expr(
             table: table_id,
             function,
             operand,
+            policy_filter,
         } => {
             let related_table = table(catalog, *table_id)?;
             let foreign_key = foreign_key(catalog, *foreign_key_id)?;
@@ -1080,6 +1123,17 @@ fn filter_expr(
                 foreign_key,
                 *table_id,
             )?);
+            if let Some(policy_filter) = policy_filter {
+                query.and_where(filter_expr(
+                    catalog,
+                    &aggregate_context,
+                    &aggregate_context,
+                    &aggregate_context,
+                    Some(context),
+                    policy_filter,
+                    template,
+                )?);
+            }
             if *function == AggregateFunction::Exists {
                 query.expr(Expr::value(1));
                 Expr::exists(query.to_owned())

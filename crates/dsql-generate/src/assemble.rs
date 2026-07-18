@@ -1,6 +1,7 @@
 //! Metadata assembly: settled facts become the per-operation and
 //! per-fragment metadata documents host generators consume.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use dsql_core::catalog::{Catalog, TableId};
@@ -93,7 +94,11 @@ pub(crate) fn operation_metadata(
         result: result_shape(catalog, inputs.plan)?,
         params: input_fields(inputs.bindings, true),
         input: input_fields(inputs.bindings, false),
-        context: context_fields(inputs.bindings),
+        context: context_fields(
+            inputs.bindings,
+            &inputs.plan.policy_context,
+            &inputs.seed.query_name,
+        )?,
         dynamic_inputs: dynamic_inputs(inputs.bindings),
         policies: Vec::new(),
         handoffs: Vec::new(),
@@ -343,7 +348,7 @@ fn collection_result_kind(
 fn collection_result_nullable(collection: &CollectionPlan) -> bool {
     matches!(collection.result, CollectionResultPlan::Rows(_))
         && collection.shape.cardinality == SelectionCardinality::AtMostOne
-        && collection.shape.nullable
+        && (collection.shape.nullable || collection.policy_filter.is_some())
 }
 
 fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField> {
@@ -364,19 +369,65 @@ fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField
         .collect()
 }
 
-fn context_fields(bindings: &[VariableBinding]) -> Vec<InputField> {
-    bindings
+fn context_fields(
+    bindings: &[VariableBinding],
+    policy_context: &[dsql_core::plan::PolicyContextRequirement],
+    operation_name: &str,
+) -> Result<Vec<InputField>> {
+    let mut fields = BTreeMap::new();
+    for binding in bindings
         .iter()
         .filter(|binding| binding.source == VariableSource::Context)
-        .map(|binding| InputField {
-            path: binding.path.clone(),
-            data_type: binding.data_type.as_str().to_string(),
-            collection: binding.collection.then_some(true),
-            enum_values: binding.enum_values.clone(),
-            required: true,
-            nullable: false,
-        })
-        .collect()
+    {
+        insert_context_field(
+            &mut fields,
+            operation_name,
+            InputField {
+                path: binding.path.clone(),
+                data_type: binding.data_type.as_str().to_string(),
+                collection: binding.collection.then_some(true),
+                enum_values: binding.enum_values.clone(),
+                required: true,
+                nullable: false,
+            },
+        )?;
+    }
+    for requirement in policy_context {
+        insert_context_field(
+            &mut fields,
+            operation_name,
+            InputField {
+                path: requirement.path.clone(),
+                data_type: requirement.data_type.as_str().to_string(),
+                collection: requirement.collection.then_some(true),
+                enum_values: Vec::new(),
+                required: true,
+                nullable: false,
+            },
+        )?;
+    }
+    Ok(fields.into_values().collect())
+}
+
+fn insert_context_field(
+    fields: &mut BTreeMap<String, InputField>,
+    operation_name: &str,
+    field: InputField,
+) -> Result<()> {
+    if let Some(existing) = fields.get(&field.path) {
+        if existing.data_type != field.data_type || existing.collection != field.collection {
+            return Err(GenerateError::Assembly {
+                name: operation_name.to_string(),
+                message: format!(
+                    "trusted context `{}` is required as incompatible `{}` and `{}` values",
+                    field.path, existing.data_type, field.data_type
+                ),
+            });
+        }
+        return Ok(());
+    }
+    fields.insert(field.path.clone(), field);
+    Ok(())
 }
 
 fn dynamic_inputs(bindings: &[VariableBinding]) -> Vec<DynamicInputMetadata> {

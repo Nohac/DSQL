@@ -442,7 +442,11 @@ async fn check_selections(
     _: Query<Entity, With<DiagnosticsDemand>>,
     defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    policy_index: Query<(Entity, &crate::entities::policy::PolicyIndex)>,
+    policies: Query<(
+        Entity,
+        &crate::entities::policy::PolicyIndex,
+        &crate::entities::policy::CompiledPolicyIndex,
+    )>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
     resolutions: View<'_, (Entity, &ResolvedClause)>,
@@ -451,7 +455,7 @@ async fn check_selections(
     let (def_entity, decl, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
     let (_, imports) = imports.item();
-    let (policy_index_entity, policy_index) = policy_index.item();
+    let (policy_index_entity, policy_index, compiled_policies) = policies.item();
     let catalog = snapshot.catalog();
 
     let tree = SelectionTree::collect(&views);
@@ -466,6 +470,7 @@ async fn check_selections(
         catalog,
         catalog_entity,
         policy_index,
+        compiled_policies,
         policy_index_entity,
         file: file.0,
         scope: &scope.0,
@@ -495,6 +500,7 @@ pub(crate) struct CheckCtx<'a, 'view> {
     pub(crate) catalog: &'a crate::catalog::Catalog,
     pub(crate) catalog_entity: Entity,
     pub(crate) policy_index: &'a crate::entities::policy::PolicyIndex,
+    pub(crate) compiled_policies: &'a crate::entities::policy::CompiledPolicyIndex,
     pub(crate) policy_index_entity: Entity,
     pub(crate) file: Entity,
     /// Resolution scope of the definition being checked.
@@ -878,7 +884,56 @@ impl CheckCtx<'_, '_> {
                 .then_with(|| left.entity.cmp(&right.entity))
         });
         for filter in filters {
-            self.diagnostic(
+            let Some(compiled) = self.compiled_policies.entry(filter.entity) else {
+                self.emit_filter_compilation_unavailable(query, name_span, filter);
+                continue;
+            };
+            let missing_target = self
+                .observed_tables
+                .iter()
+                .filter(|table| filter.matches.contains(table))
+                .any(|table| {
+                    self.compiled_policies
+                        .target(filter.entity, *table)
+                        .is_none()
+                });
+            if missing_target {
+                self.emit_filter_compilation_unavailable(query, name_span, filter);
+                continue;
+            }
+            if !compiled.has_field_rules {
+                continue;
+            }
+            self.emit_filter_execution_unavailable(query, name_span, filter);
+        }
+    }
+
+    fn emit_filter_compilation_unavailable(
+        &mut self,
+        query: Entity,
+        name_span: Span,
+        filter: &crate::entities::policy::PolicyEntry,
+    ) {
+        self.diagnostic(
+            query,
+            name_span,
+            Severity::Error,
+            DiagnosticSource::Generate,
+            DiagnosticCode::FilterExecutionUnavailable,
+            format!(
+                "filter `{}` affects this operation but could not be compiled; fix its definition diagnostics",
+                filter.name
+            ),
+        );
+    }
+
+    fn emit_filter_execution_unavailable(
+        &mut self,
+        query: Entity,
+        name_span: Span,
+        filter: &crate::entities::policy::PolicyEntry,
+    ) {
+        self.diagnostic(
                 query,
                 name_span,
                 Severity::Error,
@@ -889,7 +944,6 @@ impl CheckCtx<'_, '_> {
                     filter.name
                 ),
             );
-        }
     }
 
     fn missing_flattened_body(&mut self, entity: Entity, field: &FieldSel) {

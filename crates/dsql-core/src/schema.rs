@@ -18,7 +18,9 @@ use crate::entities::directive::DirectiveFact;
 use crate::entities::document::ParsedFile;
 use crate::entities::field_selection::FieldSel;
 use crate::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
-use crate::entities::policy::{PolicyDecl, PolicyIndex};
+use crate::entities::policy::{
+    CompiledPolicyIndex, PolicyBodyIndex, PolicyDecl, PolicyIndex, PolicyPlanIndex,
+};
 use crate::entities::variable::{
     DefinitionVariables, DuplicateAnonymousBinding, VariableBinding, VariableUse,
 };
@@ -177,8 +179,13 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
     ),
-    def_index: (Singleton<DefIndex>, DefIndex),
-    policy_index: (Singleton<PolicyIndex>, PolicyIndex),
+    def_index: (Singleton<DefIndex>, DefIndex, Option<PolicyPlanIndex>),
+    policy_index: (
+        Singleton<PolicyIndex>,
+        PolicyIndex,
+        Option<CompiledPolicyIndex>,
+    ),
+    policy_body_index: (Singleton<PolicyBodyIndex>, PolicyBodyIndex),
     resolved_selection: (ResolvedSelection, ResolutionOf, BelongsToFile, DerivedFrom),
     resolved_aggregate: (ResolvedAggregate, BelongsToFile, DerivedFrom),
     resolved_clause: (ResolvedClause, BelongsToFile, DerivedFrom),

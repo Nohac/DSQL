@@ -851,7 +851,7 @@ impl Inference<'_> {
     }
 }
 
-fn lower_snake_case(name: &str) -> String {
+pub(crate) fn lower_snake_case(name: &str) -> String {
     let mut result = String::new();
     for (index, character) in name.chars().enumerate() {
         if character.is_ascii_uppercase() {

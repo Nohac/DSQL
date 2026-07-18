@@ -19,7 +19,8 @@ use crate::catalog::{
 use crate::entities::definition::DefIndex;
 use crate::entities::document::ParsedFile;
 use crate::entities::expression::{
-    ExistsSource, Expr, LiteralValue, PathAnchor, PathSegment, Sigil, build_expr, expr_child,
+    BinaryOp, ExistsSource, Expr, LiteralValue, PathAnchor, PathSegment, Sigil, VariableRef,
+    build_expr, expr_child,
 };
 use crate::entities::{direct_name, direct_names, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
@@ -29,6 +30,10 @@ use crate::facts::{
 };
 use crate::format::CstFormatter;
 use crate::grammar::parser::{NodeRef, Rule};
+use crate::plan::{
+    ExistsKind, FilterCollection, FilterColumnScope, FilterExpr, FilterLiteral, FilterOp,
+    PolicyContextRequirement, SqlParameter,
+};
 use crate::schema::{AstFacts, dsql_schema};
 use crate::source::{BelongsToHost, ResolutionScope, ScopeImports};
 
@@ -144,6 +149,64 @@ pub struct PolicyEntry {
 pub struct PolicyIndex {
     pub definition_hash: u64,
     pub entries: Vec<PolicyEntry>,
+}
+
+/// Body-sensitive tracked input kept separate from [`PolicyIndex`], so edits
+/// to rule expressions wake policy compilation without invalidating consumers
+/// that only care about definition visibility and catalog matches.
+#[derive(Component, Debug, Clone, Hash, PartialEq)]
+#[component(hash)]
+pub struct PolicyBodyIndex {
+    pub declarations: Vec<(Entity, PolicyDecl)>,
+}
+
+/// One filter compiled for one concrete catalog target.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct CompiledPolicyTarget {
+    pub table: TableId,
+    pub enforcement: Option<FilterExpr>,
+    pub row_rule: Option<FilterExpr>,
+    pub context: Vec<PolicyContextRequirement>,
+}
+
+/// Query-planning semantics for one filter identity.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct CompiledPolicyEntry {
+    pub entity: Entity,
+    pub scope: String,
+    pub name: String,
+    pub default_active: bool,
+    pub has_field_rules: bool,
+    pub targets: Vec<CompiledPolicyTarget>,
+}
+
+/// Body-sensitive, catalog-resolved policy semantics consumed by planning.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct CompiledPolicyIndex {
+    pub entries: Vec<CompiledPolicyEntry>,
+}
+
+/// Body-sensitive policy input colocated with [`DefIndex`] so planning keeps
+/// one tracked definition join instead of adding another row driver.
+#[derive(Component, Debug, Clone, Hash, PartialEq)]
+#[component(hash)]
+pub struct PolicyPlanIndex {
+    pub resolution: PolicyIndex,
+    pub compiled: CompiledPolicyIndex,
+}
+
+impl CompiledPolicyIndex {
+    pub fn entry(&self, entity: Entity) -> Option<&CompiledPolicyEntry> {
+        self.entries.iter().find(|entry| entry.entity == entity)
+    }
+
+    pub fn target(&self, entity: Entity, table: TableId) -> Option<&CompiledPolicyTarget> {
+        self.entry(entity)?
+            .targets
+            .iter()
+            .find(|target| target.table == table)
+    }
 }
 
 impl PolicyIndex {
@@ -429,9 +492,10 @@ impl LanguageEntity for Policy {
 
     fn register(registrar: &mut Registrar<'_>) {
         registrar.system(index_policies.run_during(Phase::Complete));
+        registrar.system(index_policy_bodies.run_during(Phase::Complete));
+        registrar.system(compile_policies.run_during(Phase::Complete));
         registrar.system(check_policy_definitions.run_during(Phase::Complete));
         registrar.system(check_import_ambiguities.run_during(Phase::Complete));
-        registrar.system(diagnose_unbound_trusted_context.run_during(Phase::Complete));
     }
 }
 
@@ -587,6 +651,444 @@ async fn index_policies(
             entries,
         },
     ));
+}
+
+async fn index_policy_bodies(
+    _: Query<(Entity, &ParsedFile)>,
+    policies: View<'_, (Entity, &PolicyDecl)>,
+    mut commands: Commands<(dsql_schema::PolicyBodyIndex,)>,
+) {
+    let mut declarations = policies
+        .iter()
+        .map(|(entity, declaration)| (entity, declaration.clone()))
+        .collect::<Vec<_>>();
+    declarations.sort_by_key(|(entity, _)| *entity);
+    commands.insert((
+        Singleton::<PolicyBodyIndex>::new(),
+        PolicyBodyIndex { declarations },
+    ));
+}
+
+async fn compile_policies(
+    policy_index: Query<(Entity, &PolicyIndex)>,
+    body_index: Query<(Entity, &PolicyBodyIndex)>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    definitions: Query<(Entity, &DefIndex)>,
+    mut commands: Commands<(dsql_schema::PolicyIndex, dsql_schema::DefIndex)>,
+) {
+    let (policy_index_entity, policy_index) = policy_index.item();
+    let (_, body_index) = body_index.item();
+    let (_, snapshot) = catalog.item();
+    let (_, imports) = imports.item();
+    let (definitions_entity, _) = definitions.item();
+    let declarations = body_index
+        .declarations
+        .iter()
+        .map(|(entity, declaration)| (*entity, declaration))
+        .collect::<BTreeMap<_, _>>();
+    let mut entries = Vec::new();
+
+    for entry in policy_index
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == PolicyKind::Filter)
+    {
+        let Some(declaration) = declarations.get(&entry.entity).copied() else {
+            continue;
+        };
+        let mut targets = Vec::new();
+        for table in &entry.matches {
+            let mut compiler = PolicyCompiler {
+                catalog: snapshot.catalog(),
+                index: policy_index,
+                declarations: &declarations,
+                imports,
+                scope: &entry.scope,
+                context: Vec::new(),
+                failed: false,
+            };
+            let row = PolicyRowContext::root(*table);
+            let enforcement = declaration
+                .apply
+                .as_ref()
+                .and_then(|apply| apply.condition.as_ref())
+                .and_then(|condition| compiler.expr(condition, Some(row), Some(DataType::Boolean)));
+            let row_rule = declaration
+                .row_rules
+                .first()
+                .and_then(|rule| compiler.expr(rule, Some(row), Some(DataType::Boolean)));
+            if compiler.failed {
+                continue;
+            }
+            compiler
+                .context
+                .sort_by(|left, right| left.path.cmp(&right.path));
+            targets.push(CompiledPolicyTarget {
+                table: *table,
+                enforcement,
+                row_rule,
+                context: compiler.context,
+            });
+        }
+        entries.push(CompiledPolicyEntry {
+            entity: entry.entity,
+            scope: entry.scope.clone(),
+            name: entry.name.clone(),
+            default_active: entry.default_active,
+            has_field_rules: !declaration.field_rules.is_empty(),
+            targets,
+        });
+    }
+    let compiled = CompiledPolicyIndex { entries };
+    commands
+        .entity(policy_index_entity)
+        .insert(compiled.clone());
+    commands.entity(definitions_entity).insert(PolicyPlanIndex {
+        resolution: policy_index.clone(),
+        compiled,
+    });
+}
+
+struct PolicyCompiler<'a> {
+    catalog: &'a Catalog,
+    index: &'a PolicyIndex,
+    declarations: &'a BTreeMap<Entity, &'a PolicyDecl>,
+    imports: &'a ScopeImports,
+    scope: &'a str,
+    context: Vec<PolicyContextRequirement>,
+    failed: bool,
+}
+
+#[derive(Debug)]
+struct CompiledPath {
+    value: FilterExpr,
+    data_type: DataType,
+    relation_scope: FilterColumnScope,
+    relations: Vec<(crate::catalog::ForeignKeyId, TableId)>,
+}
+
+impl PolicyCompiler<'_> {
+    fn expr(
+        &mut self,
+        expr: &Expr,
+        row: Option<PolicyRowContext>,
+        expected: Option<DataType>,
+    ) -> Option<FilterExpr> {
+        match expr {
+            Expr::Error { .. } | Expr::Aggregate { .. } => self.fail(),
+            Expr::PredicateRef { name, .. } => {
+                let candidates =
+                    self.index
+                        .visible(self.scope, PolicyKind::Condition, name, self.imports);
+                let [condition] = candidates.as_slice() else {
+                    return self.fail();
+                };
+                let Some(declaration) = self.declarations.get(&condition.entity).copied() else {
+                    return self.fail();
+                };
+                let Some(rule) = declaration.row_rules.first() else {
+                    return self.fail();
+                };
+                self.expr(rule, row, Some(DataType::Boolean))
+            }
+            Expr::Variable { variable, .. } => {
+                self.context_parameter(variable, expected.unwrap_or(DataType::Boolean), false)
+            }
+            Expr::Path { .. } => {
+                let path = self.path(expr, row)?;
+                Some(self.wrap_relations(path.value.clone(), &path))
+            }
+            Expr::Unary { operand, .. } => self
+                .expr(operand, row, Some(DataType::Boolean))
+                .map(|operand| FilterExpr::Not(Box::new(operand))),
+            Expr::NullTest {
+                operand, negated, ..
+            } => {
+                if matches!(operand.as_ref(), Expr::Path { .. }) {
+                    let path = self.path(operand, row)?;
+                    let test = FilterExpr::NullTest {
+                        operand: Box::new(path.value.clone()),
+                        negated: *negated,
+                    };
+                    return Some(self.wrap_relations(test, &path));
+                }
+                self.expr(operand, row, None)
+                    .map(|operand| FilterExpr::NullTest {
+                        operand: Box::new(operand),
+                        negated: *negated,
+                    })
+            }
+            Expr::List { .. } => self.fail(),
+            Expr::Exists {
+                source, predicate, ..
+            } => {
+                let row = row?;
+                let (foreign_key, table) = self.exists_source(source, row)?;
+                let filter = predicate
+                    .as_deref()
+                    .and_then(|predicate| {
+                        self.expr(predicate, Some(row.nested(table)), Some(DataType::Boolean))
+                    })
+                    .map(Box::new);
+                Some(FilterExpr::Exists {
+                    foreign_key,
+                    table,
+                    kind: ExistsKind::Explicit,
+                    source_scope: FilterColumnScope::Current,
+                    policy_filter: None,
+                    filter,
+                })
+            }
+            Expr::Literal { value, .. } => Some(FilterExpr::Literal(match value {
+                LiteralValue::String(value) => FilterLiteral::String(value.clone()),
+                LiteralValue::Number(value) => FilterLiteral::Number(value.clone()),
+                LiteralValue::Bool(value) => FilterLiteral::Bool(*value),
+                LiteralValue::Null => FilterLiteral::Null,
+            })),
+            Expr::Binary { op, lhs, rhs, .. } => self.binary(op, lhs, rhs, row),
+        }
+    }
+
+    fn binary(
+        &mut self,
+        op: &BinaryOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        row: Option<PolicyRowContext>,
+    ) -> Option<FilterExpr> {
+        if matches!(op, BinaryOp::And | BinaryOp::Or) {
+            return Some(FilterExpr::Binary {
+                left: Box::new(self.expr(lhs, row, Some(DataType::Boolean))?),
+                op: if matches!(op, BinaryOp::And) {
+                    FilterOp::And
+                } else {
+                    FilterOp::Or
+                },
+                right: Box::new(self.expr(rhs, row, Some(DataType::Boolean))?),
+            });
+        }
+
+        let path_side = if matches!(lhs, Expr::Path { .. }) {
+            Some((lhs, rhs, false))
+        } else if matches!(rhs, Expr::Path { .. }) {
+            Some((rhs, lhs, true))
+        } else {
+            None
+        };
+        if let Some((path_expr, other, reversed)) = path_side {
+            let path = self.path(path_expr, row)?;
+            if matches!(op, BinaryOp::In | BinaryOp::NotIn) {
+                if reversed {
+                    return self.fail();
+                }
+                let collection = match other {
+                    Expr::List { items, .. } => FilterCollection::List(
+                        items
+                            .iter()
+                            .map(|item| self.expr(item, row, Some(path.data_type)))
+                            .collect::<Option<Vec<_>>>()?,
+                    ),
+                    Expr::Variable { variable, .. } => FilterCollection::Parameter(
+                        self.context_parameter_value(variable, path.data_type, true)?,
+                    ),
+                    _ => return self.fail(),
+                };
+                let membership = FilterExpr::Membership {
+                    operand: Box::new(path.value.clone()),
+                    collection,
+                    negated: matches!(op, BinaryOp::NotIn),
+                };
+                return Some(self.wrap_relations(membership, &path));
+            }
+            let other = self.expr(other, row, Some(path.data_type))?;
+            let (left, right) = if reversed {
+                (other, path.value.clone())
+            } else {
+                (path.value.clone(), other)
+            };
+            let binary = FilterExpr::Binary {
+                left: Box::new(left),
+                op: self.filter_op(op)?,
+                right: Box::new(right),
+            };
+            return Some(self.wrap_relations(binary, &path));
+        }
+
+        Some(FilterExpr::Binary {
+            left: Box::new(self.expr(lhs, row, None)?),
+            op: self.filter_op(op)?,
+            right: Box::new(self.expr(rhs, row, None)?),
+        })
+    }
+
+    fn filter_op(&mut self, op: &BinaryOp) -> Option<FilterOp> {
+        match op {
+            BinaryOp::Comparison(op) => Some(FilterOp::from(*op)),
+            BinaryOp::And => Some(FilterOp::And),
+            BinaryOp::Or => Some(FilterOp::Or),
+            BinaryOp::In | BinaryOp::NotIn | BinaryOp::Variable(_) => self.fail(),
+        }
+    }
+
+    fn path(&mut self, expr: &Expr, row: Option<PolicyRowContext>) -> Option<CompiledPath> {
+        let Expr::Path {
+            anchor, segments, ..
+        } = expr
+        else {
+            return self.fail();
+        };
+        let row = row?;
+        let mut table = match anchor {
+            PathAnchor::Current => row.current,
+            PathAnchor::Root => row.root,
+            PathAnchor::Parent => row.parent?,
+        };
+        let mut relations = Vec::new();
+        for (index, segment) in segments.iter().enumerate() {
+            let reference = FieldRef {
+                target: TableRef::parse(&segment.name),
+                selector: segment.relation_path.as_deref(),
+            };
+            match self.catalog.check_field_ref(table, reference) {
+                FieldCheckResult::Relation(relation) if index + 1 < segments.len() => {
+                    relations.push((relation.foreign_key.id, relation.table.id));
+                    table = relation.table.id;
+                }
+                FieldCheckResult::Column(column) if index + 1 == segments.len() => {
+                    let scope = if relations.is_empty() {
+                        match anchor {
+                            PathAnchor::Current => FilterColumnScope::Current,
+                            PathAnchor::Root => FilterColumnScope::Root,
+                            PathAnchor::Parent => FilterColumnScope::Parent,
+                        }
+                    } else {
+                        FilterColumnScope::Current
+                    };
+                    return Some(CompiledPath {
+                        value: FilterExpr::Column {
+                            scope,
+                            column: column.id,
+                        },
+                        data_type: column.data_type,
+                        relation_scope: match anchor {
+                            PathAnchor::Current => FilterColumnScope::Current,
+                            PathAnchor::Root => FilterColumnScope::Root,
+                            PathAnchor::Parent => FilterColumnScope::Parent,
+                        },
+                        relations,
+                    });
+                }
+                FieldCheckResult::Column(_)
+                | FieldCheckResult::Relation(_)
+                | FieldCheckResult::NotFound
+                | FieldCheckResult::AmbiguousRelation { .. } => return self.fail(),
+            }
+        }
+        self.fail()
+    }
+
+    fn exists_source(
+        &mut self,
+        source: &ExistsSource,
+        row: PolicyRowContext,
+    ) -> Option<(Option<crate::catalog::ForeignKeyId>, TableId)> {
+        match source {
+            ExistsSource::Table { name, .. } => self
+                .catalog
+                .table_ref_for(TableRef::parse(name))
+                .map(|table| (None, table.id))
+                .or_else(|| self.fail()),
+            ExistsSource::Relation(path) => {
+                let Expr::Path {
+                    anchor: PathAnchor::Current,
+                    segments,
+                    ..
+                } = path.as_ref()
+                else {
+                    return self.fail();
+                };
+                let [segment] = segments.as_slice() else {
+                    return self.fail();
+                };
+                let reference = FieldRef {
+                    target: TableRef::parse(&segment.name),
+                    selector: segment.relation_path.as_deref(),
+                };
+                match self.catalog.check_field_ref(row.current, reference) {
+                    FieldCheckResult::Relation(relation) => {
+                        Some((Some(relation.foreign_key.id), relation.table.id))
+                    }
+                    FieldCheckResult::Column(_)
+                    | FieldCheckResult::NotFound
+                    | FieldCheckResult::AmbiguousRelation { .. } => self.fail(),
+                }
+            }
+        }
+    }
+
+    fn wrap_relations(&self, filter: FilterExpr, path: &CompiledPath) -> FilterExpr {
+        path.relations.iter().enumerate().rev().fold(
+            filter,
+            |filter, (index, (foreign_key, table))| FilterExpr::Exists {
+                foreign_key: Some(*foreign_key),
+                table: *table,
+                kind: ExistsKind::RelationshipPredicate,
+                source_scope: if index == 0 {
+                    path.relation_scope
+                } else {
+                    FilterColumnScope::Current
+                },
+                policy_filter: None,
+                filter: Some(Box::new(filter)),
+            },
+        )
+    }
+
+    fn context_parameter(
+        &mut self,
+        variable: &VariableRef,
+        data_type: DataType,
+        collection: bool,
+    ) -> Option<FilterExpr> {
+        self.context_parameter_value(variable, data_type, collection)
+            .map(FilterExpr::Parameter)
+    }
+
+    fn context_parameter_value(
+        &mut self,
+        variable: &VariableRef,
+        data_type: DataType,
+        collection: bool,
+    ) -> Option<SqlParameter> {
+        if variable.sigil != Sigil::Context {
+            return self.fail();
+        }
+        let name = variable.name.as_deref()?;
+        let path = format!("context.{name}");
+        if let Some(existing) = self.context.iter_mut().find(|item| item.path == path) {
+            if existing.data_type == DataType::Unknown {
+                existing.data_type = data_type;
+            } else if data_type != DataType::Unknown && existing.data_type != data_type {
+                return self.fail();
+            }
+            if existing.collection != collection {
+                return self.fail();
+            }
+        } else {
+            self.context.push(PolicyContextRequirement {
+                path: path.clone(),
+                data_type,
+                collection,
+            });
+        }
+        Some(SqlParameter { path })
+    }
+
+    fn fail<T>(&mut self) -> Option<T> {
+        self.failed = true;
+        None
+    }
 }
 
 fn resolve_entry(
@@ -1387,100 +1889,6 @@ async fn check_import_ambiguities(
                 },
             );
         }
-    }
-}
-
-async fn diagnose_unbound_trusted_context(
-    _: Query<Entity, With<DiagnosticsDemand>>,
-    policies: Query<(Entity, &PolicyDecl, &BelongsToFile)>,
-    mut commands: Commands<(dsql_schema::Diagnostic,)>,
-) {
-    let (entity, decl, file) = policies.item();
-    let mut variables = Vec::new();
-    for expr in decl
-        .row_rules
-        .iter()
-        .chain(decl.field_rules.iter().map(|rule| &rule.condition))
-        .chain(
-            decl.apply
-                .iter()
-                .filter_map(|apply| apply.condition.as_ref()),
-        )
-    {
-        collect_context_variables(expr, &mut variables);
-    }
-    for (name, span) in variables {
-        emit_diagnostic(
-            &mut commands,
-            DiagnosticFacts {
-                derived_from: DerivedFrom::new(entity),
-                file: file.0,
-                span,
-                severity: Severity::Error,
-                source: DiagnosticSource::Generate,
-                code: DiagnosticCode::TrustedContextBindingUnavailable,
-                message: format!(
-                    "trusted context `{name}` cannot be bound until the server-only execution boundary is available"
-                ),
-            },
-        );
-    }
-}
-
-fn collect_context_variables(expr: &Expr, variables: &mut Vec<(String, Span)>) {
-    match expr {
-        Expr::Variable { variable, .. } if variable.sigil == Sigil::Context => {
-            variables.push((
-                variable
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| "<anonymous>".to_string()),
-                variable.span,
-            ));
-        }
-        Expr::Binary { lhs, rhs, .. } => {
-            collect_context_variables(lhs, variables);
-            collect_context_variables(rhs, variables);
-        }
-        Expr::Unary { operand, .. } | Expr::NullTest { operand, .. } => {
-            collect_context_variables(operand, variables);
-        }
-        Expr::List { items, .. } => {
-            for item in items {
-                collect_context_variables(item, variables);
-            }
-        }
-        Expr::Exists {
-            source,
-            filters,
-            predicate,
-            ..
-        } => {
-            for filter in filters {
-                if let Some(condition) = &filter.condition {
-                    collect_context_variables(condition, variables);
-                }
-            }
-            if let crate::entities::expression::ExistsSource::Relation(source) = source {
-                collect_context_variables(source, variables);
-            }
-            if let Some(predicate) = predicate {
-                collect_context_variables(predicate, variables);
-            }
-        }
-        Expr::Aggregate {
-            source, operand, ..
-        } => {
-            collect_context_variables(source, variables);
-            if let Some(operand) = operand {
-                collect_context_variables(operand, variables);
-            }
-        }
-        Expr::Literal { .. }
-        | Expr::Path { .. }
-        | Expr::Variable { .. }
-        | Expr::PredicateRef { .. }
-        | Expr::Error { .. } => {}
     }
 }
 

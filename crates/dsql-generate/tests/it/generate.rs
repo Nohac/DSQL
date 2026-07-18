@@ -468,7 +468,13 @@ async fn trusted_context_flows_through_sql_and_operation_metadata() {
         catalog_from_tables([USERS_SCHEMA]),
         vec![document(
             "queries/frontend/context.dsql",
-            "query CurrentUser { users(where .id == $:user_id) { id name } }\n",
+            concat!(
+                "filter CurrentUserOnly on users {\n",
+                "  apply where true\n",
+                "  where .id == $:user_id\n",
+                "}\n",
+                "query CurrentUser { users(limit 1) { id name } }\n",
+            ),
             "frontend",
         )],
         BTreeMap::new(),
@@ -526,6 +532,40 @@ async fn singular_selection_shapes_flow_through_sql_and_metadata() {
     artifacts.sort();
 
     insta::assert_snapshot!(artifacts.join("\n---\n"));
+}
+
+#[tokio::test]
+async fn row_filtered_singular_relations_make_object_and_flattened_fields_nullable() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
+        vec![document(
+            "queries/frontend/filtered-owner.dsql",
+            concat!(
+                "filter VisibleUsers on users { where .name != \"hidden\" }\n",
+                "query FilteredOwner {\n",
+                "  posts(limit 1) {\n",
+                "    id\n",
+                "    users(filter VisibleUsers) { id name }\n",
+                "    ...users(filter VisibleUsers) { owner_id: id owner_name: name }\n",
+                "  }\n",
+                "}\n",
+            ),
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("row-filtered singular relation assembles");
+    let artifact = assembled
+        .snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "FilteredOwner")
+        .expect("filtered-owner operation");
+
+    insta::assert_snapshot!(artifact.serialized);
 }
 
 #[tokio::test]

@@ -184,6 +184,109 @@ async fn predicate_extensions_render_with_postgres_semantics() {
 }
 
 #[tokio::test]
+async fn row_policies_apply_to_roots_relations_aggregates_and_predicate_sources() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "row-policies.dsql",
+        concat!(
+            "condition PreventTitleBypass { where not $:can_bypass_titles }\n",
+            "filter TitleRows on title {\n",
+            "  apply where PreventTitleBypass\n",
+            "  where .kind_id == $:kind_id\n",
+            "    and exists .movie_info_idx(where .info_type_id == ..kind_id)\n",
+            "}\n",
+            "filter InfoRows on movie_info_idx {\n",
+            "  apply\n",
+            "  where .info_type_id == 101\n",
+            "}\n",
+            "filter PositiveInfo on movie_info_idx { where .id > 0 }\n",
+            "query DefaultRows {\n",
+            "  title(limit 1) {\n",
+            "    id\n",
+            "    movie_info_idx { id }\n",
+            "    info_count: movie_info_idx | aggregate { count }\n",
+            "  }\n",
+            "}\n",
+            "query ConditionalBypass(filter InfoRows when false) {\n",
+            "  title(filter TitleRows when false where exists .movie_info_idx) { id }\n",
+            "}\n",
+            "query ManualRows(filter PositiveInfo when $$positive_only) {\n",
+            "  movie_info_idx { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn row_filters_execute_when_database_url_is_set() {
+    let Ok(database_url) = env::var("DSQL_TEST_DATABASE_URL") else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .expect("reference database connects");
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "row-policy-live.dsql",
+        concat!(
+            "filter MinimumTitle on title {\n",
+            "  apply\n",
+            "  where .id > $:minimum_id\n",
+            "}\n",
+            "filter ManualTitle on title { where .id > 1 }\n",
+            "query Filtered(filter ManualTitle when $$enabled) {\n",
+            "  title(order by id asc limit 1) { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+    let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+    let generated = rows
+        .collect()
+        .into_iter()
+        .map(|(_, fact)| &fact.0)
+        .next()
+        .expect("row-filtered query generates SQL");
+    let parameter_paths = generated
+        .parameters
+        .iter()
+        .map(|parameter| parameter.path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        parameter_paths,
+        ["context.minimum_id", "params.enabled"],
+        "trusted context and public input retain distinct parameter provenance",
+    );
+    let sql = format!(
+        "select ({})::text",
+        generated.sql.trim().trim_end_matches(';')
+    );
+
+    for (minimum_id, enabled, expected_id) in [(0_i32, false, 1), (1, false, 2), (0, true, 2)] {
+        let row = sqlx::query(AssertSqlSafe(sql.clone()))
+            .bind(minimum_id)
+            .bind(enabled)
+            .fetch_one(&pool)
+            .await
+            .expect("row-filtered SQL executes");
+        let json: String = row
+            .try_get::<Option<String>, _>(0)
+            .expect("query returns nullable JSON text")
+            .expect("fixture query returns one title");
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("generated output is JSON");
+        assert_eq!(value.get("id"), Some(&serde_json::json!(expected_id)));
+    }
+}
+
+#[tokio::test]
 async fn predicate_keywords_remain_valid_catalog_identifiers() {
     let bowl = sql_bowl(numeric_catalog()).await;
     insert_source(
@@ -460,6 +563,34 @@ async fn same_slot_aggregate_function_edits_rederive_sql() {
     insta::assert_snapshot!(format!(
         "before:\n{before}\n\nafter:\n{after}\n\ngrouped before:\n{grouped_before}\n\ngrouped after:\n{grouped_after}"
     ));
+}
+
+#[tokio::test]
+async fn policy_body_edits_rederive_dependent_sql() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    let policy = insert_source(
+        &bowl,
+        "policy.dsql",
+        "filter PositiveTitles on title { apply where true where .id > 0 }\n",
+    )
+    .await;
+    insert_source(
+        &bowl,
+        "query.dsql",
+        "query Titles { title(limit 1) { id } }\n",
+    )
+    .await;
+    let before = render_sql(&bowl).await;
+
+    set_source_text(
+        &bowl,
+        policy,
+        "filter PositiveTitles on title { apply where true where .id > 1 }\n",
+    )
+    .await;
+    let after = render_sql(&bowl).await;
+
+    insta::assert_snapshot!(format!("before:\n{before}\n\nafter:\n{after}"));
 }
 
 #[tokio::test]

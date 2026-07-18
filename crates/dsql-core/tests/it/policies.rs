@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use bowl::{Query, Singleton};
 use dsql_core::catalog::insert_catalog;
 use dsql_core::entities::policy::PolicyIndex;
-use dsql_core::facts::arm_editor_demands;
+use dsql_core::facts::{PlanDemand, arm_editor_demands};
 use dsql_core::language_bowl;
 use dsql_core::source::{
     ResolutionScope, ScopeImports, SourceKind, insert_embedding_source, insert_source,
@@ -231,6 +231,41 @@ async fn filter_assignment_conditions_infer_boolean_inputs() {
 }
 
 #[tokio::test]
+async fn trusted_context_type_conflicts_fail_across_policy_and_operation_boundaries() {
+    async fn case(source: &str) -> String {
+        let bowl = language_bowl().await;
+        insert_catalog(&bowl, imdb_catalog()).await;
+        arm_editor_demands(&bowl).await;
+        bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
+            .await;
+        insert_source(&bowl, "context-conflict.dsql", source).await;
+        render_diagnostic_facts(&bowl).await
+    }
+
+    let policies = case(concat!(
+        "filter ById on title { apply where true where .id > $:shared }\n",
+        "filter ByName on title { apply where true where .title > $:shared }\n",
+        "query Conflict { title { id } }\n",
+    ))
+    .await;
+    let query = case(concat!(
+        "filter ById on title { apply where true where .id > $:shared }\n",
+        "query Conflict { title(where .title > $:shared) { id } }\n",
+    ))
+    .await;
+    let roots = case(concat!(
+        "filter TitleById on title { apply where true where .id > $:shared }\n",
+        "filter InfoByValue on movie_info_idx { apply where true where .info > $:shared }\n",
+        "query Conflict { title { id } movie_info_idx { id } }\n",
+    ))
+    .await;
+
+    insta::assert_snapshot!(format!(
+        "policy-policy:\n{policies}\n\npolicy-query:\n{query}\n\ncross-root:\n{roots}"
+    ));
+}
+
+#[tokio::test]
 async fn structural_matches_rederive_across_source_revisits() {
     let bowl = language_bowl().await;
     let catalog = imdb_catalog();
@@ -258,7 +293,7 @@ async fn structural_matches_rederive_across_source_revisits() {
 }
 
 #[tokio::test]
-async fn generation_blocks_every_filter_application_until_sql_support_lands() {
+async fn row_filters_execute_while_field_filters_remain_blocked() {
     async fn case(policy: &str, query: &str) -> String {
         let bowl = language_bowl().await;
         insert_catalog(&bowl, imdb_catalog()).await;
@@ -297,9 +332,14 @@ async fn generation_blocks_every_filter_application_until_sql_support_lands() {
         "query Clean { title { id } }",
     )
     .await;
+    let field = case(
+        "filter HiddenYear on title { field production_year where true }",
+        "query Field { title(filter HiddenYear) { production_year } }",
+    )
+    .await;
 
     insta::assert_snapshot!(format!(
-        "manual:\n{manual}\n\ndefault:\n{default}\n\nopt out:\n{opt_out}\n\naggregate:\n{aggregate}\n\nexists:\n{exists}\n\nunrelated:\n{unrelated}"
+        "manual:\n{manual}\n\ndefault:\n{default}\n\nopt out:\n{opt_out}\n\naggregate:\n{aggregate}\n\nexists:\n{exists}\n\nunrelated:\n{unrelated}\n\nfield:\n{field}"
     ));
 }
 

@@ -164,6 +164,8 @@ pub struct QueryPlan {
     pub output_name: String,
     pub flattened: bool,
     pub collection: CollectionPlan,
+    /// Server-only values required by policies that can affect this root.
+    pub policy_context: Vec<PolicyContextRequirement>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -184,7 +186,17 @@ pub struct CollectionPlan {
     /// Semantic row shape of the source selection.
     pub shape: ResolvedSelectionShape,
     pub clauses: SelectionClauses,
+    /// Raw-view row constraint composed from the effective policy state.
+    pub policy_filter: Option<FilterExpr>,
     pub result: CollectionResultPlan,
+}
+
+/// One trusted context value inferred while compiling a policy expression.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PolicyContextRequirement {
+    pub path: String,
+    pub data_type: DataType,
+    pub collection: bool,
 }
 
 /// How one collection source becomes public result data.
@@ -277,6 +289,10 @@ pub enum FilterExpr {
         foreign_key: Option<ForeignKeyId>,
         table: TableId,
         kind: ExistsKind,
+        /// Row whose relation connects to this source.
+        source_scope: FilterColumnScope,
+        /// Effective raw-view row policies for the observed source.
+        policy_filter: Option<Box<FilterExpr>>,
         filter: Option<Box<FilterExpr>>,
     },
     /// One correlated scalar aggregate over a direct relation.
@@ -285,6 +301,8 @@ pub enum FilterExpr {
         table: TableId,
         function: AggregateFunction,
         operand: Option<ColumnId>,
+        /// Effective raw-view row policies for the aggregate source.
+        policy_filter: Option<Box<FilterExpr>>,
     },
 }
 
