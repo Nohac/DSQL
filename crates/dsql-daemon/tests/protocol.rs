@@ -82,6 +82,18 @@ impl Session {
         self.request("initialize", &self.initialize_params()).await
     }
 
+    async fn initialize_with_diagnostic_level(&mut self, level: &str) -> String {
+        self.request(
+            "initialize",
+            &format!(
+                "{{\"protocolVersion\":1,\"root\":{},\"diagnosticLevel\":{}}}",
+                json_str(&self.root.to_string_lossy()),
+                json_str(level),
+            ),
+        )
+        .await
+    }
+
     async fn compile(&mut self) -> String {
         self.request("compile", "{}").await
     }
@@ -216,6 +228,67 @@ async fn lifecycle_and_framing_edges() {
 
     let shutdown = session.request("shutdown", "{}").await;
     assert!(shutdown.contains("\"result\":true"), "got {shutdown}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diagnostic_level_filters_success_errors_and_replays() {
+    let mut invalid = Session::start("invalid-diagnostic-level").await;
+    let rejected = invalid.initialize_with_diagnostic_level("debug").await;
+    assert!(
+        rejected.contains("\"InvalidRequest\"") && rejected.contains("diagnosticLevel"),
+        "invalid levels reject initialization, got {rejected}",
+    );
+    let recovered = invalid.initialize().await;
+    assert!(
+        recovered.contains("\"diagnosticLevel\":\"info\""),
+        "the default level is info, got {recovered}",
+    );
+    let mut warnings = Session::start("warning-diagnostic-level").await;
+    let warning_level = warnings.initialize_with_diagnostic_level("warning").await;
+    assert!(
+        warning_level.contains("\"diagnosticLevel\":\"warning\""),
+        "warning is an accepted level, got {warning_level}",
+    );
+
+    let mut session = Session::start("error-diagnostic-level").await;
+    let config = session.root.join("dsql/dsql.toml");
+    let mut raw = std::fs::read_to_string(&config).expect("config readable");
+    raw.push_str("\n[generate.typescript]\nenabled = true\ncmd = [\"sh\", \"-c\", \"true\"]\n");
+    std::fs::write(config, raw).expect("warning-producing config writable");
+
+    let initialized = session.initialize_with_diagnostic_level("error").await;
+    assert!(
+        initialized.contains("\"diagnosticLevel\":\"error\""),
+        "initialize echoes the effective level, got {initialized}",
+    );
+    let clean = session.compile().await;
+    assert!(
+        clean.contains("\"result\"")
+            && !clean.contains("GeneratorSkipped")
+            && clean.contains("\"diagnostics\":[]"),
+        "errors-only success snapshots omit warnings, got {clean}",
+    );
+
+    std::fs::write(
+        session.root.join("queries/frontend/titles.dsql"),
+        "query Broken { missing_table { id } }\n",
+    )
+    .expect("invalid query writable");
+    let broken = session.files_changed("queries/frontend/titles.dsql").await;
+    assert!(
+        broken.contains("\"Diagnostics\"") && broken.contains("TableNotFound"),
+        "language errors still block generation, got {broken}",
+    );
+    assert!(
+        !broken.contains("GeneratorSkipped") && !broken.contains("\"severity\":\"Warning\""),
+        "errors-only snapshots omit warnings, got {broken}",
+    );
+
+    let replay = session.files_changed("README.md").await;
+    assert!(
+        replay.contains("TableNotFound") && !replay.contains("GeneratorSkipped"),
+        "no-op replay preserves the filtered snapshot, got {replay}",
+    );
 }
 
 /// A full compile answers the spec's result shape: generation id, both

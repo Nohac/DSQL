@@ -253,28 +253,10 @@ async fn plan_queries(
                         .insert(PlanKey(plan_entity.untyped()));
                 }
             }
-            TableResolution::NotFound { reference } => diagnostics.push((
-                field.name_span,
-                DiagnosticCode::TableNotFound,
-                format!("table `{reference}` not found"),
-            )),
-            TableResolution::Ambiguous {
-                reference,
-                candidates,
-            } => {
-                let candidates: Vec<String> = candidates
-                    .iter()
-                    .map(|key| format!("{}.{}", key.schema, key.table))
-                    .collect();
-                diagnostics.push((
-                    field.name_span,
-                    DiagnosticCode::AmbiguousTable,
-                    format!(
-                        "table `{reference}` is ambiguous; use an alias with a schema-qualified name ({})",
-                        candidates.join(", ")
-                    ),
-                ));
-            }
+            // Root resolution failures are semantic check diagnostics; there
+            // is no plan to build and the planning stage must not duplicate
+            // or cascade from them.
+            TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => continue,
         }
     }
 

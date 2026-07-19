@@ -370,7 +370,7 @@ async fn resolve_aggregates(
     }
 
     let (table, collection) = aggregate_source(source_resolution);
-    if !collection {
+    if !collection && !matches!(&source_resolution.target, SelectionTarget::Unresolved) {
         problems.push(AggregateProblem {
             span: source.name_span,
             kind: AggregateProblemKind::SourceMustBeCollection {

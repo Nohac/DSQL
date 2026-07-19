@@ -2,7 +2,8 @@
 //! service host build tools drive over stdio. One consumer per daemon;
 //! strictly sequential request execution over a resident project bowl,
 //! transactional publication through dsql-generate, callsite ranges and
-//! complete diagnostic snapshots in every compile response.
+//! diagnostic snapshots at the session's initialized level in every compile
+//! response.
 
 mod protocol;
 mod session;

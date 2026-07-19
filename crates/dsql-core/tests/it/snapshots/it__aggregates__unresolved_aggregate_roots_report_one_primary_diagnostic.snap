@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/aggregates.rs
+expression: "rendered.join(\"\\n\")"
+---
+Check TableNotFound[15..28]: table `mvie_info_idx` not found

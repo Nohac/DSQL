@@ -155,7 +155,11 @@ Params: `protocolVersion` (integer), `root` (absolute path to discover
 the project from — the daemon walks up to `dsql/dsql.toml` like every
 other entry point), and optional `excludeRoots` (project-base-relative
 directories the consumer's renderer owns — its `ownedRoots` — validated
-by the same rules as generator outputs below).
+by the same rules as generator outputs below). Optional `diagnosticLevel`
+selects the lowest severity returned in compile snapshots: `error`, `warning`,
+or `info` (the default). The daemon still computes every diagnostic and always
+blocks generation on errors; the level controls only the session's wire
+snapshot.
 
 Must be the first request. Version negotiation is **exact equality** in
 v1: any mismatch answers `UnsupportedProtocolVersion` and the daemon
@@ -168,7 +172,8 @@ never again), the project-base-relative `configPath`, `schemaDir`, and
 `buildDir`, plus `generatorOutputs`: the project-base-relative output
 directories the project's configured host generator command declares
 (see Host generator command below) — the consumer excludes these from
-watching alongside `buildDir`.
+watching alongside `buildDir`. The result also echoes the effective
+`diagnosticLevel`.
 
 Path rules for the whole protocol: relative paths use `/` separators
 and are relative to `projectBase`. Containment ("inside the project")
@@ -294,7 +299,7 @@ The `result` of `compile`/`filesChanged`:
       ]
     }
   ],
-  "diagnostics": [ /* Diagnostic[], complete snapshot */ ]
+  "diagnostics": [ /* Diagnostic[], complete at the initialized level */ ]
 }
 ```
 
@@ -329,11 +334,12 @@ The `result` of `compile`/`filesChanged`:
   generated types by source text slice it from the host by extractor
   authority instead of re-detecting anything (absent for plain `.dsql`
   files; additive to manifest version 2).
-- `diagnostics` is a **complete snapshot on every compile response**
-  (success and `Diagnostics` failure): warnings and infos appear here on
-  success. Bindings replace their entire displayed diagnostic state with
-  each snapshot — anything absent has been resolved. Non-compile
-  responses (`initialize`, `shutdown`, protocol errors) carry no
+- `diagnostics` is a **complete snapshot at or above the initialized
+  `diagnosticLevel` on every compile response** (success and `Diagnostics`
+  failure). At the default `info` level, warnings and infos appear on success.
+  Bindings replace their entire displayed diagnostic state with each snapshot
+  — anything absent has been resolved or is below the configured level.
+  Non-compile responses (`initialize`, `shutdown`, protocol errors) carry no
   snapshot.
 - The metadata types are the ones published by `dsql metadata-schema` /
   `dsql metadata-typescript`; this payload embeds those shapes rather
@@ -545,8 +551,9 @@ A binding (the Vite plugin being the first) owns:
 - **In-flight dedup**: at most one outstanding compile; coalesce every
   change that arrives meanwhile into the next request's `paths`.
 - **Rewriting**: per the rewrite contract and freshness rules above.
-- **Diagnostics**: present each compile response's complete snapshot;
-  clear everything not in the latest snapshot.
+- **Diagnostics**: choose the required level at `initialize`, present each
+  compile response's returned snapshot unchanged, and clear everything not in
+  the latest snapshot.
 
 Everything else — detection, scope resolution, analysis, SQL, artifact
 assembly — is the daemon's.

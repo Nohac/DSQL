@@ -20,8 +20,8 @@ use dsql_generate::{GenerateError, GenerateOptions};
 use dsql_project::Project;
 
 use crate::protocol::{
-    Method, PROTOCOL_VERSION, Request, WireDiagnostic, error_line, json_string, render_diagnostics,
-    result_line,
+    DiagnosticLevel, Method, PROTOCOL_VERSION, Request, WireDiagnostic, error_line, json_string,
+    render_diagnostics, result_line,
 };
 
 pub enum Handled {
@@ -65,6 +65,7 @@ struct Session {
     project: Project,
     project_base: PathBuf,
     exclude_roots: Vec<String>,
+    diagnostic_level: DiagnosticLevel,
     /// `None` after a failed config/schema reload: every request retries
     /// the full load until it succeeds.
     bowl: Option<Bowl>,
@@ -145,6 +146,18 @@ impl Daemon {
                 "{\"method\":\"initialize\"}",
             );
         };
+        let diagnostic_level =
+            match DiagnosticLevel::parse(request.params.diagnostic_level.as_deref()) {
+                Ok(level) => level,
+                Err(message) => {
+                    return error_line(
+                        Some(request.id),
+                        "InvalidRequest",
+                        &message,
+                        "{\"method\":\"initialize\"}",
+                    );
+                }
+            };
         let project = match Project::load_from(Path::new(root)).await {
             Ok(project) => project,
             Err(error) => {
@@ -179,14 +192,16 @@ impl Daemon {
             .map(|bytes| sha256_hex(&bytes));
 
         let body = format!(
-            "{{\"protocolVersion\":{PROTOCOL_VERSION},\"projectBase\":{},\"configPath\":\"dsql/dsql.toml\",\"schemaDir\":\"dsql/schema\",\"buildDir\":\"dsql/build\",\"generatorOutputs\":{}}}",
+            "{{\"protocolVersion\":{PROTOCOL_VERSION},\"projectBase\":{},\"configPath\":\"dsql/dsql.toml\",\"schemaDir\":\"dsql/schema\",\"buildDir\":\"dsql/build\",\"generatorOutputs\":{},\"diagnosticLevel\":{}}}",
             json_string(&project_base.to_string_lossy()),
             string_array(&generator_outputs),
+            json_string(diagnostic_level.as_str()),
         );
         self.state = State::Ready(Box::new(Session {
             project,
             project_base,
             exclude_roots,
+            diagnostic_level,
             bowl: None,
             last: None,
             locked: self.locked,
@@ -667,11 +682,19 @@ impl Session {
             .iter()
             .filter(|diagnostic| diagnostic.severity == "Error")
             .count();
+        let visible_diagnostics = diagnostics
+            .iter()
+            .filter(|diagnostic| self.diagnostic_level.includes(&diagnostic.severity))
+            .cloned()
+            .collect::<Vec<_>>();
         if errors > 0 {
             return Outcome::Error {
                 code: "Diagnostics".into(),
                 message: "cannot generate while diagnostics contain errors".into(),
-                data: format!("{{\"diagnostics\":{}}}", render_diagnostics(&diagnostics)),
+                data: format!(
+                    "{{\"diagnostics\":{}}}",
+                    render_diagnostics(&visible_diagnostics)
+                ),
                 published: None,
             };
         }
@@ -767,7 +790,7 @@ impl Session {
             manifest,
             artifacts.join(","),
             groups.join(","),
-            render_diagnostics(&diagnostics),
+            render_diagnostics(&visible_diagnostics),
         );
         Outcome::Success {
             body,

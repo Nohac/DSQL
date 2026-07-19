@@ -20,6 +20,12 @@ errors. Add integration coverage showing that warning-only compilation remains
 quiet and usable while an error still reaches the Vite error path. Mixed failed
 responses must render only the blocking errors, not the full warning snapshot.
 
-Resolved by filtering failed daemon responses at the Vite rendering boundary.
-The mixed-diagnostic integration case verifies that the blocking error remains
-visible while warning codes and messages are omitted.
+The original consumer-side filtering was incomplete as a contract: it left
+every binding responsible for understanding diagnostic severity and allowed
+stale built package output to restore warning noise. Diagnostic visibility
+must instead be configured when the daemon session initializes, with Vite
+requesting errors only and rendering the returned snapshot unchanged.
+
+Resolved by adding the daemon protocol's `diagnosticLevel` session setting.
+The daemon filters both success and failure snapshots after its full internal
+error gate; Vite requests `error` and performs no severity filtering itself.

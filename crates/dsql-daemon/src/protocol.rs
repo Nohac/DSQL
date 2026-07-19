@@ -28,8 +28,47 @@ pub struct Params {
     pub root: Option<String>,
     #[facet(default, rename = "excludeRoots")]
     pub exclude_roots: Option<Vec<String>>,
+    #[facet(default, rename = "diagnosticLevel")]
+    pub diagnostic_level: Option<String>,
     #[facet(default)]
     pub paths: Option<Vec<String>>,
+}
+
+/// Lowest diagnostic severity included in this daemon session's snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticLevel {
+    Error,
+    Warning,
+    Info,
+}
+
+impl DiagnosticLevel {
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.unwrap_or("info") {
+            "error" => Ok(Self::Error),
+            "warning" => Ok(Self::Warning),
+            "info" => Ok(Self::Info),
+            value => Err(format!(
+                "initialize params.diagnosticLevel must be `error`, `warning`, or `info`, got `{value}`"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Info => "info",
+        }
+    }
+
+    pub fn includes(self, severity: &str) -> bool {
+        match self {
+            Self::Error => severity == "Error",
+            Self::Warning => matches!(severity, "Error" | "Warning"),
+            Self::Info => true,
+        }
+    }
 }
 
 #[derive(Debug)]

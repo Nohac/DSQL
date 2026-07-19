@@ -61,6 +61,7 @@ const INITIALIZE = {
       schemaDir: "dsql/schema",
       buildDir: "dsql/build",
       generatorOutputs: ["src/generated"],
+      diagnosticLevel: "info",
     },
   },
 };
@@ -106,6 +107,7 @@ test("initializes lazily, compiles, and replays carry changed:false", async () =
   const init = requests[0]?.params as Record<string, unknown>;
   expect(init.protocolVersion).toBe(1);
   expect(init.excludeRoots).toEqual(["src/generated/dsql"]);
+  expect(init.diagnosticLevel).toBe("info");
   expect((requests[2]?.params as Record<string, unknown>).paths).toEqual(["README.md"]);
   await h.client.shutdown();
 }, 30_000);

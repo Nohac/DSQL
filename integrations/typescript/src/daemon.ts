@@ -47,6 +47,8 @@ export type DsqlDiagnostic = {
   readonly message: string;
 };
 
+export type DsqlDiagnosticLevel = "error" | "warning" | "info";
+
 export type DsqlArtifact = {
   readonly id: string;
   readonly kind: "operation" | "fragment";
@@ -86,6 +88,7 @@ export type DsqlInitializeResult = {
   readonly schemaDir: string;
   readonly buildDir: string;
   readonly generatorOutputs: readonly string[];
+  readonly diagnosticLevel: DsqlDiagnosticLevel;
 };
 
 export type DsqlDaemonOptions = {
@@ -117,6 +120,8 @@ export type DsqlDaemonClientOptions = {
   readonly root: string;
   /** Renderer-owned roots, passed as `initialize` excludeRoots. */
   readonly excludeRoots?: readonly string[];
+  /** Lowest diagnostic severity returned in compile snapshots. */
+  readonly diagnosticLevel?: DsqlDiagnosticLevel;
   readonly daemon?: DsqlDaemonOptions;
   /**
    * Called when the session dies unexpectedly, BEFORE any restart:
@@ -317,6 +322,7 @@ export class DsqlDaemonClient {
       const info = (await this.#send(session, "initialize", {
         protocolVersion: DSQL_PROTOCOL_VERSION,
         root: this.#options.root,
+        diagnosticLevel: this.#options.diagnosticLevel ?? "info",
         ...(this.#options.excludeRoots?.length
           ? { excludeRoots: this.#options.excludeRoots }
           : {}),

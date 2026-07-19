@@ -140,7 +140,10 @@ type Harness = {
   daemonArgs: () => string[];
   setRendererFailure: (message: string | null) => void;
   setModulePresent: (present: boolean) => void;
-  requests: () => Array<{ method: string; params?: { paths?: string[] } }>;
+  requests: () => Array<{
+    method: string;
+    params?: { diagnosticLevel?: string; paths?: string[] };
+  }>;
 };
 
 function harness(
@@ -291,6 +294,7 @@ function initializeStep(base: string): unknown {
         schemaDir: "dsql/schema",
         buildDir: "dsql/build",
         generatorOutputs: [],
+        diagnosticLevel: "error",
       },
     },
   };
@@ -407,7 +411,7 @@ test("rejects callsites owned by another resolver", async () => {
   expect((error as Error).message).toContain('resolver "custom" is not supported');
 }, 30_000);
 
-test("successful diagnostics stay quiet while generation errors surface", async () => {
+test("renders the daemon diagnostic snapshot without consumer filtering", async () => {
   const warning = {
     file: HOST_PATH,
     range: { start: 0, end: 1 },
@@ -459,8 +463,9 @@ test("successful diagnostics stay quiet while generation errors surface", async 
   const errors = broken.logs.error.join("\n");
   expect(errors).toContain("cannot generate");
   expect(errors).toContain("UnknownField");
-  expect(errors).not.toContain("UnindexedScanColumn");
-  expect(errors).not.toContain("scan can be slow");
+  expect(errors).toContain("UnindexedScanColumn");
+  expect(errors).toContain("scan can be slow");
+  expect(broken.requests()[0]?.params?.diagnosticLevel).toBe("error");
 }, 30_000);
 
 test("files without callsites and non-project ids pass through untouched", async () => {

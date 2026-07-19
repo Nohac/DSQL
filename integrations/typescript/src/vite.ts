@@ -101,6 +101,7 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
       client = new DsqlDaemonClient({
         root: projectRoot(),
         excludeRoots: options.renderer.ownedRoots,
+        diagnosticLevel: "error",
         ...(daemon ? { daemon } : {}),
         onInvalidate: invalidate,
       });
@@ -493,9 +494,7 @@ function hashMatches(code: string, callsite: DsqlCallsite): boolean {
 function renderDaemonError(error: DsqlDaemonError, projectBase: string): string {
   const lines = [error.message];
   for (const diagnostic of error.diagnostics) {
-    if (diagnostic.severity === "Error") {
-      lines.push(renderDiagnostic(diagnostic, projectBase));
-    }
+    lines.push(renderDiagnostic(diagnostic, projectBase));
   }
   return lines.join("\n");
 }

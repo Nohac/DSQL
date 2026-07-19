@@ -1,10 +1,12 @@
 //! Aggregate transform facts and checks across root, nested, and fragment
 //! collection sources.
 
-use bowl::{Bowl, Entity, Query};
+use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::entities::aggregate::{AggregateMode, ResolvedAggregate};
-use dsql_core::facts::arm_editor_demands;
+use dsql_core::facts::{
+    Diagnostic, DiagnosticCode, DiagnosticSource, PlanDemand, Span, arm_editor_demands,
+};
 use dsql_core::language_bowl;
 use dsql_core::resolution::ResolvedClause;
 use dsql_core::source::insert_source;
@@ -184,6 +186,42 @@ async fn invalid_aggregate_contracts_report_typed_diagnostics() {
     .await;
 
     insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn unresolved_aggregate_roots_report_one_primary_diagnostic() {
+    let bowl = checked_bowl(Catalog::hardcoded()).await;
+    bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
+        .await;
+    insert_source(
+        &bowl,
+        "unresolved-aggregate.dsql",
+        "query Broken { mvie_info_idx | aggregate { count } }\n",
+    )
+    .await;
+
+    let diagnostics = bowl
+        .scoop::<Query<(
+            Entity,
+            &DiagnosticSource,
+            &DiagnosticCode,
+            &Span,
+            &Diagnostic,
+        )>>()
+        .await;
+    let mut rendered = diagnostics
+        .collect()
+        .into_iter()
+        .map(|(_, source, code, span, diagnostic)| {
+            format!(
+                "{source:?} {code:?}[{}..{}]: {}",
+                span.start, span.end, diagnostic.0
+            )
+        })
+        .collect::<Vec<_>>();
+    rendered.sort();
+
+    insta::assert_snapshot!(rendered.join("\n"));
 }
 
 #[tokio::test]

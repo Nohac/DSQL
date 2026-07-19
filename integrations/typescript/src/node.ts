@@ -27,6 +27,7 @@ export type {
   DsqlDaemonClientOptions,
   DsqlDaemonOptions,
   DsqlDiagnostic,
+  DsqlDiagnosticLevel,
   DsqlInitializeResult,
   DsqlRange,
   DsqlSourceFileScope,
