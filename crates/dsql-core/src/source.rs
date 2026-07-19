@@ -39,8 +39,13 @@ pub struct FilePath(pub String);
 /// `.dsql` files, the embedded region's start for documents extracted from
 /// another language's source. Spans stay document-relative everywhere;
 /// this shifts them back to host coordinates at reporting boundaries.
+///
+/// Untracked: this is projection bookkeeping, not semantic document identity.
+/// A tracked offset would lift an unchanged region's entity revision when an
+/// earlier region changes length, retiring its `DerivedFrom`-anchored facts
+/// even though its fingerprint-neutral [`SourceText`] does not re-derive them.
 #[derive(Component, Hash, PartialEq, Eq, Debug, Clone, Copy)]
-#[component(hash)]
+#[component(hash, untracked)]
 pub struct SourceOffset(pub usize);
 
 /// Marks a file entity whose [`SourceText`] is a dsql document — the
@@ -239,8 +244,12 @@ pub struct AnalysisResidency;
 /// the whole `dsql(`…`)`, not just the content between the backticks
 /// (docs/spec/build-daemon.md, Callsites): the range a build-tool
 /// binding replaces with the generated operation reference.
+///
+/// Untracked for the same lifecycle reason as [`SourceOffset`]: moving an
+/// unchanged region in its host must update its projection without retiring
+/// semantic facts that have no tracked input change to re-derive them.
 #[derive(Component, Hash, Debug, Clone, Copy, PartialEq, Eq)]
-#[component(hash)]
+#[component(hash, untracked)]
 pub struct CallsiteSpan(pub crate::facts::Span);
 
 /// The span of the embedded document's content in the host — exactly the
@@ -249,8 +258,12 @@ pub struct CallsiteSpan(pub crate::facts::Span);
 /// region rope may be evicted before assembly reads it; renderers slice
 /// this range from the host to key source-string type registries without
 /// re-detecting anything (docs/spec/build-daemon.md, Callsites).
+///
+/// Untracked for the same lifecycle reason as [`SourceOffset`]: this host
+/// projection can move while the extracted document's semantic identity and
+/// content remain unchanged.
 #[derive(Component, Hash, Debug, Clone, Copy, PartialEq, Eq)]
-#[component(hash)]
+#[component(hash, untracked)]
 pub struct ContentSpan(pub crate::facts::Span);
 
 /// Marks a file entity whose text is owned by a live editor buffer. Disk

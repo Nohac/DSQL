@@ -416,7 +416,18 @@ test("successful diagnostics stay quiet while generation errors surface", async 
         error: {
           code: "Diagnostics",
           message: "cannot generate while diagnostics contain errors",
-          data: { diagnostics: [{ ...warning, severity: "Error", source: "Check" }] },
+          data: {
+            diagnostics: [
+              warning,
+              {
+                ...warning,
+                severity: "Error",
+                source: "Check",
+                code: "UnknownField",
+                message: "unknown field",
+              },
+            ],
+          },
         },
       },
     },
@@ -424,7 +435,11 @@ test("successful diagnostics stay quiet while generation errors surface", async 
   expect(await transform(broken, HOST)).toBeNull();
   expect(broken.logs.warn).toEqual([]);
   expect(broken.logs.info).toEqual([]);
-  expect(broken.logs.error.join("\n")).toContain("cannot generate");
+  const errors = broken.logs.error.join("\n");
+  expect(errors).toContain("cannot generate");
+  expect(errors).toContain("UnknownField");
+  expect(errors).not.toContain("UnindexedScanColumn");
+  expect(errors).not.toContain("scan can be slow");
 }, 30_000);
 
 test("files without callsites and non-project ids pass through untouched", async () => {

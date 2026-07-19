@@ -166,6 +166,55 @@ async fn untouched_regions_keep_their_entities_across_host_edits() {
     assert_eq!(after, before, "regions keep entities, offsets, and text");
 }
 
+#[tokio::test]
+async fn moving_later_regions_preserves_their_semantics() {
+    let (bowl, host) = host_bowl().await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+    let before = regions_of(&bowl, host).await;
+
+    replace_source_text(&bowl, host, "query Titles {", "query LongerTitles {").await;
+
+    let after = regions_of(&bowl, host).await;
+    assert_eq!(after.len(), before.len());
+    for ((before_entity, before_offset, _), (after_entity, after_offset, _)) in
+        before.iter().zip(&after)
+    {
+        assert_eq!(
+            after_entity, before_entity,
+            "region identity remains stable"
+        );
+        assert!(
+            after_offset >= before_offset,
+            "no region moves backwards after an insertion"
+        );
+    }
+    assert_eq!(after[0].1, before[0].1, "the edited region starts in place");
+    assert!(
+        after[1..]
+            .iter()
+            .zip(&before[1..])
+            .all(|((_, after_offset, _), (_, before_offset, _))| after_offset > before_offset),
+        "every later region moves in host coordinates"
+    );
+
+    let resolutions = bowl.scoop::<Query<&ResolvedEmbeddedExpression>>().await;
+    assert_eq!(
+        resolutions
+            .collect()
+            .into_iter()
+            .filter(|resolved| matches!(resolved.0, EmbeddedExpressionResolution::Target(_)))
+            .count(),
+        4,
+        "every unchanged later expression remains resolved"
+    );
+    assert_eq!(
+        crate::render_diagnostic_facts(&bowl).await,
+        "",
+        "moving regions does not invent expression-shape errors"
+    );
+}
+
 /// Editing a host while diagnostics and lints are armed re-lowers clause
 /// facts mid-settle; the ambient clause readers must sit behind the
 /// Complete barrier or the same-phase race flag kills the process (the

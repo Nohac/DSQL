@@ -17,4 +17,9 @@ dsql validate
 Preserve the daemon protocol full-diagnostic snapshot and CLI behavior; filter
 at the Vite consumer boundary where diagnostics become development-server
 errors. Add integration coverage showing that warning-only compilation remains
-quiet and usable while an error still reaches the Vite error path.
+quiet and usable while an error still reaches the Vite error path. Mixed failed
+responses must render only the blocking errors, not the full warning snapshot.
+
+Resolved by filtering failed daemon responses at the Vite rendering boundary.
+The mixed-diagnostic integration case verifies that the blocking error remains
+visible while warning codes and messages are omitted.
