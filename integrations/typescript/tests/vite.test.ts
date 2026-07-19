@@ -242,16 +242,25 @@ function harness(
   };
 }
 
+type FakeWebSocketMessage = {
+  readonly type: string;
+  readonly updates?: readonly unknown[];
+};
+
 /** A minimal dev server capturing the plugin's watcher listener. */
 function fakeServer(): {
   server: unknown;
   emitAll: (file: string) => void;
+  connect: () => void;
   changedModules: string[];
   deletedModules: string[];
+  messages: FakeWebSocketMessage[];
 } {
   const handlers: Array<(event: string, file: string) => void> = [];
+  const connectionHandlers: Array<() => void> = [];
   const changedModules: string[] = [];
   const deletedModules: string[] = [];
+  const messages: FakeWebSocketMessage[] = [];
   const server = {
     watcher: {
       add() {},
@@ -269,12 +278,27 @@ function fakeServer(): {
         deletedModules.push(file);
       },
     },
-    ws: { send() {}, on() {} },
+    ws: {
+      send(message: FakeWebSocketMessage) {
+        messages.push(message);
+      },
+      on(event: string, handler: () => void) {
+        if (event === "connection") {
+          connectionHandlers.push(handler);
+        }
+      },
+    },
   };
   return {
     server,
     changedModules,
     deletedModules,
+    messages,
+    connect: () => {
+      for (const handler of connectionHandlers) {
+        handler();
+      }
+    },
     emitAll: (file) => {
       for (const handler of handlers) {
         handler("change", file);
@@ -648,6 +672,75 @@ test("renderer failure keeps the previous state transformable", async () => {
   h.setRendererFailure(null);
   expect((await transform(h, HOST))?.code).toContain("__dsql_TitlePanelOperation");
   expect(h.renders).toHaveLength(2);
+}, 30_000);
+
+test("successful compiles clear the Vite error overlay", async () => {
+  const compileError = {
+    expectMethod: "filesChanged",
+    response: {
+      error: { code: "Diagnostics", message: "edit broke a query", data: null },
+    },
+  };
+  const h = harness((base) => [
+    initializeStep(base),
+    { expectMethod: "compile", response: { result: resultFor(HOST) } },
+    compileError,
+    {
+      expectMethod: "filesChanged",
+      response: { result: resultFor(HOST, { generationId: 2 }) },
+    },
+    compileError,
+    {
+      expectMethod: "filesChanged",
+      response: { result: resultFor(HOST, { generationId: 2, changed: false }) },
+    },
+  ]);
+  await transform(h, HOST);
+  const dev = fakeServer();
+  (h.plugin.configureServer as (server: unknown) => void)(dev.server);
+
+  expect(await hotUpdate(h, h.hostAbsolute)).toEqual([]);
+  expect(await hotUpdate(h, h.hostAbsolute)).toEqual([]);
+  expect(await hotUpdate(h, h.hostAbsolute)).toEqual([]);
+  expect(await hotUpdate(h, h.hostAbsolute)).toBeUndefined();
+  expect(dev.messages.map((message) => message.type)).toEqual([
+    "error",
+    "update",
+    "error",
+    "update",
+  ]);
+  expect(dev.messages[1]).toEqual({ type: "update", updates: [] });
+  expect(dev.messages[3]).toEqual({ type: "update", updates: [] });
+
+  dev.connect();
+  expect(dev.messages).toHaveLength(4);
+}, 30_000);
+
+test("a no-op does not hide an error from an unrendered generation", async () => {
+  const h = harness((base) => [
+    initializeStep(base),
+    { expectMethod: "compile", response: { result: resultFor(HOST) } },
+    {
+      expectMethod: "filesChanged",
+      response: { result: resultFor(HOST, { generationId: 2 }) },
+    },
+    {
+      expectMethod: "filesChanged",
+      response: { result: resultFor(HOST, { generationId: 2, changed: false }) },
+    },
+  ]);
+  await transform(h, HOST);
+  const dev = fakeServer();
+  (h.plugin.configureServer as (server: unknown) => void)(dev.server);
+
+  h.setRendererFailure("renderer exploded");
+  expect(await hotUpdate(h, h.hostAbsolute)).toEqual([]);
+  h.setRendererFailure(null);
+  expect(await hotUpdate(h, h.hostAbsolute)).toBeUndefined();
+  expect(dev.messages.map((message) => message.type)).toEqual(["error"]);
+
+  dev.connect();
+  expect(dev.messages.map((message) => message.type)).toEqual(["error", "error"]);
 }, 30_000);
 
 test("irrelevant files keep normal HMR on changed:false replays", async () => {

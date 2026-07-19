@@ -143,6 +143,17 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
     });
   };
 
+  const clearError = (): void => {
+    if (!lastError) {
+      return;
+    }
+    lastError = null;
+    // Vite keeps its error overlay until it receives an update. A
+    // successful dsql no-op must clear it even when full reloads are
+    // disabled.
+    server?.ws.send({ type: "update", updates: [] });
+  };
+
   /** Invalidates renderer outputs that filesystem watching intentionally ignores. */
   const invalidateRenderedFiles = (
     previous: DsqlRenderMap | null,
@@ -188,6 +199,12 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
           : await daemon.filesChanged(paths);
 
       if (result.changed === false && state !== null) {
+        // A renderer failure can leave the daemon one generation ahead
+        // of the active Vite state. Only a replay of the rendered
+        // generation proves that the previous error has recovered.
+        if (result.generationId === state.result.generationId) {
+          clearError();
+        }
         return { kind: "unchanged", result };
       }
       const next = await renderAndIndex(result);
@@ -198,7 +215,7 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
       }
       invalidateRenderedFiles(state?.renderMap ?? null, next.renderMap);
       state = next;
-      lastError = null;
+      clearError();
       // The render preflight may have refreshed the result; report the
       // one actually swapped in.
       return { kind: "success", result: next.result };
