@@ -903,6 +903,40 @@ async fn policy_body_edits_rederive_dependent_sql() {
 }
 
 #[tokio::test]
+async fn policy_match_edits_rederive_fragment_dependent_sql() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    let policy = insert_source(
+        &bowl,
+        "policy.dsql",
+        "filter Moving on { .kind: text } { apply where true where .id > 900001 }\n",
+    )
+    .await;
+    insert_source(
+        &bowl,
+        "query.dsql",
+        concat!(
+            "fragment Nested on title {\n",
+            "  kind_type { id kind }\n",
+            "  movie_info_idx { id info }\n",
+            "}\n",
+            "query Q { title(limit 1) { ...Nested } }\n",
+        ),
+    )
+    .await;
+    let before = render_sql(&bowl).await;
+
+    set_source_text(
+        &bowl,
+        policy,
+        "filter Moving on { .info: text } { apply where true where .id > 900001 }\n",
+    )
+    .await;
+    let after = render_sql(&bowl).await;
+
+    insta::assert_snapshot!(format!("before:\n{before}\n\nafter:\n{after}"));
+}
+
+#[tokio::test]
 async fn plans_retire_when_demand_is_removed_sources_change() {
     let bowl = sql_bowl(imdb_catalog()).await;
     let file = insert_source(&bowl, "q.dsql", "query Q {\n  title {\n    id\n  }\n}\n").await;

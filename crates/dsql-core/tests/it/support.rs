@@ -289,3 +289,52 @@ pub fn numeric_catalog() -> Catalog {
     .expect("numeric fixture catalog must build")
     .with_default_schema(Catalog::DEFAULT_SCHEMA)
 }
+
+/// A catalog with repeated field names and differing logical types for
+/// structural-policy completion coverage.
+pub fn policy_completion_catalog() -> Catalog {
+    let table = |name: &str, columns: &[(&str, DataType)]| TableMetadata {
+        schema: "public".to_string(),
+        name: name.to_string(),
+        object_type: ObjectType::Table,
+        columns: columns
+            .iter()
+            .map(|(name, data_type)| ColumnMetadata {
+                name: (*name).to_string(),
+                database_type: data_type.as_str().to_string(),
+                data_type: *data_type,
+                not_null: true,
+            })
+            .collect(),
+        constraints: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+    };
+    DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![
+                table(
+                    "first",
+                    &[
+                        ("nr_order", DataType::Int),
+                        ("shared", DataType::Text),
+                        ("only_first", DataType::Uuid),
+                    ],
+                ),
+                table(
+                    "second",
+                    &[
+                        ("nr_order", DataType::Text),
+                        ("shared", DataType::Text),
+                        ("only_second", DataType::Boolean),
+                    ],
+                ),
+            ],
+        }],
+        types: Vec::new(),
+    }
+    .into_catalog()
+    .expect("policy completion fixture catalog must build")
+    .with_default_schema(Catalog::DEFAULT_SCHEMA)
+}

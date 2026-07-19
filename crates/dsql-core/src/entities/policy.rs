@@ -37,6 +37,7 @@ use crate::plan::{
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::completion::{
     CompletionContext, CompletionItem, CompletionKind, CompletionRequest, CompletionSite,
+    PolicyCompletionContext, PolicyCompletionRole, PolicyCompletionTarget,
     emit_completion_candidate,
 };
 use crate::service::definition::{DefinitionRequest, DefinitionTarget};
@@ -801,6 +802,91 @@ async fn complete_filter_assignments(
     emit_completion_candidate(&mut commands, request, items);
 }
 
+async fn complete_policy_declarations(
+    request: Query<(Entity, &PolicyCompletionContext), With<CompletionRequest>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
+) {
+    let (request, context) = request.item();
+    let (_, snapshot) = catalog.item();
+    let catalog = snapshot.catalog();
+    let mut items = Vec::new();
+
+    match &context.role {
+        PolicyCompletionRole::TargetField { insert_dot } => {
+            let mut fields = BTreeMap::<&str, BTreeSet<&str>>::new();
+            for table in &catalog.tables {
+                for column in catalog.columns_for_table(table.id) {
+                    fields
+                        .entry(&column.name)
+                        .or_default()
+                        .insert(column.data_type.as_str());
+                }
+            }
+            items.extend(fields.into_iter().map(|(name, types)| CompletionItem {
+                label: name.to_string(),
+                kind: CompletionKind::Column,
+                detail: Some(types.into_iter().collect::<Vec<_>>().join(", ")),
+                insert_text: insert_dot.then(|| format!(".{name}")),
+            }));
+        }
+        PolicyCompletionRole::TargetType { field } => {
+            let types = catalog
+                .tables
+                .iter()
+                .flat_map(|table| catalog.columns_for_table(table.id))
+                .filter(|column| column.name == *field)
+                .map(|column| column.data_type.as_str())
+                .collect::<BTreeSet<_>>();
+            items.extend(types.into_iter().map(|data_type| CompletionItem {
+                label: data_type.to_string(),
+                kind: CompletionKind::Type,
+                detail: Some("logical type".to_string()),
+                insert_text: None,
+            }));
+        }
+        PolicyCompletionRole::Expression { target } => match target {
+            PolicyCompletionTarget::Concrete(table) => {
+                items.extend(
+                    catalog
+                        .columns_for_table(*table)
+                        .map(|column| CompletionItem {
+                            label: column.name.clone(),
+                            kind: CompletionKind::Column,
+                            detail: Some(column.data_type.as_str().to_string()),
+                            insert_text: None,
+                        }),
+                );
+                let relations = catalog.relation_fields_for_table(*table);
+                items.extend(relations.iter().map(|relation| CompletionItem {
+                    label: relation.name.to_string(),
+                    kind: CompletionKind::Relation,
+                    detail: Some(format!(
+                        "relation to {}.{} via {}",
+                        relation.table.schema, relation.table.name, relation.selector
+                    )),
+                    insert_text: None,
+                }));
+            }
+            PolicyCompletionTarget::Shape(fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|(name, data_type)| (name.as_str(), data_type.as_str()))
+                    .collect::<BTreeMap<_, _>>();
+                items.extend(fields.into_iter().map(|(name, data_type)| CompletionItem {
+                    label: name.to_string(),
+                    kind: CompletionKind::Column,
+                    detail: Some(data_type.to_string()),
+                    insert_text: None,
+                }));
+            }
+            PolicyCompletionTarget::None => {}
+        },
+    }
+
+    emit_completion_candidate(&mut commands, request, items);
+}
+
 async fn define_policy_references(
     request: Query<(Entity, &BelongsToFile, &Cursor), With<DefinitionRequest>>,
     declaration: Query<(Entity, &PolicyDecl, &ResolutionScope), Where<BowlEq<BelongsToFile>>>,
@@ -942,6 +1028,7 @@ impl LanguageEntity for Policy {
         registrar.system(hover_policy_declarations.run_during(Phase::Complete));
         registrar.system(hover_filter_assignments.run_during(Phase::Complete));
         registrar.system(complete_filter_assignments.run_during(Phase::Complete));
+        registrar.system(complete_policy_declarations.run_during(Phase::Complete));
         registrar.system(define_policy_references.run_during(Phase::Complete));
         registrar.system(define_filter_assignments.run_during(Phase::Complete));
         registrar.system(policy_declaration_tokens.run_during(Phase::Complete));

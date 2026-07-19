@@ -139,6 +139,7 @@ type Harness = {
   scriptPath: string;
   daemonArgs: () => string[];
   setRendererFailure: (message: string | null) => void;
+  setModulePresent: (present: boolean) => void;
   requests: () => Array<{ method: string; params?: { paths?: string[] } }>;
 };
 
@@ -165,6 +166,7 @@ function harness(
   const renders: DsqlRendererContext[] = [];
   const logs = { error: [] as string[], info: [] as string[], warn: [] as string[] };
   let failure: string | null = null;
+  let modulePresent = true;
   const renderer: DsqlRenderer = {
     ownedRoots: ["src/generated/dsql"],
     async render(context) {
@@ -173,15 +175,17 @@ function harness(
         throw new Error(failure);
       }
       return {
-        modules: [
-          {
-            id: "frontend/operation/TitlePanel",
-            module: "src/generated/dsql/queries/TitlePanel.ts",
-            export: "TitlePanelOperation",
-          },
-        ],
+        modules: modulePresent
+          ? [
+              {
+                id: "frontend/operation/TitlePanel",
+                module: "src/generated/dsql/queries/TitlePanel.ts",
+                export: "TitlePanelOperation",
+              },
+            ]
+          : [],
         ownedRoots: ["src/generated/dsql"],
-        files: ["src/generated/dsql/queries/TitlePanel.ts"],
+        files: modulePresent ? ["src/generated/dsql/queries/TitlePanel.ts"] : [],
       };
     },
   };
@@ -224,6 +228,9 @@ function harness(
     setRendererFailure: (message) => {
       failure = message;
     },
+    setModulePresent: (present) => {
+      modulePresent = present;
+    },
     requests: () =>
       readFileSync(logPath, "utf8")
         .split("\n")
@@ -236,8 +243,12 @@ function harness(
 function fakeServer(): {
   server: unknown;
   emitAll: (file: string) => void;
+  changedModules: string[];
+  deletedModules: string[];
 } {
   const handlers: Array<(event: string, file: string) => void> = [];
+  const changedModules: string[] = [];
+  const deletedModules: string[] = [];
   const server = {
     watcher: {
       add() {},
@@ -247,10 +258,20 @@ function fakeServer(): {
         }
       },
     },
+    moduleGraph: {
+      onFileChange(file: string) {
+        changedModules.push(file);
+      },
+      onFileDelete(file: string) {
+        deletedModules.push(file);
+      },
+    },
     ws: { send() {}, on() {} },
   };
   return {
     server,
+    changedModules,
+    deletedModules,
     emitAll: (file) => {
       for (const handler of handlers) {
         handler("change", file);
@@ -638,6 +659,37 @@ test("irrelevant files keep normal HMR on changed:false replays", async () => {
   const readme = join(h.base, "README.md");
   writeFileSync(readme, "# hi\n");
   expect(await hotUpdate(h, readme)).toBeUndefined();
+}, 30_000);
+
+test("policy-only rebuilds invalidate watcher-excluded generated modules", async () => {
+  const h = harness((base) => [
+    initializeStep(base),
+    { expectMethod: "compile", response: { result: resultFor(HOST) } },
+    {
+      expectMethod: "filesChanged",
+      response: { result: resultFor(HOST, { generationId: 2 }) },
+    },
+    {
+      expectMethod: "filesChanged",
+      response: { result: resultFor(HOST, { generationId: 3 }) },
+    },
+  ]);
+  await transform(h, HOST);
+  const dev = fakeServer();
+  (h.plugin.configureServer as (server: unknown) => void)(dev.server);
+
+  const policy = join(h.base, "queries/shared/policies.dsql");
+  expect(await hotUpdate(h, policy)).toEqual([]);
+
+  expect(dev.changedModules).toEqual([
+    join(h.base, "src/generated/dsql/queries/TitlePanel.ts"),
+  ]);
+
+  h.setModulePresent(false);
+  expect(await hotUpdate(h, policy)).toEqual([]);
+  expect(dev.deletedModules).toEqual([
+    join(h.base, "src/generated/dsql/queries/TitlePanel.ts"),
+  ]);
 }, 30_000);
 
 test("one fs event delivers once regardless of listener order", async () => {

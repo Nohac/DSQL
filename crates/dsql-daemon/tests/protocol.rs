@@ -381,6 +381,47 @@ async fn files_changed_reconciles_and_replays() {
     assert!(outside.contains("\"InvalidPath\""), "got {outside}");
 }
 
+/// Policy definitions are ambient semantic inputs for consuming queries: an
+/// incremental policy-only edit must republish the affected artifacts just as
+/// a cold compile would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn policy_body_edits_republish_dependent_artifacts() {
+    let mut session = Session::start("policy-body-edit").await;
+    std::fs::write(
+        session.root.join("queries/shared/fragments.dsql"),
+        "fragment TitleBits on title { id filtered_kind: kind_type { id } }\n",
+    )
+    .expect("nested fragment writable");
+    let policy = session.root.join("queries/shared/policies.dsql");
+    std::fs::write(
+        &policy,
+        "filter KindFilter on kind_type { apply where true where .id > 900001 }\n",
+    )
+    .expect("policy writable");
+    let initialized = session.initialize().await;
+    assert!(initialized.contains("\"result\""), "got {initialized}");
+
+    let first = session.compile().await;
+    assert!(
+        first.contains("\"generationId\":1") && first.contains("900001"),
+        "initial policy reaches the artifact, got {first}",
+    );
+
+    std::fs::write(
+        &policy,
+        "filter KindFilter on kind_type { apply where true where .id > 900002 }\n",
+    )
+    .expect("policy edit writable");
+    let changed = session.files_changed("queries/shared/policies.dsql").await;
+    assert!(
+        changed.contains("\"generationId\":2")
+            && changed.contains("\"changed\":true")
+            && changed.contains("900002")
+            && !changed.contains("900001"),
+        "policy edit must publish its new semantics, got {changed}",
+    );
+}
+
 /// Resolver-bearing document configuration drives cold discovery and warm
 /// reconciliation: unmatched files are ignored while a new custom-extension
 /// host joins its scope with the configured extractor.

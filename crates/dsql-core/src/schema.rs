@@ -35,7 +35,7 @@ use crate::resolution::{
 };
 use crate::service::completion::{
     CompletionCandidate, CompletionContext, CompletionList, CompletionRequest,
-    DirectiveCompletionContext,
+    DirectiveCompletionContext, PolicyCompletionContext,
 };
 use crate::service::definition::{DefinitionRequest, DefinitionTarget};
 use crate::service::hover::{
@@ -229,6 +229,7 @@ pub struct DsqlSchema {
         CompletionList,
         Option<CompletionContext>,
         Option<DirectiveCompletionContext>,
+        Option<PolicyCompletionContext>,
     ),
     definition_enriched: (Cursor, BelongsToFile),
     definition_answer: (DefinitionTarget,),

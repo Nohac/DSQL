@@ -142,6 +142,29 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
     });
   };
 
+  /** Invalidates renderer outputs that filesystem watching intentionally ignores. */
+  const invalidateRenderedFiles = (
+    previous: DsqlRenderMap | null,
+    next: DsqlRenderMap,
+  ): void => {
+    if (!server) {
+      return;
+    }
+    const nextFiles = new Set(next.files);
+    for (const file of previous?.files ?? []) {
+      if (!nextFiles.has(file)) {
+        server.moduleGraph.onFileDelete(
+          resolve(projectBase(), file).split("\\").join("/"),
+        );
+      }
+    }
+    for (const file of nextFiles) {
+      server.moduleGraph.onFileChange(
+        resolve(projectBase(), file).split("\\").join("/"),
+      );
+    }
+  };
+
   /** Runs one compile for `paths` (empty = the initial full compile). */
   const compileBatch = async (paths: readonly string[]): Promise<CompileOutcome> => {
     const daemon = ensureClient();
@@ -172,6 +195,7 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
         // describe a daemon that no longer exists. Discard it.
         throw new Error("dsql session invalidated during render; recompile pending");
       }
+      invalidateRenderedFiles(state?.renderMap ?? null, next.renderMap);
       state = next;
       lastError = null;
       // The render preflight may have refreshed the result; report the

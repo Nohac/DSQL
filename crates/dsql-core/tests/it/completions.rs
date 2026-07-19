@@ -94,6 +94,68 @@ async fn document_root_offers_definition_keywords() {
 }
 
 #[tokio::test]
+async fn filter_declarations_complete_structural_targets_and_body_rules() {
+    let catalog = crate::policy_completion_catalog();
+    let unrooted_target_fields = completion_list_with_catalog(
+        "filter MovieFilter on { | } { where true }",
+        '|',
+        catalog.clone(),
+    )
+    .await;
+    let target_fields = completion_list_with_catalog(
+        "filter MovieFilter on { .| } { where true }",
+        '|',
+        catalog.clone(),
+    )
+    .await;
+    let target_types = completion_list_with_catalog(
+        "filter MovieFilter on { .nr_order: | } { where true }",
+        '|',
+        catalog.clone(),
+    )
+    .await;
+    let before_colon = completion_list_with_catalog(
+        "filter MovieFilter on { .nr_order | } { where true }",
+        '|',
+        catalog.clone(),
+    )
+    .await;
+    let body_rules = completion_list_with_catalog(
+        "filter MovieFilter on { .nr_order: int } { | }",
+        '|',
+        catalog.clone(),
+    )
+    .await;
+    let body_fields = completion_list_with_catalog(
+        concat!(
+            "filter MovieFilter on {\n",
+            "  .nr_order: int\n",
+            "  .shared: text\n",
+            "} {\n",
+            "  where .|\n",
+            "}\n",
+        ),
+        '|',
+        catalog.clone(),
+    )
+    .await;
+    let concrete_body_fields =
+        completion_list_with_catalog("filter MovieFilter on first { where .| }", '|', catalog)
+            .await;
+
+    insta::assert_snapshot!(format!(
+        "unrooted target fields:\n{}\n\ntarget fields:\n{}\n\ntarget types:\n{}\n\nbefore colon:\n{}\n\nbody rules:\n{}\n\nshape body fields:\n{}\n\nconcrete body fields:\n{}",
+        render_completion_items(&unrooted_target_fields),
+        render_completion_items(&target_fields),
+        render_completion_items(&target_types),
+        render_completion_items(&before_colon),
+        render_completion_items(&body_rules),
+        render_completion_items(&body_fields),
+        render_completion_items(&concrete_body_fields),
+    ));
+}
+
+#[tokio::test]
 async fn root_selection_offers_tables() {
     insta::assert_snapshot!(completions("query Q {\n  |\n}\n").await);
 }

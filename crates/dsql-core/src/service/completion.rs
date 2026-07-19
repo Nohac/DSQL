@@ -61,6 +61,7 @@ pub enum CompletionKind {
     Fragment,
     Directive,
     Policy,
+    Type,
     Scope,
     Operator,
     Keyword,
@@ -107,6 +108,14 @@ pub enum CompletionSite {
     PredicateAggregateOperand,
     /// Naming a filter after the `filter` keyword.
     FilterAssignment,
+    /// Naming a catalog field in a structural policy target.
+    PolicyTargetField,
+    /// Naming the logical type of a structural policy target field.
+    PolicyTargetType,
+    /// Directly inside a filter or condition body, between rules.
+    PolicyBody,
+    /// Inside a filter or condition predicate.
+    PolicyExpr,
     /// After `@`, naming a directive namespace (or the `.` shorthand).
     DirectiveName,
     /// After `@namespace.` or `@.`, naming a directive member.
@@ -144,6 +153,32 @@ pub struct CompletionContext {
 #[component(hash)]
 pub struct DirectiveCompletionContext {
     pub role: DirectiveRole,
+}
+
+/// Policy-specific semantic context stamped alongside [`CompletionContext`].
+#[derive(Debug, Clone, Component, Hash)]
+#[component(hash)]
+pub struct PolicyCompletionContext {
+    pub role: PolicyCompletionRole,
+}
+
+/// The policy declaration position and semantic target relevant to completion.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum PolicyCompletionRole {
+    /// A field name in a structural target; candidates come from the catalog.
+    TargetField { insert_dot: bool },
+    /// A logical type for a field name already present in the target.
+    TargetType { field: String },
+    /// A predicate over a concrete table or a structural target's fields.
+    Expression { target: PolicyCompletionTarget },
+}
+
+/// The field namespace visible in a policy predicate.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum PolicyCompletionTarget {
+    Concrete(TableId),
+    Shape(Vec<(String, String)>),
+    None,
 }
 
 /// The classified directive position, with the names spelled so far
@@ -300,8 +335,12 @@ async fn enrich_completion_requests(
         .count()
         .min(3);
     let directive = directive_completion(&truncated_cst, &spine, prefix);
+    let policy = policy_completion(&truncated_cst, &spine, prefix, snapshot.catalog());
     let site = match &directive {
         Some((site, _)) => *site,
+        None if policy.is_some() => policy
+            .as_ref()
+            .map_or(CompletionSite::Other, |(site, _)| *site),
         None => match classify_site(&truncated_cst, &spine, stop) {
             // Dots before the word mean a spread is being typed: only
             // fragments (and the missing dots) make sense, not columns.
@@ -386,6 +425,8 @@ async fn enrich_completion_requests(
             | CompletionSite::PipeTransform
             | CompletionSite::PredicateAggregateFunction
             | CompletionSite::PredicateAggregateOperand
+            | CompletionSite::PolicyTargetField
+            | CompletionSite::PolicyTargetType
             | CompletionSite::DirectiveName
             | CompletionSite::DirectiveMember
             | CompletionSite::DirectiveArgument
@@ -429,6 +470,11 @@ async fn enrich_completion_requests(
             .entity(request)
             .insert(DirectiveCompletionContext { role });
     }
+    if let Some((_, Some(role))) = policy {
+        commands
+            .entity(request)
+            .insert(PolicyCompletionContext { role });
+    }
     commands.entity(request).insert(CompletionContext {
         site,
         table,
@@ -445,7 +491,7 @@ fn policy_keyword_applies(site: CompletionSite, keyword: &str) -> bool {
             site,
             CompletionSite::DocumentRoot | CompletionSite::ClauseList
         ),
-        "apply" | "field" => false,
+        "apply" | "field" => site == CompletionSite::PolicyBody,
         "when" => site == CompletionSite::FilterAssignment,
         _ => true,
     }
@@ -707,6 +753,110 @@ fn directive_completion(
     } else {
         Some((CompletionSite::DirectiveName, DirectiveRole::Name))
     }
+}
+
+fn policy_completion(
+    cst: &crate::grammar::parser::CstData,
+    spine: &[(Rule, NodeRef)],
+    source: &str,
+    catalog: &crate::catalog::Catalog,
+) -> Option<(CompletionSite, Option<PolicyCompletionRole>)> {
+    let (definition_rule, definition) = spine
+        .iter()
+        .rev()
+        .find(|(rule, _)| matches!(rule, Rule::FilterDef | Rule::ConditionDef))?;
+    let has_token = |node: NodeRef, token: Token| {
+        cst.children(node)
+            .any(|child| cst.match_token(child, token).is_some())
+    };
+
+    let target = crate::entities::direct_rule(cst, *definition, Rule::PolicyTarget);
+    if let Some(shape) =
+        target.and_then(|target| crate::entities::direct_rule(cst, target, Rule::ShapeTarget))
+        && !has_token(shape, Token::RBrace)
+    {
+        let current = cst
+            .children(shape)
+            .filter(|child| cst.match_rule(*child, Rule::ShapeField))
+            .last();
+        if let Some(field) = current {
+            let names = crate::entities::direct_names(cst, field);
+            if has_token(field, Token::Colon)
+                && let [name] = names.as_slice()
+            {
+                return Some((
+                    CompletionSite::PolicyTargetType,
+                    Some(PolicyCompletionRole::TargetType {
+                        field: source[name.start..name.end].to_string(),
+                    }),
+                ));
+            }
+            if !has_token(field, Token::Colon) && !names.is_empty() {
+                return Some((CompletionSite::Other, None));
+            }
+        }
+        return Some((
+            CompletionSite::PolicyTargetField,
+            Some(PolicyCompletionRole::TargetField {
+                insert_dot: !source.trim_end().ends_with('.'),
+            }),
+        ));
+    }
+
+    let body_rule = if *definition_rule == Rule::FilterDef {
+        Rule::FilterBody
+    } else {
+        Rule::ConditionBody
+    };
+    let body = crate::entities::direct_rule(cst, *definition, body_rule)?;
+    if !has_token(body, Token::LBrace) || has_token(body, Token::RBrace) {
+        return None;
+    }
+
+    let body_index = spine.iter().rposition(|(_, node)| *node == body)?;
+    let in_expression = spine[body_index + 1..]
+        .iter()
+        .any(|(rule, _)| matches!(rule, Rule::WhereClause | Rule::Expr));
+    if !in_expression {
+        return Some((CompletionSite::PolicyBody, None));
+    }
+
+    let target = match target {
+        Some(target) => {
+            if let Some(name) = crate::entities::direct_rule(cst, target, Rule::QualifiedName) {
+                let span = crate::entities::node_span(cst, name);
+                catalog
+                    .table_ref_for(TableRef::parse(&source[span.start..span.end]))
+                    .map_or(PolicyCompletionTarget::None, |table| {
+                        PolicyCompletionTarget::Concrete(table.id)
+                    })
+            } else if let Some(shape) = crate::entities::direct_rule(cst, target, Rule::ShapeTarget)
+            {
+                let fields = cst
+                    .children(shape)
+                    .filter(|child| cst.match_rule(*child, Rule::ShapeField))
+                    .filter_map(|field| {
+                        let names = crate::entities::direct_names(cst, field);
+                        let [name, type_name] = names.as_slice() else {
+                            return None;
+                        };
+                        Some((
+                            source[name.start..name.end].to_string(),
+                            source[type_name.start..type_name.end].to_string(),
+                        ))
+                    })
+                    .collect();
+                PolicyCompletionTarget::Shape(fields)
+            } else {
+                PolicyCompletionTarget::None
+            }
+        }
+        None => PolicyCompletionTarget::None,
+    };
+    Some((
+        CompletionSite::PolicyExpr,
+        Some(PolicyCompletionRole::Expression { target }),
+    ))
 }
 
 fn classify_site(

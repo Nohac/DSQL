@@ -1,0 +1,44 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+expression: "format!(\"unrooted target fields:\\n{}\\n\\ntarget fields:\\n{}\\n\\ntarget types:\\n{}\\n\\nbefore colon:\\n{}\\n\\nbody rules:\\n{}\\n\\nshape body fields:\\n{}\\n\\nconcrete body fields:\\n{}\",\nrender_completion_items(&unrooted_target_fields),\nrender_completion_items(&target_fields),\nrender_completion_items(&target_types),\nrender_completion_items(&before_colon), render_completion_items(&body_rules),\nrender_completion_items(&body_fields),\nrender_completion_items(&concrete_body_fields),)"
+---
+unrooted target fields:
+Column nr_order (int, text) insert=.nr_order
+Column only_first (uuid) insert=.only_first
+Column only_second (boolean) insert=.only_second
+Column shared (text) insert=.shared
+
+target fields:
+Column nr_order (int, text)
+Column only_first (uuid)
+Column only_second (boolean)
+Column shared (text)
+
+target types:
+Type int (logical type)
+Type text (logical type)
+
+before colon:
+
+
+body rules:
+Keyword apply
+Keyword field
+Keyword where
+
+shape body fields:
+Column nr_order (int)
+Column shared (text)
+Keyword exists
+Keyword in
+Keyword is
+Keyword not
+
+concrete body fields:
+Column nr_order (int)
+Column only_first (uuid)
+Column shared (text)
+Keyword exists
+Keyword in
+Keyword is
+Keyword not
