@@ -22,8 +22,14 @@ fn dsql_with_database(dir: &Path, database_url: &str, args: &[&str]) -> Output {
         .expect("dsql runs")
 }
 
-fn execute_observatory(dir: &Path, database_url: &str, name: &str, bindings: &[&str]) -> String {
-    let mut args = vec!["operation", "execute", name, "--scope", "default"];
+fn execute_observatory(
+    dir: &Path,
+    database_url: &str,
+    scope: &str,
+    name: &str,
+    bindings: &[&str],
+) -> String {
+    let mut args = vec!["operation", "execute", name, "--scope", scope];
     args.extend_from_slice(bindings);
     let output = dsql_with_database(dir, database_url, &args);
     assert!(output.status.success(), "stderr: {}", stderr(&output));
@@ -117,19 +123,48 @@ fn operation_execute_validates_inputs_before_connecting() {
     let observatory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/observatory");
     let output = dsql(
         &observatory,
-        &[
-            "operation",
-            "execute",
-            "RecentReadings",
-            "--scope",
-            "default",
-        ],
+        &["operation", "execute", "RecentReadings", "--scope", "api"],
     );
     assert!(!output.status.success());
     assert!(
         stderr(&output).contains("required operation input `params.direction` was not provided"),
         "input validation should precede the placeholder database URL: {}",
         stderr(&output)
+    );
+}
+
+#[test]
+fn observatory_operation_list_exposes_importing_scopes() {
+    let observatory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/observatory");
+    let listed = dsql(&observatory, &["operation", "list"]);
+    assert!(listed.status.success(), "stderr: {}", stderr(&listed));
+    let mut operations = stdout(&listed)
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    operations.sort();
+    assert_eq!(
+        operations,
+        [
+            "analytics\tConfidenceGroups",
+            "analytics\tFlatReadingSummary",
+            "analytics\tReadingSummary",
+            "api\tEmptyAggregateCount",
+            "api\tEmptyAggregateMinimum",
+            "api\tManualFilterProbe",
+            "api\tMissingFlattened",
+            "api\tNetworkTopology",
+            "api\tPrivacyProbe",
+            "api\tRecentReadings",
+            "api\tTypedReading",
+        ]
+    );
+
+    let analytics = dsql(&observatory, &["op", "list", "--scope", "analytics"]);
+    assert!(analytics.status.success(), "stderr: {}", stderr(&analytics));
+    assert_eq!(
+        stdout(&analytics),
+        "analytics\tConfidenceGroups\nanalytics\tFlatReadingSummary\nanalytics\tReadingSummary\n"
     );
 }
 
@@ -148,6 +183,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let topology = execute_observatory(
         &observatory,
         &database_url,
+        "api",
         "NetworkTopology",
         &["--context", tenant],
     );
@@ -156,6 +192,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let readings = execute_observatory(
         &observatory,
         &database_url,
+        "api",
         "RecentReadings",
         &[
             "--variables-file",
@@ -169,6 +206,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let summary = execute_observatory(
         &observatory,
         &database_url,
+        "analytics",
         "ReadingSummary",
         &["--context", tenant],
     );
@@ -177,6 +215,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let empty_summary = execute_observatory(
         &observatory,
         &database_url,
+        "analytics",
         "ReadingSummary",
         &[
             "--context",
@@ -188,6 +227,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let flat_summary = execute_observatory(
         &observatory,
         &database_url,
+        "analytics",
         "FlatReadingSummary",
         &["--context", tenant],
     );
@@ -196,6 +236,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let typed = execute_observatory(
         &observatory,
         &database_url,
+        "api",
         "TypedReading",
         &["--variables", typed_variables, "--context", visible],
     );
@@ -204,6 +245,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let restricted = execute_observatory(
         &observatory,
         &database_url,
+        "api",
         "TypedReading",
         &["--variables", typed_variables, "--context", hidden],
     );
@@ -212,6 +254,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let probe = execute_observatory(
         &observatory,
         &database_url,
+        "api",
         "PrivacyProbe",
         &[
             "--variables",
@@ -225,6 +268,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let visible_groups = execute_observatory(
         &observatory,
         &database_url,
+        "analytics",
         "ConfidenceGroups",
         &["--context", visible],
     );
@@ -242,6 +286,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let hidden_groups = execute_observatory(
         &observatory,
         &database_url,
+        "analytics",
         "ConfidenceGroups",
         &["--context", hidden],
     );
@@ -254,6 +299,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         let filtered = execute_observatory(
             &observatory,
             &database_url,
+            "api",
             "ManualFilterProbe",
             &[
                 "--variables",
@@ -268,6 +314,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let empty_count = execute_observatory(
         &observatory,
         &database_url,
+        "api",
         "EmptyAggregateCount",
         &["--context", tenant],
     );
@@ -276,6 +323,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let empty_minimum = execute_observatory(
         &observatory,
         &database_url,
+        "api",
         "EmptyAggregateMinimum",
         &[
             "--variables",
@@ -289,6 +337,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     let missing_flattened = execute_observatory(
         &observatory,
         &database_url,
+        "api",
         "MissingFlattened",
         &["--context", tenant],
     );

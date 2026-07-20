@@ -1,32 +1,10 @@
-filter TenantScope on { .tenant_id: uuid } {
-  apply where true
-  where .tenant_id == $:tenant_id
-}
-
-filter ReadingPrivacy on readings {
-  apply where true
-  field payload, confidence where $:can_read_payload
-}
-
-filter FlaggedOnly on readings {
-  where .flagged == true
-}
-
 query RecentReadings {
   readings(
     where .id in $$ids
     order by flagged asc, id $$direction
     limit 10
   ) {
-    id
-    network_code
-    station_code
-    sensor_code
-    recorded_at
-    value
-    confidence
-    flagged
-    payload
+    ...ReadingRow
   }
 }
 
@@ -53,27 +31,9 @@ query NetworkTopology {
       name
       metadata
       sensors(order by code asc) {
-        code
-        unit
+        ...SensorIdentity
       }
     }
-  }
-}
-
-query ReadingSummary {
-  readings | aggregate by network: .network_code {
-    count
-    first_seen: min .recorded_at
-    last_seen: max .recorded_at
-    total: sum .value
-    average: avg .value
-  }
-}
-
-query FlatReadingSummary {
-  ...readings | aggregate {
-    total_readings: count
-    first_reading: min .recorded_at
   }
 }
 
@@ -85,12 +45,6 @@ query PrivacyProbe {
     limit 1
   ) {
     id
-  }
-}
-
-query ConfidenceGroups {
-  readings | aggregate by confidence: .confidence {
-    count
   }
 }
 

@@ -1,6 +1,17 @@
-database_url = "<set DSQL_DATABASE_URL from `bun run url`>"
+database_url = "<set by ../.env or DSQL_DATABASE_URL>"
 default_schema = "public"
-documents = [{ resolver = "dsql", paths = ["queries/**/*.dsql"] }]
+documents = []
+
+[resolution.shared]
+documents = [{ resolver = "dsql", paths = ["queries/shared/**/*.dsql"] }]
+
+[resolution.api]
+documents = [{ resolver = "dsql", paths = ["queries/api/**/*.dsql"] }]
+imports = ["shared"]
+
+[resolution.analytics]
+documents = [{ resolver = "dsql", paths = ["queries/analytics/**/*.dsql"] }]
+imports = ["shared"]
 
 [lint]
 unindexed_scan_severity = "warning"

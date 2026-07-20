@@ -1,18 +1,82 @@
 ---
 version: 1
 filters:
-  - scope: default
-    defined_in: default
+  - scope: analytics
+    defined_in: shared
     name: FlaggedOnly
     matches:
       - target: public.readings
-  - scope: default
-    defined_in: default
+  - scope: analytics
+    defined_in: shared
     name: ReadingPrivacy
     matches:
       - target: public.readings
-  - scope: default
-    defined_in: default
+  - scope: analytics
+    defined_in: shared
+    name: TenantScope
+    matches:
+      - target: public.active_stations
+        fields:
+          tenant_id: uuid
+      - target: public.network_reading_totals
+        fields:
+          tenant_id: uuid
+      - target: public.networks
+        fields:
+          tenant_id: uuid
+      - target: public.readings
+        fields:
+          tenant_id: uuid
+      - target: public.sensors
+        fields:
+          tenant_id: uuid
+      - target: public.stations
+        fields:
+          tenant_id: uuid
+  - scope: api
+    defined_in: shared
+    name: FlaggedOnly
+    matches:
+      - target: public.readings
+  - scope: api
+    defined_in: shared
+    name: ReadingPrivacy
+    matches:
+      - target: public.readings
+  - scope: api
+    defined_in: shared
+    name: TenantScope
+    matches:
+      - target: public.active_stations
+        fields:
+          tenant_id: uuid
+      - target: public.network_reading_totals
+        fields:
+          tenant_id: uuid
+      - target: public.networks
+        fields:
+          tenant_id: uuid
+      - target: public.readings
+        fields:
+          tenant_id: uuid
+      - target: public.sensors
+        fields:
+          tenant_id: uuid
+      - target: public.stations
+        fields:
+          tenant_id: uuid
+  - scope: shared
+    defined_in: shared
+    name: FlaggedOnly
+    matches:
+      - target: public.readings
+  - scope: shared
+    defined_in: shared
+    name: ReadingPrivacy
+    matches:
+      - target: public.readings
+  - scope: shared
+    defined_in: shared
     name: TenantScope
     matches:
       - target: public.active_stations

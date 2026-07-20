@@ -47,6 +47,11 @@ pub enum CliError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("failed to load {path}: {source}")]
+    Environment {
+        path: PathBuf,
+        source: dotenvy::Error,
+    },
     #[error("failed to serialize metadata: {0}")]
     Metadata(String),
     #[error("{0} is not a project document")]
@@ -57,8 +62,39 @@ pub enum CliError {
 
 pub(crate) type Outcome = Result<bool, CliError>;
 
-fn effective_database_url(project: &Project) -> String {
-    std::env::var("DSQL_DATABASE_URL").unwrap_or_else(|_| project.config.database_url.clone())
+fn effective_database_url(project: &Project) -> Result<String, CliError> {
+    resolve_database_url(
+        project.base(),
+        &project.config.database_url,
+        std::env::var("DSQL_DATABASE_URL").ok(),
+    )
+}
+
+fn resolve_database_url(
+    project_base: &Path,
+    configured: &str,
+    process_value: Option<String>,
+) -> Result<String, CliError> {
+    if let Some(database_url) = process_value {
+        return Ok(database_url);
+    }
+    let path = project_base.join(".env");
+    let variables = match dotenvy::from_path_iter(&path) {
+        Ok(variables) => variables,
+        Err(source) if source.not_found() => return Ok(configured.to_string()),
+        Err(source) => return Err(CliError::Environment { path, source }),
+    };
+    let mut dotenv_value = None;
+    for variable in variables {
+        let (name, value) = variable.map_err(|source| CliError::Environment {
+            path: path.clone(),
+            source,
+        })?;
+        if name == "DSQL_DATABASE_URL" && dotenv_value.is_none() {
+            dotenv_value = Some(value);
+        }
+    }
+    Ok(dotenv_value.unwrap_or_else(|| configured.to_string()))
 }
 
 /// Resolves a user-supplied path onto the project document it names — the
@@ -269,7 +305,7 @@ pub async fn operation_execute(
     };
     let materialized = dsql_execute::materialize(&operation, &bindings)?;
     let executor =
-        dsql_execute::PostgresExecutor::connect(&effective_database_url(&project)).await?;
+        dsql_execute::PostgresExecutor::connect(&effective_database_url(&project)?).await?;
     let output = executor.execute_materialized(&materialized).await?;
     println!(
         "{}",
@@ -456,7 +492,7 @@ pub async fn lock() -> Outcome {
 pub async fn introspect(dry_run: bool) -> Outcome {
     let project = Project::load().await?;
     let metadata =
-        dsql_introspection::introspect_postgres(&effective_database_url(&project)).await?;
+        dsql_introspection::introspect_postgres(&effective_database_url(&project)?).await?;
     match sink_metadata(&metadata, &project.schema, dry_run).await? {
         Some(rendered) => print!("{rendered}"),
         None => println!("schema written to {}", project.schema.display()),
@@ -552,4 +588,55 @@ pub async fn generate_typescript_metadata(out_dir: &Path) -> Outcome {
     println!("wrote {}", schema_path.display());
     println!("wrote {}", types_path.display());
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_database_url;
+
+    #[test]
+    fn database_url_precedence_and_dotenv_errors_are_explicit() {
+        let directory = tempfile::tempdir().expect("temporary project base");
+        assert_eq!(
+            resolve_database_url(directory.path(), "configured", None)
+                .expect("missing .env uses configuration"),
+            "configured"
+        );
+
+        let environment = directory.path().join(".env");
+        std::fs::write(&environment, "IGNORED=value\n").expect("write .env without database URL");
+        assert_eq!(
+            resolve_database_url(directory.path(), "configured", None)
+                .expect("unrelated variables are ignored"),
+            "configured"
+        );
+
+        std::fs::write(&environment, "DSQL_DATABASE_URL='from dotenv'\n")
+            .expect("write database URL");
+        assert_eq!(
+            resolve_database_url(directory.path(), "configured", None).expect(".env is readable"),
+            "from dotenv"
+        );
+        assert_eq!(
+            resolve_database_url(
+                directory.path(),
+                "configured",
+                Some("from process".to_string()),
+            )
+            .expect("process value wins"),
+            "from process"
+        );
+
+        std::fs::write(
+            &environment,
+            "DSQL_DATABASE_URL=valid-before-error\nBROKEN='unterminated\n",
+        )
+        .expect("write malformed .env");
+        let error = resolve_database_url(directory.path(), "configured", None)
+            .expect_err("malformed .env must fail");
+        assert!(
+            error.to_string().contains("failed to load") && error.to_string().contains(".env"),
+            "got {error}"
+        );
+    }
 }

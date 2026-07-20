@@ -1,0 +1,30 @@
+filter TenantScope on { .tenant_id: uuid } {
+  apply where true
+  where .tenant_id == $:tenant_id
+}
+
+filter ReadingPrivacy on readings {
+  apply where true
+  field payload, confidence where $:can_read_payload
+}
+
+filter FlaggedOnly on readings {
+  where .flagged == true
+}
+
+fragment ReadingRow on readings {
+  id
+  network_code
+  station_code
+  sensor_code
+  recorded_at
+  value
+  confidence
+  flagged
+  payload
+}
+
+fragment SensorIdentity on sensors {
+  code
+  unit
+}

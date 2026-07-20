@@ -1,0 +1,22 @@
+query ReadingSummary {
+  readings | aggregate by network: .network_code {
+    count
+    first_seen: min .recorded_at
+    last_seen: max .recorded_at
+    total: sum .value
+    average: avg .value
+  }
+}
+
+query FlatReadingSummary {
+  ...readings | aggregate {
+    total_readings: count
+    first_reading: min .recorded_at
+  }
+}
+
+query ConfidenceGroups {
+  readings | aggregate by confidence: .confidence {
+    count
+  }
+}

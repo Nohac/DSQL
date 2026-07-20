@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { seed, type Profile } from "./seed";
 
 const stateFile = new URL(".db-state.json", import.meta.url);
+const environmentFile = new URL(".env", import.meta.url);
 const schemaFile = new URL("schema.sql", import.meta.url).pathname;
 const image = process.env.DSQL_POSTGRES_IMAGE ?? "docker.io/library/postgres:17.5-alpine";
 
@@ -97,9 +98,20 @@ async function start(profile: Profile): Promise<State> {
 
 async function stop(): Promise<void> {
   const state = await readState();
-  if (!state) return;
-  await podman("rm", "--force", state.container).catch(() => undefined);
-  await Bun.file(stateFile).delete();
+  if (state) {
+    await podman("rm", "--force", state.container).catch(() => undefined);
+    await Bun.file(stateFile).delete();
+  }
+  await Bun.file(environmentFile).delete().catch(() => undefined);
+}
+
+async function writeEnvironment(state: State): Promise<void> {
+  await Bun.file(environmentFile).delete().catch(() => undefined);
+  await writeFile(
+    environmentFile,
+    `DSQL_DATABASE_URL='${state.url}'\n`,
+    { flag: "wx", mode: 0o600 },
+  );
 }
 
 const command = process.argv[2] ?? "status";
@@ -108,8 +120,16 @@ if (!(["correctness", "small", "medium", "large"] as string[]).includes(profile)
   throw new Error(`unknown profile: ${profile}`);
 }
 
-if (command === "start") console.log((await start(profile)).url);
-else if (command === "reset") { await stop(); console.log((await start(profile)).url); }
+if (command === "start") {
+  const state = await start(profile);
+  await writeEnvironment(state);
+  console.log(state.url);
+} else if (command === "reset") {
+  await stop();
+  const state = await start(profile);
+  await writeEnvironment(state);
+  console.log(state.url);
+}
 else if (command === "stop") await stop();
 else if (command === "url") {
   const state = await readState();

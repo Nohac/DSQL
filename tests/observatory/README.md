@@ -2,7 +2,9 @@
 
 This project is the deterministic PostgreSQL target for live correctness tests
 and future benchmarks. It covers composite keys, every supported scalar type,
-catalog comments, nested relations, filters, aggregates, and dynamic inputs.
+catalog comments, nested relations, filters, aggregates, dynamic inputs, and
+resolution scopes. Shared filters and fragments are imported by separate `api`
+and `analytics` operation scopes.
 
 The Bun lifecycle talks to PostgreSQL directly through `SQL`; only container
 lifecycle operations shell out, and those use rootless Podman. PostgreSQL is
@@ -19,16 +21,21 @@ Profiles are `correctness` (the default), `small`, `medium`, and `large`. Seed
 rows are formula-derived from a fixed timestamp, so repeated resets are stable.
 Starting with a different profile replaces and reseeds an already-running
 container. The ignored `.db-state.json` is mode `0600` because it contains the
-generated password for the ephemeral database.
+generated password for the ephemeral database. `start` and `reset` also write
+the URL to an ignored project-root `.env`; `stop` removes both files.
 
-Database-touching dsql commands accept the printed URL through the environment:
+The dsql CLI reads `DSQL_DATABASE_URL` from that project-root `.env`, so
+database-touching commands work directly after `start`:
 
 ```sh
-DSQL_DATABASE_URL=<url> dsql introspect
-DSQL_DATABASE_URL=<url> dsql operation execute NetworkTopology \
-  --scope default \
+dsql introspect
+dsql operation execute NetworkTopology \
+  --scope api \
   --context '{"tenant_id":"018f6f19-795f-7c3d-b1b3-8f177ab8a301"}'
 ```
+
+An explicitly exported `DSQL_DATABASE_URL` takes precedence over `.env`, and
+the tracked `database_url` is the fallback when neither supplies a value.
 
 Live Rust tests remain opt-in and hermetic by default:
 

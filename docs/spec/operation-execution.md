@@ -40,8 +40,12 @@ identity or authorization facts; public request data must not be copied into
 context without validation.
 
 The configured `database_url` is used by default. Database-touching CLI
-commands accept `DSQL_DATABASE_URL` as an explicit runtime override, which lets
-ephemeral databases use dynamic ports without rewriting tracked configuration.
+commands read `DSQL_DATABASE_URL` from the process environment first, then from
+`.env` beside the project root's `dsql/` directory. This lets ephemeral
+databases use dynamic ports without rewriting tracked configuration. Exported
+process values always take precedence; a missing `.env` or one without that key
+falls back to `dsql.toml`, while a malformed or unreadable `.env` is an error
+when the file is consulted.
 
 ## Materialization
 

@@ -492,6 +492,7 @@ version = "0.1.0"
 dependencies = [
  "bowl",
  "clap",
+ "dotenvy",
  "dsql-core",
  "dsql-daemon",
  "dsql-execute",
@@ -504,6 +505,7 @@ dependencies = [
  "miette",
  "ropey",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
 ]
