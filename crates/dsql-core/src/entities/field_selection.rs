@@ -32,7 +32,8 @@ use crate::resolution::{
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::completion::{CompletionContext, CompletionRequest};
 use crate::service::hover::{
-    Cursor, HoverEnriched, describe_column, describe_relation, emit_hover_candidate, priority,
+    Cursor, HoverEnriched, describe_column, describe_relation, describe_table,
+    emit_hover_candidate, priority,
 };
 use crate::source::{ResolutionScope, ScopeImports};
 
@@ -1527,10 +1528,7 @@ fn describe_target(
 ) -> Option<String> {
     use crate::resolution::SelectionTarget;
     match &resolved.target {
-        SelectionTarget::Table(table) => {
-            let table = catalog.table_by_id(*table)?;
-            Some(format!("table `{}`.`{}`", table.schema, table.name))
-        }
+        SelectionTarget::Table(table) => describe_table(catalog, *table),
         SelectionTarget::Column(column) => describe_column(catalog, *column),
         SelectionTarget::Relation {
             table, foreign_key, ..
@@ -1570,6 +1568,7 @@ async fn complete_selections(
                     label,
                     kind: CompletionKind::Table,
                     detail: Some(format!("table {}.{}", table.schema, table.name)),
+                    documentation: table.description.clone(),
                     insert_text: None,
                 });
             }
@@ -1580,6 +1579,7 @@ async fn complete_selections(
                     label: column.name.clone(),
                     kind: CompletionKind::Column,
                     detail: Some(column.data_type.as_str().to_string()),
+                    documentation: column.description.clone(),
                     insert_text: None,
                 });
             }
@@ -1601,6 +1601,7 @@ async fn complete_selections(
                         "relation to {}.{} via {}",
                         relation.table.schema, relation.table.name, relation.selector
                     )),
+                    documentation: relation.table.description.clone(),
                     insert_text: None,
                 });
             }

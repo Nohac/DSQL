@@ -19,7 +19,9 @@ pub enum IntrospectionError {
 struct FlatColumn {
     schema_name: String,
     table_name: String,
+    table_description: Option<String>,
     column_name: String,
+    column_description: Option<String>,
     data_type: String,
     not_null: bool,
     object_type: String,
@@ -66,7 +68,9 @@ const PG_INTROSPECTION_QUERY: &str = r#"
 SELECT
     ns.nspname AS schema_name,
     tbl.relname AS table_name,
+    obj_description(tbl.oid, 'pg_class') AS table_description,
     col.attname AS column_name,
+    col_description(tbl.oid, col.attnum) AS column_description,
     typ.typname AS data_type,
     col.attnotnull AS not_null,
     tbl.relkind::text AS object_type
@@ -255,6 +259,7 @@ fn metadata_from_rows(
                 schema: row.schema_name.clone(),
                 name: row.table_name.clone(),
                 object_type: ObjectType::from_postgres_relkind(&row.object_type),
+                description: row.table_description,
                 columns: Vec::new(),
                 constraints: Vec::new(),
                 foreign_keys: Vec::new(),
@@ -262,6 +267,7 @@ fn metadata_from_rows(
             });
         table.columns.push(ColumnMetadata {
             name: row.column_name,
+            description: row.column_description,
             database_type: row.data_type.clone(),
             data_type: DataType::from_database_type(&row.data_type),
             not_null: row.not_null,
@@ -348,7 +354,9 @@ mod tests {
                 FlatColumn {
                     schema_name: "public".into(),
                     table_name: "title".into(),
+                    table_description: Some("Localized title records.".into()),
                     column_name: "id".into(),
+                    column_description: Some("Stable title identifier.".into()),
                     data_type: "int4".into(),
                     not_null: true,
                     object_type: "r".into(),
@@ -356,7 +364,9 @@ mod tests {
                 FlatColumn {
                     schema_name: "public".into(),
                     table_name: "title".into(),
+                    table_description: Some("Localized title records.".into()),
                     column_name: "kind_id".into(),
+                    column_description: None,
                     data_type: "int4".into(),
                     not_null: false,
                     object_type: "r".into(),
@@ -364,7 +374,9 @@ mod tests {
                 FlatColumn {
                     schema_name: "public".into(),
                     table_name: "kind_type".into(),
+                    table_description: None,
                     column_name: "id".into(),
+                    column_description: None,
                     data_type: "int4".into(),
                     not_null: true,
                     object_type: "r".into(),
@@ -420,7 +432,15 @@ mod tests {
         assert_eq!(names, ["kind_type", "title"], "tables sort by name");
 
         let title = &schema.tables[1];
+        assert_eq!(
+            title.description.as_deref(),
+            Some("Localized title records.")
+        );
         assert_eq!(title.columns.len(), 2);
+        assert_eq!(
+            title.columns[0].description.as_deref(),
+            Some("Stable title identifier.")
+        );
         assert_eq!(title.constraints.len(), 1);
         assert_eq!(title.foreign_keys.len(), 1);
         assert_eq!(title.foreign_keys[0].references.table, "kind_type");

@@ -1,0 +1,18 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+assertion_line: 109
+expression: "format!(\"tables:\\n{}\\n\\ncolumns:\\n{}\", render_completion_items(&tables),\nrender_completion_items(&columns),)"
+---
+tables:
+Table other_schema::users (table other_schema.users)
+Table posts (table public.posts)
+Table users (table public.users)
+  Application accounts.
+
+columns:
+Column created_at (timestamptz)
+Column email (text)
+Column id (uuid)
+Column name (text)
+  The account's public display name.
+Relation posts (relation to public.posts via user_id)

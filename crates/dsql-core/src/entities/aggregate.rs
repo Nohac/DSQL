@@ -930,6 +930,7 @@ async fn complete_aggregate_positions(
             label: "aggregate".to_string(),
             kind: CompletionKind::Keyword,
             detail: Some("selection transform".to_string()),
+            documentation: None,
             insert_text: None,
         }]
     } else if matches!(
@@ -945,6 +946,7 @@ async fn complete_aggregate_positions(
                     label: column.name.clone(),
                     kind: CompletionKind::Column,
                     detail: Some(column.data_type.as_str().to_string()),
+                    documentation: column.description.clone(),
                     insert_text: (context.site == CompletionSite::AggregateGroupKey
                         && context.spread_dots == 0)
                         .then(|| format!(".{}", column.name)),
@@ -965,6 +967,7 @@ async fn complete_aggregate_positions(
             label: function.label().to_string(),
             kind: CompletionKind::Keyword,
             detail: Some("aggregate function".to_string()),
+            documentation: None,
             insert_text: None,
         })
         .collect()

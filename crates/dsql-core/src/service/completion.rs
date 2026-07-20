@@ -49,6 +49,8 @@ pub struct CompletionItem {
     pub label: String,
     pub kind: CompletionKind,
     pub detail: Option<String>,
+    /// Rich documentation supplied by the resolved catalog object.
+    pub documentation: Option<String>,
     /// Text to insert when it differs from the label.
     pub insert_text: Option<String>,
 }
@@ -455,6 +457,7 @@ async fn enrich_completion_requests(
                     CompletionKind::Keyword
                 },
                 detail: None,
+                documentation: None,
                 insert_text: None,
             },
         );

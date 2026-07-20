@@ -1,0 +1,29 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+assertion_line: 87
+expression: "format!(\"root:\\n{}\\n\\npredicate:\\n{}\\n\\ncolumn:\\n{}\\n\\nrelation:\\n{}\\n\\nrelated column:\\n{}\",\nhover(&bowl, root).await, hover(&bowl, predicate).await,\nhover(&bowl, column).await, hover(&bowl, relation).await,\nhover(&bowl, related_column).await,)"
+---
+root:
+table `public`.`users`
+
+Application accounts.
+
+predicate:
+column `name`: text (not null)
+
+The account's public display name.
+
+column:
+column `name`: text (not null)
+
+The account's public display name.
+
+relation:
+relation `posts` → `public`.`posts` via `user_id`
+
+Articles published by an account.
+
+related column:
+column `title`: text (not null)
+
+The article headline.

@@ -130,12 +130,20 @@ pub mod priority {
 /// Renders one resolved catalog column for hover consumers.
 pub(crate) fn describe_column(catalog: &Catalog, column: ColumnId) -> Option<String> {
     let column = catalog.column_by_id(column)?;
-    Some(format!(
+    let identity = format!(
         "column `{}`: {}{}",
         column.name,
         column.data_type.as_str(),
         if column.not_null { " (not null)" } else { "" },
-    ))
+    );
+    Some(with_description(identity, column.description.as_deref()))
+}
+
+/// Renders one resolved catalog table for hover consumers.
+pub(crate) fn describe_table(catalog: &Catalog, table: TableId) -> Option<String> {
+    let table = catalog.table_by_id(table)?;
+    let identity = format!("table `{}`.`{}`", table.schema, table.name);
+    Some(with_description(identity, table.description.as_deref()))
 }
 
 /// Renders one resolved catalog relation for hover consumers.
@@ -148,10 +156,18 @@ pub(crate) fn describe_relation(
     let table = catalog.table_by_id(table)?;
     let foreign_key = catalog.foreign_key_by_id(foreign_key)?;
     let selector = catalog.foreign_key_selector(foreign_key);
-    Some(format!(
+    let identity = format!(
         "relation `{written}` → `{}`.`{}` via `{selector}`",
         table.schema, table.name,
-    ))
+    );
+    Some(with_description(identity, table.description.as_deref()))
+}
+
+fn with_description(identity: String, description: Option<&str>) -> String {
+    let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) else {
+        return identity;
+    };
+    format!("{identity}\n\n{description}")
 }
 
 /// Registers enrichment and arbitration; entity candidate systems register

@@ -234,45 +234,53 @@ pub fn numeric_catalog() -> Catalog {
                 schema: "public".to_string(),
                 name: "metrics".to_string(),
                 object_type: ObjectType::Table,
+                description: None,
                 columns: vec![
                     ColumnMetadata {
                         name: "amount".to_string(),
+                        description: None,
                         database_type: "numeric".to_string(),
                         data_type: DataType::from_database_type("numeric"),
                         not_null: true,
                     },
                     ColumnMetadata {
                         name: "ratio".to_string(),
+                        description: None,
                         database_type: "float8".to_string(),
                         data_type: DataType::from_database_type("float8"),
                         not_null: false,
                     },
                     ColumnMetadata {
                         name: "enabled".to_string(),
+                        description: None,
                         database_type: "bool".to_string(),
                         data_type: DataType::from_database_type("bool"),
                         not_null: true,
                     },
                     ColumnMetadata {
                         name: "exists".to_string(),
+                        description: None,
                         database_type: "int8".to_string(),
                         data_type: DataType::from_database_type("int8"),
                         not_null: true,
                     },
                     ColumnMetadata {
                         name: "in".to_string(),
+                        description: None,
                         database_type: "int8".to_string(),
                         data_type: DataType::from_database_type("int8"),
                         not_null: true,
                     },
                     ColumnMetadata {
                         name: "is".to_string(),
+                        description: None,
                         database_type: "int8".to_string(),
                         data_type: DataType::from_database_type("int8"),
                         not_null: true,
                     },
                     ColumnMetadata {
                         name: "not".to_string(),
+                        description: None,
                         database_type: "int8".to_string(),
                         data_type: DataType::from_database_type("int8"),
                         not_null: true,
@@ -297,10 +305,12 @@ pub fn policy_completion_catalog() -> Catalog {
         schema: "public".to_string(),
         name: name.to_string(),
         object_type: ObjectType::Table,
+        description: None,
         columns: columns
             .iter()
             .map(|(name, data_type)| ColumnMetadata {
                 name: (*name).to_string(),
+                description: None,
                 database_type: data_type.as_str().to_string(),
                 data_type: *data_type,
                 not_null: true,

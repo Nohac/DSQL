@@ -476,6 +476,7 @@ async fn complete_spreads(
             label: decl.name.clone(),
             kind: CompletionKind::Fragment,
             detail: Some(format!("fragment on {}", target.name)),
+            documentation: None,
             insert_text: (missing_dots > 0)
                 .then(|| format!("{}{}", ".".repeat(missing_dots), decl.name)),
         });

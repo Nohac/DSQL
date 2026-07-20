@@ -795,6 +795,7 @@ async fn complete_filter_assignments(
                     "filter {}::{} on {targets}",
                     entry.scope, entry.name
                 )),
+                documentation: None,
                 insert_text: None,
             })
         })
@@ -827,6 +828,7 @@ async fn complete_policy_declarations(
                 label: name.to_string(),
                 kind: CompletionKind::Column,
                 detail: Some(types.into_iter().collect::<Vec<_>>().join(", ")),
+                documentation: None,
                 insert_text: insert_dot.then(|| format!(".{name}")),
             }));
         }
@@ -842,6 +844,7 @@ async fn complete_policy_declarations(
                 label: data_type.to_string(),
                 kind: CompletionKind::Type,
                 detail: Some("logical type".to_string()),
+                documentation: None,
                 insert_text: None,
             }));
         }
@@ -854,6 +857,7 @@ async fn complete_policy_declarations(
                             label: column.name.clone(),
                             kind: CompletionKind::Column,
                             detail: Some(column.data_type.as_str().to_string()),
+                            documentation: column.description.clone(),
                             insert_text: None,
                         }),
                 );
@@ -865,6 +869,7 @@ async fn complete_policy_declarations(
                         "relation to {}.{} via {}",
                         relation.table.schema, relation.table.name, relation.selector
                     )),
+                    documentation: relation.table.description.clone(),
                     insert_text: None,
                 }));
             }
@@ -877,6 +882,7 @@ async fn complete_policy_declarations(
                     label: name.to_string(),
                     kind: CompletionKind::Column,
                     detail: Some(data_type.to_string()),
+                    documentation: None,
                     insert_text: None,
                 }));
             }

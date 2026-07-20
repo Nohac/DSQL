@@ -9,7 +9,7 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentFormattingParams, GotoDefinitionParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, Documentation, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
     MessageType, OneOf, Position as LspPosition, Range, SemanticTokensFullOptions,
@@ -587,6 +587,12 @@ impl LanguageServer for Backend {
                     CompletionKind::Keyword => CompletionItemKind::KEYWORD,
                 }),
                 detail: item.detail.clone(),
+                documentation: item.documentation.as_ref().map(|value| {
+                    Documentation::MarkupContent(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: value.clone(),
+                    })
+                }),
                 text_edit: replace_range.map(|range| {
                     tower_lsp_server::ls_types::CompletionTextEdit::Edit(TextEdit {
                         range,

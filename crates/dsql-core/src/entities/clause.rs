@@ -992,6 +992,7 @@ async fn complete_clause_positions(
                 label: anchor.to_string(),
                 kind: CompletionKind::Scope,
                 detail: Some(detail.to_string()),
+                documentation: None,
                 insert_text: None,
             });
         }
@@ -1002,6 +1003,7 @@ async fn complete_clause_positions(
             label: column.name.clone(),
             kind: CompletionKind::Column,
             detail: Some(column.data_type.as_str().to_string()),
+            documentation: column.description.clone(),
             insert_text: None,
         });
     }

@@ -16,6 +16,7 @@ columns:
     data_type: text
     not_null: false
   - name: kind_id
+    description: Classification assigned to the title.
     database_type: int4
     data_type: int
     not_null: true
@@ -82,3 +83,4 @@ indexes:
     columns:
       - kind_id
     unique: false
+description: Catalogued audiovisual titles.

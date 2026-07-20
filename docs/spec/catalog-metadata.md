@@ -27,8 +27,10 @@ Each table file describes one database object.
 schema: public
 name: memberships
 object_type: table
+description: Tenant-scoped application memberships.
 columns:
   - name: tenant_id
+    description: Tenant owning this membership.
     database_type: int4
     data_type: int
     not_null: true
@@ -78,6 +80,9 @@ Object metadata identifies a selectable database object.
 - `name`: database object name.
 - `object_type`: object category, such as `table`, `view`, or another
   provider-supported object kind.
+- `description`: optional provider-neutral documentation for the object. For
+  PostgreSQL, introspection reads `COMMENT ON TABLE` and the equivalent comments
+  on views and materialized views.
 - `columns`: ordered column metadata for the object.
 - `constraints`: table-level primary-key and unique constraints.
 - `foreign_keys`: table-level foreign-key constraints.
@@ -95,9 +100,15 @@ table-level metadata because primary keys, unique constraints, indexes, and
 foreign keys can all span multiple columns.
 
 - `name`: database column name.
+- `description`: optional provider-neutral documentation for the column. For
+  PostgreSQL, introspection reads `COMMENT ON COLUMN`.
 - `database_type`: database-native type name.
 - `data_type`: dsql logical type name after type mapping.
 - `not_null`: whether the column rejects null values.
+
+Descriptions are preserved in schema YAML and exposed by editor hover and
+completion. They are documentation only: they do not participate in catalog
+identity, resolution, type checking, or generated SQL.
 
 ## Constraints
 

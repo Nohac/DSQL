@@ -57,6 +57,44 @@ async fn hover_answers_by_construct() {
 }
 
 #[tokio::test]
+async fn catalog_descriptions_reach_table_column_and_relation_hover() {
+    let mut catalog = dsql_core::catalog::Catalog::hardcoded();
+    catalog.tables[0].description = Some("Application accounts.".to_string());
+    catalog.tables[1].description = Some("Articles published by an account.".to_string());
+    catalog.columns[1].description = Some("The account's public display name.".to_string());
+    catalog.columns[5].description = Some("The article headline.".to_string());
+
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, catalog).await;
+    let source = concat!(
+        "query Documented {\n",
+        "  public::users(where .name like \"A%\") {\n",
+        "    name\n",
+        "    posts {\n",
+        "      title\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+    );
+    insert_source(&bowl, FIXTURE, source).await;
+
+    let root = source.find("public::users").expect("test text") + "public::".len();
+    let predicate = source.find(".name").expect("test text") + 1;
+    let column = source.find("    name").expect("test text") + 4;
+    let relation = source.find("posts").expect("test text");
+    let related_column = source.find("title").expect("test text");
+
+    insta::assert_snapshot!(format!(
+        "root:\n{}\n\npredicate:\n{}\n\ncolumn:\n{}\n\nrelation:\n{}\n\nrelated column:\n{}",
+        hover(&bowl, root).await,
+        hover(&bowl, predicate).await,
+        hover(&bowl, column).await,
+        hover(&bowl, relation).await,
+        hover(&bowl, related_column).await,
+    ));
+}
+
+#[tokio::test]
 async fn hover_on_variables_reports_bindings() {
     let bowl = language_bowl().await;
     insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;

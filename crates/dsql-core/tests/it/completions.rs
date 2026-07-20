@@ -82,10 +82,35 @@ fn render_completion_items(list: &CompletionList) -> String {
                 .as_deref()
                 .map(|text| format!(" insert={text}"))
                 .unwrap_or_default();
-            format!("{:?} {}{detail}{insert}", item.kind, item.label)
+            let documentation = item
+                .documentation
+                .as_deref()
+                .map(|documentation| format!("\n  {documentation}"))
+                .unwrap_or_default();
+            format!(
+                "{:?} {}{detail}{insert}{documentation}",
+                item.kind, item.label
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[tokio::test]
+async fn catalog_descriptions_reach_table_and_column_completions() {
+    let mut catalog = Catalog::hardcoded();
+    catalog.tables[0].description = Some("Application accounts.".to_string());
+    catalog.columns[1].description = Some("The account's public display name.".to_string());
+
+    let tables = completion_list_with_catalog("query Q { | }", '|', catalog.clone()).await;
+    let columns =
+        completion_list_with_catalog("query Q { public::users { | } }", '|', catalog).await;
+
+    insta::assert_snapshot!(format!(
+        "tables:\n{}\n\ncolumns:\n{}",
+        render_completion_items(&tables),
+        render_completion_items(&columns),
+    ));
 }
 
 #[tokio::test]

@@ -424,6 +424,14 @@ async fn completion_edits_replace_the_word_under_the_cursor() {
         }),
         "the edit replaces `kin`"
     );
+    assert_eq!(
+        kind_id["documentation"],
+        json!({
+            "kind": "markdown",
+            "value": "Classification assigned to the title.",
+        }),
+        "catalog comments become completion documentation"
+    );
 
     // Embedded region: cursor inside `kind` (the nested `kind` column in
     // the template) — the edit range must be in host coordinates.

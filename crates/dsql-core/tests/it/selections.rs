@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{
     CatalogSnapshot, DatabaseMetadata, SchemaMetadata, insert_catalog, table_metadata_from_yaml,
+    table_metadata_to_yaml,
 };
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::field_selection::{FieldBodyKind, FieldSel};
@@ -349,6 +350,40 @@ indexes: []
     .await;
 
     insta::assert_snapshot!(render_selection_shapes(&bowl).await);
+}
+
+#[test]
+fn catalog_descriptions_round_trip_through_schema_yaml() {
+    let table = table_metadata_from_yaml(
+        r#"---
+schema: public
+name: stations
+object_type: table
+description: Observation stations.
+columns:
+  - name: code
+    description: Stable public station code.
+    database_type: text
+    data_type: text
+    not_null: true
+constraints: []
+foreign_keys: []
+indexes: []
+"#,
+    )
+    .expect("embedded table metadata parses");
+
+    let yaml = table_metadata_to_yaml(&table).expect("table metadata serializes");
+    let restored = table_metadata_from_yaml(&yaml).expect("serialized table metadata parses");
+
+    assert_eq!(
+        restored.description.as_deref(),
+        Some("Observation stations.")
+    );
+    assert_eq!(
+        restored.columns[0].description.as_deref(),
+        Some("Stable public station code.")
+    );
 }
 
 #[tokio::test]

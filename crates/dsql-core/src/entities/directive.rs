@@ -341,6 +341,7 @@ async fn complete_directives(
         label: label.to_string(),
         kind: CompletionKind::Directive,
         detail: Some(detail),
+        documentation: None,
         insert_text: insert,
     };
 
@@ -428,6 +429,7 @@ async fn complete_directives(
                         label: label.to_string(),
                         kind: CompletionKind::Keyword,
                         detail: None,
+                        documentation: None,
                         insert_text: None,
                     });
                 }

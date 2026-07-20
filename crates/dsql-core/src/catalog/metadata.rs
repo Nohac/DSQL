@@ -23,6 +23,8 @@ pub struct TableMetadata {
     pub schema: String,
     pub name: String,
     pub object_type: ObjectType,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub description: Option<String>,
     pub columns: Vec<ColumnMetadata>,
     #[facet(default, skip_serializing_if = Vec::is_empty)]
     pub constraints: Vec<TableConstraintMetadata>,
@@ -35,6 +37,8 @@ pub struct TableMetadata {
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct ColumnMetadata {
     pub name: String,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub description: Option<String>,
     pub database_type: String,
     pub data_type: DataType,
     pub not_null: bool,
@@ -240,6 +244,7 @@ impl Catalog {
                     schema_id,
                     table_schema,
                     &table_metadata.name,
+                    table_metadata.description.clone(),
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -280,6 +285,7 @@ impl Catalog {
                         table_schema,
                         &table_metadata.name,
                         &column_metadata.name,
+                        column_metadata.description.clone(),
                         &column_metadata.database_type,
                         column_metadata.data_type,
                         column_metadata.not_null,
