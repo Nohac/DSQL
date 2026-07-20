@@ -12,12 +12,15 @@ bowl = { workspace = true }
 clap = { workspace = true }
 dsql-core = { workspace = true }
 dsql-daemon = { workspace = true }
+dsql-execute = { workspace = true }
 dsql-generate = { workspace = true }
 dsql-introspection = { workspace = true }
 dsql-metadata = { workspace = true }
 dsql-project = { workspace = true }
+facet-json = { workspace = true }
 miette = { workspace = true }
 ropey = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 

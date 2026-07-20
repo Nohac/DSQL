@@ -25,6 +25,6 @@ mod support;
 mod variables;
 
 pub use support::{
-    fixture, fixture_names, imdb_catalog, numeric_catalog, policy_completion_catalog,
-    render_diagnostic_facts, render_diagnostics, replace_source_text, set_source_text,
+    fixture, imdb_catalog, numeric_catalog, policy_completion_catalog, render_diagnostic_facts,
+    render_diagnostics, replace_source_text, set_source_text,
 };

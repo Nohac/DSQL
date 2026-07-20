@@ -1,0 +1,9 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+expression: typed
+---
+{
+  "readings": {
+    "id": 2
+  }
+}

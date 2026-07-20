@@ -1,0 +1,54 @@
+---
+schema: public
+name: sensors
+object_type: table
+columns:
+  - name: tenant_id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: network_code
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: station_code
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: code
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: unit
+    database_type: text
+    data_type: text
+    not_null: true
+constraints:
+  - name: sensors_pkey
+    kind: primary_key
+    columns:
+      - tenant_id
+      - network_code
+      - station_code
+      - code
+foreign_keys:
+  - name: sensors_tenant_id_network_code_station_code_fkey
+    columns:
+      - tenant_id
+      - network_code
+      - station_code
+    references:
+      schema: public
+      table: stations
+      columns:
+        - tenant_id
+        - network_code
+        - code
+indexes:
+  - name: sensors_pkey
+    columns:
+      - tenant_id
+      - network_code
+      - station_code
+      - code
+    unique: true

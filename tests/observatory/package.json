@@ -1,0 +1,13 @@
+{
+  "name": "@dsql/observatory",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db": "bun run db.ts",
+    "start": "bun run db.ts start",
+    "reset": "bun run db.ts reset",
+    "stop": "bun run db.ts stop",
+    "status": "bun run db.ts status",
+    "url": "bun run db.ts url"
+  }
+}

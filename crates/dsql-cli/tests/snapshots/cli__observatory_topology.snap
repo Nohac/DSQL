@@ -1,0 +1,31 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+expression: topology
+---
+{
+  "networks": [
+    {
+      "code": "aurora",
+      "name": "Aurora Network",
+      "stations": [
+        {
+          "code": "north-1",
+          "metadata": {
+            "terrain": "coastal"
+          },
+          "name": "North One",
+          "sensors": [
+            {
+              "code": "humidity",
+              "unit": "percent"
+            },
+            {
+              "code": "temperature",
+              "unit": "celsius"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+---
+schema: public
+name: active_stations
+object_type: view
+description: Stations currently exposed to readers.
+columns:
+  - name: tenant_id
+    database_type: uuid
+    data_type: uuid
+    not_null: false
+  - name: network_code
+    database_type: text
+    data_type: text
+    not_null: false
+  - name: code
+    description: Station code within the composite network key.
+    database_type: text
+    data_type: text
+    not_null: false
+  - name: name
+    database_type: text
+    data_type: text
+    not_null: false

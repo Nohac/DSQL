@@ -1,0 +1,64 @@
+---
+schema: public
+name: stations
+object_type: table
+description: Physical stations that collect observations.
+columns:
+  - name: tenant_id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: network_code
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: code
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: name
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: latitude
+    database_type: numeric
+    data_type: numeric
+    not_null: true
+  - name: longitude
+    database_type: numeric
+    data_type: numeric
+    not_null: true
+  - name: commissioned_at
+    database_type: timestamptz
+    data_type: timestamptz
+    not_null: true
+  - name: metadata
+    description: Provider-specific station attributes.
+    database_type: jsonb
+    data_type: json
+    not_null: true
+constraints:
+  - name: stations_pkey
+    kind: primary_key
+    columns:
+      - tenant_id
+      - network_code
+      - code
+foreign_keys:
+  - name: stations_tenant_id_network_code_fkey
+    columns:
+      - tenant_id
+      - network_code
+    references:
+      schema: public
+      table: networks
+      columns:
+        - tenant_id
+        - code
+indexes:
+  - name: stations_pkey
+    columns:
+      - tenant_id
+      - network_code
+      - code
+    unique: true

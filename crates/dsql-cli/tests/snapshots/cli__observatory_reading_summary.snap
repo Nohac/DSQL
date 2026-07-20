@@ -1,0 +1,16 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+expression: summary
+---
+{
+  "readings": [
+    {
+      "average": "-19.3000000000000000",
+      "count": 6,
+      "first_seen": "2024-01-01T00:02:00+00:00",
+      "last_seen": "2024-01-01T00:12:00+00:00",
+      "network": "aurora",
+      "total": "-115.8000000000000000"
+    }
+  ]
+}

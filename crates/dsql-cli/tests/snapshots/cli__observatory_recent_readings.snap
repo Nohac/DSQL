@@ -1,0 +1,74 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+expression: readings
+---
+{
+  "readings": [
+    {
+      "confidence": null,
+      "flagged": false,
+      "id": 10,
+      "network_code": "aurora",
+      "payload": null,
+      "recorded_at": "2024-01-01T00:10:00+00:00",
+      "sensor_code": "temperature",
+      "station_code": "north-1",
+      "value": "-19.0000000000000000"
+    },
+    {
+      "confidence": null,
+      "flagged": false,
+      "id": 6,
+      "network_code": "aurora",
+      "payload": null,
+      "recorded_at": "2024-01-01T00:06:00+00:00",
+      "sensor_code": "temperature",
+      "station_code": "north-1",
+      "value": "-19.4000000000000000"
+    },
+    {
+      "confidence": null,
+      "flagged": false,
+      "id": 2,
+      "network_code": "aurora",
+      "payload": null,
+      "recorded_at": "2024-01-01T00:02:00+00:00",
+      "sensor_code": "temperature",
+      "station_code": "north-1",
+      "value": "-19.8000000000000000"
+    },
+    {
+      "confidence": null,
+      "flagged": true,
+      "id": 12,
+      "network_code": "aurora",
+      "payload": null,
+      "recorded_at": "2024-01-01T00:12:00+00:00",
+      "sensor_code": "temperature",
+      "station_code": "north-1",
+      "value": "-18.8000000000000000"
+    },
+    {
+      "confidence": null,
+      "flagged": true,
+      "id": 8,
+      "network_code": "aurora",
+      "payload": null,
+      "recorded_at": "2024-01-01T00:08:00+00:00",
+      "sensor_code": "temperature",
+      "station_code": "north-1",
+      "value": "-19.2000000000000000"
+    },
+    {
+      "confidence": null,
+      "flagged": true,
+      "id": 4,
+      "network_code": "aurora",
+      "payload": null,
+      "recorded_at": "2024-01-01T00:04:00+00:00",
+      "sensor_code": "temperature",
+      "station_code": "north-1",
+      "value": "-19.6000000000000000"
+    }
+  ]
+}

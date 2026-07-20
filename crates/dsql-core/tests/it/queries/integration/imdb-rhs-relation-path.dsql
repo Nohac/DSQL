@@ -1,6 +1,0 @@
-query RhsRelationPath {
-  movie_info(where .title.aka_title->movie_id.movie_id == .movie_id order by id asc limit 10) {
-    id
-    movie_id
-  }
-}

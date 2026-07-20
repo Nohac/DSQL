@@ -1,0 +1,123 @@
+filter TenantScope on { .tenant_id: uuid } {
+  apply where true
+  where .tenant_id == $:tenant_id
+}
+
+filter ReadingPrivacy on readings {
+  apply where true
+  field payload, confidence where $:can_read_payload
+}
+
+filter FlaggedOnly on readings {
+  where .flagged == true
+}
+
+query RecentReadings {
+  readings(
+    where .id in $$ids
+    order by flagged asc, id $$direction
+    limit 10
+  ) {
+    id
+    network_code
+    station_code
+    sensor_code
+    recorded_at
+    value
+    confidence
+    flagged
+    payload
+  }
+}
+
+query TypedReading {
+  readings(
+    where .network_code == $$network
+      and .recorded_at >= $$since
+      and .value >= $$minimum
+      and .confidence >= $$confidence
+      and .flagged == $$flagged
+      and .payload == $$payload
+    limit 1
+  ) {
+    id
+  }
+}
+
+query NetworkTopology {
+  networks(where .stations | exists order by code asc) {
+    code
+    name
+    stations(order by code asc) {
+      code
+      name
+      metadata
+      sensors(order by code asc) {
+        code
+        unit
+      }
+    }
+  }
+}
+
+query ReadingSummary {
+  readings | aggregate by network: .network_code {
+    count
+    first_seen: min .recorded_at
+    last_seen: max .recorded_at
+    total: sum .value
+    average: avg .value
+  }
+}
+
+query FlatReadingSummary {
+  ...readings | aggregate {
+    total_readings: count
+    first_reading: min .recorded_at
+  }
+}
+
+query PrivacyProbe {
+  readings(
+    where .confidence == $$confidence
+      or .confidence is null
+      or .confidence in $$confidences
+    limit 1
+  ) {
+    id
+  }
+}
+
+query ConfidenceGroups {
+  readings | aggregate by confidence: .confidence {
+    count
+  }
+}
+
+query ManualFilterProbe {
+  readings(filter FlaggedOnly when $$onlyFlagged order by id asc limit 1) {
+    id
+    flagged
+  }
+}
+
+query EmptyAggregateCount {
+  sensors(where .code == "humidity" and (.readings | count) == 0 limit 1) {
+    code
+  }
+}
+
+query EmptyAggregateMinimum {
+  sensors(
+    where .code == "humidity" and (.readings | min .recorded_at) != $$never
+    limit 1
+  ) {
+    code
+  }
+}
+
+query MissingFlattened {
+  ...readings(where .id < 0 limit 1) {
+    missing_id: id
+  }
+}

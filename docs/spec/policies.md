@@ -383,6 +383,12 @@ Query-authored expressions operate on the filtered logical readable view. This
 includes ordinary predicates, dynamic inputs, aggregate operands, and relation
 traversal.
 
+A null test on a conditionally readable field also requires that field's access
+condition. When access is denied, neither `is null`/`== null` nor `is not
+null`/`!= null` matches the row. Results still expose the hidden value as
+`null`; the predicate guard prevents callers from distinguishing that mask from
+a database `NULL` by probing generated operation inputs.
+
 A filter rule evaluates against raw catalog rows and relationships. It does not
 recursively observe field masking or row filters while deciding its own
 condition. This lets a rule inspect authorization fields and tables without

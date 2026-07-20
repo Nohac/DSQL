@@ -1,0 +1,80 @@
+---
+schema: public
+name: readings
+object_type: table
+description: Time-series values emitted by station sensors.
+columns:
+  - name: id
+    database_type: int8
+    data_type: int
+    not_null: true
+  - name: tenant_id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: network_code
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: station_code
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: sensor_code
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: recorded_at
+    database_type: timestamptz
+    data_type: timestamptz
+    not_null: true
+  - name: value
+    database_type: numeric
+    data_type: numeric
+    not_null: true
+  - name: confidence
+    description: Optional confidence score from zero to one.
+    database_type: float8
+    data_type: float
+    not_null: false
+  - name: flagged
+    database_type: bool
+    data_type: boolean
+    not_null: true
+  - name: payload
+    database_type: jsonb
+    data_type: json
+    not_null: true
+constraints:
+  - name: readings_pkey
+    kind: primary_key
+    columns:
+      - id
+foreign_keys:
+  - name: readings_tenant_id_network_code_station_code_sensor_code_fkey
+    columns:
+      - tenant_id
+      - network_code
+      - station_code
+      - sensor_code
+    references:
+      schema: public
+      table: sensors
+      columns:
+        - tenant_id
+        - network_code
+        - station_code
+        - code
+indexes:
+  - name: readings_pkey
+    columns:
+      - id
+    unique: true
+  - name: readings_sensor_time_idx
+    columns:
+      - tenant_id
+      - network_code
+      - station_code
+      - sensor_code
+      - recorded_at
+    unique: false

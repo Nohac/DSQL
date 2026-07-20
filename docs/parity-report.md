@@ -45,15 +45,14 @@ is either a correctness improvement or an explicit owner-level design choice.
 
 ## Verification parity
 
-The integration suite snapshots compiler and editor behavior. It also restores
-the POC's opt-in live PostgreSQL boundary:
+The integration suite snapshots compiler and editor behavior. The deterministic
+`tests/observatory` project supplies the opt-in live PostgreSQL boundary for
+operation execution, supported wire types, variants, filters, aggregates,
+composite relations, catalog comments, views, and materialized views.
 
-- every parameter-free fixture under `queries/valid` is generated and executed;
-- three data-sensitive IMDb fixtures snapshot boolean predicates, same-table
-  right-hand-side paths, and relation-path right-hand-side paths.
-
-Set `DSQL_TEST_DATABASE_URL` to run these tests. Without it they skip cleanly,
-so ordinary workspace tests remain hermetic.
+Set `DSQL_OBSERVATORY_DATABASE_URL` to its dynamically allocated URL to run the
+live tests. Without it they skip cleanly, so ordinary workspace tests remain
+hermetic.
 
 ## Intentional differences and remaining decisions
 

@@ -1,0 +1,8 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+expression: flat_summary
+---
+{
+  "first_reading": "2024-01-01T00:02:00+00:00",
+  "total_readings": 6
+}

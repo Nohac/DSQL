@@ -1,0 +1,31 @@
+---
+schema: public
+name: tenants
+object_type: table
+columns:
+  - name: id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: name
+    database_type: text
+    data_type: text
+    not_null: true
+constraints:
+  - name: tenants_name_key
+    kind: unique
+    columns:
+      - name
+  - name: tenants_pkey
+    kind: primary_key
+    columns:
+      - id
+indexes:
+  - name: tenants_name_key
+    columns:
+      - name
+    unique: true
+  - name: tenants_pkey
+    columns:
+      - id
+    unique: true

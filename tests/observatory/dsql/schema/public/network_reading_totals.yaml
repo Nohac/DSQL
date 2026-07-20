@@ -1,0 +1,18 @@
+---
+schema: public
+name: network_reading_totals
+object_type: materialized_view
+description: Precomputed reading counts per network.
+columns:
+  - name: tenant_id
+    database_type: uuid
+    data_type: uuid
+    not_null: false
+  - name: network_code
+    database_type: text
+    data_type: text
+    not_null: false
+  - name: reading_count
+    database_type: int8
+    data_type: int
+    not_null: false

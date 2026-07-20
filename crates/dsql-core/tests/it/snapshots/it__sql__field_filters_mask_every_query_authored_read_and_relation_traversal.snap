@@ -132,6 +132,16 @@ from
           else null
         end
       ) = ($2)
+      and (
+        (
+          ($1)
+          and ("title_d4d9f554"."title" is null)
+        )
+        or (
+          ($1)
+          and ("title_d4d9f554"."title" is not null)
+        )
+      )
       and exists (
         select
           1

@@ -86,11 +86,44 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Inspect or execute compiled operations.
+    #[command(visible_alias = "op")]
+    Operation {
+        #[command(subcommand)]
+        command: OperationCommand,
+    },
     /// Debug introspection over the project bowl (debug builds only).
     #[cfg(debug_assertions)]
     Debug {
         #[command(subcommand)]
         command: DebugCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum OperationCommand {
+    /// List compiled operations, optionally narrowed to one scope.
+    List {
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    /// Execute one compiled operation against the project database.
+    Execute {
+        name: String,
+        #[arg(long)]
+        scope: String,
+        /// Inline JSON containing the `params` and `input` trees.
+        #[arg(long, conflicts_with = "variables_file")]
+        variables: Option<String>,
+        /// Read the `params` and `input` JSON trees from this file.
+        #[arg(long)]
+        variables_file: Option<PathBuf>,
+        /// Inline trusted server-context JSON, without a `context` wrapper.
+        #[arg(long, conflicts_with = "context_file")]
+        context: Option<String>,
+        /// Read trusted server-context JSON from this file.
+        #[arg(long)]
+        context_file: Option<PathBuf>,
     },
 }
 
@@ -176,6 +209,30 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::SUCCESS;
         }
         Command::Introspect { dry_run } => commands::introspect(dry_run).await,
+        Command::Operation {
+            command: OperationCommand::List { scope },
+        } => commands::operation_list(scope.as_deref()).await,
+        Command::Operation {
+            command:
+                OperationCommand::Execute {
+                    name,
+                    scope,
+                    variables,
+                    variables_file,
+                    context,
+                    context_file,
+                },
+        } => {
+            commands::operation_execute(
+                &scope,
+                &name,
+                variables.as_deref(),
+                variables_file.as_deref(),
+                context.as_deref(),
+                context_file.as_deref(),
+            )
+            .await
+        }
         #[cfg(debug_assertions)]
         Command::Debug { command } => match command {
             DebugCommand::Hover { file, offset } => dsql_cli::debug::hover(&file, offset).await,

@@ -1,0 +1,44 @@
+---
+schema: public
+name: networks
+object_type: table
+description: Named observation networks within a tenant.
+columns:
+  - name: tenant_id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: code
+    description: Stable network code within its tenant.
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: name
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: active
+    database_type: bool
+    data_type: boolean
+    not_null: true
+constraints:
+  - name: networks_pkey
+    kind: primary_key
+    columns:
+      - tenant_id
+      - code
+foreign_keys:
+  - name: networks_tenant_id_fkey
+    columns:
+      - tenant_id
+    references:
+      schema: public
+      table: tenants
+      columns:
+        - id
+indexes:
+  - name: networks_pkey
+    columns:
+      - tenant_id
+      - code
+    unique: true

@@ -969,6 +969,59 @@ fn masked_column_expression(
     Ok(Expr::case(guard, raw).finally(Expr::null()).into())
 }
 
+fn filter_column_source<'a>(
+    scope: FilterSqlScope<'a>,
+    column_scope: FilterColumnScope,
+) -> SqlRowView<'a> {
+    match column_scope {
+        FilterColumnScope::Current => scope.current,
+        FilterColumnScope::Root => scope.root,
+        FilterColumnScope::PredicateSource => scope.predicate_source,
+        FilterColumnScope::Parent => scope.parent.unwrap_or(scope.current),
+    }
+}
+
+fn null_test_expr(
+    catalog: &Catalog,
+    scope: FilterSqlScope<'_>,
+    operand: &FilterExpr,
+    negated: bool,
+    template: &mut SqlTemplateContext,
+) -> Result<Expr, SqlGenerationError> {
+    let (operand, guard) = if let FilterExpr::Column {
+        scope: column_scope,
+        column: column_id,
+    } = operand
+    {
+        let source = filter_column_source(scope, *column_scope);
+        let column = column(catalog, *column_id)?;
+        let operand = Expr::col((
+            Alias::new(&source.context.table_alias),
+            Alias::new(&column.name),
+        ));
+        let guard =
+            policy_field_filter(source.field_filters, PolicyFieldTarget::Column(*column_id))
+                .map(|filter| render_policy_field_filter(catalog, source.context, filter, template))
+                .transpose()?;
+        (operand, guard)
+    } else {
+        (filter_expr(catalog, scope, operand, template)?, None)
+    };
+    let test = Expr::cust_with_expr(
+        if negated {
+            "$1 IS NOT NULL"
+        } else {
+            "$1 IS NULL"
+        },
+        operand,
+    );
+    Ok(if let Some(guard) = guard {
+        guard.and(test)
+    } else {
+        test
+    })
+}
+
 fn filter_expr(
     catalog: &Catalog,
     scope: FilterSqlScope<'_>,
@@ -980,12 +1033,7 @@ fn filter_expr(
             scope: column_scope,
             column: column_id,
         } => {
-            let source = match column_scope {
-                FilterColumnScope::Current => scope.current,
-                FilterColumnScope::Root => scope.root,
-                FilterColumnScope::PredicateSource => scope.predicate_source,
-                FilterColumnScope::Parent => scope.parent.unwrap_or(scope.current),
-            };
+            let source = filter_column_source(scope, *column_scope);
             masked_column_expression(catalog, source, *column_id, template)?
         }
         FilterExpr::Parameter(parameter) => Expr::cust(template.parameter(parameter)),
@@ -1007,15 +1055,7 @@ fn filter_expr(
             if matches!(op, FilterOp::Eq | FilterOp::Ne)
                 && let Some(operand) = null_comparison_operand(left, right)
             {
-                let operand = filter_expr(catalog, scope, operand, template)?;
-                return Ok(Expr::cust_with_expr(
-                    if *op == FilterOp::Eq {
-                        "$1 IS NULL"
-                    } else {
-                        "$1 IS NOT NULL"
-                    },
-                    operand,
-                ));
+                return null_test_expr(catalog, scope, operand, *op == FilterOp::Ne, template);
             }
             if *op == FilterOp::Like {
                 let left = filter_expr(catalog, scope, left, template)?;
@@ -1042,14 +1082,9 @@ fn filter_expr(
         FilterExpr::Not(operand) => {
             Expr::cust_with_expr("NOT ($1)", filter_expr(catalog, scope, operand, template)?)
         }
-        FilterExpr::NullTest { operand, negated } => Expr::cust_with_expr(
-            if *negated {
-                "$1 IS NOT NULL"
-            } else {
-                "$1 IS NULL"
-            },
-            filter_expr(catalog, scope, operand, template)?,
-        ),
+        FilterExpr::NullTest { operand, negated } => {
+            null_test_expr(catalog, scope, operand, *negated, template)?
+        }
         FilterExpr::Membership {
             operand,
             collection,

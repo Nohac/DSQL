@@ -14,7 +14,10 @@ use dsql_core::grammar::parser::{Node, NodeRef, Rule};
 use dsql_core::source::{FilePath, SourceKind};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 use dsql_generate::publish::MatchLockMode;
+use dsql_generate::{ArtifactFamily, SnapshotArtifact};
+use dsql_metadata::OperationMetadata;
 use dsql_project::{Project, ProjectError, load_project_documents, open_analysis_bowl};
+use serde_json::Value;
 
 /// The command layer's error: each failure keeps its own type instead of
 /// being coerced into an unrelated project variant.
@@ -26,6 +29,14 @@ pub enum CliError {
     Generate(#[from] dsql_generate::GenerateError),
     #[error(transparent)]
     Introspection(#[from] dsql_introspection::IntrospectionError),
+    #[error(transparent)]
+    Execute(#[from] dsql_execute::ExecuteError),
+    #[error("failed to parse JSON for {input}: {message}")]
+    Json { input: String, message: String },
+    #[error("{0} must be supplied inline or from a file, not both")]
+    ConflictingJsonSources(String),
+    #[error("operation `{scope}::{name}` was not found")]
+    OperationNotFound { scope: String, name: String },
     #[error("failed to read {path}: {source}")]
     Read {
         path: PathBuf,
@@ -45,6 +56,10 @@ pub enum CliError {
 }
 
 pub(crate) type Outcome = Result<bool, CliError>;
+
+fn effective_database_url(project: &Project) -> String {
+    std::env::var("DSQL_DATABASE_URL").unwrap_or_else(|_| project.config.database_url.clone())
+}
 
 /// Resolves a user-supplied path onto the project document it names — the
 /// exact path string diagnostics report under. Errors when the file is
@@ -208,6 +223,118 @@ pub async fn sql(collection_limit: Option<u64>) -> Outcome {
     }
 }
 
+/// Lists generation-clean operations without publishing artifacts.
+pub async fn operation_list(scope: Option<&str>) -> Outcome {
+    let project = Project::load().await?;
+    let Some(operations) = compiled_operations(&project).await? else {
+        return Ok(false);
+    };
+    for operation in operations
+        .iter()
+        .filter(|operation| scope.is_none_or(|scope| operation.scope == scope))
+    {
+        println!("{}\t{}", operation.scope, operation.name);
+    }
+    Ok(true)
+}
+
+/// Executes one generation-clean operation against the configured database.
+pub async fn operation_execute(
+    scope: &str,
+    name: &str,
+    variables: Option<&str>,
+    variables_file: Option<&Path>,
+    context: Option<&str>,
+    context_file: Option<&Path>,
+) -> Outcome {
+    let project = Project::load().await?;
+    let Some(operations) = compiled_operations(&project).await? else {
+        return Ok(false);
+    };
+    let artifact = operations
+        .iter()
+        .find(|artifact| artifact.scope == scope && artifact.name == name)
+        .ok_or_else(|| CliError::OperationNotFound {
+            scope: scope.to_string(),
+            name: name.to_string(),
+        })?;
+    let operation: OperationMetadata =
+        facet_json::from_str(&artifact.serialized).map_err(|error| CliError::Json {
+            input: artifact.id.clone(),
+            message: error.to_string(),
+        })?;
+    let bindings = dsql_execute::ExecutionBindings {
+        variables: json_input(variables, variables_file, "variables").await?,
+        context: json_input(context, context_file, "context").await?,
+    };
+    let materialized = dsql_execute::materialize(&operation, &bindings)?;
+    let executor =
+        dsql_execute::PostgresExecutor::connect(&effective_database_url(&project)).await?;
+    let output = executor.execute_materialized(&materialized).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).map_err(|error| CliError::Json {
+            input: "operation output".to_string(),
+            message: error.to_string(),
+        })?
+    );
+    Ok(true)
+}
+
+async fn compiled_operations(project: &Project) -> Result<Option<Vec<SnapshotArtifact>>, CliError> {
+    let bowl = open_analysis_bowl(project).await?;
+    arm_generate_demands(&bowl).await;
+    let diagnostics = crate::render::collect_diagnostics(&bowl).await;
+    let errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.is_error())
+        .collect::<Vec<_>>();
+    if !errors.is_empty() {
+        for diagnostic in errors {
+            print!("{}", crate::render::render(diagnostic));
+        }
+        return Ok(None);
+    }
+    let assembled = dsql_generate::assemble_project(&bowl, project, Default::default()).await?;
+    Ok(Some(
+        assembled
+            .snapshot
+            .artifacts
+            .into_iter()
+            .filter(|artifact| artifact.family == ArtifactFamily::Operation)
+            .collect(),
+    ))
+}
+
+async fn json_input(
+    inline: Option<&str>,
+    file: Option<&Path>,
+    label: &str,
+) -> Result<Value, CliError> {
+    if inline.is_some() && file.is_some() {
+        return Err(CliError::ConflictingJsonSources(label.to_string()));
+    }
+    let (input, raw) = if let Some(inline) = inline {
+        (format!("inline {label}"), inline.to_string())
+    } else if let Some(file) = file {
+        (
+            file.display().to_string(),
+            tokio::fs::read_to_string(file)
+                .await
+                .map_err(|source| CliError::Read {
+                    path: file.to_path_buf(),
+                    source,
+                })?,
+        )
+    } else {
+        return Ok(serde_json::json!({}));
+    };
+    serde_json::from_str(&raw).map_err(|error| CliError::Json {
+        input,
+        message: error.to_string(),
+    })
+}
+
 /// Formats project documents in place (or just `file`); with `check`,
 /// reports instead. Returns true when nothing needed changing.
 pub async fn fmt(check_only: bool, file: Option<PathBuf>) -> Outcome {
@@ -328,7 +455,8 @@ pub async fn lock() -> Outcome {
 /// one YAML document instead of writing the schema directory.
 pub async fn introspect(dry_run: bool) -> Outcome {
     let project = Project::load().await?;
-    let metadata = dsql_introspection::introspect_postgres(&project.config.database_url).await?;
+    let metadata =
+        dsql_introspection::introspect_postgres(&effective_database_url(&project)).await?;
     match sink_metadata(&metadata, &project.schema, dry_run).await? {
         Some(rendered) => print!("{rendered}"),
         None => println!("schema written to {}", project.schema.display()),
@@ -358,9 +486,8 @@ pub async fn init(path: Option<PathBuf>, database_url: Option<String>) -> Outcom
     let base = path.unwrap_or_else(|| PathBuf::from("."));
     let project = dsql_project::init_project(&base, database_url.clone()).await?;
     println!("initialized {}", project.root.display());
-    if database_url.is_some() {
-        let metadata =
-            dsql_introspection::introspect_postgres(&project.config.database_url).await?;
+    if let Some(database_url) = database_url {
+        let metadata = dsql_introspection::introspect_postgres(&database_url).await?;
         sink_metadata(&metadata, &project.schema, false).await?;
         println!("schema written to {}", project.schema.display());
     }

@@ -13,6 +13,27 @@ fn dsql(dir: &Path, args: &[&str]) -> Output {
         .expect("dsql runs")
 }
 
+fn dsql_with_database(dir: &Path, database_url: &str, args: &[&str]) -> Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_dsql"))
+        .args(args)
+        .env("DSQL_DATABASE_URL", database_url)
+        .current_dir(dir)
+        .output()
+        .expect("dsql runs")
+}
+
+fn execute_observatory(dir: &Path, database_url: &str, name: &str, bindings: &[&str]) -> String {
+    let mut args = vec!["operation", "execute", name, "--scope", "default"];
+    args.extend_from_slice(bindings);
+    let output = dsql_with_database(dir, database_url, &args);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    stdout(&output)
+}
+
+fn output_json(output: &str) -> serde_json::Value {
+    serde_json::from_str(output).expect("operation output is JSON")
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).to_string()
 }
@@ -54,6 +75,224 @@ fn validate_reports_counts_and_succeeds_on_a_clean_project() {
     let output = dsql(&imdb_fixture(), &["validate"]);
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     insta::assert_snapshot!(stdout(&output));
+}
+
+#[test]
+fn operation_list_uses_scopes_and_the_visible_alias() {
+    let listed = dsql(&imdb_fixture(), &["operation", "list"]);
+    assert!(listed.status.success(), "stderr: {}", stderr(&listed));
+    assert_eq!(stdout(&listed), "default\tTitles\n");
+
+    let scoped = dsql(&imdb_fixture(), &["op", "list", "--scope", "missing"]);
+    assert!(scoped.status.success(), "stderr: {}", stderr(&scoped));
+    assert!(stdout(&scoped).is_empty());
+}
+
+#[test]
+fn operation_execute_rejects_duplicate_binding_sources_before_loading_the_project() {
+    let output = dsql(
+        &imdb_fixture(),
+        &[
+            "operation",
+            "execute",
+            "Titles",
+            "--scope",
+            "default",
+            "--variables",
+            "{}",
+            "--variables-file",
+            "values.json",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("cannot be used with"),
+        "got {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn operation_execute_validates_inputs_before_connecting() {
+    let observatory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/observatory");
+    let output = dsql(
+        &observatory,
+        &[
+            "operation",
+            "execute",
+            "RecentReadings",
+            "--scope",
+            "default",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("required operation input `params.direction` was not provided"),
+        "input validation should precede the placeholder database URL: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn observatory_operations_execute_with_variants_policies_and_composite_relations() {
+    let Ok(database_url) = std::env::var("DSQL_OBSERVATORY_DATABASE_URL") else {
+        eprintln!("DSQL_OBSERVATORY_DATABASE_URL not set; skipping live operation test");
+        return;
+    };
+    let observatory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/observatory");
+    let tenant = r#"{"tenant_id":"018f6f19-795f-7c3d-b1b3-8f177ab8a301"}"#;
+    let visible = r#"{"tenant_id":"018f6f19-795f-7c3d-b1b3-8f177ab8a301","can_read_payload":true}"#;
+    let hidden = r#"{"tenant_id":"018f6f19-795f-7c3d-b1b3-8f177ab8a301","can_read_payload":false}"#;
+    let typed_variables = r#"{"params":{"network":"aurora","since":"2024-01-01T00:00:00Z","minimum":"-20","confidence":0.01,"flagged":false,"payload":{"sequence":2}}}"#;
+
+    let topology = execute_observatory(
+        &observatory,
+        &database_url,
+        "NetworkTopology",
+        &["--context", tenant],
+    );
+    insta::assert_snapshot!("observatory_topology", topology);
+
+    let readings = execute_observatory(
+        &observatory,
+        &database_url,
+        "RecentReadings",
+        &[
+            "--variables-file",
+            "inputs/recent.json",
+            "--context-file",
+            "inputs/no-payload.json",
+        ],
+    );
+    insta::assert_snapshot!("observatory_recent_readings", readings);
+
+    let summary = execute_observatory(
+        &observatory,
+        &database_url,
+        "ReadingSummary",
+        &["--context", tenant],
+    );
+    insta::assert_snapshot!("observatory_reading_summary", summary);
+
+    let empty_summary = execute_observatory(
+        &observatory,
+        &database_url,
+        "ReadingSummary",
+        &[
+            "--context",
+            r#"{"tenant_id":"018f6f19-795f-7c3d-b1b3-8f177ab8a399"}"#,
+        ],
+    );
+    insta::assert_snapshot!("observatory_empty_summary", empty_summary);
+
+    let flat_summary = execute_observatory(
+        &observatory,
+        &database_url,
+        "FlatReadingSummary",
+        &["--context", tenant],
+    );
+    insta::assert_snapshot!("observatory_flat_summary", flat_summary);
+
+    let typed = execute_observatory(
+        &observatory,
+        &database_url,
+        "TypedReading",
+        &["--variables", typed_variables, "--context", visible],
+    );
+    insta::assert_snapshot!("observatory_typed_reading", typed);
+
+    let restricted = execute_observatory(
+        &observatory,
+        &database_url,
+        "TypedReading",
+        &["--variables", typed_variables, "--context", hidden],
+    );
+    insta::assert_snapshot!("observatory_restricted_singular", restricted);
+
+    let probe = execute_observatory(
+        &observatory,
+        &database_url,
+        "PrivacyProbe",
+        &[
+            "--variables",
+            r#"{"params":{"confidence":0.02,"confidences":[0.02,0.04]}}"#,
+            "--context",
+            hidden,
+        ],
+    );
+    assert!(output_json(&probe)["readings"].is_null());
+
+    let visible_groups = execute_observatory(
+        &observatory,
+        &database_url,
+        "ConfidenceGroups",
+        &["--context", visible],
+    );
+    let visible_groups = output_json(&visible_groups);
+    let visible_groups = visible_groups["readings"]
+        .as_array()
+        .expect("visible confidence groups");
+    assert_eq!(visible_groups.len(), 5);
+    assert!(
+        visible_groups.iter().any(|group| {
+            group["confidence"].is_null() && group["count"] == serde_json::json!(2)
+        })
+    );
+
+    let hidden_groups = execute_observatory(
+        &observatory,
+        &database_url,
+        "ConfidenceGroups",
+        &["--context", hidden],
+    );
+    assert_eq!(
+        output_json(&hidden_groups)["readings"],
+        serde_json::json!([{"confidence": null, "count": 6}])
+    );
+
+    for (enabled, id) in [(false, 2), (true, 4)] {
+        let filtered = execute_observatory(
+            &observatory,
+            &database_url,
+            "ManualFilterProbe",
+            &[
+                "--variables",
+                &format!(r#"{{"params":{{"onlyFlagged":{enabled}}}}}"#),
+                "--context",
+                tenant,
+            ],
+        );
+        assert_eq!(output_json(&filtered)["readings"]["id"], id);
+    }
+
+    let empty_count = execute_observatory(
+        &observatory,
+        &database_url,
+        "EmptyAggregateCount",
+        &["--context", tenant],
+    );
+    assert_eq!(output_json(&empty_count)["sensors"]["code"], "humidity");
+
+    let empty_minimum = execute_observatory(
+        &observatory,
+        &database_url,
+        "EmptyAggregateMinimum",
+        &[
+            "--variables",
+            r#"{"params":{"never":"2024-01-01T00:00:00Z"}}"#,
+            "--context",
+            tenant,
+        ],
+    );
+    assert!(output_json(&empty_minimum)["sensors"].is_null());
+
+    let missing_flattened = execute_observatory(
+        &observatory,
+        &database_url,
+        "MissingFlattened",
+        &["--context", tenant],
+    );
+    assert!(output_json(&missing_flattened)["missing_id"].is_null());
 }
 
 #[test]

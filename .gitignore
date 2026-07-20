@@ -1,1 +1,3 @@
 /target
+/tests/observatory/.db-state.json
+/tests/observatory/dsql/build/

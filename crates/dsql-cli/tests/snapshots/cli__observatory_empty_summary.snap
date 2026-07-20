@@ -1,0 +1,7 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+expression: empty_summary
+---
+{
+  "readings": []
+}

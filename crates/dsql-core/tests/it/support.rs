@@ -14,18 +14,6 @@ use dsql_core::source::SourceText;
 
 const QUERY_FIXTURES: &[(&str, &str)] = &[
     (
-        "integration/imdb-boolean-predicate.dsql",
-        include_str!("queries/integration/imdb-boolean-predicate.dsql"),
-    ),
-    (
-        "integration/imdb-rhs-relation-path.dsql",
-        include_str!("queries/integration/imdb-rhs-relation-path.dsql"),
-    ),
-    (
-        "integration/imdb-rhs-same-table.dsql",
-        include_str!("queries/integration/imdb-rhs-same-table.dsql"),
-    ),
-    (
         "invalid/imdb-duplicate-relation-path.dsql",
         include_str!("queries/invalid/imdb-duplicate-relation-path.dsql"),
     ),
@@ -98,18 +86,6 @@ pub fn fixture(relative_path: &str) -> String {
         .find_map(|(path, text)| (*path == relative_path).then_some(*text))
         .unwrap_or_else(|| panic!("unknown query fixture {relative_path}"))
         .to_string()
-}
-
-/// Sorted embedded query fixture names within one fixture directory.
-pub fn fixture_names(directory: &str) -> Vec<&'static str> {
-    let prefix = format!("{directory}/");
-    let mut names = QUERY_FIXTURES
-        .iter()
-        .map(|(path, _)| *path)
-        .filter(|path| path.starts_with(&prefix))
-        .collect::<Vec<_>>();
-    names.sort_unstable();
-    names
 }
 
 /// Replaces one source entity's complete text through the same external

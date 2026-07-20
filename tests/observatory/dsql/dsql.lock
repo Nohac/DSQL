@@ -1,0 +1,35 @@
+---
+version: 1
+filters:
+  - scope: default
+    defined_in: default
+    name: FlaggedOnly
+    matches:
+      - target: public.readings
+  - scope: default
+    defined_in: default
+    name: ReadingPrivacy
+    matches:
+      - target: public.readings
+  - scope: default
+    defined_in: default
+    name: TenantScope
+    matches:
+      - target: public.active_stations
+        fields:
+          tenant_id: uuid
+      - target: public.network_reading_totals
+        fields:
+          tenant_id: uuid
+      - target: public.networks
+        fields:
+          tenant_id: uuid
+      - target: public.readings
+        fields:
+          tenant_id: uuid
+      - target: public.sensors
+        fields:
+          tenant_id: uuid
+      - target: public.stations
+        fields:
+          tenant_id: uuid

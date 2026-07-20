@@ -1,0 +1,6 @@
+database_url = "<set DSQL_DATABASE_URL from `bun run url`>"
+default_schema = "public"
+documents = [{ resolver = "dsql", paths = ["queries/**/*.dsql"] }]
+
+[lint]
+unindexed_scan_severity = "warning"
