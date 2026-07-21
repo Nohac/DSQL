@@ -259,6 +259,8 @@ Query headers may establish recursive filter assignments:
 
 ```dsql
 query Administration(
+  $$includeDeleted = false
+  $$publishedOnly = false
   filter SoftDelete when not $$includeDeleted
   filter Published when $$publishedOnly
 ) {
@@ -271,6 +273,10 @@ query Administration(
   }
 }
 ```
+
+Filter assignments may be interleaved with definition input refinements in the
+same header. The refinements remain part of the inferred public input contract;
+they do not alter filter matching or enforcement semantics.
 
 An operation assignment applies to every matching query-authored source in its
 semantic tree, including:

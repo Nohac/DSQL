@@ -212,6 +212,160 @@ query AmbiguousIds {
 }
 ```
 
+## Definition Input Refinements
+
+Required, non-null inputs remain inferred from their usage. A query or fragment
+header lists only inputs whose inferred contract is refined with nullability or
+a default:
+
+```dsql
+query RecentMovies(
+  $$limit? = null
+  $cast_limit = 5
+) {
+  titles(limit $$) {
+    cast(limit $cast_limit) {
+      name
+    }
+  }
+}
+
+fragment RecentPosts(
+  $created_after? = null
+  $$limit = 5
+) on users {
+  posts(where .created_at > $created_after limit $$) {
+    id
+  }
+}
+```
+
+The header is not a complete variable declaration list. An entry must carry
+`?`, `=`, or both; listing an otherwise ordinary required, non-null input is
+redundant and a diagnostic. Query headers may mix input refinements with
+operation-wide `filter` assignments. Fragment headers contain input refinements
+only. Directives follow the closing parenthesis as usual.
+
+Conceptually:
+
+```text
+query_header_item = input_refinement | filter_assignment
+fragment_header_item = input_refinement
+input_refinement = ("$" | "$$") Name ("?" ["=" default_value] | "=" default_value)
+```
+
+The name in a refinement identifies the generated binding, regardless of
+whether its body occurrence was named explicitly. For example, `limit $$`
+infers `params.limit`; completion after `$$` in the query header offers
+`limit`, and `$$limit? = null` refines that anonymous occurrence. The same
+applies to a structured anonymous `$` occurrence and its inferred key.
+
+Header completion offers every inferred binding not already refined, including
+its generated path, type, role, and source location. A `$$name` entry identifies
+the compatible top-level param at `params.name` and may cover compatible
+repeated usages. A `$name` entry must identify exactly one structured input
+path. If multiple structured paths infer the same key, the diagnostic and
+completion details name every candidate; the author must name the body
+occurrences distinctly before refining them. An entry with no matching inferred
+binding is a diagnostic.
+
+Bare `$` and `$$` remain valid anonymous usage-site variables, but are not
+valid refinement entries because a header needs a stable inferred key. In a
+definition-reference binding list, those bare sigils instead denote complete
+input roots. Trusted `$:name` context cannot be refined by query source;
+trusted-context defaults, if ever supported, belong to the server/provider
+boundary so a query cannot weaken an enforcement requirement.
+
+### Requiredness And Nullability
+
+Requiredness and nullability are independent:
+
+| Source contract | Required | Nullable | Omission |
+| --- | ---: | ---: | --- |
+| no header entry | yes | no | error |
+| `$$value = 10` | no | no | substitute `10` |
+| `$$value?` | yes | yes | error |
+| `$$value? = 10` | no | yes | substitute `10` |
+| `$$value? = null` | no | yes | substitute `null` |
+
+The same matrix applies to `$name`. There is no optional-without-a-default
+state: optionality means omission has a deterministic replacement value.
+`null` is valid as a default only for a `?` input, and a non-null default does
+not remove the caller's ability to provide `null` when `?` is present.
+
+The first implementation accepts compile-time scalar and homogeneous collection
+literals. Defaults cannot reference fields, other public variables, trusted
+context, functions, or row-dependent expressions. Bounded dynamic predicates
+and ordering additionally admit their empty identity values as described in
+[Dynamic Input Defaults](#dynamic-input-defaults). Rich object defaults remain
+deferred until general object-literal syntax is designed.
+
+Defaults are type-checked by the compiler and serialized into generated
+metadata. At execution, materialization substitutes a missing value before
+ordinary input validation and SQL parameter binding. A supplied value always
+wins. One definition header is the authoritative default for a logical binding;
+defaults are not repeated at usage sites.
+
+### Nullable Predicate Uses
+
+When a nullable public variable supplies an operand to an ordinary comparison,
+membership test, or other predicate atom, a runtime `null` makes that complete
+atom absent. It does not bind SQL `NULL`, become `IS NULL`, or change the
+operator:
+
+```dsql
+query Movies(
+  $$from? = null
+  $$to? = null
+) {
+  titles(
+    where .kind_id == 1
+      and (
+        .production_year >= $$from
+        or .production_year <= $$to
+      )
+  ) {
+    id
+  }
+}
+```
+
+Predicate absence is structural pruning, not replacement with boolean `true`:
+
+```text
+A and absent -> A
+absent and B -> B
+A or absent  -> A
+absent or B  -> B
+not absent   -> absent
+```
+
+Parentheses collapse with their contents. If the complete `where` expression
+becomes absent, the selection has no query-authored predicate. This definition
+keeps optional comparisons correct beneath both `and` and `or`; blindly
+lowering each absent atom to `true` would make an `or` branch match every row.
+
+Only the public input controls presence. With a non-null input, a nullable
+database column still follows PostgreSQL three-valued comparison semantics.
+Matching database null remains explicit through `is null` or `is not null`.
+For membership, a null collection removes the atom while `in []` remains an
+active predicate that is false. Enforced filters and trusted-context predicates
+cannot be pruned by nullable public inputs.
+
+Other nullable roles use their structural identities: null removes a `limit` or
+`offset` clause, an optional order item contributes no ordering, and a nullable
+bounded predicate or order input contributes no dynamic entries. Empty dynamic
+predicate and order values remain the preferred non-null representations.
+Filter-assignment `when` conditions must be non-null booleans; refining such an
+input with `?` is a diagnostic rather than introducing a third assignment state.
+
+The semantic IR records conditional predicate presence. SQL backends may use
+compiler-produced variants or a correctly guarded single statement, but must
+preserve tree-pruning semantics. A nullable input never participates in a
+unique-predicate cardinality proof, even with a non-null default, because the
+caller may explicitly provide null. A non-null input with a non-null default
+may participate because its predicate is always present.
+
 ## Ambiguity
 
 Anonymous variable inference must be deterministic. If two anonymous variables
@@ -303,23 +457,24 @@ variables. Fragment spreads are the first example, but the same model should
 also apply to query references in directives, split-fetch handles, and future
 definition-like language constructs.
 
-The general model is a bound definition reference:
+The target definition infers its own `$` structured inputs and `$$` top-level
+params from its body and refines that contract in its definition header. A
+reference may leave those roots contained, bind individual leaves, flatten a
+complete root into the caller, or place a complete root beneath a caller
+namespace. These are all checked path transformations over one input contract,
+not separate fragment-argument and query-argument systems.
+
+Conceptually, a binding list contains one or more variable references or
+mappings:
 
 ```text
-BoundDefinitionRef {
-  target: Fragment | Query | FutureDefinition,
-  bindings: Vec<VariableBinding>,
-}
-
-VariableBinding =
-  Forward(VariableRef)
-  | Map { target: VariableRef, source: VariableRef }
+binding_list = "(" binding_item (","? binding_item)* [","] ")"
+binding_item = variable_ref ["<-" variable_ref]
+variable_ref = ("$" | "$$") [Name]
 ```
 
-The target definition infers its own `$` structured inputs and `$$` top-level
-params from its body. A reference may either leave those target variables
-contained under the reference namespace or explicitly bind them into the
-caller/reference-site input contract.
+Items may be separated by whitespace or commas, and a trailing comma is valid.
+Trusted `$:name` context is global and is not part of this binding syntax.
 
 ### Default Fragment Containment
 
@@ -327,8 +482,11 @@ A fragment spread without a binding list keeps the fragment's inferred variables
 contained under the spread path.
 
 ```dsql
-fragment UserPanel on users {
-  posts(where .created_at > $created_after limit $$limit) {
+fragment UserPanel(
+  $created_after? = null
+  $$limit = 10
+) on users {
+  posts(where .created_at > $created_after limit $$) {
     id
   }
 }
@@ -350,14 +508,19 @@ input.users.UserPanel.params.limit
 
 This is valid without explicit bindings. The fragment is a reusable source
 definition and the spread site owns a contained instance of its input contract.
+The contained fields retain the fragment's requiredness, nullability, defaults,
+and bounded dynamic surfaces. Each spread instance may override an optional
+contained field independently; omission uses the fragment default.
 
 ### Explicit Bindings
 
-A binding list lets the caller lift, rename, or merge target variables into the
-caller input contract.
+A named leaf binding supplies one target input from an independently inferred
+caller input:
 
 ```dsql
-query Users {
+query Users(
+  $$page_size = 20
+) {
   users(where .created_at > $after limit $$page_size) {
     ...UserPanel(
       $created_after <- $after,
@@ -367,11 +530,20 @@ query Users {
 }
 ```
 
-The left side of `<-` identifies a variable inferred by the target definition.
-The right side is a variable occurrence in the caller context. The source
-variable participates in the caller's normal inference and merge rules exactly
-as if it appeared in a clause at that reference site, using the target
-variable's expected type and role as its inference context.
+The left side of `<-` identifies a variable inferred by the target definition,
+including an anonymous occurrence through its inferred name. The right side is
+a variable occurrence in the caller context. It participates in the caller's
+normal inference and definition-header refinement rules exactly as if it
+appeared in a clause at that reference site, using the target variable's type
+and role as its inference context.
+
+An explicit leaf binding replaces the target leaf's default and requiredness
+with the caller source contract. In the example, omission materializes the
+query's `20` and forwards it; the fragment's `10` is no longer consulted. With
+no query refinement, `$$page_size` is required and non-null. This follows
+ordinary function-call behavior: omitting an argument uses the callee default,
+while explicitly supplying an argument delegates its value contract to the
+caller expression.
 
 Explicit mappings may cross variable roots when the inferred types are
 compatible:
@@ -387,10 +559,16 @@ This maps a target structured input from a caller top-level param and a target
 top-level param from a caller structured input. The generated caller paths come
 from the source variables, not the target variables.
 
-### Forwarding Shorthand
+Source and target nullability remain directional. A non-null caller may bind a
+nullable target. A nullable caller cannot bind a non-null target, even when the
+caller has a non-null default, because it still admits explicit null. An
+optional non-null caller with a non-null default may satisfy a required non-null
+target because materialization always supplies a value.
 
-A binding item may omit `<-` when the target and source variable names are the
-same, or when an anonymous variable can be inferred unambiguously.
+### Named Forwarding Shorthand
+
+A named binding item may omit `<-` when the target and source generated names
+are the same:
 
 ```dsql
 ...UserPanel($created_after, $$limit)
@@ -399,44 +577,91 @@ same, or when an anonymous variable can be inferred unambiguously.
 This is equivalent to forwarding target `$created_after` from caller
 `$created_after`, and target `$$limit` from caller `$$limit`.
 
-Anonymous forwarding is also allowed:
+### Whole-Root Lifting
+
+Bare `$` and `$$` in a binding list are root operators, not requests to guess
+one anonymous leaf:
 
 ```dsql
-...UserPanel($$, $)
+...UserPanel($, $$)
 ```
 
-If `UserPanel` has exactly one required target param and exactly one required
-target structured input, this lifts both roots into the caller. For the example
-above, the caller's generated input becomes conceptually:
+A bare `$` flattens the target's complete structured-input root into the caller
+at the spread path. A bare `$$` flattens the complete target params root into
+the caller params root. Every leaf keeps the fragment's inferred name and path,
+type, role, requiredness, nullability, default, bounded dynamic surface, and
+conditional-access metadata. Anonymous occurrences in the fragment already
+have stable inferred keys, so no per-leaf guessing is necessary.
+
+For `UserPanel`, full lifting produces conceptually:
 
 ```text
 params.limit
-input.users.created_after
+input.users.posts.created_after
 ```
 
-The anonymous source variables are normal caller variables. If compatible
-caller variables already exist, they merge by the ordinary merge rules. If not,
-they create caller inputs using the target variable's inferred type, role, and
-name. If the target has multiple compatible variables for an anonymous binding,
-the compiler reports the normal ambiguity diagnostic and asks the user to name
-or map the binding.
+Lifted leaves merge with existing caller bindings only when their complete
+contracts are compatible. Defaults, nullability, dynamic capability surfaces,
+and roles participate in compatibility. Two identical lifted contracts may
+merge; different defaults or surfaces are conflicts rather than sources for an
+arbitrary precedence rule.
+
+### Namespaced Root Lifting
+
+A complete target root may instead be remapped beneath a named caller object:
+
+```dsql
+...SearchableUser(
+  $ <- $$searchable_user_input
+  $$ <- $$searchable_user_params
+)
+```
+
+The target sigil selects the fragment root. The source sigil selects the caller
+root, and its name becomes a path prefix. Assuming the fragment has
+`input.posts.created_after`, `params.limit`, and `params.search`, the mapping is:
+
+```text
+input.posts.created_after -> params.searchable_user_input.posts.created_after
+params.limit              -> params.searchable_user_params.limit
+params.search             -> params.searchable_user_params.search
+```
+
+This remains leaf metadata plus path-prefix transformation; it does not require
+an untyped object parameter or runtime reinterpretation. Cross-root namespace
+bindings are valid, so either target root may map beneath a named `$` structured
+object or `$$` top-level object.
+
+The namespace object is required when any contained leaf remains required. If
+every leaf has a default, the namespace is optional and omission behaves as an
+empty object so the leaf defaults apply. A namespace retains inner defaults,
+nullability, dynamic surfaces, and provenance exactly like direct root lifting.
+The namespace object itself is non-null: explicit `null` is invalid even when
+the object is optional through all-defaulted leaves.
+
+Whole-root binding copies a target contract; named leaf binding supplies an
+independent caller value. That distinction determines whether target defaults
+are preserved.
 
 ### Per-Root Binding Mode
 
-Explicit binding mode is activated independently for each variable root:
+Binding mode is activated independently for each target root:
 
 ```text
 $    structured input root
 $$   top-level params root
 ```
 
-If a binding list mentions any `$` binding, all required target structured input
-variables must be bound by that list. Unbound target `$$` params remain contained
-unless the list also mentions a `$$` binding.
+If a binding list mentions any `$` target binding, every required target
+structured input must be covered by a root binding or named leaf binding.
+Defaulted target leaves may be omitted and then use their fragment defaults.
+They do not remain contained after their root enters explicit binding mode.
+Unbound target `$$` params remain contained unless the list also mentions a
+`$$` target binding.
 
-If a binding list mentions any `$$` binding, all required target params must be
-bound by that list. Unbound target `$` inputs remain contained unless the list
-also mentions a `$` binding.
+The same rule applies symmetrically to `$$`: every required target param must be
+covered, defaulted target params may be omitted and use their defaults, and an
+unmentioned `$` root remains contained.
 
 For example:
 
@@ -444,8 +669,8 @@ For example:
 ...UserPanel($$)
 ```
 
-Only the target params root is explicitly bound. The target structured input
-root remains contained:
+The complete target params root is flattened. The target structured input root
+remains contained:
 
 ```text
 params.limit
@@ -458,28 +683,33 @@ And:
 ...UserPanel($)
 ```
 
-Only the target structured input root is explicitly bound. The target params
-root remains contained:
+The complete target structured input root is flattened. The target params root
+remains contained:
 
 ```text
-input.users.created_after
+input.users.posts.created_after
 input.users.UserPanel.params.limit
 ```
 
-This avoids forcing users to bind every root when they only want to lift one
-class of variable, while still preventing half-lifted variables within the same
-root.
+This avoids forcing users to bind both roots while preventing accidental
+half-lifting within one root. The initial language rejects mixing a whole-root
+binding with named leaf bindings for that same target root; override/exclusion
+syntax can be added later if concrete use cases justify it.
 
 ### Binding Diagnostics
 
 Within an explicitly bound root:
 
-- every required target variable for that root must be bound;
+- every required target variable for that root must be covered;
+- omitted defaulted targets use their definition defaults;
 - a target variable may be bound at most once;
 - binding a variable that the target definition does not infer is a diagnostic;
-- source and target inferred types must be compatible;
-- anonymous bindings are diagnostics when more than one target variable could
-  match;
+- leaf source and target types, collection shapes, roles, and nullability must
+  be directionally compatible;
+- root merges require compatible complete contracts, including defaults and
+  dynamic surfaces;
+- a namespace source must not collide with an incompatible scalar, dynamic
+  input, or differently shaped namespace;
 - source variables merge into the caller using the same ambiguity rules as
   ordinary variable usage.
 
@@ -620,6 +850,65 @@ order by $$order on selected_indexed
 
 Preset expansion should be visible in generated metadata and LSP hover so the
 user can see which fields and operators are actually exposed.
+
+### Dynamic Input Defaults
+
+Definition headers refine bounded dynamic inputs by their inferred name just as
+they refine scalar bindings:
+
+```dsql
+query Fields(
+  $$search = {}
+  $$order = []
+  $$limit = 50
+  $$offset = 0
+) {
+  fields(
+    where .context_id == $$context_id
+      and $$search on selected
+    order by $$order on selected
+    limit $$limit
+    offset $$offset
+  ) {
+    id
+    name
+    display
+    created_at
+  }
+}
+```
+
+The usage site remains the sole authority for the bounded capability surface.
+The header default cannot add a field, operator, relation path, or ordering mode
+that the normalized `on` surface does not expose. Defaults are validated only
+after preset and selection expansion, so a source or catalog edit that removes a
+referenced capability invalidates any affected rich default.
+
+The canonical initial defaults are algebraic identity values:
+
+- `{}` is an empty dynamic predicate and contributes no predicate atom;
+- `[]` is an empty dynamic order and contributes no order entries;
+- an empty `and` collection is true;
+- an empty `or` collection is false.
+
+Only empty `{}` is admitted before general object-literal defaults are designed.
+Rich predicate objects and non-empty order lists are a later additive extension.
+This still makes the common generated API optional without adding nullable
+types: `search?: FieldsSearch` defaults to `{}`, and `order?: FieldsOrder`
+defaults to `[]`.
+
+If a dynamic binding is explicitly refined with `?`, runtime null contributes
+the same structural absence as its identity value. This applies to the complete
+dynamic input, not to its individual field operands. `{}` and `[]` remain the
+preferred defaults because they avoid equivalent omitted/null/empty states in
+generated clients and cache keys.
+
+Reusing one named dynamic binding requires every usage to have the same
+normalized kind and capability contract: expanded paths, logical types,
+operators, relation depth, and conditional-access metadata. Otherwise the
+compiler requires separate names. Definition-reference root lifting preserves
+this complete dynamic contract; an explicit leaf binding checks the caller
+dynamic input against it.
 
 ### Explicit Dynamic Input Allowlists
 
@@ -1191,18 +1480,21 @@ Object values and general collection expressions may be useful later:
 { id: 1 }
 ```
 
+The empty object `{}` is already reserved as the identity default for a bounded
+dynamic predicate. That narrow header-only use does not imply general object
+expressions or rich object defaults.
+
 Open questions:
 
-- Whether variable defaults allow only literals or richer expressions.
-- How variable nullability should be represented.
 - Whether object values and general collection expressions belong in the query
-  language or only in filter/input positions.
+  language or only in filter/input positions, and which rich values should
+  eventually be valid defaults.
+- Whether SQL generation should prefer a bounded set of statement variants or
+  guarded expressions for structurally optional predicate trees.
 - How provider-specific scalar types are named.
 - Whether operator-qualified anonymous names should be inferred for repeated
   comparisons against the same field.
 - Whether boolean operator variables are worth supporting, or whether generated
   APIs should model those cases as explicit higher-level filter objects.
-- Whether `params` should allow defaults or whether defaults only belong in the
-  generated host/API layer.
 
 User values must be emitted as SQL parameters when this is implemented.

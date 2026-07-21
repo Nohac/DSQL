@@ -141,6 +141,52 @@ validated against the operation's required context metadata, and execution is
 refused if required context is missing. The resulting SQL parameter binding may
 combine both sources internally while retaining their provenance.
 
+### Generated Input Contracts
+
+Generated public input metadata must preserve each inferred leaf's path,
+logical type, collection shape, semantic role, requiredness, nullability, and
+typed default. Definition-reference bindings also retain the originating
+definition and source span so generators and editor tooling can explain where a
+contained or lifted contract came from. Root lifting changes paths but must not
+discard defaults or bounded dynamic capability surfaces.
+
+Requiredness and nullability produce distinct host types. For example, a query
+header containing:
+
+```dsql
+query Movies(
+  $$limit = 20
+  $$from? = null
+) {
+  titles(where .production_year >= $$from limit $$limit) {
+    id
+  }
+}
+```
+
+conceptually generates:
+
+```ts
+type MoviesParams = {
+  limit?: number;
+  from?: number | null;
+};
+```
+
+Omission is valid only when metadata provides a default. Explicit `null` is
+valid only when the field is nullable. A runtime adapter applies defaults before
+validation and execution, so downstream generators do not invent their own
+default semantics.
+
+Cache-key builders must use the materialized public input rather than the raw
+caller object. Omission and explicitly supplying the declared default therefore
+produce the same key. For nullable predicate operands, explicit `null` records
+the compiler-defined structural absence of that predicate atom; integrations
+must not reinterpret it as SQL null comparison. Cache normalization also maps a
+nullable bounded dynamic predicate or order value of `null` to its canonical
+empty `{}` or `[]` identity, so semantically identical dynamic inputs share a
+key.
+
 ### Compiler-Erased Inline Templates
 
 Inline DSQL should ideally be an authoring form that is erased by a host
@@ -476,7 +522,8 @@ debug tooling, and editor features.
 
 Useful metadata areas:
 
-- public query inputs and top-level params
+- public query inputs and top-level params, including requiredness, nullability,
+  typed defaults, semantic roles, and definition provenance
 - required host context keys
 - result field types and nullability
 - applicable filters and resolved target provenance

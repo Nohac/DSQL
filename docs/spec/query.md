@@ -111,10 +111,12 @@ query Users {
 
 Anonymous queries are not part of the language.
 
-A query header may assign named filters recursively across the operation:
+A query header may refine inferred public inputs and assign named filters
+recursively across the operation:
 
 ```dsql
 query Administration(
+  $$includeDeleted = false
   filter SoftDelete when not $$includeDeleted
 ) {
   users {
@@ -125,9 +127,12 @@ query Administration(
 
 Operation assignments, source-local overrides, and enforcement conditions are
 defined in [Filters And Access Rules](policies.md#operation-wide-assignments).
-The parenthesized header contains one or more `filter` assignments separated by
-normal DSQL whitespace. Query variables remain inferred rather than declared in
-this list. Directives, when present, follow the closing parenthesis. Empty
+Input refinements are defined in
+[Definition Input Refinements](variables.md#definition-input-refinements). The
+parenthesized header contains one or more input refinements or `filter`
+assignments separated by normal DSQL whitespace. Variables remain inferred from
+their usage; header entries only add nullability or defaults to those inferred
+contracts. Directives, when present, follow the closing parenthesis. Empty
 parentheses are invalid and omitted by the formatter.
 
 ## Selection Sets
@@ -616,9 +621,11 @@ Unique-predicate proofs are conservative:
 - `or` branches do not prove uniqueness unless every branch constrains the
   complete key to the same fixed values. Covering the same key columns with
   different values can return one row per alternative and is not at-most-one.
-- A conditionally omitted predicate does not participate. A caller-omittable
-  variable with a default may participate when the predicate remains present
-  in every compiled variant. See [Variables](variables.md).
+- A conditionally omitted predicate does not participate. An optional non-null
+  variable with a non-null default may participate because its predicate
+  remains present in every compiled variant. A nullable variable cannot,
+  because an explicit `null` structurally removes its predicate atom. See
+  [Variables](variables.md#nullable-predicate-uses).
 - Equality to another column or another row-dependent expression does not
   prove uniqueness.
 - For nullable unique-key columns, the compiled equality must not match SQL
@@ -1035,6 +1042,11 @@ query Users {
 }
 ```
 
+The assigned boolean must be non-null. A public variable used by `when` cannot
+carry a nullable `?` refinement; this is a compile-time diagnostic rather than a
+third assignment state. Use a non-null boolean default when callers may omit the
+value.
+
 This assignment is `false` when deleted rows are requested. A static opt-out
 uses the ordinary boolean literal:
 
@@ -1069,16 +1081,23 @@ null
 List literals are homogeneous typed collection values used by membership
 predicates. Empty lists infer their element type from the field on the other
 side of `in` or `not in`. General list-valued expressions and object literals
-are outside the initial predicate contract.
+are outside the initial predicate contract. The empty object `{}` is reserved
+as the identity default for a bounded dynamic predicate; it is not yet a
+general query expression.
 
 ## Fragments
 
 Fragments define reusable selection sets for a catalog target.
 
 ```dsql
-fragment UserSummary on public::users {
+fragment UserSummary(
+  $$post_limit = 5
+) on public::users {
   id
   name
+  posts(limit $$post_limit) {
+    id
+  }
 }
 
 query Users {
@@ -1090,7 +1109,10 @@ query Users {
 
 The fragment target resolves through the same table-resolution rules as root
 selections. A fragment spread is valid only when the fragment target matches the
-current selection context.
+current selection context. Like a query, a fragment may refine its inferred
+public inputs in a parenthesized header before `on`; fragment headers do not
+contain operation-wide filter assignments. See
+[Definition Input Refinements](variables.md#definition-input-refinements).
 
 ```dsql
 fragment PostSummary on posts {
@@ -1120,7 +1142,10 @@ fragment_spread = alias? "..." fragment_name binding_list? directives?
 ```
 
 `binding_list` uses the bound definition input syntax described in the
-variables spec.
+variables spec. Named items bind individual inferred leaves. Bare `$` or `$$`
+items lift the corresponding complete fragment input root, while a root mapping
+such as `$$ <- $$namespace` moves that complete contract beneath a caller
+namespace. See [Bound Definition Inputs](variables.md#bound-definition-inputs).
 
 An unaliased fragment spread merges the fragment selection set into the current
 selection object.

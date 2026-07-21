@@ -55,6 +55,19 @@ and unsupported types fail before database execution. SQL variants are replaced
 only by text from their compiler-produced closed case list; caller text is
 never interpolated into SQL.
 
+Once definition input refinements are implemented, materialization first
+substitutes typed declaration defaults for omitted public paths. It then checks
+requiredness and validates values. A supplied value always wins over a default;
+explicit `null` is accepted only for a nullable declaration. Trusted context is
+never defaulted by query source.
+
+Nullable values with structural roles are materialized through compiler-owned
+semantic cases, not by interpolating or rewriting caller text. In particular, a
+null predicate operand selects the case where its complete predicate atom is
+absent, and null pagination or dynamic input selects the corresponding absent
+clause or identity case. Execution must preserve the pruning rules defined in
+[Nullable Predicate Uses](variables.md#nullable-predicate-uses).
+
 The executor binds PostgreSQL values according to the declared logical type and
 collection shape. The generated statement returns one JSON value, which is
 decoded into the public operation result object. The executor serializes the
@@ -80,8 +93,10 @@ JSON input encodings are:
 
 A collection uses an array of the corresponding scalar encoding. The current
 compiler emits every positional input as required and non-null. Accordingly,
-the executor rejects missing and null values; optional and nullable execution
-semantics remain deferred until the language can emit such inputs.
+the implemented executor rejects missing and null values. The preceding
+default, optional, and nullable rules become active when definition input
+refinements and their metadata are implemented; adapters must not approximate
+them independently in the meantime.
 
 ## Test database
 
