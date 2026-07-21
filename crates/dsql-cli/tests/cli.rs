@@ -40,6 +40,15 @@ fn output_json(output: &str) -> serde_json::Value {
     serde_json::from_str(output).expect("operation output is JSON")
 }
 
+fn observatory_reading_ids(output: &str) -> Vec<serde_json::Value> {
+    output_json(output)["sensors"]["readings"]
+        .as_array()
+        .expect("sensor reading window")
+        .iter()
+        .map(|reading| reading["id"].clone())
+        .collect()
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).to_string()
 }
@@ -123,11 +132,19 @@ fn operation_execute_validates_inputs_before_connecting() {
     let observatory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/observatory");
     let output = dsql(
         &observatory,
-        &["operation", "execute", "RecentReadings", "--scope", "api"],
+        &[
+            "operation",
+            "execute",
+            "TypedReading",
+            "--scope",
+            "api",
+            "--context",
+            r#"{"tenant_id":"018f6f19-795f-7c3d-b1b3-8f177ab8a301","can_read_payload":true}"#,
+        ],
     );
     assert!(!output.status.success());
     assert!(
-        stderr(&output).contains("required operation input `params.direction` was not provided"),
+        stderr(&output).contains("required operation input `params.network` was not provided"),
         "input validation should precede the placeholder database URL: {}",
         stderr(&output)
     );
@@ -149,10 +166,14 @@ fn observatory_operation_list_exposes_importing_scopes() {
             "analytics\tConfidenceGroups",
             "analytics\tFlatReadingSummary",
             "analytics\tReadingSummary",
+            "api\tContainedSensorWindow",
             "api\tEmptyAggregateCount",
             "api\tEmptyAggregateMinimum",
+            "api\tLiftedSensorWindow",
             "api\tManualFilterProbe",
+            "api\tMappedSensorWindow",
             "api\tMissingFlattened",
+            "api\tNamespacedSensorWindow",
             "api\tNetworkTopology",
             "api\tPrivacyProbe",
             "api\tRecentReadings",
@@ -202,6 +223,17 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         ],
     );
     insta::assert_snapshot!("observatory_recent_readings", readings);
+
+    let defaulted_readings = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "RecentReadings",
+        &["--context-file", "inputs/no-payload.json"],
+    );
+    // The file form intentionally mirrors the header defaults, proving that
+    // omission and an explicit payload materialize the same operation.
+    assert_eq!(output_json(&defaulted_readings), output_json(&readings));
 
     let summary = execute_observatory(
         &observatory,
@@ -295,21 +327,94 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         serde_json::json!([{"confidence": null, "count": 6}])
     );
 
-    for (enabled, id) in [(false, 2), (true, 4)] {
-        let filtered = execute_observatory(
+    let unfiltered = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "ManualFilterProbe",
+        &["--context", tenant],
+    );
+    assert_eq!(output_json(&unfiltered)["readings"]["id"], 2);
+
+    let filtered = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "ManualFilterProbe",
+        &[
+            "--variables",
+            r#"{"params":{"onlyFlagged":true}}"#,
+            "--context",
+            tenant,
+        ],
+    );
+    assert_eq!(output_json(&filtered)["readings"]["id"], 4);
+
+    for operation in [
+        "ContainedSensorWindow",
+        "LiftedSensorWindow",
+        "NamespacedSensorWindow",
+    ] {
+        let window = execute_observatory(
             &observatory,
             &database_url,
             "api",
-            "ManualFilterProbe",
-            &[
-                "--variables",
-                &format!(r#"{{"params":{{"onlyFlagged":{enabled}}}}}"#),
-                "--context",
-                tenant,
-            ],
+            operation,
+            &["--context", visible],
         );
-        assert_eq!(output_json(&filtered)["readings"]["id"], id);
+        assert_eq!(
+            observatory_reading_ids(&window),
+            [serde_json::json!(12), serde_json::json!(10)]
+        );
     }
+
+    let uncapped = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "LiftedSensorWindow",
+        &[
+            "--variables",
+            r#"{"params":{"reading_limit":null}}"#,
+            "--context",
+            visible,
+        ],
+    );
+    assert_eq!(observatory_reading_ids(&uncapped).len(), 6);
+
+    let namespaced = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "NamespacedSensorWindow",
+        &[
+            "--variables",
+            r#"{"params":{"window_input":{"readings":{"clause":{"where":{"recorded_at":{"recorded_after":"2024-01-01T00:04:00Z"}}}}},"window_params":{"reading_limit":2,"reading_direction":"asc"}}}"#,
+            "--context",
+            visible,
+        ],
+    );
+    assert_eq!(
+        observatory_reading_ids(&namespaced),
+        [serde_json::json!(4), serde_json::json!(6)]
+    );
+
+    let mapped = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "MappedSensorWindow",
+        &[
+            "--variables",
+            r#"{"input":{"sensors":{"clause":{"where":{"recorded_after":{"recorded_after":"2024-01-01T00:04:00Z"}},"limit":{"page_size":2}}}},"params":{"sort":"asc"}}"#,
+            "--context",
+            visible,
+        ],
+    );
+    assert_eq!(
+        observatory_reading_ids(&mapped),
+        [serde_json::json!(4), serde_json::json!(6)]
+    );
 
     let empty_count = execute_observatory(
         &observatory,

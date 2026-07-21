@@ -2,9 +2,35 @@
 
 This project is the deterministic PostgreSQL target for live correctness tests
 and future benchmarks. It covers composite keys, every supported scalar type,
-catalog comments, nested relations, filters, aggregates, dynamic inputs, and
-resolution scopes. Shared filters and fragments are imported by separate `api`
-and `analytics` operation scopes.
+catalog comments, nested relations, filters, aggregates, runtime sort variants,
+and resolution scopes. Shared filters and fragments are imported by separate
+`api` and `analytics` operation scopes.
+
+## Coverage
+
+The project keeps stable executable features tied to named operations so a
+missing conformance case is visible during review.
+
+| Feature area | Conformance sources |
+| --- | --- |
+| Catalog types, composite keys, comments, views, and materialized views | `schema.sql`, generated `dsql/schema/`, and the live introspection test |
+| Resolution scopes and transitive shared definitions | `dsql.toml`, `shared`, `api`, and `analytics` |
+| Structured inputs, top-level params, and trusted context | `TypedReading`, `RecentReadings`, and `TenantScope` |
+| Scalar, collection, enum, boolean, and null defaults | `RecentReadings`, `ManualFilterProbe`, and `SensorReadingWindow` |
+| Nullable predicate pruning and optional pagination | `SensorReadingWindow` and `MappedSensorWindow` |
+| Fragment containment and whole-root lifting | `ContainedSensorWindow` and `LiftedSensorWindow` |
+| Namespaced and cross-root leaf bindings, including forwarding shorthand | `NamespacedSensorWindow` and `MappedSensorWindow` |
+| Nested composite-key relations, existence, ordering, and pagination | `NetworkTopology` and `SensorReadingWindow` |
+| Equality, range, membership, null, boolean, and aggregate predicates | `TypedReading`, `PrivacyProbe`, and the `EmptyAggregate*` operations |
+| Row filters, field masking, and conditional manual filters | `TenantScope`, `ReadingPrivacy`, `FlaggedOnly`, and `ManualFilterProbe` |
+| Scalar, grouped, nested, and flattened aggregates | the `analytics` scope |
+| Singular inference and root flattening | `TypedReading` and `MissingFlattened` |
+| Native generation, materialization, execution, and scope listing | the `dsql-cli` Observatory integration tests |
+
+Intentionally unimplemented language features are not represented as fake
+coverage. Directive execution, bounded dynamic inputs, split fetch, and
+mutations receive Observatory cases when their executable contracts land.
+Editor-only behavior remains in the core and LSP protocol suites.
 
 The Bun lifecycle talks to PostgreSQL directly through `SQL`; only container
 lifecycle operations shell out, and those use rootless Podman. PostgreSQL is
