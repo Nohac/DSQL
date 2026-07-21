@@ -43,10 +43,32 @@ const payload = {
   ],
   variants: {
     "input.movie_info.clause.where.id.op": {
-      eq: "=",
-      ne: "!=",
+      cases: {
+        eq: "=",
+        ne: "!=",
+      },
     },
   },
+  inputs: [
+    {
+      path: "input.movie_info.clause.where.id.op",
+      data_type: "text",
+      required: true,
+      nullable: false,
+    },
+    {
+      path: "input.movie_info.clause.where.id.value",
+      data_type: "int",
+      required: true,
+      nullable: false,
+    },
+    {
+      path: "context.tenant_id",
+      data_type: "uuid",
+      required: true,
+      nullable: false,
+    },
+  ],
 } satisfies DsqlExecutionPayload<MovieOperation>;
 
 const variables = {
@@ -71,6 +93,64 @@ test("materializes sql variants and ordered parameter values", () => {
   ).toEqual({
     sql: "select * from movie_info where id = $1 and tenant_id = $2",
     values: [42, "tenant-7"],
+  });
+});
+
+type OptionalOperation = DsqlOperation<
+  { readonly id: number },
+  { readonly direction?: "asc" | "desc" | null; readonly limit?: number | null },
+  Record<string, never>,
+  Record<string, never>
+>;
+
+const OptionalOperation = {
+  id: "optional-hash",
+  name: "Optional",
+  kind: "query",
+  requiresContext: false,
+} satisfies OptionalOperation;
+
+const optionalPayload = {
+  operation: OptionalOperation,
+  sql: "select * from movie_info order by case when '{{params.direction}}' = 'asc' then id end asc limit $1",
+  parameters: [{ path: "params.limit" }],
+  variants: {
+    "params.direction": {
+      cases: { asc: "asc", desc: "desc" },
+      nullText: "null",
+    },
+  },
+  inputs: [
+    {
+      path: "params.direction",
+      data_type: "text",
+      required: false,
+      nullable: true,
+      default: { kind: "null" },
+    },
+    {
+      path: "params.limit",
+      data_type: "int",
+      required: false,
+      nullable: true,
+      default: { kind: "number", value: "10" },
+    },
+  ],
+} satisfies DsqlExecutionPayload<OptionalOperation>;
+
+test("materializes defaults and nullable sql variants without mutating inputs", () => {
+  const variables = {};
+  expect(materializeDsqlQuery(optionalPayload, variables, {})).toEqual({
+    sql: "select * from movie_info order by case when 'null' = 'asc' then id end asc limit $1",
+    values: [10],
+  });
+  expect(variables).toEqual({});
+
+  expect(
+    materializeDsqlQuery(optionalPayload, { params: { limit: null } }, {}),
+  ).toEqual({
+    sql: "select * from movie_info order by case when 'null' = 'asc' then id end asc limit $1",
+    values: [null],
   });
 });
 

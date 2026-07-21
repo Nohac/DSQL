@@ -38,6 +38,7 @@ use crate::entities::expression::{
     BinaryOp, ExistsSource, Expr, LiteralValue, PathAnchor, PathSegment, Sigil,
 };
 use crate::entities::field_selection::{FieldSel, SelectionLimitSyntax};
+use crate::entities::variable::InputRefinement;
 use crate::facts::{BelongsToFile, Children, Span};
 
 /// What one selection's name means in its context: a derived fact entity
@@ -64,6 +65,8 @@ pub struct ResolvedSelection {
     pub target: SelectionTarget,
     /// The authoritative row shape for table and relation selections.
     pub shape: Option<ResolvedSelectionShape>,
+    /// Definition-level refinements used by descendant cardinality proofs.
+    pub input_refinements: Vec<InputRefinement>,
 }
 
 /// The semantic row cardinality of a resolved table or relation selection.
@@ -474,12 +477,13 @@ fn emit(
     root: Option<TableId>,
     context: Option<TableId>,
     target: SelectionTarget,
+    input_refinements: &[InputRefinement],
 ) {
     let written = match &selection.relation_path {
         Some(path) => format!("{}->{path}", selection.name),
         None => selection.name.clone(),
     };
-    let shape = resolve_selection_shape(catalog, selection, context, &target);
+    let shape = resolve_selection_shape(catalog, selection, context, &target, input_refinements);
     commands.insert((
         DerivedFrom::many([field, catalog_entity]),
         BelongsToFile(file),
@@ -494,6 +498,7 @@ fn emit(
             context,
             target,
             shape,
+            input_refinements: input_refinements.to_vec(),
         },
     ));
 }
@@ -503,6 +508,7 @@ fn resolve_selection_shape(
     selection: &FieldSel,
     context: Option<TableId>,
     target: &SelectionTarget,
+    input_refinements: &[InputRefinement],
 ) -> Option<ResolvedSelectionShape> {
     let table = target.child_context()?;
     let relation = match target {
@@ -520,7 +526,9 @@ fn resolve_selection_shape(
         .shape_syntax
         .predicate
         .as_ref()
-        .and_then(|predicate| unique_key_for_predicate(catalog, table, predicate));
+        .and_then(|predicate| {
+            unique_key_for_predicate(catalog, table, predicate, input_refinements)
+        });
     let limit = match selection.shape_syntax.limit {
         SelectionLimitSyntax::None => ResolvedSelectionLimit::None,
         SelectionLimitSyntax::Literal { value, span } => {
@@ -570,8 +578,9 @@ fn unique_key_for_predicate(
     catalog: &crate::catalog::Catalog,
     table: TableId,
     predicate: &Expr,
+    input_refinements: &[InputRefinement],
 ) -> Option<Vec<ColumnId>> {
-    let equalities = guaranteed_equalities(catalog, table, predicate);
+    let equalities = guaranteed_equalities(catalog, table, predicate, input_refinements);
     let table = catalog.table_by_id(table)?;
     if !table.primary_key.is_empty()
         && table
@@ -605,21 +614,24 @@ fn guaranteed_equalities(
     catalog: &crate::catalog::Catalog,
     table: TableId,
     expr: &Expr,
+    input_refinements: &[InputRefinement],
 ) -> GuaranteedEqualities {
     let Expr::Binary { op, lhs, rhs, .. } = expr else {
         return GuaranteedEqualities::new();
     };
     match op {
         BinaryOp::And => {
-            let mut equalities = guaranteed_equalities(catalog, table, lhs);
-            for (column, identities) in guaranteed_equalities(catalog, table, rhs) {
+            let mut equalities = guaranteed_equalities(catalog, table, lhs, input_refinements);
+            for (column, identities) in
+                guaranteed_equalities(catalog, table, rhs, input_refinements)
+            {
                 equalities.entry(column).or_default().extend(identities);
             }
             equalities
         }
         BinaryOp::Or => {
-            let mut equalities = guaranteed_equalities(catalog, table, lhs);
-            let right = guaranteed_equalities(catalog, table, rhs);
+            let mut equalities = guaranteed_equalities(catalog, table, lhs, input_refinements);
+            let right = guaranteed_equalities(catalog, table, rhs, input_refinements);
             equalities.retain(|column, identities| {
                 let Some(right_identities) = right.get(column) else {
                     return false;
@@ -631,6 +643,9 @@ fn guaranteed_equalities(
         }
         BinaryOp::Comparison(crate::entities::expression::ComparisonOp::Eq) => {
             equality(catalog, table, lhs, rhs)
+                .filter(|(column, identity)| {
+                    !nullable_identity(catalog, *column, identity, input_refinements)
+                })
                 .map(|(column, identity)| (column, HashSet::from([identity])))
                 .into_iter()
                 .collect()
@@ -644,6 +659,9 @@ fn guaranteed_equalities(
             }) =>
         {
             equality(catalog, table, lhs, rhs)
+                .filter(|(column, identity)| {
+                    !nullable_identity(catalog, *column, identity, input_refinements)
+                })
                 .map(|(column, identity)| (column, HashSet::from([identity])))
                 .into_iter()
                 .collect()
@@ -652,6 +670,29 @@ fn guaranteed_equalities(
             GuaranteedEqualities::new()
         }
     }
+}
+
+fn nullable_identity(
+    catalog: &crate::catalog::Catalog,
+    column: ColumnId,
+    identity: &FixedValueIdentity,
+    refinements: &[InputRefinement],
+) -> bool {
+    let (source, name) = match identity {
+        FixedValueIdentity::NamedVariable { sigil, name } => ((*sigil).into(), name.as_str()),
+        FixedValueIdentity::AnonymousVariable { sigil, .. } => {
+            let Some(column) = catalog.column_by_id(column) else {
+                return false;
+            };
+            ((*sigil).into(), column.name.as_str())
+        }
+        FixedValueIdentity::String(_)
+        | FixedValueIdentity::Number(_)
+        | FixedValueIdentity::Bool(_) => return false,
+    };
+    refinements.iter().any(|refinement| {
+        refinement.source == source && refinement.name == name && refinement.nullable
+    })
 }
 
 fn equality(
@@ -777,6 +818,7 @@ async fn resolve_roots(
                 root,
                 None,
                 resolved,
+                &decl.input_refinements,
             );
         }
         DefKind::Fragment => {
@@ -802,6 +844,7 @@ async fn resolve_roots(
                 root,
                 context,
                 resolved,
+                &decl.input_refinements,
             );
         }
     }
@@ -845,6 +888,7 @@ async fn resolve_nested(
         root,
         context,
         resolved,
+        &parent_resolved.input_refinements,
     );
 }
 

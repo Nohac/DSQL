@@ -65,6 +65,10 @@ fn formatter_cases_match_expected_output() {
             "flattened_selections",
             "query Summary { users(limit 1) { id ...posts(where .title like $$title)|aggregate{post_count:count} } ...public::users|aggregate{user_count:count} }",
         ),
+        (
+            "variable_contracts",
+            "fragment Panel($after?=null $$limit=10) on public::users{posts(where .created_at>$after limit $$){id}} query Users($$page_size=20 filter SoftDelete when $$enabled $$offset?=null){public::users(offset $$){...Panel($,$$limit<-$$page_size)}}",
+        ),
         ("comment_trivia", "query Users { # ids\n id }"),
     ];
 

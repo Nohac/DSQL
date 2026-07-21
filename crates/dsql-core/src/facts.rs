@@ -79,6 +79,8 @@ pub enum DiagnosticCode {
     ClauseValueTypeMismatch,
     PredicateTypeMismatch,
     DuplicateAnonymousVariable,
+    InvalidVariableRefinement,
+    InvalidFragmentBinding,
     TrustedContextBindingUnavailable,
     TrustedContextTypeConflict,
     FilterExecutionUnavailable,

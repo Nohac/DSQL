@@ -164,6 +164,60 @@ test("renders exact numeric and finite/non-finite float wire types", async () =>
   expect(rendered).toContain("amounts: Array<string | null>;");
 });
 
+test("renders defaulted and nullable inputs as optional TypeScript properties", async () => {
+  const root = createRoot();
+  const operation = {
+    ...operationMetadata("OptionalInputs"),
+    sql: {
+      dialect: "postgres",
+      text: "select * from movie_info limit $1",
+      parameters: [{ path: "params.limit" }],
+      variants: [],
+    },
+    params: [
+      {
+        path: "params.limit",
+        data_type: "int",
+        enum_values: [],
+        required: false,
+        nullable: true,
+        default: { kind: "null" },
+      },
+    ],
+    input: [
+      {
+        path: "input.search.clause.minimum",
+        data_type: "int",
+        enum_values: [],
+        required: false,
+        nullable: false,
+        default: { kind: "number", value: "10" },
+      },
+    ],
+    context: [],
+  };
+  const artifacts = {
+    ...createArtifacts(root, { operationNames: [operation.name] }),
+    operations: [operation],
+    operationsByName: new Map([[operation.name, operation]]),
+  } as BuildArtifacts;
+
+  await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+  const rendered = readFileSync(
+    join(root, "src/generated/dsql/queries/OptionalInputs.ts"),
+    "utf8",
+  );
+
+  expect(rendered).toContain("limit?: number | null;");
+  expect(rendered).toContain("search?: {");
+  expect(rendered).toContain("minimum?: number;");
+  expect(rendered).toContain('"default":{"kind":"null"}');
+  expect(rendered).toContain('"default":{"kind":"number","value":"10"}');
+});
+
 test("renders policy-nullable singular and flattened results while runtime limits stay arrays", async () => {
   const root = createRoot();
   const operation = {

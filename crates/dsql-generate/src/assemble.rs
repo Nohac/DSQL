@@ -6,7 +6,9 @@ use std::path::Path;
 
 use dsql_core::catalog::{Catalog, TableId};
 use dsql_core::entities::aggregate::AggregateMode;
-use dsql_core::entities::variable::{VariableBinding, VariableSource};
+use dsql_core::entities::variable::{
+    InputDefault as CoreInputDefault, VariableBinding, VariableSource,
+};
 use dsql_core::entities::variable_path::{is_input_path, is_params_path};
 use dsql_core::facts::Span;
 use dsql_core::plan::{
@@ -17,10 +19,11 @@ use dsql_core::plan::{
 use dsql_core::resolution::SelectionCardinality;
 use dsql_core::sql::GeneratedSql;
 use dsql_metadata::{
-    DefinitionKind, DynamicInputMetadata, FragmentMetadata, FragmentSpreadMetadata, InputField,
-    OperationMetadata, PolicyApplicationMetadata, PolicyFieldAccessMetadata, PolicyMetadata,
-    ResultDataType, ResultField, ResultFieldKind, ResultShape, SourceMapEntry, SourceRange,
-    SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
+    DefinitionKind, DynamicInputMetadata, FragmentMetadata, FragmentSpreadMetadata, InputDefault,
+    InputField, OperationMetadata, PolicyApplicationMetadata, PolicyFieldAccessMetadata,
+    PolicyMetadata, ResultDataType, ResultField, ResultFieldKind, ResultShape, SourceMapEntry,
+    SourceRange, SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata,
+    SqlVariantMetadata,
 };
 
 use crate::pipeline::{GenerateError, Result};
@@ -91,6 +94,7 @@ pub(crate) fn operation_metadata(
                 .iter()
                 .map(|variant| SqlVariantMetadata {
                     path: variant.path.clone(),
+                    null_text: variant.null_text.clone(),
                     cases: variant
                         .cases
                         .iter()
@@ -721,8 +725,9 @@ fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField
             data_type: binding.data_type.as_str().to_string(),
             collection: binding.collection.then_some(true),
             enum_values: binding.enum_values.clone(),
-            required: true,
-            nullable: false,
+            required: binding.required,
+            nullable: binding.nullable,
+            default: binding.default.as_ref().map(input_default),
         })
         .collect()
 }
@@ -748,6 +753,7 @@ fn context_fields(
                 enum_values: binding.enum_values.clone(),
                 required: true,
                 nullable: false,
+                default: None,
             },
         )?;
     }
@@ -762,10 +768,52 @@ fn context_fields(
                 enum_values: Vec::new(),
                 required: true,
                 nullable: false,
+                default: None,
             },
         )?;
     }
     Ok(fields.into_values().collect())
+}
+
+fn input_default(default: &CoreInputDefault) -> InputDefault {
+    match default {
+        CoreInputDefault::String(value) => InputDefault {
+            kind: "string".to_string(),
+            value: Some(value.clone()),
+            boolean: None,
+            items: None,
+        },
+        CoreInputDefault::Number(value) => InputDefault {
+            kind: "number".to_string(),
+            value: Some(value.clone()),
+            boolean: None,
+            items: None,
+        },
+        CoreInputDefault::Boolean(value) => InputDefault {
+            kind: "boolean".to_string(),
+            value: None,
+            boolean: Some(*value),
+            items: None,
+        },
+        CoreInputDefault::Null => InputDefault {
+            kind: "null".to_string(),
+            value: None,
+            boolean: None,
+            items: None,
+        },
+        CoreInputDefault::Collection(items) => InputDefault {
+            kind: "collection".to_string(),
+            value: None,
+            boolean: None,
+            items: Some(items.iter().map(input_default).collect()),
+        },
+        CoreInputDefault::EmptyObject => InputDefault {
+            kind: "empty_object".to_string(),
+            value: None,
+            boolean: None,
+            items: None,
+        },
+    }
 }
 
 fn insert_context_field(

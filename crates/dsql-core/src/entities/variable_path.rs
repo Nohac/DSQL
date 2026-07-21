@@ -5,7 +5,7 @@
 //! *top-level* — they surface as `params.<name>`.
 
 use crate::entities::expression::Sigil;
-use crate::entities::variable::VariableRole;
+use crate::entities::variable::{InputDefault, SpreadInputValue, VariableRole};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
 #[strum(serialize_all = "snake_case")]
@@ -66,6 +66,7 @@ pub(crate) enum SelectionPathMode {
 pub(crate) struct VariablePathScope {
     pub(crate) structured_prefix: Vec<String>,
     pub(crate) top_level_prefix: Vec<String>,
+    frames: Vec<std::collections::HashMap<String, SpreadInputValue>>,
 }
 
 impl VariablePathScope {
@@ -73,6 +74,7 @@ impl VariablePathScope {
         Self {
             structured_prefix: vec![InputPathSegment::Input.as_ref().to_string()],
             top_level_prefix: vec![InputPathSegment::Params.as_ref().to_string()],
+            frames: Vec::new(),
         }
     }
 
@@ -97,8 +99,29 @@ impl VariablePathScope {
                 envelope.push(InputPathSegment::Params.as_ref().to_string());
                 envelope
             },
+            frames: self.frames.clone(),
         }
     }
+
+    /// Enters a fragment using the semantic path/default mapping for its spread.
+    pub(crate) fn for_spread_map(
+        &self,
+        values: std::collections::HashMap<String, SpreadInputValue>,
+    ) -> Self {
+        let mut frames = self.frames.clone();
+        frames.push(values);
+        Self {
+            structured_prefix: vec![InputPathSegment::Input.as_ref().to_string()],
+            top_level_prefix: vec![InputPathSegment::Params.as_ref().to_string()],
+            frames,
+        }
+    }
+}
+
+/// The planned value of a variable after all enclosing spread bindings apply.
+pub(crate) enum VariableValue {
+    Public(String),
+    Default(InputDefault),
 }
 
 pub(crate) fn fragment_envelope_path(
@@ -135,6 +158,7 @@ impl VariableRole {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct VariablePathContext<'a> {
     pub(crate) role: VariableRole,
     pub(crate) inferred_path: &'a [String],
@@ -142,6 +166,46 @@ pub(crate) struct VariablePathContext<'a> {
 }
 
 pub(crate) fn variable_path(
+    selection_path: &[String],
+    context: VariablePathContext<'_>,
+    variable_scope: &VariablePathScope,
+    scope: Sigil,
+    name: Option<&str>,
+) -> String {
+    match variable_value(selection_path, context, variable_scope, scope, name) {
+        VariableValue::Public(path) => path,
+        // Callers that can lower constants use [`variable_value`]. Keeping
+        // the native path here makes unsupported constant roles diagnose as
+        // undeclared inputs instead of silently binding the wrong value.
+        VariableValue::Default(_) => {
+            native_variable_path(selection_path, context, variable_scope, scope, name)
+        }
+    }
+}
+
+pub(crate) fn variable_value(
+    selection_path: &[String],
+    context: VariablePathContext<'_>,
+    variable_scope: &VariablePathScope,
+    scope: Sigil,
+    name: Option<&str>,
+) -> VariableValue {
+    let path = native_variable_path(selection_path, context, variable_scope, scope, name);
+    variable_scope
+        .frames
+        .iter()
+        .rev()
+        .fold(VariableValue::Public(path), |value, frame| match value {
+            VariableValue::Public(path) => match frame.get(&path) {
+                Some(SpreadInputValue::Public(path)) => VariableValue::Public(path.clone()),
+                Some(SpreadInputValue::Default(default)) => VariableValue::Default(default.clone()),
+                None => VariableValue::Public(path),
+            },
+            VariableValue::Default(default) => VariableValue::Default(default),
+        })
+}
+
+fn native_variable_path(
     selection_path: &[String],
     context: VariablePathContext<'_>,
     variable_scope: &VariablePathScope,

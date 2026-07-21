@@ -8,7 +8,7 @@ use bowl::{Entity, Query, Singleton};
 
 use dsql_core::catalog::CatalogSnapshot;
 use dsql_core::entities::policy::{CompiledPolicyIndex, PolicyDecl, PolicyIndex};
-use dsql_core::entities::variable::VariableBinding;
+use dsql_core::entities::variable::{DefinitionVariables, VariableBinding};
 use dsql_core::facts::{
     BelongsToFile, DefKey, Diagnostic, PlanKey, Severity, Span, arm_generate_demands,
 };
@@ -469,22 +469,12 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
     }
 
     let binding_rows = bowl
-        .scoop::<Query<(Entity, &Span, &VariableBinding, &DefKey)>>()
+        .scoop::<Query<(Entity, &DefinitionVariables, &DefKey)>>()
         .await;
-    let mut bindings: BTreeMap<u64, Vec<(Span, VariableBinding)>> = BTreeMap::new();
-    for (_, span, binding, def) in binding_rows.collect() {
-        bindings
-            .entry(def.0.raw())
-            .or_default()
-            .push((*span, binding.clone()));
+    let mut bindings: BTreeMap<u64, Vec<VariableBinding>> = BTreeMap::new();
+    for (_, variables, def) in binding_rows.collect() {
+        bindings.insert(def.0.raw(), variables.0.clone());
     }
-    let bindings = bindings
-        .into_iter()
-        .map(|(def, mut rows)| {
-            rows.sort_by_key(|(span, _)| (span.start, span.end));
-            (def, rows.into_iter().map(|(_, binding)| binding).collect())
-        })
-        .collect();
 
     let imports = bowl
         .scoop::<Query<(Entity, &ScopeImports)>>()

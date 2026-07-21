@@ -367,7 +367,8 @@ function renderExecutionPayload(
   operation: ${operationValue},
   sql: ${JSON.stringify(operation.sql.text)},
   parameters: ${JSON.stringify(operation.sql.parameters)},
-  variants: ${JSON.stringify(sqlVariants(operation))}
+  variants: ${JSON.stringify(sqlVariants(operation))},
+  inputs: ${JSON.stringify([...operation.params, ...operation.input, ...operation.context])}
 };`;
 }
 
@@ -406,8 +407,8 @@ function renderFragmentModule(
     `export type ${variablesType} = ${fragmentVariablesTypeLiteral(
       paramsType,
       inputType,
-      fragment.params.length > 0,
-      fragment.input.length > 0,
+      fragment.params.some((field) => field.required),
+      fragment.input.some((field) => field.required),
     )};`,
     "",
     `export const ${name}Fragment: DsqlFragmentDefinition<${resultType}, ${paramsType}, ${inputType}> = {
@@ -590,13 +591,21 @@ function singleArtifactScope(
   return artifacts.scopes.length === 1 ? artifacts.scopes[0] : undefined;
 }
 
-function sqlVariants(operation: OperationMetadata): Record<string, Record<string, string>> {
+function sqlVariants(operation: OperationMetadata): Record<
+  string,
+  { readonly cases: Record<string, string>; readonly nullText?: string }
+> {
   return Object.fromEntries(
     operation.sql.variants.map((variant) => [
       variant.path,
-      Object.fromEntries(
-        variant.cases.map((case_) => [case_.value, case_.text]),
-      ),
+      {
+        cases: Object.fromEntries(
+          variant.cases.map((case_) => [case_.value, case_.text]),
+        ),
+        ...(variant.null_text === undefined
+          ? {}
+          : { nullText: variant.null_text }),
+      },
     ]),
   );
 }
@@ -869,7 +878,7 @@ function inputFieldsTypeLiteral(
       ? operationFragmentInputBranches(fields, fragmentSpreads, fragments)
       : [];
   for (const branch of fragmentBranches) {
-    root.insert(branch.path, branch.type);
+    root.insert(branch.path, branch.type, branch.required);
   }
 
   for (const field of fields) {
@@ -880,7 +889,7 @@ function inputFieldsTypeLiteral(
     if (fragmentBranches.some((branch) => pathStartsWith(path, branch.path))) {
       continue;
     }
-    root.insert(path, inputFieldType(field));
+    root.insert(path, inputFieldType(field), field.required);
   }
   return root.toTypeLiteral();
 }
@@ -889,7 +898,11 @@ function operationFragmentInputBranches(
   fields: readonly InputField[],
   fragmentSpreads: readonly FragmentSpreadMetadata[],
   fragments: readonly FragmentMetadata[],
-): Array<{ readonly path: readonly string[]; readonly type: string }> {
+): Array<{
+  readonly path: readonly string[];
+  readonly type: string;
+  readonly required: boolean;
+}> {
   if (fragmentSpreads.length === 0) {
     return [];
   }
@@ -902,6 +915,7 @@ function operationFragmentInputBranches(
       fragment: string;
       hasParams: boolean;
       hasInput: boolean;
+      required: boolean;
     }
   >();
 
@@ -925,9 +939,11 @@ function operationFragmentInputBranches(
         fragment,
         hasParams: false,
         hasInput: false,
+        required: false,
       };
       branch.hasParams ||= envelope === PARAMS_PREFIX;
       branch.hasInput ||= envelope === INPUT_PREFIX;
+      branch.required ||= field.required;
       branches.set(key, branch);
       break;
     }
@@ -940,6 +956,7 @@ function operationFragmentInputBranches(
     .map((branch) => ({
       path: branch.path,
       type: fragmentVariablesTypeName(branch.fragment),
+      required: branch.required,
     }));
 }
 
@@ -1024,16 +1041,19 @@ function fragmentVariablesTypeLiteral(
 class TypeNode {
   private readonly children = new Map<string, TypeNode>();
   private value: string | undefined;
+  private valueRequired = false;
 
-  insert(path: readonly string[], type: string): void {
+  insert(path: readonly string[], type: string, required = true): void {
     if (path.length === 0) {
       this.value = type;
+      this.valueRequired ||= required;
       return;
     }
 
     const [head, ...tail] = path;
     if (head === undefined) {
       this.value = type;
+      this.valueRequired ||= required;
       return;
     }
     let child = this.children.get(head);
@@ -1041,7 +1061,7 @@ class TypeNode {
       child = new TypeNode();
       this.children.set(head, child);
     }
-    child.insert(tail, type);
+    child.insert(tail, type, required);
   }
 
   toTypeLiteral(): string {
@@ -1049,12 +1069,17 @@ class TypeNode {
       return this.value ?? UNKNOWN_TS_TYPE;
     }
 
-    return objectType(
-      [...this.children.entries()].map(([name, child]) => [
+    return objectTypeWithOptional(
+      [...this.children.entries()].map(([name, child]) => ({
         name,
-        child.toTypeLiteral(),
-      ]),
+        type: child.toTypeLiteral(),
+        optional: !child.isRequired(),
+      })),
     );
+  }
+
+  private isRequired(): boolean {
+    return this.valueRequired || [...this.children.values()].some((child) => child.isRequired());
   }
 }
 

@@ -585,6 +585,7 @@ impl LanguageServer for Backend {
                     CompletionKind::Scope => CompletionItemKind::OPERATOR,
                     CompletionKind::Operator => CompletionItemKind::OPERATOR,
                     CompletionKind::Keyword => CompletionItemKind::KEYWORD,
+                    CompletionKind::Variable => CompletionItemKind::VARIABLE,
                 }),
                 detail: item.detail.clone(),
                 documentation: item.documentation.as_ref().map(|value| {

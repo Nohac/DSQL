@@ -14,7 +14,10 @@ use bowl::{
 };
 
 use crate::entities::document::ParsedFile;
-use crate::entities::variable::{DefinitionVariables, VariableBinding, VariableRole};
+use crate::entities::variable::{
+    DefinitionVariables, InputDefault, InputRefinement, VariableBinding, VariableRole,
+    build_input_refinements,
+};
 use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
@@ -58,6 +61,8 @@ pub struct DefDecl {
     /// this hash is the tracked dependency that re-runs them on any body
     /// edit — including same-length edits that move no span.
     pub source_hash: u64,
+    /// Contract refinements written in the definition header.
+    pub input_refinements: Vec<InputRefinement>,
 }
 
 /// The relation a fragment is declared `on`. Only fragment entities carry
@@ -195,12 +200,20 @@ impl LowerStage for Definition {
 
         let span = node_span(ctx.cst, node);
         let source_hash = crate::source::content_hash(text(ctx.source, span));
+        let header_rule = match kind {
+            DefKind::Query => Rule::QueryHeader,
+            DefKind::Fragment => Rule::FragmentHeader,
+        };
+        let input_refinements = direct_rule(ctx.cst, node, header_rule)
+            .map(|header| build_input_refinements(ctx.cst, ctx.source, header))
+            .unwrap_or_default();
         let decl = DefDecl {
             kind,
             name: text(ctx.source, name_span).to_string(),
             name_span,
             span,
             source_hash,
+            input_refinements,
         };
 
         let target = direct_rule(ctx.cst, node, Rule::QualifiedName).map(|target| {
@@ -456,8 +469,8 @@ impl FormatStage for Definition {
                 formatter.write_str(" ");
                 formatter.write_str(&name);
             }
-            if let Some(header) = formatter.direct_rule(node, Rule::QueryFilterHeader) {
-                formatter.query_filter_header(header);
+            if let Some(header) = formatter.direct_rule(node, Rule::QueryHeader) {
+                formatter.definition_header(header);
             }
             for directive in formatter.direct_rules(node, Rule::Directive) {
                 formatter.format_child(directive);
@@ -467,6 +480,9 @@ impl FormatStage for Definition {
             if let Some(name) = formatter.direct_name_text(node) {
                 formatter.write_str(" ");
                 formatter.write_str(&name);
+            }
+            if let Some(header) = formatter.direct_rule(node, Rule::FragmentHeader) {
+                formatter.definition_header(header);
             }
             formatter.write_str(" on");
             if let Some(on) = formatter.direct_qualified_name_text(node) {
@@ -588,11 +604,11 @@ fn render_variable_shape(node: &VariableShapeNode, indent: usize, output: &mut S
 }
 
 fn variable_type_label(binding: &VariableBinding) -> String {
-    if matches!(
+    let mut label = if matches!(
         binding.role,
         VariableRole::ComparisonOperator | VariableRole::SortDirection
     ) {
-        return format!(
+        format!(
             "enum({})",
             binding
                 .enum_values
@@ -600,11 +616,36 @@ fn variable_type_label(binding: &VariableBinding) -> String {
                 .map(|value| format!("\"{value}\""))
                 .collect::<Vec<_>>()
                 .join(", ")
-        );
-    }
-    if binding.collection {
+        )
+    } else if binding.collection {
         format!("{}[]", binding.data_type.as_str())
     } else {
         binding.data_type.as_str().to_string()
+    };
+    if binding.nullable {
+        label.push_str(" | null");
+    }
+    if let Some(default) = &binding.default {
+        label.push_str(" = ");
+        label.push_str(&input_default_label(default));
+    }
+    label
+}
+
+fn input_default_label(default: &InputDefault) -> String {
+    match default {
+        InputDefault::String(value) => format!("{value:?}"),
+        InputDefault::Number(value) => value.clone(),
+        InputDefault::Boolean(value) => value.to_string(),
+        InputDefault::Null => "null".to_string(),
+        InputDefault::Collection(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(input_default_label)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        InputDefault::EmptyObject => "{}".to_string(),
     }
 }

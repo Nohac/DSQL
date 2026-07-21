@@ -136,6 +136,8 @@ pub struct SqlParameterMetadata {
 pub struct SqlVariantMetadata {
     pub path: String,
     pub cases: Vec<SqlVariantCaseMetadata>,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub null_text: Option<String>,
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -170,6 +172,21 @@ pub struct InputField {
     pub enum_values: Vec<String>,
     pub required: bool,
     pub nullable: bool,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub default: Option<InputDefault>,
+}
+
+/// A typed compile-time replacement for one omitted public input.
+#[derive(Clone, Debug, Facet)]
+pub struct InputDefault {
+    /// `string`, `number`, `boolean`, `null`, `collection`, or `empty_object`.
+    pub kind: String,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub value: Option<String>,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub boolean: Option<bool>,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub items: Option<Vec<InputDefault>>,
 }
 
 #[derive(Clone, Debug, Facet)]

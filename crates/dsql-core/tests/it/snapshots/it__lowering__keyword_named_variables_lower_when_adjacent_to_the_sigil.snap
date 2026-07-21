@@ -2,5 +2,4 @@
 source: crates/dsql-core/tests/it/lowering.rs
 expression: render_clauses(&bowl).await
 ---
-title: limit $$
-title: limit <error>
+title: limit $$limit

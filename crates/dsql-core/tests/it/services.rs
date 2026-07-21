@@ -124,7 +124,7 @@ async fn hover_on_variables_reports_bindings() {
 #[tokio::test]
 async fn query_definition_hover_reports_inferred_variables() {
     let source = concat!(
-        "query MovieDetailPageQuery {\n",
+        "query MovieDetailPageQuery($$movieId? = null $$direction = \"desc\" $count = 10) {\n",
         "  public::users(\n",
         "    where .id == $$movieId\n",
         "    order by created_at $$direction\n",

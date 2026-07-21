@@ -1,7 +1,9 @@
 ---
 source: crates/dsql-core/tests/it/variables.rs
-expression: snapshot
+expression: render_definition_bindings(&bowl).await
 ---
-envelope
-input.UserPosts.input.recent.clause.limit.count Structured Limit Int Some("count") operators=[] enum=[]
-input.recent.clause.limit.count Structured Limit Int Some("count") operators=[] enum=[]
+UserFilter
+  input.UserPosts.input.recent.clause.limit.count Structured Limit Int required=true nullable=false default=None
+
+UserPosts
+  input.recent.clause.limit.count Structured Limit Int required=true nullable=false default=None

@@ -536,10 +536,7 @@ pub(crate) fn build_variable_ref(cst: &CstData, source: &str, node: NodeRef) -> 
         .map(|sigil| if context { Sigil::Context } else { sigil })
         .unwrap_or(Sigil::Query);
 
-    let name = cst.children(node).find_map(|child| match cst.get(child) {
-        Node::Token(Token::Name, _) => Some(text(source, node_span(cst, child)).to_string()),
-        _ => None,
-    });
+    let name = direct_name(cst, node).map(|span| text(source, span).to_string());
 
     let operators = cst.match_rule(node, Rule::OperatorVariable).then(|| {
         cst.children(node)

@@ -40,9 +40,13 @@ use crate::entities::policy::{
     CompiledPolicyField, CompiledPolicyIndex, CompiledPolicyTarget, PolicyIndex, PolicyKind,
     PolicyPlanIndex,
 };
-use crate::entities::variable::{VariableBinding, VariableRole, VariableSource, lower_snake_case};
+use crate::entities::variable::{
+    InputDefault, VariableBinding, VariableRole, VariableSource, effective_definition_variables,
+    lower_snake_case, spread_input_map,
+};
 use crate::entities::variable_path::{
-    InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
+    InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, VariableValue,
+    variable_path, variable_value,
 };
 use crate::facts::{
     BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
@@ -105,6 +109,15 @@ async fn plan_queries(
         .iter()
         .map(|(_, selection)| (selection.field, selection))
         .collect();
+    let variables = effective_definition_variables(
+        &tree,
+        &resolved_clauses,
+        snapshot.catalog(),
+        imports,
+        def_entity,
+        decl,
+        &scope.0,
+    );
     let mut planner = Planner {
         tree: &tree,
         resolved_clauses: &resolved_clauses,
@@ -115,6 +128,7 @@ async fn plan_queries(
         imports,
         policy_index,
         compiled_policies,
+        variables: &variables,
         operation_assignments: Vec::new(),
     };
     let mut diagnostics = Vec::new();
@@ -489,6 +503,7 @@ struct Planner<'a> {
     imports: &'a ScopeImports,
     policy_index: &'a PolicyIndex,
     compiled_policies: &'a CompiledPolicyIndex,
+    variables: &'a [VariableBinding],
     operation_assignments: Vec<PlannedPolicyAssignment>,
 }
 
@@ -1011,7 +1026,7 @@ impl Planner<'_> {
         // their spans, so source order is restored by merging on span order.
         enum Child<'a> {
             Field(&'a FieldSel, Entity),
-            Spread(String),
+            Spread(&'a crate::entities::fragment_spread::SpreadDecl),
         }
         let mut children: Vec<(usize, Child<'_>)> = self
             .tree
@@ -1021,13 +1036,14 @@ impl Planner<'_> {
         children.extend(
             self.tree
                 .spreads_under(parent)
-                .map(|(_, spread, _)| (spread.span.start, Child::Spread(spread.name.clone()))),
+                .map(|(_, spread, _)| (spread.span.start, Child::Spread(spread))),
         );
         children.sort_by_key(|(start, _)| *start);
 
         for (_, child) in children {
             match child {
-                Child::Spread(name) => {
+                Child::Spread(spread) => {
+                    let name = &spread.name;
                     walk.spreads.push(SpreadUse {
                         path: walk.result_path.join("."),
                         fragment: name.clone(),
@@ -1039,15 +1055,41 @@ impl Planner<'_> {
                     let ExpandedSpread::Fragment {
                         entity: fragment_entity,
                         ..
-                    } = walk.expansion.enter(&name)
+                    } = walk.expansion.enter(name)
                     else {
                         continue;
                     };
+                    let Some((_, fragment_decl, _, fragment_scope)) = self
+                        .tree
+                        .fragments
+                        .iter()
+                        .find(|(entity, _, _, _)| *entity == fragment_entity)
+                    else {
+                        walk.expansion.leave();
+                        continue;
+                    };
+                    let target_variables = effective_definition_variables(
+                        self.tree,
+                        self.resolved_clauses,
+                        self.catalog,
+                        self.imports,
+                        fragment_entity,
+                        fragment_decl,
+                        &fragment_scope.0,
+                    );
+                    let mut binding_problems = Vec::new();
+                    let input_map = spread_input_map(
+                        spread,
+                        &selection_path,
+                        &target_variables,
+                        &mut binding_problems,
+                    );
+                    let spread_scope = variable_scope.for_spread_map(input_map.values);
                     if let Some(fragment_plan) = self.plan_selection_set(
                         walk,
                         table,
                         SelectionPath::fragment_root(),
-                        &variable_scope.for_fragment_spread(&selection_path, &name),
+                        &spread_scope,
                         fragment_entity,
                         self.fragment_scope(fragment_entity)
                             .unwrap_or(definition_scope),
@@ -1224,30 +1266,43 @@ impl Planner<'_> {
                                 Some(OrderDirection::Asc) | None => SortDirectionPlan::Asc,
                                 Some(OrderDirection::Desc) => SortDirectionPlan::Desc,
                                 Some(OrderDirection::Variable(variable)) => {
-                                    SortDirectionPlan::Variant {
-                                        path: variable_path(
-                                            selection_path,
-                                            VariablePathContext {
-                                                role: VariableRole::SortDirection,
-                                                inferred_path: &[
-                                                    column.name.clone(),
-                                                    InputPathSegment::Direction
-                                                        .as_ref()
-                                                        .to_string(),
-                                                ],
-                                                anonymous_key: None,
-                                            },
-                                            variable_scope,
-                                            variable.sigil,
-                                            variable.name.as_deref(),
-                                        ),
-                                        variants: ["asc", "desc"]
-                                            .iter()
-                                            .map(|label| SqlVariantCase {
-                                                value: (*label).to_string(),
-                                                text: (*label).to_string(),
-                                            })
-                                            .collect(),
+                                    match variable_value(
+                                        selection_path,
+                                        VariablePathContext {
+                                            role: VariableRole::SortDirection,
+                                            inferred_path: &[
+                                                column.name.clone(),
+                                                InputPathSegment::Direction.as_ref().to_string(),
+                                            ],
+                                            anonymous_key: None,
+                                        },
+                                        variable_scope,
+                                        variable.sigil,
+                                        variable.name.as_deref(),
+                                    ) {
+                                        VariableValue::Public(path) => SortDirectionPlan::Variant {
+                                            nullable: self.variable_is_nullable(&path),
+                                            path,
+                                            variants: ["asc", "desc"]
+                                                .iter()
+                                                .map(|label| SqlVariantCase {
+                                                    value: (*label).to_string(),
+                                                    text: (*label).to_string(),
+                                                })
+                                                .collect(),
+                                        },
+                                        VariableValue::Default(InputDefault::String(value))
+                                            if value == "asc" =>
+                                        {
+                                            SortDirectionPlan::Asc
+                                        }
+                                        VariableValue::Default(InputDefault::String(value))
+                                            if value == "desc" =>
+                                        {
+                                            SortDirectionPlan::Desc
+                                        }
+                                        VariableValue::Default(InputDefault::Null) => return None,
+                                        VariableValue::Default(_) => return None,
                                     }
                                 }
                             },
@@ -1289,8 +1344,8 @@ impl Planner<'_> {
         match expr {
             Expr::Error { .. } => None,
             Expr::PredicateRef { .. } => None,
-            Expr::Variable { variable, .. } => Some(FilterExpr::Parameter(SqlParameter {
-                path: variable_path(
+            Expr::Variable { variable, .. } => {
+                let value = variable_value(
                     selection_path,
                     VariablePathContext {
                         role: VariableRole::WhereValue,
@@ -1300,8 +1355,15 @@ impl Planner<'_> {
                     variable_scope,
                     variable.sigil,
                     variable.name.as_deref(),
-                ),
-            })),
+                );
+                let filter = self.public_filter_value(value)?;
+                Some(match &filter {
+                    FilterExpr::Parameter(parameter) => {
+                        self.optional_filter(&parameter.path, filter.clone())
+                    }
+                    _ => filter,
+                })
+            }
             Expr::Path { .. } => {
                 self.plan_filter_path(resolved, table_scope.outer_current_table, expr)
             }
@@ -1424,25 +1486,45 @@ impl Planner<'_> {
                                 })
                                 .collect::<Option<Vec<_>>>()?,
                         ),
-                        Expr::Variable { variable, .. } => {
-                            FilterCollection::Parameter(SqlParameter {
-                                path: where_value_path(
-                                    selection_path,
-                                    variable_scope,
-                                    &field_path,
-                                    op,
-                                    variable,
-                                ),
-                            })
-                        }
+                        Expr::Variable { variable, .. } => match where_variable_value(
+                            selection_path,
+                            variable_scope,
+                            &field_path,
+                            op,
+                            variable,
+                        ) {
+                            VariableValue::Public(path) => {
+                                FilterCollection::Parameter(SqlParameter { path })
+                            }
+                            VariableValue::Default(InputDefault::Collection(items)) => {
+                                FilterCollection::List(
+                                    items
+                                        .iter()
+                                        .map(input_default_filter)
+                                        .collect::<Option<Vec<_>>>()?,
+                                )
+                            }
+                            VariableValue::Default(InputDefault::Null) => {
+                                return Some(FilterExpr::Absent);
+                            }
+                            VariableValue::Default(_) => return None,
+                        },
                         _ => return None,
+                    };
+                    let parameter_path = match &collection {
+                        FilterCollection::Parameter(parameter) => Some(parameter.path.clone()),
+                        FilterCollection::List(_) => None,
                     };
                     let membership = FilterExpr::Membership {
                         operand: Box::new(operand),
                         collection,
                         negated: matches!(op, BinaryOp::NotIn),
                     };
-                    return self.wrap_relation_predicate(lhs, membership, resolved, policy);
+                    let membership =
+                        self.wrap_relation_predicate(lhs, membership, resolved, policy)?;
+                    return Some(parameter_path.map_or(membership.clone(), |path| {
+                        self.optional_filter(&path, membership)
+                    }));
                 }
                 let aggregate = match (lhs.as_ref(), rhs.as_ref()) {
                     (aggregate @ Expr::Aggregate { .. }, _)
@@ -1490,15 +1572,15 @@ impl Planner<'_> {
                     && let Some(field_path) = self.predicate_path(resolved, lhs)
                 {
                     let right = match rhs.as_ref() {
-                        Expr::Variable { variable, .. } => FilterExpr::Parameter(SqlParameter {
-                            path: where_value_path(
+                        Expr::Variable { variable, .. } => {
+                            self.public_filter_value(where_variable_value(
                                 selection_path,
                                 variable_scope,
                                 &field_path,
                                 op,
                                 variable,
-                            ),
-                        }),
+                            ))?
+                        }
                         _ => self.plan_filter_expr(
                             FilterTableScope {
                                 table: table_scope.table,
@@ -1511,6 +1593,13 @@ impl Planner<'_> {
                             policy,
                         )?,
                     };
+                    let optional_parameter = match &right {
+                        FilterExpr::Parameter(parameter) => Some(parameter.clone()),
+                        _ => None,
+                    };
+                    if matches!(right, FilterExpr::Absent) {
+                        return Some(FilterExpr::Absent);
+                    }
                     if let Some(filter) = self.relation_predicate_filter(
                         selection_path,
                         lhs,
@@ -1521,7 +1610,9 @@ impl Planner<'_> {
                         resolved,
                         policy,
                     ) {
-                        return Some(filter);
+                        return Some(optional_parameter.map_or(filter.clone(), |parameter| {
+                            self.optional_filter(&parameter.path, filter)
+                        }));
                     }
                 }
                 if let (path @ Expr::Path { .. }, Expr::Variable { variable, .. }) =
@@ -1530,15 +1621,13 @@ impl Planner<'_> {
                 {
                     let left =
                         self.plan_filter_path(resolved, table_scope.outer_current_table, path)?;
-                    let right = FilterExpr::Parameter(SqlParameter {
-                        path: where_value_path(
-                            selection_path,
-                            variable_scope,
-                            &field_path,
-                            op,
-                            variable,
-                        ),
-                    });
+                    let right = self.public_filter_value(where_variable_value(
+                        selection_path,
+                        variable_scope,
+                        &field_path,
+                        op,
+                        variable,
+                    ))?;
                     return self.binary_or_variant(
                         left,
                         op,
@@ -1586,13 +1675,19 @@ impl Planner<'_> {
         variable_scope: &VariablePathScope,
         inferred_path: &[String],
     ) -> Option<FilterExpr> {
+        if !matches!(op, BinaryOp::And | BinaryOp::Or)
+            && (matches!(left, FilterExpr::Absent) || matches!(right, FilterExpr::Absent))
+        {
+            return Some(FilterExpr::Absent);
+        }
+        let optional_parameter = self.nullable_operand_parameter(&left, &right);
         if let BinaryOp::Variable(variable) = op {
             let compares_null = matches!(
                 (&left, &right),
                 (FilterExpr::Literal(FilterLiteral::Null), _)
                     | (_, FilterExpr::Literal(FilterLiteral::Null))
             );
-            return Some(FilterExpr::VariantBinary {
+            let filter = FilterExpr::VariantBinary {
                 left: Box::new(left),
                 path: variable_path(
                     selection_path,
@@ -1607,7 +1702,13 @@ impl Planner<'_> {
                 ),
                 variants: operator_variants(variable, compares_null),
                 right: Box::new(right),
-            });
+            };
+            return Some(optional_parameter.map_or(filter.clone(), |parameter| {
+                FilterExpr::Optional {
+                    parameter,
+                    operand: Box::new(filter),
+                }
+            }));
         }
         let op = match op {
             BinaryOp::Comparison(op) => FilterOp::from(*op),
@@ -1616,11 +1717,62 @@ impl Planner<'_> {
             BinaryOp::Or => FilterOp::Or,
             BinaryOp::Variable(_) => return None,
         };
-        Some(FilterExpr::Binary {
+        let filter = FilterExpr::Binary {
             left: Box::new(left),
             op,
             right: Box::new(right),
+        };
+        if matches!(op, FilterOp::And | FilterOp::Or) {
+            Some(filter)
+        } else {
+            Some(
+                optional_parameter.map_or(filter.clone(), |parameter| FilterExpr::Optional {
+                    parameter,
+                    operand: Box::new(filter),
+                }),
+            )
+        }
+    }
+
+    fn nullable_operand_parameter(
+        &self,
+        left: &FilterExpr,
+        right: &FilterExpr,
+    ) -> Option<SqlParameter> {
+        [left, right].into_iter().find_map(|operand| match operand {
+            FilterExpr::Parameter(parameter) if self.variable_is_nullable(&parameter.path) => {
+                Some(parameter.clone())
+            }
+            _ => None,
         })
+    }
+
+    fn optional_filter(&self, path: &str, filter: FilterExpr) -> FilterExpr {
+        if self.variable_is_nullable(path) {
+            FilterExpr::Optional {
+                parameter: SqlParameter {
+                    path: path.to_string(),
+                },
+                operand: Box::new(filter),
+            }
+        } else {
+            filter
+        }
+    }
+
+    fn public_filter_value(&self, value: VariableValue) -> Option<FilterExpr> {
+        match value {
+            VariableValue::Public(path) => Some(FilterExpr::Parameter(SqlParameter { path })),
+            VariableValue::Default(InputDefault::Null) => Some(FilterExpr::Absent),
+            VariableValue::Default(default) => input_default_filter(&default),
+        }
+    }
+
+    fn variable_is_nullable(&self, path: &str) -> bool {
+        self.variables
+            .iter()
+            .find(|binding| binding.path == path)
+            .is_some_and(|binding| binding.nullable)
     }
 
     fn plan_filter_expr_with_path(
@@ -1755,9 +1907,13 @@ impl Planner<'_> {
                 variable_scope,
                 policy,
             ),
-            Expr::Variable { variable, .. } => Some(FilterExpr::Parameter(SqlParameter {
-                path: where_value_path(selection_path, variable_scope, inferred_path, op, variable),
-            })),
+            Expr::Variable { variable, .. } => self.public_filter_value(where_variable_value(
+                selection_path,
+                variable_scope,
+                inferred_path,
+                op,
+                variable,
+            )),
             Expr::Binary { .. }
             | Expr::Unary { .. }
             | Expr::NullTest { .. }
@@ -1902,15 +2058,15 @@ impl Planner<'_> {
     }
 }
 
-/// The parameter path of a where-value variable bound to `field_path`.
-fn where_value_path(
+/// The public path or fixed callee default of a where-value variable.
+fn where_variable_value(
     selection_path: &[String],
     variable_scope: &VariablePathScope,
     field_path: &[String],
     op: &BinaryOp,
     variable: &VariableRef,
-) -> String {
-    variable_path(
+) -> VariableValue {
+    variable_value(
         selection_path,
         VariablePathContext {
             role: VariableRole::WhereValue,
@@ -1973,20 +2129,39 @@ fn plan_u64_value(
             value: LiteralValue::Number(value),
             ..
         } => value.parse().ok().map(SqlValue::Literal),
-        Expr::Variable { variable, .. } => Some(SqlValue::Parameter(SqlParameter {
-            path: variable_path(
-                selection_path,
-                VariablePathContext {
-                    role,
-                    inferred_path: &[inferred_key.as_ref().to_string()],
-                    anonymous_key: None,
-                },
-                variable_scope,
-                variable.sigil,
-                variable.name.as_deref(),
-            ),
-        })),
+        Expr::Variable { variable, .. } => match variable_value(
+            selection_path,
+            VariablePathContext {
+                role,
+                inferred_path: &[inferred_key.as_ref().to_string()],
+                anonymous_key: None,
+            },
+            variable_scope,
+            variable.sigil,
+            variable.name.as_deref(),
+        ) {
+            VariableValue::Public(path) => Some(SqlValue::Parameter(SqlParameter { path })),
+            VariableValue::Default(InputDefault::Number(value)) => {
+                value.parse().ok().map(SqlValue::Literal)
+            }
+            VariableValue::Default(InputDefault::Null) => None,
+            VariableValue::Default(_) => None,
+        },
         _ => None,
+    }
+}
+
+fn input_default_filter(default: &InputDefault) -> Option<FilterExpr> {
+    match default {
+        InputDefault::String(value) => {
+            Some(FilterExpr::Literal(FilterLiteral::String(value.clone())))
+        }
+        InputDefault::Number(value) => {
+            Some(FilterExpr::Literal(FilterLiteral::Number(value.clone())))
+        }
+        InputDefault::Boolean(value) => Some(FilterExpr::Literal(FilterLiteral::Bool(*value))),
+        InputDefault::Null => Some(FilterExpr::Absent),
+        InputDefault::Collection(_) | InputDefault::EmptyObject => None,
     }
 }
 
@@ -2142,6 +2317,10 @@ fn context_requirement_shape(requirement: &PolicyContextRequirement) -> String {
 fn filter_parameter_paths(filter: &FilterExpr) -> BTreeSet<&str> {
     fn collect<'a>(filter: &'a FilterExpr, paths: &mut BTreeSet<&'a str>) {
         match filter {
+            FilterExpr::Optional { parameter, operand } => {
+                paths.insert(&parameter.path);
+                collect(operand, paths);
+            }
             FilterExpr::Parameter(parameter) => {
                 paths.insert(&parameter.path);
             }
@@ -2198,7 +2377,7 @@ fn filter_parameter_paths(filter: &FilterExpr) -> BTreeSet<&str> {
                     collect(&field_filter.filter, paths);
                 }
             }
-            FilterExpr::Column { .. } | FilterExpr::Literal(_) => {}
+            FilterExpr::Absent | FilterExpr::Column { .. } | FilterExpr::Literal(_) => {}
         }
     }
 

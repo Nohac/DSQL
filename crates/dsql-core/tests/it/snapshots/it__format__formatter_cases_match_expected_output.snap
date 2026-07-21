@@ -1,6 +1,5 @@
 ---
 source: crates/dsql-core/tests/it/format.rs
-assertion_line: 73
 expression: output
 ---
 selection_boundaries
@@ -165,6 +164,28 @@ query Summary {
   }
   ...public::users | aggregate {
     user_count: count
+  }
+}
+
+---
+
+variable_contracts
+fragment Panel(
+  $after? = null
+  $$limit = 10
+) on public::users {
+  posts(where .created_at > $after limit $$) {
+    id
+  }
+}
+
+query Users(
+  $$page_size = 20
+  filter SoftDelete when $$enabled
+  $$offset? = null
+) {
+  public::users(offset $$) {
+    ...Panel($, $$limit <- $$page_size)
   }
 }
 

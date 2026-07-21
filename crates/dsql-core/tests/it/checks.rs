@@ -41,6 +41,39 @@ async fn duplicate_anonymous_variables_are_reported_for_queries_and_fragments() 
 }
 
 #[tokio::test]
+async fn invalid_input_refinements_and_fragment_bindings_are_reported() {
+    let bowl = checked_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "invalid-variable-contracts.dsql",
+        concat!(
+            "fragment Required on public::users {\n",
+            "  posts(limit $$count) { id }\n",
+            "}\n",
+            "query InvalidDefaults($$missing = 1 $$limit = \"many\") {\n",
+            "  public::users(limit $$) { id }\n",
+            "}\n",
+            "query InvalidNull($$limit = null) { public::users(limit $$) { id } }\n",
+            "query InvalidOperator($$op? = null) {\n",
+            "  public::users(where .id $$op[==, !=] \"00000000-0000-0000-0000-000000000000\") { id }\n",
+            "}\n",
+            "query InvalidSort($$direction = \"sideways\") {\n",
+            "  public::users(order by id $$direction) { id }\n",
+            "}\n",
+            "query InvalidBindings {\n",
+            "  public::users { ...Required($$missing) }\n",
+            "}\n",
+            "query InvalidBindingDirection($$caller? = null) {\n",
+            "  public::users { ...Required($$count <- $$caller) }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
 async fn valid_fixtures_check_clean_against_imdb() {
     let bowl = checked_bowl(imdb_catalog()).await;
 

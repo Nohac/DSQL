@@ -1,6 +1,6 @@
 use dsql_execute::{ExecuteError, ExecutionBindings, materialize};
 use dsql_metadata::{
-    InputField, OperationMetadata, ResultShape, SqlMetadata, SqlParameterMetadata,
+    InputDefault, InputField, OperationMetadata, ResultShape, SqlMetadata, SqlParameterMetadata,
     SqlVariantCaseMetadata, SqlVariantMetadata,
 };
 use serde_json::json;
@@ -16,6 +16,7 @@ fn field(path: &str, data_type: &str, collection: bool, enum_values: &[&str]) ->
             .collect(),
         required: true,
         nullable: false,
+        default: None,
     }
 }
 
@@ -43,6 +44,7 @@ fn operation() -> OperationMetadata {
                         text: "desc".to_string(),
                     },
                 ],
+                null_text: None,
             }],
         },
         result: ResultShape { fields: Vec::new() },
@@ -63,6 +65,45 @@ fn operation() -> OperationMetadata {
         fragment_spreads: Vec::new(),
         source_map: Vec::new(),
     }
+}
+
+#[test]
+fn materialization_applies_typed_defaults_and_nullable_variants() {
+    let mut operation = operation();
+    operation.params[0].required = false;
+    operation.params[0].default = Some(InputDefault {
+        kind: "string".to_string(),
+        value: Some("018f6f19-795f-7c3d-b1b3-8f177ab8a321".to_string()),
+        boolean: None,
+        items: None,
+    });
+    operation.params[1].required = false;
+    operation.params[1].nullable = true;
+    operation.params[1].default = Some(InputDefault {
+        kind: "null".to_string(),
+        value: None,
+        boolean: None,
+        items: None,
+    });
+    operation.sql.variants[0].null_text = Some("null".to_string());
+    operation.input[0].required = false;
+    operation.input[0].default = Some(InputDefault {
+        kind: "collection".to_string(),
+        value: None,
+        boolean: None,
+        items: Some(vec![InputDefault {
+            kind: "number".to_string(),
+            value: Some("7".to_string()),
+            boolean: None,
+            items: None,
+        }]),
+    });
+    let bindings = ExecutionBindings {
+        variables: json!({}),
+        context: json!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
+    };
+
+    insta::assert_debug_snapshot!(materialize(&operation, &bindings).expect("materializes"));
 }
 
 #[test]

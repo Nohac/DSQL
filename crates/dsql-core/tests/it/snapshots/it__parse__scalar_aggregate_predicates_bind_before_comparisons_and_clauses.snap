@@ -1,6 +1,5 @@
 ---
 source: crates/dsql-core/tests/it/parse.rs
-assertion_line: 69
 expression: "format!(\"{cst}---\\n{rendered}\")"
 ---
 document [0..193]
@@ -63,7 +62,8 @@ document [0..193]
                                                     expr [106..115]
                                                         value_variable [106..115]
                                                             DollarDollar "$$" [106..108]
-                                                            Name "minimum" [108..115]
+                                                            variable_name [108..115]
+                                                                Name "minimum" [108..115]
                                             Whitespace "\n      " [115..122]
                                             And "and" [122..125]
                                             Whitespace " " [125..126]

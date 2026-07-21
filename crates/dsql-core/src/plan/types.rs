@@ -321,9 +321,9 @@ fn filter_observes_rows(filter: &FilterExpr) -> bool {
         FilterExpr::Binary { left, right, .. } | FilterExpr::VariantBinary { left, right, .. } => {
             filter_observes_rows(left) || filter_observes_rows(right)
         }
-        FilterExpr::Not(operand) | FilterExpr::NullTest { operand, .. } => {
-            filter_observes_rows(operand)
-        }
+        FilterExpr::Optional { operand, .. }
+        | FilterExpr::Not(operand)
+        | FilterExpr::NullTest { operand, .. } => filter_observes_rows(operand),
         FilterExpr::Membership {
             operand,
             collection,
@@ -335,7 +335,7 @@ fn filter_observes_rows(filter: &FilterExpr) -> bool {
                     FilterCollection::Parameter(_) => false,
                 }
         }
-        FilterExpr::Literal(_) | FilterExpr::Parameter(_) => false,
+        FilterExpr::Absent | FilterExpr::Literal(_) | FilterExpr::Parameter(_) => false,
     }
 }
 
@@ -401,11 +401,19 @@ pub enum SortDirectionPlan {
     Variant {
         path: String,
         variants: Vec<SqlVariantCase>,
+        nullable: bool,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum FilterExpr {
+    /// A statically omitted predicate atom (for an omitted `null` default).
+    Absent,
+    /// A query-authored atom present only while its public input is non-null.
+    Optional {
+        parameter: SqlParameter,
+        operand: Box<FilterExpr>,
+    },
     Column {
         scope: FilterColumnScope,
         column: ColumnId,

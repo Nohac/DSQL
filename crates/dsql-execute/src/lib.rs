@@ -3,11 +3,14 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use dsql_metadata::{InputField, OperationMetadata};
+use dsql_metadata::{InputDefault, InputField, OperationMetadata};
 use serde_json::Value;
 use sqlx::postgres::{PgArguments, PgPool, PgPoolOptions};
 use sqlx::query::QueryScalar;
-use sqlx::types::{BigDecimal, Json, Uuid, chrono::DateTime};
+use sqlx::types::{
+    BigDecimal, Json, Uuid,
+    chrono::{DateTime, FixedOffset},
+};
 use sqlx::{AssertSqlSafe, Postgres};
 
 /// Public inputs and trusted server context for one execution.
@@ -136,6 +139,13 @@ pub fn materialize(
     for variant in &operation.sql.variants {
         let field = declared(&fields, &variant.path)?;
         let value = input_value(field, bindings)?;
+        if value.is_null() {
+            let Some(text) = &variant.null_text else {
+                return Err(invalid(&variant.path, "a non-null string variant"));
+            };
+            sql = sql.replace(&format!("{{{{{}}}}}", variant.path), text);
+            continue;
+        }
         let Some(value) = value.as_str() else {
             return Err(invalid(&variant.path, "a string variant"));
         };
@@ -158,7 +168,7 @@ pub fn materialize(
                 path: parameter.path.clone(),
                 data_type: field.data_type.clone(),
                 collection: field.collection == Some(true),
-                value: input_value(field, bindings)?.clone(),
+                value: input_value(field, bindings)?,
             })
         })
         .collect::<Result<Vec<_>, ExecuteError>>()?;
@@ -176,10 +186,7 @@ fn declared<'a>(
         .ok_or_else(|| ExecuteError::UndeclaredParameter(path.to_string()))
 }
 
-fn input_value<'a>(
-    field: &InputField,
-    bindings: &'a ExecutionBindings,
-) -> Result<&'a Value, ExecuteError> {
+fn input_value(field: &InputField, bindings: &ExecutionBindings) -> Result<Value, ExecuteError> {
     let (root, path) = field
         .path
         .strip_prefix("context.")
@@ -189,7 +196,16 @@ fn input_value<'a>(
     let value = path
         .split('.')
         .try_fold(root, |value, segment| value.get(segment))
-        .ok_or_else(|| ExecuteError::MissingInput(field.path.clone()))?;
+        .cloned()
+        .map_or_else(
+            || {
+                field.default.as_ref().map_or_else(
+                    || Err(ExecuteError::MissingInput(field.path.clone())),
+                    |default| materialize_default(field, default),
+                )
+            },
+            Ok,
+        )?;
     if value.is_null() && !field.nullable {
         return Err(invalid(
             &field.path,
@@ -197,6 +213,51 @@ fn input_value<'a>(
         ));
     }
     Ok(value)
+}
+
+fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Value, ExecuteError> {
+    match default.kind.as_str() {
+        "string" => default
+            .value
+            .clone()
+            .map(Value::String)
+            .ok_or_else(|| invalid(&field.path, "a valid string default")),
+        "number" => {
+            let Some(value) = default.value.as_deref() else {
+                return Err(invalid(&field.path, "a valid number default"));
+            };
+            match field.data_type.as_str() {
+                "int" => value
+                    .parse::<i64>()
+                    .ok()
+                    .map(Value::from)
+                    .ok_or_else(|| invalid(&field.path, "an integer default")),
+                "float" => value
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(serde_json::Number::from_f64)
+                    .map(Value::Number)
+                    .ok_or_else(|| invalid(&field.path, "a finite float default")),
+                "numeric" => Ok(Value::String(value.to_string())),
+                _ => Err(invalid(&field.path, "a compatible number default")),
+            }
+        }
+        "boolean" => default
+            .boolean
+            .map(Value::Bool)
+            .ok_or_else(|| invalid(&field.path, "a valid boolean default")),
+        "null" => Ok(Value::Null),
+        "collection" => default
+            .items
+            .as_ref()
+            .ok_or_else(|| invalid(&field.path, "a valid collection default"))?
+            .iter()
+            .map(|item| materialize_default(field, item))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        "empty_object" => Ok(Value::Object(serde_json::Map::new())),
+        _ => Err(invalid(&field.path, "a recognized input default")),
+    }
 }
 
 type Query<'q> = QueryScalar<'q, Postgres, Option<String>, PgArguments>;
@@ -222,6 +283,9 @@ fn bind_scalar<'q>(
 ) -> Result<Query<'q>, ExecuteError> {
     let value = &parameter.value;
     let error = || invalid(&parameter.path, &parameter.data_type);
+    if value.is_null() {
+        return bind_null_scalar(query, parameter);
+    }
     match parameter.data_type.as_str() {
         "uuid" => Ok(
             query.bind(Uuid::parse_str(value.as_str().ok_or_else(error)?).map_err(|_| error())?)
@@ -243,10 +307,33 @@ fn bind_scalar<'q>(
     }
 }
 
+fn bind_null_scalar<'q>(
+    query: Query<'q>,
+    parameter: &BoundParameter,
+) -> Result<Query<'q>, ExecuteError> {
+    match parameter.data_type.as_str() {
+        "uuid" => Ok(query.bind(None::<Uuid>)),
+        "text" => Ok(query.bind(None::<String>)),
+        "timestamptz" => Ok(query.bind(None::<DateTime<FixedOffset>>)),
+        "int" => Ok(query.bind(None::<i64>)),
+        "numeric" => Ok(query.bind(None::<BigDecimal>)),
+        "float" => Ok(query.bind(None::<f64>)),
+        "boolean" => Ok(query.bind(None::<bool>)),
+        "json" => Ok(query.bind(None::<Json<Value>>)),
+        data_type => Err(ExecuteError::UnsupportedType {
+            path: parameter.path.clone(),
+            data_type: data_type.to_string(),
+        }),
+    }
+}
+
 fn bind_collection<'q>(
     query: Query<'q>,
     parameter: &'q BoundParameter,
 ) -> Result<Query<'q>, ExecuteError> {
+    if parameter.value.is_null() {
+        return bind_null_collection(query, parameter);
+    }
     let Some(values) = parameter.value.as_array() else {
         return Err(invalid(
             &parameter.path,
@@ -264,7 +351,13 @@ fn bind_collection<'q>(
         "text" => Ok(query.bind(
             values
                 .iter()
-                .map(Value::as_str)
+                .map(|value| {
+                    if value.is_null() {
+                        Some(None)
+                    } else {
+                        value.as_str().map(|value| Some(value.to_string()))
+                    }
+                })
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
@@ -274,7 +367,7 @@ fn bind_collection<'q>(
         "int" => Ok(query.bind(
             values
                 .iter()
-                .map(Value::as_i64)
+                .map(|value| value.as_i64().map(Some).or(value.is_null().then_some(None)))
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
@@ -282,18 +375,28 @@ fn bind_collection<'q>(
         "float" => Ok(query.bind(
             values
                 .iter()
-                .map(Value::as_f64)
+                .map(|value| value.as_f64().map(Some).or(value.is_null().then_some(None)))
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
         "boolean" => Ok(query.bind(
             values
                 .iter()
-                .map(Value::as_bool)
+                .map(|value| {
+                    value
+                        .as_bool()
+                        .map(Some)
+                        .or(value.is_null().then_some(None))
+                })
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
-        "json" => Ok(query.bind(values.iter().cloned().map(Json).collect::<Vec<_>>())),
+        "json" => Ok(query.bind(
+            values
+                .iter()
+                .map(|value| (!value.is_null()).then(|| Json(value.clone())))
+                .collect::<Vec<_>>(),
+        )),
         data_type => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
             data_type: data_type.to_string(),
@@ -301,9 +404,38 @@ fn bind_collection<'q>(
     }
 }
 
-fn parse_strings<T, E>(values: &[Value], parse: impl Fn(&str) -> Result<T, E>) -> Option<Vec<T>> {
+fn bind_null_collection<'q>(
+    query: Query<'q>,
+    parameter: &BoundParameter,
+) -> Result<Query<'q>, ExecuteError> {
+    match parameter.data_type.as_str() {
+        "uuid" => Ok(query.bind(None::<Vec<Option<Uuid>>>)),
+        "text" => Ok(query.bind(None::<Vec<Option<String>>>)),
+        "timestamptz" => Ok(query.bind(None::<Vec<Option<DateTime<FixedOffset>>>>)),
+        "int" => Ok(query.bind(None::<Vec<Option<i64>>>)),
+        "numeric" => Ok(query.bind(None::<Vec<Option<BigDecimal>>>)),
+        "float" => Ok(query.bind(None::<Vec<Option<f64>>>)),
+        "boolean" => Ok(query.bind(None::<Vec<Option<bool>>>)),
+        "json" => Ok(query.bind(None::<Vec<Option<Json<Value>>>>)),
+        data_type => Err(ExecuteError::UnsupportedType {
+            path: parameter.path.clone(),
+            data_type: data_type.to_string(),
+        }),
+    }
+}
+
+fn parse_strings<T, E>(
+    values: &[Value],
+    parse: impl Fn(&str) -> Result<T, E>,
+) -> Option<Vec<Option<T>>> {
     values
         .iter()
-        .map(|value| value.as_str().and_then(|value| parse(value).ok()))
+        .map(|value| {
+            if value.is_null() {
+                Some(None)
+            } else {
+                value.as_str().and_then(|value| parse(value).ok()).map(Some)
+            }
+        })
         .collect()
 }

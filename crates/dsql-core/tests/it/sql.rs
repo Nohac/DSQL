@@ -149,6 +149,60 @@ async fn variables_render_as_parameters_and_variants() {
 }
 
 #[tokio::test]
+async fn nullable_inputs_prune_predicates_clauses_ordering_and_cardinality() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "nullable-inputs.dsql",
+        concat!(
+            "query NullableInputs(\n",
+            "  $$id? = null\n",
+            "  $$from? = null\n",
+            "  $$to? = null\n",
+            "  $$direction? = null\n",
+            "  $$limit? = null\n",
+            ") {\n",
+            "  public::users(\n",
+            "    where .id == $$id and (.id >= $$from or not (.id <= $$to))\n",
+            "    order by id $$direction\n",
+            "    limit $$limit\n",
+            "  ) { id }\n",
+            "}\n",
+            "query DefaultedUnique($$id = 1) {\n",
+            "  public::users(where .id == $$id) { id }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn fragment_bindings_rewrite_sql_inputs_and_inline_omitted_defaults() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "fragment-bindings.dsql",
+        concat!(
+            "fragment PostWindow($$minimum = 18 $$limit = 5) on public::users {\n",
+            "  posts(where .id >= $$minimum limit $$) { id }\n",
+            "}\n",
+            "query Contained { public::users { ...PostWindow } }\n",
+            "query Bound($$outer = 20) {\n",
+            "  public::users { ...PostWindow($$minimum <- $$outer) }\n",
+            "}\n",
+            "query Namespaced {\n",
+            "  public::users { ...PostWindow($$ <- $$window) }\n",
+            "}\n",
+        ),
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
 async fn predicate_extensions_render_with_postgres_semantics() {
     let bowl = sql_bowl(imdb_catalog()).await;
     insert_source(

@@ -105,12 +105,10 @@ async fn operator_variables_lower_inside_expressions() {
     insta::assert_snapshot!(render_clauses(&bowl).await);
 }
 
-/// Pins a language wart: keywords (`limit`, `order`, ...) lex as keyword
-/// tokens even after a variable sigil, so `$$limit` parses as an anonymous
-/// `$$` followed by a spurious `limit` clause. Candidate fix: contextual
-/// keyword handling in the generated lexer.
+/// Inferred keys such as `limit` remain usable as explicit variable names
+/// when directly adjacent to their sigil.
 #[tokio::test]
-async fn keyword_named_variables_do_not_parse_as_names() {
+async fn keyword_named_variables_lower_when_adjacent_to_the_sigil() {
     let bowl = language_bowl().await;
 
     insert_source(

@@ -78,7 +78,17 @@ fn lower_rule(
         // Consumed by Clause lowering from the clause nodes.
         Rule::Clause
         | Rule::ClauseList
-        | Rule::QueryFilterHeader
+        | Rule::QueryHeader
+        | Rule::FragmentHeader
+        | Rule::InputRefinement
+        | Rule::PublicVariable
+        | Rule::VariableName
+        | Rule::DefaultValue
+        | Rule::DefaultCollection
+        | Rule::EmptyObject
+        | Rule::BindingList
+        | Rule::BindingItem
+        | Rule::BindingVariable
         | Rule::OrderItem
         | Rule::SortDirection => None,
         // Consumed by Directive lowering from the directive node.
@@ -179,7 +189,7 @@ pub(crate) fn direct_names(cst: &CstData, node: NodeRef) -> Vec<Span> {
     cst.children(node)
         .filter_map(|child| match cst.get(child) {
             crate::grammar::parser::Node::Token(Token::Name, _) => Some(node_span(cst, child)),
-            crate::grammar::parser::Node::Rule(Rule::ContextualName, _) => {
+            crate::grammar::parser::Node::Rule(Rule::ContextualName | Rule::VariableName, _) => {
                 Some(node_span(cst, child))
             }
             _ => None,
@@ -258,7 +268,17 @@ pub fn format_rule(
         | Rule::ClauseList
         | Rule::OrderItem
         | Rule::SortDirection
-        | Rule::QueryFilterHeader
+        | Rule::QueryHeader
+        | Rule::FragmentHeader
+        | Rule::InputRefinement
+        | Rule::PublicVariable
+        | Rule::VariableName
+        | Rule::DefaultValue
+        | Rule::DefaultCollection
+        | Rule::EmptyObject
+        | Rule::BindingList
+        | Rule::BindingItem
+        | Rule::BindingVariable
         | Rule::PolicyTarget
         | Rule::ShapeTarget
         | Rule::ShapeField

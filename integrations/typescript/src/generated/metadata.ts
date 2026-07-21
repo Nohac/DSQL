@@ -132,6 +132,16 @@ export interface InputField {
   enum_values: string[];
   required: boolean;
   nullable: boolean;
+  default?: InputDefault;
+}
+
+/** A typed compile-time replacement for one omitted public input. */
+export interface InputDefault {
+  /** `string`, `number`, `boolean`, `null`, `collection`, or `empty_object`. */
+  kind: string;
+  value?: string;
+  boolean?: boolean;
+  items?: InputDefault[];
 }
 
 export interface ResultShape {
@@ -159,6 +169,7 @@ export interface SqlMetadata {
 export interface SqlVariantMetadata {
   path: string;
   cases: SqlVariantCaseMetadata[];
+  null_text?: string;
 }
 
 export interface SqlVariantCaseMetadata {
@@ -233,6 +244,16 @@ export interface InputField {
   enum_values: string[];
   required: boolean;
   nullable: boolean;
+  default?: InputDefault;
+}
+
+/** A typed compile-time replacement for one omitted public input. */
+export interface InputDefault {
+  /** `string`, `number`, `boolean`, `null`, `collection`, or `empty_object`. */
+  kind: string;
+  value?: string;
+  boolean?: boolean;
+  items?: InputDefault[];
 }
 
 export interface ResultShape {

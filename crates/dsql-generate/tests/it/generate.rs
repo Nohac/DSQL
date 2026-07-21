@@ -498,7 +498,7 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
         vec![document(
             "queries/frontend/numeric.dsql",
             concat!(
-                "query NumericMetrics {\n",
+                "query NumericMetrics($$minimum = 12345678901234567890.12345678901234567890) {\n",
                 "  metrics(where .amount >= $$minimum and .amount in $$amounts) { amount ratio }\n",
                 "}\n",
                 "query NumericSummary {\n",
@@ -523,6 +523,41 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
         .artifacts
         .iter()
         .filter(|artifact| matches!(artifact.name.as_str(), "NumericMetrics" | "NumericSummary"))
+        .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
+        .collect::<Vec<_>>();
+    artifacts.sort();
+
+    insta::assert_snapshot!(artifacts.join("\n---\n"));
+}
+
+#[tokio::test]
+async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
+        vec![document(
+            "queries/frontend/variable-contracts.dsql",
+            concat!(
+                "fragment PostWindow($$after? = null $$limit = 5) on users {\n",
+                "  posts(where .created_at >= $$after limit $$) { id }\n",
+                "}\n",
+                "query Contained { users { ...PostWindow } }\n",
+                "query Bound($$since = \"2020-01-01T00:00:00Z\") {\n",
+                "  users { ...PostWindow($$after <- $$since) }\n",
+                "}\n",
+            ),
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("variable contracts assemble");
+    let mut artifacts = assembled
+        .snapshot
+        .artifacts
+        .iter()
+        .filter(|artifact| matches!(artifact.name.as_str(), "PostWindow" | "Contained" | "Bound"))
         .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
         .collect::<Vec<_>>();
     artifacts.sort();

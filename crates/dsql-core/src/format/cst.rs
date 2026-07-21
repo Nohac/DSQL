@@ -444,18 +444,104 @@ impl<'a> CstFormatter<'a> {
         }
     }
 
-    pub fn query_filter_header(&mut self, node: NodeRef) {
-        let assignments = self.direct_rules(node, Rule::FilterAssignment);
+    pub fn definition_header(&mut self, node: NodeRef) {
+        let mut items = self
+            .direct_rules(node, Rule::InputRefinement)
+            .into_iter()
+            .map(|node| (self.node_span(node).start, node))
+            .chain(
+                self.direct_rules(node, Rule::FilterAssignment)
+                    .into_iter()
+                    .map(|node| (self.node_span(node).start, node)),
+            )
+            .collect::<Vec<_>>();
+        items.sort_by_key(|(start, _)| *start);
         self.out.push_str("(\n");
         self.indent += 1;
-        for assignment in assignments {
+        for (_, item) in items {
             self.write_indent(self.indent);
-            self.filter_assignment(assignment);
+            if self.rule(item) == Some(Rule::FilterAssignment) {
+                self.filter_assignment(item);
+            } else {
+                self.input_refinement(item);
+            }
             self.out.push('\n');
         }
         self.indent = self.indent.saturating_sub(1);
         self.write_indent(self.indent);
         self.out.push(')');
+    }
+
+    fn input_refinement(&mut self, node: NodeRef) {
+        if let Some(variable) = self.direct_rule(node, Rule::PublicVariable) {
+            self.variable_reference(variable);
+        }
+        if self.direct_token_text(node, Token::Question).is_some() {
+            self.out.push('?');
+        }
+        if let Some(default) = self.direct_rule(node, Rule::DefaultValue) {
+            self.out.push_str(" = ");
+            self.default_value(default);
+        }
+    }
+
+    fn default_value(&mut self, node: NodeRef) {
+        let Some(value) = self.children(node).into_iter().find(|child| {
+            matches!(
+                self.rule(*child),
+                Some(Rule::Literal | Rule::DefaultCollection | Rule::EmptyObject)
+            )
+        }) else {
+            return;
+        };
+        match self.rule(value) {
+            Some(Rule::DefaultCollection) => {
+                self.out.push('[');
+                let values = self.direct_rules(value, Rule::DefaultValue);
+                for (index, value) in values.into_iter().enumerate() {
+                    if index > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.default_value(value);
+                }
+                self.out.push(']');
+            }
+            Some(Rule::EmptyObject) => self.out.push_str("{}"),
+            _ => self.write_node_text(value),
+        }
+    }
+
+    pub fn binding_list(&mut self, node: NodeRef) {
+        self.out.push('(');
+        for (index, item) in self
+            .direct_rules(node, Rule::BindingItem)
+            .into_iter()
+            .enumerate()
+        {
+            if index > 0 {
+                self.out.push_str(", ");
+            }
+            let variables = self.direct_rules(item, Rule::BindingVariable);
+            if let Some(target) = variables.first() {
+                self.variable_reference(*target);
+            }
+            if let Some(source) = variables.get(1) {
+                self.out.push_str(" <- ");
+                self.variable_reference(*source);
+            }
+        }
+        self.out.push(')');
+    }
+
+    fn variable_reference(&mut self, node: NodeRef) {
+        if self.direct_token_text(node, Token::DollarDollar).is_some() {
+            self.out.push_str("$$");
+        } else {
+            self.out.push('$');
+        }
+        if let Some(name) = self.direct_name_text(node) {
+            self.out.push_str(&name);
+        }
     }
 
     pub fn order_item(&mut self, node: NodeRef) {
@@ -818,7 +904,10 @@ impl<'a> CstFormatter<'a> {
             .into_iter()
             .filter(|child| {
                 self.token(*child) == Some(Token::Name)
-                    || self.rule(*child) == Some(Rule::ContextualName)
+                    || matches!(
+                        self.rule(*child),
+                        Some(Rule::ContextualName | Rule::VariableName)
+                    )
             })
             .map(|child| self.node_text(child))
             .collect()

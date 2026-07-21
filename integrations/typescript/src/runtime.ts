@@ -35,10 +35,12 @@ export type DsqlOperationContext<Operation> =
 
 export type DsqlVariables<
   Operation extends DsqlOperation<any, any, any, any>,
-> = {
-  readonly params: DsqlOperationParams<Operation>;
-  readonly input: DsqlOperationInput<Operation>;
-};
+> = ({} extends DsqlOperationParams<Operation>
+  ? { readonly params?: DsqlOperationParams<Operation> }
+  : { readonly params: DsqlOperationParams<Operation> }) &
+  ({} extends DsqlOperationInput<Operation>
+    ? { readonly input?: DsqlOperationInput<Operation> }
+    : { readonly input: DsqlOperationInput<Operation> });
 
 export type DsqlQueryKey<Variables> = readonly [
   "dsql",
@@ -89,10 +91,10 @@ export type DsqlFragmentInput<Fragment> =
     : Record<string, never>;
 
 export type DsqlFragmentVariables<Fragment> =
-  (DsqlFragmentParams<Fragment> extends Record<string, never>
+  ({} extends DsqlFragmentParams<Fragment>
     ? { readonly params?: DsqlFragmentParams<Fragment> }
     : { readonly params: DsqlFragmentParams<Fragment> }) &
-  (DsqlFragmentInput<Fragment> extends Record<string, never>
+  ({} extends DsqlFragmentInput<Fragment>
     ? { readonly input?: DsqlFragmentInput<Fragment> }
     : { readonly input: DsqlFragmentInput<Fragment> });
 
@@ -109,7 +111,28 @@ export type DsqlSqlParameter = {
   readonly path: string;
 };
 
-export type DsqlSqlVariants = Record<string, Record<string, string>>;
+export type DsqlSqlVariants = Record<
+  string,
+  {
+    readonly cases: Record<string, string>;
+    readonly nullText?: string;
+  }
+>;
+
+export type DsqlInputDefault = {
+  readonly kind: string;
+  readonly value?: string;
+  readonly boolean?: boolean;
+  readonly items?: readonly DsqlInputDefault[];
+};
+
+export type DsqlInputField = {
+  readonly path: string;
+  readonly data_type: string;
+  readonly required: boolean;
+  readonly nullable: boolean;
+  readonly default?: DsqlInputDefault;
+};
 
 export type DsqlExecutionPayload<
   Operation extends DsqlOperation<any, any, any, any> = DsqlOperation<any, any, any, any>,
@@ -118,6 +141,7 @@ export type DsqlExecutionPayload<
   readonly sql: string;
   readonly parameters: readonly DsqlSqlParameter[];
   readonly variants: DsqlSqlVariants;
+  readonly inputs: readonly DsqlInputField[];
 };
 
 export type DsqlMaterializedQuery = {
@@ -151,7 +175,10 @@ export function materializeDsqlQuery<
   variables: DsqlVariables<Operation>,
   context: DsqlOperationContext<Operation>,
 ): DsqlMaterializedQuery {
-  const bindings = { ...variables, context };
+  const bindings = materializeDsqlBindings(payload.inputs, {
+    ...variables,
+    context,
+  });
   const sql = applyDsqlVariants(payload.sql, payload.variants, bindings);
   for (const parameter of payload.parameters) {
     if (
@@ -173,19 +200,102 @@ export function applyDsqlVariants(
   variables: unknown,
 ): string {
   let rendered = sql;
-  for (const [path, cases] of Object.entries(variants)) {
+  for (const [path, variant] of Object.entries(variants)) {
     const selected = getDsqlPath(variables, path);
+    if (selected == null && variant.nullText !== undefined) {
+      rendered = rendered.replaceAll(`{{${path}}}`, variant.nullText);
+      continue;
+    }
     if (typeof selected !== "string") {
       throw new Error(`missing dsql variant value at ${path}`);
     }
 
-    const replacement = cases[selected];
+    const replacement = variant.cases[selected];
     if (replacement === undefined) {
       throw new Error(`invalid dsql variant value at ${path}: ${selected}`);
     }
     rendered = rendered.replaceAll(`{{${path}}}`, replacement);
   }
   return rendered;
+}
+
+export function materializeDsqlBindings(
+  fields: readonly DsqlInputField[],
+  bindings: unknown,
+): unknown {
+  const materialized = cloneDsqlValue(bindings);
+  for (const field of fields) {
+    let value = getDsqlPath(materialized, field.path);
+    if (value === undefined && field.default !== undefined) {
+      value = dsqlDefaultValue(field, field.default);
+      setDsqlPath(materialized, field.path, value);
+    }
+    if (value === undefined && field.required) {
+      if (field.path.startsWith("context.")) {
+        throw new Error(`missing trusted dsql context at ${field.path}`);
+      }
+      throw new Error(`missing dsql input at ${field.path}`);
+    }
+    if (value === null && !field.nullable) {
+      if (field.path.startsWith("context.")) {
+        throw new Error(`missing trusted dsql context at ${field.path}`);
+      }
+      throw new Error(`non-null dsql input is null at ${field.path}`);
+    }
+  }
+  return materialized;
+}
+
+function dsqlDefaultValue(
+  field: DsqlInputField,
+  defaultValue: DsqlInputDefault,
+): unknown {
+  switch (defaultValue.kind) {
+    case "string":
+      return defaultValue.value;
+    case "number":
+      if (field.data_type === "numeric") return defaultValue.value;
+      return Number(defaultValue.value);
+    case "boolean":
+      return defaultValue.boolean;
+    case "null":
+      return null;
+    case "collection":
+      return (defaultValue.items ?? []).map((item) =>
+        dsqlDefaultValue(field, item),
+      );
+    case "empty_object":
+      return {};
+    default:
+      throw new Error(`invalid dsql default at ${field.path}`);
+  }
+}
+
+function cloneDsqlValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneDsqlValue);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, cloneDsqlValue(child)]),
+    );
+  }
+  return value;
+}
+
+function setDsqlPath(value: unknown, path: string, replacement: unknown): void {
+  if (value === null || typeof value !== "object") {
+    throw new Error(`cannot materialize dsql input at ${path}`);
+  }
+  const parts = path.split(".");
+  let current = value as Record<string, unknown>;
+  for (const part of parts.slice(0, -1)) {
+    const child = current[part];
+    if (child === null || typeof child !== "object" || Array.isArray(child)) {
+      current[part] = {};
+    }
+    current = current[part] as Record<string, unknown>;
+  }
+  const leaf = parts.at(-1);
+  if (leaf !== undefined) current[leaf] = replacement;
 }
 
 export function collectDsqlParameterValues(

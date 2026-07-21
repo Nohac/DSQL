@@ -8,10 +8,12 @@
 //! [`ChildOf`]: crate::facts::ChildOf
 
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
+use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::resolution::{ResolvedClause, index_resolved_clauses};
 use crate::schema::{AstFacts, dsql_schema};
 use bowl::{
-    Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, View, Where, With,
+    Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View,
+    Where, With,
 };
 
 use crate::catalog::{
@@ -23,6 +25,7 @@ use crate::entities::expression::{
     BinaryOp, ComparisonOp, Expr, Sigil, VariableRef, build_variable_ref,
 };
 use crate::entities::field_selection::{SelectionTree, TreeViews};
+use crate::entities::fragment_spread::{SpreadBindingRef, SpreadDecl, visible_fragments};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
 };
@@ -32,7 +35,12 @@ use crate::facts::{
     NodeKey, Severity, Span, VariablesDemand, emit_diagnostic,
 };
 use crate::format::CstFormatter;
-use crate::grammar::parser::NodeRef;
+use crate::grammar::lexer::Token;
+use crate::grammar::parser::{Node, NodeRef, Rule};
+use crate::service::completion::{
+    CompletionContext, CompletionItem, CompletionKind, CompletionRequest, CompletionSite,
+    emit_completion_candidate,
+};
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
@@ -58,12 +66,14 @@ impl LanguageEntity for Variable {
     fn register(reg: &mut Registrar<'_>) {
         // Views lowered facts ambiently: behind the Complete barrier.
         reg.system(infer_variables.run_during(bowl::Phase::Complete));
+        reg.system(diagnose_variable_problems);
         // Fully tracked on the duplicate facts: the engine replans the pair
         // after inference commits them at Complete, like variable hover.
         reg.system(diagnose_duplicate_anonymous_bindings);
         // Fully tracked (a per-file bound join, no views), so it needs no
         // phase barrier: pairs replan as bindings commit at Complete.
         reg.system(hover_variables);
+        reg.system(complete_definition_inputs.run_during(bowl::Phase::Complete));
     }
 }
 
@@ -110,6 +120,118 @@ pub enum VariableSource {
     Structured,
     TopLevel,
     Context,
+}
+
+/// A compile-time default attached to one inferred public input.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum InputDefault {
+    String(String),
+    Number(String),
+    Boolean(bool),
+    Null,
+    Collection(Vec<InputDefault>),
+    /// The empty identity for a bounded dynamic predicate.
+    EmptyObject,
+}
+
+/// One definition-header refinement of an inferred public input contract.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct InputRefinement {
+    pub source: VariableSource,
+    pub name: String,
+    pub name_span: Span,
+    pub span: Span,
+    pub nullable: bool,
+    pub default: Option<InputDefault>,
+}
+
+/// Lowers every [`InputRefinement`] directly contained by a definition header.
+pub(crate) fn build_input_refinements(
+    cst: &crate::grammar::parser::CstData,
+    source: &str,
+    header: NodeRef,
+) -> Vec<InputRefinement> {
+    cst.children(header)
+        .filter(|child| cst.match_rule(*child, Rule::InputRefinement))
+        .filter_map(|node| build_input_refinement(cst, source, node))
+        .collect()
+}
+
+fn build_input_refinement(
+    cst: &crate::grammar::parser::CstData,
+    source: &str,
+    node: NodeRef,
+) -> Option<InputRefinement> {
+    let variable = direct_rule(cst, node, Rule::PublicVariable)?;
+    let name_span = direct_name(cst, variable)?;
+    let source_kind = cst
+        .children(variable)
+        .find_map(|child| match cst.get(child) {
+            Node::Token(Token::Dollar, _) => Some(VariableSource::Structured),
+            Node::Token(Token::DollarDollar, _) => Some(VariableSource::TopLevel),
+            _ => None,
+        })?;
+    let default = direct_rule(cst, node, Rule::DefaultValue)
+        .and_then(|value| build_input_default(cst, source, value));
+    Some(InputRefinement {
+        source: source_kind,
+        name: text(source, name_span).to_string(),
+        name_span,
+        span: node_span(cst, node),
+        nullable: cst
+            .children(node)
+            .any(|child| cst.match_token(child, Token::Question).is_some()),
+        default,
+    })
+}
+
+fn build_input_default(
+    cst: &crate::grammar::parser::CstData,
+    source: &str,
+    node: NodeRef,
+) -> Option<InputDefault> {
+    let value = if cst.match_rule(node, Rule::DefaultValue) {
+        cst.children(node).find(|child| {
+            matches!(
+                cst.get(*child),
+                Node::Rule(
+                    Rule::Literal | Rule::DefaultCollection | Rule::EmptyObject,
+                    _
+                )
+            )
+        })?
+    } else {
+        node
+    };
+    match cst.get(value) {
+        Node::Rule(Rule::Literal, _) => {
+            cst.children(value).find_map(|child| match cst.get(child) {
+                Node::Token(Token::String, _) => {
+                    let raw = text(source, node_span(cst, child));
+                    let inner = raw
+                        .strip_prefix('"')
+                        .and_then(|raw| raw.strip_suffix('"'))
+                        .unwrap_or(raw);
+                    Some(InputDefault::String(inner.to_string()))
+                }
+                Node::Token(Token::Number, _) => Some(InputDefault::Number(
+                    text(source, node_span(cst, child)).to_string(),
+                )),
+                Node::Token(Token::True, _) => Some(InputDefault::Boolean(true)),
+                Node::Token(Token::False, _) => Some(InputDefault::Boolean(false)),
+                Node::Token(Token::Null, _) => Some(InputDefault::Null),
+                _ => None,
+            })
+        }
+        Node::Rule(Rule::DefaultCollection, _) => Some(InputDefault::Collection(
+            cst.children(value)
+                .filter(|child| cst.match_rule(*child, Rule::DefaultValue))
+                .filter_map(|child| build_input_default(cst, source, child))
+                .collect(),
+        )),
+        Node::Rule(Rule::EmptyObject, _) => Some(InputDefault::EmptyObject),
+        _ => None,
+    }
 }
 
 impl From<Sigil> for VariableSource {
@@ -162,13 +284,23 @@ pub struct VariableBinding {
     pub role: VariableRole,
     pub operators: Vec<ComparisonOp>,
     pub enum_values: Vec<String>,
+    /// Whether callers must supply this input rather than relying on a default.
+    pub required: bool,
+    /// Whether callers may explicitly supply `null`.
+    pub nullable: bool,
+    /// The deterministic replacement used when this input is omitted.
+    pub default: Option<InputDefault>,
+    /// Whether an independently inferred caller may make this value nullable.
+    allows_nullable: bool,
+    /// False for a complete contract copied through containment or root lifting.
+    refinable: bool,
 }
 
 /// All inferred bindings for one definition, ordered by occurrence span.
 ///
 /// This aggregate is the tracked input for definition-level services. The
 /// individual [`VariableBinding`] facts remain the source for occurrence
-/// hover and generated metadata.
+/// hover, while metadata consumes this effective contract.
 #[derive(Component, Debug, Clone, Hash, PartialEq)]
 #[component(hash)]
 pub struct DefinitionVariables(pub Vec<VariableBinding>);
@@ -187,35 +319,28 @@ pub struct DuplicateAnonymousBinding {
     pub path: String,
 }
 
-/// Infers the variable bindings of each definition: queries bind their own
-/// clauses (spreads are
-/// not expanded — a fragment's parameters belong to the fragment), while
-/// fragment bodies do expand nested spreads with an enveloped path scope.
+/// Infers physical variable occurrences and each definition's effective
+/// public contract after recursively applying fragment-spread bindings.
 /// Gated on [`VariablesDemand`].
-#[expect(
-    clippy::too_many_arguments,
-    reason = "system parameters are the tracked join, not an API surface"
-)]
 async fn infer_variables(
     _: Query<Entity, With<VariablesDemand>>,
     defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
-    imports: Query<(Entity, &ScopeImports)>,
-    views: TreeViews<'_>,
-    resolutions: View<'_, (Entity, &ResolvedClause)>,
+    views: VariableSemanticViews<'_>,
     mut commands: Commands<(
         dsql_schema::DefinitionVariables,
         dsql_schema::VariableBinding,
         dsql_schema::DuplicateAnonymousBinding,
+        dsql_schema::VariableProblem,
     )>,
 ) {
     let (def_entity, decl, key, file, scope) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
-    let (_, imports) = imports.item();
 
-    let tree = SelectionTree::collect(&views);
-    let resolved_clauses = index_resolved_clauses(resolutions.iter().map(|(_, resolved)| resolved));
+    let tree = SelectionTree::collect(&views.tree);
+    let resolved_clauses =
+        index_resolved_clauses(views.resolutions.iter().map(|(_, resolved)| resolved));
     let mut inference = Inference {
         tree: &tree,
         resolved_clauses: &resolved_clauses,
@@ -270,7 +395,7 @@ async fn infer_variables(
                     def_entity,
                     SelectionPath::fragment_root(),
                     &VariablePathScope::fragment(),
-                    Some(&mut SpreadExpansion::new(&tree, &scope.0, imports)),
+                    None,
                 );
             }
         }
@@ -279,18 +404,29 @@ async fn infer_variables(
     inference
         .bindings
         .sort_by_key(|(span, _)| (span.start, span.end));
+    let mut context = ContractContext {
+        tree: &tree,
+        resolved_clauses: &resolved_clauses,
+        catalog: snapshot.catalog(),
+        imports: views.imports.item().1,
+        stack: Vec::new(),
+    };
+    let (effective, problems) = context.definition_contract(def_entity, decl, &scope.0, true);
     commands.insert((
         DerivedFrom::many([def_entity, catalog_entity]),
         BelongsToFile(file.0),
+        crate::facts::DefKey(def_entity),
         *key,
-        DefinitionVariables(
-            inference
-                .bindings
-                .iter()
-                .map(|(_, binding)| binding.clone())
-                .collect(),
-        ),
+        DefinitionVariables(effective),
     ));
+    for problem in problems {
+        commands.insert((
+            DerivedFrom::many([def_entity, catalog_entity]),
+            BelongsToFile(file.0),
+            problem.span,
+            problem,
+        ));
+    }
     let mut anonymous_paths = std::collections::HashSet::new();
     for (span, binding) in inference.bindings {
         if binding.name.is_none() && !anonymous_paths.insert(binding.path.clone()) {
@@ -313,6 +449,810 @@ async fn infer_variables(
             span,
             binding,
         ));
+    }
+}
+
+#[derive(SystemParam)]
+struct VariableSemanticViews<'a> {
+    imports: Query<(Entity, &'a ScopeImports)>,
+    tree: TreeViews<'a>,
+    resolutions: View<'a, (Entity, &'a ResolvedClause)>,
+}
+
+struct ContractContext<'a> {
+    tree: &'a SelectionTree<'a>,
+    resolved_clauses: &'a std::collections::HashMap<Entity, &'a ResolvedClause>,
+    catalog: &'a crate::catalog::Catalog,
+    imports: &'a ScopeImports,
+    stack: Vec<Entity>,
+}
+
+/// Computes one definition's complete public-input contract, including spreads.
+pub(crate) fn effective_definition_variables(
+    tree: &SelectionTree<'_>,
+    resolved_clauses: &std::collections::HashMap<Entity, &ResolvedClause>,
+    catalog: &crate::catalog::Catalog,
+    imports: &ScopeImports,
+    definition: Entity,
+    decl: &DefDecl,
+    scope: &str,
+) -> Vec<VariableBinding> {
+    ContractContext {
+        tree,
+        resolved_clauses,
+        catalog,
+        imports,
+        stack: Vec::new(),
+    }
+    .definition_contract(definition, decl, scope, false)
+    .0
+}
+
+impl ContractContext<'_> {
+    fn definition_contract(
+        &mut self,
+        definition: Entity,
+        decl: &DefDecl,
+        scope: &str,
+        report_problems: bool,
+    ) -> (Vec<VariableBinding>, Vec<VariableProblem>) {
+        if self.stack.contains(&definition) {
+            return (Vec::new(), Vec::new());
+        }
+        self.stack.push(definition);
+        let mut inference = Inference {
+            tree: self.tree,
+            resolved_clauses: self.resolved_clauses,
+            catalog: self.catalog,
+            bindings: Vec::new(),
+        };
+        collect_local_definition(&mut inference, definition, decl);
+
+        let mut problems = Vec::new();
+        for (_, spread, path) in spread_sites(definition, decl, self.tree, self.catalog) {
+            let candidates = visible_fragments(
+                &spread.name,
+                scope,
+                self.imports,
+                self.tree
+                    .fragments
+                    .iter()
+                    .map(|(entity, target_decl, _, target_scope)| {
+                        (*entity, *target_decl, *target_scope)
+                    }),
+            );
+            let [(target_entity, target_decl, target_scope)] = candidates.as_slice() else {
+                continue;
+            };
+            let (target, _) =
+                self.definition_contract(*target_entity, target_decl, &target_scope.0, false);
+            let mut binding_problems = Vec::new();
+            inference.bindings.extend(
+                spread_input_map(spread, &path, &target, &mut binding_problems)
+                    .bindings
+                    .into_iter()
+                    .map(|binding| (spread.span, binding)),
+            );
+            if report_problems {
+                problems.extend(binding_problems);
+            }
+        }
+        inference
+            .bindings
+            .sort_by_key(|(span, _)| (span.start, span.end));
+        let refinement_problems = refine_bindings(decl, &mut inference.bindings);
+        if report_problems {
+            problems.extend(refinement_problems);
+        }
+        let mut merge_problems = Vec::new();
+        let effective = merge_bindings(&inference.bindings, decl, &mut merge_problems);
+        if report_problems {
+            problems.extend(merge_problems);
+        }
+        self.stack.pop();
+        (effective, problems)
+    }
+}
+
+fn collect_local_definition(inference: &mut Inference<'_>, definition: Entity, decl: &DefDecl) {
+    if decl.kind == DefKind::Query {
+        inference.collect_filter_assignments(definition, &[], &VariablePathScope::operation());
+        let roots = inference
+            .tree
+            .fields_under(definition)
+            .map(|(entity, field, _, _)| (*entity, *field))
+            .collect::<Vec<_>>();
+        for (entity, field) in roots {
+            let TableResolution::Found(table) = inference
+                .catalog
+                .resolve_table_ref_for(TableRef::parse(&field.name))
+            else {
+                continue;
+            };
+            let mut path = vec![field.output_key()];
+            if field.flattened && field.has_transform() {
+                path.push(InputPathSegment::Aggregate.as_ref().to_string());
+            }
+            inference.collect_selection(
+                table.id,
+                entity,
+                SelectionPath::body(path),
+                &VariablePathScope::operation(),
+                None,
+            );
+        }
+        return;
+    }
+
+    if let Some((_, _, target, _)) = inference
+        .tree
+        .fragments
+        .iter()
+        .find(|(entity, _, _, _)| *entity == definition)
+        && let Some(table) = inference
+            .catalog
+            .table_ref_for(TableRef::parse(&target.name))
+    {
+        inference.collect_selection_set(
+            table.id,
+            definition,
+            SelectionPath::fragment_root(),
+            &VariablePathScope::fragment(),
+            None,
+        );
+    }
+}
+
+fn spread_sites<'a>(
+    definition: Entity,
+    decl: &DefDecl,
+    tree: &'a SelectionTree<'a>,
+    catalog: &crate::catalog::Catalog,
+) -> Vec<(Entity, &'a SpreadDecl, SelectionPath)> {
+    let mut sites = Vec::new();
+    match decl.kind {
+        DefKind::Query => {
+            for (entity, field, _, _) in tree.fields_under(definition) {
+                let TableResolution::Found(table) =
+                    catalog.resolve_table_ref_for(TableRef::parse(&field.name))
+                else {
+                    continue;
+                };
+                let mut parts = vec![field.output_key()];
+                if field.flattened && field.has_transform() {
+                    parts.push(InputPathSegment::Aggregate.as_ref().to_string());
+                }
+                collect_spread_sites(
+                    tree,
+                    catalog,
+                    *entity,
+                    table.id,
+                    SelectionPath::body(parts),
+                    &mut sites,
+                );
+            }
+        }
+        DefKind::Fragment => {
+            if let Some((_, _, target, _)) = tree
+                .fragments
+                .iter()
+                .find(|(entity, _, _, _)| *entity == definition)
+                && let Some(table) = catalog.table_ref_for(TableRef::parse(&target.name))
+            {
+                collect_spread_sites(
+                    tree,
+                    catalog,
+                    definition,
+                    table.id,
+                    SelectionPath::fragment_root(),
+                    &mut sites,
+                );
+            }
+        }
+    }
+    sites
+}
+
+fn collect_spread_sites<'a>(
+    tree: &'a SelectionTree<'a>,
+    catalog: &crate::catalog::Catalog,
+    parent: Entity,
+    table: crate::catalog::TableId,
+    path: SelectionPath,
+    sites: &mut Vec<(Entity, &'a SpreadDecl, SelectionPath)>,
+) {
+    sites.extend(
+        tree.spreads_under(parent)
+            .map(|(entity, spread, _)| (*entity, *spread, path.clone())),
+    );
+    for (entity, field, _, _) in tree.fields_under(parent) {
+        let reference = FieldRef {
+            target: TableRef::parse(&field.name),
+            selector: field.relation_path.as_deref(),
+        };
+        let FieldCheckResult::Relation(relation) = catalog.check_field_ref(table, reference) else {
+            continue;
+        };
+        let mut child = path.relation_child_path(field.output_key());
+        if field.flattened && field.has_transform() {
+            child.push(InputPathSegment::Aggregate.as_ref().to_string());
+        }
+        collect_spread_sites(
+            tree,
+            catalog,
+            *entity,
+            relation.table.id,
+            SelectionPath::body(child),
+            sites,
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum PublicInputRoot {
+    Structured,
+    TopLevel,
+}
+
+impl PublicInputRoot {
+    fn of_path(path: &str) -> Option<Self> {
+        if path == "input" || path.starts_with("input.") {
+            Some(Self::Structured)
+        } else if path == "params" || path.starts_with("params.") {
+            Some(Self::TopLevel)
+        } else {
+            None
+        }
+    }
+
+    fn of_source(source: VariableSource) -> Option<Self> {
+        match source {
+            VariableSource::Structured => Some(Self::Structured),
+            VariableSource::TopLevel => Some(Self::TopLevel),
+            VariableSource::Context => None,
+        }
+    }
+
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Structured => "input",
+            Self::TopLevel => "params",
+        }
+    }
+}
+
+/// One target-fragment path after applying a spread binding list.
+#[derive(Clone, Debug)]
+pub(crate) enum SpreadInputValue {
+    Public(String),
+    Default(InputDefault),
+}
+
+/// Public contracts and per-target path rewrites for one spread instance.
+pub(crate) struct SpreadInputMap {
+    pub(crate) bindings: Vec<VariableBinding>,
+    pub(crate) values: std::collections::HashMap<String, SpreadInputValue>,
+}
+
+/// Applies one spread's containment/lifting rules to its target contract.
+pub(crate) fn spread_input_map(
+    spread: &SpreadDecl,
+    path: &SelectionPath,
+    target: &[VariableBinding],
+    problems: &mut Vec<VariableProblem>,
+) -> SpreadInputMap {
+    let bindings = bind_spread_contract(spread, path, target, problems);
+    let mut values = std::collections::HashMap::new();
+    for root in [PublicInputRoot::Structured, PublicInputRoot::TopLevel] {
+        let root_bindings = spread
+            .bindings
+            .iter()
+            .filter(|binding| PublicInputRoot::of_source(binding.target.source) == Some(root))
+            .collect::<Vec<_>>();
+        for target in target
+            .iter()
+            .filter(|binding| PublicInputRoot::of_path(&binding.path) == Some(root))
+        {
+            let whole = root_bindings
+                .iter()
+                .filter(|binding| binding.target.name.is_none())
+                .copied()
+                .collect::<Vec<_>>();
+            let value = if root_bindings.is_empty() {
+                Some(SpreadInputValue::Public(
+                    contained_binding(spread, path, target).path,
+                ))
+            } else if let [whole] = whole.as_slice() {
+                let source = whole.source.as_ref().unwrap_or(&whole.target);
+                Some(SpreadInputValue::Public(
+                    lifted_root_binding(path, target, source).path,
+                ))
+            } else if let Some(binding) = root_bindings
+                .iter()
+                .find(|binding| binding.target.name.as_deref() == Some(variable_key(&target.path)))
+            {
+                let source = binding.source.as_ref().unwrap_or(&binding.target);
+                Some(SpreadInputValue::Public(
+                    lifted_leaf_binding(path, target, source).path,
+                ))
+            } else {
+                target.default.clone().map(SpreadInputValue::Default)
+            };
+            if let Some(value) = value {
+                values.insert(target.path.clone(), value);
+            }
+        }
+    }
+    SpreadInputMap { bindings, values }
+}
+
+fn bind_spread_contract(
+    spread: &SpreadDecl,
+    path: &SelectionPath,
+    target: &[VariableBinding],
+    problems: &mut Vec<VariableProblem>,
+) -> Vec<VariableBinding> {
+    let mut result = Vec::new();
+    for root in [PublicInputRoot::Structured, PublicInputRoot::TopLevel] {
+        let root_bindings = spread
+            .bindings
+            .iter()
+            .filter(|binding| PublicInputRoot::of_source(binding.target.source) == Some(root))
+            .collect::<Vec<_>>();
+        let target_leaves = target
+            .iter()
+            .filter(|binding| PublicInputRoot::of_path(&binding.path) == Some(root))
+            .collect::<Vec<_>>();
+        if root_bindings.is_empty() {
+            result.extend(
+                target_leaves
+                    .into_iter()
+                    .map(|binding| contained_binding(spread, path, binding)),
+            );
+            continue;
+        }
+
+        let whole = root_bindings
+            .iter()
+            .filter(|binding| binding.target.name.is_none())
+            .collect::<Vec<_>>();
+        if whole.len() > 1
+            || !whole.is_empty()
+                && root_bindings
+                    .iter()
+                    .any(|binding| binding.target.name.is_some())
+        {
+            problems.push(fragment_problem(
+                spread.span,
+                format!(
+                    "fragment `{}` mixes or duplicates whole-root and leaf bindings for `{}`",
+                    spread.name,
+                    root.prefix()
+                ),
+            ));
+            continue;
+        }
+        if let Some(binding) = whole.first() {
+            let source = binding.source.as_ref().unwrap_or(&binding.target);
+            result.extend(
+                target_leaves
+                    .into_iter()
+                    .map(|target| lifted_root_binding(path, target, source)),
+            );
+            continue;
+        }
+
+        let mut covered = std::collections::HashSet::new();
+        for binding in root_bindings {
+            let Some(target_name) = binding.target.name.as_deref() else {
+                continue;
+            };
+            let candidates = target_leaves
+                .iter()
+                .filter(|target| variable_key(&target.path) == target_name)
+                .copied()
+                .collect::<Vec<_>>();
+            let [target_binding] = candidates.as_slice() else {
+                problems.push(fragment_problem(
+                    binding.span,
+                    if candidates.is_empty() {
+                        format!(
+                            "fragment `{}` infers no `{}` input named `{target_name}`",
+                            spread.name,
+                            root.prefix()
+                        )
+                    } else {
+                        format!(
+                            "fragment `{}` input `{target_name}` is ambiguous across {}",
+                            spread.name,
+                            candidates
+                                .iter()
+                                .map(|candidate| candidate.path.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    },
+                ));
+                continue;
+            };
+            if !covered.insert(target_binding.path.as_str()) {
+                problems.push(fragment_problem(
+                    binding.span,
+                    format!(
+                        "fragment `{}` input `{target_name}` is bound more than once",
+                        spread.name
+                    ),
+                ));
+                continue;
+            }
+            let source = binding.source.as_ref().unwrap_or(&binding.target);
+            result.push(lifted_leaf_binding(path, target_binding, source));
+        }
+        for target in target_leaves {
+            if covered.contains(target.path.as_str()) || target.default.is_some() {
+                continue;
+            }
+            problems.push(fragment_problem(
+                spread.span,
+                format!(
+                    "fragment `{}` requires a binding for `{}` in explicitly bound `{}` root",
+                    spread.name,
+                    target.path,
+                    root.prefix()
+                ),
+            ));
+        }
+    }
+    result
+}
+
+fn contained_binding(
+    spread: &SpreadDecl,
+    path: &SelectionPath,
+    target: &VariableBinding,
+) -> VariableBinding {
+    let mut parts = vec!["input".to_string()];
+    parts.extend(crate::entities::variable_path::fragment_envelope_path(
+        path,
+        &spread.name,
+    ));
+    parts.extend(target.path.split('.').map(str::to_string));
+    let mut binding = target.clone();
+    binding.path = parts.join(".");
+    binding.source = VariableSource::Structured;
+    binding.refinable = false;
+    binding
+}
+
+fn lifted_root_binding(
+    path: &SelectionPath,
+    target: &VariableBinding,
+    source: &SpreadBindingRef,
+) -> VariableBinding {
+    let source_root =
+        PublicInputRoot::of_source(source.source).unwrap_or(PublicInputRoot::Structured);
+    let mut parts = match source_root {
+        PublicInputRoot::TopLevel => vec!["params".to_string()],
+        PublicInputRoot::Structured => {
+            let mut parts = vec!["input".to_string()];
+            parts.extend(spread_site_path(path));
+            parts
+        }
+    };
+    if let Some(namespace) = &source.name {
+        parts.push(namespace.clone());
+    }
+    parts.extend(target.path.split('.').skip(1).map(str::to_string));
+    let mut binding = target.clone();
+    binding.path = parts.join(".");
+    binding.source = source.source;
+    binding.refinable = false;
+    binding
+}
+
+fn lifted_leaf_binding(
+    path: &SelectionPath,
+    target: &VariableBinding,
+    source: &SpreadBindingRef,
+) -> VariableBinding {
+    let inferred = [variable_key(&target.path).to_string()];
+    let source_path = variable_path(
+        &path.parts,
+        VariablePathContext {
+            role: target.role,
+            inferred_path: &inferred,
+            anonymous_key: None,
+        },
+        &VariablePathScope::operation(),
+        match source.source {
+            VariableSource::Structured => Sigil::Build,
+            VariableSource::TopLevel => Sigil::Query,
+            VariableSource::Context => Sigil::Context,
+        },
+        source.name.as_deref(),
+    );
+    let mut binding = target.clone();
+    binding.path = source_path;
+    binding.source = source.source;
+    binding.name = source.name.clone();
+    binding.required = true;
+    binding.nullable = false;
+    binding.default = None;
+    binding.allows_nullable = target.nullable;
+    binding.refinable = true;
+    binding
+}
+
+fn spread_site_path(path: &SelectionPath) -> Vec<String> {
+    let mut parts = path.parts.clone();
+    if matches!(
+        path.mode,
+        crate::entities::variable_path::SelectionPathMode::Body
+    ) {
+        parts.push(InputPathSegment::Body.as_ref().to_string());
+    }
+    parts
+}
+
+fn variable_key(path: &str) -> &str {
+    path.rsplit('.').next().unwrap_or(path)
+}
+
+fn fragment_problem(span: Span, message: String) -> VariableProblem {
+    VariableProblem {
+        span,
+        code: DiagnosticCode::InvalidFragmentBinding,
+        message,
+    }
+}
+
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct VariableProblem {
+    span: Span,
+    code: DiagnosticCode,
+    message: String,
+}
+
+async fn diagnose_variable_problems(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    problems: Query<(Entity, &VariableProblem, &Span, &BelongsToFile)>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (entity, problem, span, file) = problems.item();
+    emit_diagnostic(
+        &mut commands,
+        DiagnosticFacts {
+            derived_from: DerivedFrom::new(entity),
+            file: file.0,
+            span: *span,
+            severity: Severity::Error,
+            source: DiagnosticSource::Generate,
+            code: problem.code,
+            message: problem.message.clone(),
+        },
+    );
+}
+
+fn refine_bindings(
+    decl: &DefDecl,
+    bindings: &mut [(Span, VariableBinding)],
+) -> Vec<VariableProblem> {
+    let mut problems = Vec::new();
+    let mut refined = std::collections::HashSet::new();
+    for refinement in &decl.input_refinements {
+        let key = (refinement.source, refinement.name.as_str());
+        if !refined.insert(key) {
+            problems.push(VariableProblem {
+                span: refinement.name_span,
+                code: DiagnosticCode::InvalidVariableRefinement,
+                message: format!(
+                    "input `{}` is refined more than once in {} `{}`",
+                    refinement.name, decl.kind, decl.name
+                ),
+            });
+            continue;
+        }
+
+        let candidate_paths = bindings
+            .iter()
+            .filter(|(_, binding)| refinement_matches(refinement, binding))
+            .map(|(_, binding)| binding.path.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if candidate_paths.is_empty() {
+            problems.push(VariableProblem {
+                span: refinement.name_span,
+                code: DiagnosticCode::InvalidVariableRefinement,
+                message: format!(
+                    "{} `{}` infers no {} input named `{}`",
+                    decl.kind,
+                    decl.name,
+                    source_label(refinement.source),
+                    refinement.name
+                ),
+            });
+            continue;
+        }
+        if refinement.source == VariableSource::Structured && candidate_paths.len() > 1 {
+            problems.push(VariableProblem {
+                span: refinement.name_span,
+                code: DiagnosticCode::InvalidVariableRefinement,
+                message: format!(
+                    "structured input `{}` is ambiguous; it matches {}",
+                    refinement.name,
+                    candidate_paths.into_iter().collect::<Vec<_>>().join(", ")
+                ),
+            });
+            continue;
+        }
+
+        let mut valid = true;
+        for (_, binding) in bindings
+            .iter()
+            .filter(|(_, binding)| refinement_matches(refinement, binding))
+        {
+            if let Some(message) = validate_refinement(refinement, binding) {
+                problems.push(VariableProblem {
+                    span: refinement.span,
+                    code: DiagnosticCode::InvalidVariableRefinement,
+                    message,
+                });
+                valid = false;
+                break;
+            }
+        }
+        if !valid {
+            continue;
+        }
+        for (_, binding) in bindings
+            .iter_mut()
+            .filter(|(_, binding)| refinement_matches(refinement, binding))
+        {
+            binding.nullable = refinement.nullable;
+            binding.required = refinement.default.is_none();
+            binding.default = refinement.default.clone();
+        }
+    }
+    problems
+}
+
+fn refinement_matches(refinement: &InputRefinement, binding: &VariableBinding) -> bool {
+    if binding.source != refinement.source {
+        return false;
+    }
+    binding.name.as_deref() == Some(refinement.name.as_str())
+        || binding.path.rsplit('.').next() == Some(refinement.name.as_str())
+}
+
+fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) -> Option<String> {
+    if !binding.refinable {
+        return Some(format!(
+            "input `{}` inherits a fragment root contract and cannot be refined at the caller",
+            refinement.name
+        ));
+    }
+    if refinement.nullable && !binding.allows_nullable {
+        return Some(format!(
+            "nullable caller input `{}` cannot bind a non-null fragment input",
+            refinement.name
+        ));
+    }
+    if binding.role == VariableRole::FilterAssignment && refinement.nullable {
+        return Some(format!(
+            "filter-assignment input `{}` must be a non-null boolean",
+            refinement.name
+        ));
+    }
+    if binding.role == VariableRole::ComparisonOperator && refinement.nullable {
+        return Some(format!(
+            "comparison-operator input `{}` cannot be nullable",
+            refinement.name
+        ));
+    }
+    let Some(default) = &refinement.default else {
+        return None;
+    };
+    if matches!(default, InputDefault::Null) {
+        return (!refinement.nullable).then(|| {
+            format!(
+                "non-null input `{}` cannot use `null` as its default",
+                refinement.name
+            )
+        });
+    }
+    if input_default_matches(default, binding) {
+        None
+    } else {
+        Some(format!(
+            "default for `{}` does not match inferred type {}{}",
+            refinement.name,
+            binding.data_type.as_str(),
+            if binding.collection { "[]" } else { "" }
+        ))
+    }
+}
+
+fn input_default_matches(default: &InputDefault, binding: &VariableBinding) -> bool {
+    if !binding.enum_values.is_empty() {
+        return matches!(
+            default,
+            InputDefault::String(value) if binding.enum_values.contains(value)
+        );
+    }
+    match default {
+        InputDefault::Collection(items) if binding.collection => items.iter().all(|item| {
+            !matches!(
+                item,
+                InputDefault::Collection(_) | InputDefault::EmptyObject
+            ) && input_default_scalar_matches(item, binding.data_type)
+        }),
+        InputDefault::EmptyObject => false,
+        InputDefault::Collection(_) => false,
+        scalar if !binding.collection => input_default_scalar_matches(scalar, binding.data_type),
+        _ => false,
+    }
+}
+
+fn input_default_scalar_matches(default: &InputDefault, data_type: DataType) -> bool {
+    match default {
+        InputDefault::String(_) => matches!(
+            data_type,
+            DataType::Text | DataType::Uuid | DataType::Timestamptz | DataType::Unknown
+        ),
+        InputDefault::Number(value) => match data_type {
+            DataType::Int => value.parse::<i64>().is_ok(),
+            DataType::Float => value.parse::<f64>().is_ok_and(f64::is_finite),
+            DataType::Numeric | DataType::Unknown => true,
+            _ => false,
+        },
+        InputDefault::Boolean(_) => matches!(data_type, DataType::Boolean | DataType::Unknown),
+        InputDefault::Null => true,
+        InputDefault::Collection(_) | InputDefault::EmptyObject => false,
+    }
+}
+
+fn merge_bindings(
+    bindings: &[(Span, VariableBinding)],
+    decl: &DefDecl,
+    problems: &mut Vec<VariableProblem>,
+) -> Vec<VariableBinding> {
+    let mut merged = std::collections::BTreeMap::<String, (Span, VariableBinding)>::new();
+    for (span, binding) in bindings {
+        if let Some((first_span, existing)) = merged.get(&binding.path) {
+            if !bindings_compatible(existing, binding) {
+                problems.push(VariableProblem {
+                    span: *span,
+                    code: DiagnosticCode::InvalidVariableRefinement,
+                    message: format!(
+                        "{} `{}` infers incompatible contracts for `{}` (first used at {}..{})",
+                        decl.kind, decl.name, binding.path, first_span.start, first_span.end
+                    ),
+                });
+            }
+            continue;
+        }
+        merged.insert(binding.path.clone(), (*span, binding.clone()));
+    }
+    merged.into_values().map(|(_, binding)| binding).collect()
+}
+
+fn bindings_compatible(left: &VariableBinding, right: &VariableBinding) -> bool {
+    left.source == right.source
+        && left.data_type == right.data_type
+        && left.collection == right.collection
+        && left.role == right.role
+        && left.operators == right.operators
+        && left.enum_values == right.enum_values
+        && left.required == right.required
+        && left.nullable == right.nullable
+        && left.default == right.default
+}
+
+fn source_label(source: VariableSource) -> &'static str {
+    match source {
+        VariableSource::Structured => "structured",
+        VariableSource::TopLevel => "top-level",
+        VariableSource::Context => "trusted-context",
     }
 }
 
@@ -813,6 +1753,11 @@ impl Inference<'_> {
                 role: VariableRole::ComparisonOperator,
                 enum_values: allowed.iter().map(|op| op.as_str().to_string()).collect(),
                 operators: allowed,
+                required: true,
+                nullable: false,
+                default: None,
+                allows_nullable: true,
+                refinable: true,
             },
         ));
     }
@@ -846,6 +1791,11 @@ impl Inference<'_> {
                 role: context.role,
                 operators: context.operators,
                 enum_values: context.enum_values,
+                required: true,
+                nullable: false,
+                default: None,
+                allows_nullable: true,
+                refinable: true,
             },
         ));
     }
@@ -921,4 +1871,47 @@ async fn hover_variables(
     );
 
     emit_hover_candidate(&mut commands, request, priority::VARIABLE, text);
+}
+
+async fn complete_definition_inputs(
+    requests: Query<(Entity, &CompletionContext, &crate::facts::DefKey), With<CompletionRequest>>,
+    variables: Query<
+        (Entity, &DefinitionVariables, &crate::facts::DefKey),
+        Where<bowl::Eq<crate::facts::DefKey>>,
+    >,
+    mut commands: Commands<(dsql_schema::CompletionCandidate,)>,
+) {
+    let (request, context, _) = requests.item();
+    if context.site != CompletionSite::DefinitionInput {
+        return;
+    }
+    let (_, variables, _) = variables.item();
+    let mut seen = std::collections::HashSet::new();
+    let mut items = variables
+        .0
+        .iter()
+        .filter(|binding| {
+            binding.source != VariableSource::Context
+                && context
+                    .variable_source
+                    .is_none_or(|source| source == binding.source)
+        })
+        .filter_map(|binding| {
+            let name = variable_key(&binding.path);
+            seen.insert((binding.source, name)).then(|| CompletionItem {
+                label: name.to_string(),
+                kind: CompletionKind::Variable,
+                detail: Some(format!(
+                    "{}{} at {}",
+                    binding.data_type.as_str(),
+                    if binding.collection { "[]" } else { "" },
+                    binding.path
+                )),
+                documentation: None,
+                insert_text: None,
+            })
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| left.label.cmp(&right.label));
+    emit_completion_candidate(&mut commands, request, items);
 }

@@ -34,6 +34,7 @@ pub struct GeneratedSqlParameter {
 pub struct GeneratedSqlVariant {
     pub path: String,
     pub cases: Vec<SqlVariantCase>,
+    pub null_text: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -168,10 +169,24 @@ impl SqlTemplateContext {
     }
 
     fn variant(&mut self, path: &str, cases: &[SqlVariantCase]) -> String {
+        self.variant_with_null(path, cases, None)
+    }
+
+    fn nullable_variant(&mut self, path: &str, cases: &[SqlVariantCase]) -> String {
+        self.variant_with_null(path, cases, Some("null".to_string()))
+    }
+
+    fn variant_with_null(
+        &mut self,
+        path: &str,
+        cases: &[SqlVariantCase],
+        null_text: Option<String>,
+    ) -> String {
         if !self.variants.iter().any(|variant| variant.path == path) {
             self.variants.push(GeneratedSqlVariant {
                 path: path.to_string(),
                 cases: cases.to_vec(),
+                null_text,
             });
         }
         self.replacements
@@ -199,6 +214,15 @@ impl SqlTemplateContext {
     ) -> Result<u64, SqlGenerationError> {
         let placeholder = self.parameter(parameter);
         self.numeric_sentinel(placeholder)
+    }
+
+    fn guarded_numeric_parameter_sentinel(
+        &mut self,
+        parameter: &SqlParameter,
+        guard: u64,
+    ) -> Result<u64, SqlGenerationError> {
+        let placeholder = self.parameter(parameter);
+        self.numeric_sentinel(format!("LEAST(COALESCE({placeholder}, {guard}), {guard})"))
     }
 
     fn numeric_literal_sentinel(&mut self, literal: &str) -> Result<u64, SqlGenerationError> {
@@ -567,8 +591,16 @@ fn ordered_json_agg(
                 expressions.push(expression);
                 order_items.push(format!("${} DESC", expressions.len()));
             }
-            SortDirectionPlan::Variant { path, variants } => {
-                let placeholder = template.variant(path, variants);
+            SortDirectionPlan::Variant {
+                path,
+                variants,
+                nullable,
+            } => {
+                let placeholder = if *nullable {
+                    template.nullable_variant(path, variants)
+                } else {
+                    template.variant(path, variants)
+                };
                 expressions.push(expression.clone());
                 order_items.push(format!(
                     "CASE WHEN '{placeholder}' = 'asc' THEN ${} END ASC",
@@ -856,12 +888,17 @@ fn apply_order_limit_offset(
                     masked_column_expression(catalog, context, order.column, template)?;
                 query.order_by_expr(expression, Order::Desc);
             }
-            SortDirectionPlan::Variant { path, variants } => {
-                if policy_field_filter(
-                    context.field_filters,
-                    PolicyFieldTarget::Column(order.column),
-                )
-                .is_none()
+            SortDirectionPlan::Variant {
+                path,
+                variants,
+                nullable,
+            } => {
+                if !nullable
+                    && policy_field_filter(
+                        context.field_filters,
+                        PolicyFieldTarget::Column(order.column),
+                    )
+                    .is_none()
                 {
                     let column = column(catalog, order.column)?;
                     query.order_by(
@@ -881,7 +918,11 @@ fn apply_order_limit_offset(
                 }
                 let expression =
                     masked_column_expression(catalog, context, order.column, template)?;
-                let placeholder = template.variant(path, variants);
+                let placeholder = if *nullable {
+                    template.nullable_variant(path, variants)
+                } else {
+                    template.variant(path, variants)
+                };
                 query.order_by_expr(
                     Expr::cust_with_expr(
                         format!("CASE WHEN '{placeholder}' = 'asc' THEN $1 END"),
@@ -899,10 +940,20 @@ fn apply_order_limit_offset(
             }
         }
     }
-    if let Some(limit) = limit_override.or_else(|| sql_value_u64(&clauses.limit)) {
-        query.limit(limit);
-    } else if let Some(SqlValue::Parameter(parameter)) = &clauses.limit {
-        query.limit(template.numeric_parameter_sentinel(parameter)?);
+    match (&clauses.limit, limit_override) {
+        (Some(SqlValue::Parameter(parameter)), Some(guard)) => {
+            query.limit(template.guarded_numeric_parameter_sentinel(parameter, guard)?);
+        }
+        (Some(SqlValue::Parameter(parameter)), None) => {
+            query.limit(template.numeric_parameter_sentinel(parameter)?);
+        }
+        (_, Some(limit)) => {
+            query.limit(limit);
+        }
+        (Some(SqlValue::Literal(limit)), None) => {
+            query.limit(*limit);
+        }
+        (None, None) => {}
     }
     if let Some(offset) = sql_value_u64(&clauses.offset) {
         query.offset(offset);
@@ -1022,13 +1073,133 @@ fn null_test_expr(
     })
 }
 
+struct ConditionalFilter {
+    present: Option<Expr>,
+    value: Expr,
+}
+
 fn filter_expr(
     catalog: &Catalog,
     scope: FilterSqlScope<'_>,
     filter: &FilterExpr,
     template: &mut SqlTemplateContext,
 ) -> Result<Expr, SqlGenerationError> {
+    let rendered = conditional_filter_expr(catalog, scope, filter, template)?;
+    Ok(rendered.present.map_or(rendered.value.clone(), |present| {
+        not_expr(present).or(rendered.value)
+    }))
+}
+
+fn conditional_filter_expr(
+    catalog: &Catalog,
+    scope: FilterSqlScope<'_>,
+    filter: &FilterExpr,
+    template: &mut SqlTemplateContext,
+) -> Result<ConditionalFilter, SqlGenerationError> {
+    match filter {
+        FilterExpr::Absent => Ok(ConditionalFilter {
+            present: Some(Expr::cust("FALSE")),
+            value: Expr::cust("TRUE"),
+        }),
+        FilterExpr::Optional { parameter, operand } => Ok(ConditionalFilter {
+            present: Some(Expr::cust(format!(
+                "{} IS NOT NULL",
+                template.parameter(parameter)
+            ))),
+            value: filter_value_expr(catalog, scope, operand, template)?,
+        }),
+        FilterExpr::Binary { left, op, right } if matches!(op, FilterOp::And | FilterOp::Or) => {
+            let left = conditional_filter_expr(catalog, scope, left, template)?;
+            let right = conditional_filter_expr(catalog, scope, right, template)?;
+            Ok(combine_conditional(left, *op == FilterOp::And, right))
+        }
+        FilterExpr::Not(operand) => {
+            let operand = conditional_filter_expr(catalog, scope, operand, template)?;
+            Ok(ConditionalFilter {
+                present: operand.present,
+                value: not_expr(operand.value),
+            })
+        }
+        _ => Ok(ConditionalFilter {
+            present: None,
+            value: filter_value_expr(catalog, scope, filter, template)?,
+        }),
+    }
+}
+
+fn combine_conditional(
+    left: ConditionalFilter,
+    and: bool,
+    right: ConditionalFilter,
+) -> ConditionalFilter {
+    if and {
+        match (left.present, right.present) {
+            (None, None) => ConditionalFilter {
+                present: None,
+                value: left.value.and(right.value),
+            },
+            (None, Some(right_present)) => ConditionalFilter {
+                present: None,
+                value: left.value.and(not_expr(right_present).or(right.value)),
+            },
+            (Some(left_present), None) => ConditionalFilter {
+                present: None,
+                value: not_expr(left_present).or(left.value).and(right.value),
+            },
+            (Some(left_present), Some(right_present)) => {
+                let present = left_present.clone().or(right_present.clone());
+                ConditionalFilter {
+                    present: Some(present),
+                    value: not_expr(left_present)
+                        .or(left.value)
+                        .and(not_expr(right_present).or(right.value)),
+                }
+            }
+        }
+    } else {
+        match (left.present, right.present) {
+            (None, None) => ConditionalFilter {
+                present: None,
+                value: left.value.or(right.value),
+            },
+            (None, Some(right_present)) => ConditionalFilter {
+                present: None,
+                value: left.value.or(right_present.and(right.value)),
+            },
+            (Some(left_present), None) => ConditionalFilter {
+                present: None,
+                value: left_present.and(left.value).or(right.value),
+            },
+            (Some(left_present), Some(right_present)) => {
+                let present = left_present.clone().or(right_present.clone());
+                ConditionalFilter {
+                    present: Some(present),
+                    value: left_present
+                        .and(left.value)
+                        .or(right_present.and(right.value)),
+                }
+            }
+        }
+    }
+}
+
+fn not_expr(expression: Expr) -> Expr {
+    Expr::cust_with_expr("NOT ($1)", expression)
+}
+
+fn filter_value_expr(
+    catalog: &Catalog,
+    scope: FilterSqlScope<'_>,
+    filter: &FilterExpr,
+    template: &mut SqlTemplateContext,
+) -> Result<Expr, SqlGenerationError> {
     Ok(match filter {
+        FilterExpr::Absent => {
+            return Err(SqlGenerationError::UnsupportedFilterFragment);
+        }
+        FilterExpr::Optional { .. } => {
+            return Err(SqlGenerationError::UnsupportedFilterFragment);
+        }
         FilterExpr::Column {
             scope: column_scope,
             column: column_id,

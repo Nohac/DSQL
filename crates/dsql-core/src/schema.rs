@@ -22,7 +22,7 @@ use crate::entities::policy::{
     CompiledPolicyIndex, PolicyBodyIndex, PolicyDecl, PolicyIndex, PolicyPlanIndex,
 };
 use crate::entities::variable::{
-    DefinitionVariables, DuplicateAnonymousBinding, VariableBinding, VariableUse,
+    DefinitionVariables, DuplicateAnonymousBinding, VariableBinding, VariableProblem, VariableUse,
 };
 use crate::facts::{
     BelongsToFile, ChildOf, Children, DefKey, Diagnostic, DiagnosticCode, DiagnosticSource,
@@ -192,7 +192,13 @@ pub struct DsqlSchema {
     resolved_clause: (ResolvedClause, BelongsToFile, DerivedFrom),
     resolved_fragment_target: (ResolvedFragmentTarget, BelongsToFile, DerivedFrom),
     resolved_spread: (ResolvedSpread, BelongsToFile, DerivedFrom),
-    definition_variables: (DefinitionVariables, NodeKey, BelongsToFile, DerivedFrom),
+    definition_variables: (
+        DefinitionVariables,
+        NodeKey,
+        DefKey,
+        BelongsToFile,
+        DerivedFrom,
+    ),
     variable_binding: (VariableBinding, DefKey, Span, BelongsToFile, DerivedFrom),
     duplicate_anonymous_binding: (
         DuplicateAnonymousBinding,
@@ -201,6 +207,7 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
     ),
+    variable_problem: (VariableProblem, Span, BelongsToFile, DerivedFrom),
     query_plan: (
         QueryPlanFact,
         OperationSeed,
@@ -227,6 +234,7 @@ pub struct DsqlSchema {
     completion_answer: (
         RequestKey,
         CompletionList,
+        Option<DefKey>,
         Option<CompletionContext>,
         Option<DirectiveCompletionContext>,
         Option<PolicyCompletionContext>,

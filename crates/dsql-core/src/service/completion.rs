@@ -24,13 +24,15 @@
 
 use bowl::{
     Commands, Component, DerivedFrom, Entity, Eq as BowlEq, MutRef, Phase, Query, Registrar,
-    SystemExt, View, Where, With,
+    SystemExt, SystemParam, View, Where, With,
 };
 
 use crate::catalog::{FieldCheckResult, FieldRef, TableId, TableRef};
+use crate::entities::definition::DefDecl;
 use crate::entities::document::ParsedFile;
 use crate::entities::field_selection::{SelectionTree, TreeViews};
-use crate::facts::Span;
+use crate::entities::variable::VariableSource;
+use crate::facts::{BelongsToFile, DefKey, NodeKey, Span};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{Node, NodeRef, Parser, Rule};
 use crate::schema::dsql_schema;
@@ -67,6 +69,7 @@ pub enum CompletionKind {
     Scope,
     Operator,
     Keyword,
+    Variable,
 }
 
 /// The answer, written onto the request entity by the finalizer.
@@ -98,6 +101,8 @@ pub enum CompletionSite {
     OrderBy,
     /// On a `...Name` spread name.
     SpreadName,
+    /// Refining an inferred public input in a definition header.
+    DefinitionInput,
     /// Inside an aggregate result body.
     AggregateBody,
     /// Inside one `aggregate by` key.
@@ -146,6 +151,8 @@ pub struct CompletionContext {
     /// fragment completions insert only the dots still missing from a
     /// partial `...` spread.
     pub spread_dots: usize,
+    /// Public root whose sigil is immediately before the cursor.
+    pub variable_source: Option<VariableSource>,
 }
 
 /// Where in a directive the cursor sits, stamped alongside
@@ -232,10 +239,16 @@ pub(crate) fn register_completion_pipeline(reg: &mut Registrar<'_>) {
     reg.system(arbitrate_completions.run_during(Phase::Complete));
 }
 
+#[derive(SystemParam)]
+struct CompletionViews<'a> {
+    tree: TreeViews<'a>,
+    definitions: View<'a, (Entity, &'a DefDecl, &'a NodeKey, &'a BelongsToFile)>,
+    resolutions: View<'a, (Entity, &'a crate::resolution::ResolvedSelection)>,
+}
+
 /// Resolves the request's file (bound join on the path), computes the
 /// grammar layer from a cursor-truncated parse, the site from the CST, and
 /// the context table from the fact tree.
-#[expect(clippy::too_many_arguments, reason = "system params are injected")]
 async fn enrich_completion_requests(
     requests: Query<(Entity, &FilePath, &Position), With<CompletionRequest>>,
     file: crate::service::hover::FileMatch<'_>,
@@ -250,8 +263,7 @@ async fn enrich_completion_requests(
     >,
     documents: View<'_, (Entity, &ParsedFile, &ResolutionScope)>,
     catalog: Query<(Entity, &crate::catalog::CatalogSnapshot)>,
-    views: TreeViews<'_>,
-    resolutions: View<'_, (Entity, &crate::resolution::ResolvedSelection)>,
+    views: CompletionViews<'_>,
     mut commands: Commands<(dsql_schema::CompletionAnswer,)>,
 ) {
     let (request, _path, position) = requests.item();
@@ -338,7 +350,7 @@ async fn enrich_completion_requests(
         .min(3);
     let directive = directive_completion(&truncated_cst, &spine, prefix);
     let policy = policy_completion(&truncated_cst, &spine, prefix, snapshot.catalog());
-    let site = match &directive {
+    let mut site = match &directive {
         Some((site, _)) => *site,
         None if policy.is_some() => policy
             .as_ref()
@@ -350,6 +362,11 @@ async fn enrich_completion_requests(
             site => site,
         },
     };
+    if matches!(prefix.as_bytes().last(), Some(b'$'))
+        && definition_header_contains(&parsed.cst, cursor)
+    {
+        site = CompletionSite::DefinitionInput;
+    }
 
     // Semantic layer: the innermost open set or clause decides the context
     // table via its owning construct — a field resolves through its own
@@ -357,7 +374,14 @@ async fn enrich_completion_requests(
     // fragment through its `on` target. Truncated-tree fields map onto
     // resolver facts by their span: both parses see the same tokens before
     // the cursor.
-    let tree = SelectionTree::collect(&views);
+    let tree = SelectionTree::collect(&views.tree);
+    let definition = views
+        .definitions
+        .iter()
+        .find(|(_, decl, key, _)| {
+            key.file == file_entity && decl.span.start <= cursor && cursor <= decl.span.end
+        })
+        .map(|(entity, _, _, _)| entity);
     let owner_table = match spine_owner(&spine, site) {
         Some(SetOwner::Field(field_node)) => {
             let field_start = truncated_cst.span(field_node).start;
@@ -367,7 +391,8 @@ async fn enrich_completion_requests(
                     key.file == file_entity && field.span.start == field_start
                 })
                 .and_then(|(field_entity, _, _, _)| {
-                    resolutions
+                    views
+                        .resolutions
                         .iter()
                         .find(|(_, resolved)| resolved.field == *field_entity)
                         .and_then(|(_, resolved)| resolved.target.child_context())
@@ -422,6 +447,7 @@ async fn enrich_completion_requests(
         CompletionSite::RootSelection
             | CompletionSite::SelectionBody
             | CompletionSite::SpreadName
+            | CompletionSite::DefinitionInput
             | CompletionSite::AggregateBody
             | CompletionSite::AggregateGroupKey
             | CompletionSite::PipeTransform
@@ -468,6 +494,9 @@ async fn enrich_completion_requests(
     commands
         .entity(request)
         .insert(CompletionList { items, replace });
+    if let Some(definition) = definition {
+        commands.entity(request).insert(DefKey(definition));
+    }
     if let Some((_, role)) = directive {
         commands
             .entity(request)
@@ -484,7 +513,36 @@ async fn enrich_completion_requests(
         scope: scope.0.clone(),
         keywords,
         spread_dots,
+        variable_source: if prefix.ends_with("$$") {
+            Some(VariableSource::TopLevel)
+        } else if prefix.ends_with('$') {
+            Some(VariableSource::Structured)
+        } else {
+            None
+        },
     });
+}
+
+fn definition_header_contains(cst: &crate::grammar::parser::CstData, cursor: usize) -> bool {
+    cst.children(NodeRef::ROOT)
+        .filter(|node| {
+            matches!(
+                cst.get(*node),
+                Node::Rule(Rule::QueryDef | Rule::FragmentDef, _)
+            )
+        })
+        .filter_map(|definition| {
+            cst.children(definition).find(|child| {
+                matches!(
+                    cst.get(*child),
+                    Node::Rule(Rule::QueryHeader | Rule::FragmentHeader, _)
+                )
+            })
+        })
+        .any(|header| {
+            let span = cst.span(header);
+            span.start < cursor && cursor <= span.end
+        })
 }
 
 fn policy_keyword_applies(site: CompletionSite, keyword: &str) -> bool {
@@ -867,11 +925,22 @@ fn classify_site(
     spine: &[(Rule, NodeRef)],
     stop: Option<SpineStop>,
 ) -> CompletionSite {
+    if spine.iter().any(|(rule, _)| {
+        matches!(
+            rule,
+            Rule::QueryHeader | Rule::FragmentHeader | Rule::InputRefinement | Rule::PublicVariable
+        )
+    }) && !spine
+        .iter()
+        .any(|(rule, _)| *rule == Rule::FilterAssignment)
+    {
+        return CompletionSite::DefinitionInput;
+    }
     if stop == Some(SpineStop::Unstarted(Rule::SelectionSet))
         && let Some((Rule::QueryDef, query)) = spine.last()
         && let Some(header) = cst
             .children(*query)
-            .find(|child| cst.match_rule(*child, Rule::QueryFilterHeader))
+            .find(|child| cst.match_rule(*child, Rule::QueryHeader))
         && !cst
             .children(header)
             .any(|child| cst.match_token(child, Token::RPar).is_some())
@@ -920,7 +989,7 @@ fn classify_site(
             {
                 return CompletionSite::FilterAssignment;
             }
-            Rule::QueryFilterHeader
+            Rule::QueryHeader
                 if cst
                     .children(*node)
                     .filter(|child| cst.match_rule(*child, Rule::FilterAssignment))
@@ -933,6 +1002,10 @@ fn classify_site(
                 return CompletionSite::FilterAssignment;
             }
             Rule::ClauseList => return CompletionSite::ClauseList,
+            Rule::QueryHeader
+            | Rule::FragmentHeader
+            | Rule::InputRefinement
+            | Rule::PublicVariable => return CompletionSite::DefinitionInput,
             Rule::FragmentSpread => return CompletionSite::SpreadName,
             Rule::AggregateSet => return CompletionSite::AggregateBody,
             Rule::AggregateGroupKey => return CompletionSite::AggregateGroupKey,

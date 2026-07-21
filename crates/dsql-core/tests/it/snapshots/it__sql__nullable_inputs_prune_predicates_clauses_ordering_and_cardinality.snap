@@ -1,0 +1,88 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- users
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT('id', "users_99fc7350"."id")
+      order by
+        case
+          when '{{params.direction}}' = 'asc' then "users_99fc7350"."id"
+        end asc,
+        case
+          when '{{params.direction}}' = 'desc' then "users_99fc7350"."id"
+        end desc
+    ),
+    '[]'
+  ) as "users"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "users_99fc7350"
+    where
+      (
+        not (
+          ($1 is not null)
+          or (
+            ($2 is not null)
+            or ($3 is not null)
+          )
+        )
+      )
+      or (
+        (
+          (not ($1 is not null))
+          or "users_99fc7350"."id" = ($1)
+        )
+        and (
+          (
+            not (
+              ($2 is not null)
+              or ($3 is not null)
+            )
+          )
+          or (
+            (
+              ($2 is not null)
+              and "users_99fc7350"."id" >= ($2)
+            )
+            or (
+              ($3 is not null)
+              and (not ("users_99fc7350"."id" <= ($3)))
+            )
+          )
+        )
+      )
+    order by
+      case
+        when '{{params.direction}}' = 'asc' then "users_99fc7350"."id"
+      end asc,
+      case
+        when '{{params.direction}}' = 'desc' then "users_99fc7350"."id"
+      end desc
+    limit
+      LEAST(COALESCE($4, 10), 10)
+  ) as "users_99fc7350"
+-- parameters: params.id, params.from, params.to, params.limit
+-- variant params.direction: asc=>asc, desc=>desc
+
+-- users
+select
+  "dsql_root"."users" as "users"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT('id', "users_99fc7350"."id") as "users"
+    from
+      "public"."users" as "users_99fc7350"
+    where
+      "users_99fc7350"."id" = ($1)
+  ) as "dsql_root" on true
+-- parameters: params.id

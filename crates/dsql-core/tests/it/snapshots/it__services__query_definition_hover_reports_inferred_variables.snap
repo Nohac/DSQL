@@ -12,10 +12,10 @@ input:
   users:
     clause:
       limit:
-        count: int
+        count: int = 10
 params:
-  direction: enum("asc", "desc")
-  movieId: uuid
+  direction: enum("asc", "desc") = "desc"
+  movieId: uuid | null = null
 ```
 
 without variables:

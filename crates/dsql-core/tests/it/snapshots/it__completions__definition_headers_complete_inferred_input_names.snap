@@ -1,0 +1,9 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+expression: "format!(\"top-level:\\n{top_level}\\n\\nstructured:\\n{structured}\")"
+---
+top-level:
+Variable limit (int at params.limit)
+
+structured:
+Variable search (text at input.users.clause.where.name.search)

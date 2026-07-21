@@ -6,14 +6,16 @@ use bowl::{
 };
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
-use crate::entities::{direct_name, node_span, text};
+use crate::entities::variable::VariableSource;
+use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
     NodeKey, Severity, Span, emit_diagnostic,
 };
 use crate::format::CstFormatter;
-use crate::grammar::parser::NodeRef;
+use crate::grammar::lexer::Token;
+use crate::grammar::parser::{Node, NodeRef, Rule};
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
 use crate::source::{ResolutionScope, ScopeImports};
@@ -24,6 +26,25 @@ use crate::source::{ResolutionScope, ScopeImports};
 pub struct SpreadDecl {
     pub name: String,
     pub name_span: Span,
+    pub span: Span,
+    /// Explicit public-input bindings, empty for default containment.
+    pub bindings: Vec<SpreadBinding>,
+}
+
+/// One `$name`, `$$name`, `$`, or `$$` side of a spread binding.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct SpreadBindingRef {
+    pub source: VariableSource,
+    pub name: Option<String>,
+    pub span: Span,
+}
+
+/// One target binding and its optional explicit caller source.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct SpreadBinding {
+    pub target: SpreadBindingRef,
+    /// `None` is named forwarding shorthand and therefore requires a name.
+    pub source: Option<SpreadBindingRef>,
     pub span: Span,
 }
 
@@ -87,10 +108,14 @@ impl LowerStage for FragmentSpread {
         };
 
         let name = text(ctx.source, name_span).to_string();
+        let bindings = direct_rule(ctx.cst, node, Rule::BindingList)
+            .map(|list| build_bindings(ctx.cst, ctx.source, list))
+            .unwrap_or_default();
         let decl = SpreadDecl {
             name: name.clone(),
             name_span,
             span: node_span(ctx.cst, node),
+            bindings,
         };
 
         let key = NodeKey {
@@ -124,6 +149,47 @@ impl LowerStage for FragmentSpread {
         };
         Some(entity)
     }
+}
+
+fn build_bindings(
+    cst: &crate::grammar::parser::CstData,
+    source: &str,
+    list: NodeRef,
+) -> Vec<SpreadBinding> {
+    cst.children(list)
+        .filter(|child| cst.match_rule(*child, Rule::BindingItem))
+        .filter_map(|item| {
+            let mut refs = cst
+                .children(item)
+                .filter(|child| cst.match_rule(*child, Rule::BindingVariable))
+                .filter_map(|variable| build_binding_ref(cst, source, variable));
+            Some(SpreadBinding {
+                target: refs.next()?,
+                source: refs.next(),
+                span: node_span(cst, item),
+            })
+        })
+        .collect()
+}
+
+fn build_binding_ref(
+    cst: &crate::grammar::parser::CstData,
+    source: &str,
+    variable: NodeRef,
+) -> Option<SpreadBindingRef> {
+    let source_kind = cst
+        .children(variable)
+        .find_map(|child| match cst.get(child) {
+            Node::Token(Token::Dollar, _) => Some(VariableSource::Structured),
+            Node::Token(Token::DollarDollar, _) => Some(VariableSource::TopLevel),
+            _ => None,
+        })?;
+    let name_span = direct_name(cst, variable);
+    Some(SpreadBindingRef {
+        source: source_kind,
+        name: name_span.map(|span| text(source, span).to_string()),
+        span: node_span(cst, variable),
+    })
 }
 
 /// The fragment definitions a spread in `scope` can see, per the effective
@@ -378,6 +444,9 @@ impl FormatStage for FragmentSpread {
         if let Some(name) = formatter.direct_name_text(node) {
             formatter.write_str("...");
             formatter.write_str(&name);
+        }
+        if let Some(bindings) = formatter.direct_rule(node, Rule::BindingList) {
+            formatter.binding_list(bindings);
         }
         for directive in formatter.direct_rules(node, Rule::Directive) {
             formatter.format_child(directive);

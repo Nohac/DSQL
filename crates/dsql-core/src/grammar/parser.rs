@@ -22,6 +22,23 @@ fn is_name_token(token: Token) -> bool {
     )
 }
 
+fn is_variable_name_token(token: Token) -> bool {
+    is_name_token(token)
+        || matches!(
+            token,
+            Token::Query
+                | Token::Fragment
+                | Token::On
+                | Token::Where
+                | Token::Order
+                | Token::By
+                | Token::Limit
+                | Token::Offset
+                | Token::Asc
+                | Token::Desc
+        )
+}
+
 fn starts_expression(token: Token) -> bool {
     is_name_token(token)
         || matches!(
@@ -55,6 +72,19 @@ fn current_follows_previous_on_same_line(parser: &Parser<'_>) -> bool {
     !parser.cst.source[previous_end..current_start]
         .chars()
         .any(|character| matches!(character, '\n' | '\r'))
+}
+
+fn current_follows_previous_directly(parser: &Parser<'_>) -> bool {
+    let current_start = parser.span().start;
+    parser
+        .tokens
+        .iter()
+        .enumerate()
+        .take(parser.pos)
+        .rev()
+        .find(|(_, token)| !Parser::is_skipped(**token))
+        .and_then(|(index, _)| parser.cst.data.spans.get(index))
+        .is_some_and(|span| span.end == current_start)
 }
 
 /// A directive can follow either a fragment spread or a relation source.
@@ -164,8 +194,32 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
         )
     }
 
+    fn predicate_binary_operator_1(&self) -> bool {
+        self.peek(1) == Token::LBracket
+            || is_variable_name_token(self.peek(1)) && self.peek(2) == Token::LBracket
+    }
+
+    fn predicate_value_variable_1(&self) -> bool {
+        is_variable_name_token(self.current) && current_follows_previous_directly(self)
+    }
+
+    fn predicate_value_variable_2(&self) -> bool {
+        is_variable_name_token(self.current) && current_follows_previous_directly(self)
+    }
+
     fn predicate_collection_literal_1(&self) -> bool {
         starts_expression(self.peek(1))
+    }
+
+    fn predicate_default_collection_1(&self) -> bool {
+        self.current == Token::Comma
+    }
+
+    fn predicate_binding_list_1(&self) -> bool {
+        matches!(
+            self.current,
+            Token::Comma | Token::Dollar | Token::DollarDollar
+        )
     }
 
     fn predicate_qualified_name_1(&self) -> bool {
@@ -202,12 +256,20 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
         scoped_path_ends_in_pipe(self)
     }
 
+    fn predicate_expr_4(&self) -> bool {
+        !matches!(self.current, Token::Dollar | Token::DollarDollar)
+            || self.peek(1) == Token::LBracket
+            || is_variable_name_token(self.peek(1)) && self.peek(2) == Token::LBracket
+    }
+
     fn predicate_selection_1(&self) -> bool {
         !matches!(self.current, Token::Ellipsis)
             || matches!(
                 self.peek(2),
-                Token::ColonColon | Token::Arrow | Token::LPar | Token::LBrace | Token::Pipe
+                Token::ColonColon | Token::Arrow | Token::LBrace | Token::Pipe
             )
+            || (self.peek(2) == Token::LPar
+                && !matches!(self.peek(3), Token::Dollar | Token::DollarDollar))
             || (self.peek(2) == Token::At && directives_end_in_selection_set(self))
     }
 }

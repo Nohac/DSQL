@@ -1,0 +1,19 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+expression: render_definition_bindings(&bowl).await
+---
+Contained
+  input.users.body.UserPanel.input.posts.clause.where.created_at.created_after Structured WhereValue Timestamptz required=false nullable=true default=Some(Null)
+  input.users.body.UserPanel.params.limit Structured Limit Int required=false nullable=false default=Some(Number("10"))
+
+Lifted
+  input.users.body.posts.clause.where.created_at.created_after Structured WhereValue Timestamptz required=false nullable=true default=Some(Null)
+  params.page_size TopLevel Limit Int required=false nullable=false default=Some(Number("20"))
+
+Namespaced
+  params.panel_input.posts.clause.where.created_at.created_after TopLevel WhereValue Timestamptz required=false nullable=true default=Some(Null)
+  params.panel_params.limit TopLevel Limit Int required=false nullable=false default=Some(Number("10"))
+
+UserPanel
+  input.posts.clause.where.created_at.created_after Structured WhereValue Timestamptz required=false nullable=true default=Some(Null)
+  params.limit TopLevel Limit Int required=false nullable=false default=Some(Number("10"))

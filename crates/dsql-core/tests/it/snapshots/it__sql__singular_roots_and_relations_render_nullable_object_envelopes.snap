@@ -77,8 +77,9 @@ from
     from
       "public"."title" as "runtime_8d1f47ea"
     limit
-      10
+      LEAST(COALESCE($1, 10), 10)
   ) as "runtime_8d1f47ea"
+-- parameters: params.count
 
 -- title
 select

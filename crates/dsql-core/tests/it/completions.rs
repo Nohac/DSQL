@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
+use bowl::Singleton;
 use dsql_core::catalog::{Catalog, insert_catalog};
+use dsql_core::facts::VariablesDemand;
 use dsql_core::language_bowl;
 use dsql_core::service::{CompletionList, CompletionRequest, Position};
 use dsql_core::source::{FilePath, insert_source};
@@ -35,6 +37,8 @@ async fn completion_list_with_catalog(
 
     let bowl = language_bowl().await;
     insert_catalog(&bowl, catalog).await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
     insert_source(&bowl, "test.dsql", &source).await;
 
     bowl.insert((
@@ -116,6 +120,17 @@ async fn catalog_descriptions_reach_table_and_column_completions() {
 #[tokio::test]
 async fn document_root_offers_definition_keywords() {
     insta::assert_snapshot!(completions("|").await);
+}
+
+#[tokio::test]
+async fn definition_headers_complete_inferred_input_names() {
+    let top_level = completions("query Page($$|) { public::users(limit $$) { id } }").await;
+    let structured =
+        completions("query Search($|) { public::users(where .name == $search) { id } }").await;
+
+    insta::assert_snapshot!(format!(
+        "top-level:\n{top_level}\n\nstructured:\n{structured}"
+    ));
 }
 
 #[tokio::test]
