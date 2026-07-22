@@ -8,6 +8,10 @@ table runtime: Collection proof=none nullable=false limit=runtime
 table primary: AtMostOne proof=unique(id) nullable=true limit=none
 table anonymous: AtMostOne proof=unique(id) nullable=true limit=none
 table equality_operator: AtMostOne proof=unique(id) nullable=true limit=none
+table optional_operator_value: Collection proof=none nullable=false limit=none
+table optional_operator_value_reversed: Collection proof=none nullable=false limit=none
+table optional_named_value: Collection proof=none nullable=false limit=none
+table optional_named_value_reversed: Collection proof=none nullable=false limit=none
 table extra: AtMostOne proof=unique(id) nullable=true limit=none
 table different_literal_or: Collection proof=none nullable=false limit=none
 table same_literal_or: AtMostOne proof=unique(id) nullable=true limit=none
@@ -20,3 +24,4 @@ table row_value: Collection proof=none nullable=false limit=none
 table parent: AtMostOne proof=limit 1 nullable=true limit=literal 1
 relation kind_type: AtMostOne proof=relation nullable=false limit=none
 relation latest_info: AtMostOne proof=limit 1 nullable=true limit=literal 1
+table mandatory_operator_value: AtMostOne proof=unique(id) nullable=true limit=none

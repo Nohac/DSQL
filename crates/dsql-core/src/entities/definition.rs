@@ -47,7 +47,7 @@ impl fmt::Display for DefKind {
 }
 
 /// One named top-level definition, lowered from `query_def`/`fragment_def`.
-#[derive(Component, Debug, Hash)]
+#[derive(Component, Debug, Clone, Hash)]
 #[component(hash)]
 pub struct DefDecl {
     pub kind: DefKind,
@@ -542,7 +542,7 @@ async fn hover_definitions(
 }
 
 fn describe_query_variables(name: &str, variables: &DefinitionVariables) -> String {
-    let shape = variable_shape(&variables.0);
+    let shape = variable_shape(&variables.bindings);
     if shape.is_empty() {
         format!("### Query `{name}`\n\nNo variables.")
     } else {

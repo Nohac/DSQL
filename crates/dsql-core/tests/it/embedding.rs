@@ -12,7 +12,7 @@ use dsql_core::embedding::{
     ResolvedEmbeddedExpression,
 };
 use dsql_core::entities::definition::{DefDecl, DefKind};
-use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand};
+use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand, VariablesDemand};
 use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
 use dsql_core::source::{
@@ -89,6 +89,8 @@ async fn regions_of(bowl: &Bowl, host: Entity) -> Vec<(Entity, usize, String)> {
 #[tokio::test]
 async fn host_sources_derive_regions_that_compile() {
     let (bowl, host) = host_bowl().await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
     bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
         .await;
     bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))

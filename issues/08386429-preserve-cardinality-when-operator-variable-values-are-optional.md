@@ -1,6 +1,6 @@
 # Preserve cardinality when operator-variable values are optional
 
-**ID:** 08386429 | **Status:** Open | **Created:** 2026-07-22T18:52:42+02:00
+**ID:** 08386429 | **Status:** Done | **Created:** 2026-07-22T18:52:42+02:00
 
 At-most-one proofs re-derive the refinement name for anonymous variables from
 the compared column. For an operator-variable expression such as

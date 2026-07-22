@@ -259,9 +259,19 @@ async fn trusted_context_type_conflicts_fail_across_policy_and_operation_boundar
         query Conflict { title { id } movie_info_idx { id } }
     "#})
     .await;
+    let fragments = case(indoc::indoc! {r#"
+        fragment ByIdContext on title {
+          by_id: movie_info_idx(where .id > $:shared) { id }
+        }
+        fragment ByTextContext on title {
+          by_text: movie_info_idx(where .info > $:shared) { id }
+        }
+        query Conflict { title { ...ByIdContext ...ByTextContext } }
+    "#})
+    .await;
 
     insta::assert_snapshot!(format!(
-        "policy-policy:\n{policies}\n\npolicy-query:\n{query}\n\ncross-root:\n{roots}"
+        "policy-policy:\n{policies}\n\npolicy-query:\n{query}\n\ncross-root:\n{roots}\n\nfragments:\n{fragments}"
     ));
 }
 

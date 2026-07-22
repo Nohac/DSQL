@@ -1,6 +1,6 @@
 # Preserve trusted context through fragment spreads
 
-**ID:** 120ca946 | **Status:** Open | **Created:** 2026-07-22T18:52:42+02:00
+**ID:** 120ca946 | **Status:** Done | **Created:** 2026-07-22T18:52:42+02:00
 
 Fragment spread contract binding only processes the structured and top-level
 public roots. A trusted `$:context` input used inside a spread fragment remains

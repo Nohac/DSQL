@@ -72,7 +72,7 @@ async fn render_definition_bindings(bowl: &Bowl) -> String {
         .filter_map(|(entity, definition)| {
             let (_, contract, _) = contracts.iter().find(|(_, _, key)| key.0 == entity)?;
             let bindings = contract
-                .0
+                .bindings
                 .iter()
                 .map(|binding| {
                     format!(
@@ -174,6 +174,64 @@ async fn fragment_inputs_are_contained_lifted_namespaced_and_defaulted() {
             query Namespaced {
               public::users {
                 ...UserPanel($ <- $$panel_input, $$ <- $$panel_params)
+              }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_definition_bindings(&bowl).await);
+}
+
+#[tokio::test]
+async fn nested_fragment_contracts_rederive_after_cross_file_edits() {
+    let bowl = variables_bowl().await;
+    let fragment = insert_source(
+        &bowl,
+        "window.dsql",
+        indoc::indoc! {r#"
+            fragment Window on public::users {
+              posts(limit $$first) { id }
+            }
+            fragment Parent on public::users {
+              ...Window($$)
+            }
+        "#},
+    )
+    .await;
+    insert_source(
+        &bowl,
+        "query.dsql",
+        "query Nested { public::users { ...Parent($$) } }\n",
+    )
+    .await;
+    let before = render_definition_bindings(&bowl).await;
+
+    crate::replace_source_text(&bowl, fragment, "$$first", "$$second").await;
+    let after = render_definition_bindings(&bowl).await;
+
+    insta::assert_snapshot!(format!("before:\n{before}\n\nafter:\n{after}"));
+}
+
+#[tokio::test]
+async fn cycle_cuts_do_not_poison_later_sibling_fragment_contracts() {
+    let bowl = variables_bowl().await;
+    insert_source(
+        &bowl,
+        "cycle-cut.dsql",
+        indoc::indoc! {r#"
+            fragment B on public::users {
+              posts(limit $$b) { id }
+              ...C
+            }
+            fragment C on public::users {
+              posts(offset $$c) { id }
+              ...B
+            }
+            query Siblings {
+              public::users {
+                ...B
+                ...C
               }
             }
         "#},

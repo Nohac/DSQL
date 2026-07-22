@@ -1,6 +1,6 @@
 # Unify and memoize fragment input contract computation
 
-**ID:** 3d512ced | **Status:** Open | **Created:** 2026-07-22T18:52:43+02:00
+**ID:** 3d512ced | **Status:** Done | **Created:** 2026-07-22T18:52:43+02:00
 
 Variable inference computes local definition bindings twice, recursively
 recomputes nested fragment contracts per spread site without memoization, and

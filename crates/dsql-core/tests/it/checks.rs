@@ -78,6 +78,45 @@ async fn invalid_input_refinements_and_fragment_bindings_are_reported() {
 }
 
 #[tokio::test]
+async fn fragment_contracts_use_exact_refinement_identities_and_reject_prefix_collisions() {
+    let bowl = checked_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "fragment-contract-identities.dsql",
+        indoc::indoc! {r#"
+            fragment Window($$limit = 5) on public::users {
+              posts(limit $$) { id }
+            }
+            query LocalAndContained($$limit? = null) {
+              public::users(limit $$limit) { ...Window }
+            }
+            query LocalAndNamespaced($$limit? = null) {
+              public::users(limit $$limit) { ...Window($$ <- $$window) }
+            }
+            query LocalAndLifted($$limit = 7) {
+              public::users(limit $$limit) { ...Window($$limit) }
+            }
+            query RootLiftRefinement($$limit? = null) {
+              public::users { ...Window($$) }
+            }
+            query StructuredAmbiguous($count? = null) {
+              public::users { posts(limit $count) { id } }
+              public::posts(limit $count) { id }
+            }
+            query ScalarPrefixCollision {
+              public::users(where .id == $$window) { ...Window($$ <- $$window) }
+            }
+            query DynamicPrefixCollision {
+              public::users(where .id $$window[==] $$id) { ...Window($$ <- $$window) }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
 async fn valid_fixtures_check_clean_against_imdb() {
     let bowl = checked_bowl(imdb_catalog()).await;
 

@@ -6,7 +6,7 @@
 //! parameters with the same structured paths the variables stage infers.
 //! Runs per definition, gated on [`PlanDemand`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
 use crate::resolution::{
@@ -41,18 +41,18 @@ use crate::entities::policy::{
     PolicyPlanIndex,
 };
 use crate::entities::variable::{
-    InputDefault, VariableBinding, VariableRole, VariableSource, effective_definition_variables,
-    lower_snake_case, spread_input_map,
+    DefinitionInputRewrites, DefinitionVariableOwner, DefinitionVariables, InputDefault,
+    VariableBinding, VariableRole, VariableSource, lower_snake_case,
 };
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, VariableValue,
-    variable_path, variable_value,
+    predicate_anonymous_key, variable_path, variable_value,
 };
 use crate::facts::{
     BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
     PlanDemand, PlanKey, Severity, Span, emit_diagnostic,
 };
-use crate::source::{ResolutionScope, ScopeImports};
+use crate::source::ScopeImports;
 
 /// Registers the planning stage. A cross-entity stage system like
 /// `lower_syntax_facts`: it walks the whole checked fact tree per definition.
@@ -73,7 +73,13 @@ pub fn register_planning(reg: &mut Registrar<'_>) {
 )]
 async fn plan_queries(
     _: Query<Entity, With<PlanDemand>>,
-    defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
+    defs: Query<(
+        Entity,
+        &DefinitionVariables,
+        &DefinitionInputRewrites,
+        &DefinitionVariableOwner,
+        &BelongsToFile,
+    )>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     planning_index: Query<(
         Entity,
@@ -89,7 +95,10 @@ async fn plan_queries(
         dsql_schema::Diagnostic,
     )>,
 ) {
-    let (def_entity, decl, file, scope) = defs.item();
+    let (_, definition_variables, input_rewrites, owner, file) = defs.item();
+    let def_entity = owner.definition;
+    let decl = &owner.declaration;
+    let scope = &owner.scope;
     let (catalog_entity, snapshot) = catalog.item();
     let (_, _, planning_index) = planning_index.item();
     let policy_index = &planning_index.resolution;
@@ -109,15 +118,6 @@ async fn plan_queries(
         .iter()
         .map(|(_, selection)| (selection.field, selection))
         .collect();
-    let variables = effective_definition_variables(
-        &tree,
-        &resolved_clauses,
-        snapshot.catalog(),
-        imports,
-        def_entity,
-        decl,
-        &scope.0,
-    );
     let mut planner = Planner {
         tree: &tree,
         resolved_clauses: &resolved_clauses,
@@ -128,7 +128,8 @@ async fn plan_queries(
         imports,
         policy_index,
         compiled_policies,
-        variables: &variables,
+        variables: &definition_variables.bindings,
+        spread_input_rewrites: &input_rewrites.0,
         operation_assignments: Vec::new(),
     };
     let mut diagnostics = Vec::new();
@@ -495,15 +496,17 @@ struct PlanWalk<'a> {
 
 struct Planner<'a> {
     tree: &'a SelectionTree<'a>,
-    resolved_clauses: &'a std::collections::HashMap<Entity, &'a ResolvedClause>,
-    resolved_aggregates: &'a std::collections::HashMap<Entity, &'a ResolvedAggregate>,
-    resolved_selections: &'a std::collections::HashMap<Entity, &'a ResolvedSelection>,
+    resolved_clauses: &'a HashMap<Entity, &'a ResolvedClause>,
+    resolved_aggregates: &'a HashMap<Entity, &'a ResolvedAggregate>,
+    resolved_selections: &'a HashMap<Entity, &'a ResolvedSelection>,
     catalog: &'a Catalog,
     scope: &'a str,
     imports: &'a ScopeImports,
     policy_index: &'a PolicyIndex,
     compiled_policies: &'a CompiledPolicyIndex,
     variables: &'a [VariableBinding],
+    spread_input_rewrites:
+        &'a BTreeMap<Entity, BTreeMap<String, crate::entities::variable::SpreadInputValue>>,
     operation_assignments: Vec<PlannedPolicyAssignment>,
 }
 
@@ -1026,7 +1029,7 @@ impl Planner<'_> {
         // their spans, so source order is restored by merging on span order.
         enum Child<'a> {
             Field(&'a FieldSel, Entity),
-            Spread(&'a crate::entities::fragment_spread::SpreadDecl),
+            Spread(Entity, &'a crate::entities::fragment_spread::SpreadDecl),
         }
         let mut children: Vec<(usize, Child<'_>)> = self
             .tree
@@ -1036,13 +1039,13 @@ impl Planner<'_> {
         children.extend(
             self.tree
                 .spreads_under(parent)
-                .map(|(_, spread, _)| (spread.span.start, Child::Spread(spread))),
+                .map(|(entity, spread, _)| (spread.span.start, Child::Spread(*entity, spread))),
         );
         children.sort_by_key(|(start, _)| *start);
 
         for (_, child) in children {
             match child {
-                Child::Spread(spread) => {
+                Child::Spread(spread_entity, spread) => {
                     let name = &spread.name;
                     walk.spreads.push(SpreadUse {
                         path: walk.result_path.join("."),
@@ -1059,32 +1062,24 @@ impl Planner<'_> {
                     else {
                         continue;
                     };
-                    let Some((_, fragment_decl, _, fragment_scope)) = self
+                    if !self
                         .tree
                         .fragments
                         .iter()
-                        .find(|(entity, _, _, _)| *entity == fragment_entity)
-                    else {
+                        .any(|(entity, _, _, _)| *entity == fragment_entity)
+                    {
+                        walk.expansion.leave();
+                        continue;
+                    }
+                    let Some(rewrite) = self.spread_input_rewrites.get(&spread_entity) else {
+                        // Contract inference omits rewrites only for unresolved or
+                        // ambiguous spreads. Generation is diagnostics-gated, and
+                        // planning the subtree without validated inputs would be
+                        // unsound, so invalid programs fail closed here.
                         walk.expansion.leave();
                         continue;
                     };
-                    let target_variables = effective_definition_variables(
-                        self.tree,
-                        self.resolved_clauses,
-                        self.catalog,
-                        self.imports,
-                        fragment_entity,
-                        fragment_decl,
-                        &fragment_scope.0,
-                    );
-                    let mut binding_problems = Vec::new();
-                    let input_map = spread_input_map(
-                        spread,
-                        &selection_path,
-                        &target_variables,
-                        &mut binding_problems,
-                    );
-                    let spread_scope = variable_scope.for_spread_map(input_map.values);
+                    let spread_scope = variable_scope.for_spread_map(rewrite.clone());
                     if let Some(fragment_plan) = self.plan_selection_set(
                         walk,
                         table,
@@ -2071,11 +2066,11 @@ fn where_variable_value(
         VariablePathContext {
             role: VariableRole::WhereValue,
             inferred_path: field_path,
-            anonymous_key: if variable.name.is_none() && matches!(op, BinaryOp::Variable(_)) {
-                Some(InputPathSegment::Value.as_ref())
-            } else {
-                None
-            },
+            anonymous_key: variable
+                .name
+                .is_none()
+                .then(|| predicate_anonymous_key(op))
+                .flatten(),
         },
         variable_scope,
         variable.sigil,

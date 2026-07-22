@@ -1,0 +1,23 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+expression: "format!(\"before:\\n{before}\\n\\nafter:\\n{after}\")"
+---
+before:
+Nested
+  params.first TopLevel Limit Int required=true nullable=false default=None
+
+Parent
+  params.first TopLevel Limit Int required=true nullable=false default=None
+
+Window
+  params.first TopLevel Limit Int required=true nullable=false default=None
+
+after:
+Nested
+  params.second TopLevel Limit Int required=true nullable=false default=None
+
+Parent
+  params.second TopLevel Limit Int required=true nullable=false default=None
+
+Window
+  params.second TopLevel Limit Int required=true nullable=false default=None

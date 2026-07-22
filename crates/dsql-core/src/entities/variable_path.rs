@@ -4,7 +4,7 @@
 //! under `input.<selection path>.clause...`; `$$` (query-time) variables are
 //! *top-level* — they surface as `params.<name>`.
 
-use crate::entities::expression::Sigil;
+use crate::entities::expression::{BinaryOp, Sigil};
 use crate::entities::variable::{InputDefault, SpreadInputValue, VariableRole};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
@@ -66,7 +66,7 @@ pub(crate) enum SelectionPathMode {
 pub(crate) struct VariablePathScope {
     pub(crate) structured_prefix: Vec<String>,
     pub(crate) top_level_prefix: Vec<String>,
-    frames: Vec<std::collections::HashMap<String, SpreadInputValue>>,
+    frames: Vec<std::collections::BTreeMap<String, SpreadInputValue>>,
 }
 
 impl VariablePathScope {
@@ -82,31 +82,10 @@ impl VariablePathScope {
         Self::operation()
     }
 
-    pub(crate) fn for_fragment_spread(
-        &self,
-        current_path: &SelectionPath,
-        fragment_name: &str,
-    ) -> Self {
-        let mut envelope = self.structured_prefix.clone();
-        envelope.extend(fragment_envelope_path(current_path, fragment_name));
-        Self {
-            structured_prefix: {
-                let mut prefix = envelope.clone();
-                prefix.push(InputPathSegment::Input.as_ref().to_string());
-                prefix
-            },
-            top_level_prefix: {
-                envelope.push(InputPathSegment::Params.as_ref().to_string());
-                envelope
-            },
-            frames: self.frames.clone(),
-        }
-    }
-
     /// Enters a fragment using the semantic path/default mapping for its spread.
     pub(crate) fn for_spread_map(
         &self,
-        values: std::collections::HashMap<String, SpreadInputValue>,
+        values: std::collections::BTreeMap<String, SpreadInputValue>,
     ) -> Self {
         let mut frames = self.frames.clone();
         frames.push(values);
@@ -116,6 +95,12 @@ impl VariablePathScope {
             frames,
         }
     }
+}
+
+/// The stable generated key for an anonymous predicate value paired with a
+/// dynamic comparison operator.
+pub(crate) fn predicate_anonymous_key(operator: &BinaryOp) -> Option<&'static str> {
+    matches!(operator, BinaryOp::Variable(_)).then_some(InputPathSegment::Value.as_ref())
 }
 
 /// The planned value of a variable after all enclosing spread bindings apply.
@@ -301,50 +286,6 @@ mod tests {
                 None,
             ),
             "input.title.clause.limit",
-        );
-    }
-
-    #[test]
-    fn fragment_spread_params_path_matches_existing_shape() {
-        let scope = VariablePathScope::operation();
-        let selection = SelectionPath::body(vec!["title".to_string()]);
-        let spread_scope = scope.for_fragment_spread(&selection, "MovieFields");
-
-        assert_eq!(
-            variable_path(
-                &[],
-                VariablePathContext {
-                    role: VariableRole::WhereValue,
-                    inferred_path: &["kind".to_string()],
-                    anonymous_key: None,
-                },
-                &spread_scope,
-                Sigil::Query,
-                Some("kind"),
-            ),
-            "input.title.body.MovieFields.params.kind",
-        );
-    }
-
-    #[test]
-    fn fragment_spread_input_path_matches_existing_shape() {
-        let scope = VariablePathScope::operation();
-        let selection = SelectionPath::body(vec!["title".to_string()]);
-        let spread_scope = scope.for_fragment_spread(&selection, "MovieFields");
-
-        assert_eq!(
-            variable_path(
-                &["cast_info".to_string()],
-                VariablePathContext {
-                    role: VariableRole::Limit,
-                    inferred_path: &[InputPathSegment::Limit.as_ref().to_string()],
-                    anonymous_key: Some("count"),
-                },
-                &spread_scope,
-                Sigil::Build,
-                None,
-            ),
-            "input.title.body.MovieFields.input.cast_info.clause.limit.count",
         );
     }
 }

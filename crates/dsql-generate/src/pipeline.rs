@@ -473,7 +473,7 @@ async fn collect_facts(bowl: &bowl::Bowl, options: GenerateOptions) -> Result<Co
         .await;
     let mut bindings: BTreeMap<u64, Vec<VariableBinding>> = BTreeMap::new();
     for (_, variables, def) in binding_rows.collect() {
-        bindings.insert(def.0.raw(), variables.0.clone());
+        bindings.insert(def.0.raw(), variables.bindings.clone());
     }
 
     let imports = bowl

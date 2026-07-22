@@ -243,13 +243,17 @@ async fn resolved_selection_shapes_cover_catalog_predicate_and_limit_proofs() {
         &bowl,
         "shapes.dsql",
         indoc::indoc! {r#"
-            query Shapes {
+            query Shapes($$value? = null $$named? = null) {
               collection: title { id }
               literal: title(limit 1) { id }
               runtime: title(limit $$count) { id }
               primary: title(where .id == $$id) { id }
               anonymous: title(where .id == $$) { id }
               equality_operator: title(where .id $$key_op[==] $$operator_id) { id }
+              optional_operator_value: title(where .id $$optional_op[==] $$) { id }
+              optional_operator_value_reversed: title(where $$ $$optional_reverse_op[==] .id) { id }
+              optional_named_value: title(where .id $$named_op[==] $$named) { id }
+              optional_named_value_reversed: title(where $$named $$named_reverse_op[==] .id) { id }
               extra: title(where .id == 1 and .production_year > 2000) { id }
               different_literal_or: title(where (.id == 1 and .title == "a") or .id == 2) { id }
               same_literal_or: title(where (.id == 1 and .title == "a") or .id == 1) { id }
@@ -263,6 +267,9 @@ async fn resolved_selection_shapes_cover_catalog_predicate_and_limit_proofs() {
                 kind_type { id }
                 latest_info: movie_info(limit 1) { id }
               }
+            }
+            query MandatoryOperatorValue {
+              mandatory_operator_value: title(where .id $$mandatory_op[==] $$) { id }
             }
         "#},
     )

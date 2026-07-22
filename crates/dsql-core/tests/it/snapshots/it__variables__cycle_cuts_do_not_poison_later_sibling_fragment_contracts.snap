@@ -1,0 +1,17 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+expression: render_definition_bindings(&bowl).await
+---
+B
+  input.C.params.c Structured Offset Int required=true nullable=false default=None
+  params.b TopLevel Limit Int required=true nullable=false default=None
+
+C
+  input.B.params.b Structured Limit Int required=true nullable=false default=None
+  params.c TopLevel Offset Int required=true nullable=false default=None
+
+Siblings
+  input.users.body.B.input.C.params.c Structured Offset Int required=true nullable=false default=None
+  input.users.body.B.params.b Structured Limit Int required=true nullable=false default=None
+  input.users.body.C.input.B.params.b Structured Limit Int required=true nullable=false default=None
+  input.users.body.C.params.c Structured Offset Int required=true nullable=false default=None

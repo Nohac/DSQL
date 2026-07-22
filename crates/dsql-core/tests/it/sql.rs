@@ -3,7 +3,7 @@
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
-use dsql_core::facts::{PlanDemand, SqlDemand};
+use dsql_core::facts::{PlanDemand, SqlDemand, VariablesDemand};
 use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
@@ -17,6 +17,8 @@ async fn sql_bowl(catalog: Catalog) -> Bowl {
 async fn sql_bowl_with_limit(catalog: Catalog, collection_limit: Option<u64>) -> Bowl {
     let bowl = language_bowl().await;
     insert_catalog(&bowl, catalog).await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
     bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
         .await;
     bowl.insert((Singleton::<SqlDemand>::new(), SqlDemand))
@@ -185,15 +187,21 @@ async fn fragment_bindings_rewrite_sql_inputs_and_inline_omitted_defaults() {
         &bowl,
         "fragment-bindings.dsql",
         indoc::indoc! {r#"
-            fragment PostWindow($$minimum = 18 $$limit = 5) on public::users {
-              posts(where .id >= $$minimum limit $$) { id }
+            fragment PostWindow($$minimum = "M" $$limit = 5) on public::users {
+              posts(where .title >= $$minimum limit $$) { id }
+            }
+            fragment ParentWindow on public::users {
+              ...PostWindow($$)
             }
             query Contained { public::users { ...PostWindow } }
-            query Bound($$outer = 20) {
+            query Bound($$outer = "N") {
               public::users { ...PostWindow($$minimum <- $$outer) }
             }
             query Namespaced {
               public::users { ...PostWindow($$ <- $$window) }
+            }
+            query Nested($$outer = "N") {
+              public::users { ...ParentWindow($$minimum <- $$outer) }
             }
         "#},
     )

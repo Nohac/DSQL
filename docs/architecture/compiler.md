@@ -128,6 +128,36 @@ reruns exactly the checks that track it. Set-reactive checks additionally
 track the fingerprinted `DefIndex` so a `View` over other definitions cannot
 go stale.
 
+### Effective input contracts
+
+Variable inference publishes one contract entity per query or fragment. Its
+`DefinitionVariables` component contains the effective public bindings, while
+the private `DefinitionInputRewrites` component contains the validated input
+rewrite for every reachable fragment-spread entity. Keeping the entity-keyed
+planner state separate lets hover, completion, and metadata track stable
+bindings without rerunning for rewrite-only changes. Local occurrences remain
+separate `VariableBinding` facts so hover and occurrence diagnostics retain
+their source spans.
+
+The contract evaluator infers each definition's local inputs once and memoizes
+completed recursive fragment contracts for the duration of that evaluation.
+Cycles return an empty cut result without entering the memo, so a path that
+first encounters a definition through a cycle cannot poison a later acyclic
+use. One spread-root decision (`Contained`, whole-root lift, or explicit leaf
+bindings) produces both the caller-facing bindings and the planner rewrite;
+invalid decisions therefore cannot disagree between inference and SQL
+planning. Trusted `context` inputs pass through spreads unchanged and merge by
+the same compatibility rules as public inputs.
+
+Planning is driven by the published contract fact rather than re-walking
+fragment inputs. The fact also carries a private `DefinitionVariableOwner`
+snapshot containing the source definition, declaration, and resolution scope.
+Keeping that owner data behind a distinct component avoids making the derived
+contract entity look like another lowered definition to ambient tree views,
+while making the contract a tracked planning input. Per-spread rewrite maps use
+the target fragment's local coordinates and compose as the planner enters
+nested spreads.
+
 ## Services
 
 Request/response through bound entities: insert `(HoverRequest, FilePath,

@@ -174,7 +174,10 @@ pub struct DiagnosticsDemand;
 #[component(hash)]
 pub struct VariablesDemand;
 
-/// Demand marker for query planning (`plan::build`).
+/// Demand marker for query planning (`plan::build`). Planning consumes the
+/// effective variable contract, so low-level callers must insert
+/// [`VariablesDemand`] alongside this marker; [`arm_generate_demands`] owns
+/// that bundle for normal consumers.
 #[derive(Component, Hash)]
 #[component(hash)]
 pub struct PlanDemand;

@@ -7,7 +7,8 @@
 //!
 //! [`ChildOf`]: crate::facts::ChildOf
 
-use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
 use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::resolution::{ResolvedClause, index_resolved_clauses};
 use crate::schema::{AstFacts, dsql_schema};
@@ -27,7 +28,8 @@ use crate::entities::expression::{
 use crate::entities::field_selection::{SelectionTree, TreeViews};
 use crate::entities::fragment_spread::{SpreadBindingRef, SpreadDecl, visible_fragments};
 use crate::entities::variable_path::{
-    InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, variable_path,
+    InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope,
+    predicate_anonymous_key, variable_path,
 };
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
@@ -303,7 +305,30 @@ pub struct VariableBinding {
 /// hover, while metadata consumes this effective contract.
 #[derive(Component, Debug, Clone, Hash, PartialEq)]
 #[component(hash)]
-pub struct DefinitionVariables(pub Vec<VariableBinding>);
+pub struct DefinitionVariables {
+    pub bindings: Vec<VariableBinding>,
+}
+
+/// Validated planner input rewrites keyed by fragment-spread entity. Kept
+/// separate from [`DefinitionVariables`] so bindings-only consumers do not
+/// track entity-keyed planner state.
+#[derive(Component, Debug, Clone, Hash, PartialEq)]
+#[component(hash)]
+pub(crate) struct DefinitionInputRewrites(
+    pub(crate) BTreeMap<Entity, BTreeMap<String, SpreadInputValue>>,
+);
+
+/// Immutable definition data copied onto the effective contract fact so
+/// planning can run from that tracked fact without stamping the syntax entity
+/// or making the contract look like another lowered definition to ambient
+/// tree views.
+#[derive(Component, Debug, Clone, Hash)]
+#[component(hash)]
+pub(crate) struct DefinitionVariableOwner {
+    pub(crate) definition: Entity,
+    pub(crate) declaration: DefDecl,
+    pub(crate) scope: ResolutionScope,
+}
 
 /// One later anonymous binding whose inferred path duplicates an earlier
 /// binding in the same definition. Variable inference owns this semantic
@@ -341,85 +366,31 @@ async fn infer_variables(
     let tree = SelectionTree::collect(&views.tree);
     let resolved_clauses =
         index_resolved_clauses(views.resolutions.iter().map(|(_, resolved)| resolved));
-    let mut inference = Inference {
-        tree: &tree,
-        resolved_clauses: &resolved_clauses,
-        catalog: snapshot.catalog(),
-        bindings: Vec::new(),
-    };
-
-    if decl.kind == DefKind::Query {
-        inference.collect_filter_assignments(def_entity, &[], &VariablePathScope::operation());
-    }
-
-    match decl.kind {
-        DefKind::Query => {
-            let roots: Vec<_> = tree
-                .fields_under(def_entity)
-                .map(|(entity, field, _, _)| (*entity, *field))
-                .collect();
-            for (entity, field) in roots {
-                let TableResolution::Found(table) = inference
-                    .catalog
-                    .resolve_table_ref_for(TableRef::parse(&field.name))
-                else {
-                    continue;
-                };
-                let table_id = table.id;
-                let mut path = vec![field.output_key()];
-                if field.flattened && field.has_transform() {
-                    path.push(InputPathSegment::Aggregate.as_ref().to_string());
-                }
-                let path = SelectionPath::body(path);
-                inference.collect_selection(
-                    table_id,
-                    entity,
-                    path,
-                    &VariablePathScope::operation(),
-                    None,
-                );
-            }
-        }
-        DefKind::Fragment => {
-            if let Some((_, _, target, _)) = tree
-                .fragments
-                .iter()
-                .find(|(entity, _, _, _)| *entity == def_entity)
-                && let Some(table) = inference
-                    .catalog
-                    .table_ref_for(TableRef::parse(&target.name))
-            {
-                let table_id = table.id;
-                inference.collect_selection_set(
-                    table_id,
-                    def_entity,
-                    SelectionPath::fragment_root(),
-                    &VariablePathScope::fragment(),
-                    None,
-                );
-            }
-        }
-    }
-
-    inference
-        .bindings
-        .sort_by_key(|(span, _)| (span.start, span.end));
     let mut context = ContractContext {
         tree: &tree,
         resolved_clauses: &resolved_clauses,
         catalog: snapshot.catalog(),
         imports: views.imports.item().1,
         stack: Vec::new(),
+        completed: HashMap::new(),
     };
-    let (effective, problems) = context.definition_contract(def_entity, decl, &scope.0, true);
+    let contract = context.definition_contract(def_entity, decl, &scope.0);
     commands.insert((
         DerivedFrom::many([def_entity, catalog_entity]),
         BelongsToFile(file.0),
         crate::facts::DefKey(def_entity),
+        DefinitionVariableOwner {
+            definition: def_entity,
+            declaration: decl.clone(),
+            scope: scope.clone(),
+        },
         *key,
-        DefinitionVariables(effective),
+        DefinitionVariables {
+            bindings: contract.bindings,
+        },
+        DefinitionInputRewrites(contract.rewrites),
     ));
-    for problem in problems {
+    for problem in contract.problems {
         commands.insert((
             DerivedFrom::many([def_entity, catalog_entity]),
             BelongsToFile(file.0),
@@ -427,8 +398,8 @@ async fn infer_variables(
             problem,
         ));
     }
-    let mut anonymous_paths = std::collections::HashSet::new();
-    for (span, binding) in inference.bindings {
+    let mut anonymous_paths = HashSet::new();
+    for (span, binding) in contract.local_bindings {
         if binding.name.is_none() && !anonymous_paths.insert(binding.path.clone()) {
             commands.insert((
                 DerivedFrom::many([def_entity, catalog_entity]),
@@ -461,31 +432,20 @@ struct VariableSemanticViews<'a> {
 
 struct ContractContext<'a> {
     tree: &'a SelectionTree<'a>,
-    resolved_clauses: &'a std::collections::HashMap<Entity, &'a ResolvedClause>,
+    resolved_clauses: &'a HashMap<Entity, &'a ResolvedClause>,
     catalog: &'a crate::catalog::Catalog,
     imports: &'a ScopeImports,
     stack: Vec<Entity>,
+    completed: HashMap<Entity, DefinitionContract>,
 }
 
-/// Computes one definition's complete public-input contract, including spreads.
-pub(crate) fn effective_definition_variables(
-    tree: &SelectionTree<'_>,
-    resolved_clauses: &std::collections::HashMap<Entity, &ResolvedClause>,
-    catalog: &crate::catalog::Catalog,
-    imports: &ScopeImports,
-    definition: Entity,
-    decl: &DefDecl,
-    scope: &str,
-) -> Vec<VariableBinding> {
-    ContractContext {
-        tree,
-        resolved_clauses,
-        catalog,
-        imports,
-        stack: Vec::new(),
-    }
-    .definition_contract(definition, decl, scope, false)
-    .0
+#[derive(Clone, Default)]
+struct DefinitionContract {
+    local_bindings: Vec<(Span, VariableBinding)>,
+    bindings: Vec<VariableBinding>,
+    rewrites: BTreeMap<Entity, BTreeMap<String, SpreadInputValue>>,
+    problems: Vec<VariableProblem>,
+    cycle_cut: bool,
 }
 
 impl ContractContext<'_> {
@@ -494,10 +454,15 @@ impl ContractContext<'_> {
         definition: Entity,
         decl: &DefDecl,
         scope: &str,
-        report_problems: bool,
-    ) -> (Vec<VariableBinding>, Vec<VariableProblem>) {
+    ) -> DefinitionContract {
+        if let Some(contract) = self.completed.get(&definition) {
+            return contract.clone();
+        }
         if self.stack.contains(&definition) {
-            return (Vec::new(), Vec::new());
+            return DefinitionContract {
+                cycle_cut: true,
+                ..DefinitionContract::default()
+            };
         }
         self.stack.push(definition);
         let mut inference = Inference {
@@ -507,9 +472,16 @@ impl ContractContext<'_> {
             bindings: Vec::new(),
         };
         collect_local_definition(&mut inference, definition, decl);
+        inference
+            .bindings
+            .sort_by_key(|(span, _)| (span.start, span.end));
+        let local_bindings = inference.bindings.clone();
 
         let mut problems = Vec::new();
-        for (_, spread, path) in spread_sites(definition, decl, self.tree, self.catalog) {
+        let mut rewrites = BTreeMap::new();
+        let mut cycle_cut = false;
+        for (spread_entity, spread, path) in spread_sites(definition, decl, self.tree, self.catalog)
+        {
             let candidates = visible_fragments(
                 &spread.name,
                 scope,
@@ -524,33 +496,41 @@ impl ContractContext<'_> {
             let [(target_entity, target_decl, target_scope)] = candidates.as_slice() else {
                 continue;
             };
-            let (target, _) =
-                self.definition_contract(*target_entity, target_decl, &target_scope.0, false);
+            let target = self.definition_contract(*target_entity, target_decl, &target_scope.0);
+            cycle_cut |= target.cycle_cut;
+            rewrites.extend(target.rewrites.clone());
             let mut binding_problems = Vec::new();
+            let input_map =
+                spread_input_map(spread, &path, &target.bindings, &mut binding_problems);
             inference.bindings.extend(
-                spread_input_map(spread, &path, &target, &mut binding_problems)
+                input_map
                     .bindings
                     .into_iter()
                     .map(|binding| (spread.span, binding)),
             );
-            if report_problems {
-                problems.extend(binding_problems);
-            }
+            rewrites.insert(spread_entity, input_map.values);
+            problems.extend(binding_problems);
         }
         inference
             .bindings
             .sort_by_key(|(span, _)| (span.start, span.end));
         let refinement_problems = refine_bindings(decl, &mut inference.bindings);
-        if report_problems {
-            problems.extend(refinement_problems);
-        }
+        problems.extend(refinement_problems);
         let mut merge_problems = Vec::new();
         let effective = merge_bindings(&inference.bindings, decl, &mut merge_problems);
-        if report_problems {
-            problems.extend(merge_problems);
-        }
+        problems.extend(merge_problems);
         self.stack.pop();
-        (effective, problems)
+        let contract = DefinitionContract {
+            local_bindings,
+            bindings: effective,
+            rewrites,
+            problems,
+            cycle_cut,
+        };
+        if !cycle_cut {
+            self.completed.insert(definition, contract.clone());
+        }
+        contract
     }
 }
 
@@ -578,7 +558,6 @@ fn collect_local_definition(inference: &mut Inference<'_>, definition: Entity, d
                 entity,
                 SelectionPath::body(path),
                 &VariablePathScope::operation(),
-                None,
             );
         }
         return;
@@ -598,7 +577,6 @@ fn collect_local_definition(inference: &mut Inference<'_>, definition: Entity, d
             definition,
             SelectionPath::fragment_root(),
             &VariablePathScope::fragment(),
-            None,
         );
     }
 }
@@ -722,7 +700,7 @@ impl PublicInputRoot {
 }
 
 /// One target-fragment path after applying a spread binding list.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum SpreadInputValue {
     Public(String),
     Default(InputDefault),
@@ -731,7 +709,15 @@ pub(crate) enum SpreadInputValue {
 /// Public contracts and per-target path rewrites for one spread instance.
 pub(crate) struct SpreadInputMap {
     pub(crate) bindings: Vec<VariableBinding>,
-    pub(crate) values: std::collections::HashMap<String, SpreadInputValue>,
+    pub(crate) values: BTreeMap<String, SpreadInputValue>,
+}
+
+#[derive(Clone, Debug)]
+enum SpreadRootDecision {
+    Contained,
+    LiftWhole(SpreadBindingRef),
+    BindLeaves(BTreeMap<String, SpreadBindingRef>),
+    Invalid,
 }
 
 /// Applies one spread's containment/lifting rules to its target contract.
@@ -741,169 +727,169 @@ pub(crate) fn spread_input_map(
     target: &[VariableBinding],
     problems: &mut Vec<VariableProblem>,
 ) -> SpreadInputMap {
-    let bindings = bind_spread_contract(spread, path, target, problems);
-    let mut values = std::collections::HashMap::new();
+    let mut bindings = Vec::new();
+    let mut values = BTreeMap::new();
     for root in [PublicInputRoot::Structured, PublicInputRoot::TopLevel] {
-        let root_bindings = spread
-            .bindings
-            .iter()
-            .filter(|binding| PublicInputRoot::of_source(binding.target.source) == Some(root))
-            .collect::<Vec<_>>();
-        for target in target
-            .iter()
-            .filter(|binding| PublicInputRoot::of_path(&binding.path) == Some(root))
-        {
-            let whole = root_bindings
-                .iter()
-                .filter(|binding| binding.target.name.is_none())
-                .copied()
-                .collect::<Vec<_>>();
-            let value = if root_bindings.is_empty() {
-                Some(SpreadInputValue::Public(
-                    contained_binding(spread, path, target).path,
-                ))
-            } else if let [whole] = whole.as_slice() {
-                let source = whole.source.as_ref().unwrap_or(&whole.target);
-                Some(SpreadInputValue::Public(
-                    lifted_root_binding(path, target, source).path,
-                ))
-            } else if let Some(binding) = root_bindings
-                .iter()
-                .find(|binding| binding.target.name.as_deref() == Some(variable_key(&target.path)))
-            {
-                let source = binding.source.as_ref().unwrap_or(&binding.target);
-                Some(SpreadInputValue::Public(
-                    lifted_leaf_binding(path, target, source).path,
-                ))
-            } else {
-                target.default.clone().map(SpreadInputValue::Default)
-            };
-            if let Some(value) = value {
-                values.insert(target.path.clone(), value);
-            }
-        }
-    }
-    SpreadInputMap { bindings, values }
-}
-
-fn bind_spread_contract(
-    spread: &SpreadDecl,
-    path: &SelectionPath,
-    target: &[VariableBinding],
-    problems: &mut Vec<VariableProblem>,
-) -> Vec<VariableBinding> {
-    let mut result = Vec::new();
-    for root in [PublicInputRoot::Structured, PublicInputRoot::TopLevel] {
-        let root_bindings = spread
-            .bindings
-            .iter()
-            .filter(|binding| PublicInputRoot::of_source(binding.target.source) == Some(root))
-            .collect::<Vec<_>>();
         let target_leaves = target
             .iter()
             .filter(|binding| PublicInputRoot::of_path(&binding.path) == Some(root))
             .collect::<Vec<_>>();
-        if root_bindings.is_empty() {
-            result.extend(
-                target_leaves
-                    .into_iter()
-                    .map(|binding| contained_binding(spread, path, binding)),
-            );
-            continue;
-        }
-
-        let whole = root_bindings
-            .iter()
-            .filter(|binding| binding.target.name.is_none())
-            .collect::<Vec<_>>();
-        if whole.len() > 1
-            || !whole.is_empty()
-                && root_bindings
-                    .iter()
-                    .any(|binding| binding.target.name.is_some())
-        {
-            problems.push(fragment_problem(
-                spread.span,
-                format!(
-                    "fragment `{}` mixes or duplicates whole-root and leaf bindings for `{}`",
-                    spread.name,
-                    root.prefix()
-                ),
-            ));
-            continue;
-        }
-        if let Some(binding) = whole.first() {
-            let source = binding.source.as_ref().unwrap_or(&binding.target);
-            result.extend(
-                target_leaves
-                    .into_iter()
-                    .map(|target| lifted_root_binding(path, target, source)),
-            );
-            continue;
-        }
-
-        let mut covered = std::collections::HashSet::new();
-        for binding in root_bindings {
-            let Some(target_name) = binding.target.name.as_deref() else {
-                continue;
-            };
-            let candidates = target_leaves
-                .iter()
-                .filter(|target| variable_key(&target.path) == target_name)
-                .copied()
-                .collect::<Vec<_>>();
-            let [target_binding] = candidates.as_slice() else {
-                problems.push(fragment_problem(
-                    binding.span,
-                    if candidates.is_empty() {
-                        format!(
-                            "fragment `{}` infers no `{}` input named `{target_name}`",
-                            spread.name,
-                            root.prefix()
-                        )
-                    } else {
-                        format!(
-                            "fragment `{}` input `{target_name}` is ambiguous across {}",
-                            spread.name,
-                            candidates
-                                .iter()
-                                .map(|candidate| candidate.path.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    },
-                ));
-                continue;
-            };
-            if !covered.insert(target_binding.path.as_str()) {
-                problems.push(fragment_problem(
-                    binding.span,
-                    format!(
-                        "fragment `{}` input `{target_name}` is bound more than once",
-                        spread.name
-                    ),
-                ));
-                continue;
+        match decide_spread_root(spread, root, &target_leaves, problems) {
+            SpreadRootDecision::Contained => {
+                for target in target_leaves {
+                    let binding = contained_binding(spread, path, target);
+                    values.insert(
+                        target.path.clone(),
+                        SpreadInputValue::Public(binding.path.clone()),
+                    );
+                    bindings.push(binding);
+                }
             }
-            let source = binding.source.as_ref().unwrap_or(&binding.target);
-            result.push(lifted_leaf_binding(path, target_binding, source));
-        }
-        for target in target_leaves {
-            if covered.contains(target.path.as_str()) || target.default.is_some() {
-                continue;
+            SpreadRootDecision::LiftWhole(source) => {
+                for target in target_leaves {
+                    let binding = lifted_root_binding(path, target, &source);
+                    values.insert(
+                        target.path.clone(),
+                        SpreadInputValue::Public(binding.path.clone()),
+                    );
+                    bindings.push(binding);
+                }
             }
-            problems.push(fragment_problem(
-                spread.span,
-                format!(
-                    "fragment `{}` requires a binding for `{}` in explicitly bound `{}` root",
-                    spread.name,
-                    target.path,
-                    root.prefix()
-                ),
-            ));
+            SpreadRootDecision::BindLeaves(sources) => {
+                for target in target_leaves {
+                    if let Some(source) = sources.get(&target.path) {
+                        let binding = lifted_leaf_binding(path, target, source);
+                        values.insert(
+                            target.path.clone(),
+                            SpreadInputValue::Public(binding.path.clone()),
+                        );
+                        bindings.push(binding);
+                    } else if let Some(default) = &target.default {
+                        values.insert(
+                            target.path.clone(),
+                            SpreadInputValue::Default(default.clone()),
+                        );
+                    }
+                }
+            }
+            SpreadRootDecision::Invalid => {}
         }
     }
-    result
+    for context in target
+        .iter()
+        .filter(|binding| binding.source == VariableSource::Context)
+    {
+        bindings.push(context.clone());
+        values.insert(
+            context.path.clone(),
+            SpreadInputValue::Public(context.path.clone()),
+        );
+    }
+    SpreadInputMap { bindings, values }
+}
+
+fn decide_spread_root(
+    spread: &SpreadDecl,
+    root: PublicInputRoot,
+    target_leaves: &[&VariableBinding],
+    problems: &mut Vec<VariableProblem>,
+) -> SpreadRootDecision {
+    let root_bindings = spread
+        .bindings
+        .iter()
+        .filter(|binding| PublicInputRoot::of_source(binding.target.source) == Some(root))
+        .collect::<Vec<_>>();
+    if root_bindings.is_empty() {
+        return SpreadRootDecision::Contained;
+    }
+
+    let whole = root_bindings
+        .iter()
+        .filter(|binding| binding.target.name.is_none())
+        .collect::<Vec<_>>();
+    if whole.len() > 1
+        || !whole.is_empty()
+            && root_bindings
+                .iter()
+                .any(|binding| binding.target.name.is_some())
+    {
+        problems.push(fragment_problem(
+            spread.span,
+            format!(
+                "fragment `{}` mixes or duplicates whole-root and leaf bindings for `{}`",
+                spread.name,
+                root.prefix()
+            ),
+        ));
+        return SpreadRootDecision::Invalid;
+    }
+    if let Some(binding) = whole.first() {
+        return SpreadRootDecision::LiftWhole(
+            binding.source.as_ref().unwrap_or(&binding.target).clone(),
+        );
+    }
+
+    let mut sources = BTreeMap::new();
+    for binding in root_bindings {
+        let Some(target_name) = binding.target.name.as_deref() else {
+            continue;
+        };
+        let candidates = target_leaves
+            .iter()
+            .filter(|target| variable_key(&target.path) == target_name)
+            .copied()
+            .collect::<Vec<_>>();
+        let [target_binding] = candidates.as_slice() else {
+            problems.push(fragment_problem(
+                binding.span,
+                if candidates.is_empty() {
+                    format!(
+                        "fragment `{}` infers no `{}` input named `{target_name}`",
+                        spread.name,
+                        root.prefix()
+                    )
+                } else {
+                    format!(
+                        "fragment `{}` input `{target_name}` is ambiguous across {}",
+                        spread.name,
+                        candidates
+                            .iter()
+                            .map(|candidate| candidate.path.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+            ));
+            continue;
+        };
+        let source = binding.source.as_ref().unwrap_or(&binding.target);
+        if sources.contains_key(&target_binding.path) {
+            problems.push(fragment_problem(
+                binding.span,
+                format!(
+                    "fragment `{}` input `{target_name}` is bound more than once",
+                    spread.name
+                ),
+            ));
+        } else {
+            sources.insert(target_binding.path.clone(), source.clone());
+        }
+    }
+    for target in target_leaves {
+        if sources.contains_key(&target.path) || target.default.is_some() {
+            continue;
+        }
+        problems.push(fragment_problem(
+            spread.span,
+            format!(
+                "fragment `{}` requires a binding for `{}` in explicitly bound `{}` root",
+                spread.name,
+                target.path,
+                root.prefix()
+            ),
+        ));
+    }
+    SpreadRootDecision::BindLeaves(sources)
 }
 
 fn contained_binding(
@@ -1039,7 +1025,7 @@ fn refine_bindings(
     bindings: &mut [(Span, VariableBinding)],
 ) -> Vec<VariableProblem> {
     let mut problems = Vec::new();
-    let mut refined = std::collections::HashSet::new();
+    let mut refined = HashSet::new();
     for refinement in &decl.input_refinements {
         let key = (refinement.source, refinement.name.as_str());
         if !refined.insert(key) {
@@ -1058,7 +1044,7 @@ fn refine_bindings(
             .iter()
             .filter(|(_, binding)| refinement_matches(refinement, binding))
             .map(|(_, binding)| binding.path.as_str())
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<BTreeSet<_>>();
         if candidate_paths.is_empty() {
             problems.push(VariableProblem {
                 span: refinement.name_span,
@@ -1120,8 +1106,15 @@ fn refinement_matches(refinement: &InputRefinement, binding: &VariableBinding) -
     if binding.source != refinement.source {
         return false;
     }
-    binding.name.as_deref() == Some(refinement.name.as_str())
-        || binding.path.rsplit('.').next() == Some(refinement.name.as_str())
+    match refinement.source {
+        VariableSource::TopLevel => binding.path == format!("params.{}", refinement.name),
+        VariableSource::Structured => {
+            binding.refinable
+                && (binding.name.as_deref() == Some(refinement.name.as_str())
+                    || variable_key(&binding.path) == refinement.name)
+        }
+        VariableSource::Context => false,
+    }
 }
 
 fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) -> Option<String> {
@@ -1216,7 +1209,7 @@ fn merge_bindings(
     decl: &DefDecl,
     problems: &mut Vec<VariableProblem>,
 ) -> Vec<VariableBinding> {
-    let mut merged = std::collections::BTreeMap::<String, (Span, VariableBinding)>::new();
+    let mut merged = BTreeMap::<String, (Span, VariableBinding)>::new();
     for (span, binding) in bindings {
         if let Some((first_span, existing)) = merged.get(&binding.path) {
             if !bindings_compatible(existing, binding) {
@@ -1233,7 +1226,38 @@ fn merge_bindings(
         }
         merged.insert(binding.path.clone(), (*span, binding.clone()));
     }
+    let entries = merged.values().collect::<Vec<_>>();
+    for (index, (first_span, first)) in entries.iter().enumerate() {
+        for (second_span, second) in entries.iter().skip(index + 1) {
+            if !path_is_prefix(&first.path, &second.path) {
+                continue;
+            }
+            let (problem_span, origin_span) = if first_span <= second_span {
+                (*second_span, *first_span)
+            } else {
+                (*first_span, *second_span)
+            };
+            problems.push(VariableProblem {
+                span: problem_span,
+                code: DiagnosticCode::InvalidFragmentBinding,
+                message: format!(
+                    "{} `{}` infers `{}` as both a value and an input namespace through `{}` (first used at {}..{})",
+                    decl.kind,
+                    decl.name,
+                    first.path,
+                    second.path,
+                    origin_span.start,
+                    origin_span.end,
+                ),
+            });
+        }
+    }
     merged.into_values().map(|(_, binding)| binding).collect()
+}
+
+fn path_is_prefix(prefix: &str, path: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
 fn bindings_compatible(left: &VariableBinding, right: &VariableBinding) -> bool {
@@ -1281,24 +1305,21 @@ async fn diagnose_duplicate_anonymous_bindings(
 }
 
 struct Inference<'a> {
-    resolved_clauses: &'a std::collections::HashMap<Entity, &'a ResolvedClause>,
+    resolved_clauses: &'a HashMap<Entity, &'a ResolvedClause>,
     tree: &'a SelectionTree<'a>,
     catalog: &'a crate::catalog::Catalog,
     bindings: Vec<(Span, VariableBinding)>,
 }
 
 impl Inference<'_> {
-    /// Clauses of one selection, then its children. `expansion` is `Some`
-    /// in fragment mode, where nested spreads expand through the shared
-    /// [`SpreadExpansion`] walker (with its cycle cutoff); `None` in query
-    /// mode, where spreads are skipped entirely.
+    /// Clauses of one selection, then its direct field children. Fragment
+    /// contracts are composed separately from the memoized spread decisions.
     fn collect_selection(
         &mut self,
         table: crate::catalog::TableId,
         key: Entity,
         path: SelectionPath,
         scope: &VariablePathScope,
-        expansion: Option<&mut SpreadExpansion<'_, '_>>,
     ) {
         let clauses: Vec<_> = self
             .tree
@@ -1374,7 +1395,7 @@ impl Inference<'_> {
             }
         }
 
-        self.collect_selection_set(table, key, path, scope, expansion);
+        self.collect_selection_set(table, key, path, scope);
     }
 
     fn collect_filter_assignments(
@@ -1472,34 +1493,7 @@ impl Inference<'_> {
         parent: Entity,
         path: SelectionPath,
         scope: &VariablePathScope,
-        mut expansion: Option<&mut SpreadExpansion<'_, '_>>,
     ) {
-        if let Some(expansion) = expansion.as_deref_mut() {
-            let spreads: Vec<_> = self
-                .tree
-                .spreads_under(parent)
-                .map(|(_, spread, _)| spread.name.clone())
-                .collect();
-            for name in spreads {
-                let ExpandedSpread::Fragment {
-                    entity: fragment_entity,
-                    ..
-                } = expansion.enter(&name)
-                else {
-                    continue;
-                };
-                let spread_scope = scope.for_fragment_spread(&path, &name);
-                self.collect_selection_set(
-                    table,
-                    fragment_entity,
-                    SelectionPath::fragment_root(),
-                    &spread_scope,
-                    Some(expansion),
-                );
-                expansion.leave();
-            }
-        }
-
         let children: Vec<_> = self
             .tree
             .fields_under(parent)
@@ -1529,7 +1523,6 @@ impl Inference<'_> {
                 entity,
                 SelectionPath::body(child_path),
                 scope,
-                expansion.as_deref_mut(),
             );
         }
     }
@@ -1556,9 +1549,11 @@ impl Inference<'_> {
                         if let Some((data_type, field_path)) =
                             self.resolve_predicate_value(value, resolved)
                         {
-                            let anonymous_key = (variable.name.is_none()
-                                && matches!(op, BinaryOp::Variable(_)))
-                            .then_some(InputPathSegment::Value.as_ref());
+                            let anonymous_key = variable
+                                .name
+                                .is_none()
+                                .then(|| predicate_anonymous_key(op))
+                                .flatten();
                             self.push_binding(
                                 selection_path,
                                 BindingContext {
@@ -1886,9 +1881,9 @@ async fn complete_definition_inputs(
         return;
     }
     let (_, variables, _) = variables.item();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut items = variables
-        .0
+        .bindings
         .iter()
         .filter(|binding| {
             binding.source != VariableSource::Context

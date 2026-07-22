@@ -1,6 +1,6 @@
 # Resolve refinements by exact binding identity
 
-**ID:** 3eb7e952 | **Status:** Open | **Created:** 2026-07-22T18:52:42+02:00
+**ID:** 3eb7e952 | **Status:** Done | **Created:** 2026-07-22T18:52:42+02:00
 
 Header refinements currently match either a binding name or the final segment
 of any binding path. A caller's `$$limit` can consequently also match contained

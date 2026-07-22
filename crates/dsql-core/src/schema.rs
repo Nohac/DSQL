@@ -22,7 +22,8 @@ use crate::entities::policy::{
     CompiledPolicyIndex, PolicyBodyIndex, PolicyDecl, PolicyIndex, PolicyPlanIndex,
 };
 use crate::entities::variable::{
-    DefinitionVariables, DuplicateAnonymousBinding, VariableBinding, VariableProblem, VariableUse,
+    DefinitionInputRewrites, DefinitionVariableOwner, DefinitionVariables,
+    DuplicateAnonymousBinding, VariableBinding, VariableProblem, VariableUse,
 };
 use crate::facts::{
     BelongsToFile, ChildOf, Children, DefKey, Diagnostic, DiagnosticCode, DiagnosticSource,
@@ -194,6 +195,8 @@ pub struct DsqlSchema {
     resolved_spread: (ResolvedSpread, BelongsToFile, DerivedFrom),
     definition_variables: (
         DefinitionVariables,
+        DefinitionInputRewrites,
+        DefinitionVariableOwner,
         NodeKey,
         DefKey,
         BelongsToFile,

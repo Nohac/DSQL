@@ -568,7 +568,7 @@ async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
 #[tokio::test]
 async fn trusted_context_flows_through_sql_and_operation_metadata() {
     let bowl = memory_bowl(
-        catalog_from_tables([USERS_SCHEMA]),
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
         vec![document(
             "queries/frontend/context.dsql",
             indoc::indoc! {r#"
@@ -577,6 +577,11 @@ async fn trusted_context_flows_through_sql_and_operation_metadata() {
                   where .id == $:user_id
                 }
                 query CurrentUser { users(limit 1) { id name } }
+                fragment CurrentUserPosts on users {
+                  posts(where .user_id == $:user_id) { id }
+                }
+                fragment CurrentUserPanel on users { ...CurrentUserPosts }
+                query FragmentContext { users(limit 1) { ...CurrentUserPanel } }
             "#},
             "frontend",
         )],
@@ -586,14 +591,16 @@ async fn trusted_context_flows_through_sql_and_operation_metadata() {
     let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
         .await
         .expect("server-bound trusted context is valid query input");
-    let artifact = assembled
+    let mut artifacts = assembled
         .snapshot
         .artifacts
         .iter()
-        .find(|artifact| artifact.name == "CurrentUser")
-        .expect("current-user operation");
+        .filter(|artifact| matches!(artifact.name.as_str(), "CurrentUser" | "FragmentContext"))
+        .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
+        .collect::<Vec<_>>();
+    artifacts.sort();
 
-    insta::assert_snapshot!(artifact.serialized);
+    insta::assert_snapshot!(artifacts.join("\n---\n"));
 }
 
 #[tokio::test]

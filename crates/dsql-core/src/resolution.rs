@@ -39,6 +39,7 @@ use crate::entities::expression::{
 };
 use crate::entities::field_selection::{FieldSel, SelectionLimitSyntax};
 use crate::entities::variable::InputRefinement;
+use crate::entities::variable_path::predicate_anonymous_key;
 use crate::facts::{BelongsToFile, Children, Span};
 
 /// What one selection's name means in its context: a derived fact entity
@@ -644,7 +645,7 @@ fn guaranteed_equalities(
         BinaryOp::Comparison(crate::entities::expression::ComparisonOp::Eq) => {
             equality(catalog, table, lhs, rhs)
                 .filter(|(column, identity)| {
-                    !nullable_identity(catalog, *column, identity, input_refinements)
+                    !nullable_identity(catalog, *column, identity, input_refinements, None)
                 })
                 .map(|(column, identity)| (column, HashSet::from([identity])))
                 .into_iter()
@@ -660,7 +661,13 @@ fn guaranteed_equalities(
         {
             equality(catalog, table, lhs, rhs)
                 .filter(|(column, identity)| {
-                    !nullable_identity(catalog, *column, identity, input_refinements)
+                    !nullable_identity(
+                        catalog,
+                        *column,
+                        identity,
+                        input_refinements,
+                        predicate_anonymous_key(op),
+                    )
                 })
                 .map(|(column, identity)| (column, HashSet::from([identity])))
                 .into_iter()
@@ -677,14 +684,19 @@ fn nullable_identity(
     column: ColumnId,
     identity: &FixedValueIdentity,
     refinements: &[InputRefinement],
+    anonymous_key: Option<&str>,
 ) -> bool {
     let (source, name) = match identity {
         FixedValueIdentity::NamedVariable { sigil, name } => ((*sigil).into(), name.as_str()),
         FixedValueIdentity::AnonymousVariable { sigil, .. } => {
-            let Some(column) = catalog.column_by_id(column) else {
-                return false;
-            };
-            ((*sigil).into(), column.name.as_str())
+            if let Some(key) = anonymous_key {
+                ((*sigil).into(), key)
+            } else {
+                let Some(column) = catalog.column_by_id(column) else {
+                    return false;
+                };
+                ((*sigil).into(), column.name.as_str())
+            }
         }
         FixedValueIdentity::String(_)
         | FixedValueIdentity::Number(_)

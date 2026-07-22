@@ -1,6 +1,6 @@
 # Detect input namespace and prefix collisions
 
-**ID:** 89abab8d | **Status:** Open | **Created:** 2026-07-22T18:52:42+02:00
+**ID:** 89abab8d | **Status:** Done | **Created:** 2026-07-22T18:52:42+02:00
 
 Merged input contracts only diagnose incompatible bindings with exactly equal
 paths. A scalar or bounded dynamic input at `params.namespace` can coexist with
