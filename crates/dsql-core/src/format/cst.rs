@@ -445,27 +445,27 @@ impl<'a> CstFormatter<'a> {
     }
 
     pub fn definition_header(&mut self, node: NodeRef) {
-        let mut items = self
-            .direct_rules(node, Rule::InputRefinement)
-            .into_iter()
-            .map(|node| (self.node_span(node).start, node))
-            .chain(
-                self.direct_rules(node, Rule::FilterAssignment)
-                    .into_iter()
-                    .map(|node| (self.node_span(node).start, node)),
-            )
-            .collect::<Vec<_>>();
-        items.sort_by_key(|(start, _)| *start);
         self.out.push_str("(\n");
         self.indent += 1;
-        for (_, item) in items {
-            self.write_indent(self.indent);
-            if self.rule(item) == Some(Rule::FilterAssignment) {
-                self.filter_assignment(item);
-            } else {
-                self.input_refinement(item);
+        for child in self.children(node) {
+            match (self.rule(child), self.token(child)) {
+                (Some(Rule::FilterAssignment), _) => {
+                    self.write_indent(self.indent);
+                    self.filter_assignment(child);
+                    self.out.push('\n');
+                }
+                (Some(Rule::InputRefinement), _) => {
+                    self.write_indent(self.indent);
+                    self.input_refinement(child);
+                    self.out.push('\n');
+                }
+                (_, Some(Token::Comment)) => {
+                    self.write_indent(self.indent);
+                    self.write_node_text(child);
+                    self.out.push('\n');
+                }
+                _ => {}
             }
-            self.out.push('\n');
         }
         self.indent = self.indent.saturating_sub(1);
         self.write_indent(self.indent);
@@ -512,25 +512,67 @@ impl<'a> CstFormatter<'a> {
     }
 
     pub fn binding_list(&mut self, node: NodeRef) {
-        self.out.push('(');
-        for (index, item) in self
-            .direct_rules(node, Rule::BindingItem)
-            .into_iter()
-            .enumerate()
+        let children = self.children(node);
+        if children
+            .iter()
+            .any(|child| self.token(*child) == Some(Token::Comment))
         {
+            self.binding_list_with_comments(&children);
+            return;
+        }
+
+        self.out.push('(');
+        let items = children
+            .into_iter()
+            .filter(|child| self.rule(*child) == Some(Rule::BindingItem))
+            .collect::<Vec<_>>();
+        for (index, item) in items.into_iter().enumerate() {
             if index > 0 {
                 self.out.push_str(", ");
             }
-            let variables = self.direct_rules(item, Rule::BindingVariable);
-            if let Some(target) = variables.first() {
-                self.variable_reference(*target);
-            }
-            if let Some(source) = variables.get(1) {
-                self.out.push_str(" <- ");
-                self.variable_reference(*source);
-            }
+            self.binding_item(item);
         }
         self.out.push(')');
+    }
+
+    fn binding_list_with_comments(&mut self, children: &[NodeRef]) {
+        let last_item = children
+            .iter()
+            .rposition(|child| self.rule(*child) == Some(Rule::BindingItem));
+        self.out.push_str("(\n");
+        self.indent += 1;
+        for (index, child) in children.iter().copied().enumerate() {
+            match (self.rule(child), self.token(child)) {
+                (Some(Rule::BindingItem), _) => {
+                    self.write_indent(self.indent);
+                    self.binding_item(child);
+                    if Some(index) != last_item {
+                        self.out.push(',');
+                    }
+                    self.out.push('\n');
+                }
+                (_, Some(Token::Comment)) => {
+                    self.write_indent(self.indent);
+                    self.write_node_text(child);
+                    self.out.push('\n');
+                }
+                _ => {}
+            }
+        }
+        self.indent = self.indent.saturating_sub(1);
+        self.write_indent(self.indent);
+        self.out.push(')');
+    }
+
+    fn binding_item(&mut self, node: NodeRef) {
+        let variables = self.direct_rules(node, Rule::BindingVariable);
+        if let Some(target) = variables.first() {
+            self.variable_reference(*target);
+        }
+        if let Some(source) = variables.get(1) {
+            self.out.push_str(" <- ");
+            self.variable_reference(*source);
+        }
     }
 
     fn variable_reference(&mut self, node: NodeRef) {

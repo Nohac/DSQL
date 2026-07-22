@@ -1,6 +1,6 @@
 # Preserve comments in definition headers and fragment bindings
 
-**ID:** 62ae0413 | **Status:** Open | **Created:** 2026-07-22T18:52:43+02:00
+**ID:** 62ae0413 | **Status:** Done | **Created:** 2026-07-22T18:52:43+02:00
 
 The formatter rebuilds definition headers from refinement/filter nodes and
 fragment binding lists from binding items, omitting comment nodes between those
@@ -15,4 +15,5 @@ Acceptance criteria:
 - Leading, trailing, and between-item comments in definition headers survive.
 - Comments in fragment binding lists survive.
 - Formatting remains idempotent.
-- Formatter snapshots cover line and block comments around multiline items.
+- Formatter snapshots cover line comments and consecutive comment blocks around
+  multiline items.

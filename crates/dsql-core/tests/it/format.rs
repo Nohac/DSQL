@@ -3,6 +3,7 @@
 
 use dsql_core::format::{FormatConfidence, format_document};
 use dsql_core::grammar::parse;
+use indoc::indoc;
 
 fn format(source: &str) -> dsql_core::format::FormattedText {
     let (cst, diagnostics) = parse(source);
@@ -69,6 +70,38 @@ fn formatter_cases_match_expected_output() {
             "variable_contracts",
             "fragment Panel($after?=null $$limit=10) on public::users{posts(where .created_at>$after limit $$){id}} query Users($$page_size=20 filter SoftDelete when $$enabled $$offset?=null){public::users(offset $$){...Panel($,$$limit<-$$page_size)}}",
         ),
+        (
+            "variable_contract_comments",
+            indoc! {r#"
+                fragment Panel(
+                  # leading header comment
+                  $after? = null # after first refinement
+                  # between refinements
+                  # retained comment block
+                  $$limit = 10
+                  # trailing header comment
+                ) on public::users {
+                  id
+                }
+                query Users(
+                  # leading query comment
+                  $$page_size = 20
+                  # between query items
+                  filter SoftDelete when $$enabled
+                  # trailing query comment
+                ) {
+                  public::users {
+                    ...Panel(
+                      # leading binding comment
+                      $after <- $created_after # after first binding
+                      # between bindings
+                      $$limit <- $$page_size
+                      # trailing binding comment
+                    )
+                  }
+                }
+            "#},
+        ),
         ("comment_trivia", "query Users { # ids\n id }"),
     ];
 
@@ -80,6 +113,11 @@ fn formatter_cases_match_expected_output() {
                 formatted.confidence,
                 FormatConfidence::Full,
                 "{name} must format fully"
+            );
+            assert_eq!(
+                format(&formatted.text).text,
+                formatted.text,
+                "{name} must be idempotent"
             );
             format!("{name}\n{}", formatted.text.trim_end())
         })

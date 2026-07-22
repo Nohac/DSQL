@@ -191,6 +191,40 @@ query Users(
 
 ---
 
+variable_contract_comments
+fragment Panel(
+  # leading header comment
+  $after? = null
+  # after first refinement
+  # between refinements
+  # retained comment block
+  $$limit = 10
+  # trailing header comment
+) on public::users {
+  id
+}
+
+query Users(
+  # leading query comment
+  $$page_size = 20
+  # between query items
+  filter SoftDelete when $$enabled
+  # trailing query comment
+) {
+  public::users {
+    ...Panel(
+      # leading binding comment
+      $after <- $created_after,
+      # after first binding
+      # between bindings
+      $$limit <- $$page_size
+      # trailing binding comment
+    )
+  }
+}
+
+---
+
 comment_trivia
 query Users {
   # ids
