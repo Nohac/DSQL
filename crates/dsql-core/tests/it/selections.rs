@@ -109,16 +109,16 @@ async fn flattened_selections_lower_as_fields_while_plain_spreads_stay_spreads()
     insert_source(
         &bowl,
         "flattened.dsql",
-        concat!(
-            "fragment Bits on users { id }\n",
-            "query Flattened {\n",
-            "  users(limit 1) {\n",
-            "    ...Bits\n",
-            "    ...posts | aggregate { post_count: count }\n",
-            "  }\n",
-            "  ...public::users | aggregate { user_count: count }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment Bits on users { id }
+            query Flattened {
+              users(limit 1) {
+                ...Bits
+                ...posts | aggregate { post_count: count }
+              }
+              ...public::users | aggregate { user_count: count }
+            }
+        "#},
     )
     .await;
 
@@ -242,29 +242,29 @@ async fn resolved_selection_shapes_cover_catalog_predicate_and_limit_proofs() {
     insert_source(
         &bowl,
         "shapes.dsql",
-        concat!(
-            "query Shapes {\n",
-            "  collection: title { id }\n",
-            "  literal: title(limit 1) { id }\n",
-            "  runtime: title(limit $$count) { id }\n",
-            "  primary: title(where .id == $$id) { id }\n",
-            "  anonymous: title(where .id == $$) { id }\n",
-            "  equality_operator: title(where .id $$key_op[==] $$operator_id) { id }\n",
-            "  extra: title(where .id == 1 and .production_year > 2000) { id }\n",
-            "  different_literal_or: title(where (.id == 1 and .title == \"a\") or .id == 2) { id }\n",
-            "  same_literal_or: title(where (.id == 1 and .title == \"a\") or .id == 1) { id }\n",
-            "  different_variable_or: title(where .id == $$left or .id == $$right) { id }\n",
-            "  same_variable_or: title(where (.id == $$same and .title == \"a\") or .id == $$same) { id }\n",
-            "  anonymous_or: title(where .id == $$ or .id == $$) { id }\n",
-            "  bypass_or: title(where .id == 1 or .title == \"a\") { id }\n",
-            "  null_key: title(where .id == null) { id }\n",
-            "  row_value: title(where .id == .kind_id) { id }\n",
-            "  parent: title(limit 1) {\n",
-            "    kind_type { id }\n",
-            "    latest_info: movie_info(limit 1) { id }\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query Shapes {
+              collection: title { id }
+              literal: title(limit 1) { id }
+              runtime: title(limit $$count) { id }
+              primary: title(where .id == $$id) { id }
+              anonymous: title(where .id == $$) { id }
+              equality_operator: title(where .id $$key_op[==] $$operator_id) { id }
+              extra: title(where .id == 1 and .production_year > 2000) { id }
+              different_literal_or: title(where (.id == 1 and .title == "a") or .id == 2) { id }
+              same_literal_or: title(where (.id == 1 and .title == "a") or .id == 1) { id }
+              different_variable_or: title(where .id == $$left or .id == $$right) { id }
+              same_variable_or: title(where (.id == $$same and .title == "a") or .id == $$same) { id }
+              anonymous_or: title(where .id == $$ or .id == $$) { id }
+              bypass_or: title(where .id == 1 or .title == "a") { id }
+              null_key: title(where .id == null) { id }
+              row_value: title(where .id == .kind_id) { id }
+              parent: title(limit 1) {
+                kind_type { id }
+                latest_info: movie_info(limit 1) { id }
+              }
+            }
+        "#},
     )
     .await;
 
@@ -337,15 +337,15 @@ indexes: []
     insert_source(
         &bowl,
         "composite-shapes.dsql",
-        concat!(
-            "query CompositeShapes {\n",
-            "  complete: memberships(where .tenant_id == $$tenant and .user_id == $$user) { locale }\n",
-            "  incomplete: memberships(where .tenant_id == $$tenant) { locale }\n",
-            "  different_value_or: memberships(where (.tenant_id == 1 and .user_id == 2) or (.user_id == 3 and .tenant_id == 1)) { locale }\n",
-            "  same_values_or: memberships(where (.tenant_id == 1 and .user_id == 2) or (.user_id == 2 and .tenant_id == 1 and .locale == \"en\")) { locale }\n",
-            "  bypass_or: memberships(where (.tenant_id == 1 and .user_id == 2) or .tenant_id == 1) { locale }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query CompositeShapes {
+              complete: memberships(where .tenant_id == $$tenant and .user_id == $$user) { locale }
+              incomplete: memberships(where .tenant_id == $$tenant) { locale }
+              different_value_or: memberships(where (.tenant_id == 1 and .user_id == 2) or (.user_id == 3 and .tenant_id == 1)) { locale }
+              same_values_or: memberships(where (.tenant_id == 1 and .user_id == 2) or (.user_id == 2 and .tenant_id == 1 and .locale == "en")) { locale }
+              bypass_or: memberships(where (.tenant_id == 1 and .user_id == 2) or .tenant_id == 1) { locale }
+            }
+        "#},
     )
     .await;
 

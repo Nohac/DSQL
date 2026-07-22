@@ -26,14 +26,18 @@ async fn duplicate_anonymous_variables_are_reported_for_queries_and_fragments() 
     insert_source(
         &bowl,
         "anonymous.dsql",
-        concat!(
-            "query AmbiguousQuery {\n",
-            "  title(where .id > $ and .id < $ limit 1) {\n    id\n  }\n",
-            "}\n",
-            "fragment AmbiguousFragment on title {\n",
-            "  movie_info(where .id > $ and .id < $) {\n    id\n  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query AmbiguousQuery {
+              title(where .id > $ and .id < $ limit 1) {
+                id
+              }
+            }
+            fragment AmbiguousFragment on title {
+              movie_info(where .id > $ and .id < $) {
+                id
+              }
+            }
+        "#},
     )
     .await;
 
@@ -46,27 +50,27 @@ async fn invalid_input_refinements_and_fragment_bindings_are_reported() {
     insert_source(
         &bowl,
         "invalid-variable-contracts.dsql",
-        concat!(
-            "fragment Required on public::users {\n",
-            "  posts(limit $$count) { id }\n",
-            "}\n",
-            "query InvalidDefaults($$missing = 1 $$limit = \"many\") {\n",
-            "  public::users(limit $$) { id }\n",
-            "}\n",
-            "query InvalidNull($$limit = null) { public::users(limit $$) { id } }\n",
-            "query InvalidOperator($$op? = null) {\n",
-            "  public::users(where .id $$op[==, !=] \"00000000-0000-0000-0000-000000000000\") { id }\n",
-            "}\n",
-            "query InvalidSort($$direction = \"sideways\") {\n",
-            "  public::users(order by id $$direction) { id }\n",
-            "}\n",
-            "query InvalidBindings {\n",
-            "  public::users { ...Required($$missing) }\n",
-            "}\n",
-            "query InvalidBindingDirection($$caller? = null) {\n",
-            "  public::users { ...Required($$count <- $$caller) }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment Required on public::users {
+              posts(limit $$count) { id }
+            }
+            query InvalidDefaults($$missing = 1 $$limit = "many") {
+              public::users(limit $$) { id }
+            }
+            query InvalidNull($$limit = null) { public::users(limit $$) { id } }
+            query InvalidOperator($$op? = null) {
+              public::users(where .id $$op[==, !=] "00000000-0000-0000-0000-000000000000") { id }
+            }
+            query InvalidSort($$direction = "sideways") {
+              public::users(order by id $$direction) { id }
+            }
+            query InvalidBindings {
+              public::users { ...Required($$missing) }
+            }
+            query InvalidBindingDirection($$caller? = null) {
+              public::users { ...Required($$count <- $$caller) }
+            }
+        "#},
     )
     .await;
 
@@ -97,14 +101,13 @@ async fn numeric_and_float_literals_follow_their_logical_types() {
     insert_source(
         &bowl,
         "numeric-literals.dsql",
-        concat!(
-            "query NumericLiterals {\n",
-            "  metrics(where .amount >= 12345678901234567890.12345678901234567890",
-            " and .ratio == \"not a float\") {\n",
-            "    amount\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query NumericLiterals {
+              metrics(where .amount >= 12345678901234567890.12345678901234567890 and .ratio == "not a float") {
+                amount
+              }
+            }
+        "#},
     )
     .await;
 
@@ -117,20 +120,20 @@ async fn predicate_extensions_report_invalid_shapes_and_types() {
     insert_source(
         &bowl,
         "invalid-predicates.dsql",
-        concat!(
-            "query InvalidPredicates {\n",
-            "  title(where .id in [\"wrong\"]\n",
-            "    or 1 in [1]\n",
-            "    or exists .id\n",
-            "    or exists .missing\n",
-            "    or $$value is null\n",
-            "    or [1]\n",
-            "    or not [2]\n",
-            "    or .production_year\n",
-            "    or .movie_info_idx.info_type_id\n",
-            "    or \"not boolean\") { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query InvalidPredicates {
+              title(where .id in ["wrong"]
+                or 1 in [1]
+                or exists .id
+                or exists .missing
+                or $$value is null
+                or [1]
+                or not [2]
+                or .production_year
+                or .movie_info_idx.info_type_id
+                or "not boolean") { id }
+            }
+        "#},
     )
     .await;
 
@@ -182,16 +185,16 @@ async fn table_resolution_spans_all_visible_schemas() {
     insert_source(
         &bowl,
         "cross-schema.dsql",
-        concat!(
-            "fragment AmbiguousTarget on users { id }\n",
-            "query CrossSchema {\n",
-            "  recent: posts(limit 1) { id }\n",
-            "  public_users: public::users(limit 1) { id }\n",
-            "  other_users: other_schema::users(limit 1) { id }\n",
-            "  users(limit 1) { id }\n",
-            "  missing { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment AmbiguousTarget on users { id }
+            query CrossSchema {
+              recent: posts(limit 1) { id }
+              public_users: public::users(limit 1) { id }
+              other_users: other_schema::users(limit 1) { id }
+              users(limit 1) { id }
+              missing { id }
+            }
+        "#},
     )
     .await;
 
@@ -205,17 +208,21 @@ async fn selection_checks_report_ported_diagnostics() {
     insert_source(
         &bowl,
         "mixed.dsql",
-        concat!(
-            "query Mixed {\n",
-            "  missing_table {\n    id\n  }\n",
-            "  title(limit 1) {\n",
-            "    id\n",
-            "    id\n",
-            "    title {\n      id\n    }\n",
-            "    kind_type\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query Mixed {
+              missing_table {
+                id
+              }
+              title(limit 1) {
+                id
+                id
+                title {
+                  id
+                }
+                kind_type
+              }
+            }
+        "#},
     )
     .await;
 
@@ -228,23 +235,23 @@ async fn valid_singular_and_aggregate_flattening_check_cleanly() {
     insert_source(
         &bowl,
         "flattened-valid.dsql",
-        concat!(
-            "fragment FlatOwner on posts {\n",
-            "  ...users(where .name like $$owner) { owner_name: name }\n",
-            "}\n",
-            "query Flattened {\n",
-            "  feed: posts(limit 2) { id ...FlatOwner }\n",
-            "  accounts: public::users(limit 1) {\n",
-            "    id\n",
-            "    ...posts(where .title like $$title) | aggregate { post_count: count }\n",
-            "  }\n",
-            "  ...public::users(where .name == $$root_name) | aggregate { user_count: count }\n",
-            "  ...public::users(limit 1) { flattened_user_id: id }\n",
-            "  one_account: public::users(limit 1) {\n",
-            "    ...posts(limit 1) { latest_post_title: title }\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment FlatOwner on posts {
+              ...users(where .name like $$owner) { owner_name: name }
+            }
+            query Flattened {
+              feed: posts(limit 2) { id ...FlatOwner }
+              accounts: public::users(limit 1) {
+                id
+                ...posts(where .title like $$title) | aggregate { post_count: count }
+              }
+              ...public::users(where .name == $$root_name) | aggregate { user_count: count }
+              ...public::users(limit 1) { flattened_user_id: id }
+              one_account: public::users(limit 1) {
+                ...posts(limit 1) { latest_post_title: title }
+              }
+            }
+        "#},
     )
     .await;
 
@@ -258,19 +265,19 @@ async fn selection_shape_warnings_and_null_operator_errors_are_typed() {
     insert_source(
         &bowl,
         "shape-diagnostics.dsql",
-        concat!(
-            "query ShapeDiagnostics {\n",
-            "  empty: title(limit 0) { id }\n",
-            "  redundant_literal: title(where .id == $$id limit 1) { id }\n",
-            "  redundant_runtime: title(where .id == $$other_id limit $$cap) { id }\n",
-            "  valid_limit_proof: title(limit 1) { id }\n",
-            "  invalid_null_order: title(where .id > null) { id }\n",
-            "  invalid_null_variant: title(where .title $$operator[==, like] null) { id }\n",
-            "  parent: title(limit 1) {\n",
-            "    kind_type(limit 1) { id }\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query ShapeDiagnostics {
+              empty: title(limit 0) { id }
+              redundant_literal: title(where .id == $$id limit 1) { id }
+              redundant_runtime: title(where .id == $$other_id limit $$cap) { id }
+              valid_limit_proof: title(limit 1) { id }
+              invalid_null_order: title(where .id > null) { id }
+              invalid_null_variant: title(where .title $$operator[==, like] null) { id }
+              parent: title(limit 1) {
+                kind_type(limit 1) { id }
+              }
+            }
+        "#},
     )
     .await;
 
@@ -283,25 +290,25 @@ async fn invalid_flattening_cardinality_bodies_and_collisions_are_reported() {
     insert_source(
         &bowl,
         "flattened-invalid.dsql",
-        concat!(
-            "fragment FlatOwner on posts {\n",
-            "  ...users { owner_name: name }\n",
-            "}\n",
-            "query InvalidFlattening {\n",
-            "  ...public::users { id }\n",
-            "  accounts: public::users(limit 1) {\n",
-            "    ...posts { title }\n",
-            "    ...name { id }\n",
-            "    ...email()\n",
-            "    post_count: id\n",
-            "    ...posts | aggregate { post_count: count }\n",
-            "  }\n",
-            "  feed: posts(limit 1) {\n",
-            "    owner_name: title\n",
-            "    ...FlatOwner\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment FlatOwner on posts {
+              ...users { owner_name: name }
+            }
+            query InvalidFlattening {
+              ...public::users { id }
+              accounts: public::users(limit 1) {
+                ...posts { title }
+                ...name { id }
+                ...email()
+                post_count: id
+                ...posts | aggregate { post_count: count }
+              }
+              feed: posts(limit 1) {
+                owner_name: title
+                ...FlatOwner
+              }
+            }
+        "#},
     )
     .await;
 
@@ -315,12 +322,23 @@ async fn fragment_checks_report_target_and_compat_mismatches() {
     insert_source(
         &bowl,
         "fragments.dsql",
-        concat!(
-            "fragment OnMissing on nope {\n  id\n}\n",
-            "fragment KindFields on kind_type {\n  kind\n}\n",
-            "fragment Loop on title {\n  id\n  ...Loop\n}\n",
-            "query Q {\n  title(limit 1) {\n    ...KindFields\n  }\n}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment OnMissing on nope {
+              id
+            }
+            fragment KindFields on kind_type {
+              kind
+            }
+            fragment Loop on title {
+              id
+              ...Loop
+            }
+            query Q {
+              title(limit 1) {
+                ...KindFields
+              }
+            }
+        "#},
     )
     .await;
 
@@ -535,18 +553,20 @@ async fn directive_misuse_is_reported() {
     insert_source(
         &bowl,
         "misuse.dsql",
-        concat!(
-            "fragment Bits on title {\n  episode_nr\n}\n",
-            "query Misuse @dsql.include_if(if: 1) {\n",
-            "  title(limit 1) @custom @foo.bar {\n",
-            "    id @dsql.deprecated(reason: \"a\", reason: true, extra: 1)\n",
-            "    title @dsql.include_if\n",
-            "    kind_id @dsql.deprecated(reason: true)\n",
-            "    production_year @.deprecated(bogus: 1)\n",
-            "    ...Bits @dsql.deprecated\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment Bits on title {
+              episode_nr
+            }
+            query Misuse @dsql.include_if(if: 1) {
+              title(limit 1) @custom @foo.bar {
+                id @dsql.deprecated(reason: "a", reason: true, extra: 1)
+                title @dsql.include_if
+                kind_id @dsql.deprecated(reason: true)
+                production_year @.deprecated(bogus: 1)
+                ...Bits @dsql.deprecated
+              }
+            }
+        "#},
     )
     .await;
 
@@ -561,19 +581,19 @@ async fn directive_boolean_arguments_type_check() {
     insert_source(
         &bowl,
         "booleans.dsql",
-        concat!(
-            "query Booleans {\n",
-            "  title(limit 1) {\n",
-            "    a: id @dsql.include_if(if: true)\n",
-            "    b: id @dsql.include_if(if: $flag)\n",
-            "    c: id @dsql.include_if(if: $a == $b)\n",
-            "    d: id @dsql.include_if(if: .production_year)\n",
-            "    e: id @dsql.include_if(if: \"yes\")\n",
-            "    f: id @dsql.include_if(if: 1)\n",
-            "    g: id @dsql.include_if(if: null)\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query Booleans {
+              title(limit 1) {
+                a: id @dsql.include_if(if: true)
+                b: id @dsql.include_if(if: $flag)
+                c: id @dsql.include_if(if: $a == $b)
+                d: id @dsql.include_if(if: .production_year)
+                e: id @dsql.include_if(if: "yes")
+                f: id @dsql.include_if(if: 1)
+                g: id @dsql.include_if(if: null)
+              }
+            }
+        "#},
     )
     .await;
 

@@ -167,14 +167,14 @@ async fn filter_declarations_complete_structural_targets_and_body_rules() {
     )
     .await;
     let body_fields = completion_list_with_catalog(
-        concat!(
-            "filter MovieFilter on {\n",
-            "  .nr_order: int\n",
-            "  .shared: text\n",
-            "} {\n",
-            "  where .|\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            filter MovieFilter on {
+              .nr_order: int
+              .shared: text
+            } {
+              where .|
+            }
+        "#},
         '|',
         catalog.clone(),
     )

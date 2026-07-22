@@ -109,37 +109,37 @@ async fn root_nested_and_fragment_aggregates_resolve_from_one_semantic_ir() {
     insert_source(
         &bowl,
         "aggregates.dsql",
-        concat!(
-            "fragment UserSummary on public::users {\n",
-            "  post_stats: posts | aggregate {\n",
-            "    count\n",
-            "  }\n",
-            "  post_titles: posts | aggregate by title_group: .title {\n",
-            "    count\n",
-            "    latest: max .created_at\n",
-            "  }\n",
-            "}\n",
-            "query Summaries {\n",
-            "  stats: public::users(where .name like \"A%\") | aggregate {\n",
-            "    count\n",
-            "    populated_email: count .email\n",
-            "    any: exists\n",
-            "    first_name: min .name\n",
-            "    latest_signup: max .created_at\n",
-            "  }\n",
-            "  by_name: public::users | aggregate by label: .name, .email {\n",
-            "    count\n",
-            "    latest_signup: max .created_at\n",
-            "  }\n",
-            "  public::users(limit 2) {\n",
-            "    id\n",
-            "    post_stats: posts(where .title like \"%x%\") | aggregate {\n",
-            "      count\n",
-            "      latest: max .created_at\n",
-            "    }\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment UserSummary on public::users {
+              post_stats: posts | aggregate {
+                count
+              }
+              post_titles: posts | aggregate by title_group: .title {
+                count
+                latest: max .created_at
+              }
+            }
+            query Summaries {
+              stats: public::users(where .name like "A%") | aggregate {
+                count
+                populated_email: count .email
+                any: exists
+                first_name: min .name
+                latest_signup: max .created_at
+              }
+              by_name: public::users | aggregate by label: .name, .email {
+                count
+                latest_signup: max .created_at
+              }
+              public::users(limit 2) {
+                id
+                post_stats: posts(where .title like "%x%") | aggregate {
+                  count
+                  latest: max .created_at
+                }
+              }
+            }
+        "#},
     )
     .await;
 
@@ -153,35 +153,35 @@ async fn invalid_aggregate_contracts_report_typed_diagnostics() {
     insert_source(
         &bowl,
         "invalid-aggregates.dsql",
-        concat!(
-            "query InvalidAggregates {\n",
-            "  unknown: public::users | summarize { count }\n",
-            "  grouped_exists: public::users | aggregate by .name { exists }\n",
-            "  grouped_path: public::users | aggregate by ..name { count }\n",
-            "  grouped_collision: public::users | aggregate by count: .name { count }\n",
-            "  ...public::users | aggregate by .name { count }\n",
-            "  empty: public::users | aggregate {}\n",
-            "  fields: public::users | aggregate {\n",
-            "    mystery\n",
-            "    count .id\n",
-            "    any: exists .id\n",
-            "    min\n",
-            "    traversed: max ..name\n",
-            "    uuid_min: min .id\n",
-            "    text_sum: sum .name\n",
-            "    count\n",
-            "    count\n",
-            "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: count\n",
-            "  }\n",
-            "  sliced: public::users(order by name limit 1 offset 1) | aggregate { count }\n",
-            "  public::users(limit 1) {\n",
-            "    scalar: name | aggregate { count }\n",
-            "  }\n",
-            "  public::posts(limit 1) {\n",
-            "    singular: users | aggregate { count }\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query InvalidAggregates {
+              unknown: public::users | summarize { count }
+              grouped_exists: public::users | aggregate by .name { exists }
+              grouped_path: public::users | aggregate by ..name { count }
+              grouped_collision: public::users | aggregate by count: .name { count }
+              ...public::users | aggregate by .name { count }
+              empty: public::users | aggregate {}
+              fields: public::users | aggregate {
+                mystery
+                count .id
+                any: exists .id
+                min
+                traversed: max ..name
+                uuid_min: min .id
+                text_sum: sum .name
+                count
+                count
+                aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: count
+              }
+              sliced: public::users(order by name limit 1 offset 1) | aggregate { count }
+              public::users(limit 1) {
+                scalar: name | aggregate { count }
+              }
+              public::posts(limit 1) {
+                singular: users | aggregate { count }
+              }
+            }
+        "#},
     )
     .await;
 
@@ -230,21 +230,21 @@ async fn scalar_predicate_aggregates_share_selection_function_semantics() {
     insert_source(
         &bowl,
         "aggregate-predicates.dsql",
-        concat!(
-            "query AggregatePredicates {\n",
-            "  title(\n",
-            "    where .movie_info_idx | exists\n",
-            "      and .movie_info_idx | count >= $$minimum\n",
-            "      and (.movie_info_idx | count .info) >= 1\n",
-            "      and (.movie_info_idx | min .info) like \"4.%\"\n",
-            "      and (.movie_info_idx | max .info) != null\n",
-            "      and (.movie_info_idx | sum .info_type_id) > 0\n",
-            "      and (.movie_info_idx | avg .info_type_id) > 0\n",
-            "      and (.aka_title->movie_id | count) >= 0\n",
-            "    limit 1\n",
-            "  ) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query AggregatePredicates {
+              title(
+                where .movie_info_idx | exists
+                  and .movie_info_idx | count >= $$minimum
+                  and (.movie_info_idx | count .info) >= 1
+                  and (.movie_info_idx | min .info) like "4.%"
+                  and (.movie_info_idx | max .info) != null
+                  and (.movie_info_idx | sum .info_type_id) > 0
+                  and (.movie_info_idx | avg .info_type_id) > 0
+                  and (.aka_title->movie_id | count) >= 0
+                limit 1
+              ) { id }
+            }
+        "#},
     )
     .await;
 
@@ -258,26 +258,26 @@ async fn invalid_scalar_predicate_aggregates_report_typed_diagnostics() {
     insert_source(
         &bowl,
         "invalid-aggregate-predicates.dsql",
-        concat!(
-            "query InvalidPredicates @.include_if(if: .movie_info_idx | exists) {\n",
-            "  title(\n",
-            "    where ..movie_info_idx | count > 0\n",
-            "      and .movie_info_idx.title | count > 0\n",
-            "      and .kind_type | count > 0\n",
-            "      and .id | count > 0\n",
-            "      and .movie_info_idx | mystery > 0\n",
-            "      and .movie_info_idx | min > 0\n",
-            "      and .movie_info_idx | exists .info\n",
-            "      and .movie_info_idx | sum .info > 0\n",
-            "      and .movie_info_idx | exists > 1\n",
-            "      and .movie_info_idx | count\n",
-            "      and .movie_info_idx | count $$operator[==, >] 1\n",
-            "      and .movie_info_idx.info == (.aka_title->movie_id | count)\n",
-            "      and (.aka_title->movie_id | count) == .movie_info_idx.info\n",
-            "    limit .movie_info_idx | count\n",
-            "  ) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query InvalidPredicates @.include_if(if: .movie_info_idx | exists) {
+              title(
+                where ..movie_info_idx | count > 0
+                  and .movie_info_idx.title | count > 0
+                  and .kind_type | count > 0
+                  and .id | count > 0
+                  and .movie_info_idx | mystery > 0
+                  and .movie_info_idx | min > 0
+                  and .movie_info_idx | exists .info
+                  and .movie_info_idx | sum .info > 0
+                  and .movie_info_idx | exists > 1
+                  and .movie_info_idx | count
+                  and .movie_info_idx | count $$operator[==, >] 1
+                  and .movie_info_idx.info == (.aka_title->movie_id | count)
+                  and (.aka_title->movie_id | count) == .movie_info_idx.info
+                limit .movie_info_idx | count
+              ) { id }
+            }
+        "#},
     )
     .await;
 

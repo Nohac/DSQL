@@ -21,5 +21,6 @@ thiserror = { workspace = true }
 lelwel = { workspace = true }
 
 [dev-dependencies]
+indoc = { workspace = true }
 insta = { workspace = true }
 tokio = { workspace = true }

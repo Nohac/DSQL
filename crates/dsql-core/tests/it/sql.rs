@@ -74,41 +74,41 @@ async fn fixture_sql(name: &str) -> String {
     render_sql(&bowl).await
 }
 
-const MOVIE_SIGNALS: &str = concat!(
-    "fragment MovieSignals on title {\n",
-    "  ...movie_info_idx(where .info_type_id == 101) | aggregate {\n",
-    "    rating: max .info\n",
-    "  }\n",
-    "  ...movie_info_idx(where .info_type_id == 100) | aggregate {\n",
-    "    votes: max .info\n",
-    "  }\n",
-    "}\n",
-);
+const MOVIE_SIGNALS: &str = indoc::indoc! {r#"
+    fragment MovieSignals on title {
+      ...movie_info_idx(where .info_type_id == 101) | aggregate {
+        rating: max .info
+      }
+      ...movie_info_idx(where .info_type_id == 100) | aggregate {
+        votes: max .info
+      }
+    }
+"#};
 
-const RENDERER_EDGE_QUERY: &str = concat!(
-    "query RendererEdges {\n",
-    "  signals: title(where .id == 2 limit 1) { id ...MovieSignals }\n",
-    "  ratings: movie_info_idx(\n",
-    "    where .info_type_id == 101\n",
-    "    order by info desc, id asc\n",
-    "    limit 16\n",
-    "  ) { id info }\n",
-    "  ordered_title: title(where .id == 943844 limit 1) {\n",
-    "    aliases: aka_title->movie_id(order by kind_id desc, id asc limit 16) {\n",
-    "      id\n",
-    "      kind_id\n",
-    "    }\n",
-    "  }\n",
-    "  singular: title(where .id == 2 limit 1) {\n",
-    "    id\n",
-    "    ...kind_type { kind }\n",
-    "  }\n",
-    "  ...kind_type | aggregate {\n",
-    "    kind_count: count\n",
-    "    first_kind: min .kind\n",
-    "  }\n",
-    "}\n",
-);
+const RENDERER_EDGE_QUERY: &str = indoc::indoc! {r#"
+    query RendererEdges {
+      signals: title(where .id == 2 limit 1) { id ...MovieSignals }
+      ratings: movie_info_idx(
+        where .info_type_id == 101
+        order by info desc, id asc
+        limit 16
+      ) { id info }
+      ordered_title: title(where .id == 943844 limit 1) {
+        aliases: aka_title->movie_id(order by kind_id desc, id asc limit 16) {
+          id
+          kind_id
+        }
+      }
+      singular: title(where .id == 2 limit 1) {
+        id
+        ...kind_type { kind }
+      }
+      ...kind_type | aggregate {
+        kind_count: count
+        first_kind: min .kind
+      }
+    }
+"#};
 
 #[tokio::test]
 async fn title_basic_sql() {
@@ -154,24 +154,24 @@ async fn nullable_inputs_prune_predicates_clauses_ordering_and_cardinality() {
     insert_source(
         &bowl,
         "nullable-inputs.dsql",
-        concat!(
-            "query NullableInputs(\n",
-            "  $$id? = null\n",
-            "  $$from? = null\n",
-            "  $$to? = null\n",
-            "  $$direction? = null\n",
-            "  $$limit? = null\n",
-            ") {\n",
-            "  public::users(\n",
-            "    where .id == $$id and (.id >= $$from or not (.id <= $$to))\n",
-            "    order by id $$direction\n",
-            "    limit $$limit\n",
-            "  ) { id }\n",
-            "}\n",
-            "query DefaultedUnique($$id = 1) {\n",
-            "  public::users(where .id == $$id) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query NullableInputs(
+              $$id? = null
+              $$from? = null
+              $$to? = null
+              $$direction? = null
+              $$limit? = null
+            ) {
+              public::users(
+                where .id == $$id and (.id >= $$from or not (.id <= $$to))
+                order by id $$direction
+                limit $$limit
+              ) { id }
+            }
+            query DefaultedUnique($$id = 1) {
+              public::users(where .id == $$id) { id }
+            }
+        "#},
     )
     .await;
 
@@ -184,18 +184,18 @@ async fn fragment_bindings_rewrite_sql_inputs_and_inline_omitted_defaults() {
     insert_source(
         &bowl,
         "fragment-bindings.dsql",
-        concat!(
-            "fragment PostWindow($$minimum = 18 $$limit = 5) on public::users {\n",
-            "  posts(where .id >= $$minimum limit $$) { id }\n",
-            "}\n",
-            "query Contained { public::users { ...PostWindow } }\n",
-            "query Bound($$outer = 20) {\n",
-            "  public::users { ...PostWindow($$minimum <- $$outer) }\n",
-            "}\n",
-            "query Namespaced {\n",
-            "  public::users { ...PostWindow($$ <- $$window) }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment PostWindow($$minimum = 18 $$limit = 5) on public::users {
+              posts(where .id >= $$minimum limit $$) { id }
+            }
+            query Contained { public::users { ...PostWindow } }
+            query Bound($$outer = 20) {
+              public::users { ...PostWindow($$minimum <- $$outer) }
+            }
+            query Namespaced {
+              public::users { ...PostWindow($$ <- $$window) }
+            }
+        "#},
     )
     .await;
 
@@ -208,23 +208,23 @@ async fn predicate_extensions_render_with_postgres_semantics() {
     insert_source(
         &bowl,
         "predicate-extensions.dsql",
-        concat!(
-            "query PredicateExtensions {\n",
-            "  title(\n",
-            "    where not $$disabled\n",
-            "      or .id in $$ids\n",
-            "      and .production_year not in [1956, null]\n",
-            "      and .episode_nr is null\n",
-            "      and exists .movie_info_idx(where .info_type_id == ..kind_id)\n",
-            "      and exists .movie_info_idx(where .info_type.info == .info)\n",
-            "      and exists .movie_info_idx(where .info_type.id == ..kind_id)\n",
-            "      and exists public::info_type(where .id == ..kind_id)\n",
-            "      and exists public::info_type(\n",
-            "        where exists public::kind_type(where .id == ..id)\n",
-            "      )\n",
-            "  ) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query PredicateExtensions {
+              title(
+                where not $$disabled
+                  or .id in $$ids
+                  and .production_year not in [1956, null]
+                  and .episode_nr is null
+                  and exists .movie_info_idx(where .info_type_id == ..kind_id)
+                  and exists .movie_info_idx(where .info_type.info == .info)
+                  and exists .movie_info_idx(where .info_type.id == ..kind_id)
+                  and exists public::info_type(where .id == ..kind_id)
+                  and exists public::info_type(
+                    where exists public::kind_type(where .id == ..id)
+                  )
+              ) { id }
+            }
+        "#},
     )
     .await;
 
@@ -237,32 +237,32 @@ async fn row_policies_apply_to_roots_relations_aggregates_and_predicate_sources(
     insert_source(
         &bowl,
         "row-policies.dsql",
-        concat!(
-            "condition PreventTitleBypass { where not $:can_bypass_titles }\n",
-            "filter TitleRows on title {\n",
-            "  apply where PreventTitleBypass\n",
-            "  where .kind_id == $:kind_id\n",
-            "    and exists .movie_info_idx(where .info_type_id == ..kind_id)\n",
-            "}\n",
-            "filter InfoRows on movie_info_idx {\n",
-            "  apply\n",
-            "  where .info_type_id == 101\n",
-            "}\n",
-            "filter PositiveInfo on movie_info_idx { where .id > 0 }\n",
-            "query DefaultRows {\n",
-            "  title(limit 1) {\n",
-            "    id\n",
-            "    movie_info_idx { id }\n",
-            "    info_count: movie_info_idx | aggregate { count }\n",
-            "  }\n",
-            "}\n",
-            "query ConditionalBypass(filter InfoRows when false) {\n",
-            "  title(filter TitleRows when false where exists .movie_info_idx) { id }\n",
-            "}\n",
-            "query ManualRows(filter PositiveInfo when $$positive_only) {\n",
-            "  movie_info_idx { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            condition PreventTitleBypass { where not $:can_bypass_titles }
+            filter TitleRows on title {
+              apply where PreventTitleBypass
+              where .kind_id == $:kind_id
+                and exists .movie_info_idx(where .info_type_id == ..kind_id)
+            }
+            filter InfoRows on movie_info_idx {
+              apply
+              where .info_type_id == 101
+            }
+            filter PositiveInfo on movie_info_idx { where .id > 0 }
+            query DefaultRows {
+              title(limit 1) {
+                id
+                movie_info_idx { id }
+                info_count: movie_info_idx | aggregate { count }
+              }
+            }
+            query ConditionalBypass(filter InfoRows when false) {
+              title(filter TitleRows when false where exists .movie_info_idx) { id }
+            }
+            query ManualRows(filter PositiveInfo when $$positive_only) {
+              movie_info_idx { id }
+            }
+        "#},
     )
     .await;
 
@@ -275,42 +275,42 @@ async fn field_filters_mask_every_query_authored_read_and_relation_traversal() {
     insert_source(
         &bowl,
         "field-policies.dsql",
-        concat!(
-            "condition CanReadTitle { where $:can_read_title }\n",
-            "filter TitlePrivacy on title {\n",
-            "  apply\n",
-            "  field title, movie_info_idx where CanReadTitle\n",
-            "}\n",
-            "filter InfoPrivacy on movie_info_idx {\n",
-            "  apply\n",
-            "  field info where $:can_read_info\n",
-            "}\n",
-            "filter Unused on title {\n",
-            "  apply\n",
-            "  field production_year where $:unused\n",
-            "}\n",
-            "query MaskedReads {\n",
-            "  title(\n",
-            "    where .title == $$guess\n",
-            "      and (.title is null or .title is not null)\n",
-            "      and .movie_info_idx.info in $$infos\n",
-            "      and exists .movie_info_idx(where .info == $$info_guess)\n",
-            "      and (.movie_info_idx | count .info) > 0\n",
-            "    order by title $$direction\n",
-            "    limit 1\n",
-            "  ) {\n",
-            "    id\n",
-            "    title\n",
-            "    movie_info_idx { id info }\n",
-            "    info_stats: movie_info_idx | aggregate {\n",
-            "      count\n",
-            "      visible: count .info\n",
-            "      first: min .info\n",
-            "    }\n",
-            "  }\n",
-            "  grouped: title | aggregate by title_group: .title { count }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            condition CanReadTitle { where $:can_read_title }
+            filter TitlePrivacy on title {
+              apply
+              field title, movie_info_idx where CanReadTitle
+            }
+            filter InfoPrivacy on movie_info_idx {
+              apply
+              field info where $:can_read_info
+            }
+            filter Unused on title {
+              apply
+              field production_year where $:unused
+            }
+            query MaskedReads {
+              title(
+                where .title == $$guess
+                  and (.title is null or .title is not null)
+                  and .movie_info_idx.info in $$infos
+                  and exists .movie_info_idx(where .info == $$info_guess)
+                  and (.movie_info_idx | count .info) > 0
+                order by title $$direction
+                limit 1
+              ) {
+                id
+                title
+                movie_info_idx { id info }
+                info_stats: movie_info_idx | aggregate {
+                  count
+                  visible: count .info
+                  first: min .info
+                }
+              }
+              grouped: title | aggregate by title_group: .title { count }
+            }
+        "#},
     )
     .await;
 
@@ -323,20 +323,20 @@ async fn predicate_keywords_remain_valid_catalog_identifiers() {
     insert_source(
         &bowl,
         "contextual-identifiers.dsql",
-        concat!(
-            "fragment not on metrics { exists }\n",
-            "query exists {\n",
-            "  metrics(\n",
-            "    where .exists == 1 and .in == 2 and .is == 3 and .not == 4\n",
-            "    order by exists asc\n",
-            "  ) {\n",
-            "    ...not\n",
-            "    in: exists\n",
-            "    is\n",
-            "    not\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment not on metrics { exists }
+            query exists {
+              metrics(
+                where .exists == 1 and .in == 2 and .is == 3 and .not == 4
+                order by exists asc
+              ) {
+                ...not
+                in: exists
+                is
+                not
+              }
+            }
+        "#},
     )
     .await;
 
@@ -349,25 +349,25 @@ async fn exact_and_floating_numbers_use_their_public_wire_types() {
     insert_source(
         &bowl,
         "numeric.dsql",
-        concat!(
-            "query NumericMetrics {\n",
-            "  metrics(where .amount >= 12345678901234567890.12345678901234567890) {\n",
-            "    amount\n",
-            "    ratio\n",
-            "  }\n",
-            "  groups: metrics | aggregate by amount_group: .amount, ratio_group: .ratio {\n",
-            "    count\n",
-            "    total_amount: sum .amount\n",
-            "    average_ratio: avg .ratio\n",
-            "  }\n",
-            "  summary: metrics | aggregate {\n",
-            "    total_amount: sum .amount\n",
-            "    average_amount: avg .amount\n",
-            "    total_ratio: sum .ratio\n",
-            "    average_ratio: avg .ratio\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query NumericMetrics {
+              metrics(where .amount >= 12345678901234567890.12345678901234567890) {
+                amount
+                ratio
+              }
+              groups: metrics | aggregate by amount_group: .amount, ratio_group: .ratio {
+                count
+                total_amount: sum .amount
+                average_ratio: avg .ratio
+              }
+              summary: metrics | aggregate {
+                total_amount: sum .amount
+                average_amount: avg .amount
+                total_ratio: sum .ratio
+                average_ratio: avg .ratio
+              }
+            }
+        "#},
     )
     .await;
 
@@ -380,17 +380,17 @@ async fn numeric_template_replacements_never_rewrite_source_literals() {
     insert_source(
         &bowl,
         "numeric-template.dsql",
-        concat!(
-            "query NumericTemplate {\n",
-            "  metrics(\n",
-            "    where .amount == 9000000000000000000\n",
-            "      or .amount == 9000000000000000005.5\n",
-            "      or .amount == 12345678901234567890.12345678901234567890\n",
-            "    limit $$page_limit\n",
-            "    offset $$page_offset\n",
-            "  ) { amount }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query NumericTemplate {
+              metrics(
+                where .amount == 9000000000000000000
+                  or .amount == 9000000000000000005.5
+                  or .amount == 12345678901234567890.12345678901234567890
+                limit $$page_limit
+                offset $$page_offset
+              ) { amount }
+            }
+        "#},
     )
     .await;
 
@@ -403,32 +403,32 @@ async fn aggregates_render_root_and_nested_objects_without_safety_caps() {
     insert_source(
         &bowl,
         "aggregate-sql.dsql",
-        concat!(
-            "query AggregateSql {\n",
-            "  stats: public::users(where .email != null) | aggregate {\n",
-            "    count\n",
-            "    populated_email: count .email\n",
-            "    any: exists\n",
-            "    first_name: min .name\n",
-            "    latest_signup: max .created_at\n",
-            "  }\n",
-            "  by_email: public::users | aggregate by email_group: .email {\n",
-            "    count\n",
-            "    earliest_signup: min .created_at\n",
-            "  }\n",
-            "  public::users(limit 2) {\n",
-            "    id\n",
-            "    post_stats: posts(where .title like \"%x%\") | aggregate {\n",
-            "      count\n",
-            "      latest: max .created_at\n",
-            "    }\n",
-            "    post_groups: posts | aggregate by title_group: .title {\n",
-            "      count\n",
-            "      latest: max .created_at\n",
-            "    }\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query AggregateSql {
+              stats: public::users(where .email != null) | aggregate {
+                count
+                populated_email: count .email
+                any: exists
+                first_name: min .name
+                latest_signup: max .created_at
+              }
+              by_email: public::users | aggregate by email_group: .email {
+                count
+                earliest_signup: min .created_at
+              }
+              public::users(limit 2) {
+                id
+                post_stats: posts(where .title like "%x%") | aggregate {
+                  count
+                  latest: max .created_at
+                }
+                post_groups: posts | aggregate by title_group: .title {
+                  count
+                  latest: max .created_at
+                }
+              }
+            }
+        "#},
     )
     .await;
 
@@ -441,24 +441,24 @@ async fn scalar_aggregate_predicates_render_correlated_values() {
     insert_source(
         &bowl,
         "aggregate-predicate-sql.dsql",
-        concat!(
-            "query AggregatePredicateSql {\n",
-            "  title(\n",
-            "    where .movie_info_idx | exists\n",
-            "      and .movie_info_idx | count >= $minimum\n",
-            "      and $maximum >= (.movie_info_idx | count)\n",
-            "      and 0 < (.movie_info_idx | count .info)\n",
-            "      and (.movie_info_idx | count .info) > 0\n",
-            "      and (.movie_info_idx | count .info) <= (.movie_info_idx | count)\n",
-            "      and (.movie_info_idx | min .info) like \"4.%\"\n",
-            "      and (.movie_info_idx | max .info) != null\n",
-            "      and (.movie_info_idx | sum .info_type_id) > 0\n",
-            "      and (.movie_info_idx | avg .info_type_id) > 0\n",
-            "    order by id asc\n",
-            "    limit 5\n",
-            "  ) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query AggregatePredicateSql {
+              title(
+                where .movie_info_idx | exists
+                  and .movie_info_idx | count >= $minimum
+                  and $maximum >= (.movie_info_idx | count)
+                  and 0 < (.movie_info_idx | count .info)
+                  and (.movie_info_idx | count .info) > 0
+                  and (.movie_info_idx | count .info) <= (.movie_info_idx | count)
+                  and (.movie_info_idx | min .info) like "4.%"
+                  and (.movie_info_idx | max .info) != null
+                  and (.movie_info_idx | sum .info_type_id) > 0
+                  and (.movie_info_idx | avg .info_type_id) > 0
+                order by id asc
+                limit 5
+              ) { id }
+            }
+        "#},
     )
     .await;
 
@@ -471,16 +471,16 @@ async fn null_comparisons_render_postgres_null_predicates() {
     insert_source(
         &bowl,
         "null-predicates.dsql",
-        concat!(
-            "query NullPredicates {\n",
-            "  title(\n",
-            "    where .production_year == null\n",
-            "      or null != .kind_id\n",
-            "      or .production_year $$null_operator[==, !=] null\n",
-            "    limit 2\n",
-            "  ) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query NullPredicates {
+              title(
+                where .production_year == null
+                  or null != .kind_id
+                  or .production_year $$null_operator[==, !=] null
+                limit 2
+              ) { id }
+            }
+        "#},
     )
     .await;
 
@@ -493,17 +493,17 @@ async fn singular_roots_and_relations_render_nullable_object_envelopes() {
     insert_source(
         &bowl,
         "singular-shapes.dsql",
-        concat!(
-            "query SingularShapes {\n",
-            "  by_limit: title(order by id asc limit 1) { id title }\n",
-            "  by_key: title(where .id == $$id) {\n",
-            "    id\n",
-            "    latest_info: movie_info(order by id desc limit 1) { id info }\n",
-            "  }\n",
-            "  runtime: title(limit $$count) { id }\n",
-            "  ...title(where .id == $$flat_id) { flat_id: id flat_title: title }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query SingularShapes {
+              by_limit: title(order by id asc limit 1) { id title }
+              by_key: title(where .id == $$id) {
+                id
+                latest_info: movie_info(order by id desc limit 1) { id info }
+              }
+              runtime: title(limit $$count) { id }
+              ...title(where .id == $$flat_id) { flat_id: id flat_title: title }
+            }
+        "#},
     )
     .await;
 
@@ -516,32 +516,32 @@ async fn flattened_objects_export_fields_without_wrapper_keys() {
     insert_source(
         &bowl,
         "flattened-sql.dsql",
-        concat!(
-            "query FlattenOwner {\n",
-            "  feed: public::posts(limit 1) {\n",
-            "    id\n",
-            "    ...users(where .name like $$owner) {\n",
-            "      owner_name: name\n",
-            "      recent: posts(limit 1) { title }\n",
-            "    }\n",
-            "  }\n",
-            "}\n",
-            "query FlattenPostStats {\n",
-            "  accounts: public::users(limit 1) {\n",
-            "    id\n",
-            "    ...posts(where .title like $$title) | aggregate {\n",
-            "      post_count: count\n",
-            "      latest_post: max .created_at\n",
-            "    }\n",
-            "  }\n",
-            "}\n",
-            "query FlattenRoot {\n",
-            "  ...public::users(where .name == $$root_name) | aggregate {\n",
-            "    user_count: count\n",
-            "    first_name: min .name\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query FlattenOwner {
+              feed: public::posts(limit 1) {
+                id
+                ...users(where .name like $$owner) {
+                  owner_name: name
+                  recent: posts(limit 1) { title }
+                }
+              }
+            }
+            query FlattenPostStats {
+              accounts: public::users(limit 1) {
+                id
+                ...posts(where .title like $$title) | aggregate {
+                  post_count: count
+                  latest_post: max .created_at
+                }
+              }
+            }
+            query FlattenRoot {
+              ...public::users(where .name == $$root_name) | aggregate {
+                user_count: count
+                first_name: min .name
+              }
+            }
+        "#},
     )
     .await;
 
@@ -636,13 +636,13 @@ async fn policy_match_edits_rederive_fragment_dependent_sql() {
     insert_source(
         &bowl,
         "query.dsql",
-        concat!(
-            "fragment Nested on title {\n",
-            "  kind_type { id kind }\n",
-            "  movie_info_idx { id info }\n",
-            "}\n",
-            "query Q { title(limit 1) { ...Nested } }\n",
-        ),
+        indoc::indoc! {r#"
+            fragment Nested on title {
+              kind_type { id kind }
+              movie_info_idx { id info }
+            }
+            query Q { title(limit 1) { ...Nested } }
+        "#},
     )
     .await;
     let before = render_sql(&bowl).await;
@@ -732,26 +732,26 @@ async fn cross_file_fragment_clauses_are_preserved_in_sql() {
     insert_source(
         &bowl,
         "rating-fields.dsql",
-        concat!(
-            "fragment RatingFields on title {\n",
-            "  ratings: movie_info_idx(where .info_type_id == 101 order by id asc limit 1) {\n",
-            "    info\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment RatingFields on title {
+              ratings: movie_info_idx(where .info_type_id == 101 order by id asc limit 1) {
+                info
+              }
+            }
+        "#},
     )
     .await;
     insert_source(
         &bowl,
         "top-rated.dsql",
-        concat!(
-            "query TopRated {\n",
-            "  title(limit 1) {\n",
-            "    id\n",
-            "    ...RatingFields\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query TopRated {
+              title(limit 1) {
+                id
+                ...RatingFields
+              }
+            }
+        "#},
     )
     .await;
 

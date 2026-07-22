@@ -206,12 +206,21 @@ async fn invalid_scope_import_graphs_are_rejected() {
         ),
         (
             "cyclic imports",
-            concat!(
-                "database_url = \"x\"\n\n",
-                "[resolution.a]\ndocuments = []\nimports = [\"b\"]\n\n",
-                "[resolution.b]\ndocuments = []\nimports = [\"c\"]\n\n",
-                "[resolution.c]\ndocuments = []\nimports = [\"a\"]\n",
-            ),
+            indoc::indoc! {r#"
+                database_url = "x"
+
+                [resolution.a]
+                documents = []
+                imports = ["b"]
+
+                [resolution.b]
+                documents = []
+                imports = ["c"]
+
+                [resolution.c]
+                documents = []
+                imports = ["a"]
+            "#},
             "cyclic scope import: a -> b -> c -> a",
         ),
     ];

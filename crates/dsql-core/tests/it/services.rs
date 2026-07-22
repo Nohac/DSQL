@@ -66,16 +66,16 @@ async fn catalog_descriptions_reach_table_column_and_relation_hover() {
 
     let bowl = language_bowl().await;
     insert_catalog(&bowl, catalog).await;
-    let source = concat!(
-        "query Documented {\n",
-        "  public::users(where .name like \"A%\") {\n",
-        "    name\n",
-        "    posts {\n",
-        "      title\n",
-        "    }\n",
-        "  }\n",
-        "}\n",
-    );
+    let source = indoc::indoc! {r#"
+        query Documented {
+          public::users(where .name like "A%") {
+            name
+            posts {
+              title
+            }
+          }
+        }
+    "#};
     insert_source(&bowl, FIXTURE, source).await;
 
     let root = source.find("public::users").expect("test text") + "public::".len();
@@ -123,22 +123,22 @@ async fn hover_on_variables_reports_bindings() {
 
 #[tokio::test]
 async fn query_definition_hover_reports_inferred_variables() {
-    let source = concat!(
-        "query MovieDetailPageQuery($$movieId? = null $$direction = \"desc\" $count = 10) {\n",
-        "  public::users(\n",
-        "    where .id == $$movieId\n",
-        "    order by created_at $$direction\n",
-        "    limit $count\n",
-        "  ) {\n",
-        "    id\n",
-        "  }\n",
-        "}\n",
-        "query NoVariables {\n",
-        "  public::users(limit 1) {\n",
-        "    id\n",
-        "  }\n",
-        "}\n",
-    );
+    let source = indoc::indoc! {r#"
+        query MovieDetailPageQuery($$movieId? = null $$direction = "desc" $count = 10) {
+          public::users(
+            where .id == $$movieId
+            order by created_at $$direction
+            limit $count
+          ) {
+            id
+          }
+        }
+        query NoVariables {
+          public::users(limit 1) {
+            id
+          }
+        }
+    "#};
 
     let bowl = language_bowl().await;
     insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
@@ -169,19 +169,19 @@ async fn query_definition_hover_reports_inferred_variables() {
 async fn clause_fields_hover_from_semantic_resolutions() {
     let bowl = language_bowl().await;
     insert_catalog(&bowl, imdb_catalog()).await;
-    let source = concat!(
-        "query TopRated {\n",
-        "  movie_info_idx(\n",
-        "    where .info_type_id == 101\n",
-        "      and .title.kind_id == 1\n",
-        "      and .title.movie_info_idx.info_type_id == 100\n",
-        "    order by info desc, id asc\n",
-        "    limit 16\n",
-        "  ) {\n",
-        "    id\n",
-        "  }\n",
-        "}\n",
-    );
+    let source = indoc::indoc! {r#"
+        query TopRated {
+          movie_info_idx(
+            where .info_type_id == 101
+              and .title.kind_id == 1
+              and .title.movie_info_idx.info_type_id == 100
+            order by info desc, id asc
+            limit 16
+          ) {
+            id
+          }
+        }
+    "#};
     insert_source(&bowl, FIXTURE, source).await;
 
     let direct_column = source.find(".info_type_id").expect("test text") + 1;
@@ -211,17 +211,17 @@ async fn aggregate_fields_hover_and_tokenize_from_semantic_resolutions() {
 
     let bowl = language_bowl().await;
     insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
-    let source = concat!(
-        "query Stats {\n",
-        "  user_stats: public::users | aggregate {\n",
-        "    count\n",
-        "    first_name: min .name\n",
-        "  }\n",
-        "  user_groups: public::users | aggregate by name_group: .name {\n",
-        "    count\n",
-        "  }\n",
-        "}\n",
-    );
+    let source = indoc::indoc! {r#"
+        query Stats {
+          user_stats: public::users | aggregate {
+            count
+            first_name: min .name
+          }
+          user_groups: public::users | aggregate by name_group: .name {
+            count
+          }
+        }
+    "#};
     insert_source(&bowl, FIXTURE, source).await;
 
     let count = source.find("count").expect("test text");
@@ -262,15 +262,15 @@ async fn aggregate_predicates_hover_and_tokenize_from_clause_resolutions() {
 
     let bowl = language_bowl().await;
     insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
-    let source = concat!(
-        "query Filtered {\n",
-        "  public::users(\n",
-        "    where .posts | exists\n",
-        "      and (.posts | min .title) like \"A%\"\n",
-        "    limit 1\n",
-        "  ) { id }\n",
-        "}\n",
-    );
+    let source = indoc::indoc! {r#"
+        query Filtered {
+          public::users(
+            where .posts | exists
+              and (.posts | min .title) like "A%"
+            limit 1
+          ) { id }
+        }
+    "#};
     insert_source(&bowl, FIXTURE, source).await;
 
     let first_relation = source.find(".posts").expect("test text") + 1;

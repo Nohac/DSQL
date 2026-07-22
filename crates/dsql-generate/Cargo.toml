@@ -21,6 +21,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+indoc = { workspace = true }
 insta = { workspace = true }
 dsql-metadata = { workspace = true }
 facet-json = { workspace = true }

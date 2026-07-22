@@ -1,6 +1,6 @@
 # Adopt indoc for multiline DSQL test fixtures
 
-**ID:** b7caa354 | **Status:** Open | **Created:** 2026-07-21T21:36:08+02:00
+**ID:** b7caa354 | **Status:** Done | **Created:** 2026-07-21T21:36:08+02:00
 
 Multiline inline DSQL fixtures are commonly assembled with `concat!` and one
 quoted string per source line. This is noisy, obscures the query's visual

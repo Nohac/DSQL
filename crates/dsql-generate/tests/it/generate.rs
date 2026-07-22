@@ -431,13 +431,13 @@ async fn filter_match_lock_records_effective_scopes_and_resolved_identities() {
     let documents = vec![
         document(
             "queries/shared/policies.dsql",
-            concat!(
-                "condition Allowed { where $:allowed }\n",
-                "filter SharedStructural on { .id: uuid } {\n",
-                "  apply where Allowed\n",
-                "  field id where Allowed\n",
-                "}\n",
-            ),
+            indoc::indoc! {r#"
+                condition Allowed { where $:allowed }
+                filter SharedStructural on { .id: uuid } {
+                  apply where Allowed
+                  field id where Allowed
+                }
+            "#},
             "shared",
         ),
         document(
@@ -497,19 +497,19 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
         catalog_from_tables([NUMERIC_SCHEMA]),
         vec![document(
             "queries/frontend/numeric.dsql",
-            concat!(
-                "query NumericMetrics($$minimum = 12345678901234567890.12345678901234567890) {\n",
-                "  metrics(where .amount >= $$minimum and .amount in $$amounts) { amount ratio }\n",
-                "}\n",
-                "query NumericSummary {\n",
-                "  summary: metrics | aggregate {\n",
-                "    total_amount: sum .amount\n",
-                "    average_amount: avg .amount\n",
-                "    total_ratio: sum .ratio\n",
-                "    average_ratio: avg .ratio\n",
-                "  }\n",
-                "}\n",
-            ),
+            indoc::indoc! {r#"
+                query NumericMetrics($$minimum = 12345678901234567890.12345678901234567890) {
+                  metrics(where .amount >= $$minimum and .amount in $$amounts) { amount ratio }
+                }
+                query NumericSummary {
+                  summary: metrics | aggregate {
+                    total_amount: sum .amount
+                    average_amount: avg .amount
+                    total_ratio: sum .ratio
+                    average_ratio: avg .ratio
+                  }
+                }
+            "#},
             "frontend",
         )],
         BTreeMap::new(),
@@ -536,15 +536,15 @@ async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
         vec![document(
             "queries/frontend/variable-contracts.dsql",
-            concat!(
-                "fragment PostWindow($$after? = null $$limit = 5) on users {\n",
-                "  posts(where .created_at >= $$after limit $$) { id }\n",
-                "}\n",
-                "query Contained { users { ...PostWindow } }\n",
-                "query Bound($$since = \"2020-01-01T00:00:00Z\") {\n",
-                "  users { ...PostWindow($$after <- $$since) }\n",
-                "}\n",
-            ),
+            indoc::indoc! {r#"
+                fragment PostWindow($$after? = null $$limit = 5) on users {
+                  posts(where .created_at >= $$after limit $$) { id }
+                }
+                query Contained { users { ...PostWindow } }
+                query Bound($$since = "2020-01-01T00:00:00Z") {
+                  users { ...PostWindow($$after <- $$since) }
+                }
+            "#},
             "frontend",
         )],
         BTreeMap::new(),
@@ -571,13 +571,13 @@ async fn trusted_context_flows_through_sql_and_operation_metadata() {
         catalog_from_tables([USERS_SCHEMA]),
         vec![document(
             "queries/frontend/context.dsql",
-            concat!(
-                "filter CurrentUserOnly on users {\n",
-                "  apply where true\n",
-                "  where .id == $:user_id\n",
-                "}\n",
-                "query CurrentUser { users(limit 1) { id name } }\n",
-            ),
+            indoc::indoc! {r#"
+                filter CurrentUserOnly on users {
+                  apply where true
+                  where .id == $:user_id
+                }
+                query CurrentUser { users(limit 1) { id name } }
+            "#},
             "frontend",
         )],
         BTreeMap::new(),
@@ -602,31 +602,31 @@ async fn policy_metadata_explains_composed_access_and_disabled_assignments() {
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
         vec![document(
             "queries/frontend/access.dsql",
-            concat!(
-                "filter ContextName on users {\n",
-                "  apply\n",
-                "  field name where $:is_admin\n",
-                "}\n",
-                "filter RowName on users {\n",
-                "  apply\n",
-                "  field name where .id == $:user_id\n",
-                "}\n",
-                "filter UserPosts on users {\n",
-                "  apply\n",
-                "  field posts where .id == $:user_id\n",
-                "}\n",
-                "filter VisiblePosts on posts {\n",
-                "  apply\n",
-                "  where $:can_read_posts\n",
-                "}\n",
-                "filter Manual on users { where .id == .id }\n",
-                "query PolicyAudit(filter Manual when false) {\n",
-                "  users(limit 1) {\n",
-                "    name\n",
-                "    posts { title }\n",
-                "  }\n",
-                "}\n",
-            ),
+            indoc::indoc! {r#"
+                filter ContextName on users {
+                  apply
+                  field name where $:is_admin
+                }
+                filter RowName on users {
+                  apply
+                  field name where .id == $:user_id
+                }
+                filter UserPosts on users {
+                  apply
+                  field posts where .id == $:user_id
+                }
+                filter VisiblePosts on posts {
+                  apply
+                  where $:can_read_posts
+                }
+                filter Manual on users { where .id == .id }
+                query PolicyAudit(filter Manual when false) {
+                  users(limit 1) {
+                    name
+                    posts { title }
+                  }
+                }
+            "#},
             "frontend",
         )],
         BTreeMap::new(),
@@ -651,21 +651,21 @@ async fn singular_selection_shapes_flow_through_sql_and_metadata() {
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA, MEMBERSHIPS_SCHEMA]),
         vec![document(
             "queries/frontend/singular.dsql",
-            concat!(
-                "query ByLimit { users(limit 1) { id name } }\n",
-                "query ByKey { users(where .id == $$id) { id name } }\n",
-                "query ByCompositeKey {\n",
-                "  memberships(where .tenant_id == $$tenant and .user_id == $$user) { locale }\n",
-                "}\n",
-                "query RuntimeLimit { users(limit $$count) { id } }\n",
-                "query NestedLimit {\n",
-                "  users(limit 1) {\n",
-                "    id\n",
-                "    latest_post: posts(order by created_at desc limit 1) { title }\n",
-                "  }\n",
-                "}\n",
-                "query FlattenedSingular { ...users(limit 1) { user_id: id name } }\n",
-            ),
+            indoc::indoc! {r#"
+                query ByLimit { users(limit 1) { id name } }
+                query ByKey { users(where .id == $$id) { id name } }
+                query ByCompositeKey {
+                  memberships(where .tenant_id == $$tenant and .user_id == $$user) { locale }
+                }
+                query RuntimeLimit { users(limit $$count) { id } }
+                query NestedLimit {
+                  users(limit 1) {
+                    id
+                    latest_post: posts(order by created_at desc limit 1) { title }
+                  }
+                }
+                query FlattenedSingular { ...users(limit 1) { user_id: id name } }
+            "#},
             "frontend",
         )],
         BTreeMap::new(),
@@ -692,16 +692,16 @@ async fn row_filtered_singular_relations_make_object_and_flattened_fields_nullab
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
         vec![document(
             "queries/frontend/filtered-owner.dsql",
-            concat!(
-                "filter VisibleUsers on users { where .name != \"hidden\" }\n",
-                "query FilteredOwner {\n",
-                "  posts(limit 1) {\n",
-                "    id\n",
-                "    users(filter VisibleUsers) { id name }\n",
-                "    ...users(filter VisibleUsers) { owner_id: id owner_name: name }\n",
-                "  }\n",
-                "}\n",
-            ),
+            indoc::indoc! {r#"
+                filter VisibleUsers on users { where .name != "hidden" }
+                query FilteredOwner {
+                  posts(limit 1) {
+                    id
+                    users(filter VisibleUsers) { id name }
+                    ...users(filter VisibleUsers) { owner_id: id owner_name: name }
+                  }
+                }
+            "#},
             "frontend",
         )],
         BTreeMap::new(),
@@ -727,43 +727,43 @@ async fn field_filter_types_are_conservative_across_fragment_consumers() {
         vec![
             document(
                 "queries/shared/fragments.dsql",
-                concat!(
-                    "fragment UserFields on users {\n",
-                    "  id\n",
-                    "  name\n",
-                    "  posts { id title }\n",
-                    "  post_stats: posts | aggregate { count latest: max .created_at }\n",
-                    "}\n",
-                    "fragment PostFields on posts {\n",
-                    "  id\n",
-                    "  users { id name }\n",
-                    "  ...users { owner_name: name }\n",
-                    "}\n",
-                ),
+                indoc::indoc! {r#"
+                    fragment UserFields on users {
+                      id
+                      name
+                      posts { id title }
+                      post_stats: posts | aggregate { count latest: max .created_at }
+                    }
+                    fragment PostFields on posts {
+                      id
+                      users { id name }
+                      ...users { owner_name: name }
+                    }
+                "#},
                 "shared",
             ),
             document(
                 "queries/frontend/filtered.dsql",
-                concat!(
-                    "filter UserPrivacy on users {\n",
-                    "  apply where true\n",
-                    "  field name, posts where $:can_read_users\n",
-                    "}\n",
-                    "filter PostPrivacy on posts {\n",
-                    "  apply where true\n",
-                    "  field users where $:can_read_users\n",
-                    "}\n",
-                    "query FilteredUsers { users { ...UserFields } }\n",
-                    "query FilteredPosts { posts { ...PostFields } }\n",
-                ),
+                indoc::indoc! {r#"
+                    filter UserPrivacy on users {
+                      apply where true
+                      field name, posts where $:can_read_users
+                    }
+                    filter PostPrivacy on posts {
+                      apply where true
+                      field users where $:can_read_users
+                    }
+                    query FilteredUsers { users { ...UserFields } }
+                    query FilteredPosts { posts { ...PostFields } }
+                "#},
                 "frontend",
             ),
             document(
                 "queries/backend/unfiltered.dsql",
-                concat!(
-                    "query UnfilteredUsers { users { ...UserFields } }\n",
-                    "query UnfilteredPosts { posts { ...PostFields } }\n",
-                ),
+                indoc::indoc! {r#"
+                    query UnfilteredUsers { users { ...UserFields } }
+                    query UnfilteredPosts { posts { ...PostFields } }
+                "#},
                 "backend",
             ),
         ],
@@ -801,16 +801,16 @@ async fn field_filter_types_are_conservative_across_fragment_consumers() {
 
 #[tokio::test]
 async fn field_filter_context_conflicts_only_fail_when_both_guards_are_reached() {
-    const FILTERS: &str = concat!(
-        "filter NameAccess on users {\n",
-        "  apply\n",
-        "  field name where .name == $:shared\n",
-        "}\n",
-        "filter IdAccess on users {\n",
-        "  apply\n",
-        "  field id where .id == $:shared\n",
-        "}\n",
-    );
+    const FILTERS: &str = indoc::indoc! {r#"
+        filter NameAccess on users {
+          apply
+          field name where .name == $:shared
+        }
+        filter IdAccess on users {
+          apply
+          field id where .id == $:shared
+        }
+    "#};
 
     let unused = memory_bowl(
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
@@ -889,64 +889,64 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
         vec![document(
             "queries/frontend/aggregates.dsql",
-            concat!(
-                "fragment UserStats on users {\n",
-                "  post_stats: posts(where .title == $$title) | aggregate {\n",
-                "    count\n",
-                "    latest: max .created_at\n",
-                "  }\n",
-                "  post_groups: posts | aggregate by title_group: .title {\n",
-                "    count\n",
-                "    latest_group: max .created_at\n",
-                "  }\n",
-                "}\n",
-                "fragment FlatPostStats on users {\n",
-                "  ...posts(where .title == $$flat_title) | aggregate {\n",
-                "    flat_post_count: count\n",
-                "    flat_latest: max .created_at\n",
-                "  }\n",
-                "}\n",
-                "query RootStats {\n",
-                "  user_stats: users(where .name == $$name) | aggregate {\n",
-                "    count\n",
-                "    first_name: min .name\n",
-                "  }\n",
-                "}\n",
-                "query GroupedRoot {\n",
-                "  user_groups: users | aggregate by label: .name {\n",
-                "    count\n",
-                "    latest_name: max .name\n",
-                "  }\n",
-                "}\n",
-                "query NestedStats {\n",
-                "  users(limit 1) {\n",
-                "    id\n",
-                "    ...UserStats\n",
-                "  }\n",
-                "}\n",
-                "query FlattenRoot {\n",
-                "  ...users(where .name == $$flat_name) | aggregate {\n",
-                "    user_count: count\n",
-                "    first_name: min .name\n",
-                "  }\n",
-                "}\n",
-                "query FlattenNested {\n",
-                "  accounts: users(limit 1) {\n",
-                "    id\n",
-                "    ...FlatPostStats\n",
-                "  }\n",
-                "}\n",
-                "query FlattenOwner {\n",
-                "  feed: posts(limit 1) {\n",
-                "    id\n",
-                "    ...users(where .name == $$owner_name) {\n",
-                "      owner_name: name\n",
-                "      owner_posts: posts(limit 1) { title }\n",
-                "      ...posts | aggregate { owner_post_count: count }\n",
-                "    }\n",
-                "  }\n",
-                "}\n",
-            ),
+            indoc::indoc! {r#"
+                fragment UserStats on users {
+                  post_stats: posts(where .title == $$title) | aggregate {
+                    count
+                    latest: max .created_at
+                  }
+                  post_groups: posts | aggregate by title_group: .title {
+                    count
+                    latest_group: max .created_at
+                  }
+                }
+                fragment FlatPostStats on users {
+                  ...posts(where .title == $$flat_title) | aggregate {
+                    flat_post_count: count
+                    flat_latest: max .created_at
+                  }
+                }
+                query RootStats {
+                  user_stats: users(where .name == $$name) | aggregate {
+                    count
+                    first_name: min .name
+                  }
+                }
+                query GroupedRoot {
+                  user_groups: users | aggregate by label: .name {
+                    count
+                    latest_name: max .name
+                  }
+                }
+                query NestedStats {
+                  users(limit 1) {
+                    id
+                    ...UserStats
+                  }
+                }
+                query FlattenRoot {
+                  ...users(where .name == $$flat_name) | aggregate {
+                    user_count: count
+                    first_name: min .name
+                  }
+                }
+                query FlattenNested {
+                  accounts: users(limit 1) {
+                    id
+                    ...FlatPostStats
+                  }
+                }
+                query FlattenOwner {
+                  feed: posts(limit 1) {
+                    id
+                    ...users(where .name == $$owner_name) {
+                      owner_name: name
+                      owner_posts: posts(limit 1) { title }
+                      ...posts | aggregate { owner_post_count: count }
+                    }
+                  }
+                }
+            "#},
             "frontend",
         )],
         BTreeMap::new(),

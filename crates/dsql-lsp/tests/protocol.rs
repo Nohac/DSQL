@@ -362,14 +362,14 @@ async fn semantic_tokens_advertise_and_encode_the_host_wire_contract() {
     );
 
     let uri = session.uri("src/components/SemanticTokens.ts");
-    let text = concat!(
-        "const marker = \"😀\";\n",
-        "export const query = dsql(`\n",
-        "query Tokens {\n",
-        "  title(where .title == \"😀\" limit 1) { movie_id: id }\n",
-        "}\n",
-        "`);\n",
-    );
+    let text = indoc::indoc! {r#"
+        const marker = "😀";
+        export const query = dsql(`
+        query Tokens {
+          title(where .title == "😀" limit 1) { movie_id: id }
+        }
+        `);
+    "#};
     session.open(&uri, "typescript", text).await;
     let response = session
         .request_response(

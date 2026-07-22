@@ -219,18 +219,18 @@ fn match_lock_update_and_locked_modes_are_transactional() {
         Some(sha256_hex(canonical.as_bytes()))
     );
 
-    let noncanonical = concat!(
-        "version: 1\n",
-        "filters:\n",
-        "  - name: Visible\n",
-        "    scope: frontend\n",
-        "    defined_in: shared\n",
-        "    matches:\n",
-        "      - target: public.users\n",
-        "    conditions:\n",
-        "      - name: Allowed\n",
-        "        scope: shared\n",
-    );
+    let noncanonical = indoc::indoc! {r#"
+        version: 1
+        filters:
+          - name: Visible
+            scope: frontend
+            defined_in: shared
+            matches:
+              - target: public.users
+            conditions:
+              - name: Allowed
+                scope: shared
+    "#};
     std::fs::write(&lock_path, noncanonical).expect("write semantically equal lock");
     let accepted = publish_generation(&dir, &lock_path, &desired, MatchLockMode::Locked)
         .expect("locked mode compares canonical semantics");

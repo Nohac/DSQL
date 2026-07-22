@@ -142,14 +142,16 @@ async fn fragment_spread_envelopes_nested_bindings() {
     insert_source(
         &bowl,
         "envelope.dsql",
-        concat!(
-            "fragment UserFilter on public::users {\n",
-            "  ...UserPosts\n",
-            "}\n",
-            "fragment UserPosts on public::users {\n",
-            "  recent: posts(limit $count) {\n    id\n  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment UserFilter on public::users {
+              ...UserPosts
+            }
+            fragment UserPosts on public::users {
+              recent: posts(limit $count) {
+                id
+              }
+            }
+        "#},
     )
     .await;
     insta::assert_snapshot!(render_definition_bindings(&bowl).await);
@@ -161,20 +163,20 @@ async fn fragment_inputs_are_contained_lifted_namespaced_and_defaulted() {
     insert_source(
         &bowl,
         "fragment-inputs.dsql",
-        concat!(
-            "fragment UserPanel($created_after? = null $$limit = 10) on public::users {\n",
-            "  posts(where .created_at > $created_after limit $$) { id }\n",
-            "}\n",
-            "query Contained { public::users { ...UserPanel } }\n",
-            "query Lifted($$page_size = 20) {\n",
-            "  public::users { ...UserPanel($, $$limit <- $$page_size) }\n",
-            "}\n",
-            "query Namespaced {\n",
-            "  public::users {\n",
-            "    ...UserPanel($ <- $$panel_input, $$ <- $$panel_params)\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment UserPanel($created_after? = null $$limit = 10) on public::users {
+              posts(where .created_at > $created_after limit $$) { id }
+            }
+            query Contained { public::users { ...UserPanel } }
+            query Lifted($$page_size = 20) {
+              public::users { ...UserPanel($, $$limit <- $$page_size) }
+            }
+            query Namespaced {
+              public::users {
+                ...UserPanel($ <- $$panel_input, $$ <- $$panel_params)
+              }
+            }
+        "#},
     )
     .await;
 
@@ -185,17 +187,17 @@ async fn fragment_inputs_are_contained_lifted_namespaced_and_defaulted() {
 async fn flattened_aggregate_inputs_keep_the_source_and_aggregate_path_segments() {
     let snapshot = case(
         "flattened",
-        concat!(
-            "query FlattenedInputs {\n",
-            "  ...public::users(where .name == $root_name) | aggregate { user_count: count }\n",
-            "  accounts: public::users(limit 1) {\n",
-            "    ...posts(where .title == $post_title) | aggregate { post_count: count }\n",
-            "  }\n",
-            "  feed: posts(limit 1) {\n",
-            "    ...users(where .name == $owner_name) { owner_name: name }\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query FlattenedInputs {
+              ...public::users(where .name == $root_name) | aggregate { user_count: count }
+              accounts: public::users(limit 1) {
+                ...posts(where .title == $post_title) | aggregate { post_count: count }
+              }
+              feed: posts(limit 1) {
+                ...users(where .name == $owner_name) { owner_name: name }
+              }
+            }
+        "#},
     )
     .await;
 
@@ -211,16 +213,16 @@ async fn aggregate_predicate_inputs_use_resolved_result_types_and_paths() {
     insert_source(
         &bowl,
         "aggregate-predicate-inputs.dsql",
-        concat!(
-            "query AggregatePredicateInputs {\n",
-            "  title(\n",
-            "    where (.movie_info_idx | count) >= $minimum\n",
-            "      and (.movie_info_idx | min .info) >= $$earliest\n",
-            "      and (.movie_info_idx | sum .info_type_id) >= $total\n",
-            "    limit 1\n",
-            "  ) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query AggregatePredicateInputs {
+              title(
+                where (.movie_info_idx | count) >= $minimum
+                  and (.movie_info_idx | min .info) >= $$earliest
+                  and (.movie_info_idx | sum .info_type_id) >= $total
+                limit 1
+              ) { id }
+            }
+        "#},
     )
     .await;
 
@@ -235,12 +237,12 @@ async fn predicate_extensions_infer_boolean_scalar_and_collection_bindings() {
     insert_source(
         &bowl,
         "predicate-bindings.dsql",
-        concat!(
-            "query PredicateBindings {\n",
-            "  title(where not $$disabled and .id in $$ids\n",
-            "    and exists .movie_info_idx(where .info_type_id in $:allowed_types)) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query PredicateBindings {
+              title(where not $$disabled and .id in $$ids
+                and exists .movie_info_idx(where .info_type_id in $:allowed_types)) { id }
+            }
+        "#},
     )
     .await;
 
@@ -259,11 +261,11 @@ async fn invalid_aggregate_predicates_do_not_infer_bindings() {
     insert_source(
         &bowl,
         "invalid-aggregate-predicate-input.dsql",
-        concat!(
-            "query InvalidAggregateInput {\n",
-            "  title(where (.kind_type | count) >= $minimum limit 1) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            query InvalidAggregateInput {
+              title(where (.kind_type | count) >= $minimum limit 1) { id }
+            }
+        "#},
     )
     .await;
 
@@ -283,17 +285,17 @@ async fn cross_file_fragment_clauses_preserve_variable_inference() {
     insert_source(
         &bowl,
         "rating-filter.dsql",
-        concat!(
-            "fragment RatingFilter on title {\n",
-            "  ratings: movie_info_idx(\n",
-            "    where .info_type_id == $type\n",
-            "    order by id $direction\n",
-            "    limit $count\n",
-            "  ) {\n",
-            "    info\n",
-            "  }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            fragment RatingFilter on title {
+              ratings: movie_info_idx(
+                where .info_type_id == $type
+                order by id $direction
+                limit $count
+              ) {
+                info
+              }
+            }
+        "#},
     )
     .await;
     insert_source(

@@ -39,14 +39,14 @@ fn valid_scoped_relation_predicate() {
 
 #[test]
 fn aggregate_transform_is_contextual_syntax() {
-    let source = concat!(
-        "query Summary {\n",
-        "  stats: title(where .production_year > 2000) | aggregate {\n",
-        "    count\n",
-        "    earliest: min .production_year\n",
-        "  }\n",
-        "}\n",
-    );
+    let source = indoc::indoc! {r#"
+        query Summary {
+          stats: title(where .production_year > 2000) | aggregate {
+            count
+            earliest: min .production_year
+          }
+        }
+    "#};
     let (cst, diagnostics) = parse(source);
     let rendered = render_diagnostics(source, &diagnostics);
     insta::assert_snapshot!(format!("{cst}---\n{rendered}"));
@@ -54,16 +54,16 @@ fn aggregate_transform_is_contextual_syntax() {
 
 #[test]
 fn scalar_aggregate_predicates_bind_before_comparisons_and_clauses() {
-    let source = concat!(
-        "query AggregateFilters {\n",
-        "  title(\n",
-        "    where .movie_info_idx | exists\n",
-        "      and .movie_info_idx | count >= $$minimum\n",
-        "      and (.movie_info_idx | min .info) like \"4.%\"\n",
-        "    limit 10\n",
-        "  ) { id }\n",
-        "}\n",
-    );
+    let source = indoc::indoc! {r#"
+        query AggregateFilters {
+          title(
+            where .movie_info_idx | exists
+              and .movie_info_idx | count >= $$minimum
+              and (.movie_info_idx | min .info) like "4.%"
+            limit 10
+          ) { id }
+        }
+    "#};
     let (cst, diagnostics) = parse(source);
     let rendered = render_diagnostics(source, &diagnostics);
     insta::assert_snapshot!(format!("{cst}---\n{rendered}"));
@@ -71,15 +71,15 @@ fn scalar_aggregate_predicates_bind_before_comparisons_and_clauses() {
 
 #[test]
 fn predicate_extensions_preserve_boolean_precedence_and_sources() {
-    let source = concat!(
-        "query PredicateExtensions {\n",
-        "  users(\n",
-        "    where not $$disabled or .id in [1, null, 2,]\n",
-        "      and .deleted_at is not null\n",
-        "      and exists .posts(filter Published when $$enabled where .title not in $$titles and .user_id == ..id)\n",
-        "  ) { id }\n",
-        "}\n",
-    );
+    let source = indoc::indoc! {r#"
+        query PredicateExtensions {
+          users(
+            where not $$disabled or .id in [1, null, 2,]
+              and .deleted_at is not null
+              and exists .posts(filter Published when $$enabled where .title not in $$titles and .user_id == ..id)
+          ) { id }
+        }
+    "#};
     let (cst, diagnostics) = parse(source);
     insta::assert_snapshot!(format!(
         "{cst}---\n{}",
@@ -89,17 +89,17 @@ fn predicate_extensions_preserve_boolean_precedence_and_sources() {
 
 #[test]
 fn spreads_and_flattened_selections_are_disambiguated_by_the_suffix() {
-    let source = concat!(
-        "fragment Bits on users { id }\n",
-        "query Flattened {\n",
-        "  accounts: users(limit 1) {\n",
-        "    ...Bits @include(if: true)\n",
-        "    ...posts @include(if: true) { title }\n",
-        "    ...posts | aggregate { post_count: count }\n",
-        "  }\n",
-        "  ...public::users(where .name == $$name) | aggregate { user_count: count }\n",
-        "}\n",
-    );
+    let source = indoc::indoc! {r#"
+        fragment Bits on users { id }
+        query Flattened {
+          accounts: users(limit 1) {
+            ...Bits @include(if: true)
+            ...posts @include(if: true) { title }
+            ...posts | aggregate { post_count: count }
+          }
+          ...public::users(where .name == $$name) | aggregate { user_count: count }
+        }
+    "#};
     let (cst, diagnostics) = parse(source);
     let rendered = render_diagnostics(source, &diagnostics);
     insta::assert_snapshot!(format!("{cst}---\n{rendered}"));

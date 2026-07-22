@@ -51,21 +51,21 @@ async fn filters_and_conditions_resolve_concrete_and_structural_targets() {
     insert_source(
         &bowl,
         "policies.dsql",
-        concat!(
-            "condition Enabled { where true }\n",
-            "condition SameRow on { .id: int } { where .id == .id }\n",
-            "filter Titles on public::title {\n",
-            "  apply where Enabled\n",
-            "  where .id > 0\n",
-            "  field production_year, kind_id where SameRow\n",
-            "}\n",
-            "filter IntegerRows on { .id: int } { where .id > 0 }\n",
-            "filter Correlated on public::title {\n",
-            "  where exists .movie_info_idx(where .info_type_id == ..kind_id)\n",
-            "    and exists public::info_type(where .id == ..kind_id)\n",
-            "  field movie_info_idx where true\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            condition Enabled { where true }
+            condition SameRow on { .id: int } { where .id == .id }
+            filter Titles on public::title {
+              apply where Enabled
+              where .id > 0
+              field production_year, kind_id where SameRow
+            }
+            filter IntegerRows on { .id: int } { where .id > 0 }
+            filter Correlated on public::title {
+              where exists .movie_info_idx(where .info_type_id == ..kind_id)
+                and exists public::info_type(where .id == ..kind_id)
+              field movie_info_idx where true
+            }
+        "#},
     )
     .await;
 
@@ -80,27 +80,27 @@ async fn invalid_filter_definitions_and_assignments_fail_closed() {
     insert_source(
         &bowl,
         "invalid-policies.dsql",
-        concat!(
-            "condition RowBound on { .id: int } { where .id > 0 }\n",
-            "condition MissingTarget { where .id > 0 }\n",
-            "filter MissingTarget { where true }\n",
-            "filter EmptyShape on {} { where true }\n",
-            "filter UnknownType on { .id: mystery } { where true }\n",
-            "filter Undeclared on { .id: int } { where .kind_id > 0 }\n",
-            "filter Enforced on public::title { apply where true where .id > $:minimum_id }\n",
-            "filter WrongInput on public::title { where .id == $$public_id }\n",
-            "filter InvalidApply on public::title { apply where RowBound where .id > 0 }\n",
-            "filter InvalidExists on public::title { where exists .kind(where .missing == ..missing) }\n",
-            "filter StructuralExists on { .id: int } { where exists public::title(where .id == ..id) }\n",
-            "filter NestedAssignment on public::title { where exists .movie_info_idx(filter Enforced) }\n",
-            "query Invalid(\n",
-            "  filter Missing\n",
-            "  filter Enforced when $$disable\n",
-            ") {\n",
-            "  title(filter Enforced when false filter Enforced) { id }\n",
-            "  name(filter Enforced) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            condition RowBound on { .id: int } { where .id > 0 }
+            condition MissingTarget { where .id > 0 }
+            filter MissingTarget { where true }
+            filter EmptyShape on {} { where true }
+            filter UnknownType on { .id: mystery } { where true }
+            filter Undeclared on { .id: int } { where .kind_id > 0 }
+            filter Enforced on public::title { apply where true where .id > $:minimum_id }
+            filter WrongInput on public::title { where .id == $$public_id }
+            filter InvalidApply on public::title { apply where RowBound where .id > 0 }
+            filter InvalidExists on public::title { where exists .kind(where .missing == ..missing) }
+            filter StructuralExists on { .id: int } { where exists public::title(where .id == ..id) }
+            filter NestedAssignment on public::title { where exists .movie_info_idx(filter Enforced) }
+            query Invalid(
+              filter Missing
+              filter Enforced when $$disable
+            ) {
+              title(filter Enforced when false filter Enforced) { id }
+              name(filter Enforced) { id }
+            }
+        "#},
     )
     .await;
 
@@ -214,16 +214,16 @@ async fn filter_assignment_conditions_infer_boolean_inputs() {
     insert_source(
         &bowl,
         "inputs.dsql",
-        concat!(
-            "filter Manual on title { where .id > 0 }\n",
-            "filter Info on movie_info_idx { where .id > 0 }\n",
-            "query Q(filter Manual when $$operation) {\n",
-            "  title(\n",
-            "    filter Manual when $local\n",
-            "    where exists .movie_info_idx(filter Info when $$nested)\n",
-            "  ) { id }\n",
-            "}\n",
-        ),
+        indoc::indoc! {r#"
+            filter Manual on title { where .id > 0 }
+            filter Info on movie_info_idx { where .id > 0 }
+            query Q(filter Manual when $$operation) {
+              title(
+                filter Manual when $local
+                where exists .movie_info_idx(filter Info when $$nested)
+              ) { id }
+            }
+        "#},
     )
     .await;
 
@@ -242,22 +242,22 @@ async fn trusted_context_type_conflicts_fail_across_policy_and_operation_boundar
         render_diagnostic_facts(&bowl).await
     }
 
-    let policies = case(concat!(
-        "filter ById on title { apply where true where .id > $:shared }\n",
-        "filter ByName on title { apply where true where .title > $:shared }\n",
-        "query Conflict { title { id } }\n",
-    ))
+    let policies = case(indoc::indoc! {r#"
+        filter ById on title { apply where true where .id > $:shared }
+        filter ByName on title { apply where true where .title > $:shared }
+        query Conflict { title { id } }
+    "#})
     .await;
-    let query = case(concat!(
-        "filter ById on title { apply where true where .id > $:shared }\n",
-        "query Conflict { title(where .title > $:shared) { id } }\n",
-    ))
+    let query = case(indoc::indoc! {r#"
+        filter ById on title { apply where true where .id > $:shared }
+        query Conflict { title(where .title > $:shared) { id } }
+    "#})
     .await;
-    let roots = case(concat!(
-        "filter TitleById on title { apply where true where .id > $:shared }\n",
-        "filter InfoByValue on movie_info_idx { apply where true where .info > $:shared }\n",
-        "query Conflict { title { id } movie_info_idx { id } }\n",
-    ))
+    let roots = case(indoc::indoc! {r#"
+        filter TitleById on title { apply where true where .id > $:shared }
+        filter InfoByValue on movie_info_idx { apply where true where .info > $:shared }
+        query Conflict { title { id } movie_info_idx { id } }
+    "#})
     .await;
 
     insta::assert_snapshot!(format!(
@@ -351,12 +351,12 @@ async fn operation_assignments_match_sources_contributed_by_fragments() {
     insert_source(
         &bowl,
         "fragment-filter.dsql",
-        concat!(
-            "filter InfoRows on movie_info_idx { where .id > 0 }\n",
-            "filter LocalInfo on movie_info_idx { where .id > 0 }\n",
-            "fragment Info on title { movie_info_idx(filter LocalInfo) { id } }\n",
-            "query Q(filter InfoRows) { title(limit 1) { ...Info } }\n",
-        ),
+        indoc::indoc! {r#"
+            filter InfoRows on movie_info_idx { where .id > 0 }
+            filter LocalInfo on movie_info_idx { where .id > 0 }
+            fragment Info on title { movie_info_idx(filter LocalInfo) { id } }
+            query Q(filter InfoRows) { title(limit 1) { ...Info } }
+        "#},
     )
     .await;
 

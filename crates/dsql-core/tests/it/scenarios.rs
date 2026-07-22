@@ -232,17 +232,17 @@ async fn policy_services_follow_scope_and_collection_targets() {
     use dsql_core::service::semantic_tokens;
 
     let scenario = Scenario::new().await;
-    let policy_source = concat!(
-        "condition <|>Admin { where $:is_admin }\n",
-        "filter <|>TitleAccess on title {\n",
-        "  apply where <|>Admin\n",
-        "  field production_year where <|>Admin\n",
-        "}\n",
-        "filter NameAccess on name { where .id > 0 }\n",
-        "query Q(filter <|>TitleAccess when false) {\n",
-        "  title(filter <|>TitleAccess) { id }\n",
-        "}\n",
-    );
+    let policy_source = indoc::indoc! {r#"
+        condition <|>Admin { where $:is_admin }
+        filter <|>TitleAccess on title {
+          apply where <|>Admin
+          field production_year where <|>Admin
+        }
+        filter NameAccess on name { where .id > 0 }
+        query Q(filter <|>TitleAccess when false) {
+          title(filter <|>TitleAccess) { id }
+        }
+    "#};
     let markers = scenario.open("policies.dsql", policy_source).await;
     let (clean, _) = marked(policy_source);
     let tokens = semantic_tokens(&scenario.bowl, "policies.dsql")
@@ -366,21 +366,22 @@ async fn completion_of_directives_follows_the_registry() {
     let markers = scenario
         .open(
             "d.dsql",
-            concat!(
-                "query D {\n",
-                "  title(limit 1) {\n",
-                "    a: id @<|>\n",
-                "    b: id @dsql.<|>\n",
-                "    c: id @.<|>\n",
-                "    d: id @dsql.include_if(<|>)\n",
-                "    e: id @dsql.include_if(if: <|>)\n",
-                "    f: id @dsql.deprecated(reason: <|>)\n",
-                "    g: id @dsql.include_if(if: true, <|>)\n",
-                "    h: id @dsql.include_if(if <|>)\n",
-                "    i: id @dsql.include_if( # a comment\n      <|>)\n",
-                "  }\n",
-                "}\n",
-            ),
+            indoc::indoc! {r#"
+                query D {
+                  title(limit 1) {
+                    a: id @<|>
+                    b: id @dsql.<|>
+                    c: id @.<|>
+                    d: id @dsql.include_if(<|>)
+                    e: id @dsql.include_if(if: <|>)
+                    f: id @dsql.deprecated(reason: <|>)
+                    g: id @dsql.include_if(if: true, <|>)
+                    h: id @dsql.include_if(if <|>)
+                    i: id @dsql.include_if( # a comment
+                      <|>)
+                  }
+                }
+            "#},
         )
         .await;
     let mut sections = Vec::new();
@@ -432,15 +433,19 @@ async fn definitions_resolve_catalog_targets() {
     let markers = scenario
             .open(
                 "catalog.dsql",
-                concat!(
-                    "fragment Bits on ti<|>tle {\n  id\n}\n",
-                    "query Catalog {\n",
-                    "  movie_i<|>nfo(where .ti<|>tle.production_y<|>ear == 2000 order by no<|>te asc) {\n",
-                    "    no<|>te\n",
-                    "    ti<|>tle {\n      id\n    }\n",
-                    "  }\n",
-                    "}\n",
-                ),
+                indoc::indoc! {r#"
+                    fragment Bits on ti<|>tle {
+                      id
+                    }
+                    query Catalog {
+                      movie_i<|>nfo(where .ti<|>tle.production_y<|>ear == 2000 order by no<|>te asc) {
+                        no<|>te
+                        ti<|>tle {
+                          id
+                        }
+                      }
+                    }
+                "#},
             )
             .await;
     let mut answers = Vec::new();
