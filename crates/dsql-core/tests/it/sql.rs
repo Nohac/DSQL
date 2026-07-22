@@ -3,12 +3,12 @@
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
-use dsql_core::facts::{PlanDemand, SqlDemand, VariablesDemand};
+use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand, VariablesDemand};
 use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 
-use crate::{fixture, imdb_catalog, numeric_catalog, set_source_text};
+use crate::{fixture, imdb_catalog, numeric_catalog, render_diagnostic_facts, set_source_text};
 
 async fn sql_bowl(catalog: Catalog) -> Bowl {
     sql_bowl_with_limit(catalog, Some(10)).await
@@ -177,6 +177,82 @@ async fn nullable_inputs_prune_predicates_clauses_ordering_and_cardinality() {
     )
     .await;
 
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn nullable_predicate_operands_wrap_complete_atoms_in_every_order() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+    insert_source(
+        &bowl,
+        "nullable-predicate-operands.dsql",
+        indoc::indoc! {r#"
+            query OptionalAtoms(
+              $$id? = null
+              $$left? = null
+              $$right? = null
+            ) {
+              direct: public::users(where .id == $$id) { id }
+              seed: public::users(where .id == $$left and .id == $$right) { id }
+              reversed: public::users(
+                where $$id == .id or .name == "fallback"
+              ) { id }
+              multiple: public::users(
+                where $$left == $$right or .name == "fallback"
+              ) { id }
+              negated: public::users(where not ($$id == .id)) { id }
+            }
+        "#},
+    )
+    .await;
+
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn valid_collection_and_pagination_defaults_survive_every_binding_shape() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+    insert_source(
+        &bowl,
+        "default-binding-shapes.dsql",
+        indoc::indoc! {r#"
+            fragment DefaultWindow(
+              $$ids = ["00000000-0000-0000-0000-000000000001"]
+              $$limit = 5
+              $$offset = 2
+            ) on public::users {
+              posts(where .id in $$ids limit $$limit offset $$offset) { id }
+            }
+            query DirectDefaults(
+              $$ids? = null
+              $$limit = 0
+              $$offset = 2
+            ) {
+              public::posts(
+                where .id in $$ids
+                limit $$limit
+                offset $$offset
+              ) { id }
+            }
+            query ContainedDefaults {
+              public::users { ...DefaultWindow }
+            }
+            query LiftedDefaults {
+              public::users { ...DefaultWindow($$) }
+            }
+            query OmittedDefaults($$limit = 7) {
+              public::users { ...DefaultWindow($$limit) }
+            }
+        "#},
+    )
+    .await;
+
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
     insta::assert_snapshot!(render_sql(&bowl).await);
 }
 

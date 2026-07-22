@@ -1670,12 +1670,31 @@ impl Planner<'_> {
         variable_scope: &VariablePathScope,
         inferred_path: &[String],
     ) -> Option<FilterExpr> {
-        if !matches!(op, BinaryOp::And | BinaryOp::Or)
-            && (matches!(left, FilterExpr::Absent) || matches!(right, FilterExpr::Absent))
-        {
+        if matches!(op, BinaryOp::And | BinaryOp::Or) {
+            return Some(FilterExpr::Binary {
+                left: Box::new(left),
+                op: if matches!(op, BinaryOp::And) {
+                    FilterOp::And
+                } else {
+                    FilterOp::Or
+                },
+                right: Box::new(right),
+            });
+        }
+
+        if matches!(left, FilterExpr::Absent) || matches!(right, FilterExpr::Absent) {
             return Some(FilterExpr::Absent);
         }
-        let optional_parameter = self.nullable_operand_parameter(&left, &right);
+        let (left, mut optional_parameters) = self.predicate_atom_operand(left);
+        let (right, right_parameters) = self.predicate_atom_operand(right);
+        for parameter in right_parameters {
+            if !optional_parameters
+                .iter()
+                .any(|existing| existing.path == parameter.path)
+            {
+                optional_parameters.push(parameter);
+            }
+        }
         if let BinaryOp::Variable(variable) = op {
             let compares_null = matches!(
                 (&left, &right),
@@ -1698,48 +1717,40 @@ impl Planner<'_> {
                 variants: operator_variants(variable, compares_null),
                 right: Box::new(right),
             };
-            return Some(optional_parameter.map_or(filter.clone(), |parameter| {
-                FilterExpr::Optional {
-                    parameter,
-                    operand: Box::new(filter),
-                }
-            }));
+            return Some(wrap_optional_atom(filter, optional_parameters));
         }
         let op = match op {
             BinaryOp::Comparison(op) => FilterOp::from(*op),
             BinaryOp::In | BinaryOp::NotIn => return None,
-            BinaryOp::And => FilterOp::And,
-            BinaryOp::Or => FilterOp::Or,
-            BinaryOp::Variable(_) => return None,
+            BinaryOp::And | BinaryOp::Or | BinaryOp::Variable(_) => return None,
         };
         let filter = FilterExpr::Binary {
             left: Box::new(left),
             op,
             right: Box::new(right),
         };
-        if matches!(op, FilterOp::And | FilterOp::Or) {
-            Some(filter)
-        } else {
-            Some(
-                optional_parameter.map_or(filter.clone(), |parameter| FilterExpr::Optional {
-                    parameter,
-                    operand: Box::new(filter),
-                }),
-            )
-        }
+        Some(wrap_optional_atom(filter, optional_parameters))
     }
 
-    fn nullable_operand_parameter(
-        &self,
-        left: &FilterExpr,
-        right: &FilterExpr,
-    ) -> Option<SqlParameter> {
-        [left, right].into_iter().find_map(|operand| match operand {
-            FilterExpr::Parameter(parameter) if self.variable_is_nullable(&parameter.path) => {
-                Some(parameter.clone())
-            }
-            _ => None,
-        })
+    fn predicate_atom_operand(&self, operand: FilterExpr) -> (FilterExpr, Vec<SqlParameter>) {
+        let mut parameters = Vec::new();
+        let mut inner = operand;
+        while let FilterExpr::Optional { parameter, operand } = inner {
+            parameters.push(parameter);
+            inner = *operand;
+        }
+        if !matches!(inner, FilterExpr::Parameter(_)) && !parameters.is_empty() {
+            return (wrap_optional_atom(inner, parameters), Vec::new());
+        }
+        if let FilterExpr::Parameter(parameter) = &inner
+            && self.variable_is_nullable(&parameter.path)
+            && !parameters
+                .iter()
+                .any(|existing| existing.path == parameter.path)
+        {
+            parameters.push(parameter.clone());
+        }
+        (inner, parameters)
     }
 
     fn optional_filter(&self, path: &str, filter: FilterExpr) -> FilterExpr {
@@ -2123,7 +2134,7 @@ fn plan_u64_value(
         Expr::Literal {
             value: LiteralValue::Number(value),
             ..
-        } => value.parse().ok().map(SqlValue::Literal),
+        } => Some(SqlValue::Literal(value.parse().unwrap_or_default())),
         Expr::Variable { variable, .. } => match variable_value(
             selection_path,
             VariablePathContext {
@@ -2137,13 +2148,26 @@ fn plan_u64_value(
         ) {
             VariableValue::Public(path) => Some(SqlValue::Parameter(SqlParameter { path })),
             VariableValue::Default(InputDefault::Number(value)) => {
-                value.parse().ok().map(SqlValue::Literal)
+                // Invalid pagination defaults are diagnosed during contract
+                // validation. Preserve a present, fail-closed clause if a
+                // caller still plans the invalid program.
+                Some(SqlValue::Literal(value.parse().unwrap_or_default()))
             }
             VariableValue::Default(InputDefault::Null) => None,
             VariableValue::Default(_) => None,
         },
         _ => None,
     }
+}
+
+fn wrap_optional_atom(filter: FilterExpr, parameters: Vec<SqlParameter>) -> FilterExpr {
+    parameters
+        .into_iter()
+        .rev()
+        .fold(filter, |operand, parameter| FilterExpr::Optional {
+            parameter,
+            operand: Box::new(operand),
+        })
 }
 
 fn input_default_filter(default: &InputDefault) -> Option<FilterExpr> {

@@ -1,6 +1,6 @@
 # Reject invalid pagination defaults
 
-**ID:** a6289270 | **Status:** Open | **Created:** 2026-07-22T18:52:42+02:00
+**ID:** a6289270 | **Status:** Done | **Created:** 2026-07-22T18:52:42+02:00
 
 Definition-default validation accepts every signed integer for `limit` and
 `offset`, while planning parses their defaults as `u64`. A negative default

@@ -1153,6 +1153,25 @@ fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) 
             )
         });
     }
+    if matches!(binding.role, VariableRole::Limit | VariableRole::Offset)
+        && let InputDefault::Number(value) = default
+        && !value.parse::<i64>().is_ok_and(|value| value >= 0)
+    {
+        return Some(format!(
+            "{} default for `{}` must be a non-negative integer no greater than {}",
+            binding.role.as_str(),
+            refinement.name,
+            i64::MAX,
+        ));
+    }
+    if let InputDefault::Collection(items) = default
+        && items.iter().any(|item| matches!(item, InputDefault::Null))
+    {
+        return Some(format!(
+            "collection default for `{}` cannot contain `null` elements",
+            refinement.name
+        ));
+    }
     if input_default_matches(default, binding) {
         None
     } else {
@@ -1176,7 +1195,7 @@ fn input_default_matches(default: &InputDefault, binding: &VariableBinding) -> b
         InputDefault::Collection(items) if binding.collection => items.iter().all(|item| {
             !matches!(
                 item,
-                InputDefault::Collection(_) | InputDefault::EmptyObject
+                InputDefault::Null | InputDefault::Collection(_) | InputDefault::EmptyObject
             ) && input_default_scalar_matches(item, binding.data_type)
         }),
         InputDefault::EmptyObject => false,

@@ -1,6 +1,6 @@
 # Fix optional predicates with nullable operands
 
-**ID:** 6578e784 | **Status:** Open | **Created:** 2026-07-22T18:52:41+02:00
+**ID:** 6578e784 | **Status:** Done | **Created:** 2026-07-22T18:52:41+02:00
 
 Nullable predicate operands are only hoisted when they appear as a bare
 parameter in the planner's preferred path-on-the-left shape. In a query that

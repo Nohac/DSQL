@@ -64,6 +64,17 @@ async fn invalid_input_refinements_and_fragment_bindings_are_reported() {
             query InvalidSort($$direction = "sideways") {
               public::users(order by id $$direction) { id }
             }
+            query InvalidPaginationDefaults(
+              $$limit = -1
+              $$offset = 9223372036854775808
+            ) {
+              public::users(limit $$limit offset $$offset) { id }
+            }
+            query InvalidCollectionDefault(
+              $$ids = ["00000000-0000-0000-0000-000000000001", null]
+            ) {
+              public::users(where .id in $$ids) { id }
+            }
             query InvalidBindings {
               public::users { ...Required($$missing) }
             }
@@ -75,6 +86,35 @@ async fn invalid_input_refinements_and_fragment_bindings_are_reported() {
     .await;
 
     insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn valid_pagination_and_collection_default_edges_check_cleanly() {
+    let bowl = checked_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "valid-default-edges.dsql",
+        indoc::indoc! {r#"
+            query ValidDefaults(
+              $$nullable_ids? = null
+              $$empty_ids = []
+              $$ids = ["00000000-0000-0000-0000-000000000001"]
+              $$limit = 0
+              $$offset = 9223372036854775807
+            ) {
+              nullable: public::users(where .id in $$nullable_ids) { id }
+              empty: public::users(where .id in $$empty_ids) { id }
+              populated: public::users(
+                where .id in $$ids
+                limit $$limit
+                offset $$offset
+              ) { id }
+            }
+        "#},
+    )
+    .await;
+
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
 }
 
 #[tokio::test]

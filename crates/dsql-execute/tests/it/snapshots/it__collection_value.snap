@@ -1,0 +1,29 @@
+---
+source: crates/dsql-execute/tests/it/main.rs
+expression: "materialize(&collection_value,\n&bindings).expect(\"collection value materializes\")"
+---
+MaterializedOperation {
+    sql: "select $1, $2, $3 order by recorded_at asc",
+    parameters: [
+        BoundParameter {
+            path: "params.station",
+            data_type: "uuid",
+            collection: false,
+            value: String("018f6f19-795f-7c3d-b1b3-8f177ab8a321"),
+        },
+        BoundParameter {
+            path: "input.readings.ids",
+            data_type: "int",
+            collection: true,
+            value: Array [
+                Number(7),
+            ],
+        },
+        BoundParameter {
+            path: "context.tenant_id",
+            data_type: "uuid",
+            collection: false,
+            value: String("018f6f19-795f-7c3d-b1b3-8f177ab8a322"),
+        },
+    ],
+}

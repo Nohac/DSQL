@@ -1,6 +1,6 @@
 # Reject null elements in collection defaults
 
-**ID:** 0ca8dcdb | **Status:** Open | **Created:** 2026-07-22T18:52:42+02:00
+**ID:** 0ca8dcdb | **Status:** Done | **Created:** 2026-07-22T18:52:42+02:00
 
 Scalar default matching treats `null` as compatible with every logical type,
 including elements of collection defaults. Contracts such as

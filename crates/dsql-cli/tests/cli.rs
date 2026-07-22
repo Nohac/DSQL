@@ -49,6 +49,15 @@ fn observatory_reading_ids(output: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn observatory_root_reading_ids(output: &str) -> Vec<serde_json::Value> {
+    output_json(output)["readings"]
+        .as_array()
+        .expect("root reading collection")
+        .iter()
+        .map(|reading| reading["id"].clone())
+        .collect()
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).to_string()
 }
@@ -175,6 +184,7 @@ fn observatory_operation_list_exposes_importing_scopes() {
             "api\tMissingFlattened",
             "api\tNamespacedSensorWindow",
             "api\tNetworkTopology",
+            "api\tOptionalPredicateProbe",
             "api\tPrivacyProbe",
             "api\tRecentReadings",
             "api\tTypedReading",
@@ -349,6 +359,44 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         ],
     );
     assert_eq!(output_json(&filtered)["readings"]["id"], 4);
+
+    let optional_absent = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "OptionalPredicateProbe",
+        &["--context", tenant],
+    );
+    assert_eq!(
+        observatory_root_reading_ids(&optional_absent),
+        [
+            serde_json::json!(4),
+            serde_json::json!(8),
+            serde_json::json!(12),
+        ]
+    );
+
+    let optional_present = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "OptionalPredicateProbe",
+        &[
+            "--variables",
+            r#"{"params":{"minimum":10}}"#,
+            "--context",
+            tenant,
+        ],
+    );
+    assert_eq!(
+        observatory_root_reading_ids(&optional_present),
+        [
+            serde_json::json!(4),
+            serde_json::json!(8),
+            serde_json::json!(10),
+            serde_json::json!(12),
+        ]
+    );
 
     for operation in [
         "ContainedSensorWindow",

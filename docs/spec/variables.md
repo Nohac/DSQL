@@ -300,6 +300,15 @@ and ordering additionally admit their empty identity values as described in
 [Dynamic Input Defaults](#dynamic-input-defaults). Rich object defaults remain
 deferred until general object-literal syntax is designed.
 
+Collection defaults cannot contain `null` elements until element nullability is
+represented explicitly through metadata, materialization, and SQL generation.
+This restriction applies only to definition defaults: query-authored membership
+lists and caller-supplied collection values retain PostgreSQL-compatible null
+elements. A nullable collection may itself use `null` as its whole default.
+Defaults for `limit` and `offset` must be non-negative integers in the supported
+`int` range; an invalid default is a diagnostic and cannot remove a pagination
+clause during planning.
+
 Defaults are type-checked by the compiler and serialized into generated
 metadata. At execution, materialization substitutes a missing value before
 ordinary input validation and SQL parameter binding. A supplied value always
@@ -329,6 +338,11 @@ query Movies(
   }
 }
 ```
+
+Operand order does not change this rule. If one atom contains multiple nullable
+public operands, the atom is present only when every controlling operand is
+non-null; any null operand removes the complete atom before boolean-tree
+pruning.
 
 Predicate absence is structural pruning, not replacement with boolean `true`:
 

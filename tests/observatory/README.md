@@ -17,7 +17,7 @@ missing conformance case is visible during review.
 | Resolution scopes and transitive shared definitions | `dsql.toml`, `shared`, `api`, and `analytics` |
 | Structured inputs, top-level params, and trusted context | `TypedReading`, `RecentReadings`, and `TenantScope` |
 | Scalar, collection, enum, boolean, and null defaults | `RecentReadings`, `ManualFilterProbe`, and `SensorReadingWindow` |
-| Nullable predicate pruning and optional pagination | `SensorReadingWindow` and `MappedSensorWindow` |
+| Nullable predicate pruning, reversed operands, and optional pagination | `OptionalPredicateProbe`, `SensorReadingWindow`, and `MappedSensorWindow` |
 | Fragment containment and whole-root lifting | `ContainedSensorWindow` and `LiftedSensorWindow` |
 | Namespaced and cross-root leaf bindings, including forwarding shorthand | `NamespacedSensorWindow` and `MappedSensorWindow` |
 | Nested composite-key relations, existence, ordering, and pagination | `NetworkTopology` and `SensorReadingWindow` |

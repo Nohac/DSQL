@@ -57,6 +57,12 @@ query ManualFilterProbe(
   }
 }
 
+query OptionalPredicateProbe($$minimum? = null) {
+  readings(where $$minimum <= .id or .flagged == true order by id asc) {
+    id
+  }
+}
+
 query EmptyAggregateCount {
   sensors(where .code == "humidity"
     and (.readings | count) == 0

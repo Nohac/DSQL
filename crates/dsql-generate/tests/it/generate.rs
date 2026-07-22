@@ -544,6 +544,14 @@ async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
                 query Bound($$since = "2020-01-01T00:00:00Z") {
                   users { ...PostWindow($$after <- $$since) }
                 }
+                query NullableCollection($$ids? = null) {
+                  users(where .id in $$ids) { id }
+                }
+                query CollectionDefault(
+                  $$ids = ["00000000-0000-0000-0000-000000000001"]
+                ) {
+                  users(where .id in $$ids) { id }
+                }
             "#},
             "frontend",
         )],
@@ -557,7 +565,12 @@ async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
         .snapshot
         .artifacts
         .iter()
-        .filter(|artifact| matches!(artifact.name.as_str(), "PostWindow" | "Contained" | "Bound"))
+        .filter(|artifact| {
+            matches!(
+                artifact.name.as_str(),
+                "PostWindow" | "Contained" | "Bound" | "NullableCollection" | "CollectionDefault"
+            )
+        })
         .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
         .collect::<Vec<_>>();
     artifacts.sort();

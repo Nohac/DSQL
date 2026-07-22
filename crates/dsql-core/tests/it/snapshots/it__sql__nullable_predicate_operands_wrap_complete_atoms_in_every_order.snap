@@ -1,0 +1,128 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- direct
+select
+  COALESCE(
+    JSON_AGG(JSON_BUILD_OBJECT('id', "direct_664e5a81"."id")),
+    '[]'
+  ) as "direct"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "direct_664e5a81"
+    where
+      (not ($1 is not null))
+      or "direct_664e5a81"."id" = ($1)
+    limit
+      10
+  ) as "direct_664e5a81"
+-- parameters: params.id
+
+-- multiple
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT('id', "multiple_21425244"."id")
+    ),
+    '[]'
+  ) as "multiple"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "multiple_21425244"
+    where
+      (
+        ($1 is not null)
+        and ($2 is not null)
+        and ($1) = ($2)
+      )
+      or "multiple_21425244"."name" = 'fallback'
+    limit
+      10
+  ) as "multiple_21425244"
+-- parameters: params.left, params.right
+
+-- negated
+select
+  COALESCE(
+    JSON_AGG(JSON_BUILD_OBJECT('id', "negated_a22fcfea"."id")),
+    '[]'
+  ) as "negated"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "negated_a22fcfea"
+    where
+      (not ($1 is not null))
+      or (not (($1) = "negated_a22fcfea"."id"))
+    limit
+      10
+  ) as "negated_a22fcfea"
+-- parameters: params.id
+
+-- reversed
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT('id', "reversed_be149a76"."id")
+    ),
+    '[]'
+  ) as "reversed"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "reversed_be149a76"
+    where
+      (
+        ($1 is not null)
+        and ($1) = "reversed_be149a76"."id"
+      )
+      or "reversed_be149a76"."name" = 'fallback'
+    limit
+      10
+  ) as "reversed_be149a76"
+-- parameters: params.id
+
+-- seed
+select
+  COALESCE(
+    JSON_AGG(JSON_BUILD_OBJECT('id', "seed_3acba0f5"."id")),
+    '[]'
+  ) as "seed"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "seed_3acba0f5"
+    where
+      (
+        not (
+          ($1 is not null)
+          or ($2 is not null)
+        )
+      )
+      or (
+        (
+          (not ($1 is not null))
+          or "seed_3acba0f5"."id" = ($1)
+        )
+        and (
+          (not ($2 is not null))
+          or "seed_3acba0f5"."id" = ($2)
+        )
+      )
+    limit
+      10
+  ) as "seed_3acba0f5"
+-- parameters: params.left, params.right

@@ -1101,13 +1101,18 @@ fn conditional_filter_expr(
             present: Some(Expr::cust("FALSE")),
             value: Expr::cust("TRUE"),
         }),
-        FilterExpr::Optional { parameter, operand } => Ok(ConditionalFilter {
-            present: Some(Expr::cust(format!(
-                "{} IS NOT NULL",
-                template.parameter(parameter)
-            ))),
-            value: filter_value_expr(catalog, scope, operand, template)?,
-        }),
+        FilterExpr::Optional { parameter, operand } => {
+            let inner = conditional_filter_expr(catalog, scope, operand, template)?;
+            let guard = Expr::cust(format!("{} IS NOT NULL", template.parameter(parameter)));
+            let present = match inner.present {
+                Some(present) => guard.and(present),
+                None => guard,
+            };
+            Ok(ConditionalFilter {
+                present: Some(present),
+                value: inner.value,
+            })
+        }
         FilterExpr::Binary { left, op, right } if matches!(op, FilterOp::And | FilterOp::Or) => {
             let left = conditional_filter_expr(catalog, scope, left, template)?;
             let right = conditional_filter_expr(catalog, scope, right, template)?;

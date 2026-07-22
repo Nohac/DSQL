@@ -107,6 +107,51 @@ fn materialization_applies_typed_defaults_and_nullable_variants() {
 }
 
 #[test]
+fn materialization_distinguishes_null_collection_and_collection_value_defaults() {
+    let mut null_collection = operation();
+    null_collection.input[0].required = false;
+    null_collection.input[0].nullable = true;
+    null_collection.input[0].default = Some(InputDefault {
+        kind: "null".to_string(),
+        value: None,
+        boolean: None,
+        items: None,
+    });
+    let bindings = ExecutionBindings {
+        variables: json!({
+            "params": {
+                "station": "018f6f19-795f-7c3d-b1b3-8f177ab8a321",
+                "direction": "ascending"
+            }
+        }),
+        context: json!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
+    };
+
+    let mut collection_value = null_collection.clone();
+    collection_value.input[0].nullable = false;
+    collection_value.input[0].default = Some(InputDefault {
+        kind: "collection".to_string(),
+        value: None,
+        boolean: None,
+        items: Some(vec![InputDefault {
+            kind: "number".to_string(),
+            value: Some("7".to_string()),
+            boolean: None,
+            items: None,
+        }]),
+    });
+
+    insta::assert_debug_snapshot!(
+        "null_collection",
+        materialize(&null_collection, &bindings).expect("null collection materializes")
+    );
+    insta::assert_debug_snapshot!(
+        "collection_value",
+        materialize(&collection_value, &bindings).expect("collection value materializes")
+    );
+}
+
+#[test]
 fn materialization_resolves_variants_and_all_input_namespaces() {
     let bindings = ExecutionBindings {
         variables: json!({
