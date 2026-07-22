@@ -298,7 +298,8 @@ pub struct VariableBinding {
     refinable: bool,
 }
 
-/// All inferred bindings for one definition, ordered by occurrence span.
+/// All effective bindings for one definition, ordered lexicographically by
+/// final input path.
 ///
 /// This aggregate is the tracked input for definition-level services. The
 /// individual [`VariableBinding`] facts remain the source for occurrence

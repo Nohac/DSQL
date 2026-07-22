@@ -1,6 +1,6 @@
 # Refresh architecture plan and stale design commentary
 
-**ID:** 32afccc0 | **Status:** Open | **Created:** 2026-07-22T18:56:40+02:00
+**ID:** 32afccc0 | **Status:** Done | **Created:** 2026-07-22T18:56:40+02:00
 
 Repository guidance names `docs/plan.md` as the intended-design source of
 truth, while that document describes itself as a historical port record and

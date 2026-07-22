@@ -33,7 +33,7 @@ pub(crate) struct OperationInputs<'a> {
     pub seed: &'a OperationSeed,
     pub plan: &'a QueryPlan,
     pub sql: &'a GeneratedSql,
-    /// Variable bindings of the defining query, span-sorted.
+    /// Effective variable bindings of the defining query, path-sorted.
     pub bindings: &'a [VariableBinding],
     /// The definition's source file, absolute as loaded.
     pub file: &'a str,

@@ -9,11 +9,12 @@ Two caveats when reading:
 
 - **Implementation status varies.** The core query language (queries,
   fragments, selections, clauses, scoped predicates, variables, planning,
-  SQL generation, formatting), aggregates, and resolution scopes are
-  implemented. Predicate additions and filter integration are called out as
-  pending in their individual specs. Several other specs here (mutations,
-  split-fetch, computed expressions, enumerated types, ...) are design
-  documents for features that are not built yet in this repository.
+  SQL generation, formatting), aggregates, filters/access rules, definition
+  defaults and fragment input lifting, and resolution scopes are implemented.
+  Deferred extensions are called out in their individual specs. Several other
+  specs here (mutations, split-fetch, computed expressions, enumerated types,
+  catalog overlays, ...) are design documents for features that are not built
+  yet in this repository.
 - **Architecture references are superseded.** Where a spec mentions
   compiler machinery, `docs/architecture/compiler.md` is authoritative for
   this codebase.

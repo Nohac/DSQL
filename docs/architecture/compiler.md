@@ -128,6 +128,21 @@ reruns exactly the checks that track it. Set-reactive checks additionally
 track the fingerprinted `DefIndex` so a `View` over other definitions cannot
 go stale.
 
+### Catalog ownership and the effective boundary
+
+PostgreSQL introspection produces the **generated catalog** as replaceable YAML
+under the configured schema directory. Authored changes do not belong in those
+files. `dsql-project` currently loads that provider output and constructs the
+single `CatalogSnapshot` inserted into the bowl.
+
+The snapshot is the compiler's **effective catalog** boundary: resolution,
+checks, policies, planning, SQL, services, and generation never consult catalog
+sources independently. Catalog overlays are specified but not implemented;
+when added, project loading will validate and merge them with the generated
+catalog before constructing the same snapshot. This keeps overlay provenance
+and conflict reporting at the project boundary without spreading overlay logic
+through language systems.
+
 ### Effective input contracts
 
 Variable inference publishes one contract entity per query or fragment. Its
@@ -149,6 +164,15 @@ invalid decisions therefore cannot disagree between inference and SQL
 planning. Trusted `context` inputs pass through spreads unchanged and merge by
 the same compatibility rules as public inputs.
 
+Definition headers refine the effective bindings, not individual occurrence
+facts. A refinement may make an allowed binding nullable and may attach a typed
+default; omission, explicit `null`, and structural absence remain distinct in
+metadata and execution. Fragment spreads apply one of four checked shapes:
+containment, whole-root lifting, namespaced root lifting, or explicit leaf
+bindings. The same spread decision produces caller paths and planner rewrites,
+so code generation, runtime materialization, and SQL cannot disagree about a
+fragment's public contract.
+
 Planning is driven by the published contract fact rather than re-walking
 fragment inputs. The fact also carries a private `DefinitionVariableOwner`
 snapshot containing the source definition, declaration, and resolution scope.
@@ -157,6 +181,22 @@ contract entity look like another lowered definition to ambient tree views,
 while making the contract a tracked planning input. Per-spread rewrite maps use
 the target fragment's local coordinates and compose as the planner enters
 nested spreads.
+
+### Policies and filters
+
+Filters and reusable conditions lower as standalone `PolicyDecl` facts and use
+the same resolution scopes as fragments. `PolicyIndex` fingerprints names,
+visibility, and concrete or structural catalog matches. `PolicyBodyIndex`
+fingerprints rule bodies separately, so editing a predicate recompiles policy
+semantics without invalidating consumers that only need the match set.
+
+Policy compilation resolves conditions, row predicates, field guards, trusted
+context requirements, and enforcement into `CompiledPolicyIndex`.
+`PolicyPlanIndex` colocates that body-sensitive result with the definition index
+used by planning. Query filter assignments are resolved once against these
+tracked facts; checks, planning, SQL, metadata, hover, completion,
+go-to-definition, semantic tokens, and lock generation consume the resulting
+policy identities and matches rather than interpreting policy source again.
 
 ## Services
 
@@ -176,11 +216,20 @@ ambient-vs-tracked discipline throughout.
 ## Crates
 
 - `dsql-core` — everything above.
-- `dsql-project` — `dsql.toml` discovery/parsing, schema metadata loading,
-  document discovery, `open_project_bowl`.
-- `dsql-cli` — `dsql check | sql | fmt` over a project bowl.
+- `dsql-project` — `dsql.toml`, resolution scopes, source discovery,
+  generated-catalog loading, and `open_project_bowl`.
+- `dsql-metadata` — the stable serialized artifact and manifest contracts.
+- `dsql-generate` — settled-fact assembly and transactional artifact
+  publication.
+- `dsql-introspection` — PostgreSQL catalog introspection.
+- `dsql-execute` — strict metadata-driven PostgreSQL operation execution.
+- `dsql-daemon` — the resident FIFO build protocol and reconciliation loop.
+- `dsql-cli` — project commands, generation, daemon entrypoint, metadata
+  schemas, and operation listing/execution.
 - `dsql-lsp` — tower-lsp-server adapter: live buffers, published
   diagnostics, hover, definition, formatting.
+- `integrations/typescript` — daemon client, Vite rewriting, browser-safe
+  operation objects, server execution payloads, and renderer hooks.
 - `vendor/lelwel`, `vendor/logos` — vendored via git subtree; every local
   change is ledgered in `/vendor/PATCHES.md`.
 

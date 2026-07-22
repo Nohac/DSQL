@@ -5,10 +5,58 @@ as the incremental evaluation engine. The language core is rebuilt as **language
 entities** (the porridge playground pattern) that carry over the **language atom
 principles** from `dsql-poc/docs/proposals/language-atoms.md`.
 
-Status: **historical port record** (updated 2026-07-11). The port completed
-through phase 12; this document preserves the plan and its decision log.
-Current invariants live in `docs/architecture/compiler.md`, current gaps in
-`docs/issues.md` and `docs/codebase-review.md`.
+Status: **architecture root and historical port record** (updated 2026-07-22).
+The port completed through phase 12. The phase plan below is retained as a
+decision log, not as an implementation checklist.
+
+## Documentation ownership
+
+This file is the root source of truth for the intended compiler architecture
+and routes each kind of decision to one canonical home:
+
+- [`architecture/compiler.md`](architecture/compiler.md) is the durable,
+  current description of compiler mechanics and must agree with the
+  architectural principles recorded here.
+- [`spec/`](spec/README.md) is normative for language, metadata, execution,
+  integration, and protocol behavior. A feature spec may intentionally be
+  ahead of implementation when its status says so.
+- Markdown files under `/issues` track actionable repository work. The older
+  [`issues.md`](issues.md) retains engine notes and deferred design context.
+  Ad hoc review notes are evidence, not a source of truth.
+- The phase list and original implementation sketches later in this document
+  are historical. When they disagree with the current architecture document or
+  a normative spec, the current document wins.
+
+## Current architecture at a glance
+
+The bowl is the compiler database. Source and extracted-region entities lower
+to normalized syntax facts; resolution publishes semantic facts that checks,
+services, planning, and SQL consume without re-resolving. Fingerprinted indexes
+provide tracked inputs for ambient set reads, and demand singletons gate the
+expensive compiler products.
+
+Variable inference publishes one memoized effective input contract per query or
+fragment. Definition headers refine inferred bindings with nullability and
+typed defaults. Fragment spreads use one checked mapping for containment,
+whole-root lifting, namespaced lifting, or explicit leaf bindings; planning and
+metadata consume that same contract and rewrite map.
+
+Filters and reusable conditions are ordinary scoped DSQL definitions. Their
+catalog matches and bodies are separately fingerprinted, then compiled into a
+tracked policy plan input shared by checks, planning, SQL, metadata, editor
+services, and `dsql.lock` validation.
+
+PostgreSQL introspection owns the replaceable generated catalog. The compiler
+consumes one `CatalogSnapshot` representing the effective catalog. Today the
+project loader constructs it directly from generated YAML; authored overlays
+will merge and validate before that boundary, so downstream compiler systems
+will continue to read exactly one catalog source.
+
+## Historical port record
+
+The remaining goals, sketches, phases, and open questions record how the port
+was planned and why its foundational decisions were made. They are intentionally
+not maintained as a second implementation manual.
 
 ## Goals
 
