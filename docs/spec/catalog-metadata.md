@@ -3,13 +3,25 @@
 Status: in progress.
 
 Catalog metadata is the semantic source of truth for table names, column names,
-scalar types, nullability, primary keys, unique constraints, indexes, and
-foreign-key relationships. Parsing should preserve source structure; catalog
-resolution decides what selections mean.
+logical types, nullability, primary keys, unique constraints, indexes, and
+relationships. Parsing should preserve source structure; catalog resolution
+decides what selections mean.
+
+The **generated catalog** is the provider-derived metadata serialized under the
+project's schema directory. PostgreSQL introspection owns those files and may
+replace them completely when the database changes; users do not merge authored
+customizations into generated files.
+
+The **effective catalog** is the single validated result of applying project
+configuration and authored catalog overlays to the generated catalog. Checks,
+resolution, planning, SQL generation, editor services, and code generation all
+consume the effective catalog. They do not independently consult generated
+metadata and overlays.
 
 ## Metadata Layout
 
-Project metadata is stored as YAML files under the configured schema directory.
+Generated provider metadata is stored as YAML files under the configured schema
+directory.
 
 ```text
 schema/
@@ -62,7 +74,10 @@ indexes:
     unique: true
 ```
 
-`type_map.yaml` stores database type metadata separately.
+`type_map.yaml` stores database type metadata separately. Provider-native and
+configured table-backed enum types require nominal identities and captured
+variants beyond this initial scalar mapping; their contract is specified in
+[Enumerated Types](enums.md).
 
 ```yaml
 types:
@@ -106,9 +121,10 @@ foreign keys can all span multiple columns.
 - `data_type`: dsql logical type name after type mapping.
 - `not_null`: whether the column rejects null values.
 
-Descriptions are preserved in schema YAML and exposed by editor hover and
-completion. They are documentation only: they do not participate in catalog
-identity, resolution, type checking, or generated SQL.
+Descriptions are preserved in generated schema YAML and exposed by editor hover
+and completion. They are documentation only: they do not participate in catalog
+identity, resolution, type checking, or generated SQL. Enum type and variant
+descriptions follow the separate [Enumerated Types](enums.md) contract.
 
 ## Constraints
 
@@ -286,6 +302,10 @@ deterministically.
 
 ## Open Gaps
 
+- Define the authored overlay format and the complete generated-to-effective
+  merge contract, including first-class relationships and visibility changes.
+- Implement nominal native and table-backed enum metadata as specified by
+  [Enumerated Types](enums.md).
 - Represent partial and expression unique indexes, including the predicates and
   expressions needed to prove when they establish at-most-one cardinality.
 - Represent `NULLS NOT DISTINCT` uniqueness so nullable keys can participate in

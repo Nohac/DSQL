@@ -12,8 +12,8 @@ Two caveats when reading:
   SQL generation, formatting), aggregates, and resolution scopes are
   implemented. Predicate additions and filter integration are called out as
   pending in their individual specs. Several other specs here (mutations,
-  filters, split-fetch, computed expressions, ...) are design documents for
-  features that are not built yet in this repository.
+  split-fetch, computed expressions, enumerated types, ...) are design
+  documents for features that are not built yet in this repository.
 - **Architecture references are superseded.** Where a spec mentions
   compiler machinery, `docs/architecture/compiler.md` is authoritative for
   this codebase.

@@ -5,6 +5,13 @@ Status: consideration.
 dsql should support multiple metadata sources instead of assuming PostgreSQL
 introspection is the only way to build the catalog.
 
+Providers produce the generated catalog described by
+[Catalog Metadata](catalog-metadata.md). Project configuration may direct a
+provider to capture additional database facts, while authored overlays modify
+the generated facts into one effective catalog. Compiler stages consume only
+that effective catalog; provider and overlay composition is completed before
+language resolution begins.
+
 ## Sources To Consider
 
 - PostgreSQL introspection.
@@ -13,6 +20,20 @@ introspection is the only way to build the catalog.
 - Drizzle schema metadata.
 - ORM metadata from other ecosystems.
 - Hand-authored schema files.
+
+## Config-Directed Introspection
+
+Some database semantics cannot be discovered from structural metadata alone.
+For example, an ordinary table does not declare whether its rows are a closed,
+migration-managed value set. Narrow project configuration may tell an
+introspection provider which additional database facts to capture without
+embedding arbitrary SQL or transformation rules in dsql configuration.
+
+[Enumerated Types](enums.md) uses this model for table- and view-backed enums:
+`dsql/dsql.toml` identifies the source and structural columns, introspection
+captures their values in the generated catalog, and the effective catalog
+normalizes them with provider-native enums. A database view is the escape hatch
+when the captured source requires filtering or transformation.
 
 ## Drizzle
 
@@ -55,6 +76,6 @@ Open questions:
 - What metadata interface every provider must satisfy.
 - How provider-specific metadata is preserved.
 - How conflicts are resolved when multiple providers are combined.
-- Whether generated metadata should be normalized into the existing project
-  schema files.
+- Which provider enrichments are serialized into the existing generated schema
+  files and how their configuration fingerprints are checked.
 - How to keep output stable across provider changes.
