@@ -153,7 +153,7 @@ fn operation_execute_validates_inputs_before_connecting() {
     );
     assert!(!output.status.success());
     assert!(
-        stderr(&output).contains("required operation input `params.network` was not provided"),
+        stderr(&output).contains("required operation input `params.confidence` was not provided"),
         "input validation should precede the placeholder database URL: {}",
         stderr(&output)
     );
