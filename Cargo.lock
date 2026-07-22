@@ -554,6 +554,7 @@ name = "dsql-execute"
 version = "0.1.0"
 dependencies = [
  "dsql-metadata",
+ "facet-json",
  "insta",
  "serde_json",
  "sqlx",

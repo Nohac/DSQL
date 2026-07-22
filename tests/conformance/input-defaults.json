@@ -1,0 +1,121 @@
+[
+  {
+    "name": "integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "number", "value": "42" }
+    },
+    "expected": 42
+  },
+  {
+    "name": "malformed integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "number", "value": "4.2" }
+    },
+    "error": "integer default"
+  },
+  {
+    "name": "finite float",
+    "field": {
+      "path": "params.value",
+      "data_type": "float",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "number", "value": "1.25" }
+    },
+    "expected": 1.25
+  },
+  {
+    "name": "non-finite float",
+    "field": {
+      "path": "params.value",
+      "data_type": "float",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "number", "value": "Infinity" }
+    },
+    "error": "finite float default"
+  },
+  {
+    "name": "exact numeric",
+    "field": {
+      "path": "params.value",
+      "data_type": "numeric",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": {
+        "kind": "number",
+        "value": "12345678901234567890.12345678901234567890"
+      }
+    },
+    "expected": "12345678901234567890.12345678901234567890"
+  },
+  {
+    "name": "malformed numeric",
+    "field": {
+      "path": "params.value",
+      "data_type": "numeric",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "number", "value": "12x" }
+    },
+    "error": "numeric default"
+  },
+  {
+    "name": "integer collection",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "collection": true,
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": {
+        "kind": "collection",
+        "items": [
+          { "kind": "number", "value": "2" },
+          { "kind": "number", "value": "5" }
+        ]
+      }
+    },
+    "expected": [2, 5]
+  },
+  {
+    "name": "collection without items",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "collection": true,
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "collection" }
+    },
+    "error": "collection default"
+  },
+  {
+    "name": "boolean without value",
+    "field": {
+      "path": "params.value",
+      "data_type": "boolean",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "boolean" }
+    },
+    "error": "boolean default"
+  }
+]

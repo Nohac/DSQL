@@ -68,6 +68,11 @@ test("tanstack start uses imported validator expressions when provided", async (
     "utf8",
   );
   expect(operationSource).toContain("requiresContext: true");
+  expect(operationSource).toContain(
+    'inputs: [{"path":"params.id","data_type":"int","enum_values":[],"required":false,"nullable":false,"default":{"kind":"number","value":"7"}}]',
+  );
+  expect(operationSource).not.toContain("context.tenant_id");
+  expect(operationSource).not.toContain("select * from movie_info");
 });
 
 function createRoot(): string {
@@ -139,8 +144,9 @@ function operationMetadata(): BuildArtifacts["operations"][number] {
         path: "params.id",
         data_type: "int",
         enum_values: [],
-        required: true,
+        required: false,
         nullable: false,
+        default: { kind: "number", value: "7" },
       },
     ],
     input: [],

@@ -276,7 +276,8 @@ function renderOperationModule(
   id: ${JSON.stringify(manifestEntry.hash)},
   name: ${JSON.stringify(operation.name)},
   kind: ${JSON.stringify(DEFINITION_KIND_QUERY)},
-  requiresContext: ${operation.context.length > 0}
+  requiresContext: ${operation.context.length > 0},
+  inputs: ${JSON.stringify([...operation.params, ...operation.input])}
 };`,
     "",
     renderSourceRegistryAugmentation(options.embeddedSource, `${name}Operation`),

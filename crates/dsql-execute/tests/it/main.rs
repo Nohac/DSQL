@@ -3,6 +3,7 @@ use dsql_metadata::{
     InputDefault, InputField, OperationMetadata, ResultShape, SqlMetadata, SqlParameterMetadata,
     SqlVariantCaseMetadata, SqlVariantMetadata,
 };
+use serde_json::Value;
 use serde_json::json;
 
 fn field(path: &str, data_type: &str, collection: bool, enum_values: &[&str]) -> InputField {
@@ -65,6 +66,114 @@ fn operation() -> OperationMetadata {
         fragment_spreads: Vec::new(),
         source_map: Vec::new(),
     }
+}
+
+fn operation_with_fields(params: Vec<InputField>, parameters: &[&str]) -> OperationMetadata {
+    OperationMetadata {
+        name: "Inputs".to_string(),
+        kind: "query".to_string(),
+        sql: SqlMetadata {
+            dialect: "postgres".to_string(),
+            text: "select $1".to_string(),
+            parameters: parameters
+                .iter()
+                .map(|path| SqlParameterMetadata {
+                    path: (*path).to_string(),
+                })
+                .collect(),
+            variants: Vec::new(),
+        },
+        result: ResultShape { fields: Vec::new() },
+        params,
+        input: Vec::new(),
+        context: Vec::new(),
+        dynamic_inputs: Vec::new(),
+        policies: Vec::new(),
+        handoffs: Vec::new(),
+        fragment_spreads: Vec::new(),
+        source_map: Vec::new(),
+    }
+}
+
+#[test]
+fn shared_default_conformance_cases_match() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../../tests/conformance/input-defaults.json"
+    ))
+    .expect("conformance fixture parses");
+    let cases = cases.as_array().expect("conformance fixture is an array");
+
+    for case in cases {
+        let name = case["name"].as_str().expect("case has a name");
+        let field: InputField =
+            facet_json::from_str(&case["field"].to_string()).expect("case field metadata parses");
+        let result = materialize(
+            &operation_with_fields(vec![field], &["params.value"]),
+            &ExecutionBindings::default(),
+        );
+
+        if let Some(expected) = case.get("expected") {
+            assert!(result.is_ok(), "{name} should materialize: {result:?}");
+            if let Ok(materialized) = result {
+                assert_eq!(materialized.parameters[0].value, *expected, "{name}");
+            }
+        } else {
+            let expected = case["error"].as_str().expect("case has an error");
+            let error = result.expect_err("case should fail").to_string();
+            assert!(error.contains(expected), "{name}: {error}");
+        }
+    }
+}
+
+#[test]
+fn materialization_rejects_invalid_envelopes_and_unused_required_fields() {
+    let mut defaulted = field("params.nested.value", "int", false, &[]);
+    defaulted.required = false;
+    defaulted.default = Some(InputDefault {
+        kind: "number".to_string(),
+        value: Some("7".to_string()),
+        boolean: None,
+        items: None,
+    });
+
+    for variables in [json!({"params": null}), json!({"params": 5})] {
+        let error = materialize(
+            &operation_with_fields(vec![defaulted.clone()], &["params.nested.value"]),
+            &ExecutionBindings {
+                variables,
+                context: json!({}),
+            },
+        )
+        .expect_err("explicit invalid envelope is rejected");
+        assert!(
+            matches!(error, ExecuteError::InvalidInput { path, .. } if path == "params.nested.value")
+        );
+    }
+
+    let error = materialize(
+        &operation_with_fields(vec![field("params.unused", "int", false, &[])], &[]),
+        &ExecutionBindings::default(),
+    )
+    .expect_err("unused required input is still validated");
+    assert!(matches!(error, ExecuteError::MissingInput(path) if path == "params.unused"));
+}
+
+#[test]
+fn trusted_context_is_never_defaulted() {
+    let mut operation = operation_with_fields(Vec::new(), &[]);
+    let mut context = field("context.tenant_id", "uuid", false, &[]);
+    context.required = false;
+    context.default = Some(InputDefault {
+        kind: "string".to_string(),
+        value: Some("018f6f19-795f-7c3d-b1b3-8f177ab8a321".to_string()),
+        boolean: None,
+        items: None,
+    });
+    operation.context.push(context);
+
+    let error = materialize(&operation, &ExecutionBindings::default())
+        .expect_err("trusted context cannot receive a source default");
+    assert!(matches!(error, ExecuteError::MissingInput(path) if path == "context.tenant_id"));
 }
 
 #[test]
@@ -170,17 +279,18 @@ fn materialization_resolves_variants_and_all_input_namespaces() {
 #[test]
 fn materialization_rejects_missing_and_unknown_variant_values() {
     let missing = materialize(&operation(), &ExecutionBindings::default())
-        .expect_err("required variant is absent");
-    assert!(matches!(missing, ExecuteError::MissingInput(path) if path == "params.direction"));
+        .expect_err("first required declaration is absent");
+    assert!(matches!(missing, ExecuteError::MissingInput(path) if path == "params.station"));
 
     let bindings = ExecutionBindings {
         variables: json!({
             "params": {
                 "station": "018f6f19-795f-7c3d-b1b3-8f177ab8a321",
                 "direction": "sideways"
-            }
+            },
+            "input": {"readings": {"ids": [2]}}
         }),
-        context: json!({}),
+        context: json!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
     };
     let invalid = materialize(&operation(), &bindings).expect_err("variant is closed");
     assert!(matches!(

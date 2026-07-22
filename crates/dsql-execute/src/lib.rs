@@ -14,12 +14,21 @@ use sqlx::types::{
 use sqlx::{AssertSqlSafe, Postgres};
 
 /// Public inputs and trusted server context for one execution.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ExecutionBindings {
     /// The metadata-shaped `params` and `input` trees.
     pub variables: Value,
     /// Context fields without the `context` wrapper.
     pub context: Value,
+}
+
+impl Default for ExecutionBindings {
+    fn default() -> Self {
+        Self {
+            variables: Value::Object(serde_json::Map::new()),
+            context: Value::Object(serde_json::Map::new()),
+        }
+    }
 }
 
 /// A reusable PostgreSQL operation executor.
@@ -127,18 +136,28 @@ pub fn materialize(
             operation.sql.dialect.clone(),
         ));
     }
-    let fields = operation
+    let declared_fields = operation
         .params
         .iter()
         .chain(&operation.input)
         .chain(&operation.context)
+        .collect::<Vec<_>>();
+    let fields = declared_fields
+        .iter()
+        .copied()
         .map(|field| (field.path.as_str(), field))
         .collect::<BTreeMap<_, _>>();
+    let mut values = BTreeMap::new();
+    for field in declared_fields {
+        if let Some(value) = input_value(field, bindings)? {
+            values.insert(field.path.as_str(), value);
+        }
+    }
     let mut sql = operation.sql.text.clone();
 
     for variant in &operation.sql.variants {
-        let field = declared(&fields, &variant.path)?;
-        let value = input_value(field, bindings)?;
+        declared(&fields, &variant.path)?;
+        let value = materialized_value(&values, &variant.path)?;
         if value.is_null() {
             let Some(text) = &variant.null_text else {
                 return Err(invalid(&variant.path, "a non-null string variant"));
@@ -168,12 +187,21 @@ pub fn materialize(
                 path: parameter.path.clone(),
                 data_type: field.data_type.clone(),
                 collection: field.collection == Some(true),
-                value: input_value(field, bindings)?,
+                value: materialized_value(&values, &parameter.path)?.clone(),
             })
         })
         .collect::<Result<Vec<_>, ExecuteError>>()?;
 
     Ok(MaterializedOperation { sql, parameters })
+}
+
+fn materialized_value<'a>(
+    values: &'a BTreeMap<&str, Value>,
+    path: &str,
+) -> Result<&'a Value, ExecuteError> {
+    values
+        .get(path)
+        .ok_or_else(|| ExecuteError::MissingInput(path.to_string()))
 }
 
 fn declared<'a>(
@@ -186,43 +214,70 @@ fn declared<'a>(
         .ok_or_else(|| ExecuteError::UndeclaredParameter(path.to_string()))
 }
 
-fn input_value(field: &InputField, bindings: &ExecutionBindings) -> Result<Value, ExecuteError> {
-    let (root, path) = field
+fn input_value(
+    field: &InputField,
+    bindings: &ExecutionBindings,
+) -> Result<Option<Value>, ExecuteError> {
+    let (root, path, trusted_context) = field
         .path
         .strip_prefix("context.")
-        .map_or((&bindings.variables, field.path.as_str()), |path| {
-            (&bindings.context, path)
+        .map_or((&bindings.variables, field.path.as_str(), false), |path| {
+            (&bindings.context, path, true)
         });
-    let value = path
-        .split('.')
-        .try_fold(root, |value, segment| value.get(segment))
-        .cloned()
-        .map_or_else(
-            || {
-                field.default.as_ref().map_or_else(
-                    || Err(ExecuteError::MissingInput(field.path.clone())),
-                    |default| materialize_default(field, default),
-                )
-            },
-            Ok,
-        )?;
+    let value = match lookup_path(root, path, &field.path)? {
+        Some(value) => value.clone(),
+        None if trusted_context => return Err(ExecuteError::MissingInput(field.path.clone())),
+        None => match &field.default {
+            Some(default) => materialize_default(field, default)?,
+            None if field.required => {
+                return Err(ExecuteError::MissingInput(field.path.clone()));
+            }
+            None => return Ok(None),
+        },
+    };
     if value.is_null() && !field.nullable {
         return Err(invalid(
             &field.path,
             &format!("a non-null {}", field.data_type),
         ));
     }
-    Ok(value)
+    Ok(Some(value))
+}
+
+fn lookup_path<'a>(
+    root: &'a Value,
+    path: &str,
+    field_path: &str,
+) -> Result<Option<&'a Value>, ExecuteError> {
+    let mut current = root;
+    for segment in path.split('.') {
+        let Value::Object(object) = current else {
+            return Err(invalid(field_path, "an object input envelope"));
+        };
+        let Some(value) = object.get(segment) else {
+            return Ok(None);
+        };
+        current = value;
+    }
+    Ok(Some(current))
 }
 
 fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Value, ExecuteError> {
     match default.kind.as_str() {
-        "string" => default
-            .value
-            .clone()
-            .map(Value::String)
-            .ok_or_else(|| invalid(&field.path, "a valid string default")),
+        "string" if field.collection != Some(true) => {
+            let value = default
+                .value
+                .clone()
+                .ok_or_else(|| invalid(&field.path, "a valid string default"))?;
+            if !field.enum_values.is_empty() && !field.enum_values.contains(&value) {
+                return Err(invalid(&field.path, "a declared string default"));
+            }
+            Ok(Value::String(value))
+        }
         "number" => {
+            if field.collection == Some(true) {
+                return Err(invalid(&field.path, "a compatible number default"));
+            }
             let Some(value) = default.value.as_deref() else {
                 return Err(invalid(&field.path, "a valid number default"));
             };
@@ -238,24 +293,42 @@ fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Val
                     .and_then(serde_json::Number::from_f64)
                     .map(Value::Number)
                     .ok_or_else(|| invalid(&field.path, "a finite float default")),
-                "numeric" => Ok(Value::String(value.to_string())),
+                "numeric" => BigDecimal::from_str(value)
+                    .map(|_| Value::String(value.to_string()))
+                    .map_err(|_| invalid(&field.path, "a numeric default")),
                 _ => Err(invalid(&field.path, "a compatible number default")),
             }
         }
-        "boolean" => default
+        "boolean" if field.collection != Some(true) && field.data_type == "boolean" => default
             .boolean
             .map(Value::Bool)
             .ok_or_else(|| invalid(&field.path, "a valid boolean default")),
         "null" => Ok(Value::Null),
-        "collection" => default
-            .items
-            .as_ref()
-            .ok_or_else(|| invalid(&field.path, "a valid collection default"))?
-            .iter()
-            .map(|item| materialize_default(field, item))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::Array),
-        "empty_object" => Ok(Value::Object(serde_json::Map::new())),
+        "collection" if field.collection == Some(true) => {
+            let items = default
+                .items
+                .as_ref()
+                .ok_or_else(|| invalid(&field.path, "a valid collection default"))?;
+            let mut item_field = field.clone();
+            item_field.collection = None;
+            items
+                .iter()
+                .map(|item| {
+                    if matches!(item.kind.as_str(), "null" | "collection" | "empty_object") {
+                        return Err(invalid(&field.path, "a valid collection default"));
+                    }
+                    materialize_default(&item_field, item)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array)
+        }
+        "empty_object" if field.collection != Some(true) => {
+            Ok(Value::Object(serde_json::Map::new()))
+        }
+        "string" => Err(invalid(&field.path, "a compatible string default")),
+        "boolean" => Err(invalid(&field.path, "a compatible boolean default")),
+        "collection" => Err(invalid(&field.path, "a compatible collection default")),
+        "empty_object" => Err(invalid(&field.path, "a compatible object default")),
         _ => Err(invalid(&field.path, "a recognized input default")),
     }
 }

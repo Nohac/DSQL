@@ -1,6 +1,6 @@
 # Make input materialization strict and lossless across runtimes
 
-**ID:** d63bfee3 | **Status:** Open | **Created:** 2026-07-22T18:52:42+02:00
+**ID:** d63bfee3 | **Status:** Done | **Created:** 2026-07-22T18:52:42+02:00
 
 Rust and TypeScript do not currently implement the same input-materialization
 contract. TypeScript recursively converts every object through

@@ -24,6 +24,7 @@ export type {
 export * from "./runtime.ts";
 
 import type { OperationMetadata } from "./generated/metadata.ts";
+import { getDsqlPath, materializeDsqlBindings } from "./runtime.ts";
 
 export type DsqlQueryDefinition<
   TParams = unknown,
@@ -71,16 +72,34 @@ export function defineDsqlQuery<
     key(params, ...contextScope) {
       const [scope] = contextScope;
       requireContextScope(definition, scope);
-      return ["dsql", definition.name, scope ?? null, params] as const;
+      return [
+        "dsql",
+        definition.name,
+        scope ?? null,
+        materializeParams(definition, params),
+      ] as const;
     },
     queryOptions(params, ...contextScope) {
       const [scope] = contextScope;
       requireContextScope(definition, scope);
       return {
-        queryKey: ["dsql", definition.name, scope ?? null, params] as const,
+        queryKey: [
+          "dsql",
+          definition.name,
+          scope ?? null,
+          materializeParams(definition, params),
+        ] as const,
       };
     },
   };
+}
+
+function materializeParams<TParams>(
+  definition: OperationMetadata,
+  params: TParams,
+): TParams {
+  const bindings = materializeDsqlBindings(definition.params, { params });
+  return getDsqlPath(bindings, "params") as TParams;
 }
 
 function requireContextScope(

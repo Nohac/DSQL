@@ -1,6 +1,6 @@
 # Normalize DSQL cache keys from materialized inputs
 
-**ID:** 0bd09277 | **Status:** Open | **Created:** 2026-07-22T18:52:42+02:00
+**ID:** 0bd09277 | **Status:** Done | **Created:** 2026-07-22T18:52:42+02:00
 
 TypeScript cache-key builders currently embed the caller's raw variables.
 Omission, explicitly passing a declared default, and nullable dynamic inputs in

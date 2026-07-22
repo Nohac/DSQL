@@ -9,6 +9,8 @@ export type DsqlOperation<
   readonly kind: "query";
   /** Whether server execution binds at least one trusted-context value. */
   readonly requiresContext: boolean;
+  /** Public input metadata used for defaults and stable client cache keys. */
+  readonly inputs: readonly DsqlInputField[];
   readonly result?: Result;
   readonly params?: Params;
   readonly input?: Input;
@@ -59,7 +61,13 @@ export function dsqlQueryKey<Variables>(
       `dsql operation ${operation.name} requires contextScope for cache identity`,
     );
   }
-  return ["dsql", operation.name, contextScope ?? null, variables] as const;
+  const materialized = materializeDsqlBindings(operation.inputs, variables);
+  return [
+    "dsql",
+    operation.name,
+    contextScope ?? null,
+    materialized as Variables,
+  ] as const;
 }
 
 export type DsqlFragmentDefinition<
@@ -129,9 +137,13 @@ export type DsqlInputDefault = {
 export type DsqlInputField = {
   readonly path: string;
   readonly data_type: string;
+  readonly collection?: boolean;
+  readonly enum_values?: readonly string[];
   readonly required: boolean;
   readonly nullable: boolean;
   readonly default?: DsqlInputDefault;
+  /** Canonical identity for a nullable bounded dynamic input. */
+  readonly null_identity?: "empty_object" | "empty_collection";
 };
 
 export type DsqlExecutionPayload<
@@ -180,14 +192,6 @@ export function materializeDsqlQuery<
     context,
   });
   const sql = applyDsqlVariants(payload.sql, payload.variants, bindings);
-  for (const parameter of payload.parameters) {
-    if (
-      parameter.path.startsWith("context.") &&
-      getDsqlPath(bindings, parameter.path) == null
-    ) {
-      throw new Error(`missing trusted dsql context at ${parameter.path}`);
-    }
-  }
   return {
     sql,
     values: collectDsqlParameterValues(payload.parameters, bindings),
@@ -223,24 +227,37 @@ export function materializeDsqlBindings(
   fields: readonly DsqlInputField[],
   bindings: unknown,
 ): unknown {
-  const materialized = cloneDsqlValue(bindings);
+  let materialized = bindings;
   for (const field of fields) {
-    let value = getDsqlPath(materialized, field.path);
-    if (value === undefined && field.default !== undefined) {
-      value = dsqlDefaultValue(field, field.default);
-      setDsqlPath(materialized, field.path, value);
+    const trustedContext = field.path.startsWith("context.");
+    const lookup = lookupDsqlPath(materialized, field.path);
+    if (lookup.kind === "invalid") {
+      throw new Error(`invalid dsql input envelope at ${field.path}`);
     }
-    if (value === undefined && field.required) {
-      if (field.path.startsWith("context.")) {
+
+    let value = lookup.kind === "found" ? lookup.value : undefined;
+    if (lookup.kind === "missing") {
+      if (trustedContext) {
         throw new Error(`missing trusted dsql context at ${field.path}`);
       }
-      throw new Error(`missing dsql input at ${field.path}`);
+      if (field.default !== undefined) {
+        value = dsqlDefaultValue(field, field.default);
+        materialized = setDsqlPath(materialized, field.path, value);
+      } else if (field.required) {
+        throw new Error(`missing dsql input at ${field.path}`);
+      }
     }
+
     if (value === null && !field.nullable) {
-      if (field.path.startsWith("context.")) {
-        throw new Error(`missing trusted dsql context at ${field.path}`);
-      }
-      throw new Error(`non-null dsql input is null at ${field.path}`);
+      throw new Error(
+        trustedContext
+          ? `missing trusted dsql context at ${field.path}`
+          : `non-null dsql input is null at ${field.path}`,
+      );
+    }
+    if (value === null && field.null_identity !== undefined) {
+      const identity = field.null_identity === "empty_object" ? {} : [];
+      materialized = setDsqlPath(materialized, field.path, identity);
     }
   }
   return materialized;
@@ -251,51 +268,121 @@ function dsqlDefaultValue(
   defaultValue: DsqlInputDefault,
 ): unknown {
   switch (defaultValue.kind) {
-    case "string":
+    case "string": {
+      if (field.collection === true || defaultValue.value === undefined) {
+        return invalidDsqlDefault(field, "a valid string default");
+      }
+      if (
+        field.enum_values !== undefined &&
+        field.enum_values.length > 0 &&
+        !field.enum_values.includes(defaultValue.value)
+      ) {
+        return invalidDsqlDefault(field, "a declared string default");
+      }
       return defaultValue.value;
-    case "number":
-      if (field.data_type === "numeric") return defaultValue.value;
-      return Number(defaultValue.value);
-    case "boolean":
+    }
+    case "number": {
+      if (field.collection === true || defaultValue.value === undefined) {
+        return invalidDsqlDefault(field, "a valid number default");
+      }
+      if (field.data_type === "int") {
+        if (!/^[+-]?\d+$/.test(defaultValue.value)) {
+          return invalidDsqlDefault(field, "an integer default");
+        }
+        const integer = BigInt(defaultValue.value);
+        if (integer < -(1n << 63n) || integer > (1n << 63n) - 1n) {
+          return invalidDsqlDefault(field, "an integer default");
+        }
+        return Number(integer);
+      }
+      if (field.data_type === "float") {
+        const value = Number(defaultValue.value);
+        if (
+          !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(
+            defaultValue.value,
+          ) ||
+          !Number.isFinite(value)
+        ) {
+          return invalidDsqlDefault(field, "a finite float default");
+        }
+        return value;
+      }
+      if (field.data_type === "numeric") {
+        if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(defaultValue.value)) {
+          return invalidDsqlDefault(field, "a numeric default");
+        }
+        return defaultValue.value;
+      }
+      return invalidDsqlDefault(field, "a compatible number default");
+    }
+    case "boolean": {
+      if (
+        field.collection === true ||
+        field.data_type !== "boolean" ||
+        defaultValue.boolean === undefined
+      ) {
+        return invalidDsqlDefault(field, "a valid boolean default");
+      }
       return defaultValue.boolean;
+    }
     case "null":
       return null;
-    case "collection":
-      return (defaultValue.items ?? []).map((item) =>
-        dsqlDefaultValue(field, item),
-      );
+    case "collection": {
+      if (field.collection !== true || defaultValue.items === undefined) {
+        return invalidDsqlDefault(field, "a valid collection default");
+      }
+      const itemField = { ...field, collection: false };
+      return defaultValue.items.map((item) => {
+        if (["null", "collection", "empty_object"].includes(item.kind)) {
+          return invalidDsqlDefault(field, "a valid collection default");
+        }
+        return dsqlDefaultValue(itemField, item);
+      });
+    }
     case "empty_object":
+      if (field.collection === true) {
+        return invalidDsqlDefault(field, "a compatible object default");
+      }
       return {};
     default:
-      throw new Error(`invalid dsql default at ${field.path}`);
+      return invalidDsqlDefault(field, "a recognized input default");
   }
 }
 
-function cloneDsqlValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(cloneDsqlValue);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, child]) => [key, cloneDsqlValue(child)]),
-    );
-  }
-  return value;
+function invalidDsqlDefault(field: DsqlInputField, expected: string): never {
+  throw new Error(`invalid dsql default at ${field.path}: expected ${expected}`);
 }
 
-function setDsqlPath(value: unknown, path: string, replacement: unknown): void {
-  if (value === null || typeof value !== "object") {
+function setDsqlPath(value: unknown, path: string, replacement: unknown): unknown {
+  const parts = path.split(".");
+  return setDsqlPathParts(value, parts, 0, replacement, path);
+}
+
+function setDsqlPathParts(
+  value: unknown,
+  parts: readonly string[],
+  index: number,
+  replacement: unknown,
+  path: string,
+): unknown {
+  if (!isDsqlEnvelope(value)) {
     throw new Error(`cannot materialize dsql input at ${path}`);
   }
-  const parts = path.split(".");
-  let current = value as Record<string, unknown>;
-  for (const part of parts.slice(0, -1)) {
-    const child = current[part];
-    if (child === null || typeof child !== "object" || Array.isArray(child)) {
-      current[part] = {};
-    }
-    current = current[part] as Record<string, unknown>;
+  const part = parts[index];
+  if (part === undefined) {
+    return replacement;
   }
-  const leaf = parts.at(-1);
-  if (leaf !== undefined) current[leaf] = replacement;
+  if (index === parts.length - 1) {
+    return { ...value, [part]: replacement };
+  }
+  const child = value[part] === undefined ? {} : value[part];
+  if (!isDsqlEnvelope(child)) {
+    throw new Error(`cannot materialize dsql input at ${path}`);
+  }
+  return {
+    ...value,
+    [part]: setDsqlPathParts(child, parts, index + 1, replacement, path),
+  };
 }
 
 export function collectDsqlParameterValues(
@@ -306,16 +393,40 @@ export function collectDsqlParameterValues(
 }
 
 export function getDsqlPath(value: unknown, path: string): unknown {
+  const lookup = lookupDsqlPath(value, path);
+  return lookup.kind === "found" ? lookup.value : undefined;
+}
+
+type DsqlPathLookup =
+  | { readonly kind: "found"; readonly value: unknown }
+  | { readonly kind: "missing" }
+  | { readonly kind: "invalid" };
+
+function lookupDsqlPath(value: unknown, path: string): DsqlPathLookup {
   if (path === "") {
-    return value;
+    return { kind: "found", value };
   }
 
   let current = value;
   for (const part of path.split(".")) {
-    if (current === null || typeof current !== "object") {
-      return undefined;
+    if (!isDsqlEnvelope(current)) {
+      return { kind: "invalid" };
     }
-    current = (current as Record<string, unknown>)[part];
+    if (!Object.prototype.hasOwnProperty.call(current, part)) {
+      return { kind: "missing" };
+    }
+    current = current[part];
+    if (current === undefined) {
+      return { kind: "missing" };
+    }
   }
-  return current;
+  return { kind: "found", value: current };
+}
+
+function isDsqlEnvelope(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }

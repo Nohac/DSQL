@@ -1,13 +1,36 @@
 import { expect, test } from "bun:test";
+import defaultCases from "../../../tests/conformance/input-defaults.json" with {
+  type: "json",
+};
+import {
+  defineDsqlQuery,
+  type DsqlQueryDefinition,
+} from "../src/index";
 import {
   applyDsqlVariants,
   collectDsqlParameterValues,
   dsqlQueryKey,
   getDsqlPath,
+  materializeDsqlBindings,
   materializeDsqlQuery,
   type DsqlExecutionPayload,
   type DsqlOperation,
 } from "../src/runtime";
+
+const movieInputs = [
+  {
+    path: "input.movie_info.clause.where.id.op",
+    data_type: "text",
+    required: true,
+    nullable: false,
+  },
+  {
+    path: "input.movie_info.clause.where.id.value",
+    data_type: "int",
+    required: true,
+    nullable: false,
+  },
+] as const;
 
 type MovieOperation = DsqlOperation<
   { readonly id: number },
@@ -32,6 +55,7 @@ const MovieInfoOperation = {
   name: "MovieInfo",
   kind: "query",
   requiresContext: true,
+  inputs: movieInputs,
 } satisfies MovieOperation;
 
 const payload = {
@@ -50,18 +74,7 @@ const payload = {
     },
   },
   inputs: [
-    {
-      path: "input.movie_info.clause.where.id.op",
-      data_type: "text",
-      required: true,
-      nullable: false,
-    },
-    {
-      path: "input.movie_info.clause.where.id.value",
-      data_type: "int",
-      required: true,
-      nullable: false,
-    },
+    ...movieInputs,
     {
       path: "context.tenant_id",
       data_type: "uuid",
@@ -103,24 +116,7 @@ type OptionalOperation = DsqlOperation<
   Record<string, never>
 >;
 
-const OptionalOperation = {
-  id: "optional-hash",
-  name: "Optional",
-  kind: "query",
-  requiresContext: false,
-} satisfies OptionalOperation;
-
-const optionalPayload = {
-  operation: OptionalOperation,
-  sql: "select * from movie_info order by case when '{{params.direction}}' = 'asc' then id end asc limit $1",
-  parameters: [{ path: "params.limit" }],
-  variants: {
-    "params.direction": {
-      cases: { asc: "asc", desc: "desc" },
-      nullText: "null",
-    },
-  },
-  inputs: [
+const optionalInputs = [
     {
       path: "params.direction",
       data_type: "text",
@@ -135,7 +131,27 @@ const optionalPayload = {
       nullable: true,
       default: { kind: "number", value: "10" },
     },
-  ],
+] as const;
+
+const OptionalOperation = {
+  id: "optional-hash",
+  name: "Optional",
+  kind: "query",
+  requiresContext: false,
+  inputs: optionalInputs,
+} satisfies OptionalOperation;
+
+const optionalPayload = {
+  operation: OptionalOperation,
+  sql: "select * from movie_info order by case when '{{params.direction}}' = 'asc' then id end asc limit $1",
+  parameters: [{ path: "params.limit" }],
+  variants: {
+    "params.direction": {
+      cases: { asc: "asc", desc: "desc" },
+      nullText: "null",
+    },
+  },
+  inputs: optionalInputs,
 } satisfies DsqlExecutionPayload<OptionalOperation>;
 
 test("materializes defaults and nullable sql variants without mutating inputs", () => {
@@ -152,6 +168,149 @@ test("materializes defaults and nullable sql variants without mutating inputs", 
     sql: "select * from movie_info order by case when 'null' = 'asc' then id end asc limit $1",
     values: [null],
   });
+});
+
+test("matches the shared typed-default conformance cases", () => {
+  for (const testCase of defaultCases) {
+    const materialize = () =>
+      materializeDsqlBindings([testCase.field], {});
+    if ("expected" in testCase) {
+      expect(materialize(), testCase.name).toEqual({
+        params: { value: testCase.expected },
+      });
+    } else {
+      expect(materialize, testCase.name).toThrow(testCase.error);
+    }
+  }
+});
+
+test("materializes copy-on-write and preserves unrelated host values", () => {
+  const date = new Date("2026-07-22T00:00:00Z");
+  const bytes = new Uint8Array([2, 5, 8]);
+  const map = new Map([["answer", 42]]);
+  const set = new Set(["kept"]);
+  const untouched = { date, bytes, map, set };
+  const bindings = { params: {}, untouched };
+
+  const materialized = materializeDsqlBindings(optionalInputs, bindings) as {
+    readonly params: { readonly direction: null; readonly limit: number };
+    readonly untouched: typeof untouched;
+  };
+
+  expect(materialized).not.toBe(bindings);
+  expect(materialized.params).not.toBe(bindings.params);
+  expect(materialized.untouched).toBe(untouched);
+  expect(materialized.untouched.date).toBe(date);
+  expect(materialized.untouched.bytes).toBe(bytes);
+  expect(materialized.untouched.map).toBe(map);
+  expect(materialized.untouched.set).toBe(set);
+  expect(materializeDsqlBindings([], bindings)).toBe(bindings);
+});
+
+test("rejects invalid envelopes, unused required fields, and context defaults", () => {
+  const defaulted = {
+    path: "params.nested.value",
+    data_type: "int",
+    required: false,
+    nullable: false,
+    default: { kind: "number", value: "7" },
+  } as const;
+  for (const params of [null, 5]) {
+    expect(() => materializeDsqlBindings([defaulted], { params })).toThrow(
+      "invalid dsql input envelope at params.nested.value",
+    );
+  }
+  expect(() =>
+    materializeDsqlBindings(
+      [
+        {
+          path: "params.unused",
+          data_type: "int",
+          required: true,
+          nullable: false,
+        },
+      ],
+      {},
+    ),
+  ).toThrow("missing dsql input at params.unused");
+  expect(() =>
+    materializeDsqlBindings(
+      [
+        {
+          path: "context.tenant_id",
+          data_type: "uuid",
+          required: false,
+          nullable: false,
+          default: { kind: "string", value: "forged-default" },
+        },
+      ],
+      { context: {} },
+    ),
+  ).toThrow("missing trusted dsql context at context.tenant_id");
+});
+
+test("cache keys materialize defaults and canonical dynamic identities", () => {
+  const operation = {
+    id: "search-hash",
+    name: "Search",
+    kind: "query",
+    requiresContext: false,
+    inputs: [
+      {
+        path: "params.limit",
+        data_type: "int",
+        required: false,
+        nullable: false,
+        default: { kind: "number", value: "10" },
+      },
+      {
+        path: "params.search",
+        data_type: "predicate",
+        required: false,
+        nullable: true,
+        null_identity: "empty_object",
+      },
+      {
+        path: "params.order",
+        data_type: "order",
+        collection: true,
+        required: false,
+        nullable: true,
+        null_identity: "empty_collection",
+      },
+    ],
+  } as const satisfies DsqlOperation;
+
+  const omittedDefault = dsqlQueryKey(operation, {
+    params: { search: null, order: null },
+  });
+  const explicitDefault = dsqlQueryKey(operation, {
+    params: { limit: 10, search: {}, order: [] },
+  });
+  expect(omittedDefault).toEqual(explicitDefault);
+  expect(omittedDefault[3]).toEqual({
+    params: { limit: 10, search: {}, order: [] },
+  });
+});
+
+test("legacy query definitions also materialize cache-key defaults", () => {
+  const definition = {
+    name: "LegacySearch",
+    params: [
+      {
+        path: "params.limit",
+        data_type: "int",
+        enum_values: [],
+        required: false,
+        nullable: false,
+        default: { kind: "number", value: "10" },
+      },
+    ],
+    context: [],
+  } as unknown as DsqlQueryDefinition<{ readonly limit?: number }>;
+  const query = defineDsqlQuery(definition);
+
+  expect(query.key({})).toEqual(query.key({ limit: 10 }));
 });
 
 test("requires trusted context separately from public variables", () => {
