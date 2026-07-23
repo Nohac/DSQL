@@ -38,8 +38,8 @@ export const renderer = defineDsqlRenderer({
     const groups =
       artifacts.artifactGroups.length > 0 ? artifacts.artifactGroups : [artifacts];
 
-    // Two groups writing the same layout would fight over one ownership
-    // manifest — the second render removes the first render's files.
+    // Two groups writing the same layout would overwrite one another and make
+    // the final owned-root file set ambiguous.
     const layoutOwners = new Map<string, string>();
 
     for (const contextArtifacts of groups) {

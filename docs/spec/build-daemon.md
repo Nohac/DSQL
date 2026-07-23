@@ -433,10 +433,17 @@ render map:
   its side (see Host generator command); omitting `excludeRoots` is
   correct only for renderers that write no files. Those roots plus
   `buildDir` plus `initialize`'s `generatorOutputs` form the binding's
-  watch exclusions, so generation never retriggers itself. `files` is
-  informational (precise invalidation); exclusion must not depend on
-  it, because a renderer's *next* run can write files the previous run
-  did not list.
+  watch exclusions, so generation never retriggers itself. `files` is the
+  renderer's complete desired file set for the current run. After a successful
+  render and render-map validation, the binding reconciles every `ownedRoots`
+  tree to that set before publishing the new render map. Files omitted from the
+  set are removed, including outputs from definitions or generators that no
+  longer exist. Exclusion must still not depend on `files`, because a
+  renderer's *next* run can write paths the previous run did not list.
+- Renderer-owned roots are exclusive generated trees and MUST contain no
+  authored files. Their contents are reconstructible from compiler artifacts
+  and renderer configuration; bindings do not store ownership manifests beside
+  generated source files or depend on prior render state for cleanup.
 - After a recompile+render, the binding triggers its host's reload
   semantics; module-graph invalidation is a binding-quality concern,
   full reload is the acceptable default.
@@ -518,6 +525,10 @@ Publication order for every changed successful compile:
 
 Consequences, stated explicitly:
 
+- `buildDir` is disposable compiler state. Removing it before a command is a
+  supported cold start: the compiler recreates the complete current generation
+  and renderers produce the same owned output trees. Retaining it may avoid
+  rewriting content-addressed artifacts, but it is never a required input.
 - An `Io` failure during step 6 leaves the previous `manifest.json` —
   and every file it references — fully intact: the previous generation
   remains current by construction (content-addressing + atomic rename),

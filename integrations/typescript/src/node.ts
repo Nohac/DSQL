@@ -1,4 +1,11 @@
-import { readFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  rmdirSync,
+  unlinkSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
@@ -335,7 +342,7 @@ export type DsqlRenderMap = {
   readonly modules: readonly DsqlRenderModule[];
   /** Repeats the descriptor's roots as a consistency check. */
   readonly ownedRoots: readonly string[];
-  /** Every file this render wrote (including ownership manifests). */
+  /** The complete desired file set beneath [`DsqlRenderer.ownedRoots`]. */
   readonly files: readonly string[];
 };
 
@@ -388,6 +395,61 @@ export function validateDsqlRenderMap(
   for (const file of map.files) {
     if (!isUnderAny(assertProjectRelativePath(file, "file"), declared)) {
       throw new Error(`dsql render map file ${file} is outside every owned root`);
+    }
+  }
+}
+
+/**
+ * Reconciles exclusive renderer-owned directories to one complete desired file
+ * set. Paths are validated before any filesystem mutation, and directory
+ * symlinks are never followed while walking an owned root.
+ */
+export function reconcileDsqlOutputs(options: {
+  readonly projectBase: string;
+  readonly ownedRoots: readonly string[];
+  readonly files: readonly string[];
+}): void {
+  const projectBase = resolve(options.projectBase);
+  const ownedRoots = new Set(
+    options.ownedRoots.map((root) =>
+      assertProjectRelativePath(root, "owned root"),
+    ),
+  );
+  const files = new Set(
+    options.files.map((file) => {
+      const path = assertProjectRelativePath(file, "file");
+      if (!isUnderAny(path, ownedRoots)) {
+        throw new Error(`dsql render map file ${path} is outside every owned root`);
+      }
+      return resolve(projectBase, path);
+    }),
+  );
+
+  for (const root of ownedRoots) {
+    reconcileOwnedDirectory(resolve(projectBase, root), files);
+  }
+}
+
+function reconcileOwnedDirectory(
+  directory: string,
+  retainedFiles: ReadonlySet<string>,
+): void {
+  if (!existsSync(directory)) {
+    return;
+  }
+  if (!lstatSync(directory).isDirectory()) {
+    throw new Error(`dsql renderer-owned root ${directory} is not a directory`);
+  }
+
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      reconcileOwnedDirectory(path, retainedFiles);
+      if (readdirSync(path).length === 0) {
+        rmdirSync(path);
+      }
+    } else if (!retainedFiles.has(path)) {
+      unlinkSync(path);
     }
   }
 }
@@ -494,6 +556,11 @@ export async function renderDsqlCompileResult(
     ...options.environment(),
   });
   validateDsqlRenderMap(renderMap, renderer);
+  reconcileDsqlOutputs({
+    projectBase: options.projectBase,
+    ownedRoots: renderMap.ownedRoots,
+    files: renderMap.files,
+  });
   return { result, renderMap };
 }
 

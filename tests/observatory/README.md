@@ -46,9 +46,11 @@ bun run stop
 Profiles are `correctness` (the default), `small`, `medium`, and `large`. Seed
 rows are formula-derived from a fixed timestamp, so repeated resets are stable.
 Starting with a different profile replaces and reseeds an already-running
-container. The ignored `.db-state.json` is mode `0600` because it contains the
-generated password for the ephemeral database. `start` and `reset` also write
-the URL to an ignored project-root `.env`; `stop` removes both files.
+container. The ignored `dsql/build/observatory.json` is mode `0600` because it
+contains the generated password for the ephemeral database. `start` and
+`reset` also write the URL to an ignored project-root `.env`; `stop` removes
+both files. The `.env` is the CLI's conventional connection interface, while
+the container bookkeeping remains disposable build state.
 
 The dsql CLI reads `DSQL_DATABASE_URL` from that project-root `.env`, so
 database-touching commands work directly after `start`:

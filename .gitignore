@@ -1,4 +1,3 @@
 /target
-/tests/observatory/.db-state.json
 /tests/observatory/.env
 /tests/observatory/dsql/build/

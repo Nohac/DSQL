@@ -1,14 +1,18 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import {
+  projectRelative,
+  reconcileDsqlOutputs,
   renderDsql,
   renderMapFromResults,
   resolveEmbeddedSources,
@@ -719,7 +723,7 @@ test("does not rewrite unchanged generated files", async () => {
   expect(statSync(operationPath).mtimeMs).toBe(before);
 });
 
-test("removes stale files recorded in the generated ownership manifest", async () => {
+test("reconciles generated files without persistent ownership state", async () => {
   const root = createRoot();
 
   await renderDsql(createArtifacts(root), {
@@ -729,15 +733,59 @@ test("removes stale files recorded in the generated ownership manifest", async (
   const operationPath = join(root, "src/generated/dsql/queries/MovieInfoLookup.ts");
   expect(existsSync(operationPath)).toBe(true);
 
-  await renderDsql(createArtifacts(root, { operationNames: [] }), {
+  const nestedStale = join(root, "src/generated/dsql/queries/stale/StaleQuery.ts");
+  mkdirSync(join(root, "src/generated/dsql/queries/stale"), { recursive: true });
+  writeFileSync(nestedStale, "export {};\n");
+
+  const rendered = await renderDsql(createArtifacts(root, { operationNames: [] }), {
     root,
     queriesDir: "src/generated/dsql/queries",
   });
+  reconcileDsqlOutputs({
+    projectBase: root,
+    ownedRoots: ["src/generated/dsql"],
+    files: rendered.files.map((file) => projectRelative(root, file.path)),
+  });
 
   expect(existsSync(operationPath)).toBe(false);
+  expect(existsSync(nestedStale)).toBe(false);
+  expect(existsSync(join(root, "src/generated/dsql/queries/stale"))).toBe(false);
   expect(
     existsSync(join(root, "src/generated/dsql/queries/MovieFields.fragment.ts")),
   ).toBe(true);
+});
+
+test("rejects unsafe owned roots before reconciling", () => {
+  const root = createRoot();
+  const authored = join(root, "authored.ts");
+  writeFileSync(authored, "export {};\n");
+
+  expect(() =>
+    reconcileDsqlOutputs({
+      projectBase: root,
+      ownedRoots: ["."],
+      files: [],
+    }),
+  ).toThrow("is not a plain project-base-relative path");
+  expect(existsSync(authored)).toBe(true);
+});
+
+test("does not follow a symlinked owned root", () => {
+  const root = createRoot();
+  const target = join(root, "generated-target");
+  const authored = join(target, "authored.ts");
+  mkdirSync(target);
+  writeFileSync(authored, "export {};\n");
+  symlinkSync(target, join(root, "generated"), "dir");
+
+  expect(() =>
+    reconcileDsqlOutputs({
+      projectBase: root,
+      ownedRoots: ["generated"],
+      files: [],
+    }),
+  ).toThrow("is not a directory");
+  expect(existsSync(authored)).toBe(true);
 });
 
 function createRoot(): string {

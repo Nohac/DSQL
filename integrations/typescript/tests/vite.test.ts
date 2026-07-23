@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test } from "bun:test";
@@ -832,4 +838,26 @@ test("renderer-owned paths are swallowed without a daemon round-trip", async () 
   expect(await hotUpdate(h, generated)).toEqual([]);
   // Only initialize + compile ever reached the daemon.
   expect(h.renders).toHaveLength(1);
+}, 30_000);
+
+test("successful renders reconcile the complete owned-root file set", async () => {
+  const h = harness((base) => [
+    initializeStep(base),
+    { expectMethod: "compile", response: { result: resultFor(HOST) } },
+  ]);
+  const queries = join(h.base, "src/generated/dsql/queries");
+  const retained = join(queries, "TitlePanel.ts");
+  const stale = join(h.base, "src/generated/dsql/stale/StalePanel.ts");
+  mkdirSync(dirname(retained), { recursive: true });
+  mkdirSync(dirname(stale), { recursive: true });
+  writeFileSync(retained, "export const TitlePanelOperation = {};\n");
+  writeFileSync(stale, "export {};\n");
+
+  await transform(h, HOST);
+
+  expect(readFileSync(retained, "utf8")).toBe(
+    "export const TitlePanelOperation = {};\n",
+  );
+  expect(existsSync(stale)).toBe(false);
+  expect(existsSync(dirname(stale))).toBe(false);
 }, 30_000);

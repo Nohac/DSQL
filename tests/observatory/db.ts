@@ -1,8 +1,9 @@
 import { SQL } from "bun";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { seed, type Profile } from "./seed";
 
-const stateFile = new URL(".db-state.json", import.meta.url);
+const stateDirectory = new URL("dsql/build/", import.meta.url);
+const stateFile = new URL("observatory.json", stateDirectory);
 const environmentFile = new URL(".env", import.meta.url);
 const schemaFile = new URL("schema.sql", import.meta.url).pathname;
 const image = process.env.DSQL_POSTGRES_IMAGE ?? "docker.io/library/postgres:17.5-alpine";
@@ -85,6 +86,7 @@ async function start(profile: Profile): Promise<State> {
       await sql.close();
     }
     const state = { container, url, profile };
+    await mkdir(stateDirectory, { recursive: true });
     await writeFile(stateFile, `${JSON.stringify(state, null, 2)}\n`, {
       flag: "wx",
       mode: 0o600,

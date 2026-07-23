@@ -359,6 +359,16 @@ operation modules, execution modules, and scope name when generation is scoped.
 Transforms require returned render metadata so each source file can import from
 the generated barrel for its owning resolution scope.
 
+A renderer descriptor declares exclusive `ownedRoots`, and its render map lists
+the complete desired files beneath them. Once rendering and render-map
+validation succeed, the binding removes every unlisted file and empty stale
+directory before exposing the new map. Authored files must not live beneath an
+owned root. This makes cleanup independent of prior state: generated source
+trees contain only generated source, while disposable compiler metadata remains
+under `dsql/build`. Low-level `renderDsql` calls only write their current files;
+standalone callers must reconcile their declared output root from the returned
+file list, as the provided project renderer entrypoints do.
+
 ## Runtime Result Contract
 
 Generated result types describe the public DSQL output shape. Runtime execution
