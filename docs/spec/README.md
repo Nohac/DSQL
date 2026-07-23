@@ -13,8 +13,11 @@ Two caveats when reading:
   defaults and fragment input lifting, and resolution scopes are implemented.
   Deferred extensions are called out in their individual specs. Several other
   specs here (mutations, split-fetch, computed expressions, enumerated types,
-  catalog overlays, ...) are design documents for features that are not built
-  yet in this repository.
+  [catalog overlays](catalog-overlays.md), ...) are design documents for
+  features that are not built yet in this repository.
 - **Architecture references are superseded.** Where a spec mentions
   compiler machinery, `docs/architecture/compiler.md` is authoritative for
   this codebase.
+- **Tooling contracts also live here.** For example,
+  [TypeScript Distribution And Project Wiring](typescript-distribution.md)
+  specifies package and scaffold boundaries rather than DSQL syntax.

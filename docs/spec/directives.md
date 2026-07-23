@@ -1049,6 +1049,76 @@ External checked directives should not affect SQL, result shape, or core
 semantic checking. Generators may interpret external checked metadata at their
 entrypoints.
 
+## Typed Generator Contract
+
+The language-neutral metadata contract serializes checked directive values; it
+does not embed TypeScript declarations. The TypeScript project descriptor
+described by [Code Generation Metadata](codegen.md) projects the registered
+directive definitions into a generated type map.
+
+Conceptually:
+
+```ts
+type ProjectDirectives = {
+  "tanstack.query": {
+    locations: "query";
+    repeatable: false;
+    arguments: {
+      suspense?: boolean;
+    };
+  };
+  "api.expose": {
+    locations: "query";
+    repeatable: false;
+    arguments: {
+      method?: "GET" | "POST";
+    };
+  };
+};
+```
+
+Canonical keys use `namespace` for a namespace's default directive and
+`namespace.member` for a member. The `@.` source shorthand is always represented
+under its normalized `dsql.member` identity.
+
+Generator-facing occurrences are a discriminated union keyed by that canonical
+identity. Their argument type is derived from the supported normalized
+`DirectiveSchemaAst`:
+
+- JSON strings, numbers, integers, booleans, and null become their corresponding
+  TypeScript values;
+- `enum` becomes a literal union;
+- objects preserve required and optional properties;
+- object additional-property policies become a closed object, a typed index
+  signature, or an unsupported-schema error;
+- arrays recurse into their item schema; and
+- `x-dsql-ref` values become the appropriate checked reference metadata rather
+  than the raw source spelling.
+
+When `x-dsql-expression` permits a non-literal expression, the generated type
+uses a checked expression envelope parameterized by the schema's value type; it
+does not pretend a compile-time generator has the runtime boolean, number, or
+string value.
+
+No directive argument becomes `any`. If a generator-visible directive schema
+uses a form that the normalized AST cannot represent faithfully, project
+contract generation is a registration error with the unsupported schema path.
+Raw JSON Schema may still be retained for standards-compliant validation, but
+successful validation alone is not enough to promise a typed generator
+contract.
+
+Operations expose query-level checked directives, and result/input metadata
+exposes directives at their corresponding checked attachment paths. Repeatable
+directives remain arrays; order-sensitive repeatable directives preserve source
+order. Generator selectors such as
+`operations.withDirective("tanstack.query")` accept only registered canonical
+names and return occurrences with the matching checked argument type.
+
+This contract is required before directive-driven TypeScript generation is
+considered complete. The current directive feature remains RFC: specifying the
+type boundary does not claim that all directive locations, schema forms, or
+system directive semantics are implemented.
+
 ## Editor Support
 
 Directive definitions should power editor behavior:
@@ -1320,6 +1390,5 @@ schema nodes:
 - Should unknown extension directives ever be preserved without diagnostics?
 - Should extension directive schemas be loaded from package manifests,
   project config, or both?
-- Should directive schemas be emitted in compiler metadata for host tools?
 - Should system directive short form `@.` be allowed everywhere or only for
   known DSQL directives?

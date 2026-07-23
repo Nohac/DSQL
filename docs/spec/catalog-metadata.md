@@ -12,11 +12,10 @@ project's schema directory. PostgreSQL introspection owns those files and may
 replace them completely when the database changes; users do not merge authored
 customizations into generated files.
 
-The **effective catalog** is the single validated result of applying project
-configuration and authored catalog overlays to the generated catalog. Checks,
-resolution, planning, SQL generation, editor services, and code generation all
-consume the effective catalog. They do not independently consult generated
-metadata and overlays.
+The generated-to-effective composition boundary, authored file format,
+visibility, provenance, and manual relationships are defined by
+[Catalog Overlays](catalog-overlays.md). This document owns only the provider
+facts an overlay consumes.
 
 ## Metadata Layout
 
@@ -174,9 +173,10 @@ tenant_id -> tenant_id
 user_id   -> id
 ```
 
-Relation names are derived from the target table name unless catalog metadata
-provides an explicit relationship name. The language layer does not singularize,
-pluralize, or otherwise rewrite relation names.
+Provider-derived relation names use the target table name. The language layer
+does not singularize, pluralize, or otherwise rewrite them. Authored names and
+visibility are effective-catalog concerns defined by
+[Catalog Overlays](catalog-overlays.md).
 
 When multiple foreign-key paths connect the same source and target tables, a
 query must disambiguate the path with a relation edge selector, such as
@@ -284,10 +284,11 @@ tenant_profiles.tenant_id = users.tenant_id
 AND tenant_profiles.user_id = users.id
 ```
 
-## Validation Rules
+## Generated Catalog Validation Rules
 
-Catalog loading should reject or report metadata that cannot be used
-deterministically.
+Provider metadata loading rejects facts that cannot be used deterministically.
+Overlay target, merge, visibility, and effective-graph validation belong to
+[Catalog Overlays](catalog-overlays.md).
 
 - A table object must have a schema and name.
 - Column names must be unique within an object.
@@ -302,8 +303,6 @@ deterministically.
 
 ## Open Gaps
 
-- Define the authored overlay format and the complete generated-to-effective
-  merge contract, including first-class relationships and visibility changes.
 - Implement nominal native and table-backed enum metadata as specified by
   [Enumerated Types](enums.md).
 - Represent partial and expression unique indexes, including the predicates and

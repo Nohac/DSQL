@@ -64,6 +64,11 @@ between scopes, or between two resolvers in one scope, is a deterministic
 ownership error in cold loading and forces equivalent reconciliation in a warm
 daemon.
 
+`documents = []` is valid when a scope imports another scope, allowing an
+output-only consumer such as `shared_output` below. A scope with neither
+documents nor imports is a configuration diagnostic because it has no source
+or effective definitions.
+
 ## Resolver Model
 
 Each scope has local definitions and an effective resolver.
@@ -87,23 +92,70 @@ Rules:
 - Two imported scopes that provide the same definition name to one importing
   scope are a diagnostic.
 - Unknown imports and cyclic imports are diagnostics.
-- Imported shared definitions are emitted into each importing generated surface
-  so outputs are self-contained.
+- Imported shared definitions are emitted into each reachable terminal
+  generation target so outputs are self-contained.
 
 Fragment lookup and query planning use the current effective resolver. LSP,
 CLI validation, generation, completion, hover, and checking should all consume
 the same resolver semantics instead of rebuilding scope rules independently.
 
+## Terminal Generation Targets
+
+Not every resolution scope is a generation target.
+
+A **terminal generation target** is a configured scope that is not imported by
+any other configured scope. Equivalently, it has no dependents in the
+dependency-to-consumer graph. The implicit `default` scope is terminal.
+
+For the configuration above, `frontend` and `api` are generation targets while
+`shared` is not. Their effective artifact surfaces are:
+
+```text
+frontend = frontend + shared
+api      = api + shared
+```
+
+A non-terminal scope is reusable compiler input. Its standalone queries and
+fragments are copied into every reachable terminal target's effective closure,
+but the scope is not rendered as an independent deployable surface. If the same
+shared surface also needs independent output, the project declares another
+terminal scope that imports it:
+
+```toml
+[resolution.shared_output]
+documents = []
+imports = ["shared"]
+```
+
+A derived embedded DSQL document may belong only to a terminal generation
+target. An embedded query or fragment has one host callsite that must rewrite to
+one generated module; a non-terminal scope may feed multiple self-contained
+target outputs and therefore has no unique rewrite target. Extracting an
+embedded DSQL region in a non-terminal scope is a deterministic project error.
+A resolver-matched host containing no DSQL regions remains valid and produces
+nothing. Reusable non-terminal definitions live in standalone `.dsql`
+documents.
+
+The term *terminal generation target* avoids the ambiguous word *leaf*: imports
+are commonly drawn from consumer to dependency, in which orientation a shared
+dependency rather than a consumer would appear leaf-like.
+
 ## Generation Metadata
 
 The compiler should expose enough scope metadata for host integrations:
 
-- the list of generated scopes and their imports
+- every resolution scope, its direct imports, and whether it is a terminal
+  generation target
 - source-file ownership entries for embedded and standalone documents
-- per-scope operation and fragment artifact groups
+- each scope's effective operation and fragment artifact group
 - effective filter and condition provenance used by each scope
 
+Renderers dispatch only groups marked as terminal generation targets. Each
+target group includes the target's complete effective closure, including
+artifacts declared by non-terminal dependencies.
+
 Vite and other embedding transforms use source-file ownership to select the
-right generated query barrel for a transformed file. In multi-scope projects,
-host generators must return render metadata for each generated scope that can
-own embedded DSQL.
+right generated query barrel for a transformed file. Because embedding hosts
+are terminal-only, each callsite has exactly one target render map. In
+multi-target projects, host generators return render metadata for every
+terminal target that owns embedded DSQL.

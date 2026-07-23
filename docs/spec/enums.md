@@ -56,7 +56,8 @@ a bare `DataType::Enum`.
 
 The generated catalog records provider facts and captured values. Project
 configuration and catalog overlays contribute the authored intent needed to
-produce the effective catalog described by [Catalog Metadata](catalog-metadata.md).
+produce the effective catalog described by
+[Catalog Overlays](catalog-overlays.md).
 All compiler consumers receive that one effective catalog and do not repeat
 enum-source resolution.
 
@@ -155,10 +156,12 @@ A configured enum is valid only when:
 - at least one variant exists; and
 - the value count is below a documented compiler safety limit.
 
-Database constraints are preferred uniqueness evidence. Views can use
-overlay-provided uniqueness evidence once catalog overlays support it. Snapshot
-validation must still reject actual nulls or duplicates rather than trusting
-declared evidence blindly.
+Database constraints are preferred uniqueness evidence. Views and materialized
+views can use the overlay `assert_unique` assertion once catalog overlays
+support it; ordinary tables cannot. Unlike relationship-cardinality inference,
+configured enum introspection captures the values, so snapshot validation must
+still reject actual nulls or duplicates rather than trusting declared evidence
+blindly.
 
 Variants are strings, but they are not restricted to GraphQL identifier syntax.
 They remain case-sensitive and preserve whitespace. The dsql string-literal

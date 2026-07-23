@@ -42,7 +42,7 @@ reserved for human-readable logging and MUST NOT carry protocol data.
 
 ```json
 {"id": 1, "method": "initialize", "params": {"protocolVersion": 1, "root": "/abs/project"}}
-{"id": 1, "result": {"protocolVersion": 1, "projectBase": "/abs/project", "configPath": "dsql/dsql.toml", "schemaDir": "dsql/schema", "buildDir": "dsql/build", "generatorOutputs": []}}
+{"id": 1, "result": {"protocolVersion": 1, "projectBase": "/abs/project", "configPath": "dsql/dsql.toml", "schemaDir": "dsql/schema", "overlaysDir": "dsql/overlays", "buildDir": "dsql/build", "generatorOutputs": []}}
 ```
 
 - `id` is a consumer-chosen integer in `1..=2^53-1`, echoed verbatim.
@@ -168,12 +168,13 @@ stays uninitialized.
 The result returns the daemon's `protocolVersion` and the canonical
 paths every later exchange is relative to: `projectBase` (absolute,
 canonicalized once here — symlinks are resolved at this boundary and
-never again), the project-base-relative `configPath`, `schemaDir`, and
-`buildDir`, plus `generatorOutputs`: the project-base-relative output
-directories the project's configured host generator command declares
-(see Host generator command below) — the consumer excludes these from
-watching alongside `buildDir`. The result also echoes the effective
-`diagnosticLevel`.
+never again), the project-base-relative `configPath`, `schemaDir`,
+`overlaysDir`, and `buildDir`, plus `generatorOutputs`: the
+project-base-relative output directories the project's configured host
+generator command declares (see Host generator command below) — the consumer
+excludes these from watching alongside `buildDir`. `overlaysDir` is the fixed
+authored catalog input directory and MUST NOT be excluded from watching. The
+result also echoes the effective `diagnosticLevel`.
 
 Path rules for the whole protocol: relative paths use `/` separators
 and are relative to `projectBase`. Containment ("inside the project")
@@ -240,13 +241,14 @@ been loaded** (i.e. before any compile attempt got as far as loading —
 a compile that failed with `Diagnostics` counts as loaded) is
 equivalent to `compile`.
 
-Changes to the project config (`configPath`) or anything under
-`schemaDir` invalidate resident state: the daemon performs a full
-reload behind the same request/response. **If that reload itself fails**
-(broken `dsql.toml`, bad schema), the resident bowl is discarded, the
-request answers `ProjectLoadFailed`, the last published build tree
-stays untouched, and every subsequent `compile`/`filesChanged` retries
-the full load until it succeeds.
+Changes to the project config (`configPath`), anything under
+`schemaDir`, or anything under the authored `overlaysDir` input
+directory invalidate resident state: the daemon performs a full reload
+behind the same request/response. **If that reload itself fails**
+(broken `dsql.toml`, bad generated schema, or invalid catalog overlay),
+the resident bowl is discarded, the request answers `ProjectLoadFailed`,
+the last published build tree stays untouched, and every subsequent
+`compile`/`filesChanged` retries the full load until it succeeds.
 
 **Failure retention**: a compile that fails with `Diagnostics` keeps the
 updated (invalid) bowl resident and leaves the last successfully
@@ -267,6 +269,10 @@ The `result` of `compile`/`filesChanged`:
   "changed": true,                          // false only on no-op batches
   "manifestPath": "dsql/build/manifest.7.json",       // immutable, matches this result
   "currentManifestPath": "dsql/build/manifest.json",  // the fixed pointer
+  "projectContractHash": {
+    "algorithm": "sha256",
+    "value": "…lowercase hex…"
+  },
   "manifest": { /* BuildManifest, see metadata schema */ },
   "artifacts": [
     {
@@ -274,13 +280,26 @@ The `result` of `compile`/`filesChanged`:
       "kind": "operation",                   // operation | fragment
       "scope": "frontend",
       "metadata": { /* OperationMetadata | FragmentMetadata */ }
+    },
+    {
+      "id": "shared/fragment/TitleBits",
+      "kind": "fragment",
+      "scope": "shared",
+      "metadata": { /* FragmentMetadata */ }
     }
   ],
   "groups": [
     {
       "name": "frontend",
       "imports": ["shared"],
+      "generationTarget": true,
       "artifacts": ["frontend/operation/TitlePanel", "shared/fragment/TitleBits"]
+    },
+    {
+      "name": "shared",
+      "imports": [],
+      "generationTarget": false,
+      "artifacts": ["shared/fragment/TitleBits"]
     }
   ],
   "sourceFileScopes": [
@@ -311,6 +330,20 @@ The `result` of `compile`/`filesChanged`:
   closure**: the scope's own artifacts plus everything visible through
   its imports (the example's imported `TitleBits` is included by rule,
   not by accident).
+- `groups` contains every configured resolution scope. `generationTarget` is
+  true exactly when no other configured scope imports that group. Host
+  renderers dispatch only target groups; non-terminal groups remain present so
+  consumers can inspect the complete scope graph without reconstructing it from
+  artifacts. Target classification is compiler-owned and consumers MUST NOT
+  infer a different rule. The terminal-target and non-terminal embedding rules
+  are defined by [Resolution Scopes](resolution-scopes.md).
+- `projectContractHash` fingerprints the canonical scope graph, terminal-target
+  classification, and generator-visible normalized directive registry. A typed
+  project renderer compares it with `dsql/project.generated.ts` before invoking
+  generators. Its canonical representation in both places is `{ "algorithm":
+  "sha256", "value": "<lowercase hex>" }`, compared structurally. A mismatch is
+  a stale generated project contract, not permission to consume checked
+  metadata through outdated TypeScript types.
 - **Ordering is stable and normative** for reproducibility: `artifacts`
   by `id`, `groups` by `name`, `callsites` by `path`, `expressions` by
   `range.start`, `diagnostics` by `(file, range.start, code)`.
@@ -421,6 +454,10 @@ render map:
   `Diagnostics` errors. Shared helpers belong in plain `.dsql` documents or
   separate fragment-only embedded expressions visible through the resolution
   scope.
+- Every callsite belongs to a terminal generation target. A non-terminal scope
+  may contribute standalone artifacts to multiple target closures, but it
+  cannot own an embedded host whose one callsite would have multiple possible
+  rendered modules.
 - A binding transforms only callsites whose `resolver` it implements. It MUST
   reject an unsupported resolver deterministically rather than guessing from
   the host extension. Files with no daemon callsite pass through untouched.
@@ -558,7 +595,8 @@ A binding (the Vite plugin being the first) owns:
   `buildDir`, and `generatorOutputs`. Scope relevance is the daemon's
   judgment, not the watcher's — `sourceFileScopes` is informational
   (e.g. for UX), not a watch list, because it cannot name files that
-  don't exist yet.
+  don't exist yet. `overlaysDir` is catalog input and MUST NOT be
+  excluded.
 - **In-flight dedup**: at most one outstanding compile; coalesce every
   change that arrives meanwhile into the next request's `paths`.
 - **Rewriting**: per the rewrite contract and freshness rules above.
@@ -586,16 +624,17 @@ in the loop) runs it regardless.
 
 Declared outputs are validated at project load: each must be a
 normalized project-base-relative directory, must not be the project
-base itself, must be **disjoint from `configPath`, `schemaDir`, and
-`buildDir` in both directions** (neither ancestor nor descendant —
-`dsql/schema/generated` would hide schema changes just as surely as
-`dsql/`), and must not equal or contain the static (non-glob) prefix
-of any configured scope's document pattern (one direction only: a
-reserved directory *inside* a broad scope, like `src/generated` under
-`src/**/*.ts`, is exactly the point) — an output declaration that
-would swallow the project's own inputs is a configuration error, since
-it would silently stop the binding from watching real sources. Paths
-outside the project base are rejected the same way.
+base itself, must be **disjoint from `configPath`, `schemaDir`, the
+authored `overlaysDir` input directory, and `buildDir` in both
+directions** (neither ancestor nor descendant — `dsql/schema/generated`
+would hide schema changes just as surely as `dsql/`), and must not equal
+or contain the static (non-glob) prefix of any configured scope's
+document pattern (one direction only: a reserved directory *inside* a
+broad scope, like `src/generated` under `src/**/*.ts`, is exactly the
+point) — an output declaration that would swallow the project's own
+inputs is a configuration error, since it would silently stop the
+binding from watching real sources. Paths outside the project base are
+rejected the same way.
 
 Generator outputs, the consumer's `excludeRoots`, and `buildDir` are
 **reserved roots**: normatively excluded not just from consumer
@@ -607,7 +646,9 @@ Command generators see only the flat on-disk manifest: **scope-aware
 (grouped) generation is daemon-channel-only in v1.** If the on-disk
 manifest later grows group references (the scope-qualified artifact
 layout follow-up in docs/issues.md), that is a further manifest version
-bump, independent of this protocol.
+bump, independent of this protocol. Any such manifest groups MUST preserve the
+same compiler-owned `generationTarget` classification; command and daemon
+channels cannot disagree about renderable surfaces.
 
 ## Relationship to other surfaces
 

@@ -7,10 +7,10 @@ introspection is the only way to build the catalog.
 
 Providers produce the generated catalog described by
 [Catalog Metadata](catalog-metadata.md). Project configuration may direct a
-provider to capture additional database facts, while authored overlays modify
-the generated facts into one effective catalog. Compiler stages consume only
-that effective catalog; provider and overlay composition is completed before
-language resolution begins.
+provider to capture additional database facts. Authored composition and the
+single effective-catalog boundary are defined by
+[Catalog Overlays](catalog-overlays.md); metadata providers do not implement a
+second merge policy.
 
 ## Sources To Consider
 
@@ -31,7 +31,7 @@ embedding arbitrary SQL or transformation rules in dsql configuration.
 
 [Enumerated Types](enums.md) uses this model for table- and view-backed enums:
 `dsql/dsql.toml` identifies the source and structural columns, introspection
-captures their values in the generated catalog, and the effective catalog
+captures their values in the generated catalog, and catalog composition
 normalizes them with provider-native enums. A database view is the escape hatch
 when the captured source requires filtering or transformation.
 
@@ -61,9 +61,10 @@ Potential imported metadata:
 - Source and target tables or views.
 - Column mappings and manual join definitions.
 
-This could let projects migrate existing Hasura relationship names into dsql
-defined relationship aliases instead of exposing only raw relation edge
-selectors such as `users->assignee_id`.
+This could produce generated provider facts or authored
+[catalog overlays](catalog-overlays.md), depending on whether the imported
+metadata remains provider-owned or becomes project-owned. The effective merge
+semantics do not change.
 
 ## Provider Swap Goal
 

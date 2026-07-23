@@ -1,14 +1,14 @@
 # Relationship Naming
 
-Status: consideration.
+Status: in progress.
 
 Relationship names are catalog-driven. The language does not singularize,
 pluralize, or otherwise rewrite table names by itself.
 
-## Current Rule
+## Provider Default
 
-If a relationship points to `public::posts`, the default selectable relation name
-is `posts`, unless catalog metadata provides another name.
+If a provider relationship points to `public::posts`, the default selectable
+relation name is `posts`.
 
 ```dsql
 query Users {
@@ -20,41 +20,25 @@ query Users {
 }
 ```
 
-## Rewrite Rules To Consider
+Explicit directional relationship names, provider-edge hiding, conflict rules,
+and manual joins are defined by [Catalog Overlays](catalog-overlays.md).
+Hide-plus-add is the supported authored naming mechanism: it changes the
+exposed catalog field while preserving any independently matching provider
+proof.
 
-Project configuration may eventually support relationship naming rewrite rules.
-This would let a project normalize catalog-derived relationship names without
-hardcoding naming behavior in the language.
+## Overlay Relationships
 
-Possible use cases:
+Catalog overlays allow named relationships that reuse an inferred foreign-key
+path or declare an ordered manual join.
 
-- Rename relationships generated from foreign-key metadata.
-- Resolve multiple relationships between the same two tables.
-- Match existing API naming conventions.
-- Keep generated output stable when database constraint names are noisy.
-
-Open questions:
-
-- Whether rewrite rules apply globally or per table/schema.
-- Whether rules can inspect foreign-key column names.
-- How conflicts are reported.
-- Whether output keys follow rewritten relation names or require explicit
-  aliases.
-- How rewrite rules interact with schema-qualified relation references.
-
-## Defined Relationship Aliases
-
-Project metadata may eventually allow named relationships that alias an inferred
-foreign-key path.
-
-Example idea:
+Conceptually:
 
 ```text
 assignee = users->assignee_id
 reviewer = users->reviewer_id
 ```
 
-Those names could then be selected directly:
+Those names are selected directly:
 
 ```dsql
 query Tasks {
@@ -72,28 +56,40 @@ query Tasks {
 }
 ```
 
-This would provide stable, user-owned relationship names while keeping the raw
+This provides stable, user-owned relationship names while keeping the raw
 `[schema::]table->edge` selector available as an explicit lower-level
 reference.
 
-Potential benefits:
+Benefits include:
 
-- Avoid forcing query authors to use physical foreign-key column names
-  everywhere.
-- Preserve existing API relationship names when importing metadata from systems
-  such as Hasura.
-- Give views and other non-FK-backed objects relationship metadata.
-- Let introspection generate suggested aliases that users can edit.
-- Reduce query churn when database details change but the desired API shape does
-  not.
+- avoiding physical foreign-key column names in ordinary queries;
+- preserving established API relationship names during migration;
+- giving views and other non-FK-backed objects relationship metadata;
+- allowing tooling to generate suggested overlays for review; and
+- reducing query churn when database details change but the desired API shape
+  does not.
 
-Open questions:
+## Global Rewrite Rules To Consider
 
-- Whether aliases are scoped globally, per source table, or per schema/table.
-- Whether an alias may point only to inferred FK paths or also to hand-authored
-  join definitions.
-- Whether alias selection output keys use the alias name by default.
-- How alias conflicts with table names, columns, and inferred relations are
-  reported.
-- Whether generated aliases should be checked into project metadata or remain
-  provider-owned.
+Version 1 catalog overlays deliberately require per-object declarations.
+Project configuration may eventually support global relationship naming rewrite
+rules for broad conventions.
+
+Possible use cases:
+
+- normalize provider relationship names across a schema;
+- inspect foreign-key column names;
+- match an established API naming convention; and
+- keep generated output stable when database constraint names are noisy.
+
+Open questions for global rules:
+
+- whether rules apply globally or per schema;
+- which provider facts rules may inspect;
+- how generated suggestions become reviewed authored metadata;
+- how rule changes interact with explicit overlays; and
+- whether output keys follow rewritten names or require explicit aliases.
+
+Global rewrite rules must not introduce a second conflict or provenance model.
+If added, they must normalize into the effective-catalog composition defined by
+[Catalog Overlays](catalog-overlays.md).

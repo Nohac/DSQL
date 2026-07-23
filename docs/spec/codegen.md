@@ -262,9 +262,9 @@ Open questions:
 
 ## Generation Configuration
 
-Project configuration should describe enabled generation targets. DSQL itself
-should compile/check/plan queries and write metadata, while host integrations
-render framework-specific files.
+DSQL owns parsing, checking, planning, SQL, terminal-target classification, and
+artifact metadata. Host integrations render framework-specific files from that
+checked handoff. They do not reconstruct scopes or compiler semantics.
 
 Projects can also delegate rendering to an external command:
 
@@ -276,19 +276,25 @@ cmd = ["bun", "scripts/dsql-generate.ts"]
 
 `dsql generate` should still own parsing, checking, planning, SQL generation,
 and manifest writing. External commands should consume the build manifest and
-write host/framework-specific owned code. The TypeScript generator entrypoint is
-the source of truth for generated TypeScript output paths. Rust configuration
+write host/framework-specific owned code. The TypeScript project entrypoint is
+the source of truth for generated TypeScript output paths; Rust configuration
 does not define a TypeScript `outDir`.
 
-The command should run once per generation target, not once per query. It should
-receive compiler-owned paths through environment variables:
+The compatibility command channel receives the flat manifest through
+compiler-owned environment variables:
 
 - `DSQL_PROJECT_DIR`
 - `DSQL_MANIFEST`
 
-The manifest should be written to project-local build state such as
+The manifest is written to project-local build state such as
 `dsql/build/manifest.json` so users and tools can inspect, debug, and rerun
-generators without recompiling the project every time.
+flat generators without recompiling the project every time. Terminal-target
+rendering uses the grouped daemon handoff until the manifest format grows the
+same group contract; the two channels must not invent different target rules.
+
+The Vite binding and npm initializer do not configure an additional
+`[generate.typescript] cmd`. A daemon consumer invokes the project renderer
+itself, and running both channels would create competing generated trees.
 
 Filter match locking is resolved by DSQL before artifact publication. Unlocked
 `dsql generate` may update `<project-root>/dsql/dsql.lock` from the same
@@ -301,7 +307,230 @@ unlocked generation during development and locked generation for the Vite
 build command. The daemon remains responsible for comparison, semantic diff
 diagnostics, and any lock update.
 
-## TypeScript Render Contract
+## Generated TypeScript Project Descriptor
+
+DSQL emits a reproducible source contract at:
+
+```text
+dsql/project.generated.ts
+```
+
+Conceptually:
+
+```ts
+import { defineDsqlProject } from "@dsql/typescript/renderer";
+
+export const project = defineDsqlProject({
+  contractHash: {
+    algorithm: "sha256",
+    value: "…lowercase hex…",
+  },
+  scopes: {
+    shared: { imports: [] },
+    api: { imports: ["shared"] },
+    frontend: { imports: ["shared"] },
+  },
+  targets: ["api", "frontend"],
+  directives: {},
+});
+```
+
+Literal scope names, imports, terminal targets, and directive definitions remain
+available to TypeScript's type system. The descriptor also gives runtime
+renderer code the expected target set, so a stale descriptor cannot silently
+route a newly changed project.
+
+`contractHash` is the compiler-owned fingerprint of the canonical scope graph,
+terminal-target classification, and generator-visible normalized directive
+registry. Its canonical representation is `{ algorithm: "sha256", value:
+"<lowercase hex>" }` in both the descriptor and daemon protocol; comparison is
+structural over that representation. Before invoking any generator, the
+renderer requires both fingerprints and the explicit target graph to agree;
+otherwise it reports an actionable descriptor regeneration error and publishes
+nothing. This prevents a changed directive argument schema from being consumed
+under stale TypeScript types even when the scope names did not change.
+
+The fingerprint is semantic: source-file ordering, JSON/YAML formatting, and
+unused raw-schema annotations do not change it, while every change that affects
+the generated target or directive TypeScript contract must change it.
+
+This descriptor is generated source, not disposable build state. It contains no
+credentials, artifact list, SQL, generation result, or mutable ownership
+manifest. Projects may commit it so `generate.ts` type-checks in a fresh
+checkout, and supported tooling can recreate it from `dsql.toml` plus registered
+directive definitions. Publication manifests and transient state remain under
+`dsql/build/`.
+
+An explicit imported project descriptor is preferred to ambient module
+augmentation. Multiple DSQL projects may be visible to one TypeScript program;
+their scope and directive contracts must not merge invisibly.
+
+## Declarative Project Wiring
+
+`dsql/generate.ts` maps terminal targets to project-owned generators:
+
+```ts
+import {
+  targetOutput,
+  typescriptDefinitions,
+} from "@dsql/typescript/renderer";
+
+import { project } from "./project.generated";
+import { tanstackQuery } from "./generators/tanstack-query";
+import { tanstackStart } from "./generators/tanstack-start";
+
+export default project.renderer({
+  output: targetOutput("src/generated/dsql"),
+  targets: {
+    api: {
+      generators: [typescriptDefinitions(), tanstackStart],
+    },
+    frontend: {
+      generators: [typescriptDefinitions(), tanstackQuery],
+    },
+  },
+});
+```
+
+The target keys are exactly the terminal targets described by
+[Resolution Scopes](resolution-scopes.md). Unknown keys, missing decisions, and
+descriptor/compiler disagreement are errors. A target that intentionally emits
+nothing uses an explicit typed `project.ignore()` decision; ignoring a target
+that owns embedded callsites is invalid because those callsites require render
+map entries.
+
+Non-terminal scopes never appear as wiring targets. Their standalone artifacts
+already occur in each reachable target's effective artifact view.
+
+Framework-neutral definitions are explicit generator wiring, not implicit
+renderer output. Every operation or fragment selected for definition-module
+rendering is owned by exactly one definitions generator, which emits its
+definition and barrel modules plus the mappings required by callsite rewriting.
+A target that owns embedded callsites must therefore wire a definitions
+generator. A callsite-free target may omit it when its generators intentionally
+produce only other output, such as metadata.
+
+`generate.ts` contains no:
+
+- artifact-group fallback or iteration;
+- scope import resolution;
+- daemon startup, shutdown, or retry handling;
+- DSQL diagnostic or error reformatting;
+- output-owner bookkeeping;
+- stale-file cleanup; or
+- direct publication logic.
+
+Those are stable renderer-library responsibilities. Framework-specific policy
+and application conventions remain in project-owned generators and templates,
+as specified by [TypeScript Distribution And Project
+Wiring](typescript-distribution.md).
+
+## Generator Contract
+
+A generator receives one typed terminal target, its effective checked artifacts,
+and a path-safe desired-file collector. It returns desired files and optional
+module/export mappings; it does not write the filesystem directly.
+
+The optional `targets` declaration restricts where a generator may be wired.
+Omitting it allows every terminal target. Assigning a generator to a target
+outside its declaration is a project-contract error before daemon startup.
+
+Conceptually:
+
+```ts
+export const tanstackQuery = project.generator({
+  name: "tanstack-query",
+  targets: ["frontend"],
+  render({ target, operations, files }) {
+    for (const operation of operations) {
+      files.write(
+        `tanstack-query/${operation.name}.ts`,
+        renderOperation(operation),
+      );
+    }
+  },
+});
+```
+
+The renderer library owns:
+
+- terminal-target dispatch and effective-artifact projection;
+- contextual errors carrying generator and target identity;
+- normalized project-relative path validation;
+- composition of generated modules, exports, and desired files;
+- complete render-map validation;
+- atomic state swaps in a binding; and
+- owned-root reconciliation and stale cleanup after successful rendering.
+
+Custom generator errors retain their original cause. Project code does not catch
+and translate DSQL lifecycle errors.
+
+### Conditional generation
+
+Conditional generation is generator policy, not daemon or `generate.ts` policy.
+A generator may select operations by name, arbitrary metadata predicate, or
+checked directive:
+
+```ts
+for (const operation of operations.named("MovieSearch")) {
+  // A project-specific special case.
+}
+
+for (const operation of operations.withDirective("tanstack.query")) {
+  // Reusable source-declared generation intent.
+}
+
+for (const operation of operations.where((operation) => isPublic(operation))) {
+  // Any application-owned metadata policy.
+}
+```
+
+Name and predicate helpers are conveniences; a generator may inspect the full
+stable operation metadata. Directive selectors use the generated checked
+directive contract described by [Directives](directives.md). Generators never
+parse DSQL source, walk CST data, resolve directive names, or validate directive
+arguments themselves.
+
+## Output Composition And Collisions
+
+`targetOutput("src/generated/dsql")` assigns a deterministic target-qualified
+layout:
+
+```text
+src/generated/dsql/api/
+src/generated/dsql/frontend/
+```
+
+This is the safe default. Imported shared artifacts may appear in both trees,
+but every target remains self-contained and no generated module depends on
+another target's output.
+
+Custom layouts are allowed, but the renderer normalizes and validates the
+complete desired file set before touching disk. Every layout declares stable
+owned roots independent of the current target set; custom target paths are
+relative to those roots. This lets the binding exclude outputs before daemon
+initialization and clean removed targets after the scope graph changes.
+
+The renderer rejects:
+
+- paths escaping an owned root;
+- owned roots that overlap ambiguously instead of normalizing to one owner;
+- two generators or targets producing the same normalized file path;
+- two incompatible module/export mappings for one artifact; and
+- authored files placed beneath a declared owned root.
+
+Different generators may safely produce distinct files beneath one common owned
+root. Collision detection operates on normalized target files, not merely on
+directory strings.
+
+A renderer descriptor declares its owned roots before daemon initialization,
+and its render map lists the complete desired files beneath them. Once every
+generator and render-map check succeeds, the binding removes unlisted files and
+empty stale directories before exposing the new map. Failure publishes nothing
+and preserves the previous successful render state. Generated source trees are
+reconstructible; disposable compiler metadata remains under `dsql/build`.
+
+## TypeScript Definition Output
 
 The DSQL-owned TypeScript renderer should emit framework-neutral definition
 modules. The default public surface is one module per top-level definition plus
@@ -324,10 +553,9 @@ Execution payloads can be inline for backend-only projects or split into a
 separate directory:
 
 ```ts
-await renderDsql(artifacts, {
-  root,
-  queriesDir: "src/generated/dsql/queries",
-  executionDir: "src/generated/dsql/queries.server",
+typescriptDefinitions({
+  queriesDir: "queries",
+  executionDir: "queries.server",
 });
 ```
 
@@ -340,34 +568,11 @@ Generated query barrels should export the `dsql` helper, public runtime types,
 and every per-definition module so source-string typing is visible from one
 import.
 
-Host generators may return render metadata for Vite and other transforms:
-
-```ts
-const generator = defineDsqlGenerator(async ({ artifacts, root }) => {
-  const dsql = await renderDsql(artifacts, {
-    root,
-    queriesDir: "src/generated/dsql/queries",
-    executionDir: "src/generated/dsql/queries.server",
-  });
-
-  return dsql;
-});
-```
-
-Returned metadata should include the query barrel module, generated files,
-operation modules, execution modules, and scope name when generation is scoped.
-Transforms require returned render metadata so each source file can import from
-the generated barrel for its owning resolution scope.
-
-A renderer descriptor declares exclusive `ownedRoots`, and its render map lists
-the complete desired files beneath them. Once rendering and render-map
-validation succeed, the binding removes every unlisted file and empty stale
-directory before exposing the new map. Authored files must not live beneath an
-owned root. This makes cleanup independent of prior state: generated source
-trees contain only generated source, while disposable compiler metadata remains
-under `dsql/build`. Low-level `renderDsql` calls only write their current files;
-standalone callers must reconcile their declared output root from the returned
-file list, as the provided project renderer entrypoints do.
+The definitions generator returns the query-barrel module, generated files,
+operation modules, execution modules, and terminal target name as structured
+module/export mappings. The renderer library combines those mappings into the
+complete render map used by transforms, so each source file imports from the
+generated barrel for its owning terminal target.
 
 ## Runtime Result Contract
 
@@ -544,12 +749,15 @@ Useful metadata areas:
 - bounded dynamic predicate and order input surfaces
 - split-fetch handoffs, checked parent authorization chains, and cache key inputs
 - SQL variants for dynamic operators
+- checked directive occurrences at their semantic attachment paths, using
+  canonical names and validated arguments
 - source spans for diagnostics, hovers, and explain output
 - provider-specific hints that consumers can safely ignore
 
 Open questions:
 
-- Whether codegen metadata is directive-based, config-based, or both.
+- Which generation concerns should be source-declared through checked directives
+  versus project-owned renderer configuration.
 - How much metadata can be inferred from the catalog.
 - How generated metadata refers to result paths.
 - How provider-specific metadata is represented.

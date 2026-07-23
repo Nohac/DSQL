@@ -137,11 +137,11 @@ single `CatalogSnapshot` inserted into the bowl.
 
 The snapshot is the compiler's **effective catalog** boundary: resolution,
 checks, policies, planning, SQL, services, and generation never consult catalog
-sources independently. Catalog overlays are specified but not implemented;
-when added, project loading will validate and merge them with the generated
-catalog before constructing the same snapshot. This keeps overlay provenance
-and conflict reporting at the project boundary without spreading overlay logic
-through language systems.
+sources independently. [Catalog overlays](../spec/catalog-overlays.md) are
+designed but not implemented; project loading will validate and merge them with
+the generated catalog before constructing the same snapshot. This keeps overlay
+proof provenance and conflict reporting at the project boundary without
+spreading composition logic through language systems.
 
 ### Effective input contracts
 
