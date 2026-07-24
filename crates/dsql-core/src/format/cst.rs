@@ -313,7 +313,8 @@ impl<'a> CstFormatter<'a> {
     fn clause_list(&mut self, node: NodeRef) {
         let clauses = self.direct_rules(node, Rule::Clause);
         if let Some((where_clause, rest)) = self.complex_where_clause(&clauses) {
-            self.out.push('(');
+            self.out.push_str("(\n");
+            self.write_indent(self.indent + 1);
             self.where_clause_multiline(where_clause, self.indent + 1);
             if !rest.is_empty() {
                 self.out.push('\n');
@@ -364,7 +365,8 @@ impl<'a> CstFormatter<'a> {
     }
 
     fn clause_list_multiline(&mut self, clauses: &[NodeRef], preserve_user_breaks: bool) {
-        self.out.push('(');
+        self.out.push_str("(\n");
+        self.write_indent(self.indent + 1);
         for (idx, clause) in clauses.iter().copied().enumerate() {
             if idx > 0 {
                 let previous = clauses[idx - 1];

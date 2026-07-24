@@ -27,6 +27,22 @@ fn formatter_cases_match_expected_output() {
             "query CastLookupForHauntedMovieInfo { movie_info(where (.info like \"%haunted%\" and .id > 10 and .movie_id == 10) or .id == 10 order by id asc limit 10) { id } }",
         ),
         (
+            "aliased_multiline_clause_list",
+            indoc! {r#"
+                query FeaturedMovie {
+                  featured: movie_info_idx(
+                    where .info_type_id == 101
+                    and .info like $$
+                    and .title.kind_id == $
+                    and .title.movie_info_idx.info_type_id == 100
+                    order by info desc, id asc limit 1
+                  ) {
+                    id
+                  }
+                }
+            "#},
+        ),
+        (
             "short_clause_linebreaks",
             "query Movies { movie_info(limit 10\norder by id desc) { id } }",
         ),

@@ -23,7 +23,8 @@ query Users {
 
 complex_where_clauses
 query CastLookupForHauntedMovieInfo {
-  movie_info(where (
+  movie_info(
+    where (
       .info like "%haunted%"
       and .id > 10
       and .movie_id == 10
@@ -37,9 +38,25 @@ query CastLookupForHauntedMovieInfo {
 
 ---
 
+aliased_multiline_clause_list
+query FeaturedMovie {
+  featured: movie_info_idx(
+    where .info_type_id == 101
+    and .info like $$
+    and .title.kind_id == $
+    and .title.movie_info_idx.info_type_id == 100
+    order by info desc, id asc limit 1
+  ) {
+    id
+  }
+}
+
+---
+
 short_clause_linebreaks
 query Movies {
-  movie_info(limit 10
+  movie_info(
+    limit 10
     order by id desc
   ) {
     id
@@ -50,7 +67,8 @@ query Movies {
 
 clause_line_groups
 query Movies {
-  title(where .aka_title->episode_of_id.episode_nr > 0
+  title(
+    where .aka_title->episode_of_id.episode_nr > 0
     order by production_year desc limit 25
   ) {
     id
@@ -61,7 +79,8 @@ query Movies {
 
 variables_in_clauses
 query KeywordDiscovery {
-  keyword(where .movie_keyword.title.production_year $[>, >=] $
+  keyword(
+    where .movie_keyword.title.production_year $[>, >=] $
     order by keyword $sort_dir limit $movie_limit offset $$
   ) {
     id
@@ -72,7 +91,8 @@ query KeywordDiscovery {
 
 long_inline_clauses
 query Movies {
-  title(where .aka_title->episode_of_id.episode_nr > 0
+  title(
+    where .aka_title->episode_of_id.episode_nr > 0
     order by production_year desc limit 25 offset 12345
   ) {
     id
@@ -94,7 +114,8 @@ query Summary {
 
 aggregate_predicates
 query Popular {
-  title(where .movie_info_idx | exists
+  title(
+    where .movie_info_idx | exists
     and .movie_info_idx | count >= $$minimum
     limit 10
   ) {
@@ -106,7 +127,8 @@ query Popular {
 
 predicate_extensions
 query Visible {
-  users(where not $$disabled
+  users(
+    where not $$disabled
     or .id in [1, null, 2] and .deleted_at is not null and exists .posts(filter Published when $$enabled where .title not in $$titles)
   ) {
     id
@@ -117,7 +139,8 @@ query Visible {
 
 contextual_identifiers
 query exists {
-  metrics(where .exists == 1
+  metrics(
+    where .exists == 1
     and .in == 2
     and .is == 3
     and .not == 4
