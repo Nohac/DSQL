@@ -305,9 +305,11 @@ async fn compile_answers_the_result_shape() {
         "\"changed\":true",
         "\"manifestPath\":\"dsql/build/manifest.1.json\"",
         "\"currentManifestPath\":\"dsql/build/manifest.json\"",
+        "\"projectContractHash\":{\"algorithm\":\"sha256\",\"value\":\"",
         "\"id\":\"frontend/operation/Titles\"",
         "\"id\":\"shared/fragment/TitleBits\"",
-        "\"name\":\"frontend\",\"imports\":[\"shared\"]",
+        "\"name\":\"frontend\",\"imports\":[\"shared\"],\"generationTarget\":true",
+        "\"name\":\"shared\",\"imports\":[],\"generationTarget\":false",
         "\"path\":\"src/components/TitlePanel.ts\"",
         "\"resolver\":\"typescript\"",
         "\"algorithm\":\"sha256\"",
@@ -321,7 +323,9 @@ async fn compile_answers_the_result_shape() {
     }
     // The frontend group's closure includes the imported shared fragment.
     let frontend_group = response
-        .split("{\"name\":\"frontend\",\"imports\":[\"shared\"],\"artifacts\":[")
+        .split(
+            "{\"name\":\"frontend\",\"imports\":[\"shared\"],\"generationTarget\":true,\"artifacts\":[",
+        )
         .nth(1)
         .and_then(|rest| rest.split(']').next())
         .expect("frontend group present");

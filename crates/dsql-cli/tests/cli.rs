@@ -200,6 +200,26 @@ fn observatory_operation_list_exposes_importing_scopes() {
 }
 
 #[test]
+fn observatory_project_contract_stays_in_sync() {
+    let observatory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/observatory/dsql");
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let dsql_dir = scratch.path().join("dsql");
+    std::fs::create_dir(&dsql_dir).expect("dsql directory");
+    for file in ["dsql.toml", "project.generated.ts"] {
+        std::fs::copy(observatory.join(file), dsql_dir.join(file))
+            .expect("observatory contract input copied");
+    }
+
+    let synced = dsql(scratch.path(), &["project", "sync"]);
+    assert!(synced.status.success(), "stderr: {}", stderr(&synced));
+    assert!(
+        stdout(&synced).starts_with("unchanged "),
+        "the checked-in observatory contract is stale: {}",
+        stdout(&synced)
+    );
+}
+
+#[test]
 fn observatory_operations_execute_with_variants_policies_and_composite_relations() {
     let Ok(database_url) = std::env::var("DSQL_OBSERVATORY_DATABASE_URL") else {
         eprintln!("DSQL_OBSERVATORY_DATABASE_URL not set; skipping live operation test");
@@ -697,6 +717,44 @@ fn metadata_commands_print_the_consumer_contract() {
     let typescript = dsql(&dir, &["metadata-typescript"]);
     assert!(typescript.status.success());
     insta::assert_snapshot!("metadata_typescript", stdout(&typescript));
+}
+
+#[test]
+fn project_sync_recreates_the_config_only_typescript_contract() {
+    let dir = scratch_copy("project-sync");
+    let first = dsql(&dir, &["project", "sync"]);
+    assert!(first.status.success(), "stderr: {}", stderr(&first));
+    assert!(stdout(&first).contains("project.generated.ts"));
+    let path = dir.join("dsql/project.generated.ts");
+    let initial = std::fs::read_to_string(&path).expect("project contract written");
+    assert!(initial.contains("targets: [\"default\"]"));
+
+    let unchanged = dsql(&dir, &["project", "sync"]);
+    assert!(unchanged.status.success(), "stderr: {}", stderr(&unchanged));
+    assert!(stdout(&unchanged).starts_with("unchanged "));
+
+    std::fs::write(
+        dir.join("dsql/dsql.toml"),
+        indoc::indoc! {r#"
+            database_url = "unused"
+
+            [resolution.shared]
+            documents = [{ resolver = "dsql", paths = ["queries/**/*.dsql"] }]
+
+            [resolution.frontend]
+            documents = []
+            imports = ["shared"]
+        "#},
+    )
+    .expect("changed scope graph");
+    let changed = dsql(&dir, &["project", "sync"]);
+    assert!(changed.status.success(), "stderr: {}", stderr(&changed));
+    let current = std::fs::read_to_string(path).expect("project contract refreshed");
+    assert_ne!(initial, current);
+    assert!(current.contains("targets: [\"frontend\"]"));
+    assert!(current.contains("[\"shared\"]: { imports: [] }"));
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

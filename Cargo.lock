@@ -501,6 +501,7 @@ dependencies = [
  "dsql-metadata",
  "dsql-project",
  "facet-json",
+ "indoc",
  "insta",
  "miette",
  "ropey",

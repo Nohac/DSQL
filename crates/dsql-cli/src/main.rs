@@ -36,6 +36,11 @@ enum Command {
     },
     /// Resolve filters and update only dsql/dsql.lock.
     Lock,
+    /// Manage generated project-level integration contracts.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
     /// Parse one file and print its lossless syntax tree.
     Parse { file: PathBuf },
     /// Generate PostgreSQL for every query in the project.
@@ -127,6 +132,12 @@ enum OperationCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum ProjectCommand {
+    /// Recreate dsql/project.generated.ts from project configuration.
+    Sync,
+}
+
 #[cfg(debug_assertions)]
 #[derive(Subcommand)]
 enum DebugCommand {
@@ -161,6 +172,9 @@ async fn main() -> std::process::ExitCode {
         Command::Check { file } => commands::check(file).await,
         Command::Validate { locked } => commands::validate(locked).await,
         Command::Lock => commands::lock().await,
+        Command::Project {
+            command: ProjectCommand::Sync,
+        } => commands::project_sync().await,
         Command::Parse { file } => commands::parse_file(&file).await,
         Command::Sql { collection_limit } => commands::sql(collection_limit).await,
         Command::Fmt { check, file } => commands::fmt(check, file).await,

@@ -126,6 +126,24 @@ fn cyclic_import_visibility_is_finite_and_deduplicated() {
     );
 }
 
+#[test]
+fn terminal_generation_targets_come_from_the_complete_scope_graph() {
+    let imports = ScopeImports(BTreeMap::from([
+        ("api".to_string(), vec!["shared".to_string()]),
+        ("analytics".to_string(), vec!["shared".to_string()]),
+        ("shared".to_string(), Vec::new()),
+        ("shared_output".to_string(), vec!["shared".to_string()]),
+    ]));
+
+    assert_eq!(
+        imports.generation_targets().collect::<Vec<_>>(),
+        ["analytics", "api", "shared_output"]
+    );
+    assert!(imports.is_generation_target("api"));
+    assert!(!imports.is_generation_target("shared"));
+    assert!(!imports.is_generation_target("missing"));
+}
+
 #[tokio::test]
 async fn scopes_without_imports_do_not_see_each_other() {
     let bowl = scoped_bowl(&[("api", &[]), ("frontend", &[])]).await;

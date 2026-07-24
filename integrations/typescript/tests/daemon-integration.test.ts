@@ -28,6 +28,16 @@ integration("the real daemon serves compile results this package understands", a
     expect(result.generationId).toBe(1);
     expect(result.changed).toBe(true);
     expect(client.info?.protocolVersion).toBe(1);
+    expect(result.projectContractHash.algorithm).toBe("sha256");
+    expect(result.projectContractHash.value).toHaveLength(64);
+    expect(
+      result.groups
+        .filter((group) => group.generationTarget)
+        .map((group) => group.name),
+    ).toEqual(["frontend"]);
+    expect(
+      result.groups.find((group) => group.name === "shared")?.generationTarget,
+    ).toBe(false);
 
     const projectBase = client.info?.projectBase ?? projectDir;
     const artifacts = buildArtifactsFromGenerated(result, { projectBase });

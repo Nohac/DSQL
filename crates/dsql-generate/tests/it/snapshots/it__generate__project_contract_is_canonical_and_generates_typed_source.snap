@@ -1,0 +1,16 @@
+---
+source: crates/dsql-generate/tests/it/generate.rs
+expression: "first.typescript_source().expect(\"TypeScript project contract renders\")"
+---
+import { defineDsqlProject } from "@dsql/typescript/renderer";
+
+export const project = defineDsqlProject({
+  contractHash: {"algorithm":"sha256","value":"5a4b7e40d583f21a985d233dd2ec3960dbaaed23bbc03b4279e43473a8157995"},
+  scopes: {
+    ["common"]: { imports: [] },
+    ["frontend"]: { imports: ["common","shared"] },
+    ["shared"]: { imports: [] }
+  },
+  targets: ["frontend"],
+  directives: {},
+});

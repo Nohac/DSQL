@@ -39,6 +39,10 @@ pub enum GenerateError {
     Assembly { name: String, message: String },
     #[error("failed to serialize `{name}`: {message}")]
     Serialize { name: String, message: String },
+    #[error(
+        "artifact `{id}` belongs to scope `{scope}`, which is absent from the configured graph"
+    )]
+    ArtifactScopeNotConfigured { id: String, scope: String },
     #[error(transparent)]
     ArtifactCollision(Box<ArtifactCollision>),
     #[error(
@@ -203,14 +207,29 @@ pub async fn assemble_bowl(
 
     // Per-scope groups: every scope that owns artifacts or appears in the
     // import graph, with its effective transitive closure.
-    let mut scope_names: std::collections::BTreeSet<String> =
-        facts.imports.keys().cloned().collect();
-    scope_names.extend(artifacts.iter().map(|artifact| artifact.scope.clone()));
-    let scope_imports = ScopeImports(facts.imports.clone());
-    let groups = scope_names
-        .into_iter()
+    let scope_graph = if facts.imports.is_empty() {
+        artifacts
+            .iter()
+            .map(|artifact| (artifact.scope.clone(), Vec::new()))
+            .collect()
+    } else {
+        for artifact in &artifacts {
+            if !facts.imports.contains_key(&artifact.scope) {
+                return Err(GenerateError::ArtifactScopeNotConfigured {
+                    id: artifact.id.clone(),
+                    scope: artifact.scope.clone(),
+                });
+            }
+        }
+        facts.imports.clone()
+    };
+    let scope_imports = ScopeImports(scope_graph);
+    let groups = scope_imports
+        .0
+        .keys()
+        .cloned()
         .map(|name| {
-            let imports = facts.imports.get(&name).cloned().unwrap_or_default();
+            let imports = scope_imports.0.get(&name).cloned().unwrap_or_default();
             let visible: std::collections::BTreeSet<&str> =
                 scope_imports.visible_from(&name).collect();
             let members = artifacts
@@ -219,12 +238,14 @@ pub async fn assemble_bowl(
                 .map(|artifact| artifact.id.clone())
                 .collect();
             SnapshotGroup {
+                generation_target: scope_imports.is_generation_target(&name),
                 name,
                 imports,
                 artifacts: members,
             }
         })
         .collect();
+    let project_contract = crate::ProjectContract::from_imports(&scope_imports)?;
     let filter_match_lock = assemble_filter_match_lock(
         catalog,
         &facts.policy_index,
@@ -236,6 +257,7 @@ pub async fn assemble_bowl(
         snapshot: GenerationSnapshot {
             artifacts,
             groups,
+            project_contract,
             filter_match_lock,
         },
     })

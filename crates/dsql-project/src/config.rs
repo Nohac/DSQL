@@ -3,7 +3,7 @@
 //! Deliberately lean: lint configuration returns with the phase that
 //! consumes it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env::current_dir;
 use std::path::{Path, PathBuf};
 
@@ -52,8 +52,12 @@ pub enum ProjectError {
     MissingEmbeddingConfig { resolver: String },
     #[error("scope `{scope}` imports unknown scope `{import}`")]
     UnknownScopeImport { scope: String, import: String },
+    #[error("scope `{scope}` imports scope `{import}` more than once")]
+    DuplicateScopeImport { scope: String, import: String },
     #[error("cyclic scope import: {cycle}")]
     CyclicScopeImport { cycle: String },
+    #[error("scope `{scope}` has neither documents nor imports")]
+    EmptyScope { scope: String },
     #[error("a dsql project already exists at {0}")]
     AlreadyInitialized(PathBuf),
     #[error("generator output `{output}` {problem}")]
@@ -113,14 +117,21 @@ impl Config {
             )
     }
 
-    /// The named scope import graph installed in the language bowl.
-    pub(crate) fn scope_imports(&self) -> ScopeImports {
-        ScopeImports(
+    /// The complete configured scope graph installed in the language bowl.
+    ///
+    /// Every declared scope is a key, including the implicit `default` scope,
+    /// so terminal-target classification never depends on whether a scope
+    /// happened to produce an artifact.
+    pub fn scope_imports(&self) -> ScopeImports {
+        let scopes = if self.resolution.is_empty() {
+            BTreeMap::from([(ResolutionScope::DEFAULT.to_string(), Vec::new())])
+        } else {
             self.resolution
                 .iter()
                 .map(|(scope, config)| (scope.clone(), config.imports.clone()))
-                .collect(),
-        )
+                .collect()
+        };
+        ScopeImports(scopes)
     }
 }
 
@@ -251,7 +262,19 @@ impl Project {
             message: error.to_string(),
         })?;
         for (scope, scope_config) in &config.resolution {
+            if scope_config.documents.is_empty() && scope_config.imports.is_empty() {
+                return Err(ProjectError::EmptyScope {
+                    scope: scope.clone(),
+                });
+            }
+            let mut seen_imports = BTreeSet::new();
             for import in &scope_config.imports {
+                if !seen_imports.insert(import) {
+                    return Err(ProjectError::DuplicateScopeImport {
+                        scope: scope.clone(),
+                        import: import.clone(),
+                    });
+                }
                 if !config.resolution.contains_key(import) {
                     return Err(ProjectError::UnknownScopeImport {
                         scope: scope.clone(),

@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/embedding.rs
+expression: "crate::render_diagnostic_facts(&bowl).await"
+---
+Error[0..38]: embedded dsql expression belongs to non-terminal resolution scope `shared`; embedded regions require one terminal generation target

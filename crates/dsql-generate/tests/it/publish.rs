@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use dsql_core::source::ScopeImports;
 use dsql_generate::publish::{
     ArtifactFamily, GenerationSnapshot, MatchLockMode, PublishedGeneration, SnapshotArtifact,
     SnapshotGroup, prune, publish as publish_generation,
@@ -12,6 +13,7 @@ use dsql_generate::publish::{
 };
 use dsql_generate::{
     FilterMatchLock, GenerateError, LockedFilter, LockedFilterMatch, LockedPolicyReference,
+    ProjectContract,
 };
 
 type Result<T> = std::result::Result<T, GenerateError>;
@@ -32,16 +34,22 @@ fn artifact(name: &str, body: &str) -> SnapshotArtifact {
 }
 
 fn snapshot(artifacts: Vec<SnapshotArtifact>) -> GenerationSnapshot {
+    let project_contract = ProjectContract::from_imports(&ScopeImports(
+        std::collections::BTreeMap::from([("default".to_string(), Vec::new())]),
+    ))
+    .expect("default project contract");
     GenerationSnapshot {
         groups: vec![SnapshotGroup {
             name: "default".to_string(),
             imports: Vec::new(),
+            generation_target: true,
             artifacts: artifacts
                 .iter()
                 .map(|artifact| artifact.id.clone())
                 .collect(),
         }],
         artifacts,
+        project_contract,
         filter_match_lock: dsql_generate::FilterMatchLock::empty(),
     }
 }

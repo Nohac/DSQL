@@ -162,11 +162,11 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
     if (!server) {
       return;
     }
-    const nextFiles = new Set(next.files);
+    const nextFiles = new Set(next.files.map((file) => file.path));
     for (const file of previous?.files ?? []) {
-      if (!nextFiles.has(file)) {
+      if (!nextFiles.has(file.path)) {
         server.moduleGraph.onFileDelete(
-          resolve(projectBase(), file).split("\\").join("/"),
+          resolve(projectBase(), file.path).split("\\").join("/"),
         );
       }
     }

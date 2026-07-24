@@ -10,7 +10,7 @@ use dsql_core::input::{LanguageDocument, LanguageInputs, populate_language_bowl}
 use dsql_core::language_bowl;
 use dsql_core::source::{ResolutionScope, ScopeDocuments, ScopeImports, SourceKind};
 use dsql_generate::publish::MatchLockMode;
-use dsql_generate::{GenerateOptions, assemble_bowl, generate_project};
+use dsql_generate::{GenerateOptions, ProjectContract, assemble_bowl, generate_project};
 use dsql_project::Project;
 
 const SHARED_SOURCE: &str =
@@ -127,6 +127,37 @@ indexes:
     columns: [tenant_id, user_id]
     unique: true
 "#;
+
+#[test]
+fn project_contract_is_canonical_and_generates_typed_source() {
+    let first = ProjectContract::from_imports(&ScopeImports(BTreeMap::from([
+        (
+            "frontend".to_string(),
+            vec!["shared".to_string(), "common".to_string()],
+        ),
+        ("shared".to_string(), Vec::new()),
+        ("common".to_string(), Vec::new()),
+    ])))
+    .expect("first project contract");
+    let second = ProjectContract::from_imports(&ScopeImports(BTreeMap::from([
+        ("common".to_string(), Vec::new()),
+        ("shared".to_string(), Vec::new()),
+        (
+            "frontend".to_string(),
+            vec!["common".to_string(), "shared".to_string()],
+        ),
+    ])))
+    .expect("equivalent project contract");
+
+    // Import order can affect traversal order, but not the generated target
+    // topology or its typed renderer contract.
+    assert_eq!(first.fingerprint, second.fingerprint);
+    insta::assert_snapshot!(
+        first
+            .typescript_source()
+            .expect("TypeScript project contract renders")
+    );
+}
 
 fn document(path: &str, text: &str, scope: &str) -> LanguageDocument {
     LanguageDocument {
@@ -403,6 +434,7 @@ async fn generated_scope_groups_include_transitive_import_artifacts() {
             ("frontend".to_string(), vec!["middle".to_string()]),
             ("middle".to_string(), vec!["shared".to_string()]),
             ("shared".to_string(), Vec::new()),
+            ("standalone".to_string(), Vec::new()),
         ]),
     )
     .await;
@@ -416,6 +448,7 @@ async fn generated_scope_groups_include_transitive_import_artifacts() {
         .find(|group| group.name == "frontend")
         .expect("frontend group");
     assert_eq!(frontend.imports, vec!["middle"]);
+    assert!(frontend.generation_target);
     assert!(
         frontend
             .artifacts
@@ -423,6 +456,54 @@ async fn generated_scope_groups_include_transitive_import_artifacts() {
             .any(|artifact| artifact == "shared/fragment/TitleBits"),
         "frontend closure includes shared artifacts: {:?}",
         frontend.artifacts
+    );
+    let shared = assembled
+        .snapshot
+        .groups
+        .iter()
+        .find(|group| group.name == "shared")
+        .expect("shared group");
+    assert!(!shared.generation_target);
+    let standalone = assembled
+        .snapshot
+        .groups
+        .iter()
+        .find(|group| group.name == "standalone")
+        .expect("empty terminal group");
+    assert!(standalone.generation_target);
+    assert!(standalone.artifacts.is_empty());
+    assert_eq!(
+        assembled
+            .snapshot
+            .project_contract
+            .scopes
+            .iter()
+            .filter(|scope| scope.generation_target)
+            .map(|scope| scope.name.as_str())
+            .collect::<Vec<_>>(),
+        ["frontend", "standalone"]
+    );
+}
+
+#[tokio::test]
+async fn configured_scope_graph_rejects_artifacts_from_unknown_scopes() {
+    let bowl = memory_bowl(
+        scoped_catalog(),
+        vec![document(
+            "queries/frontend/titles.dsql",
+            "query Scoped { title(limit 1) { id } }\n",
+            "frontend",
+        )],
+        BTreeMap::from([("configured".to_string(), Vec::new())]),
+    )
+    .await;
+    let error = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect_err("configured graphs must not widen around artifacts");
+
+    assert_eq!(
+        error.to_string(),
+        "artifact `frontend/operation/Scoped` belongs to scope `frontend`, which is absent from the configured graph"
     );
 }
 

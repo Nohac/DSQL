@@ -3,6 +3,7 @@
 //! generator consumes.
 
 mod assemble;
+mod contract;
 #[cfg(feature = "native")]
 mod layout;
 mod match_lock;
@@ -13,6 +14,7 @@ mod pipeline;
 pub mod publish;
 pub mod snapshot;
 
+pub use contract::{ProjectContract, ProjectContractFingerprint, ProjectContractScope};
 pub use match_lock::{
     FILTER_MATCH_LOCK_VERSION, FilterMatchLock, LockedFilter, LockedFilterMatch,
     LockedPolicyReference,

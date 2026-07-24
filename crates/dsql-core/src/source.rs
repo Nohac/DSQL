@@ -434,6 +434,27 @@ fn configured_path_matches(configured: &Path, path: &Path) -> bool {
 pub struct ScopeImports(pub BTreeMap<String, Vec<String>>);
 
 impl ScopeImports {
+    /// Whether `scope` is a configured terminal generation target: it is
+    /// declared in the graph and no other configured scope imports it.
+    ///
+    /// Consumers must use this compiler-owned classification rather than
+    /// reconstructing the reverse import graph independently.
+    pub fn is_generation_target(&self, scope: &str) -> bool {
+        self.0.contains_key(scope)
+            && !self
+                .0
+                .values()
+                .any(|imports| imports.iter().any(|import| import == scope))
+    }
+
+    /// Configured terminal generation targets in stable lexical order.
+    pub fn generation_targets(&self) -> impl Iterator<Item = &str> {
+        self.0
+            .keys()
+            .map(String::as_str)
+            .filter(|scope| self.is_generation_target(scope))
+    }
+
     /// The effective scopes visible from `scope`: itself first, then its
     /// recursive imports in declaration order, with diamond paths deduplicated.
     /// Cycles are cut defensively; project loading rejects them separately.

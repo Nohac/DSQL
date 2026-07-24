@@ -1,7 +1,10 @@
 import { join, resolve } from "node:path";
 import { artifactKey } from "@dsql/typescript/node";
-import type { BuildArtifacts, DsqlRenderResult } from "@dsql/typescript/node";
-import { VariableDeclarationKind } from "@dsql/typescript/renderer";
+import type { BuildArtifacts } from "@dsql/typescript/node";
+import {
+  VariableDeclarationKind,
+  type DsqlProjectGenerator,
+} from "@dsql/typescript/renderer";
 import {
   createGeneratorProject,
   createSourceFromTemplate,
@@ -10,8 +13,6 @@ import {
 } from "./shared";
 
 type RenderOptions = {
-  readonly outDir: string;
-  readonly root?: string;
   readonly validatorFor?: DsqlValidatorResolver;
 };
 
@@ -27,99 +28,101 @@ export type DsqlValidatorExpression = {
   readonly expression: string;
 };
 
-export async function renderTanStackStart(
-  artifacts: BuildArtifacts,
-  dsql: DsqlRenderResult,
-  options: RenderOptions,
-): Promise<string[]> {
-  const root = resolve(options.root ?? process.cwd());
-  const clientPath = join(options.outDir, "tanstack-start.ts");
-  const serverPath = join(options.outDir, "tanstack-start.server.ts");
-  const project = createGeneratorProject();
-  const source = createSourceFromTemplate(
-    project,
-    options.outDir,
-    "tanstack-start.ts",
-    import.meta.url,
-  );
-  const serverSource = project.createSourceFile(
-    serverPath,
-    'import "@tanstack/react-start/server-only";\n',
-    { overwrite: true },
-  );
+export function tanstackStart(
+  options: RenderOptions = {},
+): Omit<DsqlProjectGenerator<string>, "targets"> {
+  return {
+    name: "tanstack-start",
+    render(context) {
+      const root = resolve(context.projectBase);
+      const outDir = resolve(root, context.outputDirectory);
+      const clientPath = join(outDir, "tanstack-start.ts");
+      const serverPath = join(outDir, "tanstack-start.server.ts");
+      const project = createGeneratorProject();
+      const source = createSourceFromTemplate(
+        project,
+        outDir,
+        "tanstack-start.ts",
+        import.meta.url,
+      );
+      const serverSource = project.createSourceFile(
+        serverPath,
+        'import "@tanstack/react-start/server-only";\n',
+        { overwrite: true },
+      );
+      const artifacts = context.artifacts;
+      const dsql = context.definitions.current;
 
-  if (artifacts.operations.length > 0) {
-    source.addImportDeclaration({
-      moduleSpecifier: importSpecifier(root, clientPath, dsql.modules.queries),
-      namedImports: artifacts.operations.map(
-        (operation) => `${toPascalCase(operation.name)}Operation`,
-      ),
-    });
-    for (const operation of artifacts.operations) {
-      const definition = dsql.definitions[artifactKey("operation", operation.name)];
-      if (!definition?.executionModule) {
-        throw new Error(`missing DSQL execution module for ${operation.name}`);
+      if (artifacts.operations.length > 0) {
+        source.addImportDeclaration({
+          moduleSpecifier: importSpecifier(root, clientPath, dsql.modules.queries),
+          namedImports: artifacts.operations.map(
+            (operation) => `${toPascalCase(operation.name)}Operation`,
+          ),
+        });
+        for (const operation of artifacts.operations) {
+          const definition = dsql.definitions[artifactKey("operation", operation.name)];
+          if (!definition?.executionModule) {
+            throw new Error(`missing DSQL execution module for ${operation.name}`);
+          }
+          serverSource.addImportDeclaration({
+            moduleSpecifier: importSpecifier(
+              root,
+              serverPath,
+              definition.executionModule,
+            ),
+            namedImports: [`${toPascalCase(operation.name)}ExecutionPayload`],
+          });
+        }
       }
+      for (const validator of validatorImports(artifacts, options.validatorFor)) {
+        source.addImportDeclaration({
+          moduleSpecifier: validator.from,
+          namedImports: [validator.name],
+        });
+      }
+
       serverSource.addImportDeclaration({
-        moduleSpecifier: importSpecifier(
-          root,
-          serverPath,
-          definition.executionModule,
-        ),
-        namedImports: [
-          `${toPascalCase(operation.name)}ExecutionPayload`,
+        moduleSpecifier: "@dsql/typescript/runtime",
+        isTypeOnly: true,
+        namedImports: ["DsqlExecutionPayload"],
+      });
+      source.addVariableStatement({
+        isExported: true,
+        declarationKind: VariableDeclarationKind.Const,
+        declarations: [
+          {
+            name: "serverOperationNames",
+            initializer: `${JSON.stringify(
+              artifacts.operations.map((operation) => operation.name),
+            )} as const`,
+          },
         ],
       });
-    }
-  }
-  for (const validator of validatorImports(artifacts, options.validatorFor)) {
-    source.addImportDeclaration({
-      moduleSpecifier: validator.from,
-      namedImports: [validator.name],
-    });
-  }
 
-  serverSource.addImportDeclaration({
-    moduleSpecifier: "@dsql/typescript/runtime",
-    isTypeOnly: true,
-    namedImports: ["DsqlExecutionPayload"],
-  });
-  source.addVariableStatement({
-    isExported: true,
-    declarationKind: VariableDeclarationKind.Const,
-    declarations: [
-      {
-        name: "serverOperationNames",
-        initializer: `${JSON.stringify(
-          artifacts.operations.map((operation) => operation.name),
-        )} as const`,
-      },
-    ],
-  });
-
-  for (const operation of artifacts.operations) {
-    const operationName = `${toPascalCase(operation.name)}Operation`;
-    source.addVariableStatement({
-      isExported: true,
-      declarationKind: VariableDeclarationKind.Const,
-      declarations: [
-        {
-          name: `${toPascalCase(operation.name)}ServerFn`,
-          initializer: `createServerFn({ method: "POST", strict: { output: false } })
+      for (const operation of artifacts.operations) {
+        const operationName = `${toPascalCase(operation.name)}Operation`;
+        source.addVariableStatement({
+          isExported: true,
+          declarationKind: VariableDeclarationKind.Const,
+          declarations: [
+            {
+              name: `${toPascalCase(operation.name)}ServerFn`,
+              initializer: `createServerFn({ method: "POST", strict: { output: false } })
   .inputValidator(${validatorExpression(operation, operationName, options.validatorFor)})
   .handler(({ data }) => executeDsqlOperation(${operationName}, data))`,
-        },
-      ],
-    });
-  }
-  serverSource.addVariableStatement({
-    isExported: true,
-    declarationKind: VariableDeclarationKind.Const,
-    declarations: [
-      {
-        name: "executionPayloads",
-        type: "Record<string, DsqlExecutionPayload<any>>",
-        initializer: `{
+            },
+          ],
+        });
+      }
+      serverSource.addVariableStatement({
+        isExported: true,
+        declarationKind: VariableDeclarationKind.Const,
+        declarations: [
+          {
+            name: "executionPayloads",
+            type: "Record<string, DsqlExecutionPayload<any>>",
+            initializer: `{
 ${artifacts.operations
   .map((operation) => {
     const name = toPascalCase(operation.name);
@@ -127,15 +130,16 @@ ${artifacts.operations
   })
   .join(",\n")}
 }`,
-      },
-    ],
-  });
+          },
+        ],
+      });
 
-  for (const file of [source, serverSource]) {
-    file.formatText();
-    await file.save();
-  }
-  return [clientPath, serverPath];
+      source.formatText();
+      serverSource.formatText();
+      context.files.write("tanstack-start.ts", source.getFullText());
+      context.files.write("tanstack-start.server.ts", serverSource.getFullText());
+    },
+  };
 }
 
 function validatorImports(

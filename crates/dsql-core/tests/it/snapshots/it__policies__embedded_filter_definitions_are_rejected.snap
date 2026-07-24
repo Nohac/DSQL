@@ -2,5 +2,5 @@
 source: crates/dsql-core/tests/it/policies.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[0..0]: embedded dsql expression defines no top-level definition; exactly one is required
+Error[0..41]: embedded dsql expression defines no top-level definition; exactly one is required
 Error[7..14]: filter definitions must live in standalone dsql files

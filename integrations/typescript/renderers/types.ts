@@ -24,5 +24,8 @@ const rendered = await renderDsql(artifacts, {
 reconcileDsqlOutputs({
   projectBase: root,
   ownedRoots: ["src/generated/dsql"],
-  files: rendered.files.map((file) => projectRelative(root, file.path)),
+  files: rendered.files.map((file) => ({
+    path: projectRelative(root, file.path),
+    contents: file.contents,
+  })),
 });

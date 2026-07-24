@@ -1,9 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
   FragmentMetadata,
@@ -182,10 +177,6 @@ export async function renderDsql(
   const renderedFiles = [...files.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([path, contents]) => ({ path, contents }));
-
-  for (const file of renderedFiles) {
-    writeFileIfChanged(file.path, file.contents);
-  }
 
   return {
     ...(scope
@@ -596,14 +587,6 @@ function sqlVariants(operation: OperationMetadata): Record<
       },
     ]),
   );
-}
-
-function writeFileIfChanged(path: string, contents: string): void {
-  if (existsSync(path) && readFileSync(path, "utf8") === contents) {
-    return;
-  }
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, contents);
 }
 
 /**

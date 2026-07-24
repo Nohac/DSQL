@@ -223,6 +223,20 @@ async fn invalid_scope_import_graphs_are_rejected() {
             "#},
             "cyclic scope import: a -> b -> c -> a",
         ),
+        (
+            "duplicate import",
+            indoc::indoc! {r#"
+                database_url = "x"
+
+                [resolution.shared]
+                documents = [{ resolver = "dsql", paths = ["queries/**/*.dsql"] }]
+
+                [resolution.frontend]
+                documents = []
+                imports = ["shared", "shared"]
+            "#},
+            "scope `frontend` imports scope `shared` more than once",
+        ),
     ];
     for (case, config, expected) in cases {
         let scratch = scratch_project(config);
@@ -231,6 +245,45 @@ async fn invalid_scope_import_graphs_are_rejected() {
             .expect_err("invalid imports must fail");
         assert_eq!(error.to_string(), expected, "{case}");
     }
+}
+
+#[tokio::test]
+async fn output_only_scopes_are_valid_but_empty_scopes_are_rejected() {
+    let output = scratch_project(indoc::indoc! {r#"
+        database_url = "x"
+
+        [resolution.shared]
+        documents = [{ resolver = "dsql", paths = ["queries/shared/**/*.dsql"] }]
+
+        [resolution.shared_output]
+        documents = []
+        imports = ["shared"]
+    "#});
+    let project = Project::load_from(output.path())
+        .await
+        .expect("an importing output-only scope is valid");
+    assert_eq!(
+        project
+            .config
+            .scope_imports()
+            .generation_targets()
+            .collect::<Vec<_>>(),
+        ["shared_output"]
+    );
+
+    let empty = scratch_project(indoc::indoc! {r#"
+        database_url = "x"
+
+        [resolution.empty]
+        documents = []
+    "#});
+    let error = Project::load_from(empty.path())
+        .await
+        .expect_err("a scope without documents or imports is invalid");
+    assert_eq!(
+        error.to_string(),
+        "scope `empty` has neither documents nor imports"
+    );
 }
 
 #[tokio::test]

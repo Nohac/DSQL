@@ -15,6 +15,10 @@ import { dsql as dsqlPlugin } from "../src/vite";
 
 const FAKE = join(import.meta.dir, "fixtures/fake-daemon.ts");
 const HOST_PATH = "src/components/Panel.tsx";
+const PROJECT_CONTRACT_HASH = {
+  algorithm: "sha256" as const,
+  value: "1".repeat(64),
+};
 
 const HOST = `"use client";
 
@@ -78,6 +82,7 @@ function resultFor(
   return {
     generationId: options.generationId ?? 1,
     changed: options.changed ?? true,
+    projectContractHash: PROJECT_CONTRACT_HASH,
     manifestPath: "dsql/build/manifest.1.json",
     currentManifestPath: "dsql/build/manifest.json",
     manifest: {
@@ -104,15 +109,14 @@ function resultFor(
           },
         ]
       : [],
-    groups: withCallsite
-      ? [
-          {
-            name: "frontend",
-            imports: [],
-            artifacts: ["frontend/operation/TitlePanel"],
-          },
-        ]
-      : [],
+    groups: [
+      {
+        name: "frontend",
+        imports: [],
+        generationTarget: true,
+        artifacts: withCallsite ? ["frontend/operation/TitlePanel"] : [],
+      },
+    ],
     sourceFileScopes: withCallsite ? [{ path, scope: "frontend" }] : [],
     callsites: withCallsite
       ? [
@@ -177,6 +181,7 @@ function harness(
   let failure: string | null = null;
   let modulePresent = true;
   const renderer: DsqlRenderer = {
+    projectContractHash: PROJECT_CONTRACT_HASH,
     ownedRoots: ["src/generated/dsql"],
     async render(context) {
       renders.push(context);
@@ -194,7 +199,14 @@ function harness(
             ]
           : [],
         ownedRoots: ["src/generated/dsql"],
-        files: modulePresent ? ["src/generated/dsql/queries/TitlePanel.ts"] : [],
+        files: modulePresent
+          ? [
+              {
+                path: "src/generated/dsql/queries/TitlePanel.ts",
+                contents: "export const TitlePanelOperation = {};\n",
+              },
+            ]
+          : [],
       };
     },
   };
@@ -625,35 +637,16 @@ test("nothing transforms before the first successful compile", async () => {
   expect(h.renders).toHaveLength(0);
 }, 30_000);
 
-test("a missing render mapping names the artifact id", async () => {
+test("a missing render mapping prevents the generation from becoming active", async () => {
   const h = harness((base) => [
     initializeStep(base),
     { expectMethod: "compile", response: { result: resultFor(HOST) } },
   ]);
-  // A renderer that maps nothing: valid map, useless for this callsite.
-  const empty = dsqlPlugin({
-    renderer: {
-      ownedRoots: ["src/generated/dsql"],
-      async render() {
-        return { modules: [], ownedRoots: ["src/generated/dsql"], files: [] };
-      },
-    },
-    root: h.base,
-    daemon: { command: "bun", args: [FAKE, h.scriptPath], cwd: h.base },
-    fullReload: false,
-  });
-  (empty.configResolved as (config: unknown) => void)({
-    root: h.base,
-    mode: "development",
-    command: "serve",
-    logger: { info() {}, warn() {}, error() {} },
-  });
-  const error = await (
-    empty.transform as (code: string, id: string) => Promise<unknown>
-  )(HOST, h.hostAbsolute).catch((caught: unknown) => caught);
-  expect(error).toBeInstanceOf(DsqlRewriteError);
-  expect((error as Error).message).toContain(
-    "no render mapping for artifact frontend/operation/TitlePanel",
+  h.setModulePresent(false);
+
+  expect(await transform(h, HOST)).toBeNull();
+  expect(h.logs.error.join("\n")).toContain(
+    "did not map embedded artifact frontend/operation/TitlePanel",
   );
 }, 30_000);
 
@@ -775,7 +768,9 @@ test("policy-only rebuilds invalidate watcher-excluded generated modules", async
     },
     {
       expectMethod: "filesChanged",
-      response: { result: resultFor(HOST, { generationId: 3 }) },
+      response: {
+        result: resultFor(HOST, { generationId: 3, withCallsite: false }),
+      },
     },
   ]);
   await transform(h, HOST);

@@ -487,6 +487,33 @@ pub async fn lock() -> Outcome {
     Ok(true)
 }
 
+/// Recreates the generated TypeScript project contract from configuration.
+///
+/// This command is intentionally config-only: it does not load the database,
+/// catalog, documents, or daemon, so a fresh checkout can restore the typed
+/// renderer surface before Vite imports it.
+pub async fn project_sync() -> Outcome {
+    let project = Project::load().await?;
+    let contract = dsql_generate::ProjectContract::from_imports(&project.config.scope_imports())?;
+    let source = contract.typescript_source()?;
+    let path = project.root.join("project.generated.ts");
+    let unchanged = tokio::fs::read_to_string(&path)
+        .await
+        .is_ok_and(|current| current == source);
+    if unchanged {
+        println!("unchanged {}", path.display());
+        return Ok(true);
+    }
+    tokio::fs::write(&path, source)
+        .await
+        .map_err(|source| CliError::Write {
+            path: path.clone(),
+            source,
+        })?;
+    println!("wrote {}", path.display());
+    Ok(true)
+}
+
 /// Introspects the configured database; dry runs print the metadata as
 /// one YAML document instead of writing the schema directory.
 pub async fn introspect(dry_run: bool) -> Outcome {

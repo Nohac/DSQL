@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Project, QuoteKind } from "@dsql/typescript/renderer";
@@ -17,7 +17,6 @@ export function createSourceFromTemplate(
   name: string,
   generatorUrl: string,
 ) {
-  mkdirSync(outDir, { recursive: true });
   return project.createSourceFile(
     join(outDir, name),
     templateContents(name, generatorUrl),

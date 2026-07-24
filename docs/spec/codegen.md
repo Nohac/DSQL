@@ -1,6 +1,6 @@
 # Code Generation Metadata
 
-Status: RFC.
+Status: in progress.
 
 dsql should be able to emit more than SQL. A checked query can also produce
 metadata for application code generation.

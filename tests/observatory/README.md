@@ -14,7 +14,7 @@ missing conformance case is visible during review.
 | Feature area | Conformance sources |
 | --- | --- |
 | Catalog types, composite keys, comments, views, and materialized views | `schema.sql`, generated `dsql/schema/`, and the live introspection test |
-| Resolution scopes and transitive shared definitions | `dsql.toml`, `shared`, `api`, and `analytics` |
+| Resolution scopes, terminal targets, and transitive shared definitions | `dsql.toml`, `project.generated.ts`, `shared`, `api`, and `analytics` |
 | Structured inputs, top-level params, and trusted context | `TypedReading`, `RecentReadings`, and `TenantScope` |
 | Scalar, collection, enum, boolean, and null defaults | `RecentReadings`, `ManualFilterProbe`, and `SensorReadingWindow` |
 | Nullable predicate pruning, reversed operands, and optional pagination | `OptionalPredicateProbe`, `SensorReadingWindow`, and `MappedSensorWindow` |

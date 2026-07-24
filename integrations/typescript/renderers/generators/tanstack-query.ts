@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import type { BuildArtifacts, DsqlRenderResult } from "@dsql/typescript/node";
+import type { DsqlProjectGenerator } from "@dsql/typescript/renderer";
 import { VariableDeclarationKind } from "@dsql/typescript/renderer";
 import {
   createGeneratorProject,
@@ -8,48 +8,45 @@ import {
   toPascalCase,
 } from "./shared";
 
-type RenderOptions = {
-  readonly outDir: string;
-  readonly root?: string;
-};
+export function tanstackQuery(): Omit<DsqlProjectGenerator<string>, "targets"> {
+  return {
+    name: "tanstack-query",
+    render(context) {
+      const root = resolve(context.projectBase);
+      const outDir = resolve(root, context.outputDirectory);
+      const sourcePath = join(outDir, "tanstack-query.ts");
+      const project = createGeneratorProject();
+      const source = createSourceFromTemplate(
+        project,
+        outDir,
+        "tanstack-query.ts",
+        import.meta.url,
+      );
+      const artifacts = context.artifacts;
+      const dsql = context.definitions.current;
 
-export async function renderTanStackQuery(
-  artifacts: BuildArtifacts,
-  dsql: DsqlRenderResult,
-  options: RenderOptions,
-): Promise<string[]> {
-  const root = resolve(options.root ?? process.cwd());
-  const sourcePath = join(options.outDir, "tanstack-query.ts");
-  const project = createGeneratorProject();
-  const source = createSourceFromTemplate(
-    project,
-    options.outDir,
-    "tanstack-query.ts",
-    import.meta.url,
-  );
+      if (artifacts.operations.length > 0) {
+        source.addImportDeclaration({
+          moduleSpecifier: importSpecifier(root, sourcePath, dsql.modules.queries),
+          namedImports: artifacts.operations.map(
+            (operation) => `${toPascalCase(operation.name)}Operation`,
+          ),
+        });
+        source.addImportDeclaration({
+          moduleSpecifier: "./tanstack-start",
+          namedImports: artifacts.operations.map(
+            (operation) => `${toPascalCase(operation.name)}ServerFn`,
+          ),
+        });
+      }
 
-  if (artifacts.operations.length > 0) {
-    source.addImportDeclaration({
-      moduleSpecifier: importSpecifier(root, sourcePath, dsql.modules.queries),
-      namedImports: artifacts.operations.map(
-        (operation) => `${toPascalCase(operation.name)}Operation`,
-      ),
-    });
-    source.addImportDeclaration({
-      moduleSpecifier: "./tanstack-start",
-      namedImports: artifacts.operations.map(
-        (operation) => `${toPascalCase(operation.name)}ServerFn`,
-      ),
-    });
-  }
-
-  source.addVariableStatement({
-    declarationKind: VariableDeclarationKind.Const,
-    declarations: [
-      {
-        name: "serverFunctions",
-        type: "Record<string, DsqlServerFunction<any>>",
-        initializer: `{
+      source.addVariableStatement({
+        declarationKind: VariableDeclarationKind.Const,
+        declarations: [
+          {
+            name: "serverFunctions",
+            type: "Record<string, DsqlServerFunction<any>>",
+            initializer: `{
 ${artifacts.operations
   .map((operation) => {
     const name = toPascalCase(operation.name);
@@ -57,11 +54,12 @@ ${artifacts.operations
   })
   .join(",\n")}
 }`,
-      },
-    ],
-  });
+          },
+        ],
+      });
 
-  source.formatText();
-  await source.save();
-  return [sourcePath];
+      source.formatText();
+      context.files.write("tanstack-query.ts", source.getFullText());
+    },
+  };
 }

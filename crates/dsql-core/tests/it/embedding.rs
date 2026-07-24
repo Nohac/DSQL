@@ -16,7 +16,8 @@ use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand, VariablesDemand
 use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
 use dsql_core::source::{
-    BelongsToHost, CallsiteSpan, SourceOffset, SourceText, insert_embedding_source,
+    BelongsToHost, CallsiteSpan, ResolutionScope, ScopeImports, SourceKind, SourceOffset,
+    SourceText, insert_embedding_source, insert_source_scoped,
 };
 use dsql_core::sql::GeneratedSqlFact;
 
@@ -519,6 +520,40 @@ async fn embedded_expression_shapes_are_checked() {
         "src/broken.ts",
         "export const f = dsql`query`;\n",
         "typescript",
+    )
+    .await;
+
+    insta::assert_snapshot!(crate::render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn embedded_regions_require_a_terminal_generation_scope() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, imdb_catalog()).await;
+    bowl.insert((
+        Singleton::<ScopeImports>::new(),
+        ScopeImports(BTreeMap::from([
+            ("frontend".to_string(), vec!["shared".to_string()]),
+            ("shared".to_string(), Vec::new()),
+        ])),
+    ))
+    .await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+    insert_source_scoped(
+        &bowl,
+        "src/shared.ts",
+        "export const query = dsql`query Shared { title(limit 1) { id } }`;",
+        ResolutionScope("shared".to_string()),
+        SourceKind::Embedded("typescript".to_string()),
+    )
+    .await;
+    insert_source_scoped(
+        &bowl,
+        "src/frontend.ts",
+        "export const query = dsql`query Frontend { title(limit 1) { id } }`;",
+        ResolutionScope("frontend".to_string()),
+        SourceKind::Embedded("typescript".to_string()),
     )
     .await;
 

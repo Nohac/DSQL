@@ -59,8 +59,15 @@ export type DsqlArtifact = {
 export type DsqlArtifactGroup = {
   readonly name: string;
   readonly imports: readonly string[];
+  /** Compiler-owned terminal generation-target classification. */
+  readonly generationTarget: boolean;
   /** The group's effective resolution closure, by artifact id. */
   readonly artifacts: readonly string[];
+};
+
+export type DsqlProjectContractFingerprint = {
+  readonly algorithm: "sha256";
+  readonly value: string;
 };
 
 export type DsqlSourceFileScope = {
@@ -73,6 +80,7 @@ export type DsqlCompileResult = {
   readonly changed: boolean;
   readonly manifestPath: string;
   readonly currentManifestPath: string;
+  readonly projectContractHash: DsqlProjectContractFingerprint;
   readonly manifest: BuildManifest;
   readonly artifacts: readonly DsqlArtifact[];
   readonly groups: readonly DsqlArtifactGroup[];

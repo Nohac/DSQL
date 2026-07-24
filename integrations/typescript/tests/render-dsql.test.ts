@@ -13,12 +13,30 @@ import { expect, test } from "bun:test";
 import {
   projectRelative,
   reconcileDsqlOutputs,
-  renderDsql,
+  renderDsql as renderDsqlPure,
   renderMapFromResults,
   resolveEmbeddedSources,
   sha256Hex,
   type BuildArtifacts,
+  type DsqlRenderResult,
+  type RenderDsqlOptions,
 } from "../src/node";
+
+async function renderDsql(
+  artifacts: BuildArtifacts,
+  options: RenderDsqlOptions,
+): Promise<DsqlRenderResult> {
+  const rendered = await renderDsqlPure(artifacts, options);
+  reconcileDsqlOutputs({
+    projectBase: options.root,
+    ownedRoots: ["src/generated/dsql"],
+    files: rendered.files.map((file) => ({
+      path: projectRelative(options.root, file.path),
+      contents: file.contents,
+    })),
+  });
+  return rendered;
+}
 
 test("renders inline per-definition dsql modules", async () => {
   const root = createRoot();
@@ -723,6 +741,20 @@ test("does not rewrite unchanged generated files", async () => {
   expect(statSync(operationPath).mtimeMs).toBe(before);
 });
 
+test("rendering stays pure until the desired files are published", async () => {
+  const root = createRoot();
+  const rendered = await renderDsqlPure(createArtifacts(root), {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+  const operationPath = join(root, "src/generated/dsql/queries/MovieInfoLookup.ts");
+
+  expect(existsSync(operationPath)).toBe(false);
+  expect(
+    rendered.files.some((file) => file.path === operationPath),
+  ).toBe(true);
+});
+
 test("reconciles generated files without persistent ownership state", async () => {
   const root = createRoot();
 
@@ -744,7 +776,10 @@ test("reconciles generated files without persistent ownership state", async () =
   reconcileDsqlOutputs({
     projectBase: root,
     ownedRoots: ["src/generated/dsql"],
-    files: rendered.files.map((file) => projectRelative(root, file.path)),
+    files: rendered.files.map((file) => ({
+      path: projectRelative(root, file.path),
+      contents: file.contents,
+    })),
   });
 
   expect(existsSync(operationPath)).toBe(false);

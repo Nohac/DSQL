@@ -771,22 +771,26 @@ impl Session {
             .iter()
             .map(|group| {
                 format!(
-                    "{{\"name\":{},\"imports\":{},\"artifacts\":{}}}",
+                    "{{\"name\":{},\"imports\":{},\"generationTarget\":{},\"artifacts\":{}}}",
                     json_string(&group.name),
                     string_array(&group.imports),
+                    group.generation_target,
                     string_array(&group.artifacts),
                 )
             })
             .collect();
+        let contract = &assembled.snapshot.project_contract.fingerprint;
 
         let body = format!(
-            "{{\"generationId\":{},\"changed\":%CHANGED%,\"manifestPath\":{},\"currentManifestPath\":{},\"manifest\":{},\"artifacts\":[{}],\"groups\":[{}],\"sourceFileScopes\":{scopes},\"callsites\":{callsites},\"diagnostics\":{}}}",
+            "{{\"generationId\":{},\"changed\":%CHANGED%,\"manifestPath\":{},\"currentManifestPath\":{},\"projectContractHash\":{{\"algorithm\":{},\"value\":{}}},\"manifest\":{},\"artifacts\":[{}],\"groups\":[{}],\"sourceFileScopes\":{scopes},\"callsites\":{callsites},\"diagnostics\":{}}}",
             published.generation_id,
             json_string(&relative_to(&self.project_base, &published.manifest_path)),
             json_string(&relative_to(
                 &self.project_base,
                 &published.current_manifest_path
             )),
+            json_string(&contract.algorithm),
+            json_string(&contract.value),
             manifest,
             artifacts.join(","),
             groups.join(","),

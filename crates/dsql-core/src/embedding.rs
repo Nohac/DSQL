@@ -23,10 +23,11 @@ use bowl::{
 };
 use regex::Regex;
 
+use crate::entities::document::ParsedFile;
 use crate::schema::dsql_schema;
 use crate::source::{
     AnalysisResidency, BelongsToHost, CallsiteSpan, ContentSpan, DsqlDocument, EmbeddingHost,
-    ExtractionResolver, OpenBuffer, ResolutionScope, SourceOffset, SourceText,
+    ExtractionResolver, OpenBuffer, ResolutionScope, ScopeImports, SourceOffset, SourceText,
 };
 
 /// One embedded-document extraction provider. Regex is implemented now;
@@ -139,19 +140,32 @@ async fn resolve_embedded_expressions(
 /// Emits diagnostics for embedded expressions without exactly one definition.
 async fn check_embedded_expressions(
     _: Query<Entity, With<crate::facts::DiagnosticsDemand>>,
+    imports: Query<(Entity, &ScopeImports)>,
     resolved: Query<(
         Entity,
         &ResolvedEmbeddedExpression,
         &crate::facts::BelongsToFile,
     )>,
+    regions: View<'_, (Entity, &ResolutionScope, &ParsedFile)>,
     mut commands: Commands<(crate::schema::dsql_schema::Diagnostic,)>,
 ) {
     use crate::facts::{
         DiagnosticCode, DiagnosticFacts, DiagnosticSource, Severity, emit_diagnostic,
     };
 
+    let (imports_entity, imports) = imports.item();
     let (resolution, resolved, file) = resolved.item();
-    let message = match resolved.0 {
+    let region = regions
+        .iter()
+        .find(|(region, _, _)| *region == file.0)
+        .map(|(_, scope, parsed)| (scope, parsed));
+    let span = region
+        .map(|(_, parsed)| crate::facts::Span {
+            start: 0,
+            end: parsed.source.len(),
+        })
+        .unwrap_or(crate::facts::Span { start: 0, end: 0 });
+    let shape_message = match resolved.0 {
         EmbeddedExpressionResolution::Target(_) => None,
         EmbeddedExpressionResolution::Empty => Some(
             "embedded dsql expression defines no top-level definition; exactly one is required"
@@ -161,17 +175,39 @@ async fn check_embedded_expressions(
             "embedded dsql expression defines {count} top-level definitions; exactly one is required"
         )),
     };
-    if let Some(message) = message {
+    if let Some(message) = shape_message {
         emit_diagnostic(
             &mut commands,
             DiagnosticFacts {
                 derived_from: DerivedFrom::new(resolution),
                 file: file.0,
-                span: crate::facts::Span { start: 0, end: 0 },
+                span,
                 severity: Severity::Error,
                 source: DiagnosticSource::Check,
                 code: DiagnosticCode::EmbeddedExpressionShape,
                 message,
+            },
+        );
+    }
+    let scope = region.map(|(scope, _)| scope);
+    if let Some(scope) = scope
+        && imports.0.contains_key(&scope.0)
+        && !imports.is_generation_target(&scope.0)
+    {
+        emit_diagnostic(
+            &mut commands,
+            DiagnosticFacts {
+                derived_from: DerivedFrom::many([resolution, imports_entity]),
+                file: file.0,
+                span,
+                severity: Severity::Error,
+                source: DiagnosticSource::Check,
+                code: DiagnosticCode::EmbeddedNonTerminalScope,
+                message: format!(
+                    "embedded dsql expression belongs to non-terminal resolution scope `{}`; \
+                     embedded regions require one terminal generation target",
+                    scope.0
+                ),
             },
         );
     }

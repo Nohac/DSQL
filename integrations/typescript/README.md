@@ -7,8 +7,8 @@ Experimental TypeScript integration for DSQL build metadata.
 After generation, app code can use a DSQL query as a typed operation:
 
 ```ts
-import { dsql } from "./generated/dsql/queries";
-import { useQuery } from "./generated/dsql/tanstack-query";
+import { dsql } from "./generated/dsql/frontend/queries";
+import { useQuery } from "./generated/dsql/frontend/tanstack-query";
 
 const MovieInfo = dsql(`
   query MovieInfoLookup {
@@ -33,54 +33,73 @@ With the Vite plugin enabled, the inline query is compiled to a generated
 operation import. The client-facing operation handle is typed and SQL-free;
 generated TanStack Start server functions keep SQL execution on the server.
 
-This package should stay metadata-first:
+This package stays metadata-first:
 
 1. The Rust CLI/compiler emits checked SQL and JSON metadata under
    `dsql/build/manifest.json`.
-2. `dsql generate` runs configured commands that write owned application code
-   from the manifest.
-3. This package provides convenience types and helpers for tools that interact
-   with those build artifacts.
+2. `dsql project sync` emits the typed resolution-scope contract at
+   `dsql/project.generated.ts`.
+3. A project-owned declarative renderer maps compiler-selected terminal targets
+   to generators.
+4. The Vite binding or one-shot daemon runner publishes the complete desired
+   file set and removes stale output.
 
 The root package exports metadata types and small runtime-neutral helpers. Node
 and Bun filesystem helpers live under `@dsql/typescript/node` so browser-facing
 code can import the root package without pulling in `node:fs`.
 
 Renderers are intentionally normal Bun/TypeScript programs so projects can
-vendor or replace them. The preferred setup is a project-owned entrypoint that
-loads DSQL build artifacts and composes generator helpers from
-`@dsql/typescript/node`.
+vendor or replace them. The preferred setup is a project-owned declarative
+entrypoint:
+
+```ts
+import {
+  targetOutput,
+  typescriptDefinitions,
+} from "@dsql/typescript/renderer";
+import { project } from "./project.generated";
+import { tanstackQuery } from "./generators/tanstack-query";
+import { tanstackStart } from "./generators/tanstack-start";
+
+const generators = () => [
+  project.generator(typescriptDefinitions({ executionDir: "queries.server" })),
+  project.generator(tanstackStart()),
+  project.generator(tanstackQuery()),
+];
+
+export default project.renderer({
+  output: targetOutput("src/generated/dsql"),
+  targets: {
+    api: { generators: generators() },
+    frontend: { generators: generators() },
+  },
+});
+```
+
+The generated `project` makes missing, misspelled, and non-terminal targets
+TypeScript errors. Runtime generation also compares its compiler-owned contract
+hash before invoking generators, so changing `dsql.toml` requires another
+`dsql project sync`.
+
+Named scopes must either own documents or import another scope, and a scope may
+import each dependency only once. Remove entirely empty scopes, or make an
+output-only target explicit with `documents = []` plus `imports = [...]`.
 
 Under a daemon-driven binding (the Vite plugin), rendering is the
 binding's job - do **not** also configure a `[generate.typescript] cmd`,
 or the flat command channel and the grouped daemon channel render
 divergent output. One-shot generation is the explicit
 `bun dsql/generate.ts`, which drives its own daemon (see below). The
-`cmd` channel remains supported for projects without a binding:
+legacy flat `cmd` channel remains supported for projects without a binding, but
+it must use a separate environment-driven entrypoint such as
+`renderers/types.ts`; never point it at the daemon-owning `dsql/generate.ts`:
 
 ```toml
 [generate.typescript]
 enabled = true
-cmd = ["bun", "dsql/generate.ts"]
+cmd = ["bun", "dsql/generate-flat.ts"]
 # Required under daemon consumers so outputs are watch-excluded:
 outputs = ["src/generated/dsql"]
-```
-
-```ts
-import {
-  loadBuildArtifacts,
-  renderDsql,
-} from "@dsql/typescript/node";
-
-const artifacts = loadBuildArtifacts(process.env.DSQL_MANIFEST!);
-
-await renderDsql(artifacts, {
-  root: process.cwd(),
-  queriesDir: "src/generated/dsql",
-});
-
-// Add vendored project/framework renderers here.
-// They can read artifacts.operations and write app-specific owned files.
 ```
 
 The minimal built-in entrypoint is `renderers/types.ts`. It only writes the
@@ -98,6 +117,7 @@ those generators read templates from `dsql/templates/*`:
 dsql/
   dsql.toml
   generate.ts
+  project.generated.ts
   generators/
     tanstack-start.ts
     tanstack-query.ts
@@ -106,15 +126,6 @@ dsql/
     tanstack-query.ts
 src/
 tsconfig.json
-```
-
-A vendored entrypoint should use the shared artifact loader rather than parsing
-the manifest shape itself:
-
-```ts
-import { loadBuildArtifacts } from "@dsql/typescript/node";
-
-const artifacts = loadBuildArtifacts(process.env.DSQL_MANIFEST!);
 ```
 
 Vendored generators can import `ts-morph` through
@@ -128,9 +139,14 @@ The base generator writes one public module per DSQL definition:
 
 ```text
 src/generated/dsql/
-  MovieInfoLookup.ts
-  MovieFields.fragment.ts
-  index.ts
+  api/
+    queries/
+      MovieInfoLookup.ts
+      MovieFields.fragment.ts
+      index.ts
+  frontend/
+    queries/
+      ...
 ```
 
 Each operation module exports its result/input/params types, a typed operation
@@ -142,17 +158,18 @@ controlled by the layout.
 const MovieInfo = dsql(`query MovieInfoLookup { movie_info { id } }`);
 ```
 
-For backend-only projects, colocated execution payloads are the simplest layout:
+`renderDsql` is the low-level pure definitions renderer. It returns desired
+file contents but never mutates the filesystem:
 
 ```ts
-await renderDsql(artifacts, {
+const definitions = await renderDsql(artifacts, {
   root,
   queriesDir: "src/generated/dsql/queries",
 });
 ```
 
 For frameworks with client/server import boundaries, pass `executionDir` to
-write matching execution modules separately:
+return matching execution modules separately:
 
 ```ts
 const dsql = await renderDsql(artifacts, {
@@ -190,13 +207,19 @@ directory configured in your application.
       executionModule: "./src/generated/dsql/queries.server/MovieInfoLookup",
     },
   },
-  files: [],
+  files: [
+    {
+      path: "/project/src/generated/dsql/queries/MovieInfoLookup.ts",
+      contents: "…",
+    },
+  ],
 }
 ```
 
-Generation writes through a DSQL-owned manifest so unchanged files keep their
-mtimes and stale files are removed only when a previous DSQL manifest recorded
-ownership.
+Project generators send all contents through `files.write(...)`. Only the
+binding publishes the validated complete desired set; unchanged files keep
+their mtimes, and unlisted files beneath exclusive renderer-owned roots are
+removed.
 
 ## Resolution Maps
 
@@ -241,38 +264,27 @@ result contains a callsite owned by the `typescript` resolver. Other resolver
 identities fail with a configuration error instead of being guessed from the
 path.
 
-Projects own a renderer descriptor: `ownedRoots` are known before any
-invocation (they become `initialize` excludeRoots), and `render` maps
-stable artifact ids to generated modules and exports.
+Projects own a generated contract plus renderer descriptor. `ownedRoots` are
+known before any invocation (they become `initialize` excludeRoots), and
+`render` maps stable artifact ids to generated modules and exports.
 
 ```ts
 // dsql/generate.ts
 import {
-  defineDsqlRenderer,
-  renderDsql,
-  renderMapFromResults,
   runDsqlRendererFromProject,
 } from "@dsql/typescript/node";
-import path from "node:path";
+import { targetOutput, typescriptDefinitions } from "@dsql/typescript/renderer";
+import { project } from "./project.generated";
 
-const OWNED_ROOTS = ["src/generated/dsql"] as const;
-
-export const renderer = defineDsqlRenderer({
-  ownedRoots: OWNED_ROOTS,
-  async render({ projectBase, artifacts, embeddedSources }) {
-    const results = [];
-    const groups =
-      artifacts.artifactGroups.length > 0 ? artifacts.artifactGroups : [artifacts];
-    for (const group of groups) {
-      results.push(
-        await renderDsql(group, {
-          root: projectBase,
-          queriesDir: path.join(projectBase, "src/generated/dsql/queries"),
-          embeddedSources,
-        }),
-      );
-    }
-    return renderMapFromResults(results, { projectBase, ownedRoots: OWNED_ROOTS });
+export const renderer = project.renderer({
+  output: targetOutput("src/generated/dsql"),
+  targets: {
+    api: {
+      generators: [project.generator(typescriptDefinitions())],
+    },
+    frontend: {
+      generators: [project.generator(typescriptDefinitions())],
+    },
   },
 });
 
@@ -308,7 +320,7 @@ const MovieInfo = dsql(`query MovieInfoLookup { movie_info { id } }`);
 becomes:
 
 ```ts
-import { MovieInfoLookupOperation as __dsql_MovieInfoLookupOperation } from "/src/generated/dsql/queries/MovieInfoLookup.ts";
+import { MovieInfoLookupOperation as __dsql_MovieInfoLookupOperation } from "/src/generated/dsql/frontend/queries/MovieInfoLookup.ts";
 const MovieInfo = __dsql_MovieInfoLookupOperation;
 ```
 
@@ -354,7 +366,7 @@ context, not by a generated module-level singleton:
 ```ts
 // src/server.ts
 import handler, { createServerEntry } from "@tanstack/react-start/server-entry";
-import type { DsqlServerContext } from "./generated/dsql/tanstack-start";
+import type { DsqlServerContext } from "./generated/dsql/frontend/tanstack-start";
 
 type RequestContext = DsqlServerContext;
 
@@ -392,7 +404,7 @@ not depend on a validation library.
 ```ts
 import { z } from "zod";
 import type { DsqlVariables } from "@dsql/typescript/runtime";
-import { MovieInfoLookupOperation } from "./generated/dsql/queries";
+import { MovieInfoLookupOperation } from "./generated/dsql/frontend/queries";
 
 export const MovieInfoVariablesSchema = z.object({
   params: z.object({ id: z.number().int() }),
@@ -401,9 +413,7 @@ export const MovieInfoVariablesSchema = z.object({
 ```
 
 ```ts
-await renderTanStackStart(artifacts, dsql, {
-  root,
-  outDir: "src/generated/dsql",
+project.generator(tanstackStart({
   validatorFor(operation) {
     if (operation.name === "MovieInfoLookup") {
       return {
@@ -416,7 +426,7 @@ await renderTanStackStart(artifacts, dsql, {
     }
     return "identity";
   },
-});
+}));
 ```
 
 Directive grammar and validation-schema generation are intentionally deferred.

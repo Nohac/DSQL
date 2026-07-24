@@ -2,9 +2,16 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { renderDsql, type BuildArtifacts } from "../src/node";
-import { renderTanStackQuery } from "../renderers/generators/tanstack-query";
-import { renderTanStackStart } from "../renderers/generators/tanstack-start";
+import {
+  projectRelative,
+  reconcileDsqlOutputs,
+  renderDsql,
+  type BuildArtifacts,
+  type DsqlDesiredFile,
+} from "../src/node";
+import type { DsqlProjectGeneratorContext } from "../src/renderer";
+import { tanstackQuery } from "../renderers/generators/tanstack-query";
+import { tanstackStart } from "../renderers/generators/tanstack-start";
 
 test("tanstack start uses imported validator expressions when provided", async () => {
   const root = createRoot();
@@ -15,9 +22,25 @@ test("tanstack start uses imported validator expressions when provided", async (
     executionDir: "src/generated/dsql/queries.server",
   });
 
-  await renderTanStackStart(artifacts, dsql, {
-    root,
-    outDir: join(root, "src/generated/dsql"),
+  const files = new Map<string, string>(
+    dsql.files.map((file) => [projectRelative(root, file.path), file.contents]),
+  );
+  const context: DsqlProjectGeneratorContext = {
+    target: "default",
+    projectBase: root,
+    outputDirectory: "src/generated/dsql",
+    artifacts,
+    embeddedSources: new Map(),
+    files: {
+      write(path, contents) {
+        files.set(join("src/generated/dsql", path), contents);
+      },
+    },
+    definitions: { current: dsql },
+    mode: "test",
+    command: "build",
+  };
+  await tanstackStart({
     validatorFor(operation) {
       if (operation.name !== "MovieInfoLookup") {
         return "identity";
@@ -31,10 +54,17 @@ test("tanstack start uses imported validator expressions when provided", async (
         expression: "MovieInfoVariablesSchema.parse",
       };
     },
-  });
-  await renderTanStackQuery(artifacts, dsql, {
-    root,
-    outDir: join(root, "src/generated/dsql"),
+  }).render(context);
+  await tanstackQuery().render(context);
+  reconcileDsqlOutputs({
+    projectBase: root,
+    ownedRoots: ["src/generated/dsql"],
+    files: [...files].map(
+      ([path, contents]): DsqlDesiredFile => ({
+        path,
+        contents,
+      }),
+    ),
   });
 
   const source = readFileSync(

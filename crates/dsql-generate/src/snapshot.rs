@@ -95,6 +95,7 @@ impl ArtifactFamily {
 pub struct SnapshotGroup {
     pub name: String,
     pub imports: Vec<String>,
+    pub generation_target: bool,
     pub artifacts: Vec<String>,
 }
 
@@ -105,6 +106,8 @@ pub struct GenerationSnapshot {
     pub artifacts: Vec<SnapshotArtifact>,
     /// Sorted by name.
     pub groups: Vec<SnapshotGroup>,
+    /// Scope graph and typed generator surface paired with this snapshot.
+    pub project_contract: crate::ProjectContract,
     /// Canonical filter match decisions paired with these artifacts.
     pub filter_match_lock: crate::FilterMatchLock,
 }

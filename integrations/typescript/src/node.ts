@@ -1,10 +1,12 @@
 import {
   existsSync,
   lstatSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   rmdirSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -19,9 +21,10 @@ import type {
   DsqlCallsite,
   DsqlCompileResult,
   DsqlDaemonOptions,
+  DsqlProjectContractFingerprint,
 } from "./daemon.ts";
 import { DsqlDaemonClient, withDaemonArgument } from "./daemon.ts";
-import type { DsqlRenderResult } from "./render/types.ts";
+import type { DsqlRenderedFile, DsqlRenderResult } from "./render/types.ts";
 
 export { DsqlDaemonClient, DsqlDaemonError, DsqlDaemonSessionError } from "./daemon.ts";
 export type {
@@ -36,6 +39,7 @@ export type {
   DsqlDiagnostic,
   DsqlDiagnosticLevel,
   DsqlInitializeResult,
+  DsqlProjectContractFingerprint,
   DsqlRange,
   DsqlSourceFileScope,
 } from "./daemon.ts";
@@ -74,6 +78,7 @@ export type BuildArtifacts = {
 export type GeneratedResolutionScope = {
   readonly name: string;
   readonly imports: readonly string[];
+  readonly generationTarget: boolean;
 };
 
 export type GeneratedSourceScope = {
@@ -154,7 +159,13 @@ export function buildArtifactsFromGenerated(
     );
     return view(
       members.flatMap((artifact) => (artifact ? [artifact] : [])),
-      [{ name: group.name, imports: group.imports }],
+      [
+        {
+          name: group.name,
+          imports: group.imports,
+          generationTarget: group.generationTarget,
+        },
+      ],
       manifest,
       result.sourceFileScopes
         .filter((entry) => memberPaths.has(entry.path))
@@ -165,7 +176,11 @@ export function buildArtifactsFromGenerated(
 
   return view(
     [...result.artifacts],
-    result.groups.map((group) => ({ name: group.name, imports: group.imports })),
+    result.groups.map((group) => ({
+      name: group.name,
+      imports: group.imports,
+      generationTarget: group.generationTarget,
+    })),
     result.manifest,
     result.sourceFileScopes.map((entry) => ({ file: entry.path, scope: entry.scope })),
     groupViews,
@@ -310,6 +325,8 @@ export function embeddedDefinitionsOf(
  * excludes it from watching.
  */
 export type DsqlRenderer = {
+  /** Generated project contract this renderer was type-checked against. */
+  readonly projectContractHash: DsqlProjectContractFingerprint;
   /** Project-base-relative directories the renderer writes into. */
   readonly ownedRoots: readonly string[];
   render(context: DsqlRendererContext): Promise<DsqlRenderMap>;
@@ -343,7 +360,13 @@ export type DsqlRenderMap = {
   /** Repeats the descriptor's roots as a consistency check. */
   readonly ownedRoots: readonly string[];
   /** The complete desired file set beneath [`DsqlRenderer.ownedRoots`]. */
-  readonly files: readonly string[];
+  readonly files: readonly DsqlDesiredFile[];
+};
+
+export type DsqlDesiredFile = {
+  /** Project-base-relative normalized path. */
+  readonly path: string;
+  readonly contents: string;
 };
 
 export function defineDsqlRenderer(renderer: DsqlRenderer): DsqlRenderer {
@@ -392,10 +415,16 @@ export function validateDsqlRenderMap(
       );
     }
   }
+  const files = new Set<string>();
   for (const file of map.files) {
-    if (!isUnderAny(assertProjectRelativePath(file, "file"), declared)) {
-      throw new Error(`dsql render map file ${file} is outside every owned root`);
+    const path = assertProjectRelativePath(file.path, "file");
+    if (!isUnderAny(path, declared)) {
+      throw new Error(`dsql render map file ${path} is outside every owned root`);
     }
+    if (files.has(path)) {
+      throw new Error(`dsql render map writes file ${path} more than once`);
+    }
+    files.add(path);
   }
 }
 
@@ -407,7 +436,7 @@ export function validateDsqlRenderMap(
 export function reconcileDsqlOutputs(options: {
   readonly projectBase: string;
   readonly ownedRoots: readonly string[];
-  readonly files: readonly string[];
+  readonly files: readonly DsqlDesiredFile[];
 }): void {
   const projectBase = resolve(options.projectBase);
   const ownedRoots = new Set(
@@ -415,19 +444,30 @@ export function reconcileDsqlOutputs(options: {
       assertProjectRelativePath(root, "owned root"),
     ),
   );
-  const files = new Set(
+  const files = new Map(
     options.files.map((file) => {
-      const path = assertProjectRelativePath(file, "file");
+      const path = assertProjectRelativePath(file.path, "file");
       if (!isUnderAny(path, ownedRoots)) {
         throw new Error(`dsql render map file ${path} is outside every owned root`);
       }
-      return resolve(projectBase, path);
+      return [resolve(projectBase, path), file.contents] as const;
     }),
   );
 
-  for (const root of ownedRoots) {
-    reconcileOwnedDirectory(resolve(projectBase, root), files);
+  for (const [path, contents] of files) {
+    writeFileIfChanged(path, contents);
   }
+  for (const root of ownedRoots) {
+    reconcileOwnedDirectory(resolve(projectBase, root), new Set(files.keys()));
+  }
+}
+
+function writeFileIfChanged(path: string, contents: string): void {
+  if (existsSync(path) && readFileSync(path, "utf8") === contents) {
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, contents);
 }
 
 function reconcileOwnedDirectory(
@@ -464,17 +504,27 @@ export function renderMapFromResults(
   options: {
     readonly projectBase: string;
     readonly ownedRoots: readonly string[];
-    /** Absolute or project-base-relative paths other generators wrote. */
-    readonly extraFiles?: readonly string[];
+    /** Absolute or project-base-relative desired files from other generators. */
+    readonly extraFiles?: readonly DsqlRenderedFile[];
   },
 ): DsqlRenderMap {
   const relativize = (path: string) =>
     isAbsolute(path) ? projectRelative(options.projectBase, path) : path;
   const modules = new Map<string, DsqlRenderModule>();
-  const files = new Set<string>((options.extraFiles ?? []).map(relativize));
+  const files = new Map<string, string>();
+  const addFile = (file: DsqlRenderedFile): void => {
+    const path = relativize(file.path);
+    if (files.has(path)) {
+      throw new Error(`dsql render results write file ${path} more than once`);
+    }
+    files.set(path, file.contents);
+  };
+  for (const file of options.extraFiles ?? []) {
+    addFile(file);
+  }
   for (const result of results) {
     for (const file of result.files) {
-      files.add(relativize(file.path));
+      addFile(file);
     }
     for (const definition of Object.values(result.definitions)) {
       if (!definition.id) {
@@ -504,7 +554,9 @@ export function renderMapFromResults(
   return {
     modules: [...modules.values()].sort((left, right) => left.id.localeCompare(right.id)),
     ownedRoots: options.ownedRoots,
-    files: [...files].sort(),
+    files: [...files]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([path, contents]) => ({ path, contents })),
   };
 }
 
@@ -525,6 +577,7 @@ export async function renderDsqlCompileResult(
   readonly result: DsqlCompileResult;
   readonly renderMap: DsqlRenderMap;
 }> {
+  assertProjectContract(initialResult, renderer);
   const prepare = (result: DsqlCompileResult) => {
     const artifacts = buildArtifactsFromGenerated(result, {
       projectBase: options.projectBase,
@@ -540,6 +593,7 @@ export async function renderDsqlCompileResult(
   let prepared = prepare(result);
   if (prepared.embedded.mismatches.length > 0) {
     result = await options.refresh(prepared.embedded.mismatches);
+    assertProjectContract(result, renderer);
     prepared = prepare(result);
     if (prepared.embedded.mismatches.length > 0) {
       throw new Error(
@@ -556,12 +610,46 @@ export async function renderDsqlCompileResult(
     ...options.environment(),
   });
   validateDsqlRenderMap(renderMap, renderer);
+  const mapped = new Set(renderMap.modules.map((module) => module.id));
+  for (const callsite of result.callsites) {
+    for (const expression of callsite.expressions) {
+      if (!mapped.has(expression.target)) {
+        throw new Error(
+          `dsql renderer did not map embedded artifact ${expression.target} from ${callsite.path}`,
+        );
+      }
+    }
+  }
   reconcileDsqlOutputs({
     projectBase: options.projectBase,
     ownedRoots: renderMap.ownedRoots,
     files: renderMap.files,
   });
   return { result, renderMap };
+}
+
+function assertProjectContract(
+  result: DsqlCompileResult,
+  renderer: DsqlRenderer,
+): void {
+  const expected = renderer.projectContractHash;
+  const actual = result.projectContractHash;
+  if (!actual) {
+    throw new Error(
+      "dsql daemon does not provide a project contract hash; upgrade or restart " +
+        "the dsql daemon before generation",
+    );
+  }
+  if (
+    actual.algorithm !== expected.algorithm ||
+    actual.value !== expected.value
+  ) {
+    throw new Error(
+      "dsql project contract is stale; run `dsql project sync` before generation " +
+        `(renderer ${expected.algorithm}:${expected.value}, compiler ` +
+        `${actual.algorithm}:${actual.value})`,
+    );
+  }
 }
 
 /**
@@ -656,7 +744,7 @@ export function loadBuildArtifacts(manifestPath: string): BuildArtifacts {
     // pointer (one-shot callers pass `dsql/build/manifest.json`).
     currentManifestPath: manifestPath,
     manifest,
-    scopes: [{ name: "default", imports: [] }],
+    scopes: [{ name: "default", imports: [], generationTarget: true }],
     sourceFileScopes: [],
     artifactGroups: [],
     operations,
