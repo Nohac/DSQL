@@ -5,7 +5,6 @@
 
 use facet::Facet;
 use facet_json::RawJson;
-use facet_value::{Value, value};
 
 pub const PROTOCOL_VERSION: u64 = 1;
 
@@ -80,12 +79,28 @@ pub struct Request {
     pub params: Params,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Facet)]
+#[facet(rename_all = "camelCase")]
+#[repr(u8)]
 pub enum Method {
     Initialize,
     Compile,
     FilesChanged,
     Shutdown,
+}
+
+/// A request method recovered for an error response. Known protocol
+/// methods stay typed; unknown input is retained verbatim.
+#[derive(Debug, Clone, Facet)]
+#[facet(untagged)]
+#[repr(u8)]
+#[expect(
+    dead_code,
+    reason = "variant payloads are read through Facet reflection"
+)]
+pub enum RequestMethod {
+    Known(Method),
+    Unknown(String),
 }
 
 /// A parse failure that still answers: with the request's own id when
@@ -94,7 +109,7 @@ pub enum Method {
 pub struct BadRequest {
     pub id: Option<u64>,
     pub message: String,
-    pub data: Value,
+    pub method: Option<RequestMethod>,
 }
 
 /// Best-effort id recovery for lines whose full envelope failed (bad
@@ -131,7 +146,7 @@ impl Request {
                 return Err(BadRequest {
                     id,
                     message: format!("unparseable request: {error}"),
-                    data: Value::NULL,
+                    method: None,
                 });
             }
         };
@@ -141,14 +156,14 @@ impl Request {
                 return Err(BadRequest {
                     id: None,
                     message: format!("id {id} is outside 1..=2^53-1"),
-                    data: Value::NULL,
+                    method: None,
                 });
             }
             None => {
                 return Err(BadRequest {
                     id: None,
                     message: "request has no id".to_string(),
-                    data: Value::NULL,
+                    method: None,
                 });
             }
         };
@@ -156,7 +171,7 @@ impl Request {
             return Err(BadRequest {
                 id: Some(id),
                 message: "request has no method".to_string(),
-                data: Value::NULL,
+                method: None,
             });
         };
         let method = match method_name.as_str() {
@@ -168,7 +183,7 @@ impl Request {
                 return Err(BadRequest {
                     id: Some(id),
                     message: format!("unknown daemon method `{other}`"),
-                    data: value!({ "method": (other) }),
+                    method: Some(RequestMethod::Unknown(other.to_string())),
                 });
             }
         };
@@ -180,7 +195,7 @@ impl Request {
                 return Err(BadRequest {
                     id: Some(id),
                     message: format!("invalid params for `{method_name}`: {error}"),
-                    data: value!({ "method": (method_name.as_str()) }),
+                    method: Some(RequestMethod::Known(method)),
                 });
             }
         };
@@ -214,20 +229,11 @@ impl WireResponse {
     }
 
     /// Constructs a failed response with the protocol's stable error shape.
-    pub fn error(
-        id: Option<u64>,
-        code: impl Into<String>,
-        message: impl Into<String>,
-        data: Value,
-    ) -> Self {
+    pub fn error(id: Option<u64>, kind: WireErrorKind, message: impl Into<String>) -> Self {
         Self {
             id,
             result: None,
-            error: Some(WireError {
-                code: code.into(),
-                message: message.into(),
-                data,
-            }),
+            error: Some(WireError::new(kind, message)),
         }
     }
 
@@ -251,12 +257,151 @@ pub enum WireResult {
     Compile(CompileResult),
 }
 
+/// One protocol-v1 failure and the only data shape legal for its code.
+#[derive(Debug, Clone, Facet)]
+#[facet(untagged)]
+#[repr(u8)]
+#[expect(
+    dead_code,
+    reason = "variant payloads are read through Facet reflection"
+)]
+pub enum WireErrorKind {
+    InvalidRequest,
+    InvalidRequestMethod {
+        method: RequestMethod,
+    },
+    NotInitialized,
+    AlreadyInitialized,
+    UnsupportedProtocolVersion {
+        #[facet(rename = "daemonVersion")]
+        daemon_version: u64,
+    },
+    InvalidPath {
+        path: String,
+    },
+    ProjectLoadFailed {
+        #[facet(default, skip_serializing_if = Option::is_none)]
+        path: Option<String>,
+        message: String,
+    },
+    Diagnostics {
+        diagnostics: Vec<WireDiagnostic>,
+    },
+    ArtifactCollision {
+        kind: String,
+        first: String,
+        #[facet(rename = "firstSource")]
+        first_source: String,
+        second: String,
+        #[facet(rename = "secondSource")]
+        second_source: String,
+        path: String,
+    },
+    AssemblyFailed {
+        artifact: String,
+        message: String,
+    },
+    PublicationLocked,
+    IoPath {
+        path: String,
+    },
+    IoAddressCollision {
+        path: String,
+        artifact: String,
+    },
+    IoUnknown,
+    GeneratorFailed {
+        #[facet(rename = "generationId")]
+        generation_id: u64,
+        #[facet(rename = "manifestPath")]
+        manifest_path: String,
+    },
+    Internal,
+}
+
+impl WireErrorKind {
+    /// Constructs either the null or method-bearing
+    /// [`WireErrorCode::InvalidRequest`] payload.
+    pub fn invalid_request(method: Option<RequestMethod>) -> Self {
+        match method {
+            Some(method) => Self::InvalidRequestMethod { method },
+            None => Self::InvalidRequest,
+        }
+    }
+
+    fn code(&self) -> WireErrorCode {
+        match self {
+            Self::InvalidRequest | Self::InvalidRequestMethod { .. } => {
+                WireErrorCode::InvalidRequest
+            }
+            Self::NotInitialized => WireErrorCode::NotInitialized,
+            Self::AlreadyInitialized => WireErrorCode::AlreadyInitialized,
+            Self::UnsupportedProtocolVersion { .. } => WireErrorCode::UnsupportedProtocolVersion,
+            Self::InvalidPath { .. } => WireErrorCode::InvalidPath,
+            Self::ProjectLoadFailed { .. } => WireErrorCode::ProjectLoadFailed,
+            Self::Diagnostics { .. } => WireErrorCode::Diagnostics,
+            Self::ArtifactCollision { .. } => WireErrorCode::ArtifactCollision,
+            Self::AssemblyFailed { .. } => WireErrorCode::AssemblyFailed,
+            Self::PublicationLocked => WireErrorCode::PublicationLocked,
+            Self::IoPath { .. } | Self::IoAddressCollision { .. } | Self::IoUnknown => {
+                WireErrorCode::Io
+            }
+            Self::GeneratorFailed { .. } => WireErrorCode::GeneratorFailed,
+            Self::Internal => WireErrorCode::Internal,
+        }
+    }
+
+    fn has_data(&self) -> bool {
+        !matches!(
+            self,
+            Self::InvalidRequest
+                | Self::NotInitialized
+                | Self::AlreadyInitialized
+                | Self::PublicationLocked
+                | Self::IoUnknown
+                | Self::Internal
+        )
+    }
+}
+
+/// Stable machine-readable daemon error codes.
+#[derive(Debug, Clone, Copy, Facet)]
+#[repr(u8)]
+enum WireErrorCode {
+    InvalidRequest,
+    NotInitialized,
+    AlreadyInitialized,
+    UnsupportedProtocolVersion,
+    InvalidPath,
+    ProjectLoadFailed,
+    Diagnostics,
+    ArtifactCollision,
+    AssemblyFailed,
+    PublicationLocked,
+    Io,
+    GeneratorFailed,
+    Internal,
+}
+
 /// The stable error body nested in a [`WireResponse`].
 #[derive(Debug, Clone, Facet)]
 pub struct WireError {
-    pub code: String,
-    pub message: String,
-    pub data: Value,
+    code: WireErrorCode,
+    message: String,
+    data: Option<WireErrorKind>,
+}
+
+impl WireError {
+    /// Converts one closed protocol failure into its code/data wire pair.
+    pub fn new(kind: WireErrorKind, message: impl Into<String>) -> Self {
+        let code = kind.code();
+        let data = kind.has_data().then_some(kind);
+        Self {
+            code,
+            message: message.into(),
+            data,
+        }
+    }
 }
 
 /// Canonical project paths returned by `initialize`.

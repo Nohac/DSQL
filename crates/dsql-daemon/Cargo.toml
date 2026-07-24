@@ -11,10 +11,10 @@ dsql-metadata = { workspace = true }
 dsql-project = { workspace = true }
 facet = { workspace = true }
 facet-json = { workspace = true }
-facet-value = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+facet-value = { workspace = true }
 fd-lock = { workspace = true }
 insta = { workspace = true }

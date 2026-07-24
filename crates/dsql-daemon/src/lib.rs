@@ -10,8 +10,7 @@ mod session;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
-use facet_value::Value;
-use protocol::{Request, WireResponse};
+use protocol::{Request, WireErrorKind, WireResponse};
 use session::Daemon;
 
 /// One frame from the reader task: a line, or bytes that were not UTF-8
@@ -58,9 +57,8 @@ where
             Frame::NotUtf8 => {
                 let response = WireResponse::error(
                     None,
-                    "InvalidRequest",
+                    WireErrorKind::InvalidRequest,
                     "request line is not UTF-8",
-                    Value::NULL,
                 );
                 if is_eof(&mut eof) {
                     return;
@@ -80,7 +78,11 @@ where
                 session::Handled::Shutdown(response) => (response, true),
             },
             Err(bad) => (
-                WireResponse::error(bad.id, "InvalidRequest", bad.message, bad.data),
+                WireResponse::error(
+                    bad.id,
+                    WireErrorKind::invalid_request(bad.method),
+                    bad.message,
+                ),
                 false,
             ),
         };

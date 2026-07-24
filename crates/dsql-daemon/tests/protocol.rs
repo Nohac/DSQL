@@ -139,7 +139,7 @@ impl Session {
 }
 
 fn assert_response_envelope(line: &str) {
-    let response: Value = facet_json::from_str(line).expect("daemon response is valid JSON");
+    let response = response_json(line);
     let object = response
         .as_object()
         .expect("daemon response is a JSON object");
@@ -150,6 +150,22 @@ fn assert_response_envelope(line: &str) {
         payloads, 1,
         "response has exactly one result or error: {line}"
     );
+}
+
+fn response_json(line: &str) -> Value {
+    facet_json::from_str(line).expect("daemon response is valid JSON")
+}
+
+fn field<'a>(value: &'a Value, name: &str) -> &'a Value {
+    value
+        .as_object()
+        .and_then(|object| object.get(name))
+        .expect("response field exists")
+}
+
+fn error_data(line: &str) -> Value {
+    let response = response_json(line);
+    field(field(&response, "error"), "data").clone()
 }
 
 fn json_str(value: &str) -> String {
@@ -179,6 +195,7 @@ async fn lifecycle_and_framing_edges() {
 
     let early = session.compile().await;
     assert!(early.contains("\"NotInitialized\""), "got {early}");
+    assert!(error_data(&early).is_null(), "got {early}");
 
     let mismatch = session
         .request(
@@ -193,6 +210,13 @@ async fn lifecycle_and_framing_edges() {
         mismatch.contains("\"UnsupportedProtocolVersion\"")
             && mismatch.contains("\"daemonVersion\":1"),
         "got {mismatch}"
+    );
+    assert_eq!(
+        field(&error_data(&mismatch), "daemonVersion")
+            .as_number()
+            .and_then(|number| number.to_u64()),
+        Some(1),
+        "got {mismatch}",
     );
 
     // The failed handshake left it uninitialized: a correct one works.
@@ -214,6 +238,14 @@ async fn lifecycle_and_framing_edges() {
             && unknown.contains("\"method\":\"frobnicate\""),
         "unknown methods keep their id and name the method, got {unknown}"
     );
+    let unknown_data = error_data(&unknown);
+    assert_eq!(
+        field(&unknown_data, "method")
+            .as_string()
+            .map(|method| method.as_str()),
+        Some("frobnicate"),
+        "got {unknown}",
+    );
 
     session.send_line("this is not json").await;
     let malformed = session.read_line().await;
@@ -221,6 +253,7 @@ async fn lifecycle_and_framing_edges() {
         malformed.contains("\"id\":null") && malformed.contains("InvalidRequest"),
         "got {malformed}"
     );
+    assert!(error_data(&malformed).is_null(), "got {malformed}");
 
     // Invalid UTF-8 answers InvalidRequest without killing the session.
     session
@@ -233,6 +266,7 @@ async fn lifecycle_and_framing_edges() {
         not_utf8.contains("\"id\":null") && not_utf8.contains("not UTF-8"),
         "got {not_utf8}"
     );
+    assert!(error_data(&not_utf8).is_null(), "got {not_utf8}");
 
     session
         .send_line("{\"id\":0,\"method\":\"compile\",\"params\":{}}")
@@ -299,6 +333,13 @@ async fn diagnostic_level_filters_success_errors_and_replays() {
     assert!(
         !broken.contains("GeneratorSkipped") && !broken.contains("\"severity\":\"Warning\""),
         "errors-only snapshots omit warnings, got {broken}",
+    );
+    let broken_data = error_data(&broken);
+    assert!(
+        field(&broken_data, "diagnostics")
+            .as_array()
+            .is_some_and(|diagnostics| !diagnostics.is_empty()),
+        "diagnostics errors carry the snapshot, got {broken}",
     );
 
     let replay = session.files_changed("README.md").await;
@@ -473,6 +514,14 @@ async fn files_changed_reconciles_and_replays() {
     // Outside paths reject.
     let outside = session.files_changed("/etc/passwd").await;
     assert!(outside.contains("\"InvalidPath\""), "got {outside}");
+    let outside_data = error_data(&outside);
+    assert_eq!(
+        field(&outside_data, "path")
+            .as_string()
+            .map(|path| path.as_str()),
+        Some("/etc/passwd"),
+        "got {outside}",
+    );
 }
 
 /// Policy definitions are ambient semantic inputs for consuming queries: an
@@ -872,6 +921,20 @@ async fn generator_failure_reports_and_replays() {
             && failed.contains("manifest.1.json"),
         "the committed generation is named, got {failed}"
     );
+    let failed_data = error_data(&failed);
+    assert_eq!(
+        field(&failed_data, "generationId")
+            .as_number()
+            .and_then(|number| number.to_u64()),
+        Some(1),
+        "got {failed}",
+    );
+    assert!(
+        field(&failed_data, "manifestPath")
+            .as_string()
+            .is_some_and(|path| path.as_str().ends_with("manifest.1.json")),
+        "got {failed}",
+    );
     assert!(
         session.root.join("dsql/build/manifest.json").exists(),
         "the build tree committed before the generator ran"
@@ -904,6 +967,7 @@ async fn publication_contention_surfaces() {
 
     let locked = session.compile().await;
     assert!(locked.contains("\"PublicationLocked\""), "got {locked}");
+    assert!(error_data(&locked).is_null(), "got {locked}");
     assert!(
         !build_dir.join("manifest.json").exists(),
         "a locked-out compile writes nothing"

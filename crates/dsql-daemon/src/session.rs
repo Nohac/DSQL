@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 use bowl::{Bowl, Entity, Mut, Query};
 use facet_json::RawJson;
-use facet_value::{Value, value};
 
 use dsql_core::embedding::{EmbeddedExpressionResolution, ResolvedEmbeddedExpression};
 use dsql_core::entities::definition::{DefDecl, DefKind};
@@ -23,8 +22,8 @@ use dsql_project::Project;
 
 use crate::protocol::{
     CompileResult, DiagnosticLevel, InitializeResult, Method, PROTOCOL_VERSION, Request,
-    WireArtifact, WireCallsite, WireDiagnostic, WireError, WireExpression, WireGroup, WireHash,
-    WireRange, WireResponse, WireResult, WireSourceFileScope,
+    RequestMethod, WireArtifact, WireCallsite, WireDiagnostic, WireError, WireErrorKind,
+    WireExpression, WireGroup, WireHash, WireRange, WireResponse, WireResult, WireSourceFileScope,
 };
 
 pub enum Handled {
@@ -102,9 +101,8 @@ impl Daemon {
                 let State::Ready(_) = &self.state else {
                     return Handled::Respond(WireResponse::error(
                         Some(request.id),
-                        "NotInitialized",
+                        WireErrorKind::NotInitialized,
                         "initialize the daemon first",
-                        Value::NULL,
                     ));
                 };
                 Handled::Respond(self.compile(request).await)
@@ -116,33 +114,35 @@ impl Daemon {
         if let State::Ready(_) = &self.state {
             return WireResponse::error(
                 Some(request.id),
-                "AlreadyInitialized",
+                WireErrorKind::AlreadyInitialized,
                 "the daemon is already initialized",
-                Value::NULL,
             );
         }
         let Some(version) = request.params.protocol_version else {
             return WireResponse::error(
                 Some(request.id),
-                "InvalidRequest",
+                WireErrorKind::InvalidRequestMethod {
+                    method: RequestMethod::Known(Method::Initialize),
+                },
                 "initialize requires params.protocolVersion",
-                value!({ "method": "initialize" }),
             );
         };
         if version != PROTOCOL_VERSION {
             return WireResponse::error(
                 Some(request.id),
-                "UnsupportedProtocolVersion",
+                WireErrorKind::UnsupportedProtocolVersion {
+                    daemon_version: PROTOCOL_VERSION,
+                },
                 format!("daemon speaks protocol {PROTOCOL_VERSION}, consumer sent {version}"),
-                value!({ "daemonVersion": (PROTOCOL_VERSION) }),
             );
         }
         let Some(root) = request.params.root.as_deref() else {
             return WireResponse::error(
                 Some(request.id),
-                "InvalidRequest",
+                WireErrorKind::InvalidRequestMethod {
+                    method: RequestMethod::Known(Method::Initialize),
+                },
                 "initialize requires params.root",
-                value!({ "method": "initialize" }),
             );
         };
         let diagnostic_level =
@@ -151,20 +151,24 @@ impl Daemon {
                 Err(message) => {
                     return WireResponse::error(
                         Some(request.id),
-                        "InvalidRequest",
+                        WireErrorKind::InvalidRequestMethod {
+                            method: RequestMethod::Known(Method::Initialize),
+                        },
                         message,
-                        value!({ "method": "initialize" }),
                     );
                 }
             };
         let project = match Project::load_from(Path::new(root)).await {
             Ok(project) => project,
             Err(error) => {
+                let message = error.to_string();
                 return WireResponse::error(
                     Some(request.id),
-                    "ProjectLoadFailed",
-                    error.to_string(),
-                    value!({ "message": (error.to_string()) }),
+                    WireErrorKind::ProjectLoadFailed {
+                        path: None,
+                        message: message.clone(),
+                    },
+                    message,
                 );
             }
         };
@@ -178,9 +182,8 @@ impl Daemon {
                 Err(error) => {
                     return WireResponse::error(
                         Some(request.id),
-                        "InvalidPath",
+                        WireErrorKind::InvalidPath { path: root },
                         error.to_string(),
-                        value!({ "path": (root) }),
                     );
                 }
             }
@@ -216,9 +219,8 @@ impl Daemon {
         let State::Ready(session) = &mut self.state else {
             return WireResponse::error(
                 Some(request.id),
-                "Internal",
+                WireErrorKind::Internal,
                 "daemon state changed while compiling",
-                Value::NULL,
             );
         };
         let id = request.id;
@@ -249,9 +251,11 @@ impl Daemon {
             session.bowl = None;
             return WireResponse::error(
                 Some(id),
-                "ProjectLoadFailed",
+                WireErrorKind::ProjectLoadFailed {
+                    path: None,
+                    message: error.clone(),
+                },
                 error.as_str(),
-                value!({ "message": (error.as_str()) }),
             );
         }
 
@@ -301,8 +305,8 @@ enum FileChange {
     Fresh(String),
 }
 
-fn respond_error_for(id: u64, (code, message, data): (String, String, Value)) -> WireResponse {
-    WireResponse::error(Some(id), code, message, data)
+fn respond_error_for(id: u64, (kind, message): (WireErrorKind, String)) -> WireResponse {
+    WireResponse::error(Some(id), kind, message)
 }
 
 fn render_outcome(id: u64, outcome: &Outcome, replay: bool) -> WireResponse {
@@ -331,12 +335,13 @@ impl Session {
     async fn classify_batch(
         &self,
         request: &Request,
-    ) -> Result<BatchPlan, (String, String, Value)> {
+    ) -> Result<BatchPlan, (WireErrorKind, String)> {
         let Some(paths) = request.params.paths.as_ref() else {
             return Err((
-                "InvalidRequest".into(),
+                WireErrorKind::InvalidRequestMethod {
+                    method: RequestMethod::Known(Method::FilesChanged),
+                },
                 "filesChanged requires params.paths".into(),
-                value!({ "method": "filesChanged" }),
             ));
         };
         if self.bowl.is_none() {
@@ -350,9 +355,10 @@ impl Session {
                 Ok(relative) => relative,
                 Err(problem) => {
                     return Err((
-                        "InvalidPath".into(),
+                        WireErrorKind::InvalidPath {
+                            path: raw.to_string(),
+                        },
                         problem,
-                        value!({ "path": (raw.as_str()) }),
                     ));
                 }
             };
@@ -364,9 +370,10 @@ impl Session {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => {
                         return Err((
-                            "Io".into(),
+                            WireErrorKind::IoPath {
+                                path: raw.to_string(),
+                            },
                             format!("failed to read {}: {error}", absolute.display()),
-                            value!({ "path": (raw.as_str()) }),
                         ));
                     }
                 };
@@ -398,7 +405,12 @@ impl Session {
                         Ok((_, true)) => reload = true,
                         Ok((changed, false)) => upserts.extend(changed),
                         Err(problem) => {
-                            return Err(("Io".into(), problem, value!({ "path": (raw.as_str()) })));
+                            return Err((
+                                WireErrorKind::IoPath {
+                                    path: raw.to_string(),
+                                },
+                                problem,
+                            ));
                         }
                     }
                 }
@@ -416,7 +428,12 @@ impl Session {
                     Ok(FileChange::Unchanged) => {}
                     Ok(FileChange::Fresh(content)) => upserts.push((absolute, content)),
                     Err(problem) => {
-                        return Err(("Io".into(), problem, value!({ "path": (raw.as_str()) })));
+                        return Err((
+                            WireErrorKind::IoPath {
+                                path: raw.to_string(),
+                            },
+                            problem,
+                        ));
                     }
                 }
             } else {
@@ -672,7 +689,7 @@ impl Session {
     /// generator, response body.
     async fn compile_now(&mut self) -> Outcome {
         let Some(bowl) = self.bowl.as_ref() else {
-            return outcome_error("Internal", "compile has no resident bowl", Value::NULL);
+            return outcome_error(WireErrorKind::Internal, "compile has no resident bowl");
         };
         let mut diagnostics = collect_diagnostics(bowl, &self.project_base).await;
         // Policy diagnostics join the snapshot BEFORE the error gate and
@@ -697,16 +714,11 @@ impl Session {
             .cloned()
             .collect::<Vec<_>>();
         if errors > 0 {
-            let data = match diagnostics_value(&visible_diagnostics) {
-                Ok(data) => data,
-                Err(message) => {
-                    return outcome_error("Internal", message, Value::NULL);
-                }
-            };
             return outcome_error(
-                "Diagnostics",
+                WireErrorKind::Diagnostics {
+                    diagnostics: visible_diagnostics,
+                },
                 "cannot generate while diagnostics contain errors",
-                data,
             );
         }
 
@@ -720,7 +732,7 @@ impl Session {
         let callsites = match collect_callsites(bowl, &self.project_base).await {
             Ok(callsites) => callsites,
             Err(message) => {
-                return outcome_error("Internal", message, Value::NULL);
+                return outcome_error(WireErrorKind::Internal, message);
             }
         };
         let scopes = collect_source_scopes(bowl, &self.project_base).await;
@@ -743,18 +755,15 @@ impl Session {
         if let Err(status) = generator {
             // The generation COMMITTED before the generator ran: report
             // it in data, and pruning still happens (via `published`).
+            let manifest_path = relative_to(&self.project_base, &published.manifest_path);
             return Outcome::Error {
-                error: WireError {
-                    code: "GeneratorFailed".to_string(),
-                    message: status,
-                    data: value!({
-                        "generationId": (published.generation_id),
-                        "manifestPath": (relative_to(
-                            &self.project_base,
-                            &published.manifest_path,
-                        ))
-                    }),
-                },
+                error: WireError::new(
+                    WireErrorKind::GeneratorFailed {
+                        generation_id: published.generation_id,
+                        manifest_path,
+                    },
+                    status,
+                ),
                 published: Some(published),
             };
         }
@@ -856,26 +865,22 @@ impl Session {
 }
 
 fn generate_outcome_error(error: GenerateError) -> Outcome {
-    let (code, data) = match &error {
-        GenerateError::ArtifactCollision(collision) => (
-            "ArtifactCollision",
-            value!({
-                "kind": (collision.kind),
-                "first": (collision.first.as_str()),
-                "firstSource": (collision.first_source.as_str()),
-                "second": (collision.second.as_str()),
-                "secondSource": (collision.second_source.as_str()),
-                "path": (collision.path.as_str())
-            }),
-        ),
-        GenerateError::PublicationLocked => ("PublicationLocked", Value::NULL),
-        GenerateError::Assembly { name, message } | GenerateError::Serialize { name, message } => (
-            "AssemblyFailed",
-            value!({
-                "artifact": (name.as_str()),
-                "message": (message.as_str())
-            }),
-        ),
+    let kind = match &error {
+        GenerateError::ArtifactCollision(collision) => WireErrorKind::ArtifactCollision {
+            kind: collision.kind.to_string(),
+            first: collision.first.clone(),
+            first_source: collision.first_source.clone(),
+            second: collision.second.clone(),
+            second_source: collision.second_source.clone(),
+            path: collision.path.clone(),
+        },
+        GenerateError::PublicationLocked => WireErrorKind::PublicationLocked,
+        GenerateError::Assembly { name, message } | GenerateError::Serialize { name, message } => {
+            WireErrorKind::AssemblyFailed {
+                artifact: name.clone(),
+                message: message.clone(),
+            }
+        }
         GenerateError::MatchLock { .. } => {
             let diagnostic = WireDiagnostic {
                 file: "dsql/dsql.lock".to_string(),
@@ -886,54 +891,43 @@ fn generate_outcome_error(error: GenerateError) -> Outcome {
                 code: "FilterMatchLock".to_string(),
                 message: error.to_string(),
             };
-            let data = match diagnostics_value(&[diagnostic]) {
-                Ok(data) => data,
-                Err(message) => return outcome_error("Internal", message, Value::NULL),
-            };
-            ("Diagnostics", data)
+            WireErrorKind::Diagnostics {
+                diagnostics: vec![diagnostic],
+            }
         }
-        GenerateError::LanguageDiagnostics { .. } => (
+        GenerateError::LanguageDiagnostics { .. } => {
             // collect_diagnostics answered first in the normal path; this
             // arm covers races where new errors appeared mid-assembly.
-            "Diagnostics",
-            value!({ "diagnostics": [] }),
-        ),
+            WireErrorKind::Diagnostics {
+                diagnostics: Vec::new(),
+            }
+        }
         // The protocol specifies data: null for Internal; the message
         // already rides the human-readable field.
-        GenerateError::Internal(_) => ("Internal", Value::NULL),
-        GenerateError::Project(project) => (
-            "ProjectLoadFailed",
-            value!({ "message": (project.to_string()) }),
-        ),
-        GenerateError::AddressCollision { path, id } => (
-            "Io",
-            value!({
-                "path": (path.as_str()),
-                "artifact": (id.as_str())
-            }),
-        ),
+        GenerateError::Internal(_) => WireErrorKind::Internal,
+        GenerateError::Project(project) => WireErrorKind::ProjectLoadFailed {
+            path: None,
+            message: project.to_string(),
+        },
+        GenerateError::AddressCollision { path, id } => WireErrorKind::IoAddressCollision {
+            path: path.clone(),
+            artifact: id.clone(),
+        },
         GenerateError::Write { path, .. } | GenerateError::Io { path, .. } => {
-            ("Io", value!({ "path": (path.to_string_lossy().as_ref()) }))
+            WireErrorKind::IoPath {
+                path: path.to_string_lossy().into_owned(),
+            }
         }
-        _ => ("Io", Value::NULL),
+        _ => WireErrorKind::IoUnknown,
     };
-    outcome_error(code, error.to_string(), data)
+    outcome_error(kind, error.to_string())
 }
 
-fn outcome_error(code: &str, message: impl Into<String>, data: Value) -> Outcome {
+fn outcome_error(kind: WireErrorKind, message: impl Into<String>) -> Outcome {
     Outcome::Error {
-        error: WireError {
-            code: code.to_string(),
-            message: message.into(),
-            data,
-        },
+        error: WireError::new(kind, message),
         published: None,
     }
-}
-
-fn diagnostics_value(diagnostics: &[WireDiagnostic]) -> Result<Value, String> {
-    let diagnostics = facet_value::to_value(&diagnostics).map_err(|error| error.to_string())?;
-    Ok(value!({ "diagnostics": (diagnostics) }))
 }
 
 async fn upsert(bowl: &Bowl, absolute: &Path, content: &str) {
