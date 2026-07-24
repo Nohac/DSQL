@@ -1,0 +1,5 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+expression: stdout(&output)
+---
+catalog is valid: 2 objects, 4 relations

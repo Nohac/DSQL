@@ -11,7 +11,7 @@ use bowl::{
     Commands, Component, Entity, Eq as BowlEq, Phase, Query, Registrar, SystemExt, Where, With,
 };
 
-use crate::catalog::{Catalog, CatalogSnapshot, ColumnId, TableId};
+use crate::catalog::{Catalog, CatalogSnapshot, CatalogSupport, ColumnId, RelationId, TableId};
 use crate::entities::fragment_spread::ResolvedSpread;
 use crate::facts::{BelongsToFile, Span};
 use crate::resolution::{
@@ -31,12 +31,24 @@ pub struct DefinitionRequest;
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum CatalogDefinition {
     /// A table definition in one schema.
-    Table { schema: String, table: String },
+    Table {
+        schema: String,
+        table: String,
+        support: Option<CatalogSupport>,
+    },
     /// A column definition in one table.
     Column {
         schema: String,
         table: String,
         column: String,
+        support: Option<CatalogSupport>,
+    },
+    /// A directional effective relationship.
+    Relation {
+        schema: String,
+        table: String,
+        name: String,
+        support: Option<CatalogSupport>,
     },
 }
 
@@ -133,9 +145,10 @@ async fn answer_selection_definitions(
         return;
     }
     let target = match &resolved.target {
-        SelectionTarget::Table(table) | SelectionTarget::Relation { table, .. } => {
-            table_definition(snapshot.catalog(), *table)
-        }
+        SelectionTarget::Table(table) => table_definition(snapshot.catalog(), *table),
+        SelectionTarget::Relation {
+            table, relation, ..
+        } => relation_definition(snapshot.catalog(), *table, *relation),
         SelectionTarget::Column(column) => column_definition(snapshot.catalog(), *column),
         SelectionTarget::Unresolved => None,
     };
@@ -163,7 +176,7 @@ async fn answer_clause_definitions(
         path.relations
             .iter()
             .find(|relation| relation.span.contains(cursor.0))
-            .and_then(|relation| table_definition(catalog, relation.table))
+            .and_then(|relation| relation_definition(catalog, relation.table, relation.relation))
             .or_else(|| match &path.terminal {
                 PathTerminal::Column { span, column, .. } if span.contains(cursor.0) => {
                     column_definition(catalog, *column)
@@ -217,6 +230,10 @@ fn table_definition(catalog: &Catalog, table: TableId) -> Option<CatalogDefiniti
     Some(CatalogDefinition::Table {
         schema: table.schema.clone(),
         table: table.name.clone(),
+        support: table
+            .description_support
+            .clone()
+            .or_else(|| table.declaration.clone()),
     })
 }
 
@@ -226,5 +243,24 @@ fn column_definition(catalog: &Catalog, column: ColumnId) -> Option<CatalogDefin
         schema: column.key.schema.clone(),
         table: column.key.table.clone(),
         column: column.name.clone(),
+        support: column
+            .description_support
+            .clone()
+            .or_else(|| column.declaration.clone()),
+    })
+}
+
+fn relation_definition(
+    catalog: &Catalog,
+    table: TableId,
+    relation: RelationId,
+) -> Option<CatalogDefinition> {
+    let table = catalog.table_by_id(table)?;
+    let relation = catalog.relation_by_id(relation)?;
+    Some(CatalogDefinition::Relation {
+        schema: table.schema.clone(),
+        table: table.name.clone(),
+        name: relation.name.clone(),
+        support: relation.supports.declaration.clone(),
     })
 }

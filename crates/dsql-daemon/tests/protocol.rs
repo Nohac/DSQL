@@ -224,6 +224,7 @@ async fn lifecycle_and_framing_edges() {
     assert!(ok.contains("\"protocolVersion\":1"), "got {ok}");
     assert!(
         ok.contains("\"configPath\":\"dsql/dsql.toml\"")
+            && ok.contains("\"overlaysDir\":\"dsql/overlays\"")
             && ok.contains("\"buildDir\":\"dsql/build\""),
         "canonical paths return, got {ok}"
     );
@@ -745,6 +746,45 @@ async fn config_reload_and_exclude_root_validation() {
     std::fs::write(&config, good).expect("config restored");
     let recovered = session.files_changed("dsql/dsql.toml").await;
     assert!(recovered.contains("\"result\""), "got {recovered}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overlay_changes_reload_fail_closed_and_recover() {
+    let mut session = Session::ready("overlay-reload").await;
+    session.compile().await;
+    let overlay = session.root.join("dsql/overlays/catalog.yaml");
+    std::fs::create_dir_all(overlay.parent().expect("overlay parent")).expect("overlay directory");
+    std::fs::write(
+        &overlay,
+        "version: 1\nobjects:\n  - target:\n      schema: public\n      name: title\n    hidden: true\n",
+    )
+    .expect("valid semantic overlay");
+    let changed = session.files_changed("dsql/overlays/catalog.yaml").await;
+    assert!(
+        changed.contains("\"TableNotFound\"") && !changed.contains("\"ProjectLoadFailed\""),
+        "a valid overlay edit reloads the effective catalog, got {changed}"
+    );
+
+    std::fs::write(
+        &overlay,
+        "version: 1\nobjects:\n  - target:\n      schema: public\n      name: title\n    hidden: false\n",
+    )
+    .expect("invalid overlay");
+
+    let failed = session.files_changed("dsql/overlays/catalog.yaml").await;
+    assert!(
+        failed.contains("\"ProjectLoadFailed\"")
+            && failed.contains("\"path\"")
+            && failed.contains("catalog.yaml"),
+        "overlay reload reports its source path, got {failed}"
+    );
+
+    std::fs::write(&overlay, "version: 1\nobjects: []\n").expect("repair overlay");
+    let recovered = session.files_changed("dsql/overlays/catalog.yaml").await;
+    assert!(
+        recovered.contains("\"result\"") && !recovered.contains("\"TableNotFound\""),
+        "overlay repair reloads without restarting, got {recovered}"
+    );
 }
 
 /// Same-content disk events and irrelevant deletions are protocol

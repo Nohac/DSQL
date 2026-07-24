@@ -47,10 +47,10 @@ tracked policy plan input shared by checks, planning, SQL, metadata, editor
 services, and `dsql.lock` validation.
 
 PostgreSQL introspection owns the replaceable generated catalog. The compiler
-consumes one `CatalogSnapshot` representing the effective catalog. Today the
-project loader constructs it directly from generated YAML; authored overlays
-will merge and validate before that boundary, so downstream compiler systems
-will continue to read exactly one catalog source.
+consumes one `CatalogSnapshot` representing the effective catalog. The project
+loader merges and validates authored overlays against generated YAML before
+that boundary, so downstream compiler systems continue to read exactly one
+catalog source.
 
 ## Historical port record
 

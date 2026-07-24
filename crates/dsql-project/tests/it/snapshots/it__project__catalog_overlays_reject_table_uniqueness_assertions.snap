@@ -1,0 +1,5 @@
+---
+source: crates/dsql-project/tests/it/project.rs
+expression: "error.to_string().replace(&scratch.path().display().to_string(), \"<project>\")"
+---
+<project>/dsql/overlays/invalid.yaml objects[0].assert_unique[0]: `assert_unique` is allowed only on views and materialized views

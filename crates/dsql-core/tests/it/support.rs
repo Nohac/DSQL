@@ -195,7 +195,7 @@ pub fn imdb_catalog() -> Catalog {
         }],
         types: Vec::new(),
     }
-    .into_catalog()
+    .to_catalog()
     .expect("imdb fixture catalog must build")
     .with_default_schema(Catalog::DEFAULT_SCHEMA)
 }
@@ -269,7 +269,7 @@ pub fn numeric_catalog() -> Catalog {
         }],
         types: Vec::new(),
     }
-    .into_catalog()
+    .to_catalog()
     .expect("numeric fixture catalog must build")
     .with_default_schema(Catalog::DEFAULT_SCHEMA)
 }
@@ -320,7 +320,7 @@ pub fn policy_completion_catalog() -> Catalog {
         }],
         types: Vec::new(),
     }
-    .into_catalog()
+    .to_catalog()
     .expect("policy completion fixture catalog must build")
     .with_default_schema(Catalog::DEFAULT_SCHEMA)
 }

@@ -132,16 +132,15 @@ go stale.
 
 PostgreSQL introspection produces the **generated catalog** as replaceable YAML
 under the configured schema directory. Authored changes do not belong in those
-files. `dsql-project` currently loads that provider output and constructs the
+files. `dsql-project` loads that provider output, composes the authored YAML
+under `dsql/overlays/`, validates the resulting graph, and constructs the
 single `CatalogSnapshot` inserted into the bowl.
 
 The snapshot is the compiler's **effective catalog** boundary: resolution,
 checks, policies, planning, SQL, services, and generation never consult catalog
-sources independently. [Catalog overlays](../spec/catalog-overlays.md) are
-designed but not implemented; project loading will validate and merge them with
-the generated catalog before constructing the same snapshot. This keeps overlay
-proof provenance and conflict reporting at the project boundary without
-spreading composition logic through language systems.
+sources independently. [Catalog overlays](../spec/catalog-overlays.md) retain
+provider and authored proof provenance at this project boundary, keeping
+composition and conflict reporting out of language systems.
 
 ### Effective input contracts
 

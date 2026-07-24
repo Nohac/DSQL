@@ -32,7 +32,7 @@ use bowl::{
     SystemExt, View, Where, With,
 };
 
-use crate::catalog::{Catalog, ColumnId, ForeignKeyId, TableId};
+use crate::catalog::{Catalog, ColumnId, RelationId, TableId};
 use crate::entities::document::ParsedFile;
 use crate::schema::dsql_schema;
 use crate::source::{BelongsToHost, FilePath, SourceOffset, SourceText};
@@ -151,14 +151,13 @@ pub(crate) fn describe_relation(
     catalog: &Catalog,
     written: &str,
     table: TableId,
-    foreign_key: ForeignKeyId,
+    relation: RelationId,
 ) -> Option<String> {
     let table = catalog.table_by_id(table)?;
-    let foreign_key = catalog.foreign_key_by_id(foreign_key)?;
-    let selector = catalog.foreign_key_selector(foreign_key);
+    let relation = catalog.relation_by_id(relation)?;
     let identity = format!(
-        "relation `{written}` → `{}`.`{}` via `{selector}`",
-        table.schema, table.name,
+        "relation `{written}` → `{}`.`{}` via `{}`",
+        table.schema, table.name, relation.selector,
     );
     Some(with_description(identity, table.description.as_deref()))
 }

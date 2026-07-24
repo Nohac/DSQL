@@ -101,7 +101,7 @@ async fn hover_clause_fields(
                 .iter()
                 .find(|step| step.span.contains(cursor.0))
                 .and_then(|step| {
-                    describe_relation(catalog, &step.written, step.table, step.foreign_key)
+                    describe_relation(catalog, &step.written, step.table, step.relation)
                 })
                 .or_else(|| match &path.terminal {
                     PathTerminal::Column { span, column, .. } if span.contains(cursor.0) => {
@@ -121,7 +121,7 @@ async fn hover_clause_fields(
                         catalog,
                         &relation.written,
                         relation.table,
-                        relation.foreign_key,
+                        relation.relation,
                     );
                 }
                 if aggregate

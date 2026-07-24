@@ -12,7 +12,7 @@
 use crate::schema::dsql_schema;
 use bowl::{Commands, Component, DerivedFrom, Entity, Query, Registrar, With};
 
-use crate::catalog::{Catalog, CatalogSnapshot, ForeignKey};
+use crate::catalog::{Catalog, CatalogSnapshot, Relation};
 use crate::entities::expression::PathAnchor;
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, Severity,
@@ -61,14 +61,14 @@ async fn lint_relations(
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
-    let SelectionTarget::Relation { foreign_key, .. } = &resolved.target else {
+    let SelectionTarget::Relation { relation, .. } = &resolved.target else {
         return;
     };
-    let Some(foreign_key) = catalog.foreign_key_by_id(*foreign_key) else {
+    let Some(relation) = catalog.relation_by_id(*relation) else {
         return;
     };
 
-    for finding in unindexed_join_columns(catalog, foreign_key) {
+    for finding in unindexed_join_columns(catalog, relation) {
         emit_diagnostic(
             &mut commands,
             DiagnosticFacts {
@@ -115,10 +115,10 @@ async fn lint_predicates(
             continue;
         }
         for step in &path.relations {
-            let Some(foreign_key) = catalog.foreign_key_by_id(step.foreign_key) else {
+            let Some(relation) = catalog.relation_by_id(step.relation) else {
                 continue;
             };
-            for finding in unindexed_join_columns(catalog, foreign_key) {
+            for finding in unindexed_join_columns(catalog, relation) {
                 findings.push((
                     step.span,
                     DiagnosticCode::UnindexedPredicateJoinColumn,
@@ -180,12 +180,12 @@ async fn lint_predicates(
 
 type Finding = (Span, DiagnosticCode, String);
 
-/// The unindexed columns on either side of a foreign-key join, labelled.
-fn unindexed_join_columns(catalog: &Catalog, foreign_key: &ForeignKey) -> Vec<String> {
-    foreign_key
-        .from_columns
+/// The unindexed columns on either side of an effective relation join.
+fn unindexed_join_columns(catalog: &Catalog, relation: &Relation) -> Vec<String> {
+    relation
+        .local_columns
         .iter()
-        .chain(foreign_key.to_columns.iter())
+        .chain(relation.target_columns.iter())
         .filter_map(|column_id| {
             let column = catalog.column_by_id(*column_id)?;
             (!column.is_indexed).then(|| column_label(catalog, column.id))

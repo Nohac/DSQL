@@ -1,7 +1,6 @@
 //! The catalog as a bowl fact: a fingerprinted singleton snapshot.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use bowl::{Bowl, Component, Entity, Singleton};
 
@@ -15,11 +14,10 @@ use super::Catalog;
 pub struct CatalogSourceRoot(pub PathBuf);
 
 /// The schema catalog every context-aware check resolves against, as a
-/// singleton component. The fingerprint is the revision verbatim, drawn
-/// from a process-global counter (the [`Catalog`] itself is large and
-/// hashing it per settle would defeat the point); replacing the snapshot
-/// always moves the revision, so checks that track it rerun exactly when
-/// the catalog actually changes.
+/// singleton component. The revision is the effective catalog's precomputed
+/// semantic fingerprint. Constructing an equal catalog is fingerprint-neutral;
+/// every consumer-visible provider or overlay fact must therefore participate
+/// in [`Catalog::semantic_fingerprint`].
 #[derive(Component)]
 #[component(revision)]
 pub struct CatalogSnapshot {
@@ -27,18 +25,19 @@ pub struct CatalogSnapshot {
     revision: u64,
 }
 
-static NEXT_REVISION: AtomicU64 = AtomicU64::new(0);
-
 impl CatalogSnapshot {
     pub fn new(catalog: Catalog) -> Self {
-        Self {
-            catalog,
-            revision: NEXT_REVISION.fetch_add(1, Ordering::Relaxed),
-        }
+        let revision = catalog.semantic_fingerprint();
+        Self { catalog, revision }
     }
 
     pub fn catalog(&self) -> &Catalog {
         &self.catalog
+    }
+
+    /// The effective semantic fingerprint used by the bowl.
+    pub fn fingerprint(&self) -> u64 {
+        self.revision
     }
 }
 

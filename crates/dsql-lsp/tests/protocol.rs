@@ -19,6 +19,10 @@ impl Session {
     /// Starts the server against a temp copy of the scoped fixture and
     /// completes the initialize handshake.
     async fn start(test: &str) -> Session {
+        Self::start_with_overlay(test, None).await
+    }
+
+    async fn start_with_overlay(test: &str, overlay: Option<&str>) -> Session {
         let source =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../dsql-project/tests/it/fixture/scoped");
         let root = std::env::temp_dir().join(format!("dsql-lsp-{test}-{}", std::process::id()));
@@ -26,6 +30,17 @@ impl Session {
             std::fs::remove_dir_all(&root).expect("clean stale fixture copy");
         }
         copy_tree(&source, &root);
+        if let Some(overlay) = overlay {
+            let path = root.join("dsql/overlays/editor.yaml");
+            std::fs::create_dir_all(path.parent().expect("overlay parent"))
+                .expect("overlay directory");
+            std::fs::write(path, overlay).expect("overlay fixture");
+            std::fs::write(
+                root.join("dsql/schema/type_map.yaml"),
+                "types:\n  - internal_type: int4\n    readable_type: integer\n    schema: pg_catalog\n    operations: []\n",
+            )
+            .expect("overlay type map");
+        }
 
         let (client_in, server_in) = tokio::io::duplex(64 * 1024);
         let (server_out, client_out) = tokio::io::duplex(64 * 1024);
@@ -238,7 +253,7 @@ fn protocol_range(text: &str, start: usize, end: usize) -> Value {
 async fn catalog_definitions_target_schema_yaml() {
     let mut session = Session::start("catalog-definition").await;
     let uri = session.uri("queries/frontend/titles.dsql");
-    let text = "query Titles {\n  title(limit 2) {\n    id\n  }\n}\n";
+    let text = "query Titles {\n  title(limit 2) {\n    id\n    kind_type { id }\n  }\n}\n";
     session.open(&uri, "dsql", text).await;
     let diagnostics = session.diagnostics_for(&uri).await;
     assert_eq!(
@@ -252,6 +267,13 @@ async fn catalog_definitions_target_schema_yaml() {
         .await;
     let column = session
         .definition(&uri, text, text.find("id\n").expect("column occurrence"))
+        .await;
+    let relation = session
+        .definition(
+            &uri,
+            text,
+            text.find("kind_type").expect("relation occurrence"),
+        )
         .await;
     let schema_uri = session.uri("dsql/schema/public/title.yaml");
     assert_eq!(table["uri"].as_str(), Some(schema_uri.as_str()));
@@ -269,6 +291,140 @@ async fn catalog_definitions_target_schema_yaml() {
             "start": {"line": 5, "character": 0},
             "end": {"line": 5, "character": 0},
         })
+    );
+    assert_eq!(relation["uri"].as_str(), Some(schema_uri.as_str()));
+    assert_eq!(
+        relation["range"],
+        json!({
+            "start": {"line": 60, "character": 0},
+            "end": {"line": 60, "character": 0},
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authored_relationship_definitions_target_overlay_yaml() {
+    let overlay = indoc::indoc! {r#"
+        version: 1
+        objects:
+          - target:
+              schema: public
+              name: title
+            description: Titles exposed by the read model.
+            columns:
+              - name: id
+                description: Stable title identifier.
+              - name: phonetic_code
+                hidden: true
+            relationships:
+              - name: kind
+                target:
+                  schema: public
+                  name: kind_type
+                columns:
+                  - local: kind_id
+                    target: id
+            hide:
+              relationships:
+                - target:
+                    schema: public
+                    name: kind_type
+                  selector: kind_id
+                  direction: referencing
+    "#};
+    let mut session = Session::start_with_overlay("overlay-definition", Some(overlay)).await;
+    let uri = session.uri("queries/frontend/titles.dsql");
+    let text = "query Titles {\n  title(limit 2) {\n    id\n    kind { id }\n  }\n}\n";
+    session.open(&uri, "dsql", text).await;
+    let diagnostics = session.diagnostics_for(&uri).await;
+    assert_eq!(
+        diagnostics.as_array().map(Vec::len),
+        Some(0),
+        "authored relationship fixture is clean: {diagnostics}"
+    );
+
+    let definition = session
+        .definition(
+            &uri,
+            text,
+            text.find("kind {").expect("relation occurrence"),
+        )
+        .await;
+    let table_definition = session
+        .definition(&uri, text, text.find("title").expect("table occurrence"))
+        .await;
+    let column_definition = session
+        .definition(&uri, text, text.find("id").expect("column occurrence"))
+        .await;
+    let overlay_uri = session.uri("dsql/overlays/editor.yaml");
+    assert_eq!(definition["uri"].as_str(), Some(overlay_uri.as_str()));
+    assert_eq!(
+        definition["range"],
+        json!({
+            "start": {"line": 12, "character": 0},
+            "end": {"line": 12, "character": 0},
+        })
+    );
+    assert_eq!(table_definition["uri"].as_str(), Some(overlay_uri.as_str()));
+    assert_eq!(
+        table_definition["range"],
+        json!({
+            "start": {"line": 4, "character": 0},
+            "end": {"line": 4, "character": 0},
+        })
+    );
+    assert_eq!(
+        column_definition["uri"].as_str(),
+        Some(overlay_uri.as_str())
+    );
+    assert_eq!(
+        column_definition["range"],
+        json!({
+            "start": {"line": 7, "character": 0},
+            "end": {"line": 7, "character": 0},
+        })
+    );
+
+    let completion_text = "query VisibleFields {\n  title(limit 1) {\n    \n  }\n}\n";
+    session.replace(&uri, 2, completion_text).await;
+    let completion = session
+        .request_response(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 2, "character": 4},
+            }),
+        )
+        .await;
+    let labels = completion["result"]
+        .as_array()
+        .expect("completion answers")
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .collect::<Vec<_>>();
+    assert!(labels.contains(&"kind"), "authored relation is offered");
+    assert!(
+        !labels.contains(&"phonetic_code") && !labels.contains(&"kind_type"),
+        "hidden columns and provider relations are absent: {completion}"
+    );
+
+    let hidden_text = "query HiddenField {\n  title(limit 1) {\n    phonetic_code\n  }\n}\n";
+    session.replace(&uri, 3, hidden_text).await;
+    let hover = session
+        .request_response(
+            "textDocument/hover",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": protocol_position(
+                    hidden_text,
+                    hidden_text.find("phonetic_code").expect("hidden field") + 1
+                ),
+            }),
+        )
+        .await;
+    assert!(
+        hover["result"].is_null(),
+        "hidden catalog fields do not produce hover information: {hover}"
     );
 }
 

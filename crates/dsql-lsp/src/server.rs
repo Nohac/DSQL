@@ -335,6 +335,8 @@ impl LanguageServer for Backend {
                     tables: Vec::new(),
                     columns: Vec::new(),
                     foreign_keys: Vec::new(),
+                    relations: Vec::new(),
+                    uniqueness_supports: Vec::new(),
                 },
             )
             .await;
@@ -753,18 +755,34 @@ async fn catalog_location(bowl: &Bowl, target: &CatalogDefinition) -> Option<Loc
         .into_iter()
         .next()
         .map(|(_, root)| root.0.clone())?;
-    let (schema, table, column) = match target {
-        CatalogDefinition::Table { schema, table } => (schema, table, None),
+    let (schema, table, item, support) = match target {
+        CatalogDefinition::Table {
+            schema,
+            table,
+            support,
+        } => (schema, table, None, support.as_ref()),
         CatalogDefinition::Column {
             schema,
             table,
             column,
-        } => (schema, table, Some(column.as_str())),
+            support,
+        } => (schema, table, Some(column.as_str()), support.as_ref()),
+        CatalogDefinition::Relation {
+            schema,
+            table,
+            name,
+            support,
+        } => (schema, table, Some(name.as_str()), support.as_ref()),
     };
-    let path = root.join(schema).join(format!("{table}.yaml"));
+    let path = support
+        .map(|support| std::path::PathBuf::from(&support.path))
+        .unwrap_or_else(|| root.join(schema).join(format!("{table}.yaml")));
     let contents = tokio::fs::read_to_string(&path).await.ok()?;
-    let line = column
-        .and_then(|column| yaml_column_line(&contents, column))
+    let item = support
+        .and_then(|support| support_item_name(&support.item_path))
+        .or(item);
+    let line = item
+        .and_then(|item| yaml_named_item_line(&contents, item))
         .or_else(|| yaml_table_line(&contents, table))
         .unwrap_or_default() as u32;
     let uri = Uri::from_file_path(&path)?;
@@ -778,6 +796,15 @@ async fn catalog_location(bowl: &Bowl, target: &CatalogDefinition) -> Option<Loc
     })
 }
 
+fn support_item_name(item_path: &str) -> Option<&str> {
+    let prefix = ["columns[", "foreign_keys["]
+        .into_iter()
+        .find(|prefix| item_path.starts_with(prefix))?;
+    item_path[prefix.len()..]
+        .split_once(']')
+        .map(|(name, _)| name)
+}
+
 fn yaml_table_line(contents: &str, table: &str) -> Option<usize> {
     let expected = format!("name: {table}");
     contents
@@ -785,7 +812,7 @@ fn yaml_table_line(contents: &str, table: &str) -> Option<usize> {
         .position(|line| line.trim() == expected && !line.trim_start().starts_with("- "))
 }
 
-fn yaml_column_line(contents: &str, column: &str) -> Option<usize> {
-    let expected = format!("- name: {column}");
+fn yaml_named_item_line(contents: &str, name: &str) -> Option<usize> {
+    let expected = format!("- name: {name}");
     contents.lines().position(|line| line.trim() == expected)
 }

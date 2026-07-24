@@ -415,6 +415,9 @@ pub struct InitializeResult {
     pub config_path: String,
     #[facet(rename = "schemaDir")]
     pub schema_dir: String,
+    /// Project-relative directory containing authored catalog overlays.
+    #[facet(rename = "overlaysDir")]
+    pub overlays_dir: String,
     #[facet(rename = "buildDir")]
     pub build_dir: String,
     #[facet(rename = "generatorOutputs")]

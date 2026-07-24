@@ -181,7 +181,7 @@ pub struct CompiledPolicyTarget {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum CompiledPolicyField {
     Column(crate::catalog::ColumnId),
-    Relation(crate::catalog::ForeignKeyId),
+    Relation(crate::catalog::RelationId),
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -816,7 +816,7 @@ async fn complete_policy_declarations(
     match &context.role {
         PolicyCompletionRole::TargetField { insert_dot } => {
             let mut fields = BTreeMap::<&str, BTreeSet<&str>>::new();
-            for table in &catalog.tables {
+            for table in catalog.visible_tables() {
                 for column in catalog.columns_for_table(table.id) {
                     fields
                         .entry(&column.name)
@@ -834,8 +834,7 @@ async fn complete_policy_declarations(
         }
         PolicyCompletionRole::TargetType { field } => {
             let types = catalog
-                .tables
-                .iter()
+                .visible_tables()
                 .flat_map(|table| catalog.columns_for_table(table.id))
                 .filter(|column| column.name == *field)
                 .map(|column| column.data_type.as_str())
@@ -1326,7 +1325,7 @@ struct CompiledPath {
     value: FilterExpr,
     data_type: DataType,
     relation_scope: FilterColumnScope,
-    relations: Vec<(crate::catalog::ForeignKeyId, TableId)>,
+    relations: Vec<(crate::catalog::RelationId, TableId)>,
 }
 
 impl PolicyCompiler<'_> {
@@ -1338,7 +1337,7 @@ impl PolicyCompiler<'_> {
         match self.catalog.check_field_ref(table, reference) {
             FieldCheckResult::Column(column) => Some(CompiledPolicyField::Column(column.id)),
             FieldCheckResult::Relation(relation) => {
-                Some(CompiledPolicyField::Relation(relation.foreign_key.id))
+                Some(CompiledPolicyField::Relation(relation.relation.id))
             }
             FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => self.fail(),
         }
@@ -1403,7 +1402,7 @@ impl PolicyCompiler<'_> {
                 source, predicate, ..
             } => {
                 let row = row?;
-                let (foreign_key, table) = self.exists_source(source, row)?;
+                let (relation, table) = self.exists_source(source, row)?;
                 let filter = predicate
                     .as_deref()
                     .and_then(|predicate| {
@@ -1411,7 +1410,7 @@ impl PolicyCompiler<'_> {
                     })
                     .map(Box::new);
                 Some(FilterExpr::Exists {
-                    foreign_key,
+                    relation,
                     table,
                     kind: ExistsKind::Explicit,
                     source_scope: FilterColumnScope::Current,
@@ -1532,7 +1531,7 @@ impl PolicyCompiler<'_> {
             };
             match self.catalog.check_field_ref(table, reference) {
                 FieldCheckResult::Relation(relation) if index + 1 < segments.len() => {
-                    relations.push((relation.foreign_key.id, relation.table.id));
+                    relations.push((relation.relation.id, relation.table.id));
                     table = relation.table.id;
                 }
                 FieldCheckResult::Column(column) if index + 1 == segments.len() => {
@@ -1572,7 +1571,7 @@ impl PolicyCompiler<'_> {
         &mut self,
         source: &ExistsSource,
         row: PolicyRowContext,
-    ) -> Option<(Option<crate::catalog::ForeignKeyId>, TableId)> {
+    ) -> Option<(Option<crate::catalog::RelationId>, TableId)> {
         match source {
             ExistsSource::Table { name, .. } => self
                 .catalog
@@ -1597,7 +1596,7 @@ impl PolicyCompiler<'_> {
                 };
                 match self.catalog.check_field_ref(row.current, reference) {
                     FieldCheckResult::Relation(relation) => {
-                        Some((Some(relation.foreign_key.id), relation.table.id))
+                        Some((Some(relation.relation.id), relation.table.id))
                     }
                     FieldCheckResult::Column(_)
                     | FieldCheckResult::NotFound
@@ -1610,8 +1609,8 @@ impl PolicyCompiler<'_> {
     fn wrap_relations(&self, filter: FilterExpr, path: &CompiledPath) -> FilterExpr {
         path.relations.iter().enumerate().rev().fold(
             filter,
-            |filter, (index, (foreign_key, table))| FilterExpr::Exists {
-                foreign_key: Some(*foreign_key),
+            |filter, (index, (relation, table))| FilterExpr::Exists {
+                relation: Some(*relation),
                 table: *table,
                 kind: ExistsKind::RelationshipPredicate,
                 source_scope: if index == 0 {
@@ -2350,17 +2349,7 @@ impl<Emit: FnMut(Span, String)> PolicyValidation<'_, Emit> {
         };
         match self.catalog.check_field_ref(row.current, reference) {
             FieldCheckResult::Relation(relation) => {
-                let cardinality = self
-                    .catalog
-                    .foreign_key_by_id(relation.foreign_key.id)
-                    .and_then(|foreign_key| {
-                        self.catalog.relation_cardinality(
-                            row.current,
-                            relation.table.id,
-                            foreign_key,
-                        )
-                    });
-                if cardinality != Some(RelationCardinality::Collection) {
+                if relation.relation.cardinality != RelationCardinality::Collection {
                     (self.emit)(
                         segment.span,
                         "`exists` relation source must be a collection".to_string(),

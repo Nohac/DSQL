@@ -34,6 +34,12 @@ pub enum ProjectError {
     },
     #[error("failed to build catalog: {0}")]
     CatalogBuild(CatalogBuildError),
+    #[error("{path} {item_path}: {message}")]
+    CatalogOverlay {
+        path: PathBuf,
+        item_path: String,
+        message: String,
+    },
     #[error(
         "document {path} is assigned to resolver `{first_resolver}` in scope `{first_scope}` and resolver `{second_resolver}` in scope `{second_scope}`"
     )]
@@ -232,6 +238,8 @@ fn default_schema() -> String {
 pub struct Project {
     pub root: PathBuf,
     pub schema: PathBuf,
+    /// Fixed directory containing authored catalog overlay inputs.
+    pub overlays: PathBuf,
     pub config: Config,
 }
 
@@ -300,6 +308,7 @@ impl Project {
         config.generate.typescript.outputs = normalized_outputs;
         Ok(Self {
             schema: root.join("schema"),
+            overlays: root.join("overlays"),
             root,
             config,
         })
@@ -308,10 +317,9 @@ impl Project {
     /// Loads the schema catalog from the project's schema directory.
     pub async fn load_catalog(&self) -> Result<Catalog> {
         let metadata = super::metadata::load_metadata_dir(&self.schema).await?;
-        metadata
-            .into_catalog()
+        super::overlay::load_effective_catalog(&metadata, &self.schema, &self.overlays)
+            .await
             .map(|catalog| catalog.with_default_schema(self.config.default_schema.clone()))
-            .map_err(ProjectError::CatalogBuild)
     }
 }
 
@@ -470,6 +478,7 @@ pub async fn init_project(base_path: &Path, database_url: Option<String>) -> Res
         return Err(error);
     }
     Ok(Project {
+        overlays: root.join("overlays"),
         root,
         schema,
         config,

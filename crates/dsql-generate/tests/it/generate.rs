@@ -194,7 +194,7 @@ fn catalog_from_tables(tables: impl IntoIterator<Item = &'static str>) -> Catalo
         }],
         types: Vec::new(),
     }
-    .into_catalog()
+    .to_catalog()
     .expect("embedded catalog builds")
 }
 

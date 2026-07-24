@@ -36,6 +36,11 @@ enum Command {
     },
     /// Resolve filters and update only dsql/dsql.lock.
     Lock,
+    /// Inspect and validate the generated plus authored catalog.
+    Catalog {
+        #[command(subcommand)]
+        command: CatalogCommand,
+    },
     /// Manage generated project-level integration contracts.
     Project {
         #[command(subcommand)]
@@ -138,6 +143,12 @@ enum ProjectCommand {
     Sync,
 }
 
+#[derive(Subcommand)]
+enum CatalogCommand {
+    /// Validate the effective catalog without loading query documents.
+    Validate,
+}
+
 #[cfg(debug_assertions)]
 #[derive(Subcommand)]
 enum DebugCommand {
@@ -172,6 +183,9 @@ async fn main() -> std::process::ExitCode {
         Command::Check { file } => commands::check(file).await,
         Command::Validate { locked } => commands::validate(locked).await,
         Command::Lock => commands::lock().await,
+        Command::Catalog {
+            command: CatalogCommand::Validate,
+        } => commands::catalog_validate().await,
         Command::Project {
             command: ProjectCommand::Sync,
         } => commands::project_sync().await,

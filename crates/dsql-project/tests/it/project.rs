@@ -1,9 +1,17 @@
 //! Loads the imdb fixture project into a bowl and drives it.
 
+use std::collections::BTreeSet;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use bowl::{Entity, Query};
-use dsql_core::facts::{Diagnostic, arm_generate_demands};
+use dsql_core::catalog::{
+    ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata, ForeignKeyDirection,
+    ForeignKeyReferenceMetadata, IndexMetadata, ObjectType, RelationCardinality, SchemaMetadata,
+    TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeMetadata,
+};
+use dsql_core::facts::{Diagnostic, Severity, arm_generate_demands};
 use dsql_core::source::SourceKind;
 use dsql_core::sql::GeneratedSqlFact;
 use dsql_project::{Project, ProjectError, find_root, open_project_bowl};
@@ -29,6 +37,678 @@ fn scratch_project(config: &str) -> TempDir {
     let scratch = scratch();
     write_file(scratch.path(), "dsql/dsql.toml", config);
     scratch
+}
+
+async fn store_overlay_catalog(root: &Path) {
+    let metadata = DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![
+                TableMetadata {
+                    schema: "public".to_string(),
+                    name: "accounts".to_string(),
+                    object_type: ObjectType::Table,
+                    description: None,
+                    columns: vec![
+                        ColumnMetadata {
+                            name: "id".to_string(),
+                            description: None,
+                            database_type: "uuid".to_string(),
+                            data_type: DataType::Uuid,
+                            not_null: true,
+                        },
+                        ColumnMetadata {
+                            name: "secret".to_string(),
+                            description: None,
+                            database_type: "text".to_string(),
+                            data_type: DataType::Text,
+                            not_null: false,
+                        },
+                        ColumnMetadata {
+                            name: "manager_id".to_string(),
+                            description: None,
+                            database_type: "uuid".to_string(),
+                            data_type: DataType::Uuid,
+                            not_null: true,
+                        },
+                    ],
+                    constraints: vec![TableConstraintMetadata {
+                        name: Some("accounts_pkey".to_string()),
+                        kind: TableConstraintKind::PrimaryKey,
+                        columns: vec!["id".to_string()],
+                    }],
+                    foreign_keys: vec![ForeignKeyConstraintMetadata {
+                        name: Some("accounts_manager_id_fkey".to_string()),
+                        columns: vec!["manager_id".to_string()],
+                        references: ForeignKeyReferenceMetadata {
+                            schema: "public".to_string(),
+                            table: "accounts".to_string(),
+                            columns: vec!["id".to_string()],
+                        },
+                    }],
+                    indexes: Vec::new(),
+                },
+                TableMetadata {
+                    schema: "public".to_string(),
+                    name: "account_summary".to_string(),
+                    object_type: ObjectType::View,
+                    description: None,
+                    columns: vec![
+                        ColumnMetadata {
+                            name: "account_id".to_string(),
+                            description: None,
+                            database_type: "uuid".to_string(),
+                            data_type: DataType::Uuid,
+                            not_null: true,
+                        },
+                        ColumnMetadata {
+                            name: "label".to_string(),
+                            description: None,
+                            database_type: "text".to_string(),
+                            data_type: DataType::Text,
+                            not_null: true,
+                        },
+                    ],
+                    constraints: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                },
+            ],
+        }],
+        types: ["uuid", "text"]
+            .into_iter()
+            .map(|data_type| TypeMetadata {
+                internal_type: data_type.to_string(),
+                readable_type: data_type.to_string(),
+                schema: "pg_catalog".to_string(),
+                operations: BTreeSet::new(),
+            })
+            .collect(),
+    };
+    dsql_project::store_metadata_dir(&metadata, &root.join("dsql/schema"))
+        .await
+        .expect("overlay fixture catalog stores");
+}
+
+#[tokio::test]
+async fn catalog_overlays_compose_visibility_documentation_and_view_relationships() {
+    let scratch = scratch_project("database_url = \"x\"\n");
+    store_overlay_catalog(scratch.path()).await;
+    let project = Project::load_from(scratch.path())
+        .await
+        .expect("project loads before overlays");
+    let provider_fingerprint = project
+        .load_catalog()
+        .await
+        .expect("provider catalog loads")
+        .semantic_fingerprint();
+    write_file(
+        scratch.path(),
+        "dsql/overlays/read-models.yaml",
+        indoc::indoc! {r#"
+            version: 1
+            objects:
+              - target:
+                  schema: public
+                  name: accounts
+                description: Public account records.
+                columns:
+                  - name: secret
+                    hidden: true
+                relationships:
+                  - name: manager
+                    target:
+                      schema: public
+                      name: accounts
+                    columns:
+                      - local: manager_id
+                        target: id
+                  - name: summary
+                    target:
+                      schema: public
+                      name: account_summary
+                    columns:
+                      - local: id
+                        target: account_id
+                hide:
+                  relationships:
+                    - target:
+                        schema: public
+                        name: accounts
+                      selector: manager_id
+                      direction: referencing
+              - target:
+                  schema: public
+                  name: account_summary
+                assert_unique:
+                  - name: account_summary_account_id_unique
+                    columns: [account_id]
+        "#},
+    );
+    write_file(
+        scratch.path(),
+        "dsql/read-model.dsql",
+        indoc::indoc! {r#"
+            query AccountSummary {
+              accounts {
+                id
+                summary {
+                  label
+                }
+              }
+            }
+        "#},
+    );
+
+    let catalog = project.load_catalog().await.expect("overlay composes");
+    assert_ne!(
+        catalog.semantic_fingerprint(),
+        provider_fingerprint,
+        "overlay-only semantic changes move the effective fingerprint"
+    );
+    let accounts = catalog
+        .table("public", "accounts")
+        .expect("accounts remains visible");
+    assert_eq!(
+        accounts.description.as_deref(),
+        Some("Public account records.")
+    );
+    assert!(
+        catalog
+            .columns_for_table(accounts.id)
+            .all(|column| column.name != "secret"),
+        "hidden columns leave the query-facing catalog"
+    );
+    let manager = catalog
+        .relation_fields_for_table(accounts.id)
+        .into_iter()
+        .find(|relation| relation.name == "manager")
+        .expect("authored replacement relationship is exposed");
+    assert_eq!(manager.relation.cardinality, RelationCardinality::Singular);
+    assert!(
+        !manager.relation.nullable,
+        "a forward non-null provider foreign key proves presence"
+    );
+    assert!(manager.relation.join_support.is_some());
+    assert!(
+        manager
+            .relation
+            .supports
+            .declaration
+            .as_ref()
+            .is_some_and(|support| support.path.ends_with("read-models.yaml"))
+    );
+    assert!(
+        manager
+            .relation
+            .supports
+            .join
+            .iter()
+            .any(|support| support.path.ends_with("accounts.yaml"))
+    );
+    let visible_provider_directions = catalog
+        .relation_fields_for_table(accounts.id)
+        .into_iter()
+        .filter(|relation| relation.name == "accounts")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        visible_provider_directions.len(),
+        1,
+        "the directional self-edge hide leaves only the reverse relation"
+    );
+    assert_eq!(
+        visible_provider_directions[0].relation.cardinality,
+        RelationCardinality::Collection
+    );
+    let relation = catalog
+        .relation_fields_for_table(accounts.id)
+        .into_iter()
+        .find(|relation| relation.name == "summary")
+        .expect("authored relationship is exposed");
+    assert_eq!(relation.relation.cardinality, RelationCardinality::Singular);
+    assert!(
+        relation.relation.nullable,
+        "overlay uniqueness proves at-most-one but not existence"
+    );
+    assert!(
+        relation
+            .relation
+            .supports
+            .declaration
+            .as_ref()
+            .is_some_and(|support| support.path.ends_with("read-models.yaml")),
+        "authored provenance is retained"
+    );
+
+    let bowl = open_project_bowl(&project)
+        .await
+        .expect("effective catalog opens");
+    arm_generate_demands(&bowl).await;
+    let diagnostics = bowl
+        .scoop::<Query<(Entity, &Severity, &Diagnostic)>>()
+        .await;
+    let errors = diagnostics
+        .collect()
+        .into_iter()
+        .filter(|(_, severity, _)| **severity == Severity::Error)
+        .map(|(_, _, diagnostic)| diagnostic.0.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        errors.is_empty(),
+        "authored view relationship resolves cleanly: {errors:?}"
+    );
+    let generated = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+    let sql = generated
+        .collect()
+        .into_iter()
+        .next()
+        .map(|(_, generated)| generated.0.sql.clone())
+        .expect("query generates SQL");
+    insta::assert_snapshot!(sql);
+}
+
+#[tokio::test]
+async fn catalog_overlay_fingerprint_tracks_semantics_not_yaml_order() {
+    let scratch = scratch_project("database_url = \"x\"\n");
+    store_overlay_catalog(scratch.path()).await;
+    let overlay = "dsql/overlays/read-models/catalog.yaml";
+    write_file(
+        scratch.path(),
+        overlay,
+        indoc::indoc! {r#"
+            version: 1
+            objects:
+              - target: { schema: public, name: accounts }
+                description: Public accounts.
+                columns:
+                  - name: secret
+                    hidden: true
+              - target: { schema: public, name: account_summary }
+                assert_unique:
+                  - name: account_summary_account_id_unique
+                    columns: [account_id]
+        "#},
+    );
+    let project = Project::load_from(scratch.path())
+        .await
+        .expect("project loads");
+    let initial = project
+        .load_catalog()
+        .await
+        .expect("first overlay composes")
+        .semantic_fingerprint();
+
+    write_file(
+        scratch.path(),
+        overlay,
+        indoc::indoc! {r#"
+            version: 1
+            objects:
+              - assert_unique:
+                  - columns:
+                      - account_id
+                    name: account_summary_account_id_unique
+                target:
+                  name: account_summary
+                  schema: public
+              - columns:
+                  - hidden: true
+                    name: secret
+                target:
+                  name: accounts
+                  schema: public
+                description: Public accounts.
+        "#},
+    );
+    let reordered = project
+        .load_catalog()
+        .await
+        .expect("reordered overlay composes")
+        .semantic_fingerprint();
+    assert_eq!(
+        reordered, initial,
+        "formatting and declaration order are fingerprint-neutral"
+    );
+
+    let changed = std::fs::read_to_string(scratch.path().join(overlay))
+        .expect("overlay reads")
+        .replace("Public accounts.", "Customer accounts.");
+    write_file(scratch.path(), overlay, &changed);
+    let changed = project
+        .load_catalog()
+        .await
+        .expect("changed overlay composes")
+        .semantic_fingerprint();
+    assert_ne!(
+        changed, initial,
+        "consumer-visible overlay semantics move the fingerprint"
+    );
+}
+
+#[tokio::test]
+async fn catalog_overlays_hide_objects_and_individual_self_fk_directions() {
+    let scratch = scratch_project("database_url = \"x\"\n");
+    store_overlay_catalog(scratch.path()).await;
+    write_file(
+        scratch.path(),
+        "dsql/overlays/visibility.yaml",
+        indoc::indoc! {r#"
+            version: 1
+            objects:
+              - target: { schema: public, name: accounts }
+                hide:
+                  relationships:
+                    - target: { schema: public, name: accounts }
+                      selector: manager_id
+                      direction: referenced
+              - target: { schema: public, name: account_summary }
+                hidden: true
+        "#},
+    );
+    let project = Project::load_from(scratch.path())
+        .await
+        .expect("configuration loads");
+    let catalog = project.load_catalog().await.expect("visibility composes");
+    assert!(
+        catalog.table("public", "account_summary").is_none(),
+        "whole-object hides remove roots from the query-facing catalog"
+    );
+    let accounts = catalog
+        .table("public", "accounts")
+        .expect("visible object remains");
+    let provider_directions = catalog
+        .relation_fields_for_table(accounts.id)
+        .into_iter()
+        .filter(|relation| relation.name == "accounts")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        provider_directions.len(),
+        1,
+        "the referenced self-FK direction alone is hidden"
+    );
+    assert_eq!(
+        provider_directions[0].relation.join_direction,
+        Some(ForeignKeyDirection::Referencing)
+    );
+    assert_eq!(
+        provider_directions[0].relation.cardinality,
+        RelationCardinality::Singular
+    );
+    assert!(!provider_directions[0].relation.nullable);
+}
+
+#[tokio::test]
+async fn catalog_overlays_reject_table_uniqueness_assertions() {
+    let scratch = scratch_project("database_url = \"x\"\n");
+    store_overlay_catalog(scratch.path()).await;
+    write_file(
+        scratch.path(),
+        "dsql/overlays/invalid.yaml",
+        indoc::indoc! {r#"
+            version: 1
+            objects:
+              - target:
+                  schema: public
+                  name: accounts
+                assert_unique:
+                  - name: unsafe_account_unique
+                    columns: [secret]
+        "#},
+    );
+
+    let project = Project::load_from(scratch.path())
+        .await
+        .expect("configuration loads");
+    let error = project
+        .load_catalog()
+        .await
+        .expect_err("table assertions fail closed");
+    insta::assert_snapshot!(
+        error
+            .to_string()
+            .replace(&scratch.path().display().to_string(), "<project>")
+    );
+}
+
+#[tokio::test]
+async fn catalog_overlays_reject_unknown_keys_and_redundant_unique_indexes() {
+    let unknown = scratch_project("database_url = \"x\"\n");
+    store_overlay_catalog(unknown.path()).await;
+    write_file(
+        unknown.path(),
+        "dsql/overlays/unknown.yaml",
+        indoc::indoc! {r#"
+            version: 1
+            objects:
+              - target: { schema: public, name: accounts }
+                columns:
+                  - name: secret
+                    hiddn: true
+        "#},
+    );
+    let project = Project::load_from(unknown.path())
+        .await
+        .expect("configuration loads");
+    let unknown_error = project
+        .load_catalog()
+        .await
+        .expect_err("unknown nested overlay keys fail closed")
+        .to_string()
+        .replace(&unknown.path().display().to_string(), "<project>");
+
+    let redundant = scratch_project("database_url = \"x\"\n");
+    store_overlay_catalog(redundant.path()).await;
+    let schema = redundant.path().join("dsql/schema");
+    let mut metadata = dsql_project::load_metadata_dir(&schema)
+        .await
+        .expect("provider metadata loads");
+    let summary = metadata
+        .schemas
+        .iter_mut()
+        .flat_map(|schema| &mut schema.tables)
+        .find(|table| table.name == "account_summary")
+        .expect("summary view");
+    summary.object_type = ObjectType::MaterializedView;
+    summary.indexes.push(IndexMetadata {
+        name: Some("account_summary_account_id_idx".to_string()),
+        columns: vec!["account_id".to_string()],
+        unique: true,
+    });
+    dsql_project::store_metadata_dir(&metadata, &schema)
+        .await
+        .expect("provider unique index publishes");
+    write_file(
+        redundant.path(),
+        "dsql/overlays/redundant.yaml",
+        indoc::indoc! {r#"
+            version: 1
+            objects:
+              - target: { schema: public, name: account_summary }
+                assert_unique:
+                  - name: authored_account_id_unique
+                    columns: [account_id]
+        "#},
+    );
+    let project = Project::load_from(redundant.path())
+        .await
+        .expect("configuration loads");
+    let redundant_error = project
+        .load_catalog()
+        .await
+        .expect_err("provider unique indexes make equal assertions redundant")
+        .to_string()
+        .replace(&redundant.path().display().to_string(), "<project>");
+
+    insta::assert_snapshot!(format!(
+        "unknown key: {unknown_error}\nredundant unique index: {redundant_error}"
+    ));
+}
+
+#[tokio::test]
+async fn catalog_overlay_validation_reports_conflicts_and_stale_references() {
+    let cases = [
+        (
+            "missing column",
+            indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: accounts }
+                    columns:
+                      - name: renamed
+                        hidden: true
+            "#},
+            None,
+        ),
+        (
+            "incompatible mapping",
+            indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: accounts }
+                    relationships:
+                      - name: broken
+                        target: { schema: public, name: account_summary }
+                        columns:
+                          - { local: id, target: label }
+            "#},
+            None,
+        ),
+        (
+            "invalid relationship name",
+            indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: accounts }
+                    relationships:
+                      - name: not-selectable
+                        target: { schema: public, name: account_summary }
+                        columns:
+                          - { local: id, target: account_id }
+            "#},
+            None,
+        ),
+        (
+            "column relationship collision",
+            indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: accounts }
+                    relationships:
+                      - name: secret
+                        target: { schema: public, name: account_summary }
+                        columns:
+                          - { local: id, target: account_id }
+            "#},
+            None,
+        ),
+        (
+            "provider relationship collision",
+            indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: accounts }
+                    relationships:
+                      - name: accounts
+                        target: { schema: public, name: account_summary }
+                        columns:
+                          - { local: id, target: account_id }
+            "#},
+            None,
+        ),
+        (
+            "repeated uniqueness column",
+            indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: account_summary }
+                    assert_unique:
+                      - name: repeated
+                        columns: [account_id, account_id]
+            "#},
+            None,
+        ),
+        (
+            "hidden target",
+            indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: account_summary }
+                    hidden: true
+                  - target: { schema: public, name: accounts }
+                    relationships:
+                      - name: summary
+                        target: { schema: public, name: account_summary }
+                        columns:
+                          - { local: id, target: account_id }
+            "#},
+            None,
+        ),
+        (
+            "redundant hide to hidden target",
+            indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: accounts }
+                    hide:
+                      relationships:
+                        - target: { schema: public, name: accounts }
+                          selector: manager_id
+                          direction: referencing
+                  - target: { schema: public, name: accounts }
+                    hidden: true
+            "#},
+            None,
+        ),
+        (
+            "duplicate ownership",
+            indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: accounts }
+                    description: First owner.
+            "#},
+            Some(indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: accounts }
+                    description: Second owner.
+            "#}),
+        ),
+        (
+            "missing provider edge",
+            indoc::indoc! {r#"
+                version: 1
+                objects:
+                  - target: { schema: public, name: accounts }
+                    hide:
+                      relationships:
+                        - target: { schema: public, name: account_summary }
+                          selector: account_id
+                          direction: referenced
+            "#},
+            None,
+        ),
+    ];
+    let mut rendered = Vec::new();
+    for (name, first, second) in cases {
+        let scratch = scratch_project("database_url = \"x\"\n");
+        store_overlay_catalog(scratch.path()).await;
+        write_file(scratch.path(), "dsql/overlays/a.yaml", first);
+        if let Some(second) = second {
+            write_file(scratch.path(), "dsql/overlays/b.yaml", second);
+        }
+        let project = Project::load_from(scratch.path())
+            .await
+            .expect("configuration loads");
+        let error = project
+            .load_catalog()
+            .await
+            .expect_err("invalid overlay fails closed")
+            .to_string()
+            .replace(&scratch.path().display().to_string(), "<project>");
+        rendered.push(format!("{name}: {error}"));
+    }
+    insta::assert_snapshot!(rendered.join("\n"));
 }
 
 #[tokio::test]
@@ -466,6 +1146,74 @@ async fn schema_directory_round_trips_and_drops_stale_tables() {
         .await
         .expect("schema restores");
     assert!(!stale.exists(), "stale table files are removed");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn transactional_schema_publication_preserves_the_live_generation_on_stage_failure() {
+    let fixture = fixture_dir("imdb");
+    let project = Project::load_from(&fixture)
+        .await
+        .expect("imdb fixture loads");
+    let metadata = dsql_project::load_metadata_dir(&project.schema)
+        .await
+        .expect("fixture schema loads");
+    let scratch = scratch();
+    let dsql_root = scratch.path().join("dsql");
+    let schema = dsql_root.join("schema");
+    dsql_project::store_metadata_dir(&metadata, &schema)
+        .await
+        .expect("initial generation publishes");
+
+    let leftover = dsql_root.join(".schema.backup-old");
+    write_file(
+        &leftover,
+        "public/poison.yaml",
+        "this is not catalog metadata",
+    );
+    let live = dsql_project::load_metadata_dir(&schema)
+        .await
+        .expect("leftover sibling is never loaded");
+
+    let original_permissions = std::fs::metadata(&dsql_root)
+        .expect("dsql root metadata")
+        .permissions();
+    let mut read_only = original_permissions.clone();
+    read_only.set_mode(0o500);
+    std::fs::set_permissions(&dsql_root, read_only).expect("make publication parent read-only");
+    let failed = dsql_project::store_metadata_dir(
+        &DatabaseMetadata {
+            schemas: Vec::new(),
+            types: Vec::new(),
+        },
+        &schema,
+    )
+    .await;
+    std::fs::set_permissions(&dsql_root, original_permissions)
+        .expect("restore publication permissions");
+    assert!(failed.is_err(), "staging must fail in a read-only parent");
+
+    let after = dsql_project::load_metadata_dir(&schema)
+        .await
+        .expect("live generation remains readable");
+    assert_eq!(after, live, "failed staging cannot mix catalog generations");
+
+    let backup = dsql_root.join(".schema.backup");
+    std::fs::rename(&schema, &backup).expect("simulate a crash in the rename window");
+    write_file(
+        &dsql_root.join(".schema.stage-interrupted"),
+        "public/poison.yaml",
+        "this is not catalog metadata",
+    );
+    let recovered = dsql_project::load_metadata_dir(&schema)
+        .await
+        .expect("the next load restores the last complete generation");
+    assert_eq!(recovered, live);
+    assert!(schema.exists(), "recovery restores the canonical live path");
+    assert!(
+        !backup.exists(),
+        "the recovered backup no longer competes with the live generation"
+    );
 }
 
 /// Single-star globs must not cross directory boundaries (the manual

@@ -1516,7 +1516,9 @@ async fn hover_fields(
         return;
     }
 
-    let text = describe_target(catalog, resolved).unwrap_or_else(|| format!("`{}`", resolved.name));
+    let Some(text) = describe_target(catalog, resolved) else {
+        return;
+    };
 
     emit_hover_candidate(&mut commands, request, priority::FIELD, text);
 }
@@ -1531,8 +1533,8 @@ fn describe_target(
         SelectionTarget::Table(table) => describe_table(catalog, *table),
         SelectionTarget::Column(column) => describe_column(catalog, *column),
         SelectionTarget::Relation {
-            table, foreign_key, ..
-        } => describe_relation(catalog, &resolved.name, *table, *foreign_key),
+            table, relation, ..
+        } => describe_relation(catalog, &resolved.name, *table, *relation),
         SelectionTarget::Unresolved => None,
     }
 }
@@ -1558,7 +1560,7 @@ async fn complete_selections(
 
     match (context.site, context.table) {
         (CompletionSite::RootSelection, _) => {
-            for table in &catalog.tables {
+            for table in catalog.visible_tables() {
                 let label = if table.schema == catalog.default_schema() {
                     table.name.clone()
                 } else {

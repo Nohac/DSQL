@@ -326,11 +326,11 @@ fn policy_application_metadata(
                             })?;
                     (column.name.clone(), "column")
                 }
-                PolicyFieldTarget::Relation(foreign_key) => {
+                PolicyFieldTarget::Relation(relation_id) => {
                     let relation = catalog
                         .relation_fields_for_table(application.target)
                         .into_iter()
-                        .find(|relation| relation.foreign_key.id == foreign_key)
+                        .find(|relation| relation.relation.id == relation_id)
                         .ok_or_else(|| GenerateError::Assembly {
                             name: application.identity.name.clone(),
                             message: "policy field relation is missing from the catalog"
@@ -593,7 +593,7 @@ fn collect_result_item_fields(
             // aggregate keeps its non-null object/array shape. Only a
             // singular row relation becomes an absent object.
             let policy_nullable =
-                policy_filters_relation(access.policy_nullable_fields, relation.foreign_key)
+                policy_filters_relation(access.policy_nullable_fields, relation.relation)
                     && matches!(relation.collection.result, CollectionResultPlan::Rows(_))
                     && cardinality == SelectionCardinality::AtMostOne;
             let nullable = collection_result_nullable(&relation.collection) || policy_nullable;
@@ -601,7 +601,7 @@ fn collect_result_item_fields(
                 .inherited_access
                 .combine(policy_access_for_target(
                     access.policy_field_access,
-                    PolicyFieldTarget::Relation(relation.foreign_key),
+                    PolicyFieldTarget::Relation(relation.relation),
                 ))
                 .combine(collection_policy_access(&relation.collection));
             if relation.flattened {
@@ -708,7 +708,7 @@ fn policy_filters_column(
 
 fn policy_filters_relation(
     fields: &[PolicyFieldTarget],
-    relation: dsql_core::catalog::ForeignKeyId,
+    relation: dsql_core::catalog::RelationId,
 ) -> bool {
     fields.contains(&PolicyFieldTarget::Relation(relation))
 }

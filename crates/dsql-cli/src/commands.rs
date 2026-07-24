@@ -217,6 +217,25 @@ pub async fn validate(locked: bool) -> Outcome {
     }
 }
 
+/// Validates only generated metadata and authored catalog overlays.
+pub async fn catalog_validate() -> Outcome {
+    let project = Project::load().await?;
+    let catalog = project.load_catalog().await?;
+    let objects = catalog.visible_tables().count();
+    let relations = catalog
+        .visible_tables()
+        .map(|table| catalog.relation_fields_for_table(table.id).len())
+        .sum::<usize>();
+    println!(
+        "catalog is valid: {} object{}, {} relation{}",
+        objects,
+        if objects == 1 { "" } else { "s" },
+        relations,
+        if relations == 1 { "" } else { "s" },
+    );
+    Ok(true)
+}
+
 /// Prints the generated PostgreSQL for every query plan in the project.
 pub async fn sql(collection_limit: Option<u64>) -> Outcome {
     let project = Project::load().await?;
@@ -520,11 +539,32 @@ pub async fn introspect(dry_run: bool) -> Outcome {
     let project = Project::load().await?;
     let metadata =
         dsql_introspection::introspect_postgres(&effective_database_url(&project)?).await?;
-    match sink_metadata(&metadata, &project.schema, dry_run).await? {
+    match publish_introspection(&project, &metadata, dry_run).await? {
         Some(rendered) => print!("{rendered}"),
-        None => println!("schema written to {}", project.schema.display()),
+        None => {
+            println!("schema written to {}", project.schema.display());
+        }
     }
     Ok(true)
+}
+
+/// Validates and optionally publishes one introspection candidate with the
+/// overlay ordering required by the catalog contract.
+pub async fn publish_introspection(
+    project: &Project,
+    metadata: &DatabaseMetadata,
+    dry_run: bool,
+) -> Result<Option<String>, CliError> {
+    metadata.to_catalog().map_err(ProjectError::CatalogBuild)?;
+    if dry_run {
+        dsql_project::load_effective_catalog(metadata, &project.schema, &project.overlays).await?;
+        return metadata_to_yaml(metadata)
+            .map(Some)
+            .map_err(CliError::Metadata);
+    }
+    dsql_project::store_metadata_dir(metadata, &project.schema).await?;
+    project.load_catalog().await?;
+    Ok(None)
 }
 
 /// The introspection sink: dry runs render monolithic YAML and touch

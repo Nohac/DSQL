@@ -337,7 +337,7 @@ indexes: []
         }],
         types: Vec::new(),
     }
-    .into_catalog()
+    .to_catalog()
     .expect("embedded catalog builds");
     let bowl = language_bowl().await;
     insert_catalog(&bowl, catalog).await;

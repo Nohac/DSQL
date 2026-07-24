@@ -161,11 +161,11 @@ impl Daemon {
         let project = match Project::load_from(Path::new(root)).await {
             Ok(project) => project,
             Err(error) => {
-                let message = error.to_string();
+                let (path, message) = project_error_parts(&error);
                 return WireResponse::error(
                     Some(request.id),
                     WireErrorKind::ProjectLoadFailed {
-                        path: None,
+                        path,
                         message: message.clone(),
                     },
                     message,
@@ -198,6 +198,7 @@ impl Daemon {
             project_base: project_base.to_string_lossy().into_owned(),
             config_path: "dsql/dsql.toml".to_string(),
             schema_dir: "dsql/schema".to_string(),
+            overlays_dir: "dsql/overlays".to_string(),
             build_dir: "dsql/build".to_string(),
             generator_outputs,
             diagnostic_level: diagnostic_level.as_str().to_string(),
@@ -247,12 +248,12 @@ impl Daemon {
 
         // Apply the plan to the resident bowl (or reload).
         let applied = session.apply(plan).await;
-        if let Err(error) = applied {
+        if let Err((path, error)) = applied {
             session.bowl = None;
             return WireResponse::error(
                 Some(id),
                 WireErrorKind::ProjectLoadFailed {
-                    path: None,
+                    path,
                     message: error.clone(),
                 },
                 error.as_str(),
@@ -386,7 +387,8 @@ impl Session {
                 continue;
             }
             if text == "dsql/dsql.toml"
-                || text.starts_with("dsql/schema")
+                || path_is_within(&text, "dsql/schema")
+                || path_is_within(&text, "dsql/overlays")
                 || text == "dsql"
                 || text.is_empty()
             {
@@ -640,7 +642,7 @@ impl Session {
         false
     }
 
-    async fn apply(&mut self, plan: BatchPlan) -> Result<(), String> {
+    async fn apply(&mut self, plan: BatchPlan) -> Result<(), (Option<String>, String)> {
         match plan {
             BatchPlan::NoOp => Ok(()),
             BatchPlan::MatchLockChanged(hash) => {
@@ -652,7 +654,7 @@ impl Session {
                     self.filter_match_lock_hash = lock_hash;
                 }
                 let Some(bowl) = self.bowl.as_ref() else {
-                    return Err("incremental batch has no resident bowl".to_string());
+                    return Err((None, "incremental batch has no resident bowl".to_string()));
                 };
                 for (absolute, content) in paths {
                     upsert(bowl, &absolute, &content).await;
@@ -666,17 +668,17 @@ impl Session {
                 // Re-read config + schema too: a transparent full reload.
                 let project = Project::load_from(&self.project_base)
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| project_error_parts(&error))?;
                 // Consumer exclusions must stay valid against the NEW
                 // config (a reload can change scopes and outputs).
                 for root in &self.exclude_roots {
                     dsql_project::validate_reserved_root(&project.config, root)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| project_error_parts(&error))?;
                 }
                 let bowl = dsql_core::language_bowl().await;
                 dsql_project::populate_project_bowl_excluding(&bowl, &project, &self.exclude_roots)
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| project_error_parts(&error))?;
                 dsql_core::facts::arm_generate_demands(&bowl).await;
                 self.project = project;
                 self.bowl = Some(bowl);
@@ -862,6 +864,34 @@ impl Session {
             Err(format!("host generator failed with {status}"))
         }
     }
+}
+
+fn path_is_within(path: &str, root: &str) -> bool {
+    path == root || path.starts_with(&format!("{root}/"))
+}
+
+fn project_error_parts(error: &dsql_project::ProjectError) -> (Option<String>, String) {
+    use dsql_project::ProjectError;
+    let path = match error {
+        ProjectError::Read { path, .. }
+        | ProjectError::Parse { path, .. }
+        | ProjectError::Write { path, .. }
+        | ProjectError::CatalogOverlay { path, .. } => Some(path.display().to_string()),
+        ProjectError::MissingRoot(_)
+        | ProjectError::CurrentDir(_)
+        | ProjectError::CatalogBuild(_)
+        | ProjectError::DuplicateDocumentAssignment { .. }
+        | ProjectError::InvalidEmbeddingPattern { .. }
+        | ProjectError::MissingEmbeddingPattern { .. }
+        | ProjectError::MissingEmbeddingConfig { .. }
+        | ProjectError::UnknownScopeImport { .. }
+        | ProjectError::DuplicateScopeImport { .. }
+        | ProjectError::CyclicScopeImport { .. }
+        | ProjectError::EmptyScope { .. }
+        | ProjectError::AlreadyInitialized(_)
+        | ProjectError::InvalidGeneratorOutput { .. } => None,
+    };
+    (path, error.to_string())
 }
 
 fn generate_outcome_error(error: GenerateError) -> Outcome {

@@ -6,7 +6,9 @@ mod provider;
 mod types;
 
 pub use component::{CatalogSnapshot, CatalogSourceRoot, insert_catalog};
-pub use keys::{ColumnId, ColumnKey, ForeignKeyId, SchemaId, SchemaKey, TableId, TableKey};
+pub use keys::{
+    ColumnId, ColumnKey, ForeignKeyId, RelationId, SchemaId, SchemaKey, TableId, TableKey,
+};
 pub use metadata::{
     CatalogBuildError, ColumnMetadata, DatabaseMetadata, ForeignKeyConstraintMetadata,
     ForeignKeyReferenceMetadata, IndexMetadata, ObjectType, SchemaMetadata, TableConstraintKind,
@@ -15,6 +17,8 @@ pub use metadata::{
     type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
 pub use types::{
-    Catalog, Column, DataType, FieldCheckResult, FieldRef, ForeignKey, Index, LiteralKind,
-    RelationCardinality, RelationField, Schema, Table, TableRef, TableResolution,
+    Catalog, CatalogSourceRange, CatalogSupport, CatalogSupportKind, Column, DataType,
+    FieldCheckResult, FieldRef, ForeignKey, ForeignKeyDirection, Index, LiteralKind, Relation,
+    RelationCardinality, RelationField, RelationSupports, Schema, Table, TableRef, TableResolution,
+    UniquenessSupport,
 };

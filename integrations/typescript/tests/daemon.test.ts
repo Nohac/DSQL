@@ -59,6 +59,7 @@ const INITIALIZE = {
       projectBase: "/tmp/project",
       configPath: "dsql/dsql.toml",
       schemaDir: "dsql/schema",
+      overlaysDir: "dsql/overlays",
       buildDir: "dsql/build",
       generatorOutputs: ["src/generated"],
       diagnosticLevel: "info",

@@ -1,0 +1,14 @@
+---
+source: crates/dsql-project/tests/it/project.rs
+expression: "rendered.join(\"\\n\")"
+---
+missing column: <project>/dsql/overlays/a.yaml objects[0].columns[0]: column public.accounts.renamed was not found
+incompatible mapping: <project>/dsql/overlays/a.yaml objects[0].relationships[0].columns[0]: relationship columns have incompatible types uuid and text
+invalid relationship name: <project>/dsql/overlays/a.yaml objects[0].relationships[0]: relationship name must be a valid DSQL name and columns must be non-empty
+column relationship collision: <project>/dsql/overlays/a.yaml objects[0].relationships[0]: relationship name `secret` collides in the effective field namespace
+provider relationship collision: <project>/dsql/overlays/a.yaml objects[0].relationships[0]: relationship name `accounts` collides in the effective field namespace
+repeated uniqueness column: <project>/dsql/overlays/a.yaml objects[0].assert_unique[0]: uniqueness assertion repeats a column
+hidden target: <project>/dsql/overlays/a.yaml objects[1].relationships[0]: visible relationship cannot target a hidden object
+redundant hide to hidden target: <project>/dsql/overlays/a.yaml objects[0].hide.relationships[0]: provider relationship target is already hidden
+duplicate ownership: <project>/dsql/overlays/b.yaml objects[0]: overlay semantic key is already owned by <project>/dsql/overlays/a.yaml objects[0]
+missing provider edge: <project>/dsql/overlays/a.yaml objects[0].hide.relationships[0]: provider relationship hide target was not found

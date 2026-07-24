@@ -1,0 +1,26 @@
+---
+source: crates/dsql-project/tests/it/project.rs
+expression: sql
+---
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'id',
+        "accounts_3bb62a2c"."id",
+        'summary',
+        "summary_json_91c21dec"."summary_result_91c21dec"
+      )
+    ),
+    '[]'
+  ) as "accounts"
+from
+  "public"."accounts" as "accounts_3bb62a2c"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT('label', "summary_91c21dec"."label") as "summary_result_91c21dec"
+    from
+      "public"."account_summary" as "summary_91c21dec"
+    where
+      "summary_91c21dec"."account_id" = "accounts_3bb62a2c"."id"
+  ) as "summary_json_91c21dec" on true

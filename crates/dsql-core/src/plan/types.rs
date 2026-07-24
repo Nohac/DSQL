@@ -2,7 +2,7 @@
 
 use bowl::{Component, Entity};
 
-use crate::catalog::{ColumnId, DataType, ForeignKeyId, TableId, TableKey};
+use crate::catalog::{ColumnId, DataType, RelationId, TableId, TableKey};
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::entities::expression::ComparisonOp;
 use crate::facts::Span;
@@ -310,7 +310,7 @@ pub struct PolicyApplicationPlan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PolicyFieldTarget {
     Column(ColumnId),
-    Relation(ForeignKeyId),
+    Relation(RelationId),
 }
 
 fn filter_observes_rows(filter: &FilterExpr) -> bool {
@@ -442,7 +442,7 @@ pub enum FilterExpr {
         right: Box<FilterExpr>,
     },
     Exists {
-        foreign_key: Option<ForeignKeyId>,
+        relation: Option<RelationId>,
         table: TableId,
         kind: ExistsKind,
         /// Row whose relation connects to this source.
@@ -455,7 +455,7 @@ pub enum FilterExpr {
     },
     /// One correlated scalar aggregate over a direct relation.
     RelationAggregate {
-        foreign_key: ForeignKeyId,
+        relation: RelationId,
         table: TableId,
         function: AggregateFunction,
         operand: Option<ColumnId>,
@@ -530,7 +530,7 @@ pub struct NestedRelation {
     pub relation_name: String,
     pub output_name: String,
     pub flattened: bool,
-    pub foreign_key: ForeignKeyId,
+    pub relation: RelationId,
     pub collection: Box<CollectionPlan>,
 }
 

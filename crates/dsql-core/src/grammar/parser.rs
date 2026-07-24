@@ -6,7 +6,9 @@ pub type Diagnostic = codespan_reporting::diagnostic::Diagnostic<()>;
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
-fn is_name_token(token: Token) -> bool {
+/// Whether one lexer token is accepted in the grammar's contextual-name
+/// positions.
+pub fn is_name_token(token: Token) -> bool {
     matches!(
         token,
         Token::Name

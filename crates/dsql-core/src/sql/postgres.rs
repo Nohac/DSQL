@@ -1,6 +1,4 @@
-use crate::catalog::{
-    Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyId, Table, TableId,
-};
+use crate::catalog::{Catalog, Column, ColumnId, DataType, Relation, RelationId, Table, TableId};
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
     AggregatePlan, CollectionPlan, CollectionResultPlan, ExistsKind, FilterCollection,
@@ -48,22 +46,14 @@ pub enum SqlGenerationError {
     MissingTable(usize),
     #[error("column id `{0}` was not found in catalog")]
     MissingColumn(usize),
-    #[error("foreign key id `{0}` was not found in catalog")]
-    MissingForeignKey(usize),
+    #[error("relation id `{0}` was not found in catalog")]
+    MissingRelation(usize),
     #[error("aggregate function requires a planned operand")]
     MissingAggregateOperand,
     #[error("filter shape is not supported in a text fragment position")]
     UnsupportedFilterFragment,
     #[error("SQL template numeric sentinel space was exhausted")]
     TemplateSentinelExhausted,
-    #[error(
-        "foreign key `{foreign_key}` does not connect parent table `{parent}` to child table `{child}`"
-    )]
-    InvalidRelation {
-        foreign_key: usize,
-        parent: String,
-        child: String,
-    },
 }
 
 #[derive(Clone, Debug)]
@@ -116,7 +106,7 @@ impl<'a> FilterSqlScope<'a> {
 }
 
 struct SelectionGenerationContext<'a> {
-    parent: Option<(SqlRowView<'a>, &'a ForeignKey)>,
+    parent: Option<(SqlRowView<'a>, &'a Relation)>,
     root: Option<SqlRowView<'a>>,
     options: PostgresSqlOptions,
     public_result_alias: Option<&'a str>,
@@ -418,23 +408,22 @@ fn generate_rows(
     let encode_exported_fields = generation.parent.is_none();
     let mut query = Query::select();
 
-    let relation_condition = if let Some((parent, foreign_key)) = generation.parent {
+    let relation_condition = if let Some((parent, relation)) = generation.parent {
         Some(relation_condition(
             catalog,
             parent.context,
             &context,
-            foreign_key,
-            collection.table,
+            relation,
         )?)
     } else {
         None
     };
     let relation_filter = generation
         .parent
-        .and_then(|(parent, foreign_key)| {
+        .and_then(|(parent, relation)| {
             policy_field_filter(
                 parent.field_filters,
-                PolicyFieldTarget::Relation(foreign_key.id),
+                PolicyFieldTarget::Relation(relation.id),
             )
             .map(|filter| render_policy_field_filter(catalog, parent.context, filter, template))
         })
@@ -511,7 +500,7 @@ fn generate_rows(
         let related_table = table(catalog, relation.collection.table)?;
         let relation_path =
             relation_instance_path(selection, item_index, related_table, relation, path);
-        let foreign_key = foreign_key(catalog, relation.foreign_key)?;
+        let relation_fact = catalog_relation(catalog, relation.relation)?;
         let child_context = context_for(related_table, &relation.output_name, &relation_path);
         let child_query = generate_collection(
             &relation.collection,
@@ -519,7 +508,7 @@ fn generate_rows(
             &relation.output_name,
             &relation_path,
             SelectionGenerationContext {
-                parent: Some((current_view, foreign_key)),
+                parent: Some((current_view, relation_fact)),
                 root: Some(root_view),
                 options: generation.options,
                 public_result_alias: None,
@@ -643,17 +632,16 @@ fn generate_aggregate(
         ),
         Alias::new(&context.table_alias),
     );
-    if let Some((parent, foreign_key)) = generation.parent {
+    if let Some((parent, relation)) = generation.parent {
         query.cond_where(relation_condition(
             catalog,
             parent.context,
             &context,
-            foreign_key,
-            collection.table,
+            relation,
         )?);
         if let Some(filter) = policy_field_filter(
             parent.field_filters,
-            PolicyFieldTarget::Relation(foreign_key.id),
+            PolicyFieldTarget::Relation(relation.id),
         ) {
             query.and_where(render_policy_field_filter(
                 catalog,
@@ -1325,7 +1313,7 @@ fn filter_value_expr(
             }
         }
         FilterExpr::Exists {
-            foreign_key: foreign_key_id,
+            relation: relation_id,
             table: table_id,
             kind,
             source_scope,
@@ -1354,18 +1342,17 @@ fn filter_value_expr(
                 FilterColumnScope::PredicateSource => scope.predicate_source,
                 FilterColumnScope::Parent => scope.parent.unwrap_or(scope.current),
             };
-            if let Some(foreign_key_id) = foreign_key_id {
-                let foreign_key = foreign_key(catalog, *foreign_key_id)?;
+            if let Some(relation_id) = relation_id {
+                let relation = catalog_relation(catalog, *relation_id)?;
                 query.cond_where(relation_condition(
                     catalog,
                     relation_source.context,
                     &exists_context,
-                    foreign_key,
-                    *table_id,
+                    relation,
                 )?);
                 if let Some(filter) = policy_field_filter(
                     relation_source.field_filters,
-                    PolicyFieldTarget::Relation(foreign_key.id),
+                    PolicyFieldTarget::Relation(relation.id),
                 ) {
                     query.and_where(render_policy_field_filter(
                         catalog,
@@ -1403,7 +1390,7 @@ fn filter_value_expr(
             Expr::exists(query.to_owned())
         }
         FilterExpr::RelationAggregate {
-            foreign_key: foreign_key_id,
+            relation: relation_id,
             table: table_id,
             function,
             operand,
@@ -1411,7 +1398,7 @@ fn filter_value_expr(
             field_filters,
         } => {
             let related_table = table(catalog, *table_id)?;
-            let foreign_key = foreign_key(catalog, *foreign_key_id)?;
+            let relation = catalog_relation(catalog, *relation_id)?;
             let aggregate_context = context_for(
                 related_table,
                 &related_table.name,
@@ -1430,12 +1417,11 @@ fn filter_value_expr(
                 catalog,
                 scope.current.context,
                 &aggregate_context,
-                foreign_key,
-                *table_id,
+                relation,
             )?);
             if let Some(filter) = policy_field_filter(
                 scope.current.field_filters,
-                PolicyFieldTarget::Relation(foreign_key.id),
+                PolicyFieldTarget::Relation(relation.id),
             ) {
                 query.and_where(render_policy_field_filter(
                     catalog,
@@ -1622,16 +1608,11 @@ fn relation_condition(
     catalog: &Catalog,
     parent: &SelectionContext,
     child: &SelectionContext,
-    foreign_key: &ForeignKey,
-    child_table: TableId,
+    relation: &Relation,
 ) -> Result<Condition, SqlGenerationError> {
     let mut condition = Condition::all();
-    let (child_columns, parent_columns) = if child_table == foreign_key.from_table {
-        (&foreign_key.from_columns, &foreign_key.to_columns)
-    } else {
-        (&foreign_key.to_columns, &foreign_key.from_columns)
-    };
-    for (child_column, parent_column) in child_columns.iter().zip(parent_columns) {
+    for (parent_column, child_column) in relation.local_columns.iter().zip(&relation.target_columns)
+    {
         condition = condition.add(
             Expr::col((
                 Alias::new(&child.table_alias),
@@ -1734,10 +1715,10 @@ fn column(catalog: &Catalog, id: ColumnId) -> Result<&Column, SqlGenerationError
         .ok_or(SqlGenerationError::MissingColumn(id.0))
 }
 
-fn foreign_key(catalog: &Catalog, id: ForeignKeyId) -> Result<&ForeignKey, SqlGenerationError> {
+fn catalog_relation(catalog: &Catalog, id: RelationId) -> Result<&Relation, SqlGenerationError> {
     catalog
-        .foreign_key_by_id(id)
-        .ok_or(SqlGenerationError::MissingForeignKey(id.0))
+        .relation_by_id(id)
+        .ok_or(SqlGenerationError::MissingRelation(id.0))
 }
 
 fn table_label(table: &Table) -> String {

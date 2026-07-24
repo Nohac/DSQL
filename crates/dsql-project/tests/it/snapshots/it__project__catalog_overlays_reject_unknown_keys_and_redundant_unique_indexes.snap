@@ -1,0 +1,6 @@
+---
+source: crates/dsql-project/tests/it/project.rs
+expression: "format!(\"unknown key: {unknown_error}\\nredundant unique index: {redundant_error}\")"
+---
+unknown key: failed to parse <project>/dsql/overlays/unknown.yaml: unknown field `hiddn` at objects[0].columns[0]
+redundant unique index: <project>/dsql/overlays/redundant.yaml objects[0].assert_unique[0]: uniqueness assertion repeats an existing ordered column tuple

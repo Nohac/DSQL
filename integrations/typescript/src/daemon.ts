@@ -94,6 +94,7 @@ export type DsqlInitializeResult = {
   readonly projectBase: string;
   readonly configPath: string;
   readonly schemaDir: string;
+  readonly overlaysDir: string;
   readonly buildDir: string;
   readonly generatorOutputs: readonly string[];
   readonly diagnosticLevel: DsqlDiagnosticLevel;

@@ -1,6 +1,6 @@
 use super::{
-    Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyId, Index, Schema, SchemaId, Table,
-    TableId,
+    Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyDirection, ForeignKeyId, Index,
+    Relation, RelationCardinality, RelationId, RelationSupports, Schema, SchemaId, Table, TableId,
 };
 use facet::Facet;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -92,7 +92,7 @@ pub struct TypeMetadata {
     pub operations: BTreeSet<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
 #[facet(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum ObjectType {
@@ -183,7 +183,8 @@ pub fn type_metadata_file_to_yaml(types: &TypeMetadataFile) -> Result<String, St
 }
 
 impl DatabaseMetadata {
-    pub fn into_catalog(self) -> Result<Catalog, CatalogBuildError> {
+    /// Builds the provider catalog without consuming the decoded metadata.
+    pub fn to_catalog(&self) -> Result<Catalog, CatalogBuildError> {
         Catalog::try_from_metadata(self)
     }
 
@@ -201,7 +202,7 @@ impl DatabaseMetadata {
 }
 
 impl Catalog {
-    pub fn try_from_metadata(metadata: DatabaseMetadata) -> Result<Self, CatalogBuildError> {
+    pub fn try_from_metadata(metadata: &DatabaseMetadata) -> Result<Self, CatalogBuildError> {
         let mut schemas = Vec::new();
         let mut tables = Vec::new();
         let mut columns = Vec::new();
@@ -244,8 +245,8 @@ impl Catalog {
                     schema_id,
                     table_schema,
                     &table_metadata.name,
+                    table_metadata.object_type,
                     table_metadata.description.clone(),
-                    Vec::new(),
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -412,7 +413,6 @@ impl Catalog {
                     let to_table = columns[to_columns[0].0].table;
                     add_foreign_key(
                         &mut foreign_keys,
-                        &mut tables,
                         &mut foreign_key_keys,
                         foreign_key.name.clone(),
                         from_columns,
@@ -437,14 +437,90 @@ impl Catalog {
             table.indexes = table_indexes[table.id.0].clone();
         }
 
+        let mut relations = Vec::with_capacity(foreign_keys.len() * 2);
+        for foreign_key in &foreign_keys {
+            let selector = foreign_key
+                .from_columns
+                .iter()
+                .map(|column| columns[column.0].name.as_str())
+                .collect::<Vec<_>>()
+                .join("_");
+            let forward = RelationId(relations.len());
+            relations.push(Relation {
+                id: forward,
+                name: tables[foreign_key.to_table.0].name.clone(),
+                selector: selector.clone(),
+                visible: true,
+                from_table: foreign_key.from_table,
+                to_table: foreign_key.to_table,
+                local_columns: foreign_key.from_columns.clone(),
+                target_columns: foreign_key.to_columns.clone(),
+                cardinality: RelationCardinality::Singular,
+                nullable: foreign_key
+                    .from_columns
+                    .iter()
+                    .any(|column| !columns[column.0].not_null),
+                join_support: Some(foreign_key.id),
+                join_direction: Some(ForeignKeyDirection::Referencing),
+                supports: RelationSupports::default(),
+            });
+            tables[foreign_key.from_table.0].relations.push(forward);
+
+            let reverse = RelationId(relations.len());
+            let cardinality = if column_set_is_unique(
+                &tables[foreign_key.from_table.0],
+                &foreign_key.from_columns,
+            ) {
+                RelationCardinality::Singular
+            } else {
+                RelationCardinality::Collection
+            };
+            relations.push(Relation {
+                id: reverse,
+                name: tables[foreign_key.from_table.0].name.clone(),
+                selector,
+                visible: true,
+                from_table: foreign_key.to_table,
+                to_table: foreign_key.from_table,
+                local_columns: foreign_key.to_columns.clone(),
+                target_columns: foreign_key.from_columns.clone(),
+                cardinality,
+                nullable: true,
+                join_support: Some(foreign_key.id),
+                join_direction: Some(ForeignKeyDirection::Referenced),
+                supports: RelationSupports::default(),
+            });
+            tables[foreign_key.to_table.0].relations.push(reverse);
+        }
+
         Ok(Catalog {
             default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
             schemas,
             tables,
             columns,
             foreign_keys,
+            relations,
+            uniqueness_supports: Vec::new(),
         })
     }
+}
+
+fn column_set_is_unique(table: &Table, columns: &[ColumnId]) -> bool {
+    table
+        .unique_constraints
+        .iter()
+        .any(|constraint| column_set_covers(columns, constraint))
+        || table
+            .indexes
+            .iter()
+            .any(|index| index.is_unique && column_set_covers(columns, &index.columns))
+}
+
+fn column_set_covers(columns: &[ColumnId], unique_columns: &[ColumnId]) -> bool {
+    !unique_columns.is_empty()
+        && unique_columns
+            .iter()
+            .all(|unique_column| columns.contains(unique_column))
 }
 
 fn effective_table_schema<'a>(schema: &'a SchemaMetadata, table: &'a TableMetadata) -> &'a str {
@@ -493,10 +569,8 @@ fn push_unique_constraint(unique_constraints: &mut Vec<Vec<ColumnId>>, columns: 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn add_foreign_key(
     foreign_keys: &mut Vec<ForeignKey>,
-    tables: &mut [Table],
     foreign_key_keys: &mut HashSet<(Vec<ColumnId>, Vec<ColumnId>)>,
     name: Option<String>,
     from_columns: Vec<ColumnId>,
@@ -516,8 +590,6 @@ fn add_foreign_key(
         from_table,
         to_table,
     });
-    tables[from_table.0].foreign_keys_from.push(foreign_key_id);
-    tables[to_table.0].foreign_keys_to.push(foreign_key_id);
 }
 
 impl ObjectType {

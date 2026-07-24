@@ -627,6 +627,7 @@ dependencies = [
  "dsql-core",
  "facet",
  "facet-toml",
+ "facet-yaml",
  "glob",
  "indoc",
  "insta",

@@ -1,13 +1,13 @@
 use super::{
-    Catalog, Column, ColumnId, FieldCheckResult, FieldRef, ForeignKey, ForeignKeyId,
-    RelationCardinality, RelationField, Table, TableId, TableRef, TableResolution,
+    Catalog, Column, ColumnId, FieldCheckResult, FieldRef, Relation, RelationField, RelationId,
+    Table, TableId, TableRef, TableResolution,
 };
 
 impl Catalog {
     pub fn table(&self, schema: &str, name: &str) -> Option<&Table> {
         self.tables
             .iter()
-            .find(|table| table.schema == schema && table.name == name)
+            .find(|table| table.visible && table.schema == schema && table.name == name)
     }
 
     pub fn table_ref_for(&self, reference: TableRef<'_>) -> Option<&Table> {
@@ -30,7 +30,7 @@ impl Catalog {
         let matches = self
             .tables
             .iter()
-            .filter(|table| table.name == reference.name)
+            .filter(|table| table.visible && table.name == reference.name)
             .collect::<Vec<_>>();
         match matches.as_slice() {
             [] => TableResolution::NotFound {
@@ -63,8 +63,8 @@ impl Catalog {
         self.columns.get(id.0)
     }
 
-    pub fn foreign_key_by_id(&self, id: ForeignKeyId) -> Option<&ForeignKey> {
-        self.foreign_keys.get(id.0)
+    pub fn relation_by_id(&self, id: RelationId) -> Option<&Relation> {
+        self.relations.get(id.0)
     }
 
     pub fn columns_for_table(&self, table: TableId) -> impl Iterator<Item = &Column> {
@@ -73,6 +73,11 @@ impl Catalog {
             .into_iter()
             .flat_map(|table| &table.columns)
             .filter_map(|id| self.columns.get(id.0))
+            .filter(|column| column.visible)
+    }
+
+    pub fn visible_tables(&self) -> impl Iterator<Item = &Table> {
+        self.tables.iter().filter(|table| table.visible)
     }
 
     pub fn relations_for_table(&self, table: TableId) -> Vec<&Table> {
@@ -87,86 +92,26 @@ impl Catalog {
             return Vec::new();
         };
         table
-            .foreign_keys_to
+            .relations
             .iter()
-            .filter_map(|id| self.foreign_keys.get(id.0))
-            .map(|foreign_key| (foreign_key, foreign_key.from_table))
-            .chain(
-                table
-                    .foreign_keys_from
-                    .iter()
-                    .filter_map(|id| self.foreign_keys.get(id.0))
-                    .map(|foreign_key| (foreign_key, foreign_key.to_table)),
-            )
-            .filter_map(|(foreign_key, related_table)| {
-                let related = self.tables.get(related_table.0)?;
+            .filter_map(|id| self.relations.get(id.0))
+            .filter(|relation| {
+                relation.visible
+                    && self
+                        .tables
+                        .get(relation.to_table.0)
+                        .is_some_and(|table| table.visible)
+            })
+            .filter_map(|relation| {
+                let related = self.tables.get(relation.to_table.0)?;
                 Some(RelationField {
-                    name: related.name.as_str(),
-                    selector: self.foreign_key_selector(foreign_key),
+                    name: relation.name.as_str(),
+                    selector: relation.selector.clone(),
                     table: related,
-                    foreign_key,
+                    relation,
                 })
             })
             .collect()
-    }
-
-    pub fn foreign_key_selector(&self, foreign_key: &ForeignKey) -> String {
-        foreign_key
-            .from_columns
-            .iter()
-            .filter_map(|id| self.columns.get(id.0))
-            .map(|column| column.name.as_str())
-            .collect::<Vec<_>>()
-            .join("_")
-    }
-
-    pub fn relation_cardinality(
-        &self,
-        current: TableId,
-        related: TableId,
-        foreign_key: &ForeignKey,
-    ) -> Option<RelationCardinality> {
-        // Child -> parent: every local FK tuple points at at most one referenced row.
-        //
-        // movie_info.movie_id -> title.id
-        // movie_info { title { ... } } => singular title
-        if current == foreign_key.from_table && related == foreign_key.to_table {
-            return Some(RelationCardinality::Singular);
-        }
-
-        // Parent -> child: many child rows may point at the same parent unless the
-        // referencing FK tuple is unique on the child table.
-        //
-        // title.id <- movie_info.movie_id
-        // title { movie_info { ... } } => collection by default
-        //
-        // users.id <- profiles.user_id, with unique(profiles.user_id)
-        // users { profiles { ... } } => singular profile
-        if current == foreign_key.to_table && related == foreign_key.from_table {
-            return Some(
-                if self.column_set_is_unique(foreign_key.from_table, &foreign_key.from_columns) {
-                    RelationCardinality::Singular
-                } else {
-                    RelationCardinality::Collection
-                },
-            );
-        }
-        None
-    }
-
-    pub fn relation_is_nullable(
-        &self,
-        current: TableId,
-        related: TableId,
-        foreign_key: &ForeignKey,
-    ) -> bool {
-        if current == foreign_key.from_table && related == foreign_key.to_table {
-            return foreign_key.from_columns.iter().any(|column_id| {
-                self.column_by_id(*column_id)
-                    .is_none_or(|column| !column.not_null)
-            });
-        }
-        current == foreign_key.to_table && related == foreign_key.from_table
     }
 
     pub fn column_set_is_unique(&self, table: TableId, columns: &[ColumnId]) -> bool {
@@ -193,7 +138,7 @@ impl Catalog {
                 .columns
                 .iter()
                 .filter_map(|id| self.columns.get(id.0))
-                .find(|column| column.name == field.target.name)
+                .find(|column| column.visible && column.name == field.target.name)
         {
             return FieldCheckResult::Column(column);
         }
@@ -204,9 +149,9 @@ impl Catalog {
             .relation_fields_for_table(table.id)
             .into_iter()
             .filter(|relation| {
-                relation.name == field.target.name
+                relation.relation.name == field.target.name
                     && relation.table.schema == field_schema
-                    && field_selector.is_none_or(|selector| selector == relation.selector)
+                    && field_selector.is_none_or(|selector| selector == relation.relation.selector)
             })
             .collect::<Vec<_>>();
         match relation_candidates.as_slice() {
@@ -219,7 +164,9 @@ impl Catalog {
                     .map(|relation| {
                         format!(
                             "{}::{}->{}",
-                            relation.table.schema, relation.name, relation.selector
+                            relation.table.schema,
+                            relation.relation.name,
+                            relation.relation.selector
                         )
                     })
                     .collect(),

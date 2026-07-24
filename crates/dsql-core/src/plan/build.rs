@@ -1116,7 +1116,7 @@ impl Planner<'_> {
                             };
                             let relation_table = relation.table.id;
                             let relation_name = relation.name.to_string();
-                            let foreign_key = relation.foreign_key.id;
+                            let relation_id = relation.relation.id;
                             let mut child_path = selection_path.relation_child_path(
                                 field.alias.clone().unwrap_or_else(|| relation_name.clone()),
                             );
@@ -1169,7 +1169,7 @@ impl Planner<'_> {
                                         .clone()
                                         .unwrap_or(relation_name),
                                     flattened: field.flattened,
-                                    foreign_key,
+                                    relation: relation_id,
                                     collection: Box::new(CollectionPlan {
                                         table: relation_table,
                                         shape,
@@ -1395,9 +1395,9 @@ impl Planner<'_> {
             } => {
                 let existence = resolved.existence_at(*span)?;
                 let source = existence.source.as_ref()?;
-                let (foreign_key, exists_table) = match source {
+                let (relation, exists_table) = match source {
                     crate::resolution::ResolvedExistenceSource::Relation(relation) => {
-                        (Some(relation.foreign_key), relation.table)
+                        (Some(relation.relation), relation.table)
                     }
                     crate::resolution::ResolvedExistenceSource::Table(table) => (None, *table),
                 };
@@ -1428,7 +1428,7 @@ impl Planner<'_> {
                     })
                     .map(Box::new);
                 Some(FilterExpr::Exists {
-                    foreign_key,
+                    relation,
                     table: exists_table,
                     kind: ExistsKind::Explicit,
                     source_scope: FilterColumnScope::Current,
@@ -1881,7 +1881,7 @@ impl Planner<'_> {
         );
         policy.applications.extend(policies.applications);
         Some(FilterExpr::RelationAggregate {
-            foreign_key: relation.foreign_key,
+            relation: relation.relation,
             table: relation.table,
             function: aggregate.function?,
             operand: aggregate.operand,
@@ -2022,7 +2022,7 @@ impl Planner<'_> {
                     );
                     policy.applications.extend(policies.applications);
                     FilterExpr::Exists {
-                        foreign_key: Some(relation.foreign_key),
+                        relation: Some(relation.relation),
                         table: relation.table,
                         kind: ExistsKind::RelationshipPredicate,
                         source_scope: FilterColumnScope::Current,

@@ -25,8 +25,8 @@ use crate::schema::dsql_schema;
 use bowl::{Commands, Component, DerivedFrom, Entity, In, Query, Registrar, Where};
 
 use crate::catalog::{
-    CatalogSnapshot, ColumnId, DataType, FieldCheckResult, FieldRef, ForeignKeyId,
-    RelationCardinality, TableId, TableKey, TableRef, TableResolution,
+    CatalogSnapshot, ColumnId, DataType, FieldCheckResult, FieldRef, RelationCardinality,
+    RelationId, TableId, TableKey, TableRef, TableResolution,
 };
 use crate::entities::aggregate::{
     AggregateFunction, AggregateMode, AggregateProblem, AggregateProblemKind,
@@ -131,7 +131,7 @@ pub enum SelectionTarget {
     /// A relation stepping to another table.
     Relation {
         table: TableId,
-        foreign_key: ForeignKeyId,
+        relation: RelationId,
         /// The foreign-key selector, for display.
         selector: String,
     },
@@ -374,7 +374,7 @@ pub struct ResolvedRelationStep {
     pub written: String,
     /// The reference's display form (selector included), for messages.
     pub display: String,
-    pub foreign_key: ForeignKeyId,
+    pub relation: RelationId,
     /// The table the step lands on.
     pub table: TableId,
 }
@@ -513,16 +513,14 @@ fn resolve_selection_shape(
 ) -> Option<ResolvedSelectionShape> {
     let table = target.child_context()?;
     let relation = match target {
-        SelectionTarget::Relation { foreign_key, .. } => {
-            context.zip(catalog.foreign_key_by_id(*foreign_key))
+        SelectionTarget::Relation { relation, .. } => {
+            context.zip(catalog.relation_by_id(*relation))
         }
         SelectionTarget::Table(_) => None,
         SelectionTarget::Column(_) | SelectionTarget::Unresolved => return None,
     };
-    let relation_is_singular = relation.is_some_and(|(context, foreign_key)| {
-        catalog.relation_cardinality(context, table, foreign_key)
-            == Some(RelationCardinality::Singular)
-    });
+    let relation_is_singular =
+        relation.is_some_and(|(_, relation)| relation.cardinality == RelationCardinality::Singular);
     let unique_key = selection
         .shape_syntax
         .predicate
@@ -555,8 +553,8 @@ fn resolve_selection_shape(
         match target {
             SelectionTarget::Table(_) => true,
             SelectionTarget::Relation { .. } if !relation_is_singular => true,
-            SelectionTarget::Relation { .. } => relation.is_none_or(|(context, foreign_key)| {
-                catalog.relation_is_nullable(context, table, foreign_key)
+            SelectionTarget::Relation { .. } => relation.is_none_or(|(_, relation)| {
+                relation.nullable
                     || selection.shape_syntax.predicate.is_some()
                     || selection.shape_syntax.has_offset
                     || limit.may_suppress()
@@ -1142,13 +1140,7 @@ fn resolve_existence(
                     };
                 }
             };
-            let collection =
-                catalog
-                    .foreign_key_by_id(relation.foreign_key.id)
-                    .and_then(|foreign_key| {
-                        catalog.relation_cardinality(context.table, relation.table.id, foreign_key)
-                    })
-                    == Some(RelationCardinality::Collection);
+            let collection = relation.relation.cardinality == RelationCardinality::Collection;
             if !collection {
                 problems.push(ExistenceProblem {
                     span: segment.span,
@@ -1159,7 +1151,7 @@ fn resolve_existence(
                 span: segment.span,
                 written: segment.name.clone(),
                 display: reference.display_text(),
-                foreign_key: relation.foreign_key.id,
+                relation: relation.relation.id,
                 table: relation.table.id,
             }))
         }
@@ -1276,12 +1268,7 @@ fn resolve_predicate_relation(
         push_invalid_predicate_source(source, problems);
         return None;
     };
-    let collection = catalog
-        .foreign_key_by_id(relation.foreign_key.id)
-        .and_then(|foreign_key| {
-            catalog.relation_cardinality(context.table, relation.table.id, foreign_key)
-        })
-        == Some(RelationCardinality::Collection);
+    let collection = relation.relation.cardinality == RelationCardinality::Collection;
     if !collection {
         push_invalid_predicate_source(source, problems);
     }
@@ -1289,7 +1276,7 @@ fn resolve_predicate_relation(
         span: segment.span,
         written: segment.name.clone(),
         display: reference.display_text(),
-        foreign_key: relation.foreign_key.id,
+        relation: relation.relation.id,
         table: relation.table.id,
     })
 }
@@ -1361,7 +1348,7 @@ fn resolve_path(
             span: segment.span,
             written: segment.name.clone(),
             display: reference.display_text(),
-            foreign_key: relation.foreign_key.id,
+            relation: relation.relation.id,
             table: relation.table.id,
         });
         current = relation.table.id;
@@ -1404,7 +1391,7 @@ fn resolve_reference(
         FieldCheckResult::Column(column) => SelectionTarget::Column(column.id),
         FieldCheckResult::Relation(relation) => SelectionTarget::Relation {
             table: relation.table.id,
-            foreign_key: relation.foreign_key.id,
+            relation: relation.relation.id,
             selector: relation.selector.clone(),
         },
         FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {

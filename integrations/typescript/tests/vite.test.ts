@@ -334,6 +334,7 @@ function initializeStep(base: string): unknown {
         projectBase: base,
         configPath: "dsql/dsql.toml",
         schemaDir: "dsql/schema",
+        overlaysDir: "dsql/overlays",
         buildDir: "dsql/build",
         generatorOutputs: [],
         diagnosticLevel: "error",

@@ -1,6 +1,6 @@
 # Catalog Overlays
 
-Status: design complete; not implemented.
+Status: implemented for version 1; deferred extensions remain design work.
 
 Catalog overlays are authored, reviewable modifications to a provider-generated
 catalog. They add application knowledge that introspection cannot prove, change

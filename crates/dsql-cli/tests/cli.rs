@@ -127,6 +127,19 @@ fn validate_reports_counts_and_succeeds_on_a_clean_project() {
 }
 
 #[test]
+fn catalog_validate_skips_documents_and_reports_the_effective_catalog() {
+    let project = scratch_copy("catalog-validate");
+    std::fs::write(
+        project.join("dsql/queries/titles.dsql"),
+        "this document is deliberately invalid",
+    )
+    .expect("break query document");
+    let output = dsql(&project, &["catalog", "validate"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    insta::assert_snapshot!(stdout(&output));
+}
+
+#[test]
 fn operation_list_uses_scopes_and_the_visible_alias() {
     let listed = dsql(&imdb_fixture(), &["operation", "list"]);
     assert!(listed.status.success(), "stderr: {}", stderr(&listed));
