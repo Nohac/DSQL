@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use facet_value::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
 struct Session {
@@ -131,8 +132,24 @@ impl Session {
         .await
         .expect("daemon answers within 30s")
         .expect("daemon alive");
-        line.trim().to_string()
+        let line = line.trim().to_string();
+        assert_response_envelope(&line);
+        line
     }
+}
+
+fn assert_response_envelope(line: &str) {
+    let response: Value = facet_json::from_str(line).expect("daemon response is valid JSON");
+    let object = response
+        .as_object()
+        .expect("daemon response is a JSON object");
+    assert!(object.get("id").is_some(), "response has an id: {line}");
+    let payloads =
+        usize::from(object.get("result").is_some()) + usize::from(object.get("error").is_some());
+    assert_eq!(
+        payloads, 1,
+        "response has exactly one result or error: {line}"
+    );
 }
 
 fn json_str(value: &str) -> String {

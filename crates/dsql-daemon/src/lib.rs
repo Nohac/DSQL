@@ -10,7 +10,8 @@ mod session;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
-use protocol::{Request, error_line};
+use facet_value::Value;
+use protocol::{Request, WireResponse};
 use session::Daemon;
 
 /// One frame from the reader task: a line, or bytes that were not UTF-8
@@ -55,41 +56,50 @@ where
             Frame::Line(line) if line.is_empty() => continue,
             Frame::Line(line) => line,
             Frame::NotUtf8 => {
-                let response =
-                    error_line(None, "InvalidRequest", "request line is not UTF-8", "null");
+                let response = WireResponse::error(
+                    None,
+                    "InvalidRequest",
+                    "request line is not UTF-8",
+                    Value::NULL,
+                );
                 if is_eof(&mut eof) {
                     return;
                 }
+                let Ok(response) = response.serialize() else {
+                    return;
+                };
                 let _ = output.write_all(response.as_bytes()).await;
                 let _ = output.write_all(b"\n").await;
                 let _ = output.flush().await;
                 continue;
             }
         };
-        let response = match Request::parse(&line) {
+        let (response, shutdown) = match Request::parse(&line) {
             Ok(request) => match daemon.handle(request).await {
-                session::Handled::Respond(body) => body,
-                session::Handled::Shutdown(body) => {
-                    if !is_eof(&mut eof) {
-                        let _ = output.write_all(body.as_bytes()).await;
-                        let _ = output.write_all(b"\n").await;
-                        let _ = output.flush().await;
-                    }
-                    return;
-                }
+                session::Handled::Respond(response) => (response, false),
+                session::Handled::Shutdown(response) => (response, true),
             },
-            Err(bad) => error_line(bad.id, "InvalidRequest", &bad.message, &bad.data),
+            Err(bad) => (
+                WireResponse::error(bad.id, "InvalidRequest", bad.message, bad.data),
+                false,
+            ),
         };
         // EOF observed while executing: finish (we did), skip the
         // response, drop whatever is queued, exit.
         if is_eof(&mut eof) {
             return;
         }
+        let Ok(response) = response.serialize() else {
+            return;
+        };
         if output.write_all(response.as_bytes()).await.is_err() {
             return;
         }
         let _ = output.write_all(b"\n").await;
         let _ = output.flush().await;
+        if shutdown {
+            return;
+        }
         daemon.after_respond().await;
     }
 }

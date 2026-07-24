@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use dsql_metadata::{InputDefault, InputField, OperationMetadata};
-use serde_json::Value;
+use facet_value::{VArray, VObject, Value};
 use sqlx::postgres::{PgArguments, PgPool, PgPoolOptions};
 use sqlx::query::QueryScalar;
 use sqlx::types::{
-    BigDecimal, Json, Uuid,
+    BigDecimal, Json, JsonRawValue, Uuid,
     chrono::{DateTime, FixedOffset},
 };
 use sqlx::{AssertSqlSafe, Postgres};
@@ -25,8 +25,8 @@ pub struct ExecutionBindings {
 impl Default for ExecutionBindings {
     fn default() -> Self {
         Self {
-            variables: Value::Object(serde_json::Map::new()),
-            context: Value::Object(serde_json::Map::new()),
+            variables: VObject::new().into(),
+            context: VObject::new().into(),
         }
     }
 }
@@ -72,7 +72,9 @@ pub enum ExecuteError {
     #[error("operation SQL dialect `{0}` is not PostgreSQL")]
     UnsupportedDialect(String),
     #[error("operation returned invalid JSON: {0}")]
-    InvalidOutput(serde_json::Error),
+    InvalidOutput(String),
+    #[error("operation JSON input `{path}` could not be encoded: {message}")]
+    InvalidJsonParameter { path: String, message: String },
 }
 
 impl PostgresExecutor {
@@ -116,8 +118,11 @@ impl PostgresExecutor {
         query
             .fetch_one(&self.pool)
             .await?
-            .map_or(Ok(Value::Null), |output| {
-                serde_json::from_str(&output).map_err(ExecuteError::InvalidOutput)
+            .map_or(Ok(Value::NULL), |output| {
+                let mut output: Value = facet_json::from_str(&output)
+                    .map_err(|error| ExecuteError::InvalidOutput(error.to_string()))?;
+                sort_object_keys(&mut output);
+                Ok(output)
             })
     }
 }
@@ -165,7 +170,7 @@ pub fn materialize(
             sql = sql.replace(&format!("{{{{{}}}}}", variant.path), text);
             continue;
         }
-        let Some(value) = value.as_str() else {
+        let Some(value) = string_value(value) else {
             return Err(invalid(&variant.path, "a string variant"));
         };
         let Some(case) = variant.cases.iter().find(|case| case.value == value) else {
@@ -251,7 +256,7 @@ fn lookup_path<'a>(
 ) -> Result<Option<&'a Value>, ExecuteError> {
     let mut current = root;
     for segment in path.split('.') {
-        let Value::Object(object) = current else {
+        let Some(object) = current.as_object() else {
             return Err(invalid(field_path, "an object input envelope"));
         };
         let Some(value) = object.get(segment) else {
@@ -272,7 +277,7 @@ fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Val
             if !field.enum_values.is_empty() && !field.enum_values.contains(&value) {
                 return Err(invalid(&field.path, "a declared string default"));
             }
-            Ok(Value::String(value))
+            Ok(Value::from(value))
         }
         "number" => {
             if field.collection == Some(true) {
@@ -290,20 +295,20 @@ fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Val
                 "float" => value
                     .parse::<f64>()
                     .ok()
-                    .and_then(serde_json::Number::from_f64)
-                    .map(Value::Number)
+                    .filter(|value| value.is_finite())
+                    .map(Value::from)
                     .ok_or_else(|| invalid(&field.path, "a finite float default")),
                 "numeric" => BigDecimal::from_str(value)
-                    .map(|_| Value::String(value.to_string()))
+                    .map(|_| Value::from(value))
                     .map_err(|_| invalid(&field.path, "a numeric default")),
                 _ => Err(invalid(&field.path, "a compatible number default")),
             }
         }
         "boolean" if field.collection != Some(true) && field.data_type == "boolean" => default
             .boolean
-            .map(Value::Bool)
+            .map(Value::from)
             .ok_or_else(|| invalid(&field.path, "a valid boolean default")),
-        "null" => Ok(Value::Null),
+        "null" => Ok(Value::NULL),
         "collection" if field.collection == Some(true) => {
             let items = default
                 .items
@@ -320,11 +325,9 @@ fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Val
                     materialize_default(&item_field, item)
                 })
                 .collect::<Result<Vec<_>, _>>()
-                .map(Value::Array)
+                .map(|items| items.into_iter().collect())
         }
-        "empty_object" if field.collection != Some(true) => {
-            Ok(Value::Object(serde_json::Map::new()))
-        }
+        "empty_object" if field.collection != Some(true) => Ok(VObject::new().into()),
         "string" => Err(invalid(&field.path, "a compatible string default")),
         "boolean" => Err(invalid(&field.path, "a compatible boolean default")),
         "collection" => Err(invalid(&field.path, "a compatible collection default")),
@@ -360,19 +363,20 @@ fn bind_scalar<'q>(
         return bind_null_scalar(query, parameter);
     }
     match parameter.data_type.as_str() {
-        "uuid" => Ok(
-            query.bind(Uuid::parse_str(value.as_str().ok_or_else(error)?).map_err(|_| error())?)
-        ),
-        "text" => Ok(query.bind(value.as_str().ok_or_else(error)?)),
+        "uuid" => Ok(query
+            .bind(Uuid::parse_str(string_value(value).ok_or_else(error)?).map_err(|_| error())?)),
+        "text" => Ok(query.bind(string_value(value).ok_or_else(error)?)),
         "timestamptz" => Ok(query.bind(
-            DateTime::parse_from_rfc3339(value.as_str().ok_or_else(error)?).map_err(|_| error())?,
+            DateTime::parse_from_rfc3339(string_value(value).ok_or_else(error)?)
+                .map_err(|_| error())?,
         )),
-        "int" => Ok(query.bind(value.as_i64().ok_or_else(error)?)),
-        "numeric" => Ok(query
-            .bind(BigDecimal::from_str(value.as_str().ok_or_else(error)?).map_err(|_| error())?)),
-        "float" => Ok(query.bind(value.as_f64().ok_or_else(error)?)),
+        "int" => Ok(query.bind(integer_value(value).ok_or_else(error)?)),
+        "numeric" => Ok(query.bind(
+            BigDecimal::from_str(string_value(value).ok_or_else(error)?).map_err(|_| error())?,
+        )),
+        "float" => Ok(query.bind(float_value(value).ok_or_else(error)?)),
         "boolean" => Ok(query.bind(value.as_bool().ok_or_else(error)?)),
-        "json" => Ok(query.bind(Json(value.clone()))),
+        "json" => Ok(query.bind(Json(json_value(parameter)?))),
         data_type => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
             data_type: data_type.to_string(),
@@ -392,7 +396,7 @@ fn bind_null_scalar<'q>(
         "numeric" => Ok(query.bind(None::<BigDecimal>)),
         "float" => Ok(query.bind(None::<f64>)),
         "boolean" => Ok(query.bind(None::<bool>)),
-        "json" => Ok(query.bind(None::<Json<Value>>)),
+        "json" => Ok(query.bind(None::<Json<Box<JsonRawValue>>>)),
         data_type => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
             data_type: data_type.to_string(),
@@ -428,7 +432,7 @@ fn bind_collection<'q>(
                     if value.is_null() {
                         Some(None)
                     } else {
-                        value.as_str().map(|value| Some(value.to_string()))
+                        string_value(value).map(|value| Some(value.to_string()))
                     }
                 })
                 .collect::<Option<Vec<_>>>()
@@ -440,7 +444,11 @@ fn bind_collection<'q>(
         "int" => Ok(query.bind(
             values
                 .iter()
-                .map(|value| value.as_i64().map(Some).or(value.is_null().then_some(None)))
+                .map(|value| {
+                    integer_value(value)
+                        .map(Some)
+                        .or(value.is_null().then_some(None))
+                })
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
@@ -448,7 +456,11 @@ fn bind_collection<'q>(
         "float" => Ok(query.bind(
             values
                 .iter()
-                .map(|value| value.as_f64().map(Some).or(value.is_null().then_some(None)))
+                .map(|value| {
+                    float_value(value)
+                        .map(Some)
+                        .or(value.is_null().then_some(None))
+                })
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
@@ -464,12 +476,19 @@ fn bind_collection<'q>(
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
-        "json" => Ok(query.bind(
-            values
+        "json" => {
+            let values = values
                 .iter()
-                .map(|value| (!value.is_null()).then(|| Json(value.clone())))
-                .collect::<Vec<_>>(),
-        )),
+                .map(|value| {
+                    if value.is_null() {
+                        Ok(None)
+                    } else {
+                        json_raw_value(&parameter.path, value).map(|value| Some(Json(value)))
+                    }
+                })
+                .collect::<Result<Vec<_>, ExecuteError>>()?;
+            Ok(query.bind(values))
+        }
         data_type => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
             data_type: data_type.to_string(),
@@ -489,7 +508,7 @@ fn bind_null_collection<'q>(
         "numeric" => Ok(query.bind(None::<Vec<Option<BigDecimal>>>)),
         "float" => Ok(query.bind(None::<Vec<Option<f64>>>)),
         "boolean" => Ok(query.bind(None::<Vec<Option<bool>>>)),
-        "json" => Ok(query.bind(None::<Vec<Option<Json<Value>>>>)),
+        "json" => Ok(query.bind(None::<Vec<Option<Json<Box<JsonRawValue>>>>>)),
         data_type => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
             data_type: data_type.to_string(),
@@ -498,7 +517,7 @@ fn bind_null_collection<'q>(
 }
 
 fn parse_strings<T, E>(
-    values: &[Value],
+    values: &VArray,
     parse: impl Fn(&str) -> Result<T, E>,
 ) -> Option<Vec<Option<T>>> {
     values
@@ -507,8 +526,83 @@ fn parse_strings<T, E>(
             if value.is_null() {
                 Some(None)
             } else {
-                value.as_str().and_then(|value| parse(value).ok()).map(Some)
+                string_value(value)
+                    .and_then(|value| parse(value).ok())
+                    .map(Some)
             }
         })
         .collect()
+}
+
+fn string_value(value: &Value) -> Option<&str> {
+    value.as_string().map(|value| value.as_str())
+}
+
+fn integer_value(value: &Value) -> Option<i64> {
+    value
+        .as_number()
+        .filter(|value| value.is_integer())
+        .and_then(|value| value.to_i64())
+}
+
+fn float_value(value: &Value) -> Option<f64> {
+    let value = value.as_number()?.to_f64_lossy();
+    value.is_finite().then_some(value)
+}
+
+fn json_value(parameter: &BoundParameter) -> Result<Box<JsonRawValue>, ExecuteError> {
+    json_raw_value(&parameter.path, &parameter.value)
+}
+
+fn json_raw_value(path: &str, value: &Value) -> Result<Box<JsonRawValue>, ExecuteError> {
+    let serialized =
+        facet_json::to_string(value).map_err(|error| ExecuteError::InvalidJsonParameter {
+            path: path.to_string(),
+            message: error.to_string(),
+        })?;
+    JsonRawValue::from_string(serialized).map_err(|error| ExecuteError::InvalidJsonParameter {
+        path: path.to_string(),
+        message: error.to_string(),
+    })
+}
+
+fn sort_object_keys(value: &mut Value) {
+    if let Some(array) = value.as_array_mut() {
+        for value in array.as_mut_slice() {
+            sort_object_keys(value);
+        }
+    } else if let Some(object) = value.as_object_mut() {
+        for value in object.values_mut() {
+            sort_object_keys(value);
+        }
+        let mut entries = object
+            .iter()
+            .map(|(key, value)| (key.as_str().to_string(), value.clone()))
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        object.clear();
+        for (key, value) in entries {
+            object.insert(key, value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use facet_value::Value;
+
+    use super::{float_value, integer_value};
+
+    #[test]
+    fn json_number_accessors_preserve_integer_and_float_categories() {
+        let integer: Value = facet_json::from_str("5").expect("integer parses");
+        let float: Value = facet_json::from_str("5.0").expect("float parses");
+        let imprecise_float: Value =
+            facet_json::from_str("9007199254740993").expect("large integer parses");
+
+        assert_eq!(integer_value(&integer), Some(5));
+        assert_eq!(integer_value(&float), None);
+        assert_eq!(float_value(&float), Some(5.0));
+        assert_eq!(float_value(&imprecise_float), Some(9_007_199_254_740_992.0));
+    }
 }

@@ -5,12 +5,12 @@ edition.workspace = true
 
 [dependencies]
 dsql-metadata = { workspace = true }
-serde_json = { workspace = true }
+facet-json = { workspace = true }
+facet-value = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres"] }
 sqlx-postgres = { workspace = true, features = ["uuid", "chrono", "bigdecimal", "json"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-facet-json = { workspace = true }
 insta = { workspace = true }
 tokio = { workspace = true }

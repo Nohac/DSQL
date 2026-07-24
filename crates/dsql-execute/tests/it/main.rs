@@ -1,10 +1,12 @@
-use dsql_execute::{ExecuteError, ExecutionBindings, materialize};
+use dsql_execute::{
+    BoundParameter, ExecuteError, ExecutionBindings, MaterializedOperation, PostgresExecutor,
+    materialize,
+};
 use dsql_metadata::{
     InputDefault, InputField, OperationMetadata, ResultShape, SqlMetadata, SqlParameterMetadata,
     SqlVariantCaseMetadata, SqlVariantMetadata,
 };
-use serde_json::Value;
-use serde_json::json;
+use facet_value::{Value, value};
 
 fn field(path: &str, data_type: &str, collection: bool, enum_values: &[&str]) -> InputField {
     InputField {
@@ -97,16 +99,21 @@ fn operation_with_fields(params: Vec<InputField>, parameters: &[&str]) -> Operat
 
 #[test]
 fn shared_default_conformance_cases_match() {
-    let cases: Value = serde_json::from_str(include_str!(
+    let cases: Value = facet_json::from_str(include_str!(
         "../../../../tests/conformance/input-defaults.json"
     ))
     .expect("conformance fixture parses");
     let cases = cases.as_array().expect("conformance fixture is an array");
 
     for case in cases {
-        let name = case["name"].as_str().expect("case has a name");
-        let field: InputField =
-            facet_json::from_str(&case["field"].to_string()).expect("case field metadata parses");
+        let case = case.as_object().expect("conformance case is an object");
+        let name = case
+            .get("name")
+            .and_then(Value::as_string)
+            .map(|value| value.as_str())
+            .expect("case has a name");
+        let field = case.get("field").expect("case has field metadata").clone();
+        let field: InputField = facet_value::from_value(field).expect("case field metadata parses");
         let result = materialize(
             &operation_with_fields(vec![field], &["params.value"]),
             &ExecutionBindings::default(),
@@ -118,7 +125,11 @@ fn shared_default_conformance_cases_match() {
                 assert_eq!(materialized.parameters[0].value, *expected, "{name}");
             }
         } else {
-            let expected = case["error"].as_str().expect("case has an error");
+            let expected = case
+                .get("error")
+                .and_then(Value::as_string)
+                .map(|value| value.as_str())
+                .expect("case has an error");
             let error = result.expect_err("case should fail").to_string();
             assert!(error.contains(expected), "{name}: {error}");
         }
@@ -136,12 +147,12 @@ fn materialization_rejects_invalid_envelopes_and_unused_required_fields() {
         items: None,
     });
 
-    for variables in [json!({"params": null}), json!({"params": 5})] {
+    for variables in [value!({"params": null}), value!({"params": 5})] {
         let error = materialize(
             &operation_with_fields(vec![defaulted.clone()], &["params.nested.value"]),
             &ExecutionBindings {
                 variables,
-                context: json!({}),
+                context: value!({}),
             },
         )
         .expect_err("explicit invalid envelope is rejected");
@@ -208,8 +219,8 @@ fn materialization_applies_typed_defaults_and_nullable_variants() {
         }]),
     });
     let bindings = ExecutionBindings {
-        variables: json!({}),
-        context: json!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
+        variables: value!({}),
+        context: value!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
     };
 
     insta::assert_debug_snapshot!(materialize(&operation, &bindings).expect("materializes"));
@@ -227,13 +238,13 @@ fn materialization_distinguishes_null_collection_and_collection_value_defaults()
         items: None,
     });
     let bindings = ExecutionBindings {
-        variables: json!({
+        variables: value!({
             "params": {
                 "station": "018f6f19-795f-7c3d-b1b3-8f177ab8a321",
                 "direction": "ascending"
             }
         }),
-        context: json!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
+        context: value!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
     };
 
     let mut collection_value = null_collection.clone();
@@ -263,14 +274,14 @@ fn materialization_distinguishes_null_collection_and_collection_value_defaults()
 #[test]
 fn materialization_resolves_variants_and_all_input_namespaces() {
     let bindings = ExecutionBindings {
-        variables: json!({
+        variables: value!({
             "params": {
                 "station": "018f6f19-795f-7c3d-b1b3-8f177ab8a321",
                 "direction": "descending"
             },
             "input": {"readings": {"ids": [2, 5, 8]}}
         }),
-        context: json!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
+        context: value!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
     };
 
     insta::assert_debug_snapshot!(materialize(&operation(), &bindings).expect("materializes"));
@@ -283,14 +294,14 @@ fn materialization_rejects_missing_and_unknown_variant_values() {
     assert!(matches!(missing, ExecuteError::MissingInput(path) if path == "params.station"));
 
     let bindings = ExecutionBindings {
-        variables: json!({
+        variables: value!({
             "params": {
                 "station": "018f6f19-795f-7c3d-b1b3-8f177ab8a321",
                 "direction": "sideways"
             },
             "input": {"readings": {"ids": [2]}}
         }),
-        context: json!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
+        context: value!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
     };
     let invalid = materialize(&operation(), &bindings).expect_err("variant is closed");
     assert!(matches!(
@@ -300,14 +311,14 @@ fn materialization_rejects_missing_and_unknown_variant_values() {
     ));
 
     let bindings = ExecutionBindings {
-        variables: json!({
+        variables: value!({
             "params": {
                 "station": null,
                 "direction": "ascending"
             },
             "input": {"readings": {"ids": [2]}}
         }),
-        context: json!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
+        context: value!({"tenant_id": "018f6f19-795f-7c3d-b1b3-8f177ab8a322"}),
     };
     let null = materialize(&operation(), &bindings).expect_err("required input is non-null");
     assert!(matches!(
@@ -332,4 +343,50 @@ fn materialization_rejects_non_query_and_non_postgres_metadata() {
         materialize(&unsupported, &ExecutionBindings::default()),
         Err(ExecuteError::UnsupportedDialect(dialect)) if dialect == "sqlite"
     ));
+}
+
+#[tokio::test]
+async fn postgres_json_bindings_roundtrip_through_sqlx() {
+    let Ok(database_url) = std::env::var("DSQL_OBSERVATORY_DATABASE_URL") else {
+        return;
+    };
+    let executor = PostgresExecutor::connect(&database_url)
+        .await
+        .expect("observatory connects");
+    let materialized = MaterializedOperation {
+        sql: "select $1::json as scalar, $2::jsonb[] as items, $3::jsonb as absent".to_string(),
+        parameters: vec![
+            BoundParameter {
+                path: "params.scalar".to_string(),
+                data_type: "json".to_string(),
+                collection: false,
+                value: value!({ "nested": [1, true] }),
+            },
+            BoundParameter {
+                path: "params.items".to_string(),
+                data_type: "json".to_string(),
+                collection: true,
+                value: value!([{ "item": 1 }, null, ["nested"]]),
+            },
+            BoundParameter {
+                path: "params.absent".to_string(),
+                data_type: "json".to_string(),
+                collection: false,
+                value: Value::NULL,
+            },
+        ],
+    };
+
+    let output = executor
+        .execute_materialized(&materialized)
+        .await
+        .expect("JSON bindings execute");
+    assert_eq!(
+        output,
+        value!({
+            "scalar": { "nested": [1, true] },
+            "items": [{ "item": 1 }, null, ["nested"]],
+            "absent": null
+        })
+    );
 }

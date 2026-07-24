@@ -1,6 +1,5 @@
 ---
 source: crates/dsql-execute/tests/it/main.rs
-assertion_line: 81
 expression: "materialize(&operation(), &bindings).expect(\"materializes\")"
 ---
 MaterializedOperation {
@@ -10,23 +9,23 @@ MaterializedOperation {
             path: "params.station",
             data_type: "uuid",
             collection: false,
-            value: String("018f6f19-795f-7c3d-b1b3-8f177ab8a321"),
+            value: "018f6f19-795f-7c3d-b1b3-8f177ab8a321",
         },
         BoundParameter {
             path: "input.readings.ids",
             data_type: "int",
             collection: true,
-            value: Array [
-                Number(2),
-                Number(5),
-                Number(8),
+            value: [
+                2,
+                5,
+                8,
             ],
         },
         BoundParameter {
             path: "context.tenant_id",
             data_type: "uuid",
             collection: false,
-            value: String("018f6f19-795f-7c3d-b1b3-8f177ab8a322"),
+            value: "018f6f19-795f-7c3d-b1b3-8f177ab8a322",
         },
     ],
 }

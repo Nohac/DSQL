@@ -4,6 +4,8 @@
 //! envelope parse answers with `id: null`.
 
 use facet::Facet;
+use facet_json::RawJson;
+use facet_value::{Value, value};
 
 pub const PROTOCOL_VERSION: u64 = 1;
 
@@ -92,7 +94,7 @@ pub enum Method {
 pub struct BadRequest {
     pub id: Option<u64>,
     pub message: String,
-    pub data: String,
+    pub data: Value,
 }
 
 /// Best-effort id recovery for lines whose full envelope failed (bad
@@ -129,7 +131,7 @@ impl Request {
                 return Err(BadRequest {
                     id,
                     message: format!("unparseable request: {error}"),
-                    data: "null".to_string(),
+                    data: Value::NULL,
                 });
             }
         };
@@ -139,14 +141,14 @@ impl Request {
                 return Err(BadRequest {
                     id: None,
                     message: format!("id {id} is outside 1..=2^53-1"),
-                    data: "null".to_string(),
+                    data: Value::NULL,
                 });
             }
             None => {
                 return Err(BadRequest {
                     id: None,
                     message: "request has no id".to_string(),
-                    data: "null".to_string(),
+                    data: Value::NULL,
                 });
             }
         };
@@ -154,7 +156,7 @@ impl Request {
             return Err(BadRequest {
                 id: Some(id),
                 message: "request has no method".to_string(),
-                data: "null".to_string(),
+                data: Value::NULL,
             });
         };
         let method = match method_name.as_str() {
@@ -166,7 +168,7 @@ impl Request {
                 return Err(BadRequest {
                     id: Some(id),
                     message: format!("unknown daemon method `{other}`"),
-                    data: format!("{{\"method\":{}}}", json_string(other)),
+                    data: value!({ "method": (other) }),
                 });
             }
         };
@@ -178,7 +180,7 @@ impl Request {
                 return Err(BadRequest {
                     id: Some(id),
                     message: format!("invalid params for `{method_name}`: {error}"),
-                    data: format!("{{\"method\":{}}}", json_string(&method_name)),
+                    data: value!({ "method": (method_name.as_str()) }),
                 });
             }
         };
@@ -190,59 +192,184 @@ impl Request {
     }
 }
 
-/// A JSON string literal (escaping through facet).
-pub fn json_string(value: &str) -> String {
-    facet_json::to_string(&value.to_string()).unwrap_or_else(|_| "\"\"".to_string())
+/// One daemon response. Exactly one of [`Self::result`] and [`Self::error`]
+/// is present.
+#[derive(Debug, Clone, Facet)]
+pub struct WireResponse {
+    pub id: Option<u64>,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub result: Option<WireResult>,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub error: Option<WireError>,
 }
 
-/// `{"id":N,"result":<body>}` — `body` is already JSON.
-pub fn result_line(id: u64, body: &str) -> String {
-    format!("{{\"id\":{id},\"result\":{body}}}")
+impl WireResponse {
+    /// Constructs a successful response for `id`.
+    pub fn success(id: u64, result: WireResult) -> Self {
+        Self {
+            id: Some(id),
+            result: Some(result),
+            error: None,
+        }
+    }
+
+    /// Constructs a failed response with the protocol's stable error shape.
+    pub fn error(
+        id: Option<u64>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        data: Value,
+    ) -> Self {
+        Self {
+            id,
+            result: None,
+            error: Some(WireError {
+                code: code.into(),
+                message: message.into(),
+                data,
+            }),
+        }
+    }
+
+    /// Serializes one line-JSON response.
+    pub fn serialize(&self) -> Result<String, String> {
+        facet_json::to_string(self).map_err(|error| error.to_string())
+    }
 }
 
-/// `{"id":N|null,"error":{"code":…,"message":…,"data":…}}`.
-pub fn error_line(id: Option<u64>, code: &str, message: &str, data: &str) -> String {
-    let id = id.map_or("null".to_string(), |id| id.to_string());
-    format!(
-        "{{\"id\":{id},\"error\":{{\"code\":{},\"message\":{},\"data\":{data}}}}}",
-        json_string(code),
-        json_string(message),
-    )
+/// Successful result payloads supported by daemon protocol version 1.
+#[derive(Debug, Clone, Facet)]
+#[facet(untagged)]
+#[repr(u8)]
+#[expect(
+    dead_code,
+    reason = "variant payloads are read through Facet reflection"
+)]
+pub enum WireResult {
+    Boolean(bool),
+    Initialize(InitializeResult),
+    Compile(CompileResult),
+}
+
+/// The stable error body nested in a [`WireResponse`].
+#[derive(Debug, Clone, Facet)]
+pub struct WireError {
+    pub code: String,
+    pub message: String,
+    pub data: Value,
+}
+
+/// Canonical project paths returned by `initialize`.
+#[derive(Debug, Clone, Facet)]
+pub struct InitializeResult {
+    #[facet(rename = "protocolVersion")]
+    pub protocol_version: u64,
+    #[facet(rename = "projectBase")]
+    pub project_base: String,
+    #[facet(rename = "configPath")]
+    pub config_path: String,
+    #[facet(rename = "schemaDir")]
+    pub schema_dir: String,
+    #[facet(rename = "buildDir")]
+    pub build_dir: String,
+    #[facet(rename = "generatorOutputs")]
+    pub generator_outputs: Vec<String>,
+    #[facet(rename = "diagnosticLevel")]
+    pub diagnostic_level: String,
+}
+
+/// One compile result returned by `compile` or `filesChanged`.
+#[derive(Debug, Clone, Facet)]
+pub struct CompileResult {
+    #[facet(rename = "generationId")]
+    pub generation_id: u64,
+    pub changed: bool,
+    #[facet(rename = "manifestPath")]
+    pub manifest_path: String,
+    #[facet(rename = "currentManifestPath")]
+    pub current_manifest_path: String,
+    #[facet(rename = "projectContractHash")]
+    pub project_contract_hash: WireHash,
+    pub manifest: RawJson<'static>,
+    pub artifacts: Vec<WireArtifact>,
+    pub groups: Vec<WireGroup>,
+    #[facet(rename = "sourceFileScopes")]
+    pub source_file_scopes: Vec<WireSourceFileScope>,
+    pub callsites: Vec<WireCallsite>,
+    pub diagnostics: Vec<WireDiagnostic>,
+}
+
+/// A named hash used for project contracts and embedding host freshness.
+#[derive(Debug, Clone, Facet)]
+pub struct WireHash {
+    pub algorithm: String,
+    pub value: String,
+}
+
+/// One compiled artifact and its canonical metadata document.
+#[derive(Debug, Clone, Facet)]
+pub struct WireArtifact {
+    pub id: String,
+    pub kind: String,
+    pub scope: String,
+    pub metadata: RawJson<'static>,
+}
+
+/// One resolution-scope group and its effective artifact closure.
+#[derive(Debug, Clone, Facet)]
+pub struct WireGroup {
+    pub name: String,
+    pub imports: Vec<String>,
+    #[facet(rename = "generationTarget")]
+    pub generation_target: bool,
+    pub artifacts: Vec<String>,
+}
+
+/// Resolution scope assigned to one source file.
+#[derive(Debug, Clone, Facet)]
+pub struct WireSourceFileScope {
+    pub path: String,
+    pub scope: String,
+}
+
+/// All embedded DSQL expressions extracted from one host file.
+#[derive(Debug, Clone, Facet)]
+pub struct WireCallsite {
+    pub path: String,
+    pub resolver: String,
+    #[facet(rename = "contentHash")]
+    pub content_hash: WireHash,
+    pub expressions: Vec<WireExpression>,
+}
+
+/// One embedded expression's host range and resolved artifact target.
+#[derive(Debug, Clone, Facet)]
+pub struct WireExpression {
+    pub range: WireRange,
+    pub target: String,
+}
+
+/// A half-open byte range in protocol coordinates.
+#[derive(Debug, Clone, Facet)]
+pub struct WireRange {
+    pub start: usize,
+    pub end: usize,
 }
 
 /// One diagnostic in the protocol's snapshot shape (host coordinates,
 /// with the embedded range when the finding sits in a region).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Facet)]
 pub struct WireDiagnostic {
     pub file: String,
-    pub start: usize,
-    pub end: usize,
-    pub embedded: Option<(usize, usize)>,
+    pub range: WireRange,
+    #[facet(
+        default,
+        rename = "embeddedRange",
+        skip_serializing_if = Option::is_none
+    )]
+    pub embedded_range: Option<WireRange>,
     pub severity: String,
     pub source: String,
     pub code: String,
     pub message: String,
-}
-
-impl WireDiagnostic {
-    pub fn render(&self) -> String {
-        let embedded = self.embedded.map_or(String::new(), |(start, end)| {
-            format!("\"embeddedRange\":{{\"start\":{start},\"end\":{end}}},")
-        });
-        format!(
-            "{{\"file\":{},\"range\":{{\"start\":{},\"end\":{}}},{embedded}\"severity\":{},\"source\":{},\"code\":{},\"message\":{}}}",
-            json_string(&self.file),
-            self.start,
-            self.end,
-            json_string(&self.severity),
-            json_string(&self.source),
-            json_string(&self.code),
-            json_string(&self.message),
-        )
-    }
-}
-
-pub fn render_diagnostics(diagnostics: &[WireDiagnostic]) -> String {
-    let rendered: Vec<String> = diagnostics.iter().map(WireDiagnostic::render).collect();
-    format!("[{}]", rendered.join(","))
 }

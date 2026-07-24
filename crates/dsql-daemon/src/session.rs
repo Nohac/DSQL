@@ -5,6 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use bowl::{Bowl, Entity, Mut, Query};
+use facet_json::RawJson;
+use facet_value::{Value, value};
 
 use dsql_core::embedding::{EmbeddedExpressionResolution, ResolvedEmbeddedExpression};
 use dsql_core::entities::definition::{DefDecl, DefKind};
@@ -20,29 +22,24 @@ use dsql_generate::{GenerateError, GenerateOptions};
 use dsql_project::Project;
 
 use crate::protocol::{
-    DiagnosticLevel, Method, PROTOCOL_VERSION, Request, WireDiagnostic, error_line, json_string,
-    render_diagnostics, result_line,
+    CompileResult, DiagnosticLevel, InitializeResult, Method, PROTOCOL_VERSION, Request,
+    WireArtifact, WireCallsite, WireDiagnostic, WireError, WireExpression, WireGroup, WireHash,
+    WireRange, WireResponse, WireResult, WireSourceFileScope,
 };
 
 pub enum Handled {
-    Respond(String),
-    Shutdown(String),
+    Respond(WireResponse),
+    Shutdown(WireResponse),
 }
 
-/// A cached compile outcome, replayed verbatim for no-op batches. The
-/// success body carries a `%CHANGED%` placeholder substituted at send.
+/// A cached compile outcome, replayed for no-op batches.
 enum Outcome {
     Success {
-        body: String,
-        /// Whether this compile actually wrote anything; replays always
-        /// send `false`.
-        changed: bool,
+        result: CompileResult,
         published: PublishedGeneration,
     },
     Error {
-        code: String,
-        message: String,
-        data: String,
+        error: WireError,
         /// Present when a generation committed before the failure
         /// (GeneratorFailed): pruning must still run.
         published: Option<PublishedGeneration>,
@@ -97,15 +94,17 @@ impl Daemon {
 
     pub async fn handle(&mut self, request: Request) -> Handled {
         match request.method {
-            Method::Shutdown => Handled::Shutdown(result_line(request.id, "true")),
+            Method::Shutdown => {
+                Handled::Shutdown(WireResponse::success(request.id, WireResult::Boolean(true)))
+            }
             Method::Initialize => Handled::Respond(self.initialize(request).await),
             Method::Compile | Method::FilesChanged => {
                 let State::Ready(_) = &self.state else {
-                    return Handled::Respond(error_line(
+                    return Handled::Respond(WireResponse::error(
                         Some(request.id),
                         "NotInitialized",
                         "initialize the daemon first",
-                        "null",
+                        Value::NULL,
                     ));
                 };
                 Handled::Respond(self.compile(request).await)
@@ -113,59 +112,59 @@ impl Daemon {
         }
     }
 
-    async fn initialize(&mut self, request: Request) -> String {
+    async fn initialize(&mut self, request: Request) -> WireResponse {
         if let State::Ready(_) = &self.state {
-            return error_line(
+            return WireResponse::error(
                 Some(request.id),
                 "AlreadyInitialized",
                 "the daemon is already initialized",
-                "null",
+                Value::NULL,
             );
         }
         let Some(version) = request.params.protocol_version else {
-            return error_line(
+            return WireResponse::error(
                 Some(request.id),
                 "InvalidRequest",
                 "initialize requires params.protocolVersion",
-                "{\"method\":\"initialize\"}",
+                value!({ "method": "initialize" }),
             );
         };
         if version != PROTOCOL_VERSION {
-            return error_line(
+            return WireResponse::error(
                 Some(request.id),
                 "UnsupportedProtocolVersion",
-                &format!("daemon speaks protocol {PROTOCOL_VERSION}, consumer sent {version}"),
-                &format!("{{\"daemonVersion\":{PROTOCOL_VERSION}}}"),
+                format!("daemon speaks protocol {PROTOCOL_VERSION}, consumer sent {version}"),
+                value!({ "daemonVersion": (PROTOCOL_VERSION) }),
             );
         }
         let Some(root) = request.params.root.as_deref() else {
-            return error_line(
+            return WireResponse::error(
                 Some(request.id),
                 "InvalidRequest",
                 "initialize requires params.root",
-                "{\"method\":\"initialize\"}",
+                value!({ "method": "initialize" }),
             );
         };
         let diagnostic_level =
             match DiagnosticLevel::parse(request.params.diagnostic_level.as_deref()) {
                 Ok(level) => level,
                 Err(message) => {
-                    return error_line(
+                    return WireResponse::error(
                         Some(request.id),
                         "InvalidRequest",
-                        &message,
-                        "{\"method\":\"initialize\"}",
+                        message,
+                        value!({ "method": "initialize" }),
                     );
                 }
             };
         let project = match Project::load_from(Path::new(root)).await {
             Ok(project) => project,
             Err(error) => {
-                return error_line(
+                return WireResponse::error(
                     Some(request.id),
                     "ProjectLoadFailed",
-                    &error.to_string(),
-                    &format!("{{\"message\":{}}}", json_string(&error.to_string())),
+                    error.to_string(),
+                    value!({ "message": (error.to_string()) }),
                 );
             }
         };
@@ -177,11 +176,11 @@ impl Daemon {
             match dsql_project::validate_reserved_root(&project.config, &root) {
                 Ok(normalized) => exclude_roots.push(normalized),
                 Err(error) => {
-                    return error_line(
+                    return WireResponse::error(
                         Some(request.id),
                         "InvalidPath",
-                        &error.to_string(),
-                        &format!("{{\"path\":{}}}", json_string(&root)),
+                        error.to_string(),
+                        value!({ "path": (root) }),
                     );
                 }
             }
@@ -191,12 +190,15 @@ impl Daemon {
             .ok()
             .map(|bytes| sha256_hex(&bytes));
 
-        let body = format!(
-            "{{\"protocolVersion\":{PROTOCOL_VERSION},\"projectBase\":{},\"configPath\":\"dsql/dsql.toml\",\"schemaDir\":\"dsql/schema\",\"buildDir\":\"dsql/build\",\"generatorOutputs\":{},\"diagnosticLevel\":{}}}",
-            json_string(&project_base.to_string_lossy()),
-            string_array(&generator_outputs),
-            json_string(diagnostic_level.as_str()),
-        );
+        let result = InitializeResult {
+            protocol_version: PROTOCOL_VERSION,
+            project_base: project_base.to_string_lossy().into_owned(),
+            config_path: "dsql/dsql.toml".to_string(),
+            schema_dir: "dsql/schema".to_string(),
+            build_dir: "dsql/build".to_string(),
+            generator_outputs,
+            diagnostic_level: diagnostic_level.as_str().to_string(),
+        };
         self.state = State::Ready(Box::new(Session {
             project,
             project_base,
@@ -207,12 +209,17 @@ impl Daemon {
             locked: self.locked,
             filter_match_lock_hash,
         }));
-        result_line(request.id, &body)
+        WireResponse::success(request.id, WireResult::Initialize(result))
     }
 
-    async fn compile(&mut self, request: Request) -> String {
+    async fn compile(&mut self, request: Request) -> WireResponse {
         let State::Ready(session) = &mut self.state else {
-            unreachable!("guarded by handle()");
+            return WireResponse::error(
+                Some(request.id),
+                "Internal",
+                "daemon state changed while compiling",
+                Value::NULL,
+            );
         };
         let id = request.id;
 
@@ -240,11 +247,11 @@ impl Daemon {
         let applied = session.apply(plan).await;
         if let Err(error) = applied {
             session.bowl = None;
-            return error_line(
+            return WireResponse::error(
                 Some(id),
                 "ProjectLoadFailed",
-                &error,
-                &format!("{{\"message\":{}}}", json_string(&error)),
+                error.as_str(),
+                value!({ "message": (error.as_str()) }),
             );
         }
 
@@ -294,22 +301,24 @@ enum FileChange {
     Fresh(String),
 }
 
-fn respond_error_for(id: u64, (code, message, data): (String, String, String)) -> String {
-    error_line(Some(id), &code, &message, &data)
+fn respond_error_for(id: u64, (code, message, data): (String, String, Value)) -> WireResponse {
+    WireResponse::error(Some(id), code, message, data)
 }
 
-fn render_outcome(id: u64, outcome: &Outcome, replay: bool) -> String {
+fn render_outcome(id: u64, outcome: &Outcome, replay: bool) -> WireResponse {
     match outcome {
-        Outcome::Success { body, changed, .. } => {
-            let flag = if *changed && !replay { "true" } else { "false" };
-            result_line(id, &body.replace("%CHANGED%", flag))
+        Outcome::Success { result, .. } => {
+            let mut result = result.clone();
+            if replay {
+                result.changed = false;
+            }
+            WireResponse::success(id, WireResult::Compile(result))
         }
-        Outcome::Error {
-            code,
-            message,
-            data,
-            ..
-        } => error_line(Some(id), code, message, data),
+        Outcome::Error { error, .. } => WireResponse {
+            id: Some(id),
+            result: None,
+            error: Some(error.clone()),
+        },
     }
 }
 
@@ -322,12 +331,12 @@ impl Session {
     async fn classify_batch(
         &self,
         request: &Request,
-    ) -> Result<BatchPlan, (String, String, String)> {
+    ) -> Result<BatchPlan, (String, String, Value)> {
         let Some(paths) = request.params.paths.as_ref() else {
             return Err((
                 "InvalidRequest".into(),
                 "filesChanged requires params.paths".into(),
-                "{\"method\":\"filesChanged\"}".into(),
+                value!({ "method": "filesChanged" }),
             ));
         };
         if self.bowl.is_none() {
@@ -343,7 +352,7 @@ impl Session {
                     return Err((
                         "InvalidPath".into(),
                         problem,
-                        format!("{{\"path\":{}}}", json_string(raw)),
+                        value!({ "path": (raw.as_str()) }),
                     ));
                 }
             };
@@ -357,7 +366,7 @@ impl Session {
                         return Err((
                             "Io".into(),
                             format!("failed to read {}: {error}", absolute.display()),
-                            format!("{{\"path\":{}}}", json_string(raw)),
+                            value!({ "path": (raw.as_str()) }),
                         ));
                     }
                 };
@@ -389,11 +398,7 @@ impl Session {
                         Ok((_, true)) => reload = true,
                         Ok((changed, false)) => upserts.extend(changed),
                         Err(problem) => {
-                            return Err((
-                                "Io".into(),
-                                problem,
-                                format!("{{\"path\":{}}}", json_string(raw)),
-                            ));
+                            return Err(("Io".into(), problem, value!({ "path": (raw.as_str()) })));
                         }
                     }
                 }
@@ -411,11 +416,7 @@ impl Session {
                     Ok(FileChange::Unchanged) => {}
                     Ok(FileChange::Fresh(content)) => upserts.push((absolute, content)),
                     Err(problem) => {
-                        return Err((
-                            "Io".into(),
-                            problem,
-                            format!("{{\"path\":{}}}", json_string(raw)),
-                        ));
+                        return Err(("Io".into(), problem, value!({ "path": (raw.as_str()) })));
                     }
                 }
             } else {
@@ -633,7 +634,9 @@ impl Session {
                 if let Some(lock_hash) = lock_hash {
                     self.filter_match_lock_hash = lock_hash;
                 }
-                let bowl = self.bowl.as_ref().expect("classified against a bowl");
+                let Some(bowl) = self.bowl.as_ref() else {
+                    return Err("incremental batch has no resident bowl".to_string());
+                };
                 for (absolute, content) in paths {
                     upsert(bowl, &absolute, &content).await;
                 }
@@ -668,14 +671,20 @@ impl Session {
     /// The compile proper: diagnostics snapshot, assembly, publication,
     /// generator, response body.
     async fn compile_now(&mut self) -> Outcome {
-        let bowl = self.bowl.as_ref().expect("apply() left a bowl");
+        let Some(bowl) = self.bowl.as_ref() else {
+            return outcome_error("Internal", "compile has no resident bowl", Value::NULL);
+        };
         let mut diagnostics = collect_diagnostics(bowl, &self.project_base).await;
         // Policy diagnostics join the snapshot BEFORE the error gate and
         // the normative sort, so they appear in every response.
         if let Some(warning) = self.generator_policy_warning() {
             diagnostics.push(warning);
             diagnostics.sort_by(|left, right| {
-                (&left.file, left.start, &left.code).cmp(&(&right.file, right.start, &right.code))
+                (&left.file, left.range.start, &left.code).cmp(&(
+                    &right.file,
+                    right.range.start,
+                    &right.code,
+                ))
             });
         }
         let errors = diagnostics
@@ -688,15 +697,17 @@ impl Session {
             .cloned()
             .collect::<Vec<_>>();
         if errors > 0 {
-            return Outcome::Error {
-                code: "Diagnostics".into(),
-                message: "cannot generate while diagnostics contain errors".into(),
-                data: format!(
-                    "{{\"diagnostics\":{}}}",
-                    render_diagnostics(&visible_diagnostics)
-                ),
-                published: None,
+            let data = match diagnostics_value(&visible_diagnostics) {
+                Ok(data) => data,
+                Err(message) => {
+                    return outcome_error("Internal", message, Value::NULL);
+                }
             };
+            return outcome_error(
+                "Diagnostics",
+                "cannot generate while diagnostics contain errors",
+                data,
+            );
         }
 
         let assembled =
@@ -709,12 +720,7 @@ impl Session {
         let callsites = match collect_callsites(bowl, &self.project_base).await {
             Ok(callsites) => callsites,
             Err(message) => {
-                return Outcome::Error {
-                    code: "Internal".into(),
-                    message,
-                    data: "null".into(),
-                    published: None,
-                };
+                return outcome_error("Internal", message, Value::NULL);
             }
         };
         let scopes = collect_source_scopes(bowl, &self.project_base).await;
@@ -738,69 +744,65 @@ impl Session {
             // The generation COMMITTED before the generator ran: report
             // it in data, and pruning still happens (via `published`).
             return Outcome::Error {
-                code: "GeneratorFailed".into(),
-                message: status,
-                data: format!(
-                    "{{\"generationId\":{},\"manifestPath\":{}}}",
-                    published.generation_id,
-                    json_string(&relative_to(&self.project_base, &published.manifest_path)),
-                ),
+                error: WireError {
+                    code: "GeneratorFailed".to_string(),
+                    message: status,
+                    data: value!({
+                        "generationId": (published.generation_id),
+                        "manifestPath": (relative_to(
+                            &self.project_base,
+                            &published.manifest_path,
+                        ))
+                    }),
+                },
                 published: Some(published),
             };
         }
 
-        let manifest = published.manifest_json.clone();
-
-        let artifacts: Vec<String> = assembled
+        let artifacts = assembled
             .snapshot
             .artifacts
             .iter()
-            .map(|artifact| {
-                format!(
-                    "{{\"id\":{},\"kind\":{},\"scope\":{},\"metadata\":{}}}",
-                    json_string(&artifact.id),
-                    json_string(artifact.family.label()),
-                    json_string(&artifact.scope),
-                    artifact.serialized,
-                )
+            .map(|artifact| WireArtifact {
+                id: artifact.id.clone(),
+                kind: artifact.family.label().to_string(),
+                scope: artifact.scope.clone(),
+                metadata: RawJson::from_owned(artifact.serialized.clone()),
             })
-            .collect();
-        let groups: Vec<String> = assembled
+            .collect::<Vec<_>>();
+        let groups = assembled
             .snapshot
             .groups
             .iter()
-            .map(|group| {
-                format!(
-                    "{{\"name\":{},\"imports\":{},\"generationTarget\":{},\"artifacts\":{}}}",
-                    json_string(&group.name),
-                    string_array(&group.imports),
-                    group.generation_target,
-                    string_array(&group.artifacts),
-                )
+            .map(|group| WireGroup {
+                name: group.name.clone(),
+                imports: group.imports.clone(),
+                generation_target: group.generation_target,
+                artifacts: group.artifacts.clone(),
             })
-            .collect();
+            .collect::<Vec<_>>();
         let contract = &assembled.snapshot.project_contract.fingerprint;
 
-        let body = format!(
-            "{{\"generationId\":{},\"changed\":%CHANGED%,\"manifestPath\":{},\"currentManifestPath\":{},\"projectContractHash\":{{\"algorithm\":{},\"value\":{}}},\"manifest\":{},\"artifacts\":[{}],\"groups\":[{}],\"sourceFileScopes\":{scopes},\"callsites\":{callsites},\"diagnostics\":{}}}",
-            published.generation_id,
-            json_string(&relative_to(&self.project_base, &published.manifest_path)),
-            json_string(&relative_to(
-                &self.project_base,
-                &published.current_manifest_path
-            )),
-            json_string(&contract.algorithm),
-            json_string(&contract.value),
-            manifest,
-            artifacts.join(","),
-            groups.join(","),
-            render_diagnostics(&visible_diagnostics),
-        );
-        Outcome::Success {
-            body,
+        let result = CompileResult {
+            generation_id: published.generation_id,
             changed: !published.written.is_empty(),
-            published,
-        }
+            manifest_path: relative_to(&self.project_base, &published.manifest_path),
+            current_manifest_path: relative_to(
+                &self.project_base,
+                &published.current_manifest_path,
+            ),
+            project_contract_hash: WireHash {
+                algorithm: contract.algorithm.clone(),
+                value: contract.value.clone(),
+            },
+            manifest: RawJson::from_owned(published.manifest_json.clone()),
+            artifacts,
+            groups,
+            source_file_scopes: scopes,
+            callsites,
+            diagnostics: visible_diagnostics,
+        };
+        Outcome::Success { result, published }
     }
 
     /// The host generator under daemon policy: enabled-but-undeclared
@@ -814,9 +816,8 @@ impl Session {
             typescript.enabled && !typescript.cmd.is_empty() && typescript.outputs.is_empty();
         skipped.then(|| WireDiagnostic {
             file: "dsql/dsql.toml".to_string(),
-            start: 0,
-            end: 0,
-            embedded: None,
+            range: WireRange { start: 0, end: 0 },
+            embedded_range: None,
             severity: "Warning".to_string(),
             source: "Generate".to_string(),
             code: "GeneratorSkipped".to_string(),
@@ -858,74 +859,81 @@ fn generate_outcome_error(error: GenerateError) -> Outcome {
     let (code, data) = match &error {
         GenerateError::ArtifactCollision(collision) => (
             "ArtifactCollision",
-            format!(
-                "{{\"kind\":{},\"first\":{},\"firstSource\":{},\"second\":{},\"secondSource\":{},\"path\":{}}}",
-                json_string(collision.kind),
-                json_string(&collision.first),
-                json_string(&collision.first_source),
-                json_string(&collision.second),
-                json_string(&collision.second_source),
-                json_string(&collision.path),
-            ),
+            value!({
+                "kind": (collision.kind),
+                "first": (collision.first.as_str()),
+                "firstSource": (collision.first_source.as_str()),
+                "second": (collision.second.as_str()),
+                "secondSource": (collision.second_source.as_str()),
+                "path": (collision.path.as_str())
+            }),
         ),
-        GenerateError::PublicationLocked => ("PublicationLocked", "null".to_string()),
+        GenerateError::PublicationLocked => ("PublicationLocked", Value::NULL),
         GenerateError::Assembly { name, message } | GenerateError::Serialize { name, message } => (
             "AssemblyFailed",
-            format!(
-                "{{\"artifact\":{},\"message\":{}}}",
-                json_string(name),
-                json_string(message),
-            ),
+            value!({
+                "artifact": (name.as_str()),
+                "message": (message.as_str())
+            }),
         ),
         GenerateError::MatchLock { .. } => {
             let diagnostic = WireDiagnostic {
                 file: "dsql/dsql.lock".to_string(),
-                start: 0,
-                end: 0,
-                embedded: None,
+                range: WireRange { start: 0, end: 0 },
+                embedded_range: None,
                 severity: "Error".to_string(),
                 source: "dsql".to_string(),
                 code: "FilterMatchLock".to_string(),
                 message: error.to_string(),
             };
-            (
-                "Diagnostics",
-                format!("{{\"diagnostics\":{}}}", render_diagnostics(&[diagnostic])),
-            )
+            let data = match diagnostics_value(&[diagnostic]) {
+                Ok(data) => data,
+                Err(message) => return outcome_error("Internal", message, Value::NULL),
+            };
+            ("Diagnostics", data)
         }
         GenerateError::LanguageDiagnostics { .. } => (
             // collect_diagnostics answered first in the normal path; this
             // arm covers races where new errors appeared mid-assembly.
             "Diagnostics",
-            "{\"diagnostics\":[]}".to_string(),
+            value!({ "diagnostics": [] }),
         ),
         // The protocol specifies data: null for Internal; the message
         // already rides the human-readable field.
-        GenerateError::Internal(_) => ("Internal", "null".to_string()),
+        GenerateError::Internal(_) => ("Internal", Value::NULL),
         GenerateError::Project(project) => (
             "ProjectLoadFailed",
-            format!("{{\"message\":{}}}", json_string(&project.to_string())),
+            value!({ "message": (project.to_string()) }),
         ),
         GenerateError::AddressCollision { path, id } => (
             "Io",
-            format!(
-                "{{\"path\":{},\"artifact\":{}}}",
-                json_string(path),
-                json_string(id),
-            ),
+            value!({
+                "path": (path.as_str()),
+                "artifact": (id.as_str())
+            }),
         ),
-        GenerateError::Write { path, .. } | GenerateError::Io { path, .. } => (
-            "Io",
-            format!("{{\"path\":{}}}", json_string(&path.to_string_lossy())),
-        ),
-        _ => ("Io", "null".to_string()),
+        GenerateError::Write { path, .. } | GenerateError::Io { path, .. } => {
+            ("Io", value!({ "path": (path.to_string_lossy().as_ref()) }))
+        }
+        _ => ("Io", Value::NULL),
     };
+    outcome_error(code, error.to_string(), data)
+}
+
+fn outcome_error(code: &str, message: impl Into<String>, data: Value) -> Outcome {
     Outcome::Error {
-        code: code.to_string(),
-        message: error.to_string(),
-        data,
+        error: WireError {
+            code: code.to_string(),
+            message: message.into(),
+            data,
+        },
         published: None,
     }
+}
+
+fn diagnostics_value(diagnostics: &[WireDiagnostic]) -> Result<Value, String> {
+    let diagnostics = facet_value::to_value(&diagnostics).map_err(|error| error.to_string())?;
+    Ok(value!({ "diagnostics": (diagnostics) }))
 }
 
 async fn upsert(bowl: &Bowl, absolute: &Path, content: &str) {
@@ -984,11 +992,6 @@ fn relative_to(base: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn string_array(values: &[String]) -> String {
-    let rendered: Vec<String> = values.iter().map(|value| json_string(value)).collect();
-    format!("[{}]", rendered.join(","))
-}
-
 /// The complete diagnostics snapshot: every fact, host coordinates,
 /// embedded ranges for region findings, deterministic order.
 async fn collect_diagnostics(bowl: &Bowl, base: &Path) -> Vec<WireDiagnostic> {
@@ -1026,9 +1029,14 @@ async fn collect_diagnostics(bowl: &Bowl, base: &Path) -> Vec<WireDiagnostic> {
             let (path, offset, embedded) = locate(file.0)?;
             Some(WireDiagnostic {
                 file: path,
-                start: offset + span.start,
-                end: offset + span.end,
-                embedded: embedded.then_some((span.start, span.end)),
+                range: WireRange {
+                    start: offset + span.start,
+                    end: offset + span.end,
+                },
+                embedded_range: embedded.then_some(WireRange {
+                    start: span.start,
+                    end: span.end,
+                }),
                 severity: format!("{severity:?}"),
                 source: format!("{source:?}"),
                 code: format!("{code:?}"),
@@ -1037,14 +1045,18 @@ async fn collect_diagnostics(bowl: &Bowl, base: &Path) -> Vec<WireDiagnostic> {
         })
         .collect();
     diagnostics.sort_by(|left, right| {
-        (&left.file, left.start, &left.code).cmp(&(&right.file, right.start, &right.code))
+        (&left.file, left.range.start, &left.code).cmp(&(
+            &right.file,
+            right.range.start,
+            &right.code,
+        ))
     });
     diagnostics
 }
 
 /// Callsites grouped per host file, with one semantically resolved artifact
 /// target per expression (docs/spec/build-daemon.md, Compile result).
-async fn collect_callsites(bowl: &Bowl, base: &Path) -> Result<String, String> {
+async fn collect_callsites(bowl: &Bowl, base: &Path) -> Result<Vec<WireCallsite>, String> {
     let regions = bowl
         .scoop::<Query<(Entity, &BelongsToHost, &CallsiteSpan)>>()
         .await;
@@ -1084,7 +1096,7 @@ async fn collect_callsites(bowl: &Bowl, base: &Path) -> Result<String, String> {
             .push((callsite.0.start, callsite.0.end, *region));
     }
 
-    let mut rendered = Vec::new();
+    let mut callsites = Vec::new();
     for (path, (host, resolver, mut expressions)) in hosts {
         expressions.sort();
         let content_hash = texts
@@ -1093,7 +1105,7 @@ async fn collect_callsites(bowl: &Bowl, base: &Path) -> Result<String, String> {
             .and_then(|(_, text)| text.to_text())
             .map(|text| sha256_hex(text.as_bytes()))
             .unwrap_or_default();
-        let mut expression_json = Vec::new();
+        let mut wire_expressions = Vec::new();
         for (start, end, region) in expressions {
             let Some((_, resolution, _)) = resolved.iter().find(|(_, _, file)| file.0 == region)
             else {
@@ -1118,24 +1130,26 @@ async fn collect_callsites(bowl: &Bowl, base: &Path) -> Result<String, String> {
                 DefKind::Fragment => "fragment",
             };
             let target = format!("{}/{family}/{}", scope.0, decl.name);
-            expression_json.push(format!(
-                "{{\"range\":{{\"start\":{start},\"end\":{end}}},\"target\":{}}}",
-                json_string(&target),
-            ));
+            wire_expressions.push(WireExpression {
+                range: WireRange { start, end },
+                target,
+            });
         }
-        rendered.push(format!(
-            "{{\"path\":{},\"resolver\":{},\"contentHash\":{{\"algorithm\":\"sha256\",\"value\":{}}},\"expressions\":[{}]}}",
-            json_string(&path),
-            json_string(&resolver),
-            json_string(&content_hash),
-            expression_json.join(","),
-        ));
+        callsites.push(WireCallsite {
+            path,
+            resolver,
+            content_hash: WireHash {
+                algorithm: "sha256".to_string(),
+                value: content_hash,
+            },
+            expressions: wire_expressions,
+        });
     }
-    Ok(format!("[{}]", rendered.join(",")))
+    Ok(callsites)
 }
 
 /// Which scope owns each source file (informational, per the spec).
-async fn collect_source_scopes(bowl: &Bowl, base: &Path) -> String {
+async fn collect_source_scopes(bowl: &Bowl, base: &Path) -> Vec<WireSourceFileScope> {
     let paths = bowl
         .scoop::<Query<(Entity, &FilePath, &ResolutionScope)>>()
         .await;
@@ -1152,15 +1166,7 @@ async fn collect_source_scopes(bowl: &Bowl, base: &Path) -> String {
         .map(|(_, path, scope)| (relative_to(base, Path::new(&path.0)), scope.0.clone()))
         .collect();
     rows.sort();
-    let rendered: Vec<String> = rows
-        .into_iter()
-        .map(|(path, scope)| {
-            format!(
-                "{{\"path\":{},\"scope\":{}}}",
-                json_string(&path),
-                json_string(&scope),
-            )
-        })
-        .collect();
-    format!("[{}]", rendered.join(","))
+    rows.into_iter()
+        .map(|(path, scope)| WireSourceFileScope { path, scope })
+        .collect()
 }

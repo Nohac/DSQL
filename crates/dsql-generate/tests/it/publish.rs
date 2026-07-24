@@ -15,11 +15,19 @@ use dsql_generate::{
     FilterMatchLock, GenerateError, LockedFilter, LockedFilterMatch, LockedPolicyReference,
     ProjectContract,
 };
+use facet::Facet;
 
 type Result<T> = std::result::Result<T, GenerateError>;
 
+#[derive(Facet)]
+struct ArtifactFixture<'a> {
+    name: &'a str,
+    body: &'a str,
+}
+
 fn artifact(name: &str, body: &str) -> SnapshotArtifact {
-    let serialized = format!("{{\"name\":\"{name}\",\"body\":\"{body}\"}}");
+    let serialized =
+        facet_json::to_string(&ArtifactFixture { name, body }).expect("fixture serializes");
     let hash = sha256_hex(serialized.as_bytes());
     SnapshotArtifact {
         id: format!("default/operation/{name}"),

@@ -17,7 +17,7 @@ use dsql_generate::publish::MatchLockMode;
 use dsql_generate::{ArtifactFamily, SnapshotArtifact};
 use dsql_metadata::OperationMetadata;
 use dsql_project::{Project, ProjectError, load_project_documents, open_analysis_bowl};
-use serde_json::Value;
+use facet_value::{VObject, Value};
 
 /// The command layer's error: each failure keeps its own type instead of
 /// being coerced into an unrelated project variant.
@@ -309,7 +309,7 @@ pub async fn operation_execute(
     let output = executor.execute_materialized(&materialized).await?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&output).map_err(|error| CliError::Json {
+        facet_json::to_string_pretty(&output).map_err(|error| CliError::Json {
             input: "operation output".to_string(),
             message: error.to_string(),
         })?
@@ -363,9 +363,9 @@ async fn json_input(
                 })?,
         )
     } else {
-        return Ok(serde_json::json!({}));
+        return Ok(VObject::new().into());
     };
-    serde_json::from_str(&raw).map_err(|error| CliError::Json {
+    facet_json::from_str(&raw).map_err(|error| CliError::Json {
         input,
         message: error.to_string(),
     })

@@ -501,11 +501,11 @@ dependencies = [
  "dsql-metadata",
  "dsql-project",
  "facet-json",
+ "facet-value",
  "indoc",
  "insta",
  "miette",
  "ropey",
- "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
@@ -544,6 +544,7 @@ dependencies = [
  "dsql-project",
  "facet",
  "facet-json",
+ "facet-value",
  "fd-lock",
  "insta",
  "thiserror",
@@ -556,8 +557,8 @@ version = "0.1.0"
 dependencies = [
  "dsql-metadata",
  "facet-json",
+ "facet-value",
  "insta",
- "serde_json",
  "sqlx",
  "sqlx-postgres",
  "thiserror",
@@ -852,6 +853,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23217da0c01b294462c439b81c586d26818bfcbe91a457672275706f31e043da"
 dependencies = [
  "facet-core",
+]
+
+[[package]]
+name = "facet-value"
+version = "0.50.0-rc.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfc5a08618f541594700de7dc032054e04368c06029682d61ab43683d18f5232"
+dependencies = [
+ "facet-core",
+ "facet-format",
+ "facet-reflect",
+ "indexmap",
 ]
 
 [[package]]
