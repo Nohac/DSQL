@@ -1074,7 +1074,7 @@ fn filter_expr(
 ) -> Result<Expr, SqlGenerationError> {
     let rendered = conditional_filter_expr(catalog, scope, filter, template)?;
     Ok(rendered.present.map_or(rendered.value.clone(), |present| {
-        not_expr(present).or(rendered.value)
+        value_or_absent(rendered.value, present)
     }))
 }
 
@@ -1133,19 +1133,18 @@ fn combine_conditional(
             },
             (None, Some(right_present)) => ConditionalFilter {
                 present: None,
-                value: left.value.and(not_expr(right_present).or(right.value)),
+                value: left.value.and(value_or_absent(right.value, right_present)),
             },
             (Some(left_present), None) => ConditionalFilter {
                 present: None,
-                value: not_expr(left_present).or(left.value).and(right.value),
+                value: value_or_absent(left.value, left_present).and(right.value),
             },
             (Some(left_present), Some(right_present)) => {
                 let present = left_present.clone().or(right_present.clone());
                 ConditionalFilter {
                     present: Some(present),
-                    value: not_expr(left_present)
-                        .or(left.value)
-                        .and(not_expr(right_present).or(right.value)),
+                    value: value_or_absent(left.value, left_present)
+                        .and(value_or_absent(right.value, right_present)),
                 }
             }
         }
@@ -1157,23 +1156,35 @@ fn combine_conditional(
             },
             (None, Some(right_present)) => ConditionalFilter {
                 present: None,
-                value: left.value.or(right_present.and(right.value)),
+                value: left.value.or(value_if_present(right.value, right_present)),
             },
             (Some(left_present), None) => ConditionalFilter {
                 present: None,
-                value: left_present.and(left.value).or(right.value),
+                value: value_if_present(left.value, left_present).or(right.value),
             },
             (Some(left_present), Some(right_present)) => {
                 let present = left_present.clone().or(right_present.clone());
                 ConditionalFilter {
                     present: Some(present),
-                    value: left_present
-                        .and(left.value)
-                        .or(right_present.and(right.value)),
+                    value: value_if_present(left.value, left_present)
+                        .or(value_if_present(right.value, right_present)),
                 }
             }
         }
     }
+}
+
+/// Renders the type-constraining value before its untyped presence guard.
+///
+/// PostgreSQL determines an external parameter's type from its first
+/// constraining occurrence, so `$1 IS NOT NULL OR column LIKE $1` cannot be
+/// prepared while `column LIKE $1 OR $1 IS NOT NULL` can.
+fn value_or_absent(value: Expr, present: Expr) -> Expr {
+    value.or(not_expr(present))
+}
+
+fn value_if_present(value: Expr, present: Expr) -> Expr {
+    value.and(present)
 }
 
 fn not_expr(expression: Expr) -> Expr {

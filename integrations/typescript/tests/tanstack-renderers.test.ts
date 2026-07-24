@@ -3,6 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import {
+  ModuleKind,
+  ModuleResolutionKind,
+  Project,
+  ScriptTarget,
+} from "ts-morph";
+import {
   projectRelative,
   reconcileDsqlOutputs,
   renderDsql,
@@ -103,7 +109,122 @@ test("tanstack start uses imported validator expressions when provided", async (
   );
   expect(operationSource).not.toContain("context.tenant_id");
   expect(operationSource).not.toContain("select * from movie_info");
+
+  assertGeneratedQueryConsumerTypes(root, querySource);
 });
+
+function assertGeneratedQueryConsumerTypes(
+  root: string,
+  querySource: string,
+): void {
+  const generatedDirectory = join(root, "src/generated/dsql");
+  writeFileSync(join(root, "runtime.ts"), readFileSync(
+    new URL("../src/runtime.ts", import.meta.url),
+    "utf8",
+  ));
+  writeFileSync(
+    join(root, "react-query.d.ts"),
+    `
+export type UseQueryOptions<Result, ErrorType, Selected, Key> = {};
+export type UseQueryResult<Result, ErrorType> = {};
+export function queryOptions<Options>(options: Options): Options;
+export function useQuery<Options>(options: Options): unknown;
+`,
+  );
+  writeFileSync(
+    join(generatedDirectory, "queries/index.ts"),
+    `
+import type { DsqlOperation } from "@dsql/typescript/runtime";
+export const MovieInfoLookupOperation =
+  {} as DsqlOperation<unknown, Record<string, never>, Record<string, never>, Record<string, never>>;
+`,
+  );
+  writeFileSync(
+    join(generatedDirectory, "tanstack-start.ts"),
+    `
+import type { DsqlOperation, DsqlVariables } from "@dsql/typescript/runtime";
+export type DsqlServerVariables<
+  Operation extends DsqlOperation<any, any, any, any>,
+> = DsqlVariables<Operation>;
+export const MovieInfoLookupServerFn = async () => undefined;
+`,
+  );
+  writeFileSync(join(generatedDirectory, "tanstack-query.ts"), querySource);
+  writeFileSync(
+    join(root, "consumer.ts"),
+    `
+import type { DsqlOperation } from "@dsql/typescript/runtime";
+import { executeQuery, useQuery } from "./src/generated/dsql/tanstack-query";
+
+declare const optionalOperation: DsqlOperation<
+  unknown,
+  { info?: string | null },
+  { search?: { term?: string | null } },
+  Record<string, never>
+>;
+useQuery(optionalOperation);
+useQuery(optionalOperation, {});
+useQuery(optionalOperation, { params: {} });
+useQuery(optionalOperation, { input: {} });
+executeQuery(optionalOperation);
+
+declare const requiredNullableOperation: DsqlOperation<
+  unknown,
+  { info: string | null },
+  Record<string, never>,
+  Record<string, never>
+>;
+// @ts-expect-error nullable without a default remains required
+useQuery(requiredNullableOperation);
+useQuery(requiredNullableOperation, { params: { info: null } });
+executeQuery(requiredNullableOperation, { params: { info: null } });
+
+declare const requiredOperation: DsqlOperation<
+  unknown,
+  { id: number },
+  Record<string, never>,
+  Record<string, never>
+>;
+// @ts-expect-error required public variables keep the options argument required
+useQuery(requiredOperation);
+useQuery(requiredOperation, { params: { id: 1 } });
+
+declare const contextOperation: DsqlOperation<
+  unknown,
+  { info?: string | null },
+  Record<string, never>,
+  { tenant_id?: string }
+>;
+// @ts-expect-error trusted context keeps the options argument required
+useQuery(contextOperation);
+// @ts-expect-error trusted context requires an explicit cache scope
+useQuery(contextOperation, {});
+useQuery(contextOperation, { contextScope: "tenant" });
+`,
+  );
+
+  const project = new Project({
+    compilerOptions: {
+      baseUrl: root,
+      exactOptionalPropertyTypes: true,
+      module: ModuleKind.ESNext,
+      moduleResolution: ModuleResolutionKind.Bundler,
+      paths: {
+        "@dsql/typescript/runtime": ["runtime.ts"],
+        "@tanstack/react-query": ["react-query.d.ts"],
+      },
+      strict: true,
+      target: ScriptTarget.ES2022,
+    },
+    skipAddingFilesFromTsConfig: true,
+  });
+  project.addSourceFileAtPath(join(root, "consumer.ts"));
+  expect(
+    project
+      .getPreEmitDiagnostics()
+      .map((diagnostic) => diagnostic.getMessageText()),
+  ).toEqual([]);
+}
 
 function createRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "dsql-tanstack-"));

@@ -7,6 +7,7 @@ import type { UseQueryOptions, UseQueryResult } from "@tanstack/react-query";
 import type {
   DsqlOperation,
   DsqlOperationResult,
+  DsqlVariables,
 } from "@dsql/typescript/runtime";
 import { dsqlQueryKey } from "@dsql/typescript/runtime";
 import type { DsqlServerVariables } from "./tanstack-start";
@@ -19,25 +20,13 @@ export type DsqlQueryVariables<
   readonly input: Input;
 };
 
-type DsqlOptionalParams<Params> =
-  [Params] extends [Record<string, never>]
-    ? { readonly params?: Params }
-    : { readonly params: Params };
-
-type DsqlOptionalInput<Input> =
-  [Input] extends [Record<string, never>]
-    ? { readonly input?: Input }
-    : { readonly input: Input };
-
 type DsqlVariableOptions<Params, Input> =
-  DsqlOptionalParams<Params> & DsqlOptionalInput<Input>;
+  DsqlVariables<DsqlOperation<unknown, Params, Input>>;
 
 type DsqlOptionsArgument<Params, Input, Context, Options> =
   [Context] extends [Record<string, never>]
-    ? [Params] extends [Record<string, never>]
-      ? [Input] extends [Record<string, never>]
-        ? readonly [options?: Options]
-        : readonly [options: Options]
+    ? {} extends DsqlVariableOptions<Params, Input>
+      ? readonly [options?: Options]
       : readonly [options: Options]
     : readonly [options: Options];
 

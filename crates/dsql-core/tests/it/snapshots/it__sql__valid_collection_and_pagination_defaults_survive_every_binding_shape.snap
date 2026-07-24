@@ -15,8 +15,8 @@ from
     from
       "public"."posts" as "posts_ed412d1c"
     where
-      (not ($1 is not null))
-      or ("posts_ed412d1c"."id" = ANY($1))
+      ("posts_ed412d1c"."id" = ANY($1))
+      or (not ($1 is not null))
     limit
       LEAST(COALESCE($2, 10), 10) offset $3
   ) as "posts_ed412d1c"

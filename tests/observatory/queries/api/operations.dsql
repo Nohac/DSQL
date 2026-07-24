@@ -63,6 +63,12 @@ query OptionalPredicateProbe($$minimum? = null) {
   }
 }
 
+query OptionalLikeProbe($$code?) {
+  sensors(where .code like $$code order by code asc limit 1) {
+    code
+  }
+}
+
 query EmptyAggregateCount {
   sensors(where .code == "humidity"
     and (.readings | count) == 0

@@ -15,8 +15,8 @@ from
     from
       "public"."users" as "direct_664e5a81"
     where
-      (not ($1 is not null))
-      or "direct_664e5a81"."id" = ($1)
+      "direct_664e5a81"."id" = ($1)
+      or (not ($1 is not null))
     limit
       10
   ) as "direct_664e5a81"
@@ -38,9 +38,11 @@ from
       "public"."users" as "multiple_21425244"
     where
       (
-        ($1 is not null)
-        and ($2 is not null)
-        and ($1) = ($2)
+        ($1) = ($2)
+        and (
+          ($1 is not null)
+          and ($2 is not null)
+        )
       )
       or "multiple_21425244"."name" = 'fallback'
     limit
@@ -61,12 +63,54 @@ from
     from
       "public"."users" as "negated_a22fcfea"
     where
-      (not ($1 is not null))
-      or (not (($1) = "negated_a22fcfea"."id"))
+      (not (($1) = "negated_a22fcfea"."id"))
+      or (not ($1 is not null))
     limit
       10
   ) as "negated_a22fcfea"
 -- parameters: params.id
+
+-- pattern
+select
+  COALESCE(
+    JSON_AGG(JSON_BUILD_OBJECT('id', "pattern_d803321a"."id")),
+    '[]'
+  ) as "pattern"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "pattern_d803321a"
+    where
+      ("pattern_d803321a"."name" like $1)
+      or (not ($1 is not null))
+    limit
+      10
+  ) as "pattern_d803321a"
+-- parameters: params.name
+
+-- required_pattern
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT('id', "required_pattern_aaf880a8"."id")
+    ),
+    '[]'
+  ) as "required_pattern"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "required_pattern_aaf880a8"
+    where
+      ("required_pattern_aaf880a8"."name" like $1)
+      or (not ($1 is not null))
+    limit
+      10
+  ) as "required_pattern_aaf880a8"
+-- parameters: params.required_name
 
 -- reversed
 select
@@ -84,8 +128,8 @@ from
       "public"."users" as "reversed_be149a76"
     where
       (
-        ($1 is not null)
-        and ($1) = "reversed_be149a76"."id"
+        ($1) = "reversed_be149a76"."id"
+        and ($1 is not null)
       )
       or "reversed_be149a76"."name" = 'fallback'
     limit
@@ -107,19 +151,19 @@ from
       "public"."users" as "seed_3acba0f5"
     where
       (
-        not (
-          ($1 is not null)
-          or ($2 is not null)
+        (
+          "seed_3acba0f5"."id" = ($1)
+          or (not ($1 is not null))
+        )
+        and (
+          "seed_3acba0f5"."id" = ($2)
+          or (not ($2 is not null))
         )
       )
       or (
-        (
-          (not ($1 is not null))
-          or "seed_3acba0f5"."id" = ($1)
-        )
-        and (
-          (not ($2 is not null))
-          or "seed_3acba0f5"."id" = ($2)
+        not (
+          ($1 is not null)
+          or ($2 is not null)
         )
       )
     limit

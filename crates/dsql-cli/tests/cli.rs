@@ -222,6 +222,7 @@ fn observatory_operation_list_exposes_importing_scopes() {
             "api\tMissingFlattened",
             "api\tNamespacedSensorWindow",
             "api\tNetworkTopology",
+            "api\tOptionalLikeProbe",
             "api\tOptionalPredicateProbe",
             "api\tPrivacyProbe",
             "api\tRecentReadings",
@@ -446,6 +447,26 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     assert_eq!(
         observatory_root_reading_ids(&optional_present),
         [4, 8, 10, 12]
+    );
+
+    let optional_like = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "OptionalLikeProbe",
+        &[
+            "--variables",
+            r#"{"params":{"code":null}}"#,
+            "--context",
+            tenant,
+        ],
+    );
+    assert_eq!(
+        string(field(
+            field(&output_json(&optional_like), "sensors"),
+            "code"
+        )),
+        "humidity"
     );
 
     for operation in [

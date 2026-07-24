@@ -5,7 +5,7 @@ use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand, VariablesDemand};
 use dsql_core::language_bowl;
-use dsql_core::source::insert_source;
+use dsql_core::source::{insert_embedding_source, insert_source};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 
 use crate::{fixture, imdb_catalog, numeric_catalog, render_diagnostic_facts, set_source_text};
@@ -192,9 +192,15 @@ async fn nullable_predicate_operands_wrap_complete_atoms_in_every_order() {
             query OptionalAtoms(
               $$id? = null
               $$left? = null
+              $$name? = null
+              $$required_name?
               $$right? = null
             ) {
               direct: public::users(where .id == $$id) { id }
+              pattern: public::users(where .name like $$name) { id }
+              required_pattern: public::users(
+                where .name like $$required_name
+              ) { id }
               seed: public::users(where .id == $$left and .id == $$right) { id }
               reversed: public::users(
                 where $$id == .id or .name == "fallback"
@@ -203,6 +209,103 @@ async fn nullable_predicate_operands_wrap_complete_atoms_in_every_order() {
                 where $$left == $$right or .name == "fallback"
               ) { id }
               negated: public::users(where not ($$id == .id)) { id }
+            }
+        "#},
+    )
+    .await;
+
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn featured_movie_optional_like_sql_is_typed_before_its_presence_guard() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+    insert_source(
+        &bowl,
+        "hero-panel.dsql",
+        indoc::indoc! {r#"
+            fragment HeroPanelFields on title {
+              id
+              title
+            }
+        "#},
+    )
+    .await;
+    insert_embedding_source(
+        &bowl,
+        "FeaturedMovie.tsx",
+        indoc::indoc! {r#"
+            export const FeaturedMovieQuery = dsql(`
+            query FeaturedMovieQuery(
+              $$info?
+            ) {
+              featured: movie_info_idx(where .info_type_id == 101
+                and .info like $$
+                and .title.kind_id == 1
+                and .title.movie_info_idx.info_type_id == 100
+                order by info desc, id asc limit 1
+              ) {
+                ...title {
+                  ...HeroPanelFields
+                }
+              }
+            }
+            `);
+
+            export function FeaturedMovie() {
+              return useQuery(FeaturedMovieQuery);
+            }
+        "#},
+        "typescript",
+    )
+    .await;
+
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn nested_optional_predicate_trees_keep_parameters_typed() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+    insert_source(
+        &bowl,
+        "nested-optional-predicates.dsql",
+        indoc::indoc! {r#"
+            query NestedOptionalPredicates(
+              $$user_name? = null
+              $$post_title? = null
+              $$author_name? = null
+              $$minimum_id? = null
+              $$maximum_id? = null
+            ) {
+              public::users(
+                where (
+                  .name like $$user_name
+                  or not (.id >= $$minimum_id and .id <= $$maximum_id)
+                ) and (
+                  .posts.title like $$post_title
+                  or .posts.users.name like $$author_name
+                )
+              ) {
+                id
+                posts(
+                  where (
+                    .title like $$post_title
+                    and .users.name like $$author_name
+                  ) or not (
+                    .users.id >= $$minimum_id
+                    and .users.id <= $$maximum_id
+                  )
+                ) {
+                  id
+                  title
+                }
+              }
             }
         "#},
     )

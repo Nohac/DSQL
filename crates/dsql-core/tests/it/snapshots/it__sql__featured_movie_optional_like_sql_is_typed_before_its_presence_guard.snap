@@ -1,0 +1,69 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- featured
+select
+  "dsql_root"."featured" as "featured"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'id',
+        "title_json_5b451f07"."id",
+        'title',
+        "title_json_5b451f07"."title"
+      ) as "featured"
+    from
+      "public"."movie_info_idx" as "featured_faaf6fb1"
+      left join LATERAL (
+        select
+          "title_5b451f07"."id" as "id",
+          "title_5b451f07"."title" as "title"
+        from
+          "public"."title" as "title_5b451f07"
+        where
+          "title_5b451f07"."id" = "featured_faaf6fb1"."movie_id"
+      ) as "title_json_5b451f07" on true
+    where
+      "featured_faaf6fb1"."info_type_id" = 101
+      and (
+        ("featured_faaf6fb1"."info" like $1)
+        or (not ($1 is not null))
+      )
+      and exists (
+        select
+          1
+        from
+          "public"."title" as "title_1ff2a09c"
+        where
+          "title_1ff2a09c"."id" = "featured_faaf6fb1"."movie_id"
+          and "title_1ff2a09c"."kind_id" = 1
+      )
+      and exists (
+        select
+          1
+        from
+          "public"."title" as "title_1ff2a09c"
+        where
+          "title_1ff2a09c"."id" = "featured_faaf6fb1"."movie_id"
+          and exists (
+            select
+              1
+            from
+              "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+            where
+              "movie_info_idx_15314ac3"."movie_id" = "title_1ff2a09c"."id"
+              and "movie_info_idx_15314ac3"."info_type_id" = 100
+          )
+      )
+    order by
+      "featured_faaf6fb1"."info" desc,
+      "featured_faaf6fb1"."id" asc
+    limit
+      1
+  ) as "dsql_root" on true
+-- parameters: params.info

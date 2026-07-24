@@ -233,6 +233,21 @@ test("rejects invalid envelopes, unused required fields, and context defaults", 
       {},
     ),
   ).toThrow("missing dsql input at params.unused");
+  const requiredNullable = {
+    path: "params.info",
+    data_type: "text",
+    required: true,
+    nullable: true,
+  } as const;
+  expect(
+    materializeDsqlBindings(
+      [requiredNullable],
+      { params: { info: null } },
+    ),
+  ).toEqual({ params: { info: null } });
+  expect(() =>
+    materializeDsqlBindings([requiredNullable], { params: {} }),
+  ).toThrow("missing dsql input at params.info");
   expect(() =>
     materializeDsqlBindings(
       [

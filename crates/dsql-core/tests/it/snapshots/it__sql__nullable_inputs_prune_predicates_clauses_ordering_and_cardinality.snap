@@ -25,35 +25,33 @@ from
       "public"."users" as "users_99fc7350"
     where
       (
-        not (
-          ($1 is not null)
-          or (
-            ($2 is not null)
-            or ($3 is not null)
-          )
-        )
-      )
-      or (
         (
-          (not ($1 is not null))
-          or "users_99fc7350"."id" = ($1)
+          "users_99fc7350"."id" = ($1)
+          or (not ($1 is not null))
         )
         and (
           (
+            "users_99fc7350"."id" >= ($2)
+            and ($2 is not null)
+          )
+          or (
+            (not ("users_99fc7350"."id" <= ($3)))
+            and ($3 is not null)
+          )
+          or (
             not (
               ($2 is not null)
               or ($3 is not null)
             )
           )
+        )
+      )
+      or (
+        not (
+          ($1 is not null)
           or (
-            (
-              ($2 is not null)
-              and "users_99fc7350"."id" >= ($2)
-            )
-            or (
-              ($3 is not null)
-              and (not ("users_99fc7350"."id" <= ($3)))
-            )
+            ($2 is not null)
+            or ($3 is not null)
           )
         )
       )
