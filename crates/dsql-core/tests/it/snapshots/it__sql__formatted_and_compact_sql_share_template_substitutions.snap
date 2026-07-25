@@ -1,0 +1,40 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql_forms(&bowl).await
+---
+-- formatted
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'id',
+        "users_99fc7350"."id",
+        'name',
+        "users_99fc7350"."name"
+      )
+      order by
+        case
+          when '{{params.direction}}' = 'asc' then "users_99fc7350"."id"
+        end asc,
+        case
+          when '{{params.direction}}' = 'desc' then "users_99fc7350"."id"
+        end desc
+    ),
+    '[]'
+  ) as "users"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "users_99fc7350"
+    where
+      "users_99fc7350"."id" >= ($1)
+    order by
+      "users_99fc7350"."id" {{params.direction}}
+    limit
+      LEAST(COALESCE($2, 10), 10)
+  ) as "users_99fc7350"
+
+-- compact
+SELECT COALESCE(JSON_AGG(JSON_BUILD_OBJECT('id', "users_99fc7350"."id", 'name', "users_99fc7350"."name") ORDER BY CASE WHEN '{{params.direction}}' = 'asc' THEN "users_99fc7350"."id" END ASC, CASE WHEN '{{params.direction}}' = 'desc' THEN "users_99fc7350"."id" END DESC), '[]') AS "users" FROM (SELECT * FROM "public"."users" AS "users_99fc7350" WHERE "users_99fc7350"."id" >= ($1) ORDER BY "users_99fc7350"."id" {{params.direction}} LIMIT LEAST(COALESCE($2, 10), 10)) AS "users_99fc7350"

@@ -5,6 +5,7 @@ import {
   renderDsql,
   type BuildArtifacts,
   type DsqlDesiredFile,
+  type DsqlOutputMode,
   type DsqlRenderer,
   type DsqlRendererContext,
   type DsqlRenderModule,
@@ -51,6 +52,7 @@ export type DsqlProjectGeneratorContext<Target extends string = string> = {
   readonly definitions: DsqlDefinitionOutput;
   readonly mode: string;
   readonly command: "serve" | "build";
+  readonly outputMode: DsqlOutputMode;
 };
 
 export type DsqlProjectGenerator<Target extends string = string> = {
@@ -186,6 +188,7 @@ export function typescriptDefinitions(
         queriesDir,
         ...(executionDir ? { executionDir } : {}),
         embeddedSources: context.embeddedSources,
+        outputMode: context.outputMode,
       });
       for (const file of rendered.files) {
         const path = normalizeRelativePath(
@@ -258,6 +261,7 @@ function createProjectRenderer<
               definitions,
               mode: context.mode,
               command: context.command,
+              outputMode: context.outputMode,
             });
           } catch (error) {
             throw new Error(

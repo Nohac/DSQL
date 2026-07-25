@@ -122,7 +122,10 @@ pub struct FragmentSpreadMetadata {
 #[derive(Clone, Debug, Facet)]
 pub struct SqlMetadata {
     pub dialect: String,
+    /// Human-readable SQL formatted for diagnostics and development output.
     pub text: String,
+    /// Semantically identical single-line SQL for compact generated output.
+    pub compact_text: String,
     pub parameters: Vec<SqlParameterMetadata>,
     pub variants: Vec<SqlVariantMetadata>,
 }

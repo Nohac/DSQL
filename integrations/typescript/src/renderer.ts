@@ -16,3 +16,4 @@ export type {
   DsqlTargetOutput,
   TypeScriptDefinitionsOptions,
 } from "./project.ts";
+export type { DsqlOutputMode } from "./node.ts";

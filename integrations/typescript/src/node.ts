@@ -338,6 +338,9 @@ export type DsqlRenderer = {
   render(context: DsqlRendererContext): Promise<DsqlRenderMap>;
 };
 
+/** Generated-source presentation selected by the host integration. */
+export type DsqlOutputMode = "readable" | "compact";
+
 export type DsqlRendererContext = {
   readonly projectBase: string;
   /** The full compile result, verbatim. */
@@ -349,6 +352,7 @@ export type DsqlRendererContext = {
   readonly embeddedSources: ReadonlyMap<string, string>;
   readonly mode: string;
   readonly command: "serve" | "build";
+  readonly outputMode: DsqlOutputMode;
 };
 
 export type DsqlRenderModule = {
@@ -577,7 +581,10 @@ export async function renderDsqlCompileResult(
   options: {
     readonly projectBase: string;
     readonly refresh: (paths: readonly string[]) => Promise<DsqlCompileResult>;
-    readonly environment: () => Pick<DsqlRendererContext, "mode" | "command">;
+    readonly environment: () => Pick<
+      DsqlRendererContext,
+      "mode" | "command" | "outputMode"
+    >;
   },
 ): Promise<{
   readonly result: DsqlCompileResult;
@@ -669,6 +676,8 @@ export async function runDsqlRendererFromProject(
     readonly root?: string;
     readonly daemon?: DsqlDaemonOptions;
     readonly mode?: string;
+    /** Generated-source presentation; defaults to readable. */
+    readonly outputMode?: DsqlOutputMode;
     /** Enforce the project's `dsql.lock` for this one-shot run. */
     readonly locked?: boolean;
   } = {},
@@ -689,6 +698,7 @@ export async function runDsqlRendererFromProject(
       environment: () => ({
         mode: options.mode ?? process.env.NODE_ENV ?? "production",
         command: "build",
+        outputMode: options.outputMode ?? "readable",
       }),
     });
     return rendered.renderMap;

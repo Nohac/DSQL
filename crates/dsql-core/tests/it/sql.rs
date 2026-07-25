@@ -71,6 +71,23 @@ async fn render_sql(bowl: &Bowl) -> String {
         .join("\n\n")
 }
 
+async fn render_sql_forms(bowl: &Bowl) -> String {
+    let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+    let mut generated: Vec<&GeneratedSqlFact> =
+        rows.collect().into_iter().map(|(_, fact)| fact).collect();
+    generated.sort_by(|left, right| left.0.operation_name.cmp(&right.0.operation_name));
+    generated
+        .into_iter()
+        .map(|fact| {
+            format!(
+                "-- formatted\n{}\n\n-- compact\n{}",
+                fact.0.sql, fact.0.compact_sql
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 async fn fixture_sql(name: &str) -> String {
     let bowl = sql_bowl(imdb_catalog()).await;
     insert_source(&bowl, name, &fixture(name)).await;
@@ -149,6 +166,30 @@ async fn variables_render_as_parameters_and_variants() {
         .await;
 
     insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn formatted_and_compact_sql_share_template_substitutions() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "output-modes.dsql",
+        indoc::indoc! {r#"
+            query OutputModes {
+              public::users(
+                where .id >= $$minimum
+                order by id $$direction[asc, desc]
+                limit $$limit
+              ) {
+                id
+                name
+              }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql_forms(&bowl).await);
 }
 
 #[tokio::test]

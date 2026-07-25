@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import ts from "typescript";
 import type {
   FragmentMetadata,
   FragmentSpreadMetadata,
@@ -9,6 +10,7 @@ import type {
   ResultField,
 } from "../generated/metadata.ts";
 import type { BuildArtifacts } from "../node.ts";
+import type { DsqlOutputMode } from "../node.ts";
 
 export type RenderDsqlOptions = {
   readonly root: string;
@@ -25,6 +27,8 @@ export type RenderDsqlOptions = {
    * `DsqlSourceRegistry` augmentation keyed by that content.
    */
   readonly embeddedSources?: ReadonlyMap<string, string>;
+  /** Generated-source presentation; defaults to readable. */
+  readonly outputMode?: DsqlOutputMode;
 };
 
 export type DsqlRenderedFile = {
@@ -137,6 +141,7 @@ export async function renderDsql(
       operationPath,
       renderOperationModule(artifacts, operation, {
         includeExecutionPayload: executionDir === undefined,
+        outputMode: options.outputMode ?? "readable",
         embeddedSource: options.embeddedSources?.get(
           artifactKey("operation", operation.name),
         ),
@@ -149,6 +154,7 @@ export async function renderDsql(
         executionPath,
         renderOperationExecutionModule(operation, {
           operationImport: relativeModuleSpecifier(executionPath, operationPath),
+          outputMode: options.outputMode ?? "readable",
         }),
       );
       executionExports.push(exportStatement(plan.fileStem));
@@ -213,6 +219,7 @@ function renderOperationModule(
   operation: OperationMetadata,
   options: {
     readonly includeExecutionPayload: boolean;
+    readonly outputMode: DsqlOutputMode;
     readonly embeddedSource?: string | undefined;
   },
 ): string {
@@ -266,6 +273,7 @@ function renderOperationModule(
       "",
       renderExecutionPayload(operation, `${name}Operation`, {
         exportedName: `${name}ExecutionPayload`,
+        outputMode: options.outputMode,
       }),
     );
   }
@@ -321,6 +329,7 @@ function renderOperationExecutionModule(
   operation: OperationMetadata,
   options: {
     readonly operationImport: string;
+    readonly outputMode: DsqlOutputMode;
   },
 ): string {
   const name = toPascalCase(operation.name);
@@ -330,6 +339,7 @@ function renderOperationExecutionModule(
     "",
     renderExecutionPayload(operation, `${name}Operation`, {
       exportedName: `${name}ExecutionPayload`,
+      outputMode: options.outputMode,
     }),
     "",
   ].join("\n");
@@ -340,15 +350,39 @@ function renderExecutionPayload(
   operationValue: string,
   options: {
     readonly exportedName: string;
+    readonly outputMode: DsqlOutputMode;
   },
 ): string {
+  const sql =
+    options.outputMode === "compact"
+      ? JSON.stringify(operation.sql.compact_text)
+      : typescriptTemplateLiteral(operation.sql.text);
   return `export const ${options.exportedName}: DsqlExecutionPayload<typeof ${operationValue}> = {
   operation: ${operationValue},
-  sql: ${JSON.stringify(operation.sql.text)},
   parameters: ${JSON.stringify(operation.sql.parameters)},
   variants: ${JSON.stringify(sqlVariants(operation))},
-  inputs: ${JSON.stringify([...operation.params, ...operation.input, ...operation.context])}
+  inputs: ${JSON.stringify([...operation.params, ...operation.input, ...operation.context])},
+  sql: ${sql}
 };`;
+}
+
+const TYPESCRIPT_PRINTER = ts.createPrinter({
+  newLine: ts.NewLineKind.LineFeed,
+});
+const TYPESCRIPT_SOURCE_FILE = ts.createSourceFile(
+  "generated.ts",
+  "",
+  ts.ScriptTarget.Latest,
+  false,
+  ts.ScriptKind.TS,
+);
+
+function typescriptTemplateLiteral(value: string): string {
+  return TYPESCRIPT_PRINTER.printNode(
+    ts.EmitHint.Expression,
+    ts.factory.createNoSubstitutionTemplateLiteral(value),
+    TYPESCRIPT_SOURCE_FILE,
+  );
 }
 
 function renderFragmentModule(

@@ -59,7 +59,13 @@ function resultFor(
   const operation = {
     name: "TitlePanel",
     kind: "query",
-    sql: { dialect: "postgres", text: "select 1", parameters: [], variants: [] },
+    sql: {
+      dialect: "postgres",
+      text: "select\n  1",
+      compact_text: "select 1",
+      parameters: [],
+      variants: [],
+    },
     result: { fields: [] },
     params: [],
     input: [],
@@ -164,6 +170,7 @@ function harness(
     readonly command?: "build" | "serve";
     readonly locked?: boolean | "build";
     readonly lockAlreadyPresent?: boolean;
+    readonly outputMode?: "readable" | "compact" | "auto";
   } = {},
 ): Harness {
   const base = mkdtempSync(join(tmpdir(), "dsql-vite-test-"));
@@ -220,6 +227,9 @@ function harness(
     daemon: { command: "bun", args: daemonArgs, cwd: base },
     fullReload: false,
     ...(options.locked === undefined ? {} : { locked: options.locked }),
+    ...(options.outputMode === undefined
+      ? {}
+      : { outputMode: options.outputMode }),
   });
   const fakeConfig = {
     root: base,
@@ -370,6 +380,25 @@ test("production builds enforce the match lock by default", async () => {
   await transform(production, HOST);
   expect(production.daemonArgs()).toEqual(["--locked"]);
   await production.plugin.closeBundle?.();
+}, 30_000);
+
+test("output mode defaults by command and accepts an explicit override", async () => {
+  const development = harness(lockSteps);
+  await transform(development, HOST);
+  expect(development.renders[0]?.outputMode).toBe("readable");
+
+  const production = harness(lockSteps, HOST, HOST_PATH, { command: "build" });
+  await transform(production, HOST);
+  expect(production.renders[0]?.outputMode).toBe("compact");
+  await production.plugin.closeBundle?.();
+
+  const readableBuild = harness(lockSteps, HOST, HOST_PATH, {
+    command: "build",
+    outputMode: "readable",
+  });
+  await transform(readableBuild, HOST);
+  expect(readableBuild.renders[0]?.outputMode).toBe("readable");
+  await readableBuild.plugin.closeBundle?.();
 }, 30_000);
 
 test("production lock enforcement can be disabled", async () => {

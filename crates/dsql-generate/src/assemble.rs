@@ -75,6 +75,7 @@ pub(crate) fn operation_metadata(
         sql: SqlMetadata {
             dialect: SqlDialect::Postgres.as_ref().to_string(),
             text: inputs.sql.sql.clone(),
+            compact_text: inputs.sql.compact_sql.clone(),
             parameters: inputs
                 .sql
                 .parameters

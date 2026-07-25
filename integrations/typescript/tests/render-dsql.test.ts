@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
+import ts from "typescript";
 import {
   projectRelative,
   reconcileDsqlOutputs,
@@ -103,6 +104,55 @@ test("renders inline per-definition dsql modules", async () => {
   );
 });
 
+test("renders readable SQL with compiler-owned escaping and compact SQL on request", async () => {
+  const readableRoot = createRoot();
+  const readableSql =
+    "select `value`, '${binding}', E'path\\\\file'\r\n-- \u2028\u2029\0";
+  const compactSql = "select `value`,'${binding}',E'path\\\\file'";
+  const operation = {
+    ...operationMetadata("SqlPresentation"),
+    sql: {
+      dialect: "postgres",
+      text: readableSql,
+      compact_text: compactSql,
+      parameters: [],
+      variants: [],
+    },
+  };
+  const readableArtifacts = artifactsWithOperation(readableRoot, operation);
+
+  await renderDsql(readableArtifacts, {
+    root: readableRoot,
+    queriesDir: "src/generated/dsql/queries",
+    outputMode: "readable",
+  });
+  const readableSource = readFileSync(
+    join(readableRoot, "src/generated/dsql/queries/SqlPresentation.ts"),
+    "utf8",
+  );
+  expect(readableSource.indexOf("inputs:")).toBeLessThan(
+    readableSource.indexOf("sql:"),
+  );
+  expect(readableSource).toContain("sql: `");
+  const readableModule = await evaluateGeneratedModule(readableSource);
+  expect(readableModule.SqlPresentationExecutionPayload?.sql).toBe(readableSql);
+
+  const compactRoot = createRoot();
+  const compactArtifacts = artifactsWithOperation(compactRoot, operation);
+  await renderDsql(compactArtifacts, {
+    root: compactRoot,
+    queriesDir: "src/generated/dsql/queries",
+    outputMode: "compact",
+  });
+  const compactSource = readFileSync(
+    join(compactRoot, "src/generated/dsql/queries/SqlPresentation.ts"),
+    "utf8",
+  );
+  expect(compactSource).toContain(`sql: ${JSON.stringify(compactSql)}`);
+  const compactModule = await evaluateGeneratedModule(compactSource);
+  expect(compactModule.SqlPresentationExecutionPayload?.sql).toBe(compactSql);
+});
+
 test("renders exact numeric and finite/non-finite float wire types", async () => {
   const root = createRoot();
   const operation = {
@@ -193,6 +243,7 @@ test("renders defaulted and nullable inputs as optional TypeScript properties", 
     sql: {
       dialect: "postgres",
       text: "select * from movie_info limit $1",
+      compact_text: "select * from movie_info limit $1",
       parameters: [{ path: "params.limit" }],
       variants: [],
     },
@@ -905,6 +956,34 @@ function createArtifacts(
   };
 }
 
+function artifactsWithOperation(
+  root: string,
+  operation: BuildArtifacts["operations"][number],
+): BuildArtifacts {
+  const artifacts = createArtifacts(root, { operationNames: [operation.name] });
+  return {
+    ...artifacts,
+    operations: [operation],
+    operationsByName: new Map([[operation.name, operation]]),
+  };
+}
+
+async function evaluateGeneratedModule(
+  source: string,
+): Promise<Record<string, { readonly sql?: string } | undefined>> {
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const encoded = Buffer.from(output, "utf8").toString("base64");
+  return (await import(`data:text/javascript;base64,${encoded}`)) as Record<
+    string,
+    { readonly sql?: string } | undefined
+  >;
+}
+
 function operationMetadata(name: string): BuildArtifacts["operations"][number] {
   return {
     name,
@@ -912,6 +991,7 @@ function operationMetadata(name: string): BuildArtifacts["operations"][number] {
     sql: {
       dialect: "postgres",
       text: "select * from movie_info where id = $1 and user_id = $2",
+      compact_text: "select * from movie_info where id = $1 and user_id = $2",
       parameters: [{ path: "params.id" }, { path: "context.user_id" }],
       variants: [],
     },

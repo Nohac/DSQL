@@ -175,7 +175,11 @@ test("compiler contract mismatch fails before rendering or publishing", async ()
     renderDsqlCompileResult(renderer, result, {
       projectBase: root,
       refresh: async () => result,
-      environment: () => ({ mode: "test", command: "build" }),
+      environment: () => ({
+        mode: "test",
+        command: "build",
+        outputMode: "readable",
+      }),
     }),
   ).rejects.toThrow("run `dsql project sync`");
   expect(rendered).toBe(false);
@@ -199,7 +203,11 @@ test("a daemon without project contracts requires an upgrade, not project sync",
     renderDsqlCompileResult(renderer, result, {
       projectBase: "/tmp/project",
       refresh: async () => result,
-      environment: () => ({ mode: "test", command: "build" }),
+      environment: () => ({
+        mode: "test",
+        command: "build",
+        outputMode: "readable",
+      }),
     }),
   ).rejects.toThrow("upgrade or restart the dsql daemon");
 });
@@ -285,6 +293,7 @@ function rendererContext(
     embeddedSources: new Map(),
     mode: "test",
     command: "build",
+    outputMode: "readable",
   };
 }
 
@@ -343,6 +352,7 @@ function operationMetadata(): BuildArtifacts["operations"][number] {
     sql: {
       dialect: "postgres",
       text: "select 1",
+      compact_text: "select 1",
       parameters: [],
       variants: [],
     },

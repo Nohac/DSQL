@@ -161,7 +161,10 @@ export interface ResultField {
 
 export interface SqlMetadata {
   dialect: string;
+  /** Human-readable SQL formatted for diagnostics and development output. */
   text: string;
+  /** Semantically identical single-line SQL for compact generated output. */
+  compact_text: string;
   parameters: SqlParameterMetadata[];
   variants: SqlVariantMetadata[];
 }

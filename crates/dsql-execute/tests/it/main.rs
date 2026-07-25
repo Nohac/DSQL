@@ -30,6 +30,7 @@ fn operation() -> OperationMetadata {
         sql: SqlMetadata {
             dialect: "postgres".to_string(),
             text: "select $1, $2, $3 order by recorded_at {{params.direction}}".to_string(),
+            compact_text: "select $1, $2, $3 order by recorded_at {{params.direction}}".to_string(),
             parameters: ["params.station", "input.readings.ids", "context.tenant_id"]
                 .map(|path| SqlParameterMetadata {
                     path: path.to_string(),
@@ -77,6 +78,7 @@ fn operation_with_fields(params: Vec<InputField>, parameters: &[&str]) -> Operat
         sql: SqlMetadata {
             dialect: "postgres".to_string(),
             text: "select $1".to_string(),
+            compact_text: "select $1".to_string(),
             parameters: parameters
                 .iter()
                 .map(|path| SqlParameterMetadata {

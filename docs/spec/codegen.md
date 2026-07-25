@@ -564,6 +564,23 @@ execution payload data. Framework adapters import public operation handles from
 the query barrel and execution payloads only from the protected execution
 surface.
 
+Host integrations select a generated-source presentation mode and pass it
+through the renderer context:
+
+- `readable` emits formatted SQL as a TypeScript template literal. The
+  TypeScript printer owns literal escaping, and evaluating the generated module
+  must recover the metadata text byte-for-byte.
+- `compact` emits the compiler's semantically identical single-line SQL as a
+  JSON string literal.
+
+The compiler derives both forms from one SQL statement and publishes them as
+`sql.text` and `sql.compact_text`; presentation never changes operation
+identity, parameter ordering, variants, manifests, or owned output paths.
+Vite's `outputMode: "auto"` default selects `readable` while serving and
+`compact` while building. An explicit mode applies to both commands. Projects
+that commit generated output should pin one mode to avoid serve/build-only
+file churn.
+
 Generated query barrels should export the `dsql` helper, public runtime types,
 and every per-definition module so source-string typing is visible from one
 import.
@@ -734,6 +751,12 @@ Possible high-level shape:
 The metadata does not need to mirror the internal compiler IR. It should be a
 consumer-friendly contract for generated clients, endpoint adapters, validation,
 debug tooling, and editor features.
+
+Before the first public release, manifest version 2 is a compiler-package
+contract rather than a backwards-compatible interchange promise: maintained
+compiler, daemon, and renderer components move together, and a required metadata
+addition causes artifacts to be regenerated. Compatibility readers must not
+silently synthesize missing execution data.
 
 Useful metadata areas:
 

@@ -45,6 +45,7 @@ test("tanstack start uses imported validator expressions when provided", async (
     definitions: { current: dsql },
     mode: "test",
     command: "build",
+    outputMode: "readable",
   };
   await tanstackStart({
     validatorFor(operation) {
@@ -274,6 +275,7 @@ function operationMetadata(): BuildArtifacts["operations"][number] {
     sql: {
       dialect: "postgres",
       text: "select * from movie_info where id = $1",
+      compact_text: "select * from movie_info where id = $1",
       parameters: [{ path: "params.id" }],
       variants: [],
     },

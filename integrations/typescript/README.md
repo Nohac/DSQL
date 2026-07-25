@@ -304,9 +304,21 @@ import { dsql } from "@dsql/typescript/vite";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  plugins: [dsql({ renderer })],
+  plugins: [
+    dsql({
+      renderer,
+      outputMode: "auto",
+    }),
+  ],
 });
 ```
+
+`outputMode` accepts `"readable"`, `"compact"`, or `"auto"` (the default).
+Automatic mode writes formatted SQL template literals during `vite serve` and
+single-line JSON string literals during `vite build`. Pin either explicit mode
+when generated output is tracked so serving and building do not rewrite it in
+different presentations. The one-shot runner defaults to readable output and
+accepts the same explicit `"readable"` or `"compact"` selection.
 
 The plugin must run before source-altering transforms (`enforce: "pre"`
 is set by the plugin itself): expression ranges apply to the raw file

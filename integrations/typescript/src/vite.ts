@@ -13,6 +13,7 @@ import {
   projectRelative,
   renderDsqlCompileResult,
   sha256Hex,
+  type DsqlOutputMode,
   type DsqlRenderer,
   type DsqlRenderMap,
   type DsqlRenderModule,
@@ -31,6 +32,9 @@ export type DsqlVitePluginOptions = {
   /** Enforce `dsql.lock`: always, never, or only for production builds
    * (default `"build"`). */
   readonly locked?: boolean | "build";
+  /** Generated-source presentation. `"auto"` (the default) uses readable
+   * output while serving and compact output for builds. */
+  readonly outputMode?: DsqlOutputMode | "auto";
 };
 
 type CompileOutcome =
@@ -129,6 +133,13 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
   };
 
   const projectBase = () => ensureClient().info?.projectBase ?? projectRoot();
+
+  const outputMode = (): DsqlOutputMode => {
+    if (options.outputMode && options.outputMode !== "auto") {
+      return options.outputMode;
+    }
+    return (env?.command ?? config?.command) === "build" ? "compact" : "readable";
+  };
 
   const surfaceError = (error: Error): void => {
     lastError = error;
@@ -246,6 +257,7 @@ export function dsql(options: DsqlVitePluginOptions): Plugin {
           mode: env?.mode ?? config?.mode ?? "development",
           command:
             (env?.command ?? config?.command) === "build" ? "build" : "serve",
+          outputMode: outputMode(),
         }),
       },
     );
@@ -525,6 +537,6 @@ function renderDiagnostic(diagnostic: DsqlDiagnostic, projectBase?: string): str
   );
 }
 
-export type { DsqlRenderer, DsqlRenderMap } from "./node.ts";
+export type { DsqlOutputMode, DsqlRenderer, DsqlRenderMap } from "./node.ts";
 export { DsqlDaemonError } from "./daemon.ts";
 export { DsqlRewriteError } from "./rewrite.ts";

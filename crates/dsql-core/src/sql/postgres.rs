@@ -17,7 +17,10 @@ use thiserror::Error;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GeneratedSql {
     pub operation_name: String,
+    /// Human-readable SQL formatted for diagnostics and development output.
     pub sql: String,
+    /// Semantically identical single-line SQL for compact generated output.
+    pub compact_sql: String,
     pub parameters: Vec<GeneratedSqlParameter>,
     /// Trusted policy context reached while rendering readable-view guards.
     pub policy_context: Vec<PolicyContextRequirement>,
@@ -195,10 +198,13 @@ impl SqlTemplateContext {
         cases: &[SqlVariantCase],
     ) {
         let placeholder = self.variant(path, cases);
-        self.replacements.push((
-            format!("\"{table_alias}\".\"{column}\" asc"),
-            format!("\"{table_alias}\".\"{column}\" {placeholder}"),
-        ));
+        let replacement = format!("\"{table_alias}\".\"{column}\" {placeholder}");
+        for direction in ["asc", "ASC"] {
+            self.replacements.push((
+                format!("\"{table_alias}\".\"{column}\" {direction}"),
+                replacement.clone(),
+            ));
+        }
     }
 
     fn numeric_parameter_sentinel(
@@ -267,22 +273,24 @@ pub fn generate_postgres_sql_with_options(
         } else {
             combine_root_queries(roots)?
         };
+        let compact = query.to_string(PostgresQueryBuilder);
         let formatted = sqlformat::format(
-            &query.to_string(PostgresQueryBuilder),
+            &compact,
             &sqlformat::QueryParams::default(),
             &format_options,
         );
-        let Some(mut sql) = replace_numeric_sentinels(&formatted, &template.numeric_replacements)
-        else {
+        let Some(sql) = finalize_sql_template(&formatted, &template) else {
             next_sentinel = template.next_sentinel;
             continue;
         };
-        for (needle, replacement) in &template.replacements {
-            sql = sql.replace(needle, replacement);
-        }
+        let Some(compact_sql) = finalize_sql_template(&compact, &template) else {
+            next_sentinel = template.next_sentinel;
+            continue;
+        };
         return Ok(GeneratedSql {
             operation_name: operation_name.to_string(),
             sql,
+            compact_sql,
             parameters: template.parameters,
             policy_context: template.policy_context,
             variants: template.variants,
@@ -388,9 +396,17 @@ fn singular_root_envelope(output_names: &[String], root_query: SelectStatement) 
     envelope.to_owned()
 }
 
-/// Replaces numeric template markers against their ranges in the original
-/// formatted SQL, so one replacement's payload is never scanned for another
-/// marker. `None` asks the caller to rebuild with a fresh sentinel range.
+fn finalize_sql_template(sql: &str, template: &SqlTemplateContext) -> Option<String> {
+    let mut sql = replace_numeric_sentinels(sql, &template.numeric_replacements)?;
+    for (needle, replacement) in &template.replacements {
+        sql = sql.replace(needle, replacement);
+    }
+    Some(sql)
+}
+
+/// Replaces numeric template markers against their ranges in one rendered SQL
+/// form, so one replacement's payload is never scanned for another marker.
+/// `None` asks the caller to rebuild with a fresh sentinel range.
 fn replace_numeric_sentinels(sql: &str, replacements: &[(String, String)]) -> Option<String> {
     let mut ranges = Vec::with_capacity(replacements.len());
     for (needle, replacement) in replacements {
