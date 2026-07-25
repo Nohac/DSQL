@@ -478,6 +478,13 @@ complete root into the caller, or place a complete root beneath a caller
 namespace. These are all checked path transformations over one input contract,
 not separate fragment-argument and query-argument systems.
 
+References in this section to retaining bounded dynamic surfaces describe the
+eventual fragment extension. The initial bounded-dynamic slice rejects every
+dynamic input owned by a fragment, so none of those paths can occur until the
+extension in
+[Bounded Dynamic Predicates And Ordering](#bounded-dynamic-predicates-and-ordering)
+is implemented.
+
 Conceptually, a binding list contains one or more variable references or
 mappings:
 
@@ -633,12 +640,12 @@ A complete target root may instead be remapped beneath a named caller object:
 
 The target sigil selects the fragment root. The source sigil selects the caller
 root, and its name becomes a path prefix. Assuming the fragment has
-`input.posts.created_after`, `params.limit`, and `params.search`, the mapping is:
+`input.posts.created_after`, `params.limit`, and `params.pattern`, the mapping is:
 
 ```text
 input.posts.created_after -> params.searchable_user_input.posts.created_after
 params.limit              -> params.searchable_user_params.limit
-params.search             -> params.searchable_user_params.search
+params.pattern            -> params.searchable_user_params.pattern
 ```
 
 This remains leaf metadata plus path-prefix transformation; it does not require
@@ -774,9 +781,13 @@ capability surface, makes relationship depth unclear, and can turn a fixed DSQL
 query into a broad dynamic query builder.
 
 Instead, dynamic predicates and order inputs are bounded by the DSQL document.
+The initial feature deliberately has one surface form:
 
 ```dsql
-query Fields {
+query Fields(
+  $$search = {}
+  $$order = []
+) {
   fields(
     where .context_id == $$context_id
       and $$search on selected
@@ -792,45 +803,215 @@ query Fields {
 }
 ```
 
+The `on` token disambiguates a bounded dynamic input from an ordinary variable.
+Without it, a variable in predicate position is a boolean value:
+
+```dsql
+where $$enabled
+```
+
+`on` is reserved from `variable_name` in every variable position: `$$on`,
+`$on`, fragment bindings named `on`, and operator variables named `on` are
+invalid. The other currently admitted keywords remain valid variable names:
+`query`, `fragment`, `where`, `order`, `by`, `limit`, `offset`, `asc`, `desc`,
+and the contextual keywords `not`, `in`, `is`, `exists`, `filter`, `condition`,
+`apply`, `when`, and `field`. A sigil immediately followed by `on selected`
+therefore starts an anonymous dynamic input; the initial slice parses that shape
+so it can diagnose anonymous dynamic inputs as unsupported.
+
+The initial contract has these boundaries:
+
+- only named top-level `$$name` inputs are accepted;
+- the containing definition must be a query;
+- `selected` is the only accepted surface;
+- `selected` is shallow;
+- anonymous dynamic inputs, fragment-local dynamic inputs, explicit allowlists,
+  additional presets, and deep relation traversal are diagnostics or deferred
+  syntax rather than partially supported behavior.
+
+Keeping dynamic inputs on query definitions makes every public capability
+surface explicit in one generated operation. Fragment lifting may extend the
+same contract later, but the compiler must reject an initial-slice dynamic input
+inside a fragment instead of silently containing or widening it.
+
+A dynamic predicate usage must be the complete predicate or occur in positive
+conjunctive position beneath `and`. A usage beneath `or` or `not` is a
+diagnostic in the initial slice. The public dynamic object may still contain its
+own recursive `or` and `not` nodes. This restriction lets an empty whole input
+behave as structural absence without replacing an `or` operand with `TRUE`;
+supporting arbitrary source-level boolean placement requires a later
+presence-aware SQL plan.
+
+The predicate root is the `where` clause owned by the selection whose body
+defines `selected`. A dynamic usage inside an `exists` source's nested
+`where` clause is a diagnostic in the initial slice because that source has no
+selection body from which to derive the surface.
+
+### Selected Capability Surface
+
 `$$search on selected` is one predicate atom. It means:
 
 - `$$search` is a top-level generated parameter.
-- The allowed predicate fields are scalar fields selected directly in the current
-  selection body.
-- Available operators are inferred from each field's catalog type.
-- Nested relation fields are not included by default.
+- the allowed predicate fields are scalar fields selected directly in the
+  effective current selection body after fragment expansion;
+- the resolved scalar must belong to the current collection source, so
+  flattening a relationship field does not make that relationship path part of
+  the shallow surface;
+- a selected alias is the public dynamic field name, while metadata retains the
+  resolved catalog field identity;
+- available operators are compiler-owned and derived from each resolved field's
+  logical type;
+- nested relation fields are not included by default.
 
-Conceptual generated input shape:
+Selections that resolve to the same public key must already satisfy the normal
+result-shape collision rules. A reused named dynamic input is valid only when
+every usage has the same normalized kind and capability contract: public field
+keys, resolved logical types, operators or directions, nullability, and
+conditional-access metadata. Otherwise the compiler requires separate names.
+
+Conceptual generated predicate input:
 
 ```ts
 type FieldsSearch = {
   and?: FieldsSearch[];
   or?: FieldsSearch[];
-  id?: { eq?: string; neq?: string };
-  name?: { eq?: string; neq?: string; ilike?: string };
-  display?: { eq?: string; neq?: string; ilike?: string };
-  created_at?: { eq?: string; neq?: string; gt?: string; gte?: string; lt?: string; lte?: string };
+  not?: FieldsSearch;
+  id?: {
+    eq?: string;
+    neq?: string;
+    in?: string[];
+    not_in?: string[];
+    is_null?: boolean;
+  };
+  name?: {
+    eq?: string;
+    neq?: string;
+    like?: string;
+    in?: string[];
+    not_in?: string[];
+    is_null?: boolean;
+  };
+  display?: {
+    eq?: string;
+    neq?: string;
+    like?: string;
+    in?: string[];
+    not_in?: string[];
+    is_null?: boolean;
+  };
+  created_at?: {
+    eq?: string;
+    neq?: string;
+    gt?: string;
+    gte?: string;
+    lt?: string;
+    lte?: string;
+    in?: string[];
+    not_in?: string[];
+    is_null?: boolean;
+  };
 };
 ```
+
+The exact operator set is type-aware:
+
+- `eq`, `neq`, `in`, `not_in`, and `is_null` apply to comparable scalar types;
+- `gt`, `gte`, `lt`, and `lte` apply to ordered scalar types;
+- `like` applies to text-like scalar types.
+
+The compiler owns both these public operator names and their SQL lowering.
+Runtimes consume compiler metadata; they must not maintain a parallel
+type-to-operator table or interpolate user-provided SQL syntax.
+
+Predicate objects compose recursively. Sibling field entries, sibling operators
+within one field, and `and` alongside other entries are combined with `AND`.
+`or` combines its members with `OR`; `not` negates its nested predicate.
+Object key order has no semantic effect.
+
+```ts
+const search: FieldsSearch = {
+  name: { like: "A%", neq: "Archived" },
+  or: [
+    { display: { like: "%featured%" } },
+    { created_at: { gte: "2025-01-01T00:00:00Z" } },
+  ],
+};
+```
+
+Dynamic predicate objects use the same structural-pruning algebra as nullable
+static predicates. An object with no active entries and an empty field-operator
+object are absent. Absent members are removed from `and` and `or`; `not` of an
+absent child is absent. An `and` with no active members is absent rather than an
+active `TRUE`, because lowering absence to `TRUE` would make a containing `or`
+branch match every row. An explicitly supplied `or` with no active members is
+the active false predicate.
+
+Examples:
+
+```text
+{ or: [{}, X] }          -> X
+{ or: [{}] }             -> false
+{ and: [] }              -> absent
+{ not: {} }              -> absent
+{ not: { or: [] } }      -> true
+```
+
+The last form negates an active false predicate and is therefore an active true
+predicate. It can intentionally make a containing dynamic `or` match every row,
+just as `not_in: []` can. Dynamic filters constrain application-selected rows;
+they are not an authorization boundary and never remove enforced static
+filters.
+
+Runtime values follow the same logical wire validation as ordinary inputs.
+`null` is not accepted as an operand for `eq`, `neq`, ordered comparisons,
+`like`, `in`, or `not_in`, and `in`/`not_in` collections may not contain null
+elements. Null tests use `is_null: true` and `is_null: false`, lowering to
+`IS NULL` and `IS NOT NULL`. Empty membership preserves the static predicate
+contract: `in: []` is false and `not_in: []` is true.
+
+This intentionally differs from nullable static operands, whose null value
+prunes their complete predicate atom. A dynamic caller expresses absence by
+omitting an operator key; nullable null is accepted only for the complete
+dynamic input and maps to its empty identity.
 
 `order by $$order on selected` means:
 
 - `$$order` is a top-level generated parameter.
-- The allowed order fields are scalar fields selected directly in the current
-  selection body.
-- Direction values are the normal closed sort-direction enum.
-- The input may support one or more order entries depending on target codegen.
+- the allowed order fields are the same shallow selected scalar surface;
+- the input is an array, and its element order is SQL precedence order;
+- each array element must contain exactly one field;
+- directions are `asc`, `desc`, `asc_nulls_first`, `asc_nulls_last`,
+  `desc_nulls_first`, and `desc_nulls_last`.
 
-Conceptual generated input shape:
+Conceptual generated order input:
 
 ```ts
 type FieldsOrder = Array<
-  | { id: "asc" | "desc" }
-  | { name: "asc" | "desc" }
-  | { display: "asc" | "desc" }
-  | { created_at: "asc" | "desc" }
+  | { id: FieldsOrderDirection }
+  | { name: FieldsOrderDirection }
+  | { display: FieldsOrderDirection }
+  | { created_at: FieldsOrderDirection }
 >;
+
+type FieldsOrderDirection =
+  | "asc"
+  | "desc"
+  | "asc_nulls_first"
+  | "asc_nulls_last"
+  | "desc_nulls_first"
+  | "desc_nulls_last";
 ```
+
+Repeated fields are accepted and retain their supplied positions, matching
+ordinary SQL ordering even when an entry is redundant. A future static syntax
+for explicit null placement should use the same six compiler-owned direction
+semantics.
+
+Static and dynamic order items may coexist, and one clause may contain multiple
+dynamic order inputs. Each dynamic array expands in place, so its internal order
+and the precedence of surrounding static or dynamic items are both preserved.
+The typed constant identity occupies that same position without affecting row
+order.
 
 The main design rule is that dynamic inputs expose a static capability surface.
 The query author chooses which fields and relationship paths are available, and
@@ -841,29 +1022,10 @@ static query clauses. A conditionally hidden scalar behaves as `NULL`, and a
 conditionally hidden relation behaves as absent. Generated metadata must mark
 dynamic fields whose readable value is conditional so UI and server tooling can
 describe the surface accurately, but a dynamic input never bypasses a filter.
-
-`selected` should be treated as a built-in dynamic input preset, not a special
-case in the grammar. It expands to scalar fields selected directly in the current
-selection body.
-
-Other built-in presets may be useful:
-
-```text
-selected          scalar fields selected directly in this body
-indexed           indexed scalar fields on this table
-selected_indexed  selected scalar fields that are indexed
-searchable        text-like fields marked searchable by config/catalog
-```
-
-Using a preset:
-
-```dsql
-where $$search on selected_indexed
-order by $$order on selected_indexed
-```
-
-Preset expansion should be visible in generated metadata and LSP hover so the
-user can see which fields and operators are actually exposed.
+Consequently, `is_null` observes the same policy-filtered value as static
+`is null`: on a row-dependent hidden field it may match rows where the readable
+value was masked to `NULL`. This is intentional parity, not access to the raw
+column.
 
 ### Dynamic Input Defaults
 
@@ -895,15 +1057,14 @@ query Fields(
 The usage site remains the sole authority for the bounded capability surface.
 The header default cannot add a field, operator, relation path, or ordering mode
 that the normalized `on` surface does not expose. Defaults are validated only
-after preset and selection expansion, so a source or catalog edit that removes a
-referenced capability invalidates any affected rich default.
+after selection expansion.
 
 The canonical initial defaults are algebraic identity values:
 
 - `{}` is an empty dynamic predicate and contributes no predicate atom;
 - `[]` is an empty dynamic order and contributes no order entries;
-- an empty `and` collection is true;
-- an empty `or` collection is false.
+- an empty `and` collection is structurally absent;
+- an empty `or` collection is an active false predicate.
 
 Only empty `{}` is admitted before general object-literal defaults are designed.
 Rich predicate objects and non-empty order lists are a later additive extension.
@@ -917,200 +1078,136 @@ dynamic input, not to its individual field operands. `{}` and `[]` remain the
 preferred defaults because they avoid equivalent omitted/null/empty states in
 generated clients and cache keys.
 
-Reusing one named dynamic binding requires every usage to have the same
-normalized kind and capability contract: expanded paths, logical types,
-operators, relation depth, and conditional-access metadata. Otherwise the
-compiler requires separate names. Definition-reference root lifting preserves
-this complete dynamic contract; an explicit leaf binding checks the caller
-dynamic input against it.
+Omitted defaults are materialized before validation and execution. Cache keys
+use the materialized dynamic input, recursively sort object keys, and preserve
+array order. In particular, order arrays retain precedence, and predicate
+composition arrays retain their supplied traversal order. Omitted, defaulted,
+and nullable-null identity values therefore share one canonical cache identity.
 
-### Explicit Dynamic Input Allowlists
+### SQL And Runtime Contract
 
-The common case can use `on selected`, but a query should also be able to extend
-or narrow the surface explicitly.
+The compiler emits one collision-safe marker for every dynamic predicate or
+order usage site in both formatted and compact SQL. Marker allocation must prove
+that the marker is absent from both complete generated forms before using it.
+Replacement is literal, not regular-expression based and not JavaScript
+replacement-string based.
 
-```dsql
-query ProjectTaskCounts {
-  project_task_count(
-    where $$search on {
-      selected
-      .task.legacy_template_id ilike
-    }
-    order by $$order on {
-      selected
-      .task.legacy_template_id
-    }
-  ) {
-    priority
-    progress
-    clean_count
-    dirty_count
+Dynamic predicate identity replaces its whole marker with a compiler-owned true
+expression. Dynamic order identity replaces its whole marker with a
+compiler-owned typed constant order expression that has no effect on row order.
+The latter must be integration-tested against Postgres; emitting an empty string
+after `ORDER BY` is invalid.
 
-    task {
-      legacy_template_id
-      name
-    }
-  }
-}
-```
+The runtime traverses each materialized dynamic input once in deterministic
+order. Dynamic operand values become ordinary SQL parameters appended after all
+fixed parameters. When one named input is used at multiple compatible sites,
+the runtime reuses the same allocated parameter positions while rendering each
+site's compiler-owned readable field expressions. It never places a caller
+string into SQL.
 
-`selected` inside an allowlist expands to scalar fields selected directly in the
-current body. Additional paths must be listed explicitly. Operators in predicate
-allowlists may be explicit when a field should expose only a subset of its
-type-compatible operators.
+The dynamic input object is never itself a positional SQL parameter. Its
+runtime-appended operands are not entries in `sql.parameters`, whose paths
+resolve to declared ordinary fields. Each dynamic operand takes its logical type
+and binding rules from the compiler-owned capability field/operator record.
 
-Presets can also be composed inside an explicit allowlist.
+Compiler metadata owns:
 
-```dsql
-where $$search on {
-  preset selected
-  preset indexed
-  .task.legacy_template_id ilike
-}
-```
+- the public field key and resolved catalog identity;
+- logical type, nullability, and conditional-access classification;
+- allowed public operators or directions;
+- the SQL lowering for every allowed operator at every site;
+- usage-site markers and readable SQL field expressions;
+- the identity kind used for defaults and nullable whole-input values.
 
-Conceptual generated order input:
+The browser operation object carries only the ordinary public input/default
+contract needed for typing, default materialization, and cache keys. Expanded
+capabilities, SQL expressions, and usage sites belong to the server execution
+payload and full generated artifact. This prevents browser bundles from
+receiving server-only catalog and policy detail while keeping renderers and API
+generators fully informed.
 
-```ts
-type ProjectTaskCountOrder = Array<
-  | { priority: "asc" | "desc" }
-  | { progress: "asc" | "desc" }
-  | { clean_count: "asc" | "desc" }
-  | { dirty_count: "asc" | "desc" }
-  | { task: { legacy_template_id: "asc" | "desc" } }
->;
-```
+Dynamic inputs are ordinary public input fields with a full path such as
+`params.search`, a `dynamic_predicate` or `dynamic_order` logical type, and their
+normal required, nullable, and default flags. The capability side table is keyed
+by that full path rather than by an unqualified name.
 
-This mirrors the ergonomic part of Hasura-style typed `order_by` objects while
-keeping DSQL's query shape and exposed relation depth explicit.
+Runtime validation rejects unknown fields, unknown operators or directions,
+malformed recursive nodes, scalar/collection shape mismatches, null operands,
+multi-field order entries, and values outside the ordinary logical wire
+contract before database execution.
 
-Project-defined presets may eventually move repeated rules out of individual
-queries.
+### Deferred Extensions
 
-```dsql
-dynamic preset Searchable {
-  include selected
-  operators text [ilike]
-  operators uuid [==]
-}
+The following are useful additive extensions, but are outside the initial
+feature:
 
-dynamic preset FastOrder {
-  include selected
-  require indexed
-}
-```
+- explicit surfaces such as `on { selected .task.name like }`;
+- built-in presets such as `indexed`, `selected_indexed`, and `searchable`;
+- project-defined presets;
+- explicit or automatic deep relation traversal;
+- rich non-empty object/list defaults;
+- fragment-local dynamic inputs and fragment binding/lifting;
+- anonymous dynamic inputs;
+- static query syntax for explicit null ordering.
 
-The exact declaration syntax is unresolved. The important model is that presets
-are reusable capability surfaces over fields, relationship paths, catalog
-metadata, and type-aware operator sets.
-
-### Relation Depth
-
-`on selected` should be shallow by default. If a selected body contains a nested
-relation, that nested relation does not automatically become part of the dynamic
-filter or order API.
-
-Possible future shorthand:
-
-```dsql
-where $$search on selected deep
-order by $$order on selected deep
-```
-
-This remains unresolved. Deep selected traversal can expose a much wider API
-than the query author intended, so the first accepted form should prefer explicit
-relationship paths.
-
-### Search Helpers
-
-Search inputs are usually built by application code from a text box. The DSQL
-document should describe the allowed search surface, while the host code can
-decide which branches to send.
-
-```dsql
-query Fields {
-  fields(
-    where .context_id == $$context_id
-      and $$search on {
-        .name ilike
-        .display ilike
-        .id ==
-      }
-    order by $$order on selected
-  ) {
-    id
-    name
-    display
-  }
-}
-```
-
-Application code may then construct an `or` filter containing `name`, `display`,
-and, only when the text is a valid UUID, `id`.
-
-The `on` surface is mandatory for dynamic-predicate interpretation. Without it,
-a variable in predicate position is an ordinary boolean atom:
-
-```dsql
-where $$search
-```
-
-This creates a boolean `params.search`; it does not create a dynamic predicate
-object. A variable followed by `on <preset>` or `on { ... }` is instead a
-bounded dynamic predicate. The `on` token is the disambiguator, and both forms
-compose with `and`, `or`, `not`, and parentheses.
-
-Open questions:
-
-- Whether dynamic order inputs are arrays, objects, or both in generated
-  TypeScript.
-- Whether generated dynamic predicate objects support only `and`/`or`
-  composition or also `not`.
-- How null ordering options are represented.
-- Whether `on selected deep` should exist or explicit paths are always better.
-- How dynamic predicate/order inputs should appear in hover and generated
-  metadata.
-- Whether project-defined presets belong in DSQL files, project config, or
-  provider metadata.
-- Whether preset names should be case-sensitive and how they avoid collisions
-  with field names.
+Future presets remain normalized capability expansions, never runtime shortcuts.
+Deep traversal must remain explicit enough that a query author can review the
+exposed relationship surface.
 
 ## Codegen Notes
 
 Variables should produce a metadata contract that generated clients and endpoint
 adapters can use without reinterpreting the query.
 
-Possible shape:
+Conceptual full artifact shape:
 
 ```json
 {
-  "params": {
-    "limit": { "type": "int", "required": true }
-  },
-  "input": {
-    "users": {
-      "clause": {
-        "where": {
-          "id": { "type": "int" }
-        }
-      }
+  "params": [
+    {
+      "path": "params.search",
+      "data_type": "dynamic_predicate",
+      "required": false,
+      "default": { "kind": "object", "fields": [] }
     }
-  },
-  "context": {
-    "tenant_id": { "type": "uuid", "required": true }
-  },
-  "dynamic_inputs": {
-    "search": {
+  ],
+  "context": [
+    {
+      "path": "context.tenant_id",
+      "data_type": "uuid",
+      "required": true
+    }
+  ],
+  "dynamic_inputs": [
+    {
+      "path": "params.search",
       "kind": "predicate",
-      "preset": "selected",
-      "fields": ["id", "name", "display"]
-    },
-    "order": {
-      "kind": "order",
-      "preset": "selected_indexed",
-      "fields": ["id", "created_at"]
+      "surface": "selected",
+      "identity": "object",
+      "fields": [
+        {
+          "key": "name",
+          "catalog_path": "public.fields.name",
+          "data_type": "text",
+          "nullable": false,
+          "access": "unconditional",
+          "operators": ["eq", "neq", "like", "in", "not_in", "is_null"]
+        }
+      ],
+      "sites": [
+        {
+          "marker": "<compiler-owned marker>",
+          "fields": [
+            {
+              "key": "name",
+              "expression": "<compiler-owned readable SQL expression>",
+              "operators": ["<compiler-owned SQL lowerings>"]
+            }
+          ]
+        }
+      ]
     }
-  }
+  ]
 }
 ```
 
@@ -1119,9 +1216,11 @@ query variables. Only a server-side adapter or request boundary may bind them.
 Generated browser clients do not expose context setters or merge context into
 the public operation input.
 
-Dynamic predicate and order inputs should expose their expanded field/operator
-surface so application code can generate type-safe UI controls without knowing
-DSQL internals.
+The exact serialized operator-lowering records may use templates or structured
+prefix/suffix fields, but they must be compiler-produced data that cannot contain
+caller-selected SQL syntax. Dynamic predicate and order inputs expose their
+expanded field/operator surface so application code can generate type-safe UI
+controls without knowing DSQL internals.
 
 ## Operator Variables
 

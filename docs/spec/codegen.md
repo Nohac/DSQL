@@ -148,7 +148,9 @@ logical type, collection shape, semantic role, requiredness, nullability, and
 typed default. Definition-reference bindings also retain the originating
 definition and source span so generators and editor tooling can explain where a
 contained or lifted contract came from. Root lifting changes paths but must not
-discard defaults or bounded dynamic capability surfaces.
+discard defaults. Retaining bounded dynamic capability surfaces is part of the
+eventual fragment extension; the initial bounded-dynamic slice rejects dynamic
+inputs owned by fragments.
 
 Requiredness and nullability produce distinct host types. For example, a query
 header containing:
@@ -737,11 +739,11 @@ Possible high-level shape:
 {
   "query": "Projects",
   "result": {},
-  "input": {},
-  "params": {},
-  "context": {},
+  "input": [],
+  "params": [],
+  "context": [],
   "filters": [],
-  "dynamic_inputs": {},
+  "dynamic_inputs": [],
   "handoffs": [],
   "sql": {},
   "source_map": {}
@@ -769,7 +771,9 @@ Useful metadata areas:
   assignments
 - filter-driven conditional fields, classified as context-only or row-dependent
 - parameter binding provenance: public input or trusted context
-- bounded dynamic predicate and order input surfaces
+- bounded dynamic predicate and order input surfaces in server execution
+  artifacts; browser operation objects retain only their ordinary public
+  input/default contracts
 - split-fetch handoffs, checked parent authorization chains, and cache key inputs
 - SQL variants for dynamic operators
 - checked directive occurrences at their semantic attachment paths, using
