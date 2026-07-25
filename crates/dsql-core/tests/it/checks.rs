@@ -81,6 +81,28 @@ async fn invalid_input_refinements_and_fragment_bindings_are_reported() {
             query InvalidBindingDirection($$caller? = null) {
               public::users { ...Required($$count <- $$caller) }
             }
+            query DuplicateRefinement($$count = 1 $$count = 2) {
+              public::users(limit $$count) { id }
+            }
+            query IncompatibleMergedContract {
+              public::users(where .id == $$value and .name == $$value) { id }
+            }
+            query MixedRootBinding {
+              public::users {
+                ...Required($$ <- $$all, $$count <- $$one)
+              }
+            }
+            query DuplicateLeafBinding {
+              public::users {
+                ...Required($$count <- $$one, $$count <- $$two)
+              }
+            }
+            filter Conditional on public::users {
+              where .id is not null
+            }
+            query NullableFilterAssignment($$enabled?) {
+              public::users(filter Conditional when $$enabled) { id }
+            }
         "#},
     )
     .await;
@@ -99,6 +121,7 @@ async fn valid_pagination_and_collection_default_edges_check_cleanly() {
               $$nullable_ids? = null
               $$empty_ids = []
               $$ids = ["00000000-0000-0000-0000-000000000001"]
+              $$nullable_limit? = 5
               $$limit = 0
               $$offset = 9007199254740991
             ) {
@@ -106,9 +129,10 @@ async fn valid_pagination_and_collection_default_edges_check_cleanly() {
               empty: public::users(where .id in $$empty_ids) { id }
               populated: public::users(
                 where .id in $$ids
-                limit $$limit
+                limit $$nullable_limit
                 offset $$offset
               ) { id }
+              empty_limit: public::users(limit $$limit) { id }
             }
         "#},
     )

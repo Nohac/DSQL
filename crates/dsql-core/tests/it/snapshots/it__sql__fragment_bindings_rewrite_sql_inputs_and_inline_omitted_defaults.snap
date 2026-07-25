@@ -84,6 +84,47 @@ from
   ) as "posts_json_9b3bd304" on true
 -- parameters: input.users.body.PostWindow.params.minimum, input.users.body.PostWindow.params.limit
 
+-- DeepContained
+select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'posts',
+        "posts_json_9b3bd304"."posts_result_9b3bd304"
+      )
+    ),
+    '[]'
+  ) as "users"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "users_99fc7350"
+    limit
+      10
+  ) as "users_99fc7350"
+  left join LATERAL (
+    select
+      COALESCE(
+        JSON_AGG(JSON_BUILD_OBJECT('id', "posts_9b3bd304"."id")),
+        '[]'
+      ) as "posts_result_9b3bd304"
+    from
+      (
+        select
+          *
+        from
+          "public"."posts" as "posts_9b3bd304"
+        where
+          "posts_9b3bd304"."user_id" = "users_99fc7350"."id"
+          and "posts_9b3bd304"."title" >= ($1)
+        limit
+          LEAST(COALESCE($2, 10), 10)
+      ) as "posts_9b3bd304"
+  ) as "posts_json_9b3bd304" on true
+-- parameters: input.users.body.ParentWindow.params.minimum, input.users.body.ParentWindow.params.limit
+
 -- Namespaced
 select
   COALESCE(

@@ -633,6 +633,15 @@ async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
                 ) {
                   users(where .id in $$ids) { id }
                 }
+                fragment ParentWindow on users {
+                  ...PostWindow($$)
+                }
+                query DeepContained {
+                  users { ...ParentWindow }
+                }
+                query NullableNonNullDefault($$limit? = 5) {
+                  users(limit $$limit) { id }
+                }
             "#},
             "frontend",
         )],
@@ -649,7 +658,14 @@ async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
         .filter(|artifact| {
             matches!(
                 artifact.name.as_str(),
-                "PostWindow" | "Contained" | "Bound" | "NullableCollection" | "CollectionDefault"
+                "PostWindow"
+                    | "Contained"
+                    | "Bound"
+                    | "NullableCollection"
+                    | "CollectionDefault"
+                    | "ParentWindow"
+                    | "DeepContained"
+                    | "NullableNonNullDefault"
             )
         })
         .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))

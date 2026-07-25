@@ -169,6 +169,16 @@ fn materialization_rejects_invalid_envelopes_and_unused_required_fields() {
     )
     .expect_err("unused required input is still validated");
     assert!(matches!(error, ExecuteError::MissingInput(path) if path == "params.unused"));
+
+    let error = materialize(
+        &operation_with_fields(Vec::new(), &["params.undeclared"]),
+        &ExecutionBindings::default(),
+    )
+    .expect_err("SQL parameters require declared input metadata");
+    assert!(matches!(
+        error,
+        ExecuteError::UndeclaredParameter(path) if path == "params.undeclared"
+    ));
 }
 
 #[test]

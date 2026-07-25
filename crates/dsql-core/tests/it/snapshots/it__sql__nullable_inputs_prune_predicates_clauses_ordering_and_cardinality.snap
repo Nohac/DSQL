@@ -84,3 +84,48 @@ from
   ) as "users_99fc7350"
 -- parameters: params.id, params.from, params.to, params.limit
 -- variant params.direction: asc=>asc, desc=>desc
+
+-- OptionalEdges
+select
+  COALESCE(
+    JSON_AGG(JSON_BUILD_OBJECT('id', "users_99fc7350"."id")),
+    '[]'
+  ) as "users"
+from
+  (
+    select
+      *
+    from
+      "public"."users" as "users_99fc7350"
+    where
+      (
+        (
+          (
+            ("users_99fc7350"."id" = ANY($1))
+            and ($1 is not null)
+          )
+          or (
+            ($2)
+            and ($2 is not null)
+          )
+        )
+        and (
+          ($1 is not null)
+          or ($2 is not null)
+        )
+      )
+      or (
+        ($3) = "users_99fc7350"."id"
+        and ($3 is not null)
+      )
+      or (
+        not (
+          ($1 is not null)
+          or ($2 is not null)
+          or ($3 is not null)
+        )
+      )
+    limit
+      10 offset $4
+  ) as "users_99fc7350"
+-- parameters: params.ids, params.enabled, params.reversed, params.offset

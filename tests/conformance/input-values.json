@@ -72,5 +72,17 @@
     },
     "bindings": { "params": { "value": [1, null] } },
     "expected": [1, null]
+  },
+  {
+    "name": "nullable integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": true,
+      "nullable": true
+    },
+    "bindings": { "params": { "value": null } },
+    "expected": null
   }
 ]

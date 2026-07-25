@@ -3,6 +3,10 @@ source: crates/dsql-core/tests/it/checks.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
 Error[105..121]: default for `limit` does not match inferred type int
+Error[1082..1089]: query `IncompatibleMergedContract` infers incompatible contracts for `params.value` (first used at 1061..1068)
+Error[1147..1189]: fragment `Required` mixes or duplicates whole-root and leaf bindings for `params`
+Error[1277..1293]: fragment `Required` input `count` is bound more than once
+Error[1396..1406]: filter-assignment input `enabled` must be a non-null boolean
 Error[178..192]: non-null input `limit` cannot use `null` as its default
 Error[251..263]: comparison-operator input `op` cannot be nullable
 Error[373..397]: default for `direction` does not match inferred type unknown
@@ -13,3 +17,4 @@ Error[772..794]: fragment `Required` requires a binding for `params.count` in ex
 Error[784..793]: fragment `Required` infers no `params` input named `missing`
 Error[829..845]: nullable caller input `caller` cannot bind a non-null fragment input
 Error[93..100]: query `InvalidDefaults` infers no top-level input named `missing`
+Error[944..949]: input `count` is refined more than once in query `DuplicateRefinement`

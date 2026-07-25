@@ -215,6 +215,19 @@ async fn nullable_inputs_prune_predicates_clauses_ordering_and_cardinality() {
             query DefaultedUnique($$id = 1) {
               public::users(where .id == $$id) { id }
             }
+            query OptionalEdges(
+              $$ids? = null
+              $$offset? = null
+              $$enabled? = null
+              $$reversed? = null
+            ) {
+              public::users(
+                where .id in $$ids
+                  or $$enabled
+                  or $$reversed == .id
+                offset $$offset
+              ) { id }
+            }
         "#},
     )
     .await;
@@ -455,6 +468,9 @@ async fn fragment_bindings_rewrite_sql_inputs_and_inline_omitted_defaults() {
             }
             query Nested($$outer = "N") {
               public::users { ...ParentWindow($$minimum <- $$outer) }
+            }
+            query DeepContained {
+              public::users { ...ParentWindow }
             }
         "#},
     )

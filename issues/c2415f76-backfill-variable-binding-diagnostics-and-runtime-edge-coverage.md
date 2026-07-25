@@ -1,6 +1,6 @@
 # Backfill variable binding diagnostics and runtime edge coverage
 
-**ID:** c2415f76 | **Status:** Open | **Created:** 2026-07-22T18:52:43+02:00
+**ID:** c2415f76 | **Status:** Done | **Created:** 2026-07-22T18:52:43+02:00
 
 Variable defaults and fragment lifting have strong happy-path snapshots, but
 several implemented diagnostics and runtime matrix rows have no direct coverage.
@@ -21,3 +21,13 @@ Add focused integration coverage for:
 Prefer compact table-driven integration tests and shared fixtures over one test
 per syntax example. Snapshot user-visible diagnostics, plans, SQL, and protocol
 responses.
+
+## Resolution
+
+The concentrated variable, check, SQL, executor, and observatory tests now
+cover this matrix. Shared conformance fixtures drive default and supplied-value
+materialization in both maintained runtimes. The opt-in observatory CLI test
+executes the highest-risk optional operand inside `or` against PostgreSQL, both
+omitted and present. Core and generated-metadata snapshots cover contained,
+lifted, namespaced, multi-level, and deep-default propagation without one test
+per syntax form.
