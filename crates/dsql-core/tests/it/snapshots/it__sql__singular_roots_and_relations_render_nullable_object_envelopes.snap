@@ -4,19 +4,19 @@ expression: render_sql(&bowl).await
 ---
 -- SingularShapes
 select
-  "dsql_operation_root_0"."by_limit" as "by_limit",
-  "dsql_operation_root_1"."by_key" as "by_key",
-  "dsql_operation_root_2"."runtime" as "runtime",
-  "dsql_operation_root_3"."flat_id" as "flat_id",
-  "dsql_operation_root_3"."flat_title" as "flat_title"
+  "root_0"."by_limit" as "by_limit",
+  "root_1"."by_key" as "by_key",
+  "root_2"."runtime" as "runtime",
+  "root_3"."flat_id" as "flat_id",
+  "root_3"."flat_title" as "flat_title"
 from
   (
     select
-      "dsql_root"."by_limit" as "by_limit"
+      "root"."by_limit" as "by_limit"
     from
       (
         select
-          1) as "dsql_singleton"
+          1) as "singleton"
       left join LATERAL (
         select
           JSON_BUILD_OBJECT(
@@ -31,15 +31,15 @@ from
           "by_limit_31385e1f"."id" asc
         limit
           1
-      ) as "dsql_root" on true
-  ) as "dsql_operation_root_0"
+      ) as "root" on true
+  ) as "root_0"
   cross join (
     select
-      "dsql_root"."by_key" as "by_key"
+      "root"."by_key" as "by_key"
     from
       (
         select
-          1) as "dsql_singleton"
+          1) as "singleton"
       left join LATERAL (
         select
           JSON_BUILD_OBJECT(
@@ -69,8 +69,8 @@ from
           ) as "latest_info_json_9fb9d44e" on true
         where
           "by_key_e6eec04b"."id" = ($1)
-      ) as "dsql_root" on true
-  ) as "dsql_operation_root_1"
+      ) as "root" on true
+  ) as "root_1"
   cross join (
     select
       COALESCE(
@@ -86,15 +86,15 @@ from
         limit
           LEAST(COALESCE($2, 10), 10)
       ) as "runtime_8d1f47ea"
-  ) as "dsql_operation_root_2"
+  ) as "root_2"
   cross join (
     select
-      "dsql_root"."flat_id" as "flat_id",
-      "dsql_root"."flat_title" as "flat_title"
+      "root"."flat_id" as "flat_id",
+      "root"."flat_title" as "flat_title"
     from
       (
         select
-          1) as "dsql_singleton"
+          1) as "singleton"
       left join LATERAL (
         select
           TO_JSON("title_d4d9f554"."id") as "flat_id",
@@ -103,6 +103,6 @@ from
           "public"."title" as "title_d4d9f554"
         where
           "title_d4d9f554"."id" = ($3)
-      ) as "dsql_root" on true
-  ) as "dsql_operation_root_3"
+      ) as "root" on true
+  ) as "root_3"
 -- parameters: params.id, params.count, params.flat_id

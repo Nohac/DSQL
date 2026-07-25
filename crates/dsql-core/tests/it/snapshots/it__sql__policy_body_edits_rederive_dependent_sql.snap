@@ -5,11 +5,11 @@ expression: "format!(\"before:\\n{before}\\n\\nafter:\\n{after}\")"
 before:
 -- Titles
 select
-  "dsql_root"."title" as "title"
+  "root"."title" as "title"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT('id', "title_d4d9f554"."id") as "title"
@@ -19,16 +19,16 @@ from
       "title_d4d9f554"."id" > 0
     limit
       1
-  ) as "dsql_root" on true
+  ) as "root" on true
 
 after:
 -- Titles
 select
-  "dsql_root"."title" as "title"
+  "root"."title" as "title"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT('id', "title_d4d9f554"."id") as "title"
@@ -38,4 +38,4 @@ from
       "title_d4d9f554"."id" > 1
     limit
       1
-  ) as "dsql_root" on true
+  ) as "root" on true

@@ -4,11 +4,11 @@ expression: stdout
 ---
 -- Actors
 select
-  "dsql_root"."actors" as "actors"
+  "root"."actors" as "actors"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT(
@@ -21,7 +21,7 @@ from
       "public"."title" as "actors_cb3f0a30"
     limit
       1
-  ) as "dsql_root" on true
+  ) as "root" on true
 
 -- Titles
 select

@@ -4,11 +4,11 @@ expression: render_sql(&bowl).await
 ---
 -- UsersPage
 select
-  "dsql_root"."users" as "users"
+  "root"."users" as "users"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT(
@@ -46,7 +46,7 @@ from
       "users_99fc7350"."created_at" {{params.dir}}
     limit
       $3 offset $4
-  ) as "dsql_root" on true
+  ) as "root" on true
 -- parameters: params.name, input.users.clause.where.id.tenant, params.max, input.users.clause.offset.skip
 -- variant params.name_op: ===>=, like=>like
 -- variant params.dir: asc=>asc, desc=>desc

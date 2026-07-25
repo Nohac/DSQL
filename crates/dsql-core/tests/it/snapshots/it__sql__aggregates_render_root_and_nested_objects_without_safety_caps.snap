@@ -4,9 +4,9 @@ expression: render_sql(&bowl).await
 ---
 -- AggregateSql
 select
-  "dsql_operation_root_0"."stats" as "stats",
-  "dsql_operation_root_1"."by_email" as "by_email",
-  "dsql_operation_root_2"."users" as "users"
+  "root_0"."stats" as "stats",
+  "root_1"."by_email" as "by_email",
+  "root_2"."users" as "users"
 from
   (
     select
@@ -26,7 +26,7 @@ from
       "public"."users" as "stats_fdeedab3"
     where
       "stats_fdeedab3"."email" is not null
-  ) as "dsql_operation_root_0"
+  ) as "root_0"
   cross join (
     select
       COALESCE(
@@ -53,7 +53,7 @@ from
         group by
           "by_email_74e58642"."email"
       ) as "by_email_74e58642_groups_efee4319"
-  ) as "dsql_operation_root_1"
+  ) as "root_1"
   cross join (
     select
       COALESCE(
@@ -121,4 +121,4 @@ from
               "post_groups_412749f0"."title"
           ) as "post_groups_412749f0_groups_94123404"
       ) as "post_groups_json_412749f0" on true
-  ) as "dsql_operation_root_2"
+  ) as "root_2"

@@ -333,7 +333,7 @@ fn combine_root_queries(
 
     let mut query = Query::select();
     for (index, (root, output_names)) in roots.into_iter().enumerate() {
-        let root_alias = format!("dsql_operation_root_{index}");
+        let root_alias = format!("root_{index}");
         for output_name in output_names {
             query.expr_as(
                 Expr::col((Alias::new(&root_alias), Alias::new(&output_name))),
@@ -365,8 +365,8 @@ fn root_output_names(plan: &QueryRootPlan) -> Vec<String> {
 }
 
 fn singular_root_envelope(output_names: &[String], root_query: SelectStatement) -> SelectStatement {
-    const SINGLETON_ALIAS: &str = "dsql_singleton";
-    const ROOT_ALIAS: &str = "dsql_root";
+    const SINGLETON_ALIAS: &str = "singleton";
+    const ROOT_ALIAS: &str = "root";
 
     let mut singleton = Query::select();
     singleton.expr(Expr::value(1));

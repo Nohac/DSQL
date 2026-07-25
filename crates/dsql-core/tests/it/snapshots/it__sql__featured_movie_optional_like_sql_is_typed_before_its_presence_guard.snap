@@ -4,11 +4,11 @@ expression: render_sql(&bowl).await
 ---
 -- FeaturedMovieQuery
 select
-  "dsql_root"."featured" as "featured"
+  "root"."featured" as "featured"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT(
@@ -65,5 +65,5 @@ from
       "featured_faaf6fb1"."id" asc
     limit
       1
-  ) as "dsql_root" on true
+  ) as "root" on true
 -- parameters: params.info

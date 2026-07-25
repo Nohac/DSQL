@@ -4,20 +4,20 @@ expression: render_sql(&bowl).await
 ---
 -- RendererEdges
 select
-  "dsql_operation_root_0"."signals" as "signals",
-  "dsql_operation_root_1"."ratings" as "ratings",
-  "dsql_operation_root_2"."ordered_title" as "ordered_title",
-  "dsql_operation_root_3"."singular" as "singular",
-  "dsql_operation_root_4"."kind_count" as "kind_count",
-  "dsql_operation_root_4"."first_kind" as "first_kind"
+  "root_0"."signals" as "signals",
+  "root_1"."ratings" as "ratings",
+  "root_2"."ordered_title" as "ordered_title",
+  "root_3"."singular" as "singular",
+  "root_4"."kind_count" as "kind_count",
+  "root_4"."first_kind" as "first_kind"
 from
   (
     select
-      "dsql_root"."signals" as "signals"
+      "root"."signals" as "signals"
     from
       (
         select
-          1) as "dsql_singleton"
+          1) as "singleton"
       left join LATERAL (
         select
           JSON_BUILD_OBJECT(
@@ -52,8 +52,8 @@ from
           "signals_103b5263"."id" = 2
         limit
           1
-      ) as "dsql_root" on true
-  ) as "dsql_operation_root_0"
+      ) as "root" on true
+  ) as "root_0"
   cross join (
     select
       COALESCE(
@@ -84,14 +84,14 @@ from
         limit
           16
       ) as "ratings_f7637813"
-  ) as "dsql_operation_root_1"
+  ) as "root_1"
   cross join (
     select
-      "dsql_root"."ordered_title" as "ordered_title"
+      "root"."ordered_title" as "ordered_title"
     from
       (
         select
-          1) as "dsql_singleton"
+          1) as "singleton"
       left join LATERAL (
         select
           JSON_BUILD_OBJECT(
@@ -135,15 +135,15 @@ from
           "ordered_title_f2d3b1aa"."id" = 943844
         limit
           1
-      ) as "dsql_root" on true
-  ) as "dsql_operation_root_2"
+      ) as "root" on true
+  ) as "root_2"
   cross join (
     select
-      "dsql_root"."singular" as "singular"
+      "root"."singular" as "singular"
     from
       (
         select
-          1) as "dsql_singleton"
+          1) as "singleton"
       left join LATERAL (
         select
           JSON_BUILD_OBJECT(
@@ -166,12 +166,12 @@ from
           "singular_b1ef7ca7"."id" = 2
         limit
           1
-      ) as "dsql_root" on true
-  ) as "dsql_operation_root_3"
+      ) as "root" on true
+  ) as "root_3"
   cross join (
     select
       TO_JSON(COUNT(*)) as "kind_count",
       TO_JSON(MIN("kind_type_639d6b68"."kind")) as "first_kind"
     from
       "public"."kind_type" as "kind_type_639d6b68"
-  ) as "dsql_operation_root_4"
+  ) as "root_4"

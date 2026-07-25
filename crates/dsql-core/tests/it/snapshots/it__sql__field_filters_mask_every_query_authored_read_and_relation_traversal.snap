@@ -4,16 +4,16 @@ expression: render_sql(&bowl).await
 ---
 -- MaskedReads
 select
-  "dsql_operation_root_0"."title" as "title",
-  "dsql_operation_root_1"."grouped" as "grouped"
+  "root_0"."title" as "title",
+  "root_1"."grouped" as "grouped"
 from
   (
     select
-      "dsql_root"."title" as "title"
+      "root"."title" as "title"
     from
       (
         select
-          1) as "dsql_singleton"
+          1) as "singleton"
       left join LATERAL (
         select
           JSON_BUILD_OBJECT(
@@ -178,8 +178,8 @@ from
           end desc
         limit
           1
-      ) as "dsql_root" on true
-  ) as "dsql_operation_root_0"
+      ) as "root" on true
+  ) as "root_0"
   cross join (
     select
       COALESCE(
@@ -213,6 +213,6 @@ from
             end
           )
       ) as "grouped_272ef66c_groups_34e61f93"
-  ) as "dsql_operation_root_1"
+  ) as "root_1"
 -- parameters: context.can_read_title, params.guess, context.can_read_info, params.infos, params.info_guess
 -- variant params.direction: asc=>asc, desc=>desc

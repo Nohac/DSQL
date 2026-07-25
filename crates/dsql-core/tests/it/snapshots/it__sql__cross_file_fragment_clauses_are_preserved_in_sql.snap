@@ -4,11 +4,11 @@ expression: render_sql(&bowl).await
 ---
 -- TopRated
 select
-  "dsql_root"."title" as "title"
+  "root"."title" as "title"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT(
@@ -34,4 +34,4 @@ from
       ) as "ratings_json_7214f337" on true
     limit
       1
-  ) as "dsql_root" on true
+  ) as "root" on true

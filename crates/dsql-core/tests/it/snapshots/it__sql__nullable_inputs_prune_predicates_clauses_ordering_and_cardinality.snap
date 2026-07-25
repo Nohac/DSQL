@@ -4,11 +4,11 @@ expression: render_sql(&bowl).await
 ---
 -- DefaultedUnique
 select
-  "dsql_root"."users" as "users"
+  "root"."users" as "users"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT('id', "users_99fc7350"."id") as "users"
@@ -16,7 +16,7 @@ from
       "public"."users" as "users_99fc7350"
     where
       "users_99fc7350"."id" = ($1)
-  ) as "dsql_root" on true
+  ) as "root" on true
 -- parameters: params.id
 
 -- NullableInputs

@@ -4,13 +4,13 @@ expression: render_sql(&bowl).await
 ---
 -- OptionalAtoms
 select
-  "dsql_operation_root_0"."direct" as "direct",
-  "dsql_operation_root_1"."pattern" as "pattern",
-  "dsql_operation_root_2"."required_pattern" as "required_pattern",
-  "dsql_operation_root_3"."seed" as "seed",
-  "dsql_operation_root_4"."reversed" as "reversed",
-  "dsql_operation_root_5"."multiple" as "multiple",
-  "dsql_operation_root_6"."negated" as "negated"
+  "root_0"."direct" as "direct",
+  "root_1"."pattern" as "pattern",
+  "root_2"."required_pattern" as "required_pattern",
+  "root_3"."seed" as "seed",
+  "root_4"."reversed" as "reversed",
+  "root_5"."multiple" as "multiple",
+  "root_6"."negated" as "negated"
 from
   (
     select
@@ -30,7 +30,7 @@ from
         limit
           10
       ) as "direct_664e5a81"
-  ) as "dsql_operation_root_0"
+  ) as "root_0"
   cross join (
     select
       COALESCE(
@@ -49,7 +49,7 @@ from
         limit
           10
       ) as "pattern_d803321a"
-  ) as "dsql_operation_root_1"
+  ) as "root_1"
   cross join (
     select
       COALESCE(
@@ -70,7 +70,7 @@ from
         limit
           10
       ) as "required_pattern_aaf880a8"
-  ) as "dsql_operation_root_2"
+  ) as "root_2"
   cross join (
     select
       COALESCE(
@@ -103,7 +103,7 @@ from
         limit
           10
       ) as "seed_3acba0f5"
-  ) as "dsql_operation_root_3"
+  ) as "root_3"
   cross join (
     select
       COALESCE(
@@ -127,7 +127,7 @@ from
         limit
           10
       ) as "reversed_be149a76"
-  ) as "dsql_operation_root_4"
+  ) as "root_4"
   cross join (
     select
       COALESCE(
@@ -154,7 +154,7 @@ from
         limit
           10
       ) as "multiple_21425244"
-  ) as "dsql_operation_root_5"
+  ) as "root_5"
   cross join (
     select
       COALESCE(
@@ -173,5 +173,5 @@ from
         limit
           10
       ) as "negated_a22fcfea"
-  ) as "dsql_operation_root_6"
+  ) as "root_6"
 -- parameters: params.id, params.name, params.required_name, params.left, params.right

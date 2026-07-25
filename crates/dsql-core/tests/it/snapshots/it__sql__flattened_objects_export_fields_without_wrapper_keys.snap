@@ -4,11 +4,11 @@ expression: render_sql(&bowl).await
 ---
 -- FlattenOwner
 select
-  "dsql_root"."feed" as "feed"
+  "root"."feed" as "feed"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT(
@@ -43,16 +43,16 @@ from
       ) as "users_json_df293de7" on true
     limit
       1
-  ) as "dsql_root" on true
+  ) as "root" on true
 -- parameters: params.owner
 
 -- FlattenPostStats
 select
-  "dsql_root"."accounts" as "accounts"
+  "root"."accounts" as "accounts"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT(
@@ -77,7 +77,7 @@ from
       ) as "posts_json_cd19cb80" on true
     limit
       1
-  ) as "dsql_root" on true
+  ) as "root" on true
 -- parameters: params.title
 
 -- FlattenRoot

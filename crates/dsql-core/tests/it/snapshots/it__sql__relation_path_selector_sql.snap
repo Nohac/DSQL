@@ -4,11 +4,11 @@ expression: "fixture_sql(\"valid/imdb-relation-path-selector.dsql\").await"
 ---
 -- MovieRelationPathSelector
 select
-  "dsql_root"."movie_info" as "movie_info"
+  "root"."movie_info" as "movie_info"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT(
@@ -72,4 +72,4 @@ from
       ) as "title_json_85df456e" on true
     where
       "movie_info_d37aaa02"."id" = 1811435
-  ) as "dsql_root" on true
+  ) as "root" on true

@@ -110,7 +110,7 @@ impl PostgresExecutor {
     ) -> Result<Value, ExecuteError> {
         let inner = materialized.sql.trim().trim_end_matches(';');
         let mut query = sqlx::query_scalar::<Postgres, Option<String>>(AssertSqlSafe(format!(
-            "select ROW_TO_JSON(\"dsql_result\")::text from ({inner}) as \"dsql_result\""
+            "select ROW_TO_JSON(\"result\")::text from ({inner}) as \"result\""
         )));
         for parameter in &materialized.parameters {
             query = bind(query, parameter)?;

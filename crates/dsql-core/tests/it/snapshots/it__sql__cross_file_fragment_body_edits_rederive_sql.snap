@@ -4,11 +4,11 @@ expression: after
 ---
 -- UsesBits
 select
-  "dsql_root"."title" as "title"
+  "root"."title" as "title"
 from
   (
     select
-      1) as "dsql_singleton"
+      1) as "singleton"
   left join LATERAL (
     select
       JSON_BUILD_OBJECT('title', "title_d4d9f554"."title") as "title"
@@ -16,4 +16,4 @@ from
       "public"."title" as "title_d4d9f554"
     limit
       1
-  ) as "dsql_root" on true
+  ) as "root" on true
