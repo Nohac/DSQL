@@ -259,8 +259,32 @@ export function materializeDsqlBindings(
       const identity = field.null_identity === "empty_object" ? {} : [];
       materialized = setDsqlPath(materialized, field.path, identity);
     }
+    validateDsqlSafeInteger(field, value);
   }
   return materialized;
+}
+
+function validateDsqlSafeInteger(
+  field: DsqlInputField,
+  value: unknown,
+): void {
+  if (value === null || value === undefined || field.data_type !== "int") {
+    return;
+  }
+  if (field.collection === true) {
+    if (
+      !Array.isArray(value) ||
+      !value.every((item) => item === null || Number.isSafeInteger(item))
+    ) {
+      throw new Error(
+        `operation input ${field.path} must be an array of safe integers`,
+      );
+    }
+    return;
+  }
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`operation input ${field.path} must be a safe integer`);
+  }
 }
 
 function dsqlDefaultValue(
@@ -290,8 +314,11 @@ function dsqlDefaultValue(
           return invalidDsqlDefault(field, "an integer default");
         }
         const integer = BigInt(defaultValue.value);
-        if (integer < -(1n << 63n) || integer > (1n << 63n) - 1n) {
-          return invalidDsqlDefault(field, "an integer default");
+        if (
+          integer < BigInt(Number.MIN_SAFE_INTEGER) ||
+          integer > BigInt(Number.MAX_SAFE_INTEGER)
+        ) {
+          return invalidDsqlDefault(field, "a safe integer default");
         }
         return Number(integer);
       }

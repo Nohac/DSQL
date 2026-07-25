@@ -12,6 +12,54 @@
     "expected": 42
   },
   {
+    "name": "minimum safe integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "number", "value": "-9007199254740991" }
+    },
+    "expected": -9007199254740991
+  },
+  {
+    "name": "maximum safe integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "number", "value": "9007199254740991" }
+    },
+    "expected": 9007199254740991
+  },
+  {
+    "name": "below minimum safe integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "number", "value": "-9007199254740992" }
+    },
+    "error": "safe integer default"
+  },
+  {
+    "name": "above maximum safe integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "number", "value": "9007199254740992" }
+    },
+    "error": "safe integer default"
+  },
+  {
     "name": "malformed integer",
     "field": {
       "path": "params.value",
@@ -92,6 +140,25 @@
       }
     },
     "expected": [2, 5]
+  },
+  {
+    "name": "unsafe integer collection member",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "collection": true,
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": {
+        "kind": "collection",
+        "items": [
+          { "kind": "number", "value": "2" },
+          { "kind": "number", "value": "9007199254740992" }
+        ]
+      }
+    },
+    "error": "safe integer default"
   },
   {
     "name": "collection without items",

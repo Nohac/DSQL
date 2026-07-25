@@ -55,11 +55,10 @@ and unsupported types fail before database execution. SQL variants are replaced
 only by text from their compiler-produced closed case list; caller text is
 never interpolated into SQL.
 
-Once definition input refinements are implemented, materialization first
-substitutes typed declaration defaults for omitted public paths. It then checks
-requiredness and validates values. A supplied value always wins over a default;
-explicit `null` is accepted only for a nullable declaration. Trusted context is
-never defaulted by query source.
+Materialization first substitutes typed declaration defaults for omitted public
+paths. It then checks requiredness and validates values. A supplied value always
+wins over a default; explicit `null` is accepted only for a nullable declaration.
+Trusted context is never defaulted by query source.
 
 Nullable values with structural roles are materialized through compiler-owned
 semantic cases, not by interpolating or rewriting caller text. In particular, a
@@ -88,18 +87,22 @@ JSON input encodings are:
 | `uuid` | UUID string |
 | `text` | string |
 | `timestamptz` | RFC 3339 string |
-| `int` | integer number |
+| `int` | integer number between `-9007199254740991` and `9007199254740991` |
 | `numeric` | decimal string, preserving arbitrary precision |
 | `float` | number |
 | `boolean` | boolean |
 | `json` | any JSON value |
 
-A collection uses an array of the corresponding scalar encoding. The current
-compiler emits every positional input as required and non-null. Accordingly,
-the implemented executor rejects missing and null values. The preceding
-default, optional, and nullable rules become active when definition input
-refinements and their metadata are implemented; adapters must not approximate
-them independently in the meantime.
+A collection uses an array of the corresponding scalar encoding. Supplied
+collections may contain `null` elements; declaration collection defaults may
+not. The `int` range is the exact-integer domain of IEEE-754 doubles, which JSON
+numbers take when parsed by JavaScript. Both supplied values and declaration
+defaults outside it are rejected before database execution. Use `numeric` when
+an exact value outside that range is required.
+
+Input refinements determine requiredness, nullability, and defaults in emitted
+metadata. The maintained Rust and TypeScript materializers consume that same
+contract; adapters must not reinterpret it independently.
 
 ## Test database
 

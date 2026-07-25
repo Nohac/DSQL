@@ -13,6 +13,9 @@ use sqlx::types::{
 };
 use sqlx::{AssertSqlSafe, Postgres};
 
+const MIN_SAFE_INTEGER: i64 = -9_007_199_254_740_991;
+const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
 /// Public inputs and trusted server context for one execution.
 #[derive(Clone, Debug)]
 pub struct ExecutionBindings {
@@ -246,7 +249,31 @@ fn input_value(
             &format!("a non-null {}", field.data_type),
         ));
     }
+    validate_safe_integer(field, &value)?;
     Ok(Some(value))
+}
+
+fn validate_safe_integer(field: &InputField, value: &Value) -> Result<(), ExecuteError> {
+    if value.is_null() || field.data_type != "int" {
+        return Ok(());
+    }
+    if field.collection == Some(true) {
+        let Some(values) = value.as_array() else {
+            return Err(invalid(&field.path, "an array of safe integers"));
+        };
+        if values
+            .iter()
+            .all(|value| value.is_null() || integer_value(value).is_some_and(is_safe_integer))
+        {
+            return Ok(());
+        }
+        return Err(invalid(&field.path, "an array of safe integers"));
+    }
+    if integer_value(value).is_some_and(is_safe_integer) {
+        Ok(())
+    } else {
+        Err(invalid(&field.path, "a safe integer"))
+    }
 }
 
 fn lookup_path<'a>(
@@ -290,8 +317,9 @@ fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Val
                 "int" => value
                     .parse::<i64>()
                     .ok()
+                    .filter(|value| is_safe_integer(*value))
                     .map(Value::from)
-                    .ok_or_else(|| invalid(&field.path, "an integer default")),
+                    .ok_or_else(|| invalid(&field.path, "a safe integer default")),
                 "float" => value
                     .parse::<f64>()
                     .ok()
@@ -543,6 +571,10 @@ fn integer_value(value: &Value) -> Option<i64> {
         .as_number()
         .filter(|value| value.is_integer())
         .and_then(|value| value.to_i64())
+}
+
+fn is_safe_integer(value: i64) -> bool {
+    (MIN_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value)
 }
 
 fn float_value(value: &Value) -> Option<f64> {

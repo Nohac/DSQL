@@ -100,7 +100,7 @@ async fn valid_pagination_and_collection_default_edges_check_cleanly() {
               $$empty_ids = []
               $$ids = ["00000000-0000-0000-0000-000000000001"]
               $$limit = 0
-              $$offset = 9223372036854775807
+              $$offset = 9007199254740991
             ) {
               nullable: public::users(where .id in $$nullable_ids) { id }
               empty: public::users(where .id in $$empty_ids) { id }
@@ -209,6 +209,39 @@ async fn numeric_and_float_literals_follow_their_logical_types() {
               metrics(where .amount >= 12345678901234567890.12345678901234567890 and .ratio == "not a float") {
                 amount
               }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn integer_defaults_use_the_json_safe_number_domain() {
+    let bowl = checked_bowl(numeric_catalog()).await;
+    insert_source(
+        &bowl,
+        "integer-defaults.dsql",
+        indoc::indoc! {r#"
+            query SafeIntegerDefaults(
+              $$minimum = -9007199254740991
+              $$maximum = 9007199254740991
+            ) {
+              metrics(
+                where .exists >= $$minimum and .exists <= $$maximum
+              ) { exists }
+            }
+            query InvalidIntegerDefaults(
+              $$below = -9007199254740992
+              $$above = 9007199254740992
+              $$values = [1, 9007199254740992]
+            ) {
+              metrics(
+                where .exists == $$below
+                  or .exists == $$above
+                  or .exists in $$values
+              ) { exists }
             }
         "#},
     )

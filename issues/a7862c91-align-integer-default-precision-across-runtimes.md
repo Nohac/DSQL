@@ -1,6 +1,6 @@
 # Align integer default precision across runtimes
 
-**ID:** a7862c91 | **Status:** Open | **Created:** 2026-07-22T22:12:52+02:00
+**ID:** a7862c91 | **Status:** Done | **Created:** 2026-07-22T22:12:52+02:00
 
 Rust materializes integer defaults across the full signed 64-bit range, while
 the TypeScript runtime validates that same range and then converts it to a

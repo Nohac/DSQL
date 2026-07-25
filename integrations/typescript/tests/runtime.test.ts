@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 import defaultCases from "../../../tests/conformance/input-defaults.json" with {
   type: "json",
 };
+import inputCases from "../../../tests/conformance/input-values.json" with {
+  type: "json",
+};
 import {
   defineDsqlQuery,
   type DsqlQueryDefinition,
@@ -178,6 +181,22 @@ test("matches the shared typed-default conformance cases", () => {
       expect(materialize(), testCase.name).toEqual({
         params: { value: testCase.expected },
       });
+    } else {
+      expect(materialize, testCase.name).toThrow(testCase.error);
+    }
+  }
+});
+
+test("matches the shared supplied-value conformance cases", () => {
+  for (const testCase of inputCases) {
+    const materialize = () =>
+      materializeDsqlBindings([testCase.field], testCase.bindings);
+    if ("expected" in testCase) {
+      const materialized = materialize();
+      expect(
+        getDsqlPath(materialized, testCase.field.path),
+        testCase.name,
+      ).toEqual(testCase.expected);
     } else {
       expect(materialize, testCase.name).toThrow(testCase.error);
     }

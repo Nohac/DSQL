@@ -46,6 +46,9 @@ use crate::service::completion::{
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
 use crate::source::{ResolutionScope, ScopeImports};
 
+const MIN_SAFE_INTEGER: i64 = -9_007_199_254_740_991;
+const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
 /// One variable occurrence, lowered from `value_variable` or
 /// `operator_variable`. The inference stage (phase 7) groups these by name
 /// and derives the query's parameter set.
@@ -1156,13 +1159,19 @@ fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) 
     }
     if matches!(binding.role, VariableRole::Limit | VariableRole::Offset)
         && let InputDefault::Number(value) = default
-        && !value.parse::<i64>().is_ok_and(|value| value >= 0)
+        && parse_safe_integer(value).is_none_or(|value| value < 0)
     {
         return Some(format!(
             "{} default for `{}` must be a non-negative integer no greater than {}",
             binding.role.as_str(),
             refinement.name,
-            i64::MAX,
+            MAX_SAFE_INTEGER,
+        ));
+    }
+    if binding.data_type == DataType::Int && !integer_default_is_safe(default) {
+        return Some(format!(
+            "integer default for `{}` must be between {MIN_SAFE_INTEGER} and {MAX_SAFE_INTEGER}",
+            refinement.name,
         ));
     }
     if let InputDefault::Collection(items) = default
@@ -1213,7 +1222,7 @@ fn input_default_scalar_matches(default: &InputDefault, data_type: DataType) -> 
             DataType::Text | DataType::Uuid | DataType::Timestamptz | DataType::Unknown
         ),
         InputDefault::Number(value) => match data_type {
-            DataType::Int => value.parse::<i64>().is_ok(),
+            DataType::Int => parse_safe_integer(value).is_some(),
             DataType::Float => value.parse::<f64>().is_ok_and(f64::is_finite),
             DataType::Numeric | DataType::Unknown => true,
             _ => false,
@@ -1221,6 +1230,21 @@ fn input_default_scalar_matches(default: &InputDefault, data_type: DataType) -> 
         InputDefault::Boolean(_) => matches!(data_type, DataType::Boolean | DataType::Unknown),
         InputDefault::Null => true,
         InputDefault::Collection(_) | InputDefault::EmptyObject => false,
+    }
+}
+
+fn parse_safe_integer(value: &str) -> Option<i64> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|value| (MIN_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(value))
+}
+
+fn integer_default_is_safe(default: &InputDefault) -> bool {
+    match default {
+        InputDefault::Number(value) => parse_safe_integer(value).is_some(),
+        InputDefault::Collection(items) => items.iter().all(integer_default_is_safe),
+        _ => true,
     }
 }
 

@@ -172,6 +172,52 @@ fn materialization_rejects_invalid_envelopes_and_unused_required_fields() {
 }
 
 #[test]
+fn shared_input_value_conformance_cases_match() {
+    let cases: Value = facet_json::from_str(include_str!(
+        "../../../../tests/conformance/input-values.json"
+    ))
+    .expect("conformance fixture parses");
+    let cases = cases.as_array().expect("conformance fixture is an array");
+
+    for case in cases {
+        let case = case.as_object().expect("conformance case is an object");
+        let name = case
+            .get("name")
+            .and_then(Value::as_string)
+            .map(|value| value.as_str())
+            .expect("case has a name");
+        let field = case.get("field").expect("case has field metadata").clone();
+        let field: InputField = facet_value::from_value(field).expect("case field metadata parses");
+        let variables = case
+            .get("bindings")
+            .expect("case has a bindings envelope")
+            .clone();
+        let result = materialize(
+            &operation_with_fields(vec![field], &["params.value"]),
+            &ExecutionBindings {
+                variables,
+                context: value!({}),
+            },
+        );
+
+        if let Some(expected) = case.get("expected") {
+            assert!(result.is_ok(), "{name} should materialize: {result:?}");
+            if let Ok(materialized) = result {
+                assert_eq!(materialized.parameters[0].value, *expected, "{name}");
+            }
+        } else {
+            let expected = case
+                .get("error")
+                .and_then(Value::as_string)
+                .map(|value| value.as_str())
+                .expect("case has an error");
+            let error = result.expect_err("case should fail").to_string();
+            assert!(error.contains(expected), "{name}: {error}");
+        }
+    }
+}
+
+#[test]
 fn trusted_context_is_never_defaulted() {
     let mut operation = operation_with_fields(Vec::new(), &[]);
     let mut context = field("context.tenant_id", "uuid", false, &[]);

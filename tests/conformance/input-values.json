@@ -1,0 +1,76 @@
+[
+  {
+    "name": "minimum safe integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": -9007199254740991 } },
+    "expected": -9007199254740991
+  },
+  {
+    "name": "maximum safe integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": 9007199254740991 } },
+    "expected": 9007199254740991
+  },
+  {
+    "name": "below minimum safe integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": -9007199254740992 } },
+    "error": "a safe integer"
+  },
+  {
+    "name": "above maximum safe integer",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": 9007199254740992 } },
+    "error": "a safe integer"
+  },
+  {
+    "name": "unsafe integer collection member",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "collection": true,
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": [1, 9007199254740992] } },
+    "error": "an array of safe integers"
+  },
+  {
+    "name": "null integer collection member",
+    "field": {
+      "path": "params.value",
+      "data_type": "int",
+      "collection": true,
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": [1, null] } },
+    "expected": [1, null]
+  }
+]
