@@ -206,8 +206,9 @@ export function applyDsqlVariants(
   let rendered = sql;
   for (const [path, variant] of Object.entries(variants)) {
     const selected = getDsqlPath(variables, path);
-    if (selected == null && variant.nullText !== undefined) {
-      rendered = rendered.replaceAll(`{{${path}}}`, variant.nullText);
+    const nullText = variant.nullText;
+    if (selected == null && nullText !== undefined) {
+      rendered = rendered.replaceAll(`{{${path}}}`, () => nullText);
       continue;
     }
     if (typeof selected !== "string") {
@@ -218,7 +219,7 @@ export function applyDsqlVariants(
     if (replacement === undefined) {
       throw new Error(`invalid dsql variant value at ${path}: ${selected}`);
     }
-    rendered = rendered.replaceAll(`{{${path}}}`, replacement);
+    rendered = rendered.replaceAll(`{{${path}}}`, () => replacement);
   }
   return rendered;
 }

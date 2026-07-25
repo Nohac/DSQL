@@ -19,11 +19,10 @@ use dsql_core::plan::{
 use dsql_core::resolution::SelectionCardinality;
 use dsql_core::sql::GeneratedSql;
 use dsql_metadata::{
-    DefinitionKind, DynamicInputMetadata, FragmentMetadata, FragmentSpreadMetadata, InputDefault,
-    InputField, OperationMetadata, PolicyApplicationMetadata, PolicyFieldAccessMetadata,
-    PolicyMetadata, ResultDataType, ResultField, ResultFieldKind, ResultShape, SourceMapEntry,
-    SourceRange, SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata,
-    SqlVariantMetadata,
+    DefinitionKind, FragmentMetadata, FragmentSpreadMetadata, InputDefault, InputField,
+    OperationMetadata, PolicyApplicationMetadata, PolicyFieldAccessMetadata, PolicyMetadata,
+    ResultDataType, ResultField, ResultFieldKind, ResultShape, SourceMapEntry, SourceRange,
+    SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
 };
 
 use crate::pipeline::{GenerateError, Result};
@@ -111,7 +110,7 @@ pub(crate) fn operation_metadata(
             &inputs.sql.policy_context,
             &inputs.seed.query_name,
         )?,
-        dynamic_inputs: dynamic_inputs(inputs.bindings),
+        dynamic_inputs: Vec::new(),
         policies: policy_metadata(catalog, source_root, inputs)?,
         handoffs: Vec::new(),
         fragment_spreads: fragment_spreads(&inputs.seed.spreads),
@@ -149,7 +148,7 @@ pub(crate) fn fragment_metadata(
         )?,
         params: input_fields(inputs.bindings, true),
         input: input_fields(inputs.bindings, false),
-        dynamic_inputs: dynamic_inputs(inputs.bindings),
+        dynamic_inputs: Vec::new(),
         fragment_spreads: fragment_spreads(&inputs.plan.spreads),
         source_map: vec![SourceMapEntry {
             id: inputs.plan.name.clone(),
@@ -844,26 +843,6 @@ fn insert_context_field(
     }
     fields.insert(field.path.clone(), field);
     Ok(())
-}
-
-fn dynamic_inputs(bindings: &[VariableBinding]) -> Vec<DynamicInputMetadata> {
-    bindings
-        .iter()
-        .filter(|binding| !binding.enum_values.is_empty())
-        .map(|binding| DynamicInputMetadata {
-            name: binding.name.clone().unwrap_or_else(|| {
-                binding
-                    .path
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or("value")
-                    .to_string()
-            }),
-            kind: binding.role.as_str().to_string(),
-            preset: String::new(),
-            fields: Vec::new(),
-        })
-        .collect()
 }
 
 fn join_path(parent: &str, name: &str) -> String {

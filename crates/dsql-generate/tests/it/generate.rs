@@ -642,6 +642,15 @@ async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
                 query NullableNonNullDefault($$limit? = 5) {
                   users(limit $$limit) { id }
                 }
+                query ClosedVariants(
+                  $$operator = "=="
+                  $$direction = "asc"
+                ) {
+                  users(
+                    where .name $$operator[==, like] "A"
+                    order by name $$direction
+                  ) { id }
+                }
             "#},
             "frontend",
         )],
@@ -661,6 +670,7 @@ async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
                 "PostWindow"
                     | "Contained"
                     | "Bound"
+                    | "ClosedVariants"
                     | "NullableCollection"
                     | "CollectionDefault"
                     | "ParentWindow"

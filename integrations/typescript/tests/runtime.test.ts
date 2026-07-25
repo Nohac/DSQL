@@ -438,3 +438,17 @@ test("rejects invalid dsql variant values", () => {
     }),
   ).toThrow("invalid dsql variant value at input.movie_info.clause.where.id.op: gt");
 });
+
+test("treats variant replacement text literally", () => {
+  expect(
+    applyDsqlVariants(
+      "select '{{params.variant}}', '{{params.variant}}'",
+      {
+        "params.variant": {
+          cases: { literal: "$&-$$" },
+        },
+      },
+      { params: { variant: "literal" } },
+    ),
+  ).toBe("select '$&-$$', '$&-$$'");
+});
