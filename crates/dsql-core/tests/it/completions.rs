@@ -252,6 +252,20 @@ async fn order_by_offers_columns_and_directions() {
 }
 
 #[tokio::test]
+async fn bounded_dynamic_inputs_complete_the_selected_surface_keyword() {
+    let predicate = completions(
+        "query Q($$search = {}) {\n  public::users(where $$search on |) {\n    id\n  }\n}\n",
+    )
+    .await;
+    let order = completions(
+        "query Q($$order = []) {\n  public::users(order by $$order on |) {\n    id\n  }\n}\n",
+    )
+    .await;
+
+    insta::assert_snapshot!(format!("predicate:\n{predicate}\n\norder:\n{order}"));
+}
+
+#[tokio::test]
 async fn aggregate_bodies_offer_contextual_functions_and_operands() {
     let functions = completions_with_marker(
         "query Q {\n  public::users | aggregate {\n    ¦\n  }\n}\n",

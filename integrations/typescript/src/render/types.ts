@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import ts from "typescript";
 import type {
+  DynamicInputMetadata,
   FragmentMetadata,
   FragmentSpreadMetadata,
   InputField,
@@ -247,7 +248,12 @@ function renderOperationModule(
     "",
     `export type ${resultType} = ${resultLiteral};`,
     "",
-    `export type ${paramsType} = ${paramsTypeLiteral(operation.params)};`,
+    ...dynamicInputTypeDefinitions(operation),
+    `export type ${paramsType} = ${paramsTypeLiteral(
+      operation.params,
+      operation.dynamic_inputs,
+      operation.name,
+    )};`,
     "",
     `export type ${inputType} = ${inputTypeLiteral(
       operation.input,
@@ -361,6 +367,7 @@ function renderExecutionPayload(
   operation: ${operationValue},
   parameters: ${JSON.stringify(operation.sql.parameters)},
   variants: ${JSON.stringify(sqlVariants(operation))},
+  dynamicInputs: ${JSON.stringify(operation.dynamic_inputs)},
   inputs: ${JSON.stringify([...operation.params, ...operation.input, ...operation.context])},
   sql: ${sql}
 };`;
@@ -738,8 +745,23 @@ function resultTypeLiteral(ctx: ResultTypeCtx): string {
   return objectTypeAt(ctx, "");
 }
 
-function paramsTypeLiteral(fields: readonly InputField[]): string {
-  return inputFieldsTypeLiteral(fields, PARAMS_PREFIX);
+function paramsTypeLiteral(
+  fields: readonly InputField[],
+  dynamicInputs: readonly DynamicInputMetadata[] = [],
+  operationName = "",
+): string {
+  return inputFieldsTypeLiteral(
+    fields,
+    PARAMS_PREFIX,
+    [],
+    [],
+    new Map(
+      dynamicInputs.map((input) => [
+        input.path,
+        dynamicInputTypeName(operationName, input.path),
+      ]),
+    ),
+  );
 }
 
 function inputTypeLiteral(
@@ -759,6 +781,7 @@ function inputFieldsTypeLiteral(
   prefix: InputRoot,
   fragmentSpreads: readonly FragmentSpreadMetadata[] = [],
   fragments: readonly FragmentMetadata[] = [],
+  dynamicTypes: ReadonlyMap<string, string> = new Map(),
 ): string {
   if (fields.length === 0) {
     return "Record<string, never>";
@@ -781,9 +804,80 @@ function inputFieldsTypeLiteral(
     if (fragmentBranches.some((branch) => pathStartsWith(path, branch.path))) {
       continue;
     }
-    root.insert(path, inputFieldType(field), field.required);
+    root.insert(
+      path,
+      dynamicTypes.get(field.path) ?? inputFieldType(field),
+      field.required,
+    );
   }
   return root.toTypeLiteral();
+}
+
+function dynamicInputTypeDefinitions(operation: OperationMetadata): string[] {
+  if (operation.dynamic_inputs.length === 0) {
+    return [];
+  }
+  return operation.dynamic_inputs.flatMap((input) => [
+    `export type ${dynamicInputTypeName(operation.name, input.path)} = ${dynamicInputTypeLiteral(
+      operation.name,
+      input,
+    )};`,
+    "",
+  ]);
+}
+
+function dynamicInputTypeName(operationName: string, path: string): string {
+  return `${toPascalCase(operationName)}${path
+    .split(".")
+    .map(toPascalCase)
+    .join("")}DynamicInput`;
+}
+
+function dynamicInputTypeLiteral(
+  operationName: string,
+  input: DynamicInputMetadata,
+): string {
+  const typeName = dynamicInputTypeName(operationName, input.path);
+  if (input.kind === "order") {
+    const entries = input.fields.map((field) =>
+      objectType([
+        [
+          field.key,
+          field.directions.map((direction) => JSON.stringify(direction)).join(" | "),
+        ],
+      ]),
+    );
+    return `Array<${entries.length === 0 ? "never" : entries.join(" | ")}>`;
+  }
+  const properties: Array<{
+    readonly name: string;
+    readonly type: string;
+    readonly optional: boolean;
+  }> = [
+    { name: "and", type: `Array<${typeName}>`, optional: true },
+    { name: "or", type: `Array<${typeName}>`, optional: true },
+    { name: "not", type: typeName, optional: true },
+  ];
+  for (const field of input.fields) {
+    const scalar = dataType(field.data_type);
+    properties.push({
+      name: field.key,
+      type: objectTypeWithOptional(
+        field.operators.map((operator) => ({
+          name: operator,
+          type:
+            operator === "is_null"
+              ? "boolean"
+              : operator === "in" || operator === "not_in"
+                ? `Array<${scalar}>`
+                : scalar,
+          optional: true,
+        })),
+      ),
+      optional: true,
+    });
+  }
+  return objectTypeWithOptional(properties);
 }
 
 function operationFragmentInputBranches(

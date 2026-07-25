@@ -1,4 +1,9 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
@@ -119,10 +124,18 @@ function assertGeneratedQueryConsumerTypes(
   querySource: string,
 ): void {
   const generatedDirectory = join(root, "src/generated/dsql");
-  writeFileSync(join(root, "runtime.ts"), readFileSync(
-    new URL("../src/runtime.ts", import.meta.url),
-    "utf8",
-  ));
+  writeFileSync(
+    join(root, "runtime.ts"),
+    readFileSync(new URL("../src/runtime.ts", import.meta.url), "utf8"),
+  );
+  mkdirSync(join(root, "generated"));
+  writeFileSync(
+    join(root, "generated/metadata.ts"),
+    readFileSync(
+      new URL("../src/generated/metadata.ts", import.meta.url),
+      "utf8",
+    ),
+  );
   writeFileSync(
     join(root, "react-query.d.ts"),
     `

@@ -20,7 +20,7 @@ use bowl::{
 use crate::catalog::{
     CatalogSnapshot, DataType, FieldCheckResult, FieldRef, TableRef, TableResolution,
 };
-use crate::entities::clause::{ClauseFact, OrderDirection};
+use crate::entities::clause::{ClauseFact, OrderDirection, OrderTerm};
 use crate::entities::definition::{DefDecl, DefKind};
 use crate::entities::expression::{
     BinaryOp, ComparisonOp, Expr, Sigil, VariableRef, build_variable_ref,
@@ -253,8 +253,10 @@ impl From<Sigil> for VariableSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VariableRole {
     WhereValue,
+    DynamicPredicate,
     ComparisonOperator,
     SortDirection,
+    DynamicOrder,
     Limit,
     Offset,
     FilterAssignment,
@@ -265,8 +267,10 @@ impl VariableRole {
     pub fn as_str(self) -> &'static str {
         match self {
             VariableRole::WhereValue => "wherevalue",
+            VariableRole::DynamicPredicate => "dynamicpredicate",
             VariableRole::ComparisonOperator => "comparisonoperator",
             VariableRole::SortDirection => "sortdirection",
+            VariableRole::DynamicOrder => "dynamicorder",
             VariableRole::Limit => "limit",
             VariableRole::Offset => "offset",
             VariableRole::FilterAssignment => "filterassignment",
@@ -1157,6 +1161,24 @@ fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) 
             )
         });
     }
+    if binding.role == VariableRole::DynamicPredicate {
+        return (!matches!(default, InputDefault::EmptyObject)).then(|| {
+            format!(
+                "dynamic predicate `{}` only accepts the empty object default",
+                refinement.name
+            )
+        });
+    }
+    if binding.role == VariableRole::DynamicOrder {
+        return (!matches!(default, InputDefault::Collection(items) if items.is_empty())).then(
+            || {
+                format!(
+                    "dynamic order `{}` only accepts the empty collection default",
+                    refinement.name
+                )
+            },
+        );
+    }
     if matches!(binding.role, VariableRole::Limit | VariableRole::Offset)
         && let InputDefault::Number(value) = default
         && parse_safe_integer(value).is_none_or(|value| value < 0)
@@ -1401,39 +1423,58 @@ impl Inference<'_> {
                 ),
                 ClauseFact::OrderBy { items } => {
                     for item in items {
-                        let Some(OrderDirection::Variable(variable)) = &item.direction else {
-                            continue;
-                        };
-                        let Some(resolved) = resolved else {
-                            continue;
-                        };
-                        let Some(column_id) = resolved
-                            .order_item_at(item.field_span)
-                            .and_then(|resolved| resolved.column)
-                        else {
-                            continue;
-                        };
-                        let Some(column) = self.catalog.column_by_id(column_id) else {
-                            continue;
-                        };
-                        let inferred_path = [
-                            column.name.clone(),
-                            InputPathSegment::Direction.as_ref().to_string(),
-                        ];
-                        self.push_binding(
-                            &path.parts,
-                            BindingContext {
-                                role: VariableRole::SortDirection,
-                                data_type: DataType::Unknown,
-                                collection: false,
-                                scope,
-                                inferred_path: &inferred_path,
-                                anonymous_key: None,
-                                operators: Vec::new(),
-                                enum_values: vec!["asc".to_string(), "desc".to_string()],
-                            },
-                            variable,
-                        );
+                        match item {
+                            OrderTerm::Dynamic(variable) => self.push_binding(
+                                &path.parts,
+                                BindingContext {
+                                    role: VariableRole::DynamicOrder,
+                                    data_type: DataType::Unknown,
+                                    collection: false,
+                                    scope,
+                                    inferred_path: &["order".to_string()],
+                                    anonymous_key: None,
+                                    operators: Vec::new(),
+                                    enum_values: Vec::new(),
+                                },
+                                &variable,
+                            ),
+                            OrderTerm::Column(item) => {
+                                let Some(OrderDirection::Variable(variable)) = &item.direction
+                                else {
+                                    continue;
+                                };
+                                let Some(resolved) = resolved else {
+                                    continue;
+                                };
+                                let Some(column_id) = resolved
+                                    .order_item_at(item.field_span)
+                                    .and_then(|resolved| resolved.column)
+                                else {
+                                    continue;
+                                };
+                                let Some(column) = self.catalog.column_by_id(column_id) else {
+                                    continue;
+                                };
+                                let inferred_path = [
+                                    column.name.clone(),
+                                    InputPathSegment::Direction.as_ref().to_string(),
+                                ];
+                                self.push_binding(
+                                    &path.parts,
+                                    BindingContext {
+                                        role: VariableRole::SortDirection,
+                                        data_type: DataType::Unknown,
+                                        collection: false,
+                                        scope,
+                                        inferred_path: &inferred_path,
+                                        anonymous_key: None,
+                                        operators: Vec::new(),
+                                        enum_values: vec!["asc".to_string(), "desc".to_string()],
+                                    },
+                                    variable,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1525,6 +1566,7 @@ impl Inference<'_> {
             }
             Expr::Literal { .. }
             | Expr::Path { .. }
+            | Expr::DynamicPredicate { .. }
             | Expr::PredicateRef { .. }
             | Expr::Aggregate { .. }
             | Expr::Error { .. } => {}
@@ -1680,6 +1722,22 @@ impl Inference<'_> {
                     variable,
                 );
             }
+            Expr::DynamicPredicate { variable, .. } => {
+                self.push_binding(
+                    selection_path,
+                    BindingContext {
+                        role: VariableRole::DynamicPredicate,
+                        data_type: DataType::Unknown,
+                        collection: false,
+                        scope,
+                        inferred_path: &["search".to_string()],
+                        anonymous_key: None,
+                        operators: Vec::new(),
+                        enum_values: Vec::new(),
+                    },
+                    variable,
+                );
+            }
             Expr::List { .. }
             | Expr::Aggregate { .. }
             | Expr::Path { .. }
@@ -1725,6 +1783,7 @@ impl Inference<'_> {
             | Expr::Exists { .. }
             | Expr::Literal { .. }
             | Expr::Variable { .. }
+            | Expr::DynamicPredicate { .. }
             | Expr::PredicateRef { .. }
             | Expr::Error { .. } => None,
         }

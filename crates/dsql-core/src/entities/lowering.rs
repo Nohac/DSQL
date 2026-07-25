@@ -44,7 +44,9 @@ fn lower_rule(
         | Rule::LimitClause
         | Rule::OffsetClause => Clause::lower(ctx, node, commands),
         Rule::Directive => Directive::lower(ctx, node, commands),
-        Rule::ValueVariable | Rule::OperatorVariable => Variable::lower(ctx, node, commands),
+        Rule::ValueVariable | Rule::OperatorVariable | Rule::DynamicInput => {
+            Variable::lower(ctx, node, commands)
+        }
         // Expression rules lower as part of the clause/directive facts that
         // contain them (expression::build_expr); the claim is a no-op.
         Rule::Expr
@@ -242,7 +244,9 @@ pub fn format_rule(
         | Rule::LimitClause
         | Rule::OffsetClause => Clause::format(formatter, node),
         Rule::Directive => Directive::format(formatter, node),
-        Rule::ValueVariable | Rule::OperatorVariable => Variable::format(formatter, node),
+        Rule::ValueVariable | Rule::OperatorVariable | Rule::DynamicInput => {
+            Variable::format(formatter, node)
+        }
         Rule::Expr
         | Rule::BinaryExpr
         | Rule::UnaryExpr

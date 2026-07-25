@@ -508,6 +508,7 @@ fn assignment_expr_is_row_independent(expr: &Expr) -> bool {
         | Expr::Exists { .. }
         | Expr::Literal { .. }
         | Expr::Path { .. }
+        | Expr::DynamicPredicate { .. }
         | Expr::PredicateRef { .. }
         | Expr::Aggregate { .. }
         | Expr::Error { .. } => false,
@@ -623,7 +624,11 @@ fn collect_expr_policy_references(
                 collect_expr_policy_references(operand, conditions, filters);
             }
         }
-        Expr::Literal { .. } | Expr::Path { .. } | Expr::Variable { .. } | Expr::Error { .. } => {}
+        Expr::Literal { .. }
+        | Expr::Path { .. }
+        | Expr::Variable { .. }
+        | Expr::DynamicPredicate { .. }
+        | Expr::Error { .. } => {}
     }
 }
 
@@ -1350,7 +1355,9 @@ impl PolicyCompiler<'_> {
         expected: Option<DataType>,
     ) -> Option<FilterExpr> {
         match expr {
-            Expr::Error { .. } | Expr::Aggregate { .. } => self.fail(),
+            Expr::Error { .. } | Expr::Aggregate { .. } | Expr::DynamicPredicate { .. } => {
+                self.fail()
+            }
             Expr::PredicateRef { name, .. } => {
                 let candidates =
                     self.index
@@ -1967,6 +1974,7 @@ fn expr_is_boolean(expr: &Expr) -> bool {
         | Expr::Exists { .. }
         | Expr::PredicateRef { .. }
         | Expr::Variable { .. }
+        | Expr::DynamicPredicate { .. }
         | Expr::Literal {
             value: LiteralValue::Bool(_),
             ..
@@ -2073,6 +2081,10 @@ impl<Emit: FnMut(Span, String)> PolicyValidation<'_, Emit> {
                     );
                 }
             }
+            Expr::DynamicPredicate { .. } => (self.emit)(
+                expr.span(),
+                "bounded dynamic inputs are only supported in query definitions".to_string(),
+            ),
             Expr::Path {
                 anchor, segments, ..
             } => {

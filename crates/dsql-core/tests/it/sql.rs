@@ -193,6 +193,30 @@ async fn formatted_and_compact_sql_share_template_substitutions() {
 }
 
 #[tokio::test]
+async fn bounded_dynamic_markers_retry_on_generated_sql_collisions() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "dynamic-marker-collision.dsql",
+        indoc::indoc! {r#"
+            query MarkerCollision($$search = {}) {
+              title(
+                where .title == "{{dynamic:0}}"
+                  and $$search on selected
+                limit 1
+              ) {
+                id
+                title
+              }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql_forms(&bowl).await);
+}
+
+#[tokio::test]
 async fn nullable_inputs_prune_predicates_clauses_ordering_and_cardinality() {
     let bowl = sql_bowl(Catalog::hardcoded()).await;
     insert_source(

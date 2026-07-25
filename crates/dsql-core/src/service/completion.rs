@@ -925,6 +925,9 @@ fn classify_site(
     spine: &[(Rule, NodeRef)],
     stop: Option<SpineStop>,
 ) -> CompletionSite {
+    if spine.iter().any(|(rule, _)| *rule == Rule::DynamicInput) {
+        return CompletionSite::Other;
+    }
     if spine.iter().any(|(rule, _)| {
         matches!(
             rule,

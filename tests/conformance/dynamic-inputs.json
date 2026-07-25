@@ -1,0 +1,429 @@
+{
+  "operation": {
+    "name": "DynamicConformance",
+    "kind": "query",
+    "sql": {
+      "dialect": "postgres",
+      "text": "select $1 where {{dynamic:0}} and {{dynamic:1}} order by {{dynamic:2}}",
+      "compact_text": "select $1 where {{dynamic:0}} and {{dynamic:1}} order by {{dynamic:2}}",
+      "parameters": [{ "path": "params.tenant" }],
+      "variants": []
+    },
+    "result": { "fields": [] },
+    "params": [
+      {
+        "path": "params.tenant",
+        "data_type": "int",
+        "enum_values": [],
+        "required": true,
+        "nullable": false
+      },
+      {
+        "path": "params.search",
+        "data_type": "dynamic_predicate",
+        "enum_values": [],
+        "required": false,
+        "nullable": true,
+        "default": { "kind": "empty_object" }
+      },
+      {
+        "path": "params.order",
+        "data_type": "dynamic_order",
+        "enum_values": [],
+        "required": false,
+        "nullable": true,
+        "default": { "kind": "collection", "items": [] }
+      }
+    ],
+    "input": [],
+    "context": [],
+    "dynamic_inputs": [
+      {
+        "path": "params.search",
+        "kind": "predicate",
+        "surface": "selected",
+        "fields": [
+          {
+            "key": "amount",
+            "catalog_path": "public.readings.amount",
+            "data_type": "numeric",
+            "nullable": false,
+            "access": "unconditional",
+            "operators": ["eq"],
+            "directions": []
+          },
+          {
+            "key": "id",
+            "catalog_path": "public.readings.id",
+            "data_type": "int",
+            "nullable": false,
+            "access": "unconditional",
+            "operators": ["eq", "in", "not_in", "is_null"],
+            "directions": []
+          },
+          {
+            "key": "name",
+            "catalog_path": "public.readings.name",
+            "data_type": "text",
+            "nullable": false,
+            "access": "unconditional",
+            "operators": ["like"],
+            "directions": []
+          },
+          {
+            "key": "recorded_at",
+            "catalog_path": "public.readings.recorded_at",
+            "data_type": "timestamptz",
+            "nullable": false,
+            "access": "unconditional",
+            "operators": ["eq"],
+            "directions": []
+          }
+        ],
+        "sites": [
+          {
+            "marker": "{{dynamic:0}}",
+            "identity_sql": "TRUE",
+            "fields": [
+              {
+                "key": "amount",
+                "operators": [
+                  {
+                    "name": "eq",
+                    "value_kind": "scalar",
+                    "before_value": "u.amount = ",
+                    "cases": []
+                  }
+                ],
+                "directions": []
+              },
+              {
+                "key": "id",
+                "operators": [
+                  {
+                    "name": "eq",
+                    "value_kind": "scalar",
+                    "before_value": "u.id = ",
+                    "cases": []
+                  },
+                  {
+                    "name": "in",
+                    "value_kind": "collection",
+                    "before_value": "u.id = ANY(",
+                    "after_value": ")",
+                    "cases": []
+                  },
+                  {
+                    "name": "not_in",
+                    "value_kind": "collection",
+                    "before_value": "u.id <> ALL(",
+                    "after_value": ")",
+                    "cases": []
+                  },
+                  {
+                    "name": "is_null",
+                    "value_kind": "boolean",
+                    "cases": [
+                      { "value": "true", "text": "u.id IS NULL" },
+                      { "value": "false", "text": "u.id IS NOT NULL" }
+                    ]
+                  }
+                ],
+                "directions": []
+              },
+              {
+                "key": "name",
+                "operators": [
+                  {
+                    "name": "like",
+                    "value_kind": "scalar",
+                    "before_value": "u.name LIKE ",
+                    "cases": []
+                  }
+                ],
+                "directions": []
+              },
+              {
+                "key": "recorded_at",
+                "operators": [
+                  {
+                    "name": "eq",
+                    "value_kind": "scalar",
+                    "before_value": "u.recorded_at = ",
+                    "cases": []
+                  }
+                ],
+                "directions": []
+              }
+            ]
+          },
+          {
+            "marker": "{{dynamic:1}}",
+            "identity_sql": "TRUE",
+            "fields": [
+              {
+                "key": "amount",
+                "operators": [
+                  {
+                    "name": "eq",
+                    "value_kind": "scalar",
+                    "before_value": "u2.amount = ",
+                    "cases": []
+                  }
+                ],
+                "directions": []
+              },
+              {
+                "key": "id",
+                "operators": [
+                  {
+                    "name": "eq",
+                    "value_kind": "scalar",
+                    "before_value": "u2.id = ",
+                    "cases": []
+                  },
+                  {
+                    "name": "in",
+                    "value_kind": "collection",
+                    "before_value": "u2.id = ANY(",
+                    "after_value": ")",
+                    "cases": []
+                  },
+                  {
+                    "name": "not_in",
+                    "value_kind": "collection",
+                    "before_value": "u2.id <> ALL(",
+                    "after_value": ")",
+                    "cases": []
+                  },
+                  {
+                    "name": "is_null",
+                    "value_kind": "boolean",
+                    "cases": [
+                      { "value": "true", "text": "u2.id IS NULL" },
+                      { "value": "false", "text": "u2.id IS NOT NULL" }
+                    ]
+                  }
+                ],
+                "directions": []
+              },
+              {
+                "key": "name",
+                "operators": [
+                  {
+                    "name": "like",
+                    "value_kind": "scalar",
+                    "before_value": "u2.name LIKE ",
+                    "cases": []
+                  }
+                ],
+                "directions": []
+              },
+              {
+                "key": "recorded_at",
+                "operators": [
+                  {
+                    "name": "eq",
+                    "value_kind": "scalar",
+                    "before_value": "u2.recorded_at = ",
+                    "cases": []
+                  }
+                ],
+                "directions": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": "params.order",
+        "kind": "order",
+        "surface": "selected",
+        "fields": [
+          {
+            "key": "id",
+            "catalog_path": "public.readings.id",
+            "data_type": "int",
+            "nullable": false,
+            "access": "unconditional",
+            "operators": [],
+            "directions": ["asc", "desc_nulls_last"]
+          }
+        ],
+        "sites": [
+          {
+            "marker": "{{dynamic:2}}",
+            "identity_sql": "NULL::integer",
+            "fields": [
+              {
+                "key": "id",
+                "operators": [],
+                "directions": [
+                  { "value": "asc", "text": "u.id ASC" },
+                  {
+                    "value": "desc_nulls_last",
+                    "text": "u.id DESC NULLS LAST"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "policies": [],
+    "handoffs": [],
+    "fragment_spreads": [],
+    "source_map": []
+  },
+  "cases": [
+    {
+      "name": "omitted inputs use algebraic identities",
+      "bindings": { "params": { "tenant": 7 } },
+      "expected_sql": "select $1 where TRUE and TRUE order by NULL::integer",
+      "expected_values": [7]
+    },
+    {
+      "name": "nullable inputs use algebraic identities",
+      "bindings": {
+        "params": { "tenant": 7, "search": null, "order": null }
+      },
+      "expected_sql": "select $1 where TRUE and TRUE order by NULL::integer",
+      "expected_values": [7]
+    },
+    {
+      "name": "and drops empty children and or keeps active children",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": {
+            "and": [{ "name": { "like": "A%" } }, {}],
+            "or": [{ "id": { "in": [1, 2] } }]
+          },
+          "order": [{ "id": "desc_nulls_last" }]
+        }
+      },
+      "expected_sql": "select $1 where (((u.name LIKE $2)) AND ((u.id = ANY($3)))) and (((u2.name LIKE $2)) AND ((u2.id = ANY($3)))) order by u.id DESC NULLS LAST",
+      "expected_values": [7, "A%", [1, 2]]
+    },
+    {
+      "name": "or containing only empty predicates is false",
+      "bindings": {
+        "params": { "tenant": 7, "search": { "or": [{}] } }
+      },
+      "expected_sql": "select $1 where (FALSE) and (FALSE) order by NULL::integer",
+      "expected_values": [7]
+    },
+    {
+      "name": "empty and and not-empty are absent",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": { "and": [], "not": {} }
+        }
+      },
+      "expected_sql": "select $1 where TRUE and TRUE order by NULL::integer",
+      "expected_values": [7]
+    },
+    {
+      "name": "not of false is active",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": { "not": { "or": [] } }
+        }
+      },
+      "expected_sql": "select $1 where (NOT ((FALSE))) and (NOT ((FALSE))) order by NULL::integer",
+      "expected_values": [7]
+    },
+    {
+      "name": "empty membership collections use boolean identities",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": { "id": { "in": [], "not_in": [] } }
+        }
+      },
+      "expected_sql": "select $1 where (FALSE AND TRUE) and (FALSE AND TRUE) order by NULL::integer",
+      "expected_values": [7]
+    },
+    {
+      "name": "is null chooses compiler-owned boolean cases",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": { "id": { "is_null": true } },
+          "order": [{ "id": "asc" }]
+        }
+      },
+      "expected_sql": "select $1 where (u.id IS NULL) and (u2.id IS NULL) order by u.id ASC",
+      "expected_values": [7]
+    },
+    {
+      "name": "numeric and timestamp values share validation and positions",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": {
+            "amount": { "eq": "1." },
+            "recorded_at": { "eq": "2024-02-29T23:59:59Z" }
+          }
+        }
+      },
+      "expected_sql": "select $1 where (u.amount = $2 AND u.recorded_at = $3) and (u2.amount = $2 AND u2.recorded_at = $3) order by NULL::integer",
+      "expected_values": [7, "1.", "2024-02-29T23:59:59Z"]
+    },
+    {
+      "name": "unknown selected field is rejected",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": { "unknown": { "eq": 1 } }
+        }
+      },
+      "error": "params.search.unknown"
+    },
+    {
+      "name": "unknown operator is rejected",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": { "id": { "gt": 1 } }
+        }
+      },
+      "error": "params.search.id.gt"
+    },
+    {
+      "name": "null scalar operand is rejected",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": { "id": { "eq": null } }
+        }
+      },
+      "error": "params.search.id.eq"
+    },
+    {
+      "name": "invalid calendar timestamp is rejected",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": {
+            "recorded_at": { "eq": "2023-02-29T12:00:00Z" }
+          }
+        }
+      },
+      "error": "params.search.recorded_at.eq"
+    },
+    {
+      "name": "malformed boolean composition is rejected",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": { "or": {} }
+        }
+      },
+      "error": "params.search.or"
+    }
+  ]
+}

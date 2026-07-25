@@ -1,0 +1,9 @@
+---
+source: crates/dsql-core/tests/it/completions.rs
+expression: "format!(\"predicate:\\n{predicate}\\n\\norder:\\n{order}\")"
+---
+predicate:
+Keyword selected
+
+order:
+Keyword selected

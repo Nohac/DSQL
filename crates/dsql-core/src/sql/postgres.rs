@@ -1,11 +1,11 @@
 use crate::catalog::{Catalog, Column, ColumnId, DataType, Relation, RelationId, Table, TableId};
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
-    AggregatePlan, CollectionPlan, CollectionResultPlan, ExistsKind, FilterCollection,
-    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, NestedRelation,
-    PolicyContextRequirement, PolicyFieldFilter, PolicyFieldTarget, QueryPlan, QueryRootPlan,
-    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue,
-    SqlVariantCase,
+    AggregatePlan, CollectionPlan, CollectionResultPlan, DynamicInputFieldPlan, DynamicInputKind,
+    DynamicPredicateOperator, ExistsKind, FilterCollection, FilterColumnScope, FilterExpr,
+    FilterLiteral, FilterOp, NestedRelation, OrderByPlan, PolicyContextRequirement,
+    PolicyFieldFilter, PolicyFieldTarget, QueryPlan, QueryRootPlan, SelectionClauses,
+    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
 };
 use crate::resolution::SelectionCardinality;
 use sea_query::{
@@ -25,6 +25,7 @@ pub struct GeneratedSql {
     /// Trusted policy context reached while rendering readable-view guards.
     pub policy_context: Vec<PolicyContextRequirement>,
     pub variants: Vec<GeneratedSqlVariant>,
+    pub dynamic_sites: Vec<GeneratedDynamicInputSite>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -37,6 +38,43 @@ pub struct GeneratedSqlVariant {
     pub path: String,
     pub cases: Vec<SqlVariantCase>,
     pub null_text: Option<String>,
+}
+
+/// Compiler-owned SQL replacement data for one bounded dynamic usage site.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GeneratedDynamicInputSite {
+    pub path: String,
+    pub kind: DynamicInputKind,
+    pub marker: String,
+    pub identity_sql: String,
+    pub fields: Vec<GeneratedDynamicInputSiteField>,
+}
+
+/// Site-specific readable SQL capabilities for one selected scalar.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GeneratedDynamicInputSiteField {
+    pub key: String,
+    pub data_type: DataType,
+    pub operators: Vec<GeneratedDynamicPredicateOperator>,
+    pub directions: Vec<SqlVariantCase>,
+}
+
+/// Structured SQL lowering for one public predicate operator at one site.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GeneratedDynamicPredicateOperator {
+    pub name: DynamicPredicateOperator,
+    pub value_kind: GeneratedDynamicValueKind,
+    pub before_value: Option<String>,
+    pub after_value: Option<String>,
+    pub cases: Vec<SqlVariantCase>,
+}
+
+/// Runtime operand shape consumed by a generated predicate lowering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GeneratedDynamicValueKind {
+    Scalar,
+    Collection,
+    Boolean,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -56,6 +94,12 @@ pub enum SqlGenerationError {
     MissingAggregateOperand,
     #[error("filter shape is not supported in a text fragment position")]
     UnsupportedFilterFragment,
+    #[error("failed to render a dynamic input field expression")]
+    DynamicExpressionRender,
+    #[error("failed to locate the generated dynamic SQL marker `{0}`")]
+    DynamicMarkerMissing(String),
+    #[error("generated dynamic order marker `{0}` is not followed by `ASC`")]
+    DynamicOrderMarkerRender(String),
     #[error("SQL template numeric sentinel space was exhausted")]
     TemplateSentinelExhausted,
     #[error("query plan has no roots")]
@@ -125,20 +169,38 @@ struct SqlTemplateContext {
     variants: Vec<GeneratedSqlVariant>,
     replacements: Vec<(String, String)>,
     numeric_replacements: Vec<(String, String)>,
+    dynamic_markers: Vec<DynamicMarker>,
+    dynamic_sites: Vec<GeneratedDynamicInputSite>,
     next_sentinel: u64,
+    next_dynamic_marker: u64,
 }
 
 const FIRST_NUMERIC_SENTINEL: u64 = 9_000_000_000_000_000_000;
 
+#[derive(Clone, Copy)]
+enum DynamicMarkerKind {
+    Exact,
+    Order,
+}
+
+struct DynamicMarker {
+    internal: String,
+    public: String,
+    kind: DynamicMarkerKind,
+}
+
 impl SqlTemplateContext {
-    fn new(next_sentinel: u64) -> Self {
+    fn new(next_sentinel: u64, next_dynamic_marker: u64) -> Self {
         Self {
             parameters: Vec::new(),
             policy_context: Vec::new(),
             variants: Vec::new(),
             replacements: Vec::new(),
             numeric_replacements: Vec::new(),
+            dynamic_markers: Vec::new(),
+            dynamic_sites: Vec::new(),
             next_sentinel,
+            next_dynamic_marker,
         }
     }
 
@@ -237,6 +299,39 @@ impl SqlTemplateContext {
             .push((sentinel.to_string(), replacement));
         Ok(sentinel)
     }
+
+    fn dynamic_site(
+        &mut self,
+        path: &str,
+        kind: DynamicInputKind,
+        identity_sql: &str,
+        fields: Vec<GeneratedDynamicInputSiteField>,
+        marker_kind: DynamicMarkerKind,
+    ) -> Result<String, SqlGenerationError> {
+        let sentinel = self.next_sentinel;
+        self.next_sentinel = sentinel
+            .checked_add(1)
+            .ok_or(SqlGenerationError::TemplateSentinelExhausted)?;
+        let internal = format!("__dsql_dynamic_{sentinel}__");
+        let public = format!("{{{{dynamic:{}}}}}", self.next_dynamic_marker);
+        self.next_dynamic_marker = self
+            .next_dynamic_marker
+            .checked_add(1)
+            .ok_or(SqlGenerationError::TemplateSentinelExhausted)?;
+        self.dynamic_markers.push(DynamicMarker {
+            internal: internal.clone(),
+            public: public.clone(),
+            kind: marker_kind,
+        });
+        self.dynamic_sites.push(GeneratedDynamicInputSite {
+            path: path.to_string(),
+            kind,
+            marker: public,
+            identity_sql: identity_sql.to_string(),
+            fields,
+        });
+        Ok(internal)
+    }
 }
 
 pub fn generate_postgres_sql(
@@ -259,8 +354,9 @@ pub fn generate_postgres_sql_with_options(
         ..Default::default()
     };
     let mut next_sentinel = FIRST_NUMERIC_SENTINEL;
+    let mut next_dynamic_marker = 0;
     loop {
-        let mut template = SqlTemplateContext::new(next_sentinel);
+        let mut template = SqlTemplateContext::new(next_sentinel, next_dynamic_marker);
         let mut roots = Vec::with_capacity(plan.roots.len());
         for root in &plan.roots {
             roots.push(generate_root_query(root, catalog, options, &mut template)?);
@@ -279,12 +375,14 @@ pub fn generate_postgres_sql_with_options(
             &sqlformat::QueryParams::default(),
             &format_options,
         );
-        let Some(sql) = finalize_sql_template(&formatted, &template) else {
+        let Some(sql) = finalize_sql_template(&formatted, &template)? else {
             next_sentinel = template.next_sentinel;
+            next_dynamic_marker = template.next_dynamic_marker;
             continue;
         };
-        let Some(compact_sql) = finalize_sql_template(&compact, &template) else {
+        let Some(compact_sql) = finalize_sql_template(&compact, &template)? else {
             next_sentinel = template.next_sentinel;
+            next_dynamic_marker = template.next_dynamic_marker;
             continue;
         };
         return Ok(GeneratedSql {
@@ -294,6 +392,7 @@ pub fn generate_postgres_sql_with_options(
             parameters: template.parameters,
             policy_context: template.policy_context,
             variants: template.variants,
+            dynamic_sites: template.dynamic_sites,
         });
     }
 }
@@ -396,12 +495,56 @@ fn singular_root_envelope(output_names: &[String], root_query: SelectStatement) 
     envelope.to_owned()
 }
 
-fn finalize_sql_template(sql: &str, template: &SqlTemplateContext) -> Option<String> {
-    let mut sql = replace_numeric_sentinels(sql, &template.numeric_replacements)?;
+fn finalize_sql_template(
+    sql: &str,
+    template: &SqlTemplateContext,
+) -> Result<Option<String>, SqlGenerationError> {
+    let Some(sql) = replace_dynamic_markers(sql, &template.dynamic_markers)? else {
+        return Ok(None);
+    };
+    let Some(mut sql) = replace_numeric_sentinels(&sql, &template.numeric_replacements) else {
+        return Ok(None);
+    };
     for (needle, replacement) in &template.replacements {
         sql = sql.replace(needle, replacement);
     }
-    Some(sql)
+    Ok(Some(sql))
+}
+
+fn replace_dynamic_markers(
+    sql: &str,
+    markers: &[DynamicMarker],
+) -> Result<Option<String>, SqlGenerationError> {
+    let mut ranges = Vec::with_capacity(markers.len());
+    for marker in markers {
+        if sql.contains(&marker.public) {
+            return Ok(None);
+        }
+        let mut occurrences = sql.match_indices(&marker.internal);
+        let Some((start, _)) = occurrences.next() else {
+            return Err(SqlGenerationError::DynamicMarkerMissing(
+                marker.internal.clone(),
+            ));
+        };
+        if occurrences.next().is_some() {
+            return Ok(None);
+        }
+        let mut end = start + marker.internal.len();
+        if matches!(marker.kind, DynamicMarkerKind::Order) {
+            let rest = &sql[end..];
+            let whitespace = rest.len() - rest.trim_start().len();
+            end += whitespace;
+            if sql[end..].starts_with("asc") || sql[end..].starts_with("ASC") {
+                end += 3;
+            } else {
+                return Err(SqlGenerationError::DynamicOrderMarkerRender(
+                    marker.internal.clone(),
+                ));
+            }
+        }
+        ranges.push((start, end, marker.public.as_str()));
+    }
+    Ok(replace_ranges(sql, ranges))
 }
 
 /// Replaces numeric template markers against their ranges in one rendered SQL
@@ -417,8 +560,11 @@ fn replace_numeric_sentinels(sql: &str, replacements: &[(String, String)]) -> Op
         }
         ranges.push((start, start + needle.len(), replacement.as_str()));
     }
-    ranges.sort_by_key(|(start, _, _)| *start);
+    replace_ranges(sql, ranges)
+}
 
+fn replace_ranges(sql: &str, mut ranges: Vec<(usize, usize, &str)>) -> Option<String> {
+    ranges.sort_by_key(|(start, _, _)| *start);
     let mut rendered = String::with_capacity(sql.len());
     let mut cursor = 0;
     for (start, end, replacement) in ranges {
@@ -644,36 +790,51 @@ fn ordered_json_agg(
     let mut expressions = vec![object];
     let mut order_items = Vec::with_capacity(clauses.order_by.len());
     for order in &clauses.order_by {
-        let expression = masked_column_expression(catalog, context, order.column, template)?;
-        match &order.direction {
-            SortDirectionPlan::Asc => {
-                expressions.push(expression);
-                order_items.push(format!("${} ASC", expressions.len()));
+        match order {
+            OrderByPlan::Column { column, direction } => {
+                let expression = masked_column_expression(catalog, context, *column, template)?;
+                match direction {
+                    SortDirectionPlan::Asc => {
+                        expressions.push(expression);
+                        order_items.push(format!("${} ASC", expressions.len()));
+                    }
+                    SortDirectionPlan::Desc => {
+                        expressions.push(expression);
+                        order_items.push(format!("${} DESC", expressions.len()));
+                    }
+                    SortDirectionPlan::Variant {
+                        path,
+                        variants,
+                        nullable,
+                    } => {
+                        let placeholder = if *nullable {
+                            template.nullable_variant(path, variants)
+                        } else {
+                            template.variant(path, variants)
+                        };
+                        expressions.push(expression.clone());
+                        order_items.push(format!(
+                            "CASE WHEN '{placeholder}' = 'asc' THEN ${} END ASC",
+                            expressions.len()
+                        ));
+                        expressions.push(expression);
+                        order_items.push(format!(
+                            "CASE WHEN '{placeholder}' = 'desc' THEN ${} END DESC",
+                            expressions.len()
+                        ));
+                    }
+                }
             }
-            SortDirectionPlan::Desc => {
-                expressions.push(expression);
-                order_items.push(format!("${} DESC", expressions.len()));
-            }
-            SortDirectionPlan::Variant {
-                path,
-                variants,
-                nullable,
-            } => {
-                let placeholder = if *nullable {
-                    template.nullable_variant(path, variants)
-                } else {
-                    template.variant(path, variants)
-                };
-                expressions.push(expression.clone());
-                order_items.push(format!(
-                    "CASE WHEN '{placeholder}' = 'asc' THEN ${} END ASC",
-                    expressions.len()
-                ));
-                expressions.push(expression);
-                order_items.push(format!(
-                    "CASE WHEN '{placeholder}' = 'desc' THEN ${} END DESC",
-                    expressions.len()
-                ));
+            OrderByPlan::Dynamic { path, fields } => {
+                let fields = generated_dynamic_order_fields(catalog, context, fields, template)?;
+                let marker = template.dynamic_site(
+                    path,
+                    DynamicInputKind::Order,
+                    "NULL::integer",
+                    fields,
+                    DynamicMarkerKind::Exact,
+                )?;
+                order_items.push(marker);
             }
         }
     }
@@ -939,66 +1100,82 @@ fn apply_order_limit_offset(
     template: &mut SqlTemplateContext,
 ) -> Result<(), SqlGenerationError> {
     for order in &clauses.order_by {
-        match &order.direction {
-            SortDirectionPlan::Asc => {
-                let expression =
-                    masked_column_expression(catalog, context, order.column, template)?;
-                query.order_by_expr(expression, Order::Asc);
-            }
-            SortDirectionPlan::Desc => {
-                let expression =
-                    masked_column_expression(catalog, context, order.column, template)?;
-                query.order_by_expr(expression, Order::Desc);
-            }
-            SortDirectionPlan::Variant {
-                path,
-                variants,
-                nullable,
-            } => {
-                if !nullable
-                    && policy_field_filter(
-                        context.field_filters,
-                        PolicyFieldTarget::Column(order.column),
-                    )
-                    .is_none()
-                {
-                    let column = column(catalog, order.column)?;
-                    query.order_by(
-                        (
-                            Alias::new(&context.context.table_alias),
-                            Alias::new(&column.name),
+        match order {
+            OrderByPlan::Column {
+                column: column_id,
+                direction,
+            } => match direction {
+                SortDirectionPlan::Asc => {
+                    let expression =
+                        masked_column_expression(catalog, context, *column_id, template)?;
+                    query.order_by_expr(expression, Order::Asc);
+                }
+                SortDirectionPlan::Desc => {
+                    let expression =
+                        masked_column_expression(catalog, context, *column_id, template)?;
+                    query.order_by_expr(expression, Order::Desc);
+                }
+                SortDirectionPlan::Variant {
+                    path,
+                    variants,
+                    nullable,
+                } => {
+                    if !nullable
+                        && policy_field_filter(
+                            context.field_filters,
+                            PolicyFieldTarget::Column(*column_id),
+                        )
+                        .is_none()
+                    {
+                        let column = column(catalog, *column_id)?;
+                        query.order_by(
+                            (
+                                Alias::new(&context.context.table_alias),
+                                Alias::new(&column.name),
+                            ),
+                            Order::Asc,
+                        );
+                        template.replace_order_direction(
+                            &context.context.table_alias,
+                            &column.name,
+                            path,
+                            variants,
+                        );
+                        continue;
+                    }
+                    let expression =
+                        masked_column_expression(catalog, context, *column_id, template)?;
+                    let placeholder = if *nullable {
+                        template.nullable_variant(path, variants)
+                    } else {
+                        template.variant(path, variants)
+                    };
+                    query.order_by_expr(
+                        Expr::cust_with_expr(
+                            format!("CASE WHEN '{placeholder}' = 'asc' THEN $1 END"),
+                            expression.clone(),
                         ),
                         Order::Asc,
                     );
-                    template.replace_order_direction(
-                        &context.context.table_alias,
-                        &column.name,
-                        path,
-                        variants,
+                    query.order_by_expr(
+                        Expr::cust_with_expr(
+                            format!("CASE WHEN '{placeholder}' = 'desc' THEN $1 END"),
+                            expression,
+                        ),
+                        Order::Desc,
                     );
-                    continue;
                 }
-                let expression =
-                    masked_column_expression(catalog, context, order.column, template)?;
-                let placeholder = if *nullable {
-                    template.nullable_variant(path, variants)
-                } else {
-                    template.variant(path, variants)
-                };
-                query.order_by_expr(
-                    Expr::cust_with_expr(
-                        format!("CASE WHEN '{placeholder}' = 'asc' THEN $1 END"),
-                        expression.clone(),
-                    ),
-                    Order::Asc,
-                );
-                query.order_by_expr(
-                    Expr::cust_with_expr(
-                        format!("CASE WHEN '{placeholder}' = 'desc' THEN $1 END"),
-                        expression,
-                    ),
-                    Order::Desc,
-                );
+            },
+            OrderByPlan::Dynamic { path, fields } => {
+                let fields = generated_dynamic_order_fields(catalog, context, fields, template)?;
+                let marker = template.dynamic_site(
+                    path,
+                    DynamicInputKind::Order,
+                    "NULL::integer",
+                    fields,
+                    DynamicMarkerKind::Order,
+                )?;
+                query.order_by_expr(Expr::cust(marker), Order::Asc);
             }
         }
     }
@@ -1286,6 +1463,17 @@ fn filter_value_expr(
             masked_column_expression(catalog, source, *column_id, template)?
         }
         FilterExpr::Parameter(parameter) => Expr::cust(template.parameter(parameter)),
+        FilterExpr::DynamicPredicate { path, fields } => {
+            let fields =
+                generated_dynamic_predicate_fields(catalog, scope.current, fields, template)?;
+            Expr::cust(template.dynamic_site(
+                path,
+                DynamicInputKind::Predicate,
+                "TRUE",
+                fields,
+                DynamicMarkerKind::Exact,
+            )?)
+        }
         FilterExpr::Literal(literal) => match literal {
             FilterLiteral::String(value) => Expr::value(value.clone()),
             FilterLiteral::Number(value) => match value.parse::<i64>() {
@@ -1538,6 +1726,142 @@ fn filter_value_expr(
             }
         }
     })
+}
+
+fn generated_dynamic_predicate_fields(
+    catalog: &Catalog,
+    source: SqlRowView<'_>,
+    fields: &[DynamicInputFieldPlan],
+    template: &mut SqlTemplateContext,
+) -> Result<Vec<GeneratedDynamicInputSiteField>, SqlGenerationError> {
+    fields
+        .iter()
+        .map(|field| {
+            let expression = dynamic_field_expression(catalog, source, field.column, template)?;
+            let operators = field
+                .operators
+                .iter()
+                .map(|operator| {
+                    let (value_kind, before_value, after_value, cases) = match operator {
+                        DynamicPredicateOperator::Eq => dynamic_scalar(&expression, "="),
+                        DynamicPredicateOperator::Neq => dynamic_scalar(&expression, "!="),
+                        DynamicPredicateOperator::Gt => dynamic_scalar(&expression, ">"),
+                        DynamicPredicateOperator::Gte => dynamic_scalar(&expression, ">="),
+                        DynamicPredicateOperator::Lt => dynamic_scalar(&expression, "<"),
+                        DynamicPredicateOperator::Lte => dynamic_scalar(&expression, "<="),
+                        DynamicPredicateOperator::Like => dynamic_scalar(&expression, "like"),
+                        DynamicPredicateOperator::In => (
+                            GeneratedDynamicValueKind::Collection,
+                            Some(format!("({expression}) = ANY(")),
+                            Some(")".to_string()),
+                            Vec::new(),
+                        ),
+                        DynamicPredicateOperator::NotIn => (
+                            GeneratedDynamicValueKind::Collection,
+                            Some(format!("({expression}) <> ALL(")),
+                            Some(")".to_string()),
+                            Vec::new(),
+                        ),
+                        DynamicPredicateOperator::IsNull => (
+                            GeneratedDynamicValueKind::Boolean,
+                            None,
+                            None,
+                            vec![
+                                SqlVariantCase {
+                                    value: "true".to_string(),
+                                    text: format!("({expression}) IS NULL"),
+                                },
+                                SqlVariantCase {
+                                    value: "false".to_string(),
+                                    text: format!("({expression}) IS NOT NULL"),
+                                },
+                            ],
+                        ),
+                    };
+                    GeneratedDynamicPredicateOperator {
+                        name: *operator,
+                        value_kind,
+                        before_value,
+                        after_value,
+                        cases,
+                    }
+                })
+                .collect();
+            Ok(GeneratedDynamicInputSiteField {
+                key: field.key.clone(),
+                data_type: field.data_type,
+                operators,
+                directions: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+fn dynamic_scalar(
+    expression: &str,
+    operator: &str,
+) -> (
+    GeneratedDynamicValueKind,
+    Option<String>,
+    Option<String>,
+    Vec<SqlVariantCase>,
+) {
+    (
+        GeneratedDynamicValueKind::Scalar,
+        Some(format!("({expression}) {operator} ")),
+        None,
+        Vec::new(),
+    )
+}
+
+fn generated_dynamic_order_fields(
+    catalog: &Catalog,
+    source: SqlRowView<'_>,
+    fields: &[DynamicInputFieldPlan],
+    template: &mut SqlTemplateContext,
+) -> Result<Vec<GeneratedDynamicInputSiteField>, SqlGenerationError> {
+    fields
+        .iter()
+        .map(|field| {
+            let expression = dynamic_field_expression(catalog, source, field.column, template)?;
+            let directions = [
+                ("asc", "ASC"),
+                ("desc", "DESC"),
+                ("asc_nulls_first", "ASC NULLS FIRST"),
+                ("asc_nulls_last", "ASC NULLS LAST"),
+                ("desc_nulls_first", "DESC NULLS FIRST"),
+                ("desc_nulls_last", "DESC NULLS LAST"),
+            ]
+            .into_iter()
+            .map(|(value, direction)| SqlVariantCase {
+                value: value.to_string(),
+                text: format!("({expression}) {direction}"),
+            })
+            .collect();
+            Ok(GeneratedDynamicInputSiteField {
+                key: field.key.clone(),
+                data_type: field.data_type,
+                operators: Vec::new(),
+                directions,
+            })
+        })
+        .collect()
+}
+
+fn dynamic_field_expression(
+    catalog: &Catalog,
+    source: SqlRowView<'_>,
+    column: ColumnId,
+    template: &mut SqlTemplateContext,
+) -> Result<String, SqlGenerationError> {
+    let expression = masked_column_expression(catalog, source, column, template)?;
+    let mut query = Query::select();
+    query.expr(expression);
+    let rendered = query.to_string(PostgresQueryBuilder);
+    rendered
+        .strip_prefix("SELECT ")
+        .map(str::to_string)
+        .ok_or(SqlGenerationError::DynamicExpressionRender)
 }
 
 fn null_comparison_operand<'a>(
@@ -1808,4 +2132,44 @@ fn catalog_relation(catalog: &Catalog, id: RelationId) -> Result<&Relation, SqlG
 
 fn table_label(table: &Table) -> String {
     format!("{}.{}", table.schema, table.name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DynamicMarker, DynamicMarkerKind, SqlGenerationError, replace_dynamic_markers};
+
+    fn marker(kind: DynamicMarkerKind) -> DynamicMarker {
+        DynamicMarker {
+            internal: "__dsql_dynamic_1__".to_string(),
+            public: "{{dynamic:0}}".to_string(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn structural_dynamic_marker_failures_are_not_retried() {
+        let missing = replace_dynamic_markers("SELECT 1", &[marker(DynamicMarkerKind::Exact)]);
+        assert!(matches!(
+            missing,
+            Err(SqlGenerationError::DynamicMarkerMissing(_))
+        ));
+
+        let missing_order = replace_dynamic_markers(
+            "SELECT 1 ORDER BY __dsql_dynamic_1__",
+            &[marker(DynamicMarkerKind::Order)],
+        );
+        assert!(matches!(
+            missing_order,
+            Err(SqlGenerationError::DynamicOrderMarkerRender(_))
+        ));
+    }
+
+    #[test]
+    fn colliding_dynamic_markers_request_a_fresh_sentinel() {
+        let collision = replace_dynamic_markers(
+            "SELECT '__dsql_dynamic_1__', __dsql_dynamic_1__",
+            &[marker(DynamicMarkerKind::Exact)],
+        );
+        assert!(matches!(collision, Ok(None)));
+    }
 }

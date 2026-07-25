@@ -111,6 +111,46 @@ async fn invalid_input_refinements_and_fragment_bindings_are_reported() {
 }
 
 #[tokio::test]
+async fn invalid_bounded_dynamic_input_owners_and_positions_are_reported() {
+    let bowl = checked_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "invalid-dynamic-inputs.dsql",
+        indoc::indoc! {r#"
+            fragment DynamicFragment on public::users {
+              posts(
+                where $$search on selected
+                order by $$order on selected
+              ) { id }
+            }
+            query AnonymousDynamic {
+              public::users(
+                where $$ on selected
+                order by $$ on selected
+              ) { id name }
+            }
+            query InvalidPlacement($$search = {}) {
+              public::users(
+                where .id == "00000000-0000-0000-0000-000000000000"
+                  or $$search on selected
+              ) { id name }
+            }
+            query InvalidNegation($$search = {}) {
+              public::users(where not $$search on selected) { id name }
+            }
+            query InvalidExists($$search = {}) {
+              public::users(
+                where exists .posts(where $$search on selected)
+              ) { id name }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
 async fn valid_pagination_and_collection_default_edges_check_cleanly() {
     let bowl = checked_bowl(Catalog::hardcoded()).await;
     insert_source(

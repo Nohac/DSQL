@@ -112,17 +112,52 @@ export interface PolicyFieldAccessMetadata {
   access: string;
 }
 
+/** One normalized bounded input capability and all of its SQL usage sites. */
 export interface DynamicInputMetadata {
-  name: string;
+  path: string;
   kind: string;
-  preset: string;
+  surface: string;
   fields: DynamicInputField[];
+  sites: DynamicInputSite[];
 }
 
+/** One exact compiler-owned marker and its site-specific lowerings. */
+export interface DynamicInputSite {
+  marker: string;
+  identity_sql: string;
+  fields: DynamicInputSiteField[];
+}
+
+/** Compiler-owned SQL capabilities for one public field at one usage site. */
+export interface DynamicInputSiteField {
+  key: string;
+  operators: DynamicPredicateOperatorMetadata[];
+  directions: SqlVariantCaseMetadata[];
+}
+
+export interface SqlVariantCaseMetadata {
+  value: string;
+  text: string;
+}
+
+/** Structured SQL fragments for one validated dynamic predicate operator. */
+export interface DynamicPredicateOperatorMetadata {
+  name: string;
+  value_kind: string;
+  before_value?: string;
+  after_value?: string;
+  cases: SqlVariantCaseMetadata[];
+}
+
+/** One public selected-field capability exposed by a dynamic input. */
 export interface DynamicInputField {
-  path: string;
+  key: string;
+  catalog_path: string;
   data_type: string;
+  nullable: boolean;
+  access: string;
   operators: string[];
+  directions: string[];
 }
 
 export interface InputField {
@@ -175,11 +210,6 @@ export interface SqlVariantMetadata {
   null_text?: string;
 }
 
-export interface SqlVariantCaseMetadata {
-  value: string;
-  text: string;
-}
-
 export interface SqlParameterMetadata {
   path: string;
 }
@@ -227,17 +257,52 @@ export interface FragmentSpreadMetadata {
   fragment: string;
 }
 
+/** One normalized bounded input capability and all of its SQL usage sites. */
 export interface DynamicInputMetadata {
-  name: string;
+  path: string;
   kind: string;
-  preset: string;
+  surface: string;
   fields: DynamicInputField[];
+  sites: DynamicInputSite[];
 }
 
+/** One exact compiler-owned marker and its site-specific lowerings. */
+export interface DynamicInputSite {
+  marker: string;
+  identity_sql: string;
+  fields: DynamicInputSiteField[];
+}
+
+/** Compiler-owned SQL capabilities for one public field at one usage site. */
+export interface DynamicInputSiteField {
+  key: string;
+  operators: DynamicPredicateOperatorMetadata[];
+  directions: SqlVariantCaseMetadata[];
+}
+
+export interface SqlVariantCaseMetadata {
+  value: string;
+  text: string;
+}
+
+/** Structured SQL fragments for one validated dynamic predicate operator. */
+export interface DynamicPredicateOperatorMetadata {
+  name: string;
+  value_kind: string;
+  before_value?: string;
+  after_value?: string;
+  cases: SqlVariantCaseMetadata[];
+}
+
+/** One public selected-field capability exposed by a dynamic input. */
 export interface DynamicInputField {
-  path: string;
+  key: string;
+  catalog_path: string;
   data_type: string;
+  nullable: boolean;
+  access: string;
   operators: string[];
+  directions: string[];
 }
 
 export interface InputField {

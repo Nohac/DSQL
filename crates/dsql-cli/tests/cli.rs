@@ -214,6 +214,7 @@ fn observatory_operation_list_exposes_importing_scopes() {
             "analytics\tFlatReadingSummary",
             "analytics\tReadingSummary",
             "api\tContainedSensorWindow",
+            "api\tDynamicReadingSearch",
             "api\tEmptyAggregateCount",
             "api\tEmptyAggregateMinimum",
             "api\tLiftedSensorWindow",
@@ -478,6 +479,20 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         )),
         "humidity"
     );
+
+    let dynamic = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "DynamicReadingSearch",
+        &[
+            "--variables",
+            r#"{"params":{"search":{"flagged":{"eq":true}},"order":[{"id":"desc"}]}}"#,
+            "--context",
+            visible,
+        ],
+    );
+    assert_eq!(observatory_root_reading_ids(&dynamic), [12, 8, 4]);
 
     for operation in [
         "ContainedSensorWindow",

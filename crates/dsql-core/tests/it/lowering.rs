@@ -3,7 +3,7 @@
 //! fact anchored to the clause or directive containing it.
 
 use bowl::{Bowl, Entity, Query};
-use dsql_core::entities::clause::{ClauseFact, OrderDirection};
+use dsql_core::entities::clause::{ClauseFact, OrderDirection, OrderTerm};
 use dsql_core::entities::directive::DirectiveFact;
 use dsql_core::entities::field_selection::FieldSel;
 use dsql_core::entities::variable::VariableUse;
@@ -43,14 +43,20 @@ async fn render_clauses(bowl: &Bowl) -> String {
                 ClauseFact::OrderBy { items } => {
                     let items: Vec<String> = items
                         .iter()
-                        .map(|item| {
-                            let direction = match &item.direction {
-                                Some(OrderDirection::Asc) => " asc",
-                                Some(OrderDirection::Desc) => " desc",
-                                Some(OrderDirection::Variable(_)) => " $var",
-                                None => "",
-                            };
-                            format!("{}{direction}", item.field)
+                        .map(|term| match term {
+                            OrderTerm::Dynamic(variable) => format!(
+                                "$${} on selected",
+                                variable.name.as_deref().unwrap_or_default()
+                            ),
+                            OrderTerm::Column(item) => {
+                                let direction = match &item.direction {
+                                    Some(OrderDirection::Asc) => " asc",
+                                    Some(OrderDirection::Desc) => " desc",
+                                    Some(OrderDirection::Variable(_)) => " $var",
+                                    None => "",
+                                };
+                                format!("{}{direction}", item.field)
+                            }
                         })
                         .collect();
                     format!("order by {}", items.join(", "))

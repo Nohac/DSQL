@@ -612,6 +612,101 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
 }
 
 #[tokio::test]
+async fn bounded_dynamic_inputs_flow_through_sql_and_metadata() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA]),
+        vec![document(
+            "queries/frontend/dynamic.dsql",
+            indoc::indoc! {r#"
+                filter NameAccess on public::users {
+                  apply where true
+                  field name where $:is_admin
+                }
+                query DynamicUsers(
+                  $$search = {}
+                  $$order = []
+                ) {
+                  users(
+                    where $$search on selected
+                    order by name asc, $$order on selected, id desc
+                  ) {
+                    id
+                    label: name
+                  }
+                }
+            "#},
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("assembly succeeds");
+    let artifact = assembled
+        .snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "DynamicUsers")
+        .expect("dynamic operation artifact");
+
+    insta::assert_snapshot!(artifact.serialized);
+}
+
+#[tokio::test]
+async fn reused_dynamic_inputs_require_identical_selected_surfaces() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA]),
+        vec![document(
+            "queries/frontend/incompatible-dynamic.dsql",
+            indoc::indoc! {r#"
+                query IncompatibleDynamic($$search = {}) {
+                  by_id: users(where $$search on selected) { id }
+                  by_name: users(where $$search on selected) { name }
+                }
+            "#},
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let error = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect_err("incompatible dynamic surfaces must fail generation");
+    let message = error.to_string();
+    assert!(
+        message.contains("params.search") && message.contains("incompatible capability surface"),
+        "unexpected dynamic surface conflict: {message}",
+    );
+}
+
+#[tokio::test]
+async fn dynamic_predicates_reject_selected_aliases_reserved_for_composition() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA]),
+        vec![document(
+            "queries/frontend/reserved-dynamic.dsql",
+            indoc::indoc! {r#"
+                query ReservedDynamic($$search = {}) {
+                  users(where $$search on selected) { not: name }
+                }
+            "#},
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let error = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect_err("reserved predicate composition keys must fail generation");
+    let message = error.to_string();
+    assert!(
+        message.contains("selected field `not`") && message.contains("alias the field"),
+        "unexpected reserved dynamic field error: {message}",
+    );
+}
+
+#[tokio::test]
 async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
     let bowl = memory_bowl(
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),

@@ -2,6 +2,9 @@ export type {
   BuildManifest,
   DynamicInputField,
   DynamicInputMetadata,
+  DynamicInputSite,
+  DynamicInputSiteField,
+  DynamicPredicateOperatorMetadata,
   FragmentManifestEntry,
   FragmentMetadata,
   FragmentSpreadMetadata,
@@ -18,6 +21,7 @@ export type {
   SourceMapEntry,
   SourceRange,
   SqlMetadata,
+  SqlVariantCaseMetadata,
   SqlVariantMetadata,
 } from "./generated/metadata.ts";
 

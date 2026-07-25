@@ -631,6 +631,8 @@ impl<'a> CstFormatter<'a> {
                     self.write_node_text(path);
                 } else if let Some(variable) = self.direct_rule(node, Rule::ValueVariable) {
                     self.write_node_text(variable);
+                } else if let Some(dynamic) = self.direct_rule(node, Rule::DynamicInput) {
+                    self.write_node_text(dynamic);
                 } else if let Some(name) = self.direct_rule(node, Rule::PredicateName) {
                     self.write_node_text(name);
                 } else if let Some(inner) = self.direct_rule(node, Rule::Expr) {
@@ -647,7 +649,9 @@ impl<'a> CstFormatter<'a> {
                     self.out.push_str(&name);
                 }
             }
-            Some(Rule::ScopedPath) | Some(Rule::ValueVariable) => self.write_node_text(node),
+            Some(Rule::ScopedPath | Rule::ValueVariable | Rule::DynamicInput) => {
+                self.write_node_text(node);
+            }
             _ => {}
         }
     }
@@ -814,6 +818,7 @@ impl<'a> CstFormatter<'a> {
                     | Rule::ScalarAggregateExpr
                     | Rule::Literal
                     | Rule::ScopedPath
+                    | Rule::DynamicInput
                     | Rule::ValueVariable
                     | Rule::PredicateName
             )

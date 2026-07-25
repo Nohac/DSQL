@@ -168,6 +168,8 @@ pub struct QueryPlan {
     pub roots: Vec<QueryRootPlan>,
     /// Server-only values required by policies that can affect any root.
     pub policy_context: Vec<PolicyContextRequirement>,
+    /// Normalized public capability contracts keyed by full input path.
+    pub dynamic_inputs: Vec<DynamicInputContract>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -318,7 +320,8 @@ fn filter_observes_rows(filter: &FilterExpr) -> bool {
     match filter {
         FilterExpr::Column { .. }
         | FilterExpr::Exists { .. }
-        | FilterExpr::RelationAggregate { .. } => true,
+        | FilterExpr::RelationAggregate { .. }
+        | FilterExpr::DynamicPredicate { .. } => true,
         FilterExpr::Binary { left, right, .. } | FilterExpr::VariantBinary { left, right, .. } => {
             filter_observes_rows(left) || filter_observes_rows(right)
         }
@@ -389,10 +392,75 @@ pub struct SelectionClauses {
     pub offset: Option<SqlValue>,
 }
 
+/// One normalized bounded dynamic public-input contract.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct OrderByPlan {
+pub struct DynamicInputContract {
+    pub path: String,
+    pub kind: DynamicInputKind,
+    pub fields: Vec<DynamicInputFieldPlan>,
+}
+
+/// The runtime structure bounded by one dynamic input contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DynamicInputKind {
+    Predicate,
+    Order,
+}
+
+/// One selected scalar exposed by a bounded dynamic contract.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DynamicInputFieldPlan {
+    pub key: String,
     pub column: ColumnId,
-    pub direction: SortDirectionPlan,
+    pub data_type: DataType,
+    pub nullable: bool,
+    pub access: PolicyAccess,
+    pub operators: Vec<DynamicPredicateOperator>,
+}
+
+/// One compiler-owned predicate operation exposed for a selected scalar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DynamicPredicateOperator {
+    Eq,
+    Neq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    Like,
+    In,
+    NotIn,
+    IsNull,
+}
+
+impl DynamicPredicateOperator {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::Neq => "neq",
+            Self::Gt => "gt",
+            Self::Gte => "gte",
+            Self::Lt => "lt",
+            Self::Lte => "lte",
+            Self::Like => "like",
+            Self::In => "in",
+            Self::NotIn => "not_in",
+            Self::IsNull => "is_null",
+        }
+    }
+}
+
+/// One static or runtime-expanded ordering term in source precedence order.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum OrderByPlan {
+    Column {
+        column: ColumnId,
+        direction: SortDirectionPlan,
+    },
+    Dynamic {
+        path: String,
+        fields: Vec<DynamicInputFieldPlan>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -421,6 +489,11 @@ pub enum FilterExpr {
     },
     Literal(FilterLiteral),
     Parameter(SqlParameter),
+    /// One bounded predicate object rendered by the execution runtime.
+    DynamicPredicate {
+        path: String,
+        fields: Vec<DynamicInputFieldPlan>,
+    },
     Binary {
         left: Box<FilterExpr>,
         op: FilterOp,

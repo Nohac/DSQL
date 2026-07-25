@@ -81,6 +81,23 @@ query OptionalLikeProbe($$code?) {
   }
 }
 
+query DynamicReadingSearch(
+  $$search = {}
+  $$order = []
+) {
+  readings(
+    where $$search on selected
+    order by $$order on selected
+    limit 5
+  ) {
+    id
+    recorded_at
+    value
+    confidence
+    flagged
+  }
+}
+
 query EmptyAggregateCount {
   sensors(where .code == "humidity"
     and (.readings | count) == 0

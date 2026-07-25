@@ -153,6 +153,89 @@ test("renders readable SQL with compiler-owned escaping and compact SQL on reque
   expect(compactModule.SqlPresentationExecutionPayload?.sql).toBe(compactSql);
 });
 
+test("renders bounded dynamic input types and server execution metadata", async () => {
+  const root = createRoot();
+  const operation = operationMetadata("SearchUsers");
+  operation.params.push(
+    {
+      path: "params.search",
+      data_type: "dynamic_predicate",
+      enum_values: [],
+      required: false,
+      nullable: false,
+      default: { kind: "empty_object" },
+    },
+    {
+      path: "params.order",
+      data_type: "dynamic_order",
+      enum_values: [],
+      required: false,
+      nullable: false,
+      default: { kind: "collection", items: [] },
+    },
+  );
+  operation.dynamic_inputs = [
+    {
+      path: "params.search",
+      kind: "predicate",
+      surface: "selected",
+      fields: [
+        {
+          key: "name",
+          catalog_path: "public.users.name",
+          data_type: "text",
+          nullable: false,
+          access: "unconditional",
+          operators: ["eq", "like", "in", "is_null"],
+          directions: [],
+        },
+      ],
+      sites: [],
+    },
+    {
+      path: "params.order",
+      kind: "order",
+      surface: "selected",
+      fields: [
+        {
+          key: "name",
+          catalog_path: "public.users.name",
+          data_type: "text",
+          nullable: false,
+          access: "unconditional",
+          operators: [],
+          directions: ["asc", "desc_nulls_last"],
+        },
+      ],
+      sites: [],
+    },
+  ];
+
+  await renderDsql(artifactsWithOperation(root, operation), {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+  const source = readFileSync(
+    join(root, "src/generated/dsql/queries/SearchUsers.ts"),
+    "utf8",
+  );
+
+  expect(source).toContain(
+    "export type SearchUsersParamsSearchDynamicInput = {",
+  );
+  expect(source).toContain("name?: {");
+  expect(source).toContain("like?: string;");
+  expect(source).toContain("in?: Array<string>;");
+  expect(source).toContain(
+    'export type SearchUsersParamsOrderDynamicInput = Array<{\n  name: "asc" | "desc_nulls_last";\n}>;',
+  );
+  expect(source).toContain(
+    "search?: SearchUsersParamsSearchDynamicInput;",
+  );
+  expect(source).toContain("dynamicInputs:");
+  expect(source).not.toContain("dynamic_inputs:");
+});
+
 test("renders exact numeric and finite/non-finite float wire types", async () => {
   const root = createRoot();
   const operation = {

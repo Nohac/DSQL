@@ -1,0 +1,30 @@
+---
+source: crates/dsql-execute/tests/it/main.rs
+expression: "materialize(&dynamic_operation(),\n&bindings).expect(\"dynamic operation materializes\")"
+---
+MaterializedOperation {
+    sql: "select $1 where (((u.name LIKE $2)) AND ((u.id = ANY($3)) OR (NOT ((u.id IS NULL))))) and (((u2.name LIKE $2)) AND ((u2.id = ANY($3)) OR (NOT ((u2.id IS NULL))))) order by u.name DESC NULLS LAST",
+    parameters: [
+        BoundParameter {
+            path: "params.tenant",
+            data_type: "int",
+            collection: false,
+            value: 7,
+        },
+        BoundParameter {
+            path: "params.search.and[0].name.like",
+            data_type: "text",
+            collection: false,
+            value: "A%",
+        },
+        BoundParameter {
+            path: "params.search.or[0].id.in",
+            data_type: "int",
+            collection: true,
+            value: [
+                1,
+                2,
+            ],
+        },
+    ],
+}

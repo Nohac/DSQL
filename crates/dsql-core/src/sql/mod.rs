@@ -5,6 +5,8 @@ mod postgres;
 
 pub use generate::{GeneratedSqlFact, SqlOptions, register_sql};
 pub use postgres::{
-    GeneratedSql, GeneratedSqlParameter, GeneratedSqlVariant, PostgresSqlOptions,
-    SqlGenerationError, generate_postgres_sql, generate_postgres_sql_with_options,
+    GeneratedDynamicInputSite, GeneratedDynamicInputSiteField, GeneratedDynamicPredicateOperator,
+    GeneratedDynamicValueKind, GeneratedSql, GeneratedSqlParameter, GeneratedSqlVariant,
+    PostgresSqlOptions, SqlGenerationError, generate_postgres_sql,
+    generate_postgres_sql_with_options,
 };

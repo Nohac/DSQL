@@ -3,8 +3,9 @@ use dsql_execute::{
     materialize,
 };
 use dsql_metadata::{
-    InputDefault, InputField, OperationMetadata, ResultShape, SqlMetadata, SqlParameterMetadata,
-    SqlVariantCaseMetadata, SqlVariantMetadata,
+    DynamicInputField, DynamicInputMetadata, DynamicInputSite, DynamicInputSiteField,
+    DynamicPredicateOperatorMetadata, InputDefault, InputField, OperationMetadata, ResultShape,
+    SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
 };
 use facet_value::{Value, value};
 
@@ -92,6 +93,148 @@ fn operation_with_fields(params: Vec<InputField>, parameters: &[&str]) -> Operat
         input: Vec::new(),
         context: Vec::new(),
         dynamic_inputs: Vec::new(),
+        policies: Vec::new(),
+        handoffs: Vec::new(),
+        fragment_spreads: Vec::new(),
+        source_map: Vec::new(),
+    }
+}
+
+fn dynamic_operation() -> OperationMetadata {
+    let predicate_fields = ["u", "u2"]
+        .into_iter()
+        .map(|alias| DynamicInputSiteField {
+            key: "id".to_string(),
+            operators: vec![
+                DynamicPredicateOperatorMetadata {
+                    name: "in".to_string(),
+                    value_kind: "collection".to_string(),
+                    before_value: Some(format!("{alias}.id = ANY(")),
+                    after_value: Some(")".to_string()),
+                    cases: Vec::new(),
+                },
+                DynamicPredicateOperatorMetadata {
+                    name: "is_null".to_string(),
+                    value_kind: "boolean".to_string(),
+                    before_value: None,
+                    after_value: None,
+                    cases: vec![
+                        SqlVariantCaseMetadata {
+                            value: "true".to_string(),
+                            text: format!("{alias}.id IS NULL"),
+                        },
+                        SqlVariantCaseMetadata {
+                            value: "false".to_string(),
+                            text: format!("{alias}.id IS NOT NULL"),
+                        },
+                    ],
+                },
+            ],
+            directions: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let predicate_sites = ["{{dynamic:0}}", "{{dynamic:1}}"]
+        .into_iter()
+        .zip(predicate_fields)
+        .map(|(marker, id)| DynamicInputSite {
+            marker: marker.to_string(),
+            identity_sql: "TRUE".to_string(),
+            fields: vec![
+                id,
+                DynamicInputSiteField {
+                    key: "name".to_string(),
+                    operators: vec![DynamicPredicateOperatorMetadata {
+                        name: "like".to_string(),
+                        value_kind: "scalar".to_string(),
+                        before_value: Some(if marker.contains(":0") {
+                            "u.name LIKE ".to_string()
+                        } else {
+                            "u2.name LIKE ".to_string()
+                        }),
+                        after_value: None,
+                        cases: Vec::new(),
+                    }],
+                    directions: Vec::new(),
+                },
+            ],
+        })
+        .collect();
+    OperationMetadata {
+        name: "Dynamic".to_string(),
+        kind: "query".to_string(),
+        sql: SqlMetadata {
+            dialect: "postgres".to_string(),
+            text: "select $1 where {{dynamic:0}} and {{dynamic:1}} order by {{dynamic:2}}"
+                .to_string(),
+            compact_text: "select $1 where {{dynamic:0}} and {{dynamic:1}} order by {{dynamic:2}}"
+                .to_string(),
+            parameters: vec![SqlParameterMetadata {
+                path: "params.tenant".to_string(),
+            }],
+            variants: Vec::new(),
+        },
+        result: ResultShape { fields: Vec::new() },
+        params: vec![
+            field("params.tenant", "int", false, &[]),
+            field("params.search", "dynamic_predicate", false, &[]),
+            field("params.order", "dynamic_order", false, &[]),
+        ],
+        input: Vec::new(),
+        context: Vec::new(),
+        dynamic_inputs: vec![
+            DynamicInputMetadata {
+                path: "params.search".to_string(),
+                kind: "predicate".to_string(),
+                surface: "selected".to_string(),
+                fields: vec![
+                    DynamicInputField {
+                        key: "id".to_string(),
+                        catalog_path: "public.users.id".to_string(),
+                        data_type: "int".to_string(),
+                        nullable: false,
+                        access: "unconditional".to_string(),
+                        operators: vec!["in".to_string(), "is_null".to_string()],
+                        directions: Vec::new(),
+                    },
+                    DynamicInputField {
+                        key: "name".to_string(),
+                        catalog_path: "public.users.name".to_string(),
+                        data_type: "text".to_string(),
+                        nullable: false,
+                        access: "unconditional".to_string(),
+                        operators: vec!["like".to_string()],
+                        directions: Vec::new(),
+                    },
+                ],
+                sites: predicate_sites,
+            },
+            DynamicInputMetadata {
+                path: "params.order".to_string(),
+                kind: "order".to_string(),
+                surface: "selected".to_string(),
+                fields: vec![DynamicInputField {
+                    key: "name".to_string(),
+                    catalog_path: "public.users.name".to_string(),
+                    data_type: "text".to_string(),
+                    nullable: false,
+                    access: "unconditional".to_string(),
+                    operators: Vec::new(),
+                    directions: vec!["desc_nulls_last".to_string()],
+                }],
+                sites: vec![DynamicInputSite {
+                    marker: "{{dynamic:2}}".to_string(),
+                    identity_sql: "NULL::integer".to_string(),
+                    fields: vec![DynamicInputSiteField {
+                        key: "name".to_string(),
+                        operators: Vec::new(),
+                        directions: vec![SqlVariantCaseMetadata {
+                            value: "desc_nulls_last".to_string(),
+                            text: "u.name DESC NULLS LAST".to_string(),
+                        }],
+                    }],
+                }],
+            },
+        ],
         policies: Vec::new(),
         handoffs: Vec::new(),
         fragment_spreads: Vec::new(),
@@ -228,6 +371,72 @@ fn shared_input_value_conformance_cases_match() {
 }
 
 #[test]
+fn shared_dynamic_input_conformance_cases_match() {
+    let fixture: Value = facet_json::from_str(include_str!(
+        "../../../../tests/conformance/dynamic-inputs.json"
+    ))
+    .expect("dynamic conformance fixture parses");
+    let fixture = fixture
+        .as_object()
+        .expect("dynamic conformance fixture is an object");
+    let operation: OperationMetadata = facet_value::from_value(
+        fixture
+            .get("operation")
+            .expect("fixture has operation metadata")
+            .clone(),
+    )
+    .expect("fixture operation metadata parses");
+    let cases = fixture
+        .get("cases")
+        .and_then(Value::as_array)
+        .expect("fixture has conformance cases");
+
+    for case in cases {
+        let case = case.as_object().expect("conformance case is an object");
+        let name = case
+            .get("name")
+            .and_then(Value::as_string)
+            .map(|value| value.as_str())
+            .expect("case has a name");
+        let variables = case.get("bindings").expect("case has bindings").clone();
+        let result = materialize(
+            &operation,
+            &ExecutionBindings {
+                variables,
+                context: value!({}),
+            },
+        );
+
+        if let Some(expected_sql) = case.get("expected_sql") {
+            let expected_sql = expected_sql
+                .as_string()
+                .map(|value| value.as_str())
+                .expect("expected SQL is a string");
+            let expected_values = case
+                .get("expected_values")
+                .and_then(Value::as_array)
+                .expect("successful case has expected values");
+            let materialized = result.expect("dynamic conformance case materializes");
+            assert_eq!(materialized.sql, expected_sql, "{name}");
+            let values = materialized
+                .parameters
+                .into_iter()
+                .map(|parameter| parameter.value)
+                .collect::<Vec<_>>();
+            assert_eq!(values, expected_values.as_slice(), "{name}");
+        } else {
+            let expected = case
+                .get("error")
+                .and_then(Value::as_string)
+                .map(|value| value.as_str())
+                .expect("rejection case has an error");
+            let error = result.expect_err("dynamic conformance case rejects");
+            assert!(error.to_string().contains(expected), "{name}: {error}");
+        }
+    }
+}
+
+#[test]
 fn trusted_context_is_never_defaulted() {
     let mut operation = operation_with_fields(Vec::new(), &[]);
     let mut context = field("context.tenant_id", "uuid", false, &[]);
@@ -346,6 +555,186 @@ fn materialization_resolves_variants_and_all_input_namespaces() {
 }
 
 #[test]
+fn materialization_lowers_bounded_dynamic_inputs_and_reuses_operands() {
+    let bindings = ExecutionBindings {
+        variables: value!({
+            "params": {
+                "tenant": 7,
+                "search": {
+                    "and": [{"name": {"like": "A%"}}, {}],
+                    "or": [
+                        {"id": {"in": [1, 2]}},
+                        {"not": {"id": {"is_null": true}}}
+                    ]
+                },
+                "order": [{"name": "desc_nulls_last"}]
+            }
+        }),
+        context: value!({}),
+    };
+
+    insta::assert_debug_snapshot!(
+        materialize(&dynamic_operation(), &bindings).expect("dynamic operation materializes")
+    );
+}
+
+#[test]
+fn materialization_uses_dynamic_identities_and_rejects_unknown_capabilities() {
+    let empty = ExecutionBindings {
+        variables: value!({
+            "params": {"tenant": 7, "search": {}, "order": []}
+        }),
+        context: value!({}),
+    };
+    insta::assert_debug_snapshot!(
+        "identity",
+        materialize(&dynamic_operation(), &empty).expect("empty dynamic inputs materialize")
+    );
+
+    let unknown = ExecutionBindings {
+        variables: value!({
+            "params": {
+                "tenant": 7,
+                "search": {"secret": {"eq": "nope"}},
+                "order": []
+            }
+        }),
+        context: value!({}),
+    };
+    let error = materialize(&dynamic_operation(), &unknown)
+        .expect_err("unknown dynamic fields are rejected");
+    assert!(
+        matches!(error, ExecuteError::InvalidInput { path, .. } if path == "params.search.secret")
+    );
+}
+
+#[test]
+fn materialization_defaults_and_nullable_dynamic_inputs_to_identities() {
+    let mut operation = dynamic_operation();
+    for field in &mut operation.params {
+        match field.data_type.as_str() {
+            "dynamic_predicate" => {
+                field.required = false;
+                field.nullable = true;
+                field.default = Some(InputDefault {
+                    kind: "empty_object".to_string(),
+                    value: None,
+                    boolean: None,
+                    items: None,
+                });
+            }
+            "dynamic_order" => {
+                field.required = false;
+                field.nullable = true;
+                field.default = Some(InputDefault {
+                    kind: "collection".to_string(),
+                    value: None,
+                    boolean: None,
+                    items: Some(Vec::new()),
+                });
+            }
+            _ => {}
+        }
+    }
+    let omitted = ExecutionBindings {
+        variables: value!({"params": {"tenant": 7}}),
+        context: value!({}),
+    };
+    let nullable = ExecutionBindings {
+        variables: value!({
+            "params": {"tenant": 7, "search": null, "order": null}
+        }),
+        context: value!({}),
+    };
+
+    let omitted = materialize(&operation, &omitted).expect("defaults materialize");
+    let nullable = materialize(&operation, &nullable).expect("null identities materialize");
+    assert_eq!(omitted, nullable);
+    insta::assert_debug_snapshot!("defaulted_dynamic_identities", omitted);
+}
+
+#[test]
+fn materialization_rejects_malformed_dynamic_inputs() {
+    let cases = [
+        (
+            value!({
+                "params": {
+                    "tenant": 7,
+                    "search": {"name": {"eq": "not allowed"}},
+                    "order": []
+                }
+            }),
+            "params.search.name.eq",
+        ),
+        (
+            value!({
+                "params": {
+                    "tenant": 7,
+                    "search": {"name": {"like": null}},
+                    "order": []
+                }
+            }),
+            "params.search.name.like",
+        ),
+        (
+            value!({
+                "params": {
+                    "tenant": 7,
+                    "search": {"id": {"in": [1, null]}},
+                    "order": []
+                }
+            }),
+            "params.search.id.in",
+        ),
+        (
+            value!({
+                "params": {
+                    "tenant": 7,
+                    "search": {"or": {}},
+                    "order": []
+                }
+            }),
+            "params.search.or",
+        ),
+        (
+            value!({
+                "params": {
+                    "tenant": 7,
+                    "search": {},
+                    "order": [{"name": "desc_nulls_last", "id": "desc_nulls_last"}]
+                }
+            }),
+            "params.order[0]",
+        ),
+        (
+            value!({
+                "params": {
+                    "tenant": 7,
+                    "search": {},
+                    "order": [{"name": "sideways"}]
+                }
+            }),
+            "params.order[0]",
+        ),
+    ];
+
+    for (variables, expected_path) in cases {
+        let error = materialize(
+            &dynamic_operation(),
+            &ExecutionBindings {
+                variables,
+                context: value!({}),
+            },
+        )
+        .expect_err("malformed dynamic input is rejected");
+        assert!(
+            matches!(error, ExecuteError::InvalidInput { ref path, .. } if path == expected_path),
+            "expected an error at {expected_path}, got {error}",
+        );
+    }
+}
+
+#[test]
 fn materialization_rejects_missing_and_unknown_variant_values() {
     let missing = materialize(&operation(), &ExecutionBindings::default())
         .expect_err("first required declaration is absent");
@@ -446,5 +835,30 @@ async fn postgres_json_bindings_roundtrip_through_sqlx() {
             "items": [{ "item": 1 }, null, ["nested"]],
             "absent": null
         })
+    );
+}
+
+#[tokio::test]
+async fn postgres_accepts_the_dynamic_order_identity_expression() {
+    let Ok(database_url) = std::env::var("DSQL_OBSERVATORY_DATABASE_URL") else {
+        return;
+    };
+    let executor = PostgresExecutor::connect(&database_url)
+        .await
+        .expect("observatory connects");
+    let materialized = MaterializedOperation {
+        sql: "select JSON_AGG(value order by NULL::integer) as values from (values (2), (1)) as source(value)".to_string(),
+        parameters: Vec::new(),
+    };
+
+    let output = executor
+        .execute_materialized(&materialized)
+        .await
+        .expect("typed constant dynamic order identity executes");
+    assert!(
+        output
+            .as_object()
+            .and_then(|object| object.get("values"))
+            .is_some()
     );
 }

@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 import defaultCases from "../../../tests/conformance/input-defaults.json" with {
   type: "json",
 };
+import dynamicCases from "../../../tests/conformance/dynamic-inputs.json" with {
+  type: "json",
+};
 import inputCases from "../../../tests/conformance/input-values.json" with {
   type: "json",
 };
@@ -76,6 +79,7 @@ const payload = {
       },
     },
   },
+  dynamicInputs: [],
   inputs: [
     ...movieInputs,
     {
@@ -154,6 +158,7 @@ const optionalPayload = {
       nullText: "null",
     },
   },
+  dynamicInputs: [],
   inputs: optionalInputs,
 } satisfies DsqlExecutionPayload<OptionalOperation>;
 
@@ -171,6 +176,198 @@ test("materializes defaults and nullable sql variants without mutating inputs", 
     sql: "select * from movie_info order by case when 'null' = 'asc' then id end asc limit $1",
     values: [null],
   });
+});
+
+test("materializes bounded dynamic inputs with shared operand positions", () => {
+  const dynamicInputs = [
+    {
+      path: "params.search",
+      kind: "predicate",
+      surface: "selected",
+      fields: [
+        {
+          key: "id",
+          catalog_path: "public.users.id",
+          data_type: "int",
+          nullable: false,
+          access: "unconditional",
+          operators: ["in"],
+          directions: [],
+        },
+        {
+          key: "name",
+          catalog_path: "public.users.name",
+          data_type: "text",
+          nullable: false,
+          access: "unconditional",
+          operators: ["like"],
+          directions: [],
+        },
+      ],
+      sites: ["u", "u2"].map((alias, index) => ({
+        marker: `{{dynamic:${index}}}`,
+        identity_sql: "TRUE",
+        fields: [
+          {
+            key: "id",
+            operators: [
+              {
+                name: "in",
+                value_kind: "collection",
+                before_value: `${alias}.id = ANY(`,
+                after_value: ")",
+                cases: [],
+              },
+            ],
+            directions: [],
+          },
+          {
+            key: "name",
+            operators: [
+              {
+                name: "like",
+                value_kind: "scalar",
+                before_value: `${alias}.name LIKE `,
+                cases: [],
+              },
+            ],
+            directions: [],
+          },
+        ],
+      })),
+    },
+    {
+      path: "params.order",
+      kind: "order",
+      surface: "selected",
+      fields: [
+        {
+          key: "name",
+          catalog_path: "public.users.name",
+          data_type: "text",
+          nullable: false,
+          access: "unconditional",
+          operators: [],
+          directions: ["desc_nulls_last"],
+        },
+      ],
+      sites: [
+        {
+          marker: "{{dynamic:2}}",
+          identity_sql: "NULL::integer",
+          fields: [
+            {
+              key: "name",
+              operators: [],
+              directions: [
+                {
+                  value: "desc_nulls_last",
+                  text: "u.name DESC NULLS LAST",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+  const operation = {
+    id: "dynamic",
+    name: "Dynamic",
+    kind: "query",
+    requiresContext: false,
+    inputs: [
+      {
+        path: "params.tenant",
+        data_type: "int",
+        required: true,
+        nullable: false,
+      },
+      {
+        path: "params.search",
+        data_type: "dynamic_predicate",
+        required: true,
+        nullable: false,
+      },
+      {
+        path: "params.order",
+        data_type: "dynamic_order",
+        required: true,
+        nullable: false,
+      },
+    ],
+  } satisfies DsqlOperation;
+  const dynamicPayload = {
+    operation,
+    sql: "select $1 where {{dynamic:0}} and {{dynamic:1}} order by {{dynamic:2}}",
+    parameters: [{ path: "params.tenant" }],
+    variants: {},
+    dynamicInputs,
+    inputs: operation.inputs,
+  } satisfies DsqlExecutionPayload;
+
+  expect(
+    materializeDsqlQuery(
+      dynamicPayload,
+      {
+        params: {
+          tenant: 7,
+          search: {
+            and: [{ name: { like: "A%" } }, {}],
+            or: [{ id: { in: [1, 2] } }],
+          },
+          order: [{ name: "desc_nulls_last" }],
+        },
+      },
+      {},
+    ),
+  ).toEqual({
+    sql: "select $1 where (((u.name LIKE $2)) AND ((u.id = ANY($3)))) and (((u2.name LIKE $2)) AND ((u2.id = ANY($3)))) order by u.name DESC NULLS LAST",
+    values: [7, "A%", [1, 2]],
+  });
+
+  const withIdDataType = (dataType: string) => ({
+    ...dynamicPayload,
+    dynamicInputs: dynamicPayload.dynamicInputs.map((input) =>
+      input.path === "params.search"
+        ? {
+            ...input,
+            fields: input.fields.map((field) =>
+              field.key === "id" ? { ...field, data_type: dataType } : field,
+            ),
+          }
+        : input,
+    ),
+  });
+  const materializeId = (dataType: string, value: unknown) =>
+    materializeDsqlQuery(
+      withIdDataType(dataType),
+      {
+        params: {
+          tenant: 7,
+          search: { id: { in: [value] } },
+          order: [],
+        },
+      },
+      {},
+    );
+
+  const uuid = "00000000-0000-0000-0000-000000000000";
+  expect(materializeId("uuid", uuid).values).toEqual([7, [uuid]]);
+  expect(() => materializeId("uuid", "not-a-uuid")).toThrow("valid uuid");
+  const timestamp = "2024-02-29T12:34:56.789+01:30";
+  expect(materializeId("timestamptz", timestamp).values).toEqual([
+    7,
+    [timestamp],
+  ]);
+  expect(() =>
+    materializeId("timestamptz", "2025-02-29T12:34:56Z"),
+  ).toThrow("valid timestamptz");
+  expect(materializeId("numeric", "123.45e-2").values).toEqual([
+    7,
+    ["123.45e-2"],
+  ]);
+  expect(() => materializeId("numeric", "12.3.4")).toThrow("valid numeric");
 });
 
 test("matches the shared typed-default conformance cases", () => {
@@ -197,6 +394,37 @@ test("matches the shared supplied-value conformance cases", () => {
         getDsqlPath(materialized, testCase.field.path),
         testCase.name,
       ).toEqual(testCase.expected);
+    } else {
+      expect(materialize, testCase.name).toThrow(testCase.error);
+    }
+  }
+});
+
+test("matches the shared bounded dynamic input conformance cases", () => {
+  const operation: DsqlOperation<unknown, Record<string, unknown>> = {
+    id: "dynamic-conformance",
+    name: dynamicCases.operation.name,
+    kind: "query",
+    requiresContext: false,
+    inputs: dynamicCases.operation.params,
+  };
+  const payload: DsqlExecutionPayload<typeof operation> = {
+    operation,
+    sql: dynamicCases.operation.sql.text,
+    parameters: dynamicCases.operation.sql.parameters,
+    variants: {},
+    dynamicInputs: dynamicCases.operation.dynamic_inputs,
+    inputs: dynamicCases.operation.params,
+  };
+
+  for (const testCase of dynamicCases.cases) {
+    const materialize = () =>
+      materializeDsqlQuery(payload, testCase.bindings, {});
+    if ("expected_sql" in testCase) {
+      expect(materialize(), testCase.name).toEqual({
+        sql: testCase.expected_sql,
+        values: testCase.expected_values,
+      });
     } else {
       expect(materialize, testCase.name).toThrow(testCase.error);
     }
@@ -299,18 +527,15 @@ test("cache keys materialize defaults and canonical dynamic identities", () => {
       },
       {
         path: "params.search",
-        data_type: "predicate",
+        data_type: "dynamic_predicate",
         required: false,
         nullable: true,
-        null_identity: "empty_object",
       },
       {
         path: "params.order",
-        data_type: "order",
-        collection: true,
+        data_type: "dynamic_order",
         required: false,
         nullable: true,
-        null_identity: "empty_collection",
       },
     ],
   } as const satisfies DsqlOperation;

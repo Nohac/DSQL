@@ -186,7 +186,7 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     }
 
     fn predicate_order_by_clause_1(&self) -> bool {
-        is_name_token(self.peek(1))
+        is_name_token(self.peek(1)) || self.peek(1) == Token::DollarDollar
     }
 
     fn predicate_operator_variable_1(&self) -> bool {
@@ -246,8 +246,12 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     }
 
     fn predicate_expr_1(&self) -> bool {
-        matches!(self.peek(1), Token::Dot | Token::DotDot | Token::Tilde)
-            || is_name_token(self.peek(1))
+        self.current == Token::Exists
+            && (matches!(self.peek(1), Token::Dot | Token::DotDot | Token::Tilde)
+                || is_name_token(self.peek(1)))
+            || self.current == Token::DollarDollar
+                && (self.peek(1) == Token::On
+                    || is_variable_name_token(self.peek(1)) && self.peek(2) == Token::On)
     }
 
     fn predicate_expr_2(&self) -> bool {

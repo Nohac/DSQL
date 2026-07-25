@@ -1,6 +1,8 @@
 # Code Generation Metadata
 
-Status: in progress.
+Status: implemented for language-neutral metadata, declarative project
+renderers, and the browser-handle/server-payload TypeScript split. Additional
+renderer and validation targets remain in progress.
 
 dsql should be able to emit more than SQL. A checked query can also produce
 metadata for application code generation.

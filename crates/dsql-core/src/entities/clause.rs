@@ -41,7 +41,7 @@ pub enum ClauseFact {
         expr: Expr,
     },
     OrderBy {
-        items: Vec<OrderItem>,
+        items: Vec<OrderTerm>,
     },
     Limit {
         expr: Expr,
@@ -57,6 +57,13 @@ pub struct OrderItem {
     pub field: String,
     pub field_span: Span,
     pub direction: Option<OrderDirection>,
+}
+
+/// One source-ordered static or bounded dynamic ordering term.
+#[derive(Debug, Clone, Hash, PartialEq)]
+pub enum OrderTerm {
+    Column(OrderItem),
+    Dynamic(VariableRef),
 }
 
 #[derive(Debug, Clone, Hash, PartialEq)]
@@ -250,10 +257,13 @@ pub(crate) fn clause_expr(ctx: &LowerCtx<'_>, node: NodeRef) -> Expr {
     }
 }
 
-fn order_items(cst: &CstData, source: &str, node: NodeRef) -> Vec<OrderItem> {
+fn order_items(cst: &CstData, source: &str, node: NodeRef) -> Vec<OrderTerm> {
     cst.children(node)
         .filter(|child| cst.match_rule(*child, Rule::OrderItem))
         .map(|item| {
+            if let Some(dynamic) = direct_rule(cst, item, Rule::DynamicInput) {
+                return OrderTerm::Dynamic(build_variable_ref(cst, source, dynamic));
+            }
             let field_span = direct_rule(cst, item, Rule::QualifiedName)
                 .map(|name| node_span(cst, name))
                 .unwrap_or_else(|| node_span(cst, item));
@@ -272,11 +282,11 @@ fn order_items(cst: &CstData, source: &str, node: NodeRef) -> Vec<OrderItem> {
                     })
             });
 
-            OrderItem {
+            OrderTerm::Column(OrderItem {
                 field: text(source, field_span).to_string(),
                 field_span,
                 direction,
-            }
+            })
         })
         .collect()
 }
@@ -306,10 +316,25 @@ pub(crate) fn check_clause(
             crate::entities::policy::check_filter_assignment(ctx, table, entity, clause);
         }
         ClauseFact::Where { expr } => {
+            check_dynamic_predicate_placement(
+                ctx,
+                entity,
+                expr,
+                DynamicPredicatePlacement::Conjunctive,
+            );
             check_predicate_expr(ctx, resolved, table, entity, expr, true);
         }
         ClauseFact::OrderBy { items } => {
-            for item in items {
+            for variable in items.iter().filter_map(|item| match item {
+                OrderTerm::Dynamic(variable) => Some(variable),
+                OrderTerm::Column(_) => None,
+            }) {
+                check_dynamic_input_owner(ctx, entity, variable, "order");
+            }
+            for item in items.iter().filter_map(|item| match item {
+                OrderTerm::Column(item) => Some(item),
+                OrderTerm::Dynamic(_) => None,
+            }) {
                 let resolved_item =
                     resolved.and_then(|resolved| resolved.order_item_at(item.field_span));
                 if resolved_item.is_none_or(|item| item.column.is_none()) {
@@ -328,6 +353,127 @@ pub(crate) fn check_clause(
         }
         ClauseFact::Offset { expr } => {
             check_non_negative_integer(ctx, entity, "offset", expr, span);
+        }
+    }
+}
+
+fn check_dynamic_input_owner(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    entity: bowl::Entity,
+    variable: &VariableRef,
+    kind: &str,
+) {
+    use crate::facts::DiagnosticCode;
+
+    if variable.name.is_none() {
+        ctx.error(
+            entity,
+            variable.span,
+            DiagnosticCode::InvalidDynamicInput,
+            format!("bounded dynamic {kind} inputs must be named top-level query inputs"),
+        );
+    }
+    if ctx.enclosing_fragment.is_some() {
+        ctx.error(
+            entity,
+            variable.span,
+            DiagnosticCode::InvalidDynamicInput,
+            format!("bounded dynamic {kind} inputs are not supported in fragments"),
+        );
+    }
+}
+
+fn check_dynamic_predicate_placement(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    entity: bowl::Entity,
+    expr: &Expr,
+    placement: DynamicPredicatePlacement,
+) {
+    use crate::entities::expression::BinaryOp;
+    use crate::facts::DiagnosticCode;
+
+    match expr {
+        Expr::DynamicPredicate { variable, span } => {
+            check_dynamic_input_owner(ctx, entity, variable, "predicate");
+            match placement {
+                DynamicPredicatePlacement::Conjunctive => {}
+                DynamicPredicatePlacement::InvalidBoolean => ctx.error(
+                    entity,
+                    *span,
+                    DiagnosticCode::InvalidDynamicInput,
+                    "bounded dynamic predicates must be the whole predicate or occur in positive `and` position".to_string(),
+                ),
+                DynamicPredicatePlacement::MissingSelectedSurface => ctx.error(
+                    entity,
+                    *span,
+                    DiagnosticCode::InvalidDynamicInput,
+                    "bounded dynamic predicates inside `exists` have no selected row surface"
+                        .to_string(),
+                ),
+            }
+        }
+        Expr::Binary { op, lhs, rhs, .. } => {
+            let child_placement = match placement {
+                DynamicPredicatePlacement::Conjunctive if matches!(op, BinaryOp::And) => {
+                    DynamicPredicatePlacement::Conjunctive
+                }
+                DynamicPredicatePlacement::MissingSelectedSurface => {
+                    DynamicPredicatePlacement::MissingSelectedSurface
+                }
+                DynamicPredicatePlacement::Conjunctive
+                | DynamicPredicatePlacement::InvalidBoolean => {
+                    DynamicPredicatePlacement::InvalidBoolean
+                }
+            };
+            check_dynamic_predicate_placement(ctx, entity, lhs, child_placement);
+            check_dynamic_predicate_placement(ctx, entity, rhs, child_placement);
+        }
+        Expr::Unary { operand, .. } | Expr::NullTest { operand, .. } => {
+            check_dynamic_predicate_placement(ctx, entity, operand, placement.nested());
+        }
+        Expr::List { items, .. } => {
+            for item in items {
+                check_dynamic_predicate_placement(ctx, entity, item, placement.nested());
+            }
+        }
+        Expr::Exists { predicate, .. } => {
+            if let Some(predicate) = predicate {
+                check_dynamic_predicate_placement(
+                    ctx,
+                    entity,
+                    predicate,
+                    DynamicPredicatePlacement::MissingSelectedSurface,
+                );
+            }
+        }
+        Expr::Aggregate {
+            source, operand, ..
+        } => {
+            check_dynamic_predicate_placement(ctx, entity, source, placement.nested());
+            if let Some(operand) = operand {
+                check_dynamic_predicate_placement(ctx, entity, operand, placement.nested());
+            }
+        }
+        Expr::Path { .. }
+        | Expr::Variable { .. }
+        | Expr::PredicateRef { .. }
+        | Expr::Literal { .. }
+        | Expr::Error { .. } => {}
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DynamicPredicatePlacement {
+    Conjunctive,
+    InvalidBoolean,
+    MissingSelectedSurface,
+}
+
+impl DynamicPredicatePlacement {
+    fn nested(self) -> Self {
+        match self {
+            Self::MissingSelectedSurface => Self::MissingSelectedSurface,
+            Self::Conjunctive | Self::InvalidBoolean => Self::InvalidBoolean,
         }
     }
 }
@@ -555,7 +701,7 @@ fn check_predicate_expr(
                 );
             }
         }
-        Expr::Variable { .. } | Expr::Error { .. } => {}
+        Expr::Variable { .. } | Expr::DynamicPredicate { .. } | Expr::Error { .. } => {}
     }
 }
 
@@ -891,6 +1037,7 @@ fn resolved_expr_type(
         | Expr::Exists { .. }
         | Expr::Literal { .. }
         | Expr::Variable { .. }
+        | Expr::DynamicPredicate { .. }
         | Expr::PredicateRef { .. }
         | Expr::Error { .. } => None,
     }
@@ -952,7 +1099,11 @@ impl FormatStage for Clause {
                 if idx > 0 {
                     formatter.write_str(", ");
                 }
-                formatter.order_item(item);
+                if formatter.direct_rule(item, Rule::DynamicInput).is_some() {
+                    formatter.write_node_text(item);
+                } else {
+                    formatter.order_item(item);
+                }
             }
         } else if formatter.rule(node) == Some(Rule::LimitClause) {
             formatter.write_str("limit ");

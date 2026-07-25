@@ -1,0 +1,30 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql_forms(&bowl).await
+---
+-- formatted
+select
+  "root"."title" as "title"
+from
+  (
+    select
+      1) as "singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'id',
+        "title_d4d9f554"."id",
+        'title',
+        "title_d4d9f554"."title"
+      ) as "title"
+    from
+      "public"."title" as "title_d4d9f554"
+    where
+      "title_d4d9f554"."title" = '{{dynamic:0}}'
+      and ({{dynamic:1}})
+    limit
+      1
+  ) as "root" on true
+
+-- compact
+SELECT "root"."title" AS "title" FROM (SELECT 1) AS "singleton" LEFT JOIN LATERAL (SELECT JSON_BUILD_OBJECT('id', "title_d4d9f554"."id", 'title', "title_d4d9f554"."title") AS "title" FROM "public"."title" AS "title_d4d9f554" WHERE "title_d4d9f554"."title" = '{{dynamic:0}}' AND ({{dynamic:1}}) LIMIT 1) AS "root" ON true

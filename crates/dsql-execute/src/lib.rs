@@ -3,7 +3,10 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use dsql_metadata::{InputDefault, InputField, OperationMetadata};
+use dsql_metadata::{
+    DynamicInputMetadata, DynamicInputSite, DynamicInputSiteField, InputDefault, InputField,
+    OperationMetadata,
+};
 use facet_value::{VArray, VObject, Value};
 use sqlx::postgres::{PgArguments, PgPool, PgPoolOptions};
 use sqlx::query::QueryScalar;
@@ -70,6 +73,8 @@ pub enum ExecuteError {
     InvalidVariant { path: String, value: String },
     #[error("operation input `{path}` uses unsupported logical type `{data_type}`")]
     UnsupportedType { path: String, data_type: String },
+    #[error("operation dynamic input metadata is invalid: {0}")]
+    InvalidDynamicMetadata(String),
     #[error("operation kind `{0}` cannot be executed as a PostgreSQL query")]
     UnsupportedOperationKind(String),
     #[error("operation SQL dialect `{0}` is not PostgreSQL")]
@@ -185,7 +190,7 @@ pub fn materialize(
         sql = sql.replace(&format!("{{{{{}}}}}", variant.path), &case.text);
     }
 
-    let parameters = operation
+    let mut parameters = operation
         .sql
         .parameters
         .iter()
@@ -199,8 +204,434 @@ pub fn materialize(
             })
         })
         .collect::<Result<Vec<_>, ExecuteError>>()?;
+    materialize_dynamic_inputs(
+        &mut sql,
+        &operation.dynamic_inputs,
+        &values,
+        &mut parameters,
+    )?;
 
     Ok(MaterializedOperation { sql, parameters })
+}
+
+fn materialize_dynamic_inputs(
+    sql: &mut String,
+    inputs: &[DynamicInputMetadata],
+    values: &BTreeMap<&str, Value>,
+    parameters: &mut Vec<BoundParameter>,
+) -> Result<(), ExecuteError> {
+    for input in inputs {
+        let value = materialized_value(values, &input.path)?;
+        let value = if value.is_null() {
+            match input.kind.as_str() {
+                "predicate" => VObject::new().into(),
+                "order" => VArray::new().into(),
+                _ => {
+                    return Err(ExecuteError::InvalidDynamicMetadata(format!(
+                        "input `{}` has unknown kind `{}`",
+                        input.path, input.kind
+                    )));
+                }
+            }
+        } else {
+            value.clone()
+        };
+        let parameter_start = parameters.len();
+        let mut expected_parameter_end = None;
+        for site in &input.sites {
+            let mut operand_index = parameter_start;
+            let rendered = match input.kind.as_str() {
+                "predicate" => render_dynamic_predicate(
+                    input,
+                    site,
+                    &value,
+                    &input.path,
+                    parameters,
+                    &mut operand_index,
+                )?
+                .unwrap_or_else(|| site.identity_sql.clone()),
+                "order" => render_dynamic_order(input, site, &value, &input.path)?
+                    .unwrap_or_else(|| site.identity_sql.clone()),
+                kind => {
+                    return Err(ExecuteError::InvalidDynamicMetadata(format!(
+                        "input `{}` has unknown kind `{kind}`",
+                        input.path
+                    )));
+                }
+            };
+            if let Some(expected) = expected_parameter_end {
+                if operand_index != expected {
+                    return Err(ExecuteError::InvalidDynamicMetadata(format!(
+                        "sites for `{}` do not consume the same operands",
+                        input.path
+                    )));
+                }
+            } else {
+                expected_parameter_end = Some(operand_index);
+            }
+            replace_dynamic_marker(sql, site, &rendered)?;
+        }
+        if input.sites.is_empty() {
+            return Err(ExecuteError::InvalidDynamicMetadata(format!(
+                "input `{}` has no SQL usage sites",
+                input.path
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn replace_dynamic_marker(
+    sql: &mut String,
+    site: &DynamicInputSite,
+    rendered: &str,
+) -> Result<(), ExecuteError> {
+    let mut occurrences = sql.match_indices(&site.marker);
+    if occurrences.next().is_none() || occurrences.next().is_some() {
+        return Err(ExecuteError::InvalidDynamicMetadata(format!(
+            "marker `{}` does not identify exactly one SQL site",
+            site.marker
+        )));
+    }
+    *sql = sql.replacen(&site.marker, rendered, 1);
+    Ok(())
+}
+
+fn render_dynamic_predicate(
+    input: &DynamicInputMetadata,
+    site: &DynamicInputSite,
+    value: &Value,
+    path: &str,
+    parameters: &mut Vec<BoundParameter>,
+    operand_index: &mut usize,
+) -> Result<Option<String>, ExecuteError> {
+    let Some(object) = value.as_object() else {
+        return Err(invalid(path, "a dynamic predicate object"));
+    };
+    let mut keys = object.keys().map(|key| key.as_str()).collect::<Vec<_>>();
+    keys.sort_unstable();
+    let mut predicates = Vec::new();
+    for key in keys {
+        let Some(value) = object.get(key) else {
+            continue;
+        };
+        match key {
+            "and" => {
+                let Some(items) = value.as_array() else {
+                    return Err(invalid(&format!("{path}.and"), "an array of predicates"));
+                };
+                let mut children = Vec::new();
+                for (index, item) in items.iter().enumerate() {
+                    if let Some(child) = render_dynamic_predicate(
+                        input,
+                        site,
+                        item,
+                        &format!("{path}.and[{index}]"),
+                        parameters,
+                        operand_index,
+                    )? {
+                        children.push(child);
+                    }
+                }
+                if !children.is_empty() {
+                    predicates.push(parenthesized_join(children, " AND "));
+                }
+            }
+            "or" => {
+                let Some(items) = value.as_array() else {
+                    return Err(invalid(&format!("{path}.or"), "an array of predicates"));
+                };
+                let mut children = Vec::new();
+                for (index, item) in items.iter().enumerate() {
+                    if let Some(child) = render_dynamic_predicate(
+                        input,
+                        site,
+                        item,
+                        &format!("{path}.or[{index}]"),
+                        parameters,
+                        operand_index,
+                    )? {
+                        children.push(child);
+                    }
+                }
+                predicates.push(if children.is_empty() {
+                    "FALSE".to_string()
+                } else {
+                    parenthesized_join(children, " OR ")
+                });
+            }
+            "not" => {
+                if let Some(child) = render_dynamic_predicate(
+                    input,
+                    site,
+                    value,
+                    &format!("{path}.not"),
+                    parameters,
+                    operand_index,
+                )? {
+                    predicates.push(format!("NOT ({child})"));
+                }
+            }
+            field_key => {
+                let field = dynamic_site_field(input, site, field_key, path)?;
+                let Some(operators) = value.as_object() else {
+                    return Err(invalid(
+                        &format!("{path}.{field_key}"),
+                        "a dynamic field-operator object",
+                    ));
+                };
+                let mut operator_keys =
+                    operators.keys().map(|key| key.as_str()).collect::<Vec<_>>();
+                operator_keys.sort_unstable();
+                for operator_name in operator_keys {
+                    let Some(operand) = operators.get(operator_name) else {
+                        continue;
+                    };
+                    let Some(operator) = field
+                        .operators
+                        .iter()
+                        .find(|operator| operator.name == operator_name)
+                    else {
+                        return Err(invalid(
+                            &format!("{path}.{field_key}.{operator_name}"),
+                            "a declared dynamic predicate operator",
+                        ));
+                    };
+                    let operand_path = format!("{path}.{field_key}.{operator_name}");
+                    let predicate = match operator.value_kind.as_str() {
+                        "scalar" => {
+                            validate_dynamic_scalar(
+                                &field_data_type(input, field_key)?,
+                                operand,
+                                &operand_path,
+                            )?;
+                            let placeholder = dynamic_parameter(
+                                parameters,
+                                operand_index,
+                                &operand_path,
+                                &field_data_type(input, field_key)?,
+                                false,
+                                operand,
+                            )?;
+                            format!(
+                                "{}{placeholder}{}",
+                                operator.before_value.as_deref().unwrap_or_default(),
+                                operator.after_value.as_deref().unwrap_or_default()
+                            )
+                        }
+                        "collection" => {
+                            validate_dynamic_collection(
+                                &field_data_type(input, field_key)?,
+                                operand,
+                                &operand_path,
+                            )?;
+                            let Some(items) = operand.as_array() else {
+                                return Err(invalid(&operand_path, "a collection"));
+                            };
+                            if items.is_empty() {
+                                if operator_name == "in" {
+                                    "FALSE".to_string()
+                                } else {
+                                    "TRUE".to_string()
+                                }
+                            } else {
+                                let placeholder = dynamic_parameter(
+                                    parameters,
+                                    operand_index,
+                                    &operand_path,
+                                    &field_data_type(input, field_key)?,
+                                    true,
+                                    operand,
+                                )?;
+                                format!(
+                                    "{}{placeholder}{}",
+                                    operator.before_value.as_deref().unwrap_or_default(),
+                                    operator.after_value.as_deref().unwrap_or_default()
+                                )
+                            }
+                        }
+                        "boolean" => {
+                            let Some(value) = operand.as_bool() else {
+                                return Err(invalid(&operand_path, "a boolean"));
+                            };
+                            let value = if value { "true" } else { "false" };
+                            operator
+                                .cases
+                                .iter()
+                                .find(|case| case.value == value)
+                                .map(|case| case.text.clone())
+                                .ok_or_else(|| {
+                                    ExecuteError::InvalidDynamicMetadata(format!(
+                                        "operator `{operator_name}` has no `{value}` lowering"
+                                    ))
+                                })?
+                        }
+                        kind => {
+                            return Err(ExecuteError::InvalidDynamicMetadata(format!(
+                                "operator `{operator_name}` has unknown value kind `{kind}`"
+                            )));
+                        }
+                    };
+                    predicates.push(predicate);
+                }
+            }
+        }
+    }
+    Ok((!predicates.is_empty()).then(|| parenthesized_join(predicates, " AND ")))
+}
+
+fn render_dynamic_order(
+    input: &DynamicInputMetadata,
+    site: &DynamicInputSite,
+    value: &Value,
+    path: &str,
+) -> Result<Option<String>, ExecuteError> {
+    let Some(items) = value.as_array() else {
+        return Err(invalid(path, "an array of dynamic order entries"));
+    };
+    let mut rendered = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let item_path = format!("{path}[{index}]");
+        let Some(object) = item.as_object() else {
+            return Err(invalid(&item_path, "a single-field order object"));
+        };
+        if object.len() != 1 {
+            return Err(invalid(&item_path, "a single-field order object"));
+        }
+        let Some((field_key, direction)) = object.iter().next() else {
+            return Err(invalid(&item_path, "a single-field order object"));
+        };
+        let field = dynamic_site_field(input, site, field_key.as_str(), path)?;
+        let Some(direction) = string_value(direction) else {
+            return Err(invalid(&item_path, "a dynamic order direction"));
+        };
+        let Some(case) = field.directions.iter().find(|case| case.value == direction) else {
+            return Err(invalid(&item_path, "a declared dynamic order direction"));
+        };
+        rendered.push(case.text.clone());
+    }
+    Ok((!rendered.is_empty()).then(|| rendered.join(", ")))
+}
+
+fn dynamic_site_field<'a>(
+    input: &DynamicInputMetadata,
+    site: &'a DynamicInputSite,
+    key: &str,
+    path: &str,
+) -> Result<&'a DynamicInputSiteField, ExecuteError> {
+    if !input.fields.iter().any(|field| field.key == key) {
+        return Err(invalid(
+            &format!("{path}.{key}"),
+            "a selected dynamic field",
+        ));
+    }
+    site.fields
+        .iter()
+        .find(|field| field.key == key)
+        .ok_or_else(|| {
+            ExecuteError::InvalidDynamicMetadata(format!(
+                "site `{}` has no lowering for field `{key}`",
+                site.marker
+            ))
+        })
+}
+
+fn field_data_type(input: &DynamicInputMetadata, key: &str) -> Result<String, ExecuteError> {
+    input
+        .fields
+        .iter()
+        .find(|field| field.key == key)
+        .map(|field| field.data_type.clone())
+        .ok_or_else(|| {
+            ExecuteError::InvalidDynamicMetadata(format!(
+                "input `{}` has no field `{key}`",
+                input.path
+            ))
+        })
+}
+
+fn dynamic_parameter(
+    parameters: &mut Vec<BoundParameter>,
+    operand_index: &mut usize,
+    path: &str,
+    data_type: &str,
+    collection: bool,
+    value: &Value,
+) -> Result<String, ExecuteError> {
+    if *operand_index == parameters.len() {
+        parameters.push(BoundParameter {
+            path: path.to_string(),
+            data_type: data_type.to_string(),
+            collection,
+            value: value.clone(),
+        });
+    } else {
+        let Some(existing) = parameters.get(*operand_index) else {
+            return Err(ExecuteError::InvalidDynamicMetadata(
+                "dynamic operand allocation is not contiguous".to_string(),
+            ));
+        };
+        if existing.data_type != data_type
+            || existing.collection != collection
+            || existing.value != *value
+        {
+            return Err(ExecuteError::InvalidDynamicMetadata(format!(
+                "reused dynamic site disagrees at operand `{path}`"
+            )));
+        }
+    }
+    *operand_index += 1;
+    Ok(format!("${}", *operand_index))
+}
+
+fn parenthesized_join(items: Vec<String>, separator: &str) -> String {
+    format!("({})", items.join(separator))
+}
+
+fn validate_dynamic_collection(
+    data_type: &str,
+    value: &Value,
+    path: &str,
+) -> Result<(), ExecuteError> {
+    let Some(items) = value.as_array() else {
+        return Err(invalid(path, &format!("an array of {data_type} values")));
+    };
+    for item in items {
+        if item.is_null() {
+            return Err(invalid(path, "a collection without null elements"));
+        }
+        validate_dynamic_scalar(data_type, item, path)?;
+    }
+    Ok(())
+}
+
+fn validate_dynamic_scalar(data_type: &str, value: &Value, path: &str) -> Result<(), ExecuteError> {
+    if value.is_null() {
+        return Err(invalid(path, &format!("a non-null {data_type} value")));
+    }
+    let valid = match data_type {
+        "uuid" => string_value(value).is_some_and(|value| Uuid::parse_str(value).is_ok()),
+        "text" => string_value(value).is_some(),
+        "timestamptz" => {
+            string_value(value).is_some_and(|value| DateTime::parse_from_rfc3339(value).is_ok())
+        }
+        "int" => integer_value(value).is_some_and(is_safe_integer),
+        "numeric" => string_value(value).is_some_and(|value| BigDecimal::from_str(value).is_ok()),
+        "float" => float_value(value).is_some_and(f64::is_finite),
+        "boolean" => value.as_bool().is_some(),
+        "json" => true,
+        data_type => {
+            return Err(ExecuteError::UnsupportedType {
+                path: path.to_string(),
+                data_type: data_type.to_string(),
+            });
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid(path, &format!("a valid {data_type} value")))
+    }
 }
 
 fn materialized_value<'a>(
@@ -337,11 +768,14 @@ fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Val
             .map(Value::from)
             .ok_or_else(|| invalid(&field.path, "a valid boolean default")),
         "null" => Ok(Value::NULL),
-        "collection" if field.collection == Some(true) => {
+        "collection" if field.collection == Some(true) || field.data_type == "dynamic_order" => {
             let items = default
                 .items
                 .as_ref()
                 .ok_or_else(|| invalid(&field.path, "a valid collection default"))?;
+            if field.data_type == "dynamic_order" && !items.is_empty() {
+                return Err(invalid(&field.path, "an empty dynamic order default"));
+            }
             let mut item_field = field.clone();
             item_field.collection = None;
             items
@@ -355,11 +789,15 @@ fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Val
                 .collect::<Result<Vec<_>, _>>()
                 .map(|items| items.into_iter().collect())
         }
-        "empty_object" if field.collection != Some(true) => Ok(VObject::new().into()),
+        "empty_object"
+            if field.collection != Some(true) && field.data_type == "dynamic_predicate" =>
+        {
+            Ok(VObject::new().into())
+        }
         "string" => Err(invalid(&field.path, "a compatible string default")),
         "boolean" => Err(invalid(&field.path, "a compatible boolean default")),
         "collection" => Err(invalid(&field.path, "a compatible collection default")),
-        "empty_object" => Err(invalid(&field.path, "a compatible object default")),
+        "empty_object" => Err(invalid(&field.path, "a dynamic predicate default")),
         _ => Err(invalid(&field.path, "a recognized input default")),
     }
 }

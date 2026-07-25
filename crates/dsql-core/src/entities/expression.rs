@@ -60,6 +60,11 @@ pub enum Expr {
         variable: VariableRef,
         span: Span,
     },
+    /// One bounded dynamic predicate input such as `$$search on selected`.
+    DynamicPredicate {
+        variable: VariableRef,
+        span: Span,
+    },
     /// A bare reusable-condition reference. Query predicates reject these;
     /// filter analysis resolves them against visible condition definitions.
     PredicateRef {
@@ -91,6 +96,7 @@ impl Expr {
             | Expr::Literal { span, .. }
             | Expr::Path { span, .. }
             | Expr::Variable { span, .. }
+            | Expr::DynamicPredicate { span, .. }
             | Expr::PredicateRef { span, .. }
             | Expr::Aggregate { span, .. }
             | Expr::Error { span } => *span,
@@ -236,6 +242,7 @@ pub(crate) fn expr_child(cst: &CstData, node: NodeRef) -> Option<NodeRef> {
                     | Rule::ExistsExpr
                     | Rule::Literal
                     | Rule::ScopedPath
+                    | Rule::DynamicInput
                     | Rule::ValueVariable
                     | Rule::PredicateName,
                 _
@@ -263,6 +270,10 @@ pub(crate) fn build_expr(cst: &CstData, source: &str, node: NodeRef) -> Expr {
         Node::Rule(Rule::Literal, _) => build_literal(cst, source, node, span),
         Node::Rule(Rule::ScopedPath, _) => build_path(cst, source, node, span),
         Node::Rule(Rule::ValueVariable, _) => Expr::Variable {
+            variable: build_variable_ref(cst, source, node),
+            span,
+        },
+        Node::Rule(Rule::DynamicInput, _) => Expr::DynamicPredicate {
             variable: build_variable_ref(cst, source, node),
             span,
         },
@@ -388,6 +399,7 @@ fn is_expr_node(cst: &CstData, node: NodeRef) -> bool {
                 | Rule::ExistsExpr
                 | Rule::Literal
                 | Rule::ScopedPath
+                | Rule::DynamicInput
                 | Rule::ValueVariable
                 | Rule::PredicateName,
             _
@@ -653,6 +665,9 @@ impl std::fmt::Display for Expr {
                 Ok(())
             }
             Expr::Variable { variable, .. } => f.write_str(&render_variable(variable)),
+            Expr::DynamicPredicate { variable, .. } => {
+                write!(f, "{} on selected", render_variable(variable))
+            }
             Expr::PredicateRef { name, .. } => f.write_str(name),
             Expr::Aggregate {
                 source,

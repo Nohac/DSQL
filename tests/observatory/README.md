@@ -18,6 +18,7 @@ missing conformance case is visible during review.
 | Structured inputs, top-level params, and trusted context | `TypedReading`, `RecentReadings`, and `TenantScope` |
 | Scalar, collection, enum, boolean, and null defaults | `RecentReadings`, `ManualFilterProbe`, and `SensorReadingWindow` |
 | Nullable predicate pruning, reversed operands, and optional pagination | `OptionalPredicateProbe`, `SensorReadingWindow`, and `MappedSensorWindow` |
+| Bounded dynamic predicates and ordering over selected fields | `DynamicReadingSearch` |
 | Fragment containment and whole-root lifting | `ContainedSensorWindow` and `LiftedSensorWindow` |
 | Namespaced and cross-root leaf bindings, including forwarding shorthand | `NamespacedSensorWindow` and `MappedSensorWindow` |
 | Nested composite-key relations, existence, ordering, and pagination | `NetworkTopology` and `SensorReadingWindow` |
@@ -28,9 +29,9 @@ missing conformance case is visible during review.
 | Native generation, materialization, execution, and scope listing | the `dsql-cli` Observatory integration tests |
 
 Intentionally unimplemented language features are not represented as fake
-coverage. Directive execution, bounded dynamic inputs, split fetch, and
-mutations receive Observatory cases when their executable contracts land.
-Editor-only behavior remains in the core and LSP protocol suites.
+coverage. Directive execution, split fetch, and mutations receive Observatory
+cases when their executable contracts land. Editor-only behavior remains in the
+core and LSP protocol suites.
 
 The Bun lifecycle talks to PostgreSQL directly through `SQL`; only container
 lifecycle operations shell out, and those use rootless Podman. PostgreSQL is

@@ -1,0 +1,15 @@
+---
+source: crates/dsql-execute/tests/it/main.rs
+expression: "materialize(&dynamic_operation(),\n&empty).expect(\"empty dynamic inputs materialize\")"
+---
+MaterializedOperation {
+    sql: "select $1 where TRUE and TRUE order by NULL::integer",
+    parameters: [
+        BoundParameter {
+            path: "params.tenant",
+            data_type: "int",
+            collection: false,
+            value: 7,
+        },
+    ],
+}

@@ -7,7 +7,7 @@ use std::path::Path;
 use dsql_core::catalog::{Catalog, TableId};
 use dsql_core::entities::aggregate::AggregateMode;
 use dsql_core::entities::variable::{
-    InputDefault as CoreInputDefault, VariableBinding, VariableSource,
+    InputDefault as CoreInputDefault, VariableBinding, VariableRole, VariableSource,
 };
 use dsql_core::entities::variable_path::{is_input_path, is_params_path};
 use dsql_core::facts::Span;
@@ -17,12 +17,14 @@ use dsql_core::plan::{
     PolicyFieldTarget, QueryPlan, QueryRootPlan, SelectionPlan, SelectionPlanItem, SpreadUse,
 };
 use dsql_core::resolution::SelectionCardinality;
-use dsql_core::sql::GeneratedSql;
+use dsql_core::sql::{GeneratedDynamicInputSite, GeneratedDynamicValueKind, GeneratedSql};
 use dsql_metadata::{
-    DefinitionKind, FragmentMetadata, FragmentSpreadMetadata, InputDefault, InputField,
-    OperationMetadata, PolicyApplicationMetadata, PolicyFieldAccessMetadata, PolicyMetadata,
-    ResultDataType, ResultField, ResultFieldKind, ResultShape, SourceMapEntry, SourceRange,
-    SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
+    DefinitionKind, DynamicInputField, DynamicInputMetadata, DynamicInputSite,
+    DynamicInputSiteField, DynamicPredicateOperatorMetadata, FragmentMetadata,
+    FragmentSpreadMetadata, InputDefault, InputField, OperationMetadata, PolicyApplicationMetadata,
+    PolicyFieldAccessMetadata, PolicyMetadata, ResultDataType, ResultField, ResultFieldKind,
+    ResultShape, SourceMapEntry, SourceRange, SqlDialect, SqlMetadata, SqlParameterMetadata,
+    SqlVariantCaseMetadata, SqlVariantMetadata,
 };
 
 use crate::pipeline::{GenerateError, Result};
@@ -110,7 +112,7 @@ pub(crate) fn operation_metadata(
             &inputs.sql.policy_context,
             &inputs.seed.query_name,
         )?,
-        dynamic_inputs: Vec::new(),
+        dynamic_inputs: dynamic_input_metadata(catalog, inputs)?,
         policies: policy_metadata(catalog, source_root, inputs)?,
         handoffs: Vec::new(),
         fragment_spreads: fragment_spreads(&inputs.seed.spreads),
@@ -121,6 +123,145 @@ pub(crate) fn operation_metadata(
             content_range: inputs.content_range,
         }],
     })
+}
+
+fn dynamic_input_metadata(
+    catalog: &Catalog,
+    inputs: &OperationInputs<'_>,
+) -> Result<Vec<DynamicInputMetadata>> {
+    inputs
+        .plan
+        .dynamic_inputs
+        .iter()
+        .map(|contract| {
+            let mut fields = Vec::with_capacity(contract.fields.len());
+            for field in &contract.fields {
+                let column =
+                    catalog
+                        .column_by_id(field.column)
+                        .ok_or_else(|| GenerateError::Assembly {
+                            name: inputs.seed.query_name.clone(),
+                            message: format!(
+                                "dynamic input `{}` references a missing column",
+                                contract.path
+                            ),
+                        })?;
+                let table =
+                    catalog
+                        .table_by_id(column.table)
+                        .ok_or_else(|| GenerateError::Assembly {
+                            name: inputs.seed.query_name.clone(),
+                            message: format!(
+                                "dynamic input `{}` references a missing table",
+                                contract.path
+                            ),
+                        })?;
+                fields.push(DynamicInputField {
+                    key: field.key.clone(),
+                    catalog_path: format!("{}.{}.{}", table.schema, table.name, column.name),
+                    data_type: field.data_type.as_str().to_string(),
+                    nullable: field.nullable,
+                    access: access_label(field.access).to_string(),
+                    operators: field
+                        .operators
+                        .iter()
+                        .map(|operator| operator.as_str().to_string())
+                        .collect(),
+                    directions: match contract.kind {
+                        dsql_core::plan::DynamicInputKind::Predicate => Vec::new(),
+                        dsql_core::plan::DynamicInputKind::Order => dynamic_order_directions(),
+                    },
+                });
+            }
+            let sites = inputs
+                .sql
+                .dynamic_sites
+                .iter()
+                .filter(|site| site.path == contract.path && site.kind == contract.kind)
+                .map(dynamic_input_site)
+                .collect::<Vec<_>>();
+            if sites.is_empty() {
+                return Err(GenerateError::Assembly {
+                    name: inputs.seed.query_name.clone(),
+                    message: format!(
+                        "dynamic input `{}` has no generated SQL usage sites",
+                        contract.path
+                    ),
+                });
+            }
+            Ok(DynamicInputMetadata {
+                path: contract.path.clone(),
+                kind: match contract.kind {
+                    dsql_core::plan::DynamicInputKind::Predicate => "predicate",
+                    dsql_core::plan::DynamicInputKind::Order => "order",
+                }
+                .to_string(),
+                surface: "selected".to_string(),
+                fields,
+                sites,
+            })
+        })
+        .collect()
+}
+
+fn dynamic_input_site(site: &GeneratedDynamicInputSite) -> DynamicInputSite {
+    DynamicInputSite {
+        marker: site.marker.clone(),
+        identity_sql: site.identity_sql.clone(),
+        fields: site
+            .fields
+            .iter()
+            .map(|field| DynamicInputSiteField {
+                key: field.key.clone(),
+                operators: field
+                    .operators
+                    .iter()
+                    .map(|operator| DynamicPredicateOperatorMetadata {
+                        name: operator.name.as_str().to_string(),
+                        value_kind: match operator.value_kind {
+                            GeneratedDynamicValueKind::Scalar => "scalar",
+                            GeneratedDynamicValueKind::Collection => "collection",
+                            GeneratedDynamicValueKind::Boolean => "boolean",
+                        }
+                        .to_string(),
+                        before_value: operator.before_value.clone(),
+                        after_value: operator.after_value.clone(),
+                        cases: operator
+                            .cases
+                            .iter()
+                            .map(sql_variant_case_metadata)
+                            .collect(),
+                    })
+                    .collect(),
+                directions: field
+                    .directions
+                    .iter()
+                    .map(sql_variant_case_metadata)
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+fn sql_variant_case_metadata(case: &dsql_core::plan::SqlVariantCase) -> SqlVariantCaseMetadata {
+    SqlVariantCaseMetadata {
+        value: case.value.clone(),
+        text: case.text.clone(),
+    }
+}
+
+fn dynamic_order_directions() -> Vec<String> {
+    [
+        "asc",
+        "desc",
+        "asc_nulls_first",
+        "asc_nulls_last",
+        "desc_nulls_first",
+        "desc_nulls_last",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 pub(crate) fn fragment_metadata(
@@ -730,7 +871,12 @@ fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField
         })
         .map(|binding| InputField {
             path: binding.path.clone(),
-            data_type: binding.data_type.as_str().to_string(),
+            data_type: match binding.role {
+                VariableRole::DynamicPredicate => "dynamic_predicate",
+                VariableRole::DynamicOrder => "dynamic_order",
+                _ => binding.data_type.as_str(),
+            }
+            .to_string(),
             collection: binding.collection.then_some(true),
             enum_values: binding.enum_values.clone(),
             required: binding.required,

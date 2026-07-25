@@ -214,6 +214,23 @@ query Users(
 
 ---
 
+bounded_dynamic_inputs
+query Search(
+  $$search = {}
+  $$order = []
+) {
+  public::users(
+    where .id > 0
+    and $$search on selected
+    order by name asc, $$order on selected, id desc
+  ) {
+    id
+    label: name
+  }
+}
+
+---
+
 variable_contract_comments
 fragment Panel(
   # leading header comment

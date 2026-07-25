@@ -307,6 +307,7 @@ fn selection_shape_syntax(ctx: &LowerCtx<'_>, suffix: Option<NodeRef>) -> Select
                 | Expr::NullTest { .. }
                 | Expr::List { .. }
                 | Expr::Exists { .. }
+                | Expr::DynamicPredicate { .. }
                 | Expr::PredicateRef { .. }
                 | Expr::Error { .. } => SelectionLimitSyntax::None,
             };
@@ -1273,6 +1274,7 @@ fn collect_expr_assignment_filters(
         Expr::Literal { .. }
         | Expr::Path { .. }
         | Expr::Variable { .. }
+        | Expr::DynamicPredicate { .. }
         | Expr::PredicateRef { .. }
         | Expr::Error { .. } => {}
     }

@@ -79,6 +79,7 @@ pub enum DiagnosticCode {
     CircularFragmentSpread,
     ClauseValueTypeMismatch,
     PredicateTypeMismatch,
+    InvalidDynamicInput,
     DuplicateAnonymousVariable,
     InvalidVariableRefinement,
     InvalidFragmentBinding,

@@ -124,8 +124,10 @@ pub(crate) fn fragment_envelope_path(
 impl VariableRole {
     fn path_clause_segment(self) -> InputPathSegment {
         match self {
-            Self::WhereValue | Self::ComparisonOperator => InputPathSegment::Where,
-            Self::SortDirection => InputPathSegment::OrderBy,
+            Self::WhereValue | Self::DynamicPredicate | Self::ComparisonOperator => {
+                InputPathSegment::Where
+            }
+            Self::SortDirection | Self::DynamicOrder => InputPathSegment::OrderBy,
             Self::Limit => InputPathSegment::Limit,
             Self::Offset => InputPathSegment::Offset,
             Self::FilterAssignment => InputPathSegment::Filter,
@@ -136,8 +138,10 @@ impl VariableRole {
         matches!(
             self,
             Self::WhereValue
+                | Self::DynamicPredicate
                 | Self::ComparisonOperator
                 | Self::SortDirection
+                | Self::DynamicOrder
                 | Self::FilterAssignment
         )
     }

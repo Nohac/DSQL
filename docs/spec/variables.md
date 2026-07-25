@@ -1,6 +1,9 @@
 # Variables
 
-Status: unfinished.
+Status: implemented for inferred scalar and collection variables, defaults,
+nullability, fragment bindings, and the initial bounded dynamic input scope.
+Provider-defined types and the deferred extensions called out below remain
+unfinished.
 
 Variables allow query input values to be inferred from their usage and bound at
 execution or generation time.
@@ -1117,7 +1120,7 @@ Compiler metadata owns:
 - allowed public operators or directions;
 - the SQL lowering for every allowed operator at every site;
 - usage-site markers and readable SQL field expressions;
-- the identity kind used for defaults and nullable whole-input values.
+- the canonical empty default for its dynamic input kind;
 
 The browser operation object carries only the ordinary public input/default
 contract needed for typing, default materialization, and cache keys. Expanded
@@ -1168,7 +1171,7 @@ Conceptual full artifact shape:
       "path": "params.search",
       "data_type": "dynamic_predicate",
       "required": false,
-      "default": { "kind": "object", "fields": [] }
+      "default": { "kind": "empty_object" }
     }
   ],
   "context": [
@@ -1183,7 +1186,6 @@ Conceptual full artifact shape:
       "path": "params.search",
       "kind": "predicate",
       "surface": "selected",
-      "identity": "object",
       "fields": [
         {
           "key": "name",

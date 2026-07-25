@@ -1,4 +1,4 @@
-token Query='query' Fragment='fragment' Filter='filter' Condition='condition' On='on' Apply='apply' When='when' Field='field' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or' Not='not' In='in' Is='is' Exists='exists';
+token Query='query' Fragment='fragment' Filter='filter' Condition='condition' On='on' Selected='selected' Apply='apply' When='when' Field='field' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or' Not='not' In='in' Is='is' Exists='exists';
 token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' LeftArrow='<-' Arrow='->' Colon=':' At='@' Comma=',' Pipe='|' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$' Question='?' Assign='=';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
@@ -10,7 +10,7 @@ start document;
 
 document: definition*;
 contextual_name: 'not' | 'in' | 'is' | 'exists' | 'filter' | 'condition' | 'apply' | 'when' | 'field';
-variable_name: Name | contextual_name | 'query' | 'fragment' | 'on' | 'where' | 'order' | 'by' | 'limit' | 'offset' | 'asc' | 'desc';
+variable_name: Name | contextual_name | 'query' | 'fragment' | 'where' | 'order' | 'by' | 'limit' | 'offset' | 'asc' | 'desc';
 definition^:
   query_def
 | fragment_def
@@ -42,6 +42,7 @@ relation_ref: qualified_name ['->' (Name | contextual_name)];
 scoped_path_segment: qualified_name ['->' (Name | contextual_name)];
 scoped_path: ('.' | '..' | '~') scoped_path_segment ('.' scoped_path_segment)*;
 value_variable: '$$' [?1 variable_name] | '$' (':' Name / [?2 variable_name]);
+dynamic_input: '$$' [variable_name] 'on' 'selected';
 comparison_operator: '==' | '!=' | '>' | '>=' | '<' | '<=' | 'like';
 operator_variable: ('$' | '$$') [variable_name] '[' comparison_operator (?1 ',' comparison_operator)* [','] ']';
 binary_operator: comparison_operator | ?1 operator_variable;
@@ -77,7 +78,7 @@ clause:
 where_clause: 'where' expr;
 order_by_clause: 'order' 'by' order_item (?1 ',' order_item)* [','];
 sort_direction: 'asc' | 'desc' | value_variable;
-order_item: qualified_name [sort_direction];
+order_item: dynamic_input | qualified_name [sort_direction];
 limit_clause: 'limit' expr;
 offset_clause: 'offset' expr;
 directive: '@' directive_name [?1 '(' directive_argument (?2 ',' directive_argument)* [','] ')'];
@@ -104,6 +105,7 @@ expr:
 | predicate_name
 | ?3 scalar_aggregate_expr
 | scoped_path
+| ?1 dynamic_input
 | value_variable
 | '(' expr ')'
 ;

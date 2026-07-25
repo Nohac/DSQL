@@ -784,6 +784,7 @@ fn fixed_value_identity(expr: &Expr) -> Option<FixedValueIdentity> {
         | Expr::NullTest { .. }
         | Expr::List { .. }
         | Expr::Exists { .. }
+        | Expr::DynamicPredicate { .. }
         | Expr::PredicateRef { .. }
         | Expr::Error { .. } => None,
     }
@@ -951,7 +952,10 @@ async fn resolve_clauses(
                 &mut existences,
             ),
             ClauseFact::OrderBy { items } => {
-                order_items.extend(items.iter().map(|item| {
+                order_items.extend(items.iter().filter_map(|item| {
+                    let crate::entities::clause::OrderTerm::Column(item) = item else {
+                        return None;
+                    };
                     let reference = FieldRef {
                         target: TableRef::parse(&item.field),
                         selector: None,
@@ -960,10 +964,10 @@ async fn resolve_clauses(
                         FieldCheckResult::Column(column) => Some(column.id),
                         _ => None,
                     };
-                    ResolvedOrderItem {
+                    Some(ResolvedOrderItem {
                         span: item.field_span,
                         column,
-                    }
+                    })
                 }));
             }
             ClauseFact::Limit { expr } | ClauseFact::Offset { expr } => {
@@ -1053,6 +1057,7 @@ fn collect_clause_values(
         }
         Expr::Literal { .. }
         | Expr::Variable { .. }
+        | Expr::DynamicPredicate { .. }
         | Expr::PredicateRef { .. }
         | Expr::Error { .. } => {}
     }

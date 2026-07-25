@@ -87,6 +87,10 @@ fn formatter_cases_match_expected_output() {
             "fragment Panel($after?=null $$limit=10) on public::users{posts(where .created_at>$after limit $$){id}} query Users($$page_size=20 filter SoftDelete when $$enabled $$offset?=null){public::users(offset $$){...Panel($,$$limit<-$$page_size)}}",
         ),
         (
+            "bounded_dynamic_inputs",
+            "query Search($$search={} $$order=[]){public::users(where .id>0 and $$search on selected order by name asc,$$order on selected,id desc){id label:name}}",
+        ),
+        (
             "variable_contract_comments",
             indoc! {r#"
                 fragment Panel(

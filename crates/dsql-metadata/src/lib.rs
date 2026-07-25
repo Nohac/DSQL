@@ -192,19 +192,54 @@ pub struct InputDefault {
     pub items: Option<Vec<InputDefault>>,
 }
 
+/// One normalized bounded input capability and all of its SQL usage sites.
 #[derive(Clone, Debug, Facet)]
 pub struct DynamicInputMetadata {
-    pub name: String,
+    pub path: String,
     pub kind: String,
-    pub preset: String,
+    pub surface: String,
     pub fields: Vec<DynamicInputField>,
+    pub sites: Vec<DynamicInputSite>,
 }
 
+/// One public selected-field capability exposed by a dynamic input.
 #[derive(Clone, Debug, Facet)]
 pub struct DynamicInputField {
-    pub path: String,
+    pub key: String,
+    pub catalog_path: String,
     pub data_type: String,
+    pub nullable: bool,
+    pub access: String,
     pub operators: Vec<String>,
+    pub directions: Vec<String>,
+}
+
+/// One exact compiler-owned marker and its site-specific lowerings.
+#[derive(Clone, Debug, Facet)]
+pub struct DynamicInputSite {
+    pub marker: String,
+    pub identity_sql: String,
+    pub fields: Vec<DynamicInputSiteField>,
+}
+
+/// Compiler-owned SQL capabilities for one public field at one usage site.
+#[derive(Clone, Debug, Facet)]
+pub struct DynamicInputSiteField {
+    pub key: String,
+    pub operators: Vec<DynamicPredicateOperatorMetadata>,
+    pub directions: Vec<SqlVariantCaseMetadata>,
+}
+
+/// Structured SQL fragments for one validated dynamic predicate operator.
+#[derive(Clone, Debug, Facet)]
+pub struct DynamicPredicateOperatorMetadata {
+    pub name: String,
+    pub value_kind: String,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub before_value: Option<String>,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub after_value: Option<String>,
+    pub cases: Vec<SqlVariantCaseMetadata>,
 }
 
 #[derive(Clone, Debug, Facet)]

@@ -15,10 +15,13 @@ queries, or source-repository references are reproduced here.
 
 ## Summary
 
-A safe full read-side replacement is not close today, but the relational
-compiler is much closer than the raw compatibility percentage suggests. The
-largest gaps are concentrated in a handful of reusable capabilities rather
-than hundreds of unrelated features.
+This assessment began as a gap analysis. Since it was written, dsql has landed
+the initial versions of inferred singular reads, aggregates, variable defaults
+and nullability, fragment binding and lifting, catalog overlays with normalized
+relationships, filters with trusted context, server-only operation execution,
+and bounded dynamic predicates and ordering. The remaining gaps are now
+concentrated in static read parity, richer provider types, computed fields,
+table-valued functions, and page/split-fetch composition.
 
 The audit found 193 Hasura queries and 65 reusable table fragments. Thirteen
 subscriptions and a small separate GraphQL service were identified but excluded
@@ -29,7 +32,7 @@ language-level gap. This does not mean that 172 queries need bespoke features.
 Implementing four coherent capability clusters raises estimated coverage
 sharply:
 
-| Cumulative capability | Queries covered |
+| Historical cumulative capability estimate | Queries covered |
 | --- | ---: |
 | Current identified surface | 21 / 193 |
 | Dynamic and optional variable semantics | 64 / 193 |
@@ -37,9 +40,11 @@ sharply:
 | Plus core read parity features | 168 / 193 |
 | Plus computed fields and table-valued functions | 193 / 193 |
 
-These are feature-shape estimates, not proof that the operations would already
-be production-safe. Authorization and the generated server API boundary remain
-cross-cutting blockers even after language coverage reaches 193.
+These figures are the original feature-shape estimates, not a newly measured
+compatibility score. They should not be read as the current implementation
+count. Production adoption still requires application-specific filters,
+trusted-context binding, generated endpoint review, and workload validation,
+even though the compiler and runtime contracts for those boundaries now exist.
 
 ## Existing Strengths
 
@@ -58,6 +63,12 @@ The ordinary relational core maps well:
   `sum` and `max` use.
 - Typed scalar variables, fixed-field dynamic comparison operators, and
   dynamic ascending/descending direction.
+- Optional and defaulted inputs, nullable predicate pruning, and fragment
+  variable binding and lifting.
+- Version-1 catalog overlays and normalized authored relationships.
+- Compiler-applied row filters, readable-field masks, and trusted context.
+- Bounded dynamic predicates and ordering over shallow selected fields.
+- Server-only operation materialization and PostgreSQL execution.
 - TypeScript result generation and build-time embedded queries.
 
 Features absent from dsql but irrelevant to this read corpus include inline
@@ -70,27 +81,31 @@ assessment.
 ### Dynamic boolean filters
 
 - Observed in 78 queries.
-- Covered conceptually by [Variables](spec/variables.md), especially bounded
-  dynamic filters and ordering.
-- The proposed capability model is a strong match.
-- Grammar, planning, metadata, list operators, null operators, and code
-  generation remain unimplemented.
+- Implemented for named top-level inputs bounded by the shallow
+  `on selected` surface, including recursive boolean composition, typed
+  operators, runtime validation, generated metadata, and SQL lowering.
+- Explicit allowlists, deep relation traversal, and fragment-local dynamic
+  inputs remain deferred extensions rather than migration blockers for the
+  initial selected-field shape.
 
 ### Dynamic ordering
 
 - Observed in 80 queries.
-- Covered conceptually by [Variables](spec/variables.md).
-- The bounded `order on selected` design directly addresses the need.
-- Nested allowlists, multiple fields, and explicit null ordering remain open.
+- Implemented for ordered multi-field arrays over the shallow selected surface,
+  including six explicit direction/null-placement variants and interleaving
+  with static order terms.
+- Deep relation traversal and explicit authored allowlist presets remain
+  deferred.
 
 ### Optional and defaulted variables
 
 - 102 queries declare at least one optional or defaulted variable.
 - The corpus contains 303 optional variables and nine defaults.
-- [Variables](spec/variables.md) is unfinished in this area.
-- Current dsql input metadata makes every variable required and non-null.
-- Omitted filters, ordering, limits, offsets, and scalar predicates need
-  explicit SQL and type semantics.
+- Implemented across inference, fragment binding/lifting, SQL variants,
+  metadata, native execution, TypeScript materialization, and cache identity.
+- Nullable scalar predicate atoms prune structurally; pagination and ordering
+  use their specified null/default semantics; bounded dynamic identities are
+  `{}` and `[]`.
 
 ### Metadata-defined relationships
 
@@ -101,9 +116,9 @@ assessment.
   metadata.
 - [Relationship Naming](spec/relationship-naming.md) covers imported names and
   aliases.
-- The current catalog only represents relationships as foreign keys. It needs
-  a general named relationship model with manual column mappings,
-  cardinality, nullability, and source provenance.
+- Implemented by version-1 catalog overlays and one merged effective catalog.
+  Authored relationships support ordered composite mappings, views,
+  cardinality/nullability inference, visibility, validation, and provenance.
 
 ### Authorization and role filtering
 
@@ -115,8 +130,12 @@ assessment.
 - [Policies And Permissions](spec/policies.md) and
   [Code Generation Metadata](spec/codegen.md) anticipate context values, row
   policies, soft-delete filters, field visibility, and policy-aware types.
-- None of this is implemented yet. This is the principal production-safety
-  blocker.
+- The initial filter system is implemented for reusable row constraints,
+  field/relation readable-view filtering, defaults/manual assignments,
+  trusted context, aggregates, metadata, match locking, and generated
+  server execution.
+- Replacing an existing permission corpus still requires authoring or importing
+  equivalent filters and validating their application-specific semantics.
 
 ### Inferred singular selections
 
@@ -146,17 +165,17 @@ assessment.
 - [Query Language](spec/query.md),
   [Scoped Predicates](spec/scoped-predicates.md), and
   [Variables](spec/variables.md) cover parts of the problem.
-- The practical read set needs `ilike`, `in`, `not in`, `is null`, and
-  likely `not`.
-- Null comparisons need dedicated lowering; ordinary SQL `= NULL` is not
-  equivalent to `IS NULL`.
+- `in`, `not in`, `is null`, `is not null`, boolean `not`, and correct null
+  lowering are implemented.
+- Case-insensitive matching remains missing.
 
 ### Explicit null ordering
 
 - Explicit null placement occurs in ten queries and is also constructed by
   host code.
-- It is an open question in [Variables](spec/variables.md).
-- It has no accepted syntax or implementation.
+- Bounded dynamic ordering implements explicit null placement through the six
+  closed direction values.
+- Equivalent static query syntax remains to be designed and implemented.
 
 ### Distinct-on selection
 
@@ -201,28 +220,31 @@ assessment.
 - The current TanStack Start integration demonstrates the intended security
   boundary: generated browser calls cross into server functions, and only the
   server materializes and executes SQL.
-- The remaining work is not Apollo compatibility. It is a stable generated API
-  contract for validated public input, trusted request context, policy binding,
-  operation lookup, execution errors, and cache identity.
+- The baseline contract is implemented: browser handles omit SQL, server
+  payloads retain SQL and capability metadata, native and TypeScript runtimes
+  materialize inputs, trusted context stays separate, and cache keys canonicalize
+  defaults and bounded dynamic identities.
+- Additional framework adapters and richer generated validators remain
+  code-generation work, not language-core requirements.
 
 ## Security And Execution Boundary
 
 The audited database migrations contain no PostgreSQL row-level security
 policies. Authorization currently lives in Hasura metadata.
 
-Dsql cannot safely execute equivalent SQL under a broadly privileged database
-connection until one of these strategies exists:
+Dsql can now express the first strategy below, but a replacement deployment is
+safe only after the application has supplied and reviewed one of these
+strategies:
 
 1. Translate existing permission metadata into generic dsql policies as
    bootstrap data.
 2. Introduce equivalent PostgreSQL row-level security.
 3. Apply equivalent constraints in a trusted application layer.
 
-The policy RFC proposes stable result shapes with masked fields, while the
-reference system can expose role-specific schemas in which fields are absent.
-Dsql does not need to preserve that behavior, but the generated API's chosen
-field-visibility and nullability semantics must become normative before policy
-implementation.
+DSQL uses stable result shapes with logical readable-view filtering: hidden
+scalars become nullable and hidden relations become absent rather than changing
+the generated shape per role. Those semantics are normative in
+[Policies And Permissions](spec/policies.md).
 
 Policies must apply consistently to relationship traversal, aggregates,
 computed fields, and table-valued functions. Protecting ordinary rows while
@@ -283,8 +305,8 @@ broadening query syntax.
 
 #### 1. Policies, trusted context, and generated API enforcement
 
-Implement the policy/context path across parsing or provider metadata,
-planning, SQL, generated metadata, server execution, and result types.
+Status: implemented for the initial filter scope across parsing, planning, SQL,
+generated metadata, server execution, result typing, and match locking.
 
 Required behavior:
 
@@ -298,7 +320,7 @@ Required behavior:
   a result;
 - inspectable debug output showing the policies applied to an operation.
 
-Specifications to expand:
+Deferred specification work:
 
 - [Policies And Permissions](spec/policies.md): select one field-visibility
   model, define policy composition and overrides, specify aggregate/function
@@ -309,9 +331,8 @@ Specifications to expand:
 
 #### 2. General relationship metadata and catalog overlays
 
-Replace the assumption that every selectable edge is a PostgreSQL foreign key
-with a normalized relationship model. Foreign keys remain one provider of that
-model.
+Status: implemented for version-1 overlays. Foreign keys and authored overlays
+feed one normalized relationship model and one effective catalog.
 
 Required behavior:
 
@@ -324,7 +345,7 @@ Required behavior:
 - deterministic merging and conflict diagnostics across introspection and
   project metadata.
 
-Specifications to expand:
+Deferred specification work:
 
 - [Catalog Metadata](spec/catalog-metadata.md): add first-class relationship
   metadata rather than storing only foreign keys.
@@ -339,7 +360,7 @@ model.
 
 #### 3. Server-only generated API contract
 
-Generalize the boundary already demonstrated by the TanStack Start renderer.
+Status: implemented for the native executor and TypeScript/TanStack boundary.
 Framework integrations may differ, but all must preserve the same security
 contract.
 
@@ -353,7 +374,7 @@ Required behavior:
 - stable result and error contracts;
 - no endpoint that accepts arbitrary SQL or arbitrary query structure.
 
-Specification to expand:
+Deferred specification work:
 
 - [Code Generation Metadata](spec/codegen.md): make the public-handle,
   server-payload, validator, context, executor, error, and cache-key contracts
@@ -366,30 +387,31 @@ surface and the estimated 168-query core read surface.
 
 #### 4. Bounded dynamic filters and ordering
 
-Implement the bounded capability model already proposed in
-[Variables](spec/variables.md).
+Status: implemented for named top-level inputs over the shallow
+`on selected` surface described in [Variables](spec/variables.md).
 
-Required behavior:
+Implemented behavior:
 
-- explicit field/operator allowlists and reusable presets;
-- shallow-by-default relationship exposure;
+- compiler-derived field/operator capabilities;
+- shallow selected-field exposure;
 - typed `and`, `or`, and `not` composition;
 - list-valued operators;
 - ordered multi-column sort inputs;
 - explicit null ordering;
-- reuse of one bounded input across detail and aggregate/page-metadata roots;
+- reuse of one named input across compatible selected-row usages;
 - generated validators that reject fields and operators outside the compiled
   capability surface.
 
-The specification needs final grammar, metadata shape, relation-depth rules,
-empty-input semantics, and SQL lowering. It should use the audited workload as
-an acceptance model without reproducing its domain schema.
+Explicit authored allowlists/presets, fragment-local inputs, and deep relation
+surfaces remain deferred. Sharing one capability across a selected-row root and
+an aggregate/page-metadata root belongs to page composition because an
+aggregate source has no row selection body for `on selected`.
 
 #### 5. Optional inputs, defaults, and conditional clause participation
 
-Optionality is separate from accepting `null`. The compiler must know whether
-an omitted input removes a predicate or clause, supplies a default, or binds SQL
-`NULL`.
+Status: implemented. Optionality remains distinct from accepting `null`; the
+compiler records whether omission prunes a predicate/clause, supplies a
+default, or binds SQL `NULL`.
 
 Required behavior:
 
@@ -400,7 +422,7 @@ Required behavior:
 - correct parameter and cache-key behavior for omitted values;
 - compatibility with fragment-bound and reused top-level inputs.
 
-Specification to expand:
+Deferred specification work:
 
 - [Variables](spec/variables.md): replace the current open question about
   defaults with exact omission, nullability, variant, and codegen semantics.
@@ -441,13 +463,10 @@ not require a separate assertion form.
 
 #### 7. Predicate and ordering parity
 
-Extend the static expression surface with the small set repeatedly needed by
-real read APIs:
+The static expression surface now includes `in`, `not in`, `is null`,
+`is not null`, and boolean `not`. Remaining parity work is:
 
 - `ilike`;
-- `in` and `not in`;
-- `is null` and `is not null`;
-- boolean `not`;
 - explicit `nulls first` and `nulls last` ordering;
 - `distinct on` with PostgreSQL ordering validation.
 
@@ -556,14 +575,14 @@ without making those services part of dsql's relational query language.
 
 ## Suggested Delivery Order
 
-1. Settle policies/trusted context and the server-only generated API contract.
-2. Introduce normalized relationship metadata and catalog overlays.
-3. Implement bounded dynamic filters/order plus optional input semantics.
-4. Implement the missing predicate/order/distinct features.
-5. Compose page rows and metadata over one bounded collection input.
-6. Generalize provider scalar, enum, and array types.
-7. Add provider-backed computed fields and table-valued functions.
-8. Re-run the anonymous capability audit after each cluster and add only
+The first three original clusters—policy/server execution, catalog overlays,
+and bounded dynamic/defaulted inputs—are implemented. The remaining order is:
+
+1. Implement the remaining predicate/order/distinct features.
+2. Compose page rows and metadata over one bounded collection input.
+3. Generalize provider scalar, enum, and array types.
+4. Add provider-backed computed fields and table-valued functions.
+5. Re-run the anonymous capability audit after each cluster and add only
    synthetic regression fixtures.
 
 All regression fixtures derived from this assessment should be synthetic. They
