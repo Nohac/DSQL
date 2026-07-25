@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: "fixture_sql(\"valid/imdb-relation-path-selector.dsql\").await"
 ---
--- movie_info
+-- MovieRelationPathSelector
 select
   "dsql_root"."movie_info" as "movie_info"
 from

@@ -2,7 +2,7 @@
 source: crates/dsql-cli/tests/cli.rs
 expression: stdout
 ---
--- actors
+-- Actors
 select
   "dsql_root"."actors" as "actors"
 from
@@ -23,7 +23,7 @@ from
       1
   ) as "dsql_root" on true
 
--- title
+-- Titles
 select
   COALESCE(
     JSON_AGG(

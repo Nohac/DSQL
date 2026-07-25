@@ -38,6 +38,18 @@ query NetworkTopology {
   }
 }
 
+query MultiRootOverview {
+  latest: readings(order by id desc limit 1) {
+    id
+  }
+  reading_summary: readings | aggregate {
+    count
+  }
+  ...sensors | aggregate {
+    sensor_count: count
+  }
+}
+
 query PrivacyProbe {
   readings(where .confidence == $$confidence
     or .confidence is null

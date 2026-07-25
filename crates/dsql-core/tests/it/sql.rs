@@ -5,6 +5,7 @@ use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand, VariablesDemand};
 use dsql_core::language_bowl;
+use dsql_core::plan::QueryPlanFact;
 use dsql_core::source::{insert_embedding_source, insert_source};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 
@@ -36,11 +37,11 @@ async fn render_sql(bowl: &Bowl) -> String {
     let rows = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
     let mut generated: Vec<&GeneratedSqlFact> =
         rows.collect().into_iter().map(|(_, fact)| fact).collect();
-    generated.sort_by(|left, right| left.0.output_name.cmp(&right.0.output_name));
+    generated.sort_by(|left, right| left.0.operation_name.cmp(&right.0.operation_name));
     generated
         .into_iter()
         .map(|fact| {
-            let mut section = format!("-- {}\n{}", fact.0.output_name, fact.0.sql);
+            let mut section = format!("-- {}\n{}", fact.0.operation_name, fact.0.sql);
             if !fact.0.parameters.is_empty() {
                 let parameters: Vec<&str> = fact
                     .0
@@ -741,6 +742,15 @@ async fn repeated_flattened_aggregates_and_collection_ordering_render_independen
     insert_source(&bowl, "movie-signals.dsql", MOVIE_SIGNALS).await;
     insert_source(&bowl, "renderer-edges.dsql", RENDERER_EDGE_QUERY).await;
 
+    let plans = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
+    let plans = plans.collect();
+    assert_eq!(plans.len(), 1, "one query definition has one plan");
+    assert_eq!(
+        plans[0].1.0.roots.len(),
+        5,
+        "the definition plan retains every ordered root"
+    );
+
     insta::assert_snapshot!(render_sql(&bowl).await);
 }
 
@@ -862,11 +872,11 @@ async fn plans_retire_when_demand_is_removed_sources_change() {
     let names: Vec<String> = rows
         .collect()
         .into_iter()
-        .map(|(_, fact)| fact.0.output_name.clone())
+        .map(|(_, fact)| fact.0.operation_name.clone())
         .collect();
     assert_eq!(
         names,
-        vec!["kind_type".to_string()],
+        vec!["Q".to_string()],
         "stale SQL must retire with the edit"
     );
 }

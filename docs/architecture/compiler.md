@@ -181,6 +181,14 @@ while making the contract a tracked planning input. Per-spread rewrite maps use
 the target fragment's local coordinates and compose as the planner enters
 nested spreads.
 
+Planning emits one `QueryPlanFact` per query definition. Its ordered root plans
+share one operation-level policy-context contract and one fragment-spread
+provenance set. SQL generation consumes that complete definition plan through a
+single template context, so parameters and dynamic variants deduplicate across
+roots. A multi-root definition renders each root as a one-row subquery and
+cross-joins those subqueries into one result row; generation consequently
+publishes one operation artifact under the source definition name.
+
 ### Policies and filters
 
 Filters and reusable conditions lower as standalone `PolicyDecl` facts and use

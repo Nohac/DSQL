@@ -3,19 +3,20 @@ use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
     AggregatePlan, CollectionPlan, CollectionResultPlan, ExistsKind, FilterCollection,
     FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, NestedRelation,
-    PolicyContextRequirement, PolicyFieldFilter, PolicyFieldTarget, QueryPlan, SelectionClauses,
-    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    PolicyContextRequirement, PolicyFieldFilter, PolicyFieldTarget, QueryPlan, QueryRootPlan,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue,
+    SqlVariantCase,
 };
 use crate::resolution::SelectionCardinality;
 use sea_query::{
-    Alias, Asterisk, Condition, Expr, ExprTrait, Func, JoinType, Order, PgFunc,
-    PostgresQueryBuilder, Query, SelectStatement,
+    Alias, Asterisk, Condition, Expr, ExprTrait, Func, IntoIden, JoinType, Order, PgFunc,
+    PostgresQueryBuilder, Query, SelectStatement, TableRef,
 };
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GeneratedSql {
-    pub output_name: String,
+    pub operation_name: String,
     pub sql: String,
     pub parameters: Vec<GeneratedSqlParameter>,
     /// Trusted policy context reached while rendering readable-view guards.
@@ -54,6 +55,8 @@ pub enum SqlGenerationError {
     UnsupportedFilterFragment,
     #[error("SQL template numeric sentinel space was exhausted")]
     TemplateSentinelExhausted,
+    #[error("query plan has no roots")]
+    EmptyQueryPlan,
 }
 
 #[derive(Clone, Debug)]
@@ -231,13 +234,15 @@ impl SqlTemplateContext {
 }
 
 pub fn generate_postgres_sql(
+    operation_name: &str,
     plan: &QueryPlan,
     catalog: &Catalog,
 ) -> Result<GeneratedSql, SqlGenerationError> {
-    generate_postgres_sql_with_options(plan, catalog, PostgresSqlOptions::default())
+    generate_postgres_sql_with_options(operation_name, plan, catalog, PostgresSqlOptions::default())
 }
 
 pub fn generate_postgres_sql_with_options(
+    operation_name: &str,
     plan: &QueryPlan,
     catalog: &Catalog,
     options: PostgresSqlOptions,
@@ -249,33 +254,21 @@ pub fn generate_postgres_sql_with_options(
     };
     let mut next_sentinel = FIRST_NUMERIC_SENTINEL;
     loop {
-        let mut path = Vec::new();
         let mut template = SqlTemplateContext::new(next_sentinel);
-        let root = table(catalog, plan.collection.table)?;
-        path.push(path_segment(root, &plan.output_name));
-        let root_query = generate_collection(
-            &plan.collection,
-            catalog,
-            &plan.output_name,
-            &path,
-            SelectionGenerationContext {
-                parent: None,
-                root: None,
-                options,
-                public_result_alias: Some(&plan.output_name),
-                flattened: plan.flattened,
-            },
-            &mut template,
-        )?;
-        let root_query = if matches!(plan.collection.result, CollectionResultPlan::Rows(_))
-            && plan.collection.shape.cardinality == SelectionCardinality::AtMostOne
-        {
-            singular_root_envelope(plan, root_query)
+        let mut roots = Vec::with_capacity(plan.roots.len());
+        for root in &plan.roots {
+            roots.push(generate_root_query(root, catalog, options, &mut template)?);
+        }
+        let query = if roots.len() == 1 {
+            let Some((query, _)) = roots.pop() else {
+                return Err(SqlGenerationError::EmptyQueryPlan);
+            };
+            query
         } else {
-            root_query
+            combine_root_queries(roots)?
         };
         let formatted = sqlformat::format(
-            &root_query.to_string(PostgresQueryBuilder),
+            &query.to_string(PostgresQueryBuilder),
             &sqlformat::QueryParams::default(),
             &format_options,
         );
@@ -288,7 +281,7 @@ pub fn generate_postgres_sql_with_options(
             sql = sql.replace(needle, replacement);
         }
         return Ok(GeneratedSql {
-            output_name: plan.output_name.clone(),
+            operation_name: operation_name.to_string(),
             sql,
             parameters: template.parameters,
             policy_context: template.policy_context,
@@ -297,13 +290,69 @@ pub fn generate_postgres_sql_with_options(
     }
 }
 
-fn singular_root_envelope(plan: &QueryPlan, root_query: SelectStatement) -> SelectStatement {
-    const SINGLETON_ALIAS: &str = "dsql_singleton";
-    const ROOT_ALIAS: &str = "dsql_root";
+fn generate_root_query(
+    plan: &QueryRootPlan,
+    catalog: &Catalog,
+    options: PostgresSqlOptions,
+    template: &mut SqlTemplateContext,
+) -> Result<(SelectStatement, Vec<String>), SqlGenerationError> {
+    let mut path = Vec::new();
+    let root = table(catalog, plan.collection.table)?;
+    path.push(path_segment(root, &plan.output_name));
+    let root_query = generate_collection(
+        &plan.collection,
+        catalog,
+        &plan.output_name,
+        &path,
+        SelectionGenerationContext {
+            parent: None,
+            root: None,
+            options,
+            public_result_alias: Some(&plan.output_name),
+            flattened: plan.flattened,
+        },
+        template,
+    )?;
+    let output_names = root_output_names(plan);
+    let root_query = if matches!(plan.collection.result, CollectionResultPlan::Rows(_))
+        && plan.collection.shape.cardinality == SelectionCardinality::AtMostOne
+    {
+        singular_root_envelope(&output_names, root_query)
+    } else {
+        root_query
+    };
+    Ok((root_query, output_names))
+}
 
-    let mut singleton = Query::select();
-    singleton.expr(Expr::value(1));
+fn combine_root_queries(
+    roots: Vec<(SelectStatement, Vec<String>)>,
+) -> Result<SelectStatement, SqlGenerationError> {
+    if roots.is_empty() {
+        return Err(SqlGenerationError::EmptyQueryPlan);
+    }
 
+    let mut query = Query::select();
+    for (index, (root, output_names)) in roots.into_iter().enumerate() {
+        let root_alias = format!("dsql_operation_root_{index}");
+        for output_name in output_names {
+            query.expr_as(
+                Expr::col((Alias::new(&root_alias), Alias::new(&output_name))),
+                Alias::new(output_name),
+            );
+        }
+        if index == 0 {
+            query.from_subquery(root, Alias::new(root_alias));
+        } else {
+            query.cross_join(TableRef::SubQuery(
+                root.into(),
+                Alias::new(root_alias).into_iden(),
+            ));
+        }
+    }
+    Ok(query.to_owned())
+}
+
+fn root_output_names(plan: &QueryRootPlan) -> Vec<String> {
     let mut output_names = if plan.flattened {
         let mut names = Vec::new();
         collect_collection_output_names(&plan.collection.result, &mut names);
@@ -312,11 +361,20 @@ fn singular_root_envelope(plan: &QueryPlan, root_query: SelectStatement) -> Sele
         vec![plan.output_name.clone()]
     };
     output_names.dedup();
+    output_names
+}
+
+fn singular_root_envelope(output_names: &[String], root_query: SelectStatement) -> SelectStatement {
+    const SINGLETON_ALIAS: &str = "dsql_singleton";
+    const ROOT_ALIAS: &str = "dsql_root";
+
+    let mut singleton = Query::select();
+    singleton.expr(Expr::value(1));
 
     let mut envelope = Query::select();
     for output_name in output_names {
         envelope.expr_as(
-            Expr::col((Alias::new(ROOT_ALIAS), Alias::new(&output_name))),
+            Expr::col((Alias::new(ROOT_ALIAS), Alias::new(output_name))),
             Alias::new(output_name),
         );
     }

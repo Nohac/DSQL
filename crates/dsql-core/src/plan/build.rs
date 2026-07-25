@@ -1,10 +1,11 @@
 //! The facts-to-plan builder.
 //!
-//! One plan per query-root selection: projections and nested relations from
-//! the checked fact tree, filters lowered from expression trees (multi-step
-//! relation predicates become `EXISTS` subqueries), variables becoming SQL
-//! parameters with the same structured paths the variables stage infers.
-//! Runs per definition, gated on [`PlanDemand`].
+//! One plan per query definition: ordered roots containing projections and
+//! nested relations from the checked fact tree, filters lowered from
+//! expression trees (multi-step relation predicates become `EXISTS`
+//! subqueries), variables becoming SQL parameters with the same structured
+//! paths the variables stage infers. Runs per definition, gated on
+//! [`PlanDemand`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -24,9 +25,9 @@ use super::types::{
     FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation, OperationSeed, OrderByPlan,
     PolicyAccess, PolicyApplicationField, PolicyApplicationPlan, PolicyAssignmentState,
     PolicyContextRequirement, PolicyEnforcement, PolicyFieldAccess, PolicyFieldFilter,
-    PolicyFieldTarget, PolicyIdentity, Projection, QueryPlan, QueryPlanFact, SelectionClauses,
-    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter, SqlValue,
-    SqlVariantCase,
+    PolicyFieldTarget, PolicyIdentity, Projection, QueryPlan, QueryPlanFact, QueryRootPlan,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter,
+    SqlValue, SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
@@ -60,7 +61,6 @@ pub fn register_planning(reg: &mut Registrar<'_>) {
     // Views lowered facts ambiently: behind the Complete barrier.
     reg.system(plan_queries.run_during(bowl::Phase::Complete));
     reg.system(diagnose_policy_query_context_conflicts);
-    reg.system(diagnose_cross_root_context_conflicts);
 }
 
 /// Plans every root selection of each query definition. Root spreads are
@@ -162,8 +162,10 @@ async fn plan_queries(
         .fields_under(def_entity)
         .map(|(entity, field, _, _)| (*entity, *field))
         .collect();
-    let root_count = roots.len();
-    for (root_index, (root_entity, field)) in roots.into_iter().enumerate() {
+    let mut planned_roots = Vec::new();
+    let mut operation_spreads = Vec::new();
+    let mut operation_policy_context = Vec::new();
+    for (root_entity, field) in roots {
         match planner
             .catalog
             .resolve_table_ref_for(TableRef::parse(&field.name))
@@ -231,7 +233,9 @@ async fn plan_queries(
                         field.name_span,
                         &mut diagnostics,
                     );
-                    let plan = QueryPlan {
+                    operation_policy_context.extend(policy_context);
+                    operation_spreads.extend(spreads);
+                    planned_roots.push(QueryRootPlan {
                         output_name,
                         flattened: field.flattened,
                         collection: CollectionPlan {
@@ -245,27 +249,7 @@ async fn plan_queries(
                             policy_applications,
                             result,
                         },
-                        policy_context,
-                    };
-                    let plan_entity = commands.insert((
-                        DerivedFrom::many([def_entity, catalog_entity]),
-                        BelongsToFile(file.0),
-                        DefKey(def_entity),
-                        QueryPlanFact(plan),
-                        OperationSeed {
-                            query_name: decl.name.clone(),
-                            root_index,
-                            root_count,
-                            def_span: decl.span,
-                            scope: scope.0.clone(),
-                            spreads,
-                        },
-                    ));
-                    // Self key: SQL facts carry the same key, so artifact
-                    // assembly pairs each plan with its rendering.
-                    commands
-                        .entity(plan_entity)
-                        .insert(PlanKey(plan_entity.untyped()));
+                    });
                 }
             }
             // Root resolution failures are semantic check diagnostics; there
@@ -273,6 +257,31 @@ async fn plan_queries(
             // or cascade from them.
             TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => continue,
         }
+    }
+
+    if !planned_roots.is_empty() {
+        let policy_context =
+            deduplicate_policy_context(operation_policy_context, decl.span, &mut diagnostics);
+        let plan_entity = commands.insert((
+            DerivedFrom::many([def_entity, catalog_entity]),
+            BelongsToFile(file.0),
+            DefKey(def_entity),
+            QueryPlanFact(QueryPlan {
+                roots: planned_roots,
+                policy_context,
+            }),
+            OperationSeed {
+                query_name: decl.name.clone(),
+                def_span: decl.span,
+                scope: scope.0.clone(),
+                spreads: operation_spreads,
+            },
+        ));
+        // Self key: SQL facts carry the same key, so artifact assembly pairs
+        // the definition plan with its rendering.
+        commands
+            .entity(plan_entity)
+            .insert(PlanKey(plan_entity.untyped()));
     }
 
     emit_plan_diagnostics(
@@ -363,53 +372,6 @@ async fn diagnose_policy_query_context_conflicts(
             message: context_conflict_message(requirement, &binding_requirement),
         },
     );
-}
-
-/// Rejects requirements that are individually valid for separate roots of
-/// one query but become incompatible when that query's server contract is
-/// considered as a whole.
-async fn diagnose_cross_root_context_conflicts(
-    _: Query<Entity, With<DiagnosticsDemand>>,
-    plans: Query<(
-        Entity,
-        &QueryPlanFact,
-        &OperationSeed,
-        &DefKey,
-        &BelongsToFile,
-    )>,
-    others: Query<(Entity, &QueryPlanFact, &DefKey), Where<BowlEq<DefKey>>>,
-    mut commands: Commands<(dsql_schema::Diagnostic,)>,
-) {
-    let (plan_entity, plan, seed, _, file) = plans.item();
-    let (other_entity, other, _) = others.item();
-    if plan_entity >= other_entity {
-        return;
-    }
-    for requirement in &plan.0.policy_context {
-        let Some(other_requirement) = other
-            .0
-            .policy_context
-            .iter()
-            .find(|other| other.path == requirement.path)
-        else {
-            continue;
-        };
-        if !context_requirements_conflict(requirement, other_requirement) {
-            continue;
-        }
-        emit_diagnostic(
-            &mut commands,
-            DiagnosticFacts {
-                derived_from: DerivedFrom::many([plan_entity, other_entity]),
-                file: file.0,
-                span: seed.def_span,
-                severity: Severity::Error,
-                source: DiagnosticSource::Plan,
-                code: DiagnosticCode::TrustedContextTypeConflict,
-                message: context_conflict_message(requirement, other_requirement),
-            },
-        );
-    }
 }
 
 /// Plans a fragment body against its declared table: no SQL renders from

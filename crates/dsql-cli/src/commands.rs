@@ -267,7 +267,7 @@ pub async fn sql(collection_limit: Option<u64>) -> Outcome {
         let mut generated: Vec<(String, String)> = rows
             .collect()
             .into_iter()
-            .map(|(_, fact)| (fact.0.output_name.clone(), fact.0.sql.clone()))
+            .map(|(_, fact)| (fact.0.operation_name.clone(), fact.0.sql.clone()))
             .collect();
         generated.sort();
 

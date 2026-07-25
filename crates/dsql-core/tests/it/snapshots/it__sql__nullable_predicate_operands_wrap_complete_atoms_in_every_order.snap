@@ -2,171 +2,176 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: render_sql(&bowl).await
 ---
--- direct
+-- OptionalAtoms
 select
-  COALESCE(
-    JSON_AGG(JSON_BUILD_OBJECT('id', "direct_664e5a81"."id")),
-    '[]'
-  ) as "direct"
+  "dsql_operation_root_0"."direct" as "direct",
+  "dsql_operation_root_1"."pattern" as "pattern",
+  "dsql_operation_root_2"."required_pattern" as "required_pattern",
+  "dsql_operation_root_3"."seed" as "seed",
+  "dsql_operation_root_4"."reversed" as "reversed",
+  "dsql_operation_root_5"."multiple" as "multiple",
+  "dsql_operation_root_6"."negated" as "negated"
 from
   (
     select
-      *
+      COALESCE(
+        JSON_AGG(JSON_BUILD_OBJECT('id', "direct_664e5a81"."id")),
+        '[]'
+      ) as "direct"
     from
-      "public"."users" as "direct_664e5a81"
-    where
-      "direct_664e5a81"."id" = ($1)
-      or (not ($1 is not null))
-    limit
-      10
-  ) as "direct_664e5a81"
--- parameters: params.id
-
--- multiple
-select
-  COALESCE(
-    JSON_AGG(
-      JSON_BUILD_OBJECT('id', "multiple_21425244"."id")
-    ),
-    '[]'
-  ) as "multiple"
-from
-  (
-    select
-      *
-    from
-      "public"."users" as "multiple_21425244"
-    where
       (
-        ($1) = ($2)
-        and (
-          ($1 is not null)
-          and ($2 is not null)
-        )
-      )
-      or "multiple_21425244"."name" = 'fallback'
-    limit
-      10
-  ) as "multiple_21425244"
--- parameters: params.left, params.right
-
--- negated
-select
-  COALESCE(
-    JSON_AGG(JSON_BUILD_OBJECT('id', "negated_a22fcfea"."id")),
-    '[]'
-  ) as "negated"
-from
-  (
-    select
-      *
-    from
-      "public"."users" as "negated_a22fcfea"
-    where
-      (not (($1) = "negated_a22fcfea"."id"))
-      or (not ($1 is not null))
-    limit
-      10
-  ) as "negated_a22fcfea"
--- parameters: params.id
-
--- pattern
-select
-  COALESCE(
-    JSON_AGG(JSON_BUILD_OBJECT('id', "pattern_d803321a"."id")),
-    '[]'
-  ) as "pattern"
-from
-  (
-    select
-      *
-    from
-      "public"."users" as "pattern_d803321a"
-    where
-      ("pattern_d803321a"."name" like $1)
-      or (not ($1 is not null))
-    limit
-      10
-  ) as "pattern_d803321a"
--- parameters: params.name
-
--- required_pattern
-select
-  COALESCE(
-    JSON_AGG(
-      JSON_BUILD_OBJECT('id', "required_pattern_aaf880a8"."id")
-    ),
-    '[]'
-  ) as "required_pattern"
-from
-  (
-    select
-      *
-    from
-      "public"."users" as "required_pattern_aaf880a8"
-    where
-      ("required_pattern_aaf880a8"."name" like $1)
-      or (not ($1 is not null))
-    limit
-      10
-  ) as "required_pattern_aaf880a8"
--- parameters: params.required_name
-
--- reversed
-select
-  COALESCE(
-    JSON_AGG(
-      JSON_BUILD_OBJECT('id', "reversed_be149a76"."id")
-    ),
-    '[]'
-  ) as "reversed"
-from
-  (
-    select
-      *
-    from
-      "public"."users" as "reversed_be149a76"
-    where
-      (
-        ($1) = "reversed_be149a76"."id"
-        and ($1 is not null)
-      )
-      or "reversed_be149a76"."name" = 'fallback'
-    limit
-      10
-  ) as "reversed_be149a76"
--- parameters: params.id
-
--- seed
-select
-  COALESCE(
-    JSON_AGG(JSON_BUILD_OBJECT('id', "seed_3acba0f5"."id")),
-    '[]'
-  ) as "seed"
-from
-  (
-    select
-      *
-    from
-      "public"."users" as "seed_3acba0f5"
-    where
-      (
-        (
-          "seed_3acba0f5"."id" = ($1)
+        select
+          *
+        from
+          "public"."users" as "direct_664e5a81"
+        where
+          "direct_664e5a81"."id" = ($1)
           or (not ($1 is not null))
-        )
-        and (
-          "seed_3acba0f5"."id" = ($2)
+        limit
+          10
+      ) as "direct_664e5a81"
+  ) as "dsql_operation_root_0"
+  cross join (
+    select
+      COALESCE(
+        JSON_AGG(JSON_BUILD_OBJECT('id', "pattern_d803321a"."id")),
+        '[]'
+      ) as "pattern"
+    from
+      (
+        select
+          *
+        from
+          "public"."users" as "pattern_d803321a"
+        where
+          ("pattern_d803321a"."name" like $2)
           or (not ($2 is not null))
-        )
-      )
-      or (
-        not (
-          ($1 is not null)
-          or ($2 is not null)
-        )
-      )
-    limit
-      10
-  ) as "seed_3acba0f5"
--- parameters: params.left, params.right
+        limit
+          10
+      ) as "pattern_d803321a"
+  ) as "dsql_operation_root_1"
+  cross join (
+    select
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT('id', "required_pattern_aaf880a8"."id")
+        ),
+        '[]'
+      ) as "required_pattern"
+    from
+      (
+        select
+          *
+        from
+          "public"."users" as "required_pattern_aaf880a8"
+        where
+          ("required_pattern_aaf880a8"."name" like $3)
+          or (not ($3 is not null))
+        limit
+          10
+      ) as "required_pattern_aaf880a8"
+  ) as "dsql_operation_root_2"
+  cross join (
+    select
+      COALESCE(
+        JSON_AGG(JSON_BUILD_OBJECT('id', "seed_3acba0f5"."id")),
+        '[]'
+      ) as "seed"
+    from
+      (
+        select
+          *
+        from
+          "public"."users" as "seed_3acba0f5"
+        where
+          (
+            (
+              "seed_3acba0f5"."id" = ($4)
+              or (not ($4 is not null))
+            )
+            and (
+              "seed_3acba0f5"."id" = ($5)
+              or (not ($5 is not null))
+            )
+          )
+          or (
+            not (
+              ($4 is not null)
+              or ($5 is not null)
+            )
+          )
+        limit
+          10
+      ) as "seed_3acba0f5"
+  ) as "dsql_operation_root_3"
+  cross join (
+    select
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT('id', "reversed_be149a76"."id")
+        ),
+        '[]'
+      ) as "reversed"
+    from
+      (
+        select
+          *
+        from
+          "public"."users" as "reversed_be149a76"
+        where
+          (
+            ($1) = "reversed_be149a76"."id"
+            and ($1 is not null)
+          )
+          or "reversed_be149a76"."name" = 'fallback'
+        limit
+          10
+      ) as "reversed_be149a76"
+  ) as "dsql_operation_root_4"
+  cross join (
+    select
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT('id', "multiple_21425244"."id")
+        ),
+        '[]'
+      ) as "multiple"
+    from
+      (
+        select
+          *
+        from
+          "public"."users" as "multiple_21425244"
+        where
+          (
+            ($4) = ($5)
+            and (
+              ($4 is not null)
+              and ($5 is not null)
+            )
+          )
+          or "multiple_21425244"."name" = 'fallback'
+        limit
+          10
+      ) as "multiple_21425244"
+  ) as "dsql_operation_root_5"
+  cross join (
+    select
+      COALESCE(
+        JSON_AGG(JSON_BUILD_OBJECT('id', "negated_a22fcfea"."id")),
+        '[]'
+      ) as "negated"
+    from
+      (
+        select
+          *
+        from
+          "public"."users" as "negated_a22fcfea"
+        where
+          (not (($1) = "negated_a22fcfea"."id"))
+          or (not ($1 is not null))
+        limit
+          10
+      ) as "negated_a22fcfea"
+  ) as "dsql_operation_root_6"
+-- parameters: params.id, params.name, params.required_name, params.left, params.right

@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: render_sql(&bowl).await
 ---
--- title
+-- AggregatePredicateSql
 select
   COALESCE(
     JSON_AGG(

@@ -11,6 +11,6 @@ pub use types::{
     PlanDiagnosticKind, PlannedFile, PolicyAccess, PolicyApplicationField, PolicyApplicationPlan,
     PolicyAssignmentState, PolicyContextRequirement, PolicyEnforcement, PolicyFieldAccess,
     PolicyFieldFilter, PolicyFieldTarget, PolicyIdentity, Projection, QueryPlan, QueryPlanFact,
-    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter,
-    SqlValue, SqlVariantCase,
+    QueryRootPlan, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
+    SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
 };

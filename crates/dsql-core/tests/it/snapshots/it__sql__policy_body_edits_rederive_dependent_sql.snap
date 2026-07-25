@@ -3,7 +3,7 @@ source: crates/dsql-core/tests/it/sql.rs
 expression: "format!(\"before:\\n{before}\\n\\nafter:\\n{after}\")"
 ---
 before:
--- title
+-- Titles
 select
   "dsql_root"."title" as "title"
 from
@@ -22,7 +22,7 @@ from
   ) as "dsql_root" on true
 
 after:
--- title
+-- Titles
 select
   "dsql_root"."title" as "title"
 from

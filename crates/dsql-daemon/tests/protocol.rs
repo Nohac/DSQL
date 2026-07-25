@@ -418,6 +418,41 @@ async fn compile_answers_the_result_shape() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn embedded_multiple_roots_target_one_operation_artifact() {
+    let mut session = Session::start("multiple-root-callsite").await;
+    std::fs::write(
+        session.root.join("src/components/Overview.ts"),
+        indoc::indoc! {r#"
+            export const overview = dsql(`
+              query Overview {
+                titles: title(limit 2) { id }
+                summary: title | aggregate { count }
+              }
+            `);
+        "#},
+    )
+    .expect("embedded fixture writes");
+    let initialized = session.initialize().await;
+    assert!(initialized.contains("\"result\""), "got {initialized}");
+
+    let response = session.compile().await;
+    for expectation in [
+        "\"id\":\"frontend/operation/Overview\"",
+        "\"target\":\"frontend/operation/Overview\"",
+        "\"name\":\"Overview\"",
+    ] {
+        assert!(
+            response.contains(expectation),
+            "missing {expectation} in {response}"
+        );
+    }
+    assert!(
+        !response.contains("Overview_titles") && !response.contains("Overview_summary"),
+        "roots must not leak synthetic artifact identities: {response}"
+    );
+}
+
 /// A configured TypeScript extractor owns rewriting independently of the
 /// host extension, and fragment-only expressions resolve to fragment
 /// artifacts just like queries resolve to operations.

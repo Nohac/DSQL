@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: "fixture_sql(\"valid/imdb-title-basic.dsql\").await"
 ---
--- title
+-- TitleLookup
 select
   COALESCE(
     JSON_AGG(

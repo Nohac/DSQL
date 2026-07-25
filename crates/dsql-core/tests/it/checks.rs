@@ -701,6 +701,24 @@ async fn duplicate_output_keys_through_spreads_are_reported() {
     insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
+#[tokio::test]
+async fn duplicate_output_keys_across_query_roots_are_reported() {
+    let bowl = checked_bowl(imdb_catalog()).await;
+    insert_source(
+        &bowl,
+        "root-collision.dsql",
+        indoc::indoc! {r#"
+            query RootCollision {
+              repeated: title(limit 1) { id }
+              repeated: kind_type(limit 1) { id }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
 /// A same-length body edit moves no span, so nothing about the
 /// definition's header changes — `DefDecl::source_hash` is what re-runs
 /// the walks. Before it existed, this exact edit left diagnostics stale.

@@ -2,6 +2,7 @@
 //! incremental reconciliation, publication through dsql-generate, and
 //! last-outcome replay for no-op batches.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use bowl::{Bowl, Entity, Mut, Query};
@@ -737,6 +738,9 @@ impl Session {
                 return outcome_error(WireErrorKind::Internal, message);
             }
         };
+        if let Err(message) = validate_callsite_targets(&assembled.snapshot.artifacts, &callsites) {
+            return outcome_error(WireErrorKind::Internal, message);
+        }
         let scopes = collect_source_scopes(bowl, &self.project_base).await;
         let published = match dsql_generate::publish_snapshot(
             &self.project,
@@ -1170,6 +1174,27 @@ async fn collect_callsites(bowl: &Bowl, base: &Path) -> Result<Vec<WireCallsite>
         });
     }
     Ok(callsites)
+}
+
+fn validate_callsite_targets(
+    artifacts: &[dsql_generate::SnapshotArtifact],
+    callsites: &[WireCallsite],
+) -> Result<(), String> {
+    let artifact_ids = artifacts
+        .iter()
+        .map(|artifact| artifact.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for callsite in callsites {
+        for expression in &callsite.expressions {
+            if !artifact_ids.contains(expression.target.as_str()) {
+                return Err(format!(
+                    "embedded expression `{}` at {}..{} targets missing artifact `{}`",
+                    callsite.path, expression.range.start, expression.range.end, expression.target,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Which scope owns each source file (informational, per the spec).

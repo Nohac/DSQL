@@ -3,21 +3,21 @@ source: crates/dsql-core/tests/it/sql.rs
 expression: "format!(\"before:\\n{before}\\n\\nafter:\\n{after}\\n\\ngrouped before:\\n{grouped_before}\\n\\ngrouped after:\\n{grouped_after}\")"
 ---
 before:
--- edge
+-- Edge
 select
   JSON_BUILD_OBJECT('value', MAX("edge_26e19395"."name")) as "edge"
 from
   "public"."users" as "edge_26e19395"
 
 after:
--- edge
+-- Edge
 select
   JSON_BUILD_OBJECT('value', MIN("edge_26e19395"."name")) as "edge"
 from
   "public"."users" as "edge_26e19395"
 
 grouped before:
--- edge
+-- Edge
 select
   COALESCE(
     JSON_AGG(
@@ -42,7 +42,7 @@ from
   ) as "edge_26e19395_groups_46a1febd"
 
 grouped after:
--- edge
+-- Edge
 select
   COALESCE(
     JSON_AGG(

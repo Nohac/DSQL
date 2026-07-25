@@ -473,6 +473,27 @@ test("embedded sources follow daemon targets and legacy ambiguity stays untyped"
     ["operation/MovieInfoLookup", querySource],
     ["fragment/MovieFields", fragmentSource],
   ]);
+  expect(() =>
+    resolveEmbeddedSources(definitions, {
+      projectBase: root,
+      callsites: [
+        {
+          path: hostPath,
+          resolver: "typescript",
+          contentHash: { algorithm: "sha256", value: sha256Hex(Buffer.from(host)) },
+          expressions: [
+            {
+              range: { start: 14, end: queryStart + querySource.length + 1 },
+              target: "frontend/operation/Missing",
+            },
+          ],
+        },
+      ],
+    }),
+  ).toThrow(
+    'dsql compile result references missing artifact "frontend/operation/Missing" ' +
+      'for "embedded.component"',
+  );
 
   const ambiguous = resolveEmbeddedSources(
     [

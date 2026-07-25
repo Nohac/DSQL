@@ -1086,6 +1086,49 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
     insta::assert_snapshot!(artifacts.join("\n---\n"));
 }
 
+#[tokio::test]
+async fn multiple_roots_assemble_as_one_operation_contract() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
+        vec![document(
+            "queries/frontend/multiple-roots.dsql",
+            indoc::indoc! {r#"
+                fragment UserBits on users {
+                  name
+                }
+                query UserOverview($$name? = null) {
+                  summary: users(where .name == $$name) | aggregate {
+                    count
+                  }
+                  first: users(where .name == $$name limit 1) {
+                    id
+                    ...UserBits
+                  }
+                  ...posts | aggregate {
+                    post_count: count
+                  }
+                }
+            "#},
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("multiple roots assemble");
+    let operations = assembled
+        .snapshot
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.family == dsql_generate::ArtifactFamily::Operation)
+        .collect::<Vec<_>>();
+    assert_eq!(operations.len(), 1, "the definition emits one operation");
+    assert_eq!(operations[0].name, "UserOverview");
+
+    insta::assert_snapshot!(operations[0].serialized);
+}
+
 /// Two *independent* scopes may each define an operation with the same
 /// public name — resolution namespaces are separate, and without an
 /// import relationship the language checks rightly stay silent (importing

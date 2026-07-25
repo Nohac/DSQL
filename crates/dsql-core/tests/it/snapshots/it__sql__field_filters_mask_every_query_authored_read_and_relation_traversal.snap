@@ -1,214 +1,218 @@
 ---
 source: crates/dsql-core/tests/it/sql.rs
-assertion_line: 333
 expression: render_sql(&bowl).await
 ---
--- grouped
+-- MaskedReads
 select
-  COALESCE(
-    JSON_AGG(
-      JSON_BUILD_OBJECT(
-        'title_group',
-        "grouped_272ef66c_groups_34e61f93"."title_group",
-        'count',
-        "grouped_272ef66c_groups_34e61f93"."count"
-      )
-    ),
-    '[]'
-  ) as "grouped"
+  "dsql_operation_root_0"."title" as "title",
+  "dsql_operation_root_1"."grouped" as "grouped"
 from
   (
     select
-      (
-        case
-          when ($1) then "grouped_272ef66c"."title"
-          else null
-        end
-      ) as "title_group",
-      COUNT(*) as "count"
+      "dsql_root"."title" as "title"
     from
-      "public"."title" as "grouped_272ef66c"
-    group by
       (
-        case
-          when ($1) then "grouped_272ef66c"."title"
-          else null
-        end
-      )
-  ) as "grouped_272ef66c_groups_34e61f93"
--- parameters: context.can_read_title
-
--- title
-select
-  "dsql_root"."title" as "title"
-from
-  (
-    select
-      1) as "dsql_singleton"
-  left join LATERAL (
-    select
-      JSON_BUILD_OBJECT(
-        'id',
-        "title_d4d9f554"."id",
-        'title',
-        (
-          case
-            when ($1) then "title_d4d9f554"."title"
-            else null
-          end
-        ),
-        'movie_info_idx',
-        "movie_info_idx_json_3575fa4a"."movie_info_idx_result_3575fa4a",
-        'info_stats',
-        "info_stats_json_dc4bad77"."info_stats_result_dc4bad77"
-      ) as "title"
-    from
-      "public"."title" as "title_d4d9f554"
+        select
+          1) as "dsql_singleton"
       left join LATERAL (
         select
-          COALESCE(
-            JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'id',
+            "title_d4d9f554"."id",
+            'title',
+            (
+              case
+                when ($1) then "title_d4d9f554"."title"
+                else null
+              end
+            ),
+            'movie_info_idx',
+            "movie_info_idx_json_3575fa4a"."movie_info_idx_result_3575fa4a",
+            'info_stats',
+            "info_stats_json_dc4bad77"."info_stats_result_dc4bad77"
+          ) as "title"
+        from
+          "public"."title" as "title_d4d9f554"
+          left join LATERAL (
+            select
+              COALESCE(
+                JSON_AGG(
+                  JSON_BUILD_OBJECT(
+                    'id',
+                    "movie_info_idx_3575fa4a"."id",
+                    'info',
+                    (
+                      case
+                        when ($3) then "movie_info_idx_3575fa4a"."info"
+                        else null
+                      end
+                    )
+                  )
+                ),
+                '[]'
+              ) as "movie_info_idx_result_3575fa4a"
+            from
+              (
+                select
+                  *
+                from
+                  "public"."movie_info_idx" as "movie_info_idx_3575fa4a"
+                where
+                  "movie_info_idx_3575fa4a"."movie_id" = "title_d4d9f554"."id"
+                  and ($1)
+                limit
+                  10
+              ) as "movie_info_idx_3575fa4a"
+          ) as "movie_info_idx_json_3575fa4a" on true
+          left join LATERAL (
+            select
               JSON_BUILD_OBJECT(
-                'id',
-                "movie_info_idx_3575fa4a"."id",
-                'info',
+                'count',
+                COUNT(*),
+                'visible',
+                COUNT(
+                  (
+                    case
+                      when ($3) then "info_stats_dc4bad77"."info"
+                      else null
+                    end
+                  )
+                ),
+                'first',
+                MIN(
+                  (
+                    case
+                      when ($3) then "info_stats_dc4bad77"."info"
+                      else null
+                    end
+                  )
+                )
+              ) as "info_stats_result_dc4bad77"
+            from
+              "public"."movie_info_idx" as "info_stats_dc4bad77"
+            where
+              "info_stats_dc4bad77"."movie_id" = "title_d4d9f554"."id"
+              and ($1)
+          ) as "info_stats_json_dc4bad77" on true
+        where
+          (
+            case
+              when ($1) then "title_d4d9f554"."title"
+              else null
+            end
+          ) = ($2)
+          and (
+            (
+              ($1)
+              and ("title_d4d9f554"."title" is null)
+            )
+            or (
+              ($1)
+              and ("title_d4d9f554"."title" is not null)
+            )
+          )
+          and exists (
+            select
+              1
+            from
+              "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+            where
+              "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
+              and ($1)
+              and (
                 (
                   case
-                    when ($3) then "movie_info_idx_3575fa4a"."info"
+                    when ($3) then "movie_info_idx_15314ac3"."info"
+                    else null
+                  end
+                ) = ANY($4)
+              )
+          )
+          and exists (
+            select
+              1
+            from
+              "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+            where
+              "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
+              and ($1)
+              and (
+                case
+                  when ($3) then "movie_info_idx_15314ac3"."info"
+                  else null
+                end
+              ) = ($5)
+          )
+          and (
+            select
+              COUNT(
+                (
+                  case
+                    when ($3) then "movie_info_idx_ce96181b"."info"
                     else null
                   end
                 )
               )
-            ),
-            '[]'
-          ) as "movie_info_idx_result_3575fa4a"
-        from
-          (
-            select
-              *
             from
-              "public"."movie_info_idx" as "movie_info_idx_3575fa4a"
+              "public"."movie_info_idx" as "movie_info_idx_ce96181b"
             where
-              "movie_info_idx_3575fa4a"."movie_id" = "title_d4d9f554"."id"
+              "movie_info_idx_ce96181b"."movie_id" = "title_d4d9f554"."id"
               and ($1)
-            limit
-              10
-          ) as "movie_info_idx_3575fa4a"
-      ) as "movie_info_idx_json_3575fa4a" on true
-      left join LATERAL (
-        select
-          JSON_BUILD_OBJECT(
-            'count',
-            COUNT(*),
-            'visible',
-            COUNT(
-              (
-                case
-                  when ($3) then "info_stats_dc4bad77"."info"
-                  else null
-                end
-              )
-            ),
-            'first',
-            MIN(
-              (
-                case
-                  when ($3) then "info_stats_dc4bad77"."info"
-                  else null
-                end
-              )
-            )
-          ) as "info_stats_result_dc4bad77"
-        from
-          "public"."movie_info_idx" as "info_stats_dc4bad77"
-        where
-          "info_stats_dc4bad77"."movie_id" = "title_d4d9f554"."id"
-          and ($1)
-      ) as "info_stats_json_dc4bad77" on true
-    where
-      (
-        case
-          when ($1) then "title_d4d9f554"."title"
-          else null
-        end
-      ) = ($2)
-      and (
-        (
-          ($1)
-          and ("title_d4d9f554"."title" is null)
-        )
-        or (
-          ($1)
-          and ("title_d4d9f554"."title" is not null)
-        )
-      )
-      and exists (
-        select
-          1
-        from
-          "public"."movie_info_idx" as "movie_info_idx_15314ac3"
-        where
-          "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
-          and ($1)
-          and (
-            (
+          ) > 0
+        order by
+          case
+            when '{{params.direction}}' = 'asc' then (
               case
-                when ($3) then "movie_info_idx_15314ac3"."info"
+                when ($1) then "title_d4d9f554"."title"
                 else null
               end
-            ) = ANY($4)
-          )
-      )
-      and exists (
-        select
+            )
+          end asc,
+          case
+            when '{{params.direction}}' = 'desc' then (
+              case
+                when ($1) then "title_d4d9f554"."title"
+                else null
+              end
+            )
+          end desc
+        limit
           1
-        from
-          "public"."movie_info_idx" as "movie_info_idx_15314ac3"
-        where
-          "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
-          and ($1)
-          and (
+      ) as "dsql_root" on true
+  ) as "dsql_operation_root_0"
+  cross join (
+    select
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'title_group',
+            "grouped_272ef66c_groups_34e61f93"."title_group",
+            'count',
+            "grouped_272ef66c_groups_34e61f93"."count"
+          )
+        ),
+        '[]'
+      ) as "grouped"
+    from
+      (
+        select
+          (
             case
-              when ($3) then "movie_info_idx_15314ac3"."info"
+              when ($1) then "grouped_272ef66c"."title"
               else null
             end
-          ) = ($5)
-      )
-      and (
-        select
-          COUNT(
-            (
-              case
-                when ($3) then "movie_info_idx_ce96181b"."info"
-                else null
-              end
-            )
-          )
+          ) as "title_group",
+          COUNT(*) as "count"
         from
-          "public"."movie_info_idx" as "movie_info_idx_ce96181b"
-        where
-          "movie_info_idx_ce96181b"."movie_id" = "title_d4d9f554"."id"
-          and ($1)
-      ) > 0
-    order by
-      case
-        when '{{params.direction}}' = 'asc' then (
-          case
-            when ($1) then "title_d4d9f554"."title"
-            else null
-          end
-        )
-      end asc,
-      case
-        when '{{params.direction}}' = 'desc' then (
-          case
-            when ($1) then "title_d4d9f554"."title"
-            else null
-          end
-        )
-      end desc
-    limit
-      1
-  ) as "dsql_root" on true
+          "public"."title" as "grouped_272ef66c"
+        group by
+          (
+            case
+              when ($1) then "grouped_272ef66c"."title"
+              else null
+            end
+          )
+      ) as "grouped_272ef66c_groups_34e61f93"
+  ) as "dsql_operation_root_1"
 -- parameters: context.can_read_title, params.guess, context.can_read_info, params.infos, params.info_guess
 -- variant params.direction: asc=>asc, desc=>desc

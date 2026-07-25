@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: "fixture_sql(\"valid/imdb-rhs-relation-path.dsql\").await"
 ---
--- movie_info
+-- RhsRelationPath
 select
   COALESCE(
     JSON_AGG(

@@ -69,10 +69,13 @@ clause or identity case. Execution must preserve the pruning rules defined in
 [Nullable Predicate Uses](variables.md#nullable-predicate-uses).
 
 The executor binds PostgreSQL values according to the declared logical type and
-collection shape. The generated statement returns one JSON value, which is
-decoded into the public operation result object. The executor serializes the
-complete generated result row, so ordinary single-root operations and
-multi-column flattened roots obey the same metadata result shape.
+collection shape. Every query definition produces one generated statement that
+returns exactly one result row. A multi-root definition renders its collection,
+singular, aggregate, and flattened roots as one-row subqueries and combines
+them in source order; all roots share one parameter and variant namespace. The
+executor serializes the complete generated row as one JSON value, so
+single-root, multi-root, and multi-column flattened operations all obey the
+same metadata result shape.
 
 `PostgresExecutor::connect` creates a single-connection pool for one-shot CLI
 use. Long-lived library callers can provide their own pool through

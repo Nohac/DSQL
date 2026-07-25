@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: "fixture_sql(\"valid/imdb-fragment-spread.dsql\").await"
 ---
--- title
+-- TitleWithFragment
 select
   COALESCE(
     JSON_AGG(

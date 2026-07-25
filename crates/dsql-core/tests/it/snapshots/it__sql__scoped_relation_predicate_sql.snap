@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: "fixture_sql(\"valid/imdb-scoped-relation-predicate.dsql\").await"
 ---
--- title
+-- ScopedRelationPredicate
 select
   "dsql_root"."title" as "title"
 from

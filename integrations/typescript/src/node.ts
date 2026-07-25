@@ -276,7 +276,13 @@ export function resolveEmbeddedSources(
     );
     for (const callsite of options.callsites) {
       for (const expression of callsite.expressions) {
-        const definition = byId.get(expression.target)!;
+        const definition = byId.get(expression.target);
+        if (definition === undefined) {
+          throw new Error(
+            `dsql compile result references missing artifact ${JSON.stringify(expression.target)} ` +
+              `for ${JSON.stringify(callsite.path)} at ${expression.range.start}..${expression.range.end}`,
+          );
+        }
         slice(definition, callsite.contentHash.value);
       }
     }

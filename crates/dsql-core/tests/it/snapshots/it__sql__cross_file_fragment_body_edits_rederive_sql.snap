@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: after
 ---
--- title
+-- UsesBits
 select
   "dsql_root"."title" as "title"
 from

@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: render_sql(&bowl).await
 ---
--- title
+-- PredicateExtensions
 select
   COALESCE(
     JSON_AGG(JSON_BUILD_OBJECT('id', "title_d4d9f554"."id")),

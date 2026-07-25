@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: "fixture_sql(\"valid/imdb-rhs-same-table.dsql\").await"
 ---
--- movie_info
+-- RhsSameTable
 select
   COALESCE(
     JSON_AGG(

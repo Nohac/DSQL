@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: "fixture_sql(\"valid/imdb-movie-info-basic.dsql\").await"
 ---
--- movie_info
+-- MovieInfoLookup
 select
   COALESCE(
     JSON_AGG(

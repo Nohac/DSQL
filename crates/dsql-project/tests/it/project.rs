@@ -735,9 +735,9 @@ async fn project_checks_clean_and_generates_sql() {
     let names: Vec<String> = generated
         .collect()
         .into_iter()
-        .map(|(_, fact)| fact.0.output_name.clone())
+        .map(|(_, fact)| fact.0.operation_name.clone())
         .collect();
-    assert_eq!(names, vec!["title".to_string()]);
+    assert_eq!(names, vec!["Titles".to_string()]);
 }
 
 #[tokio::test]

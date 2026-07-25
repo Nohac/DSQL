@@ -57,6 +57,7 @@ async fn generate_sql_facts(
     let (options_entity, options) = options.item();
 
     match generate_postgres_sql_with_options(
+        &seed.query_name,
         &plan.0,
         snapshot.catalog(),
         PostgresSqlOptions {

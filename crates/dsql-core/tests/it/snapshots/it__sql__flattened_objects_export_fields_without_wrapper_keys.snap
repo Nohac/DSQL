@@ -2,41 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: render_sql(&bowl).await
 ---
--- accounts
-select
-  "dsql_root"."accounts" as "accounts"
-from
-  (
-    select
-      1) as "dsql_singleton"
-  left join LATERAL (
-    select
-      JSON_BUILD_OBJECT(
-        'id',
-        "accounts_c1b9ad84"."id",
-        'post_count',
-        "posts_json_cd19cb80"."post_count",
-        'latest_post',
-        "posts_json_cd19cb80"."latest_post"
-      ) as "accounts"
-    from
-      "public"."users" as "accounts_c1b9ad84"
-      left join LATERAL (
-        select
-          COUNT(*) as "post_count",
-          MAX("posts_cd19cb80"."created_at") as "latest_post"
-        from
-          "public"."posts" as "posts_cd19cb80"
-        where
-          "posts_cd19cb80"."user_id" = "accounts_c1b9ad84"."id"
-          and ("posts_cd19cb80"."title" like $1)
-      ) as "posts_json_cd19cb80" on true
-    limit
-      1
-  ) as "dsql_root" on true
--- parameters: params.title
-
--- feed
+-- FlattenOwner
 select
   "dsql_root"."feed" as "feed"
 from
@@ -80,7 +46,41 @@ from
   ) as "dsql_root" on true
 -- parameters: params.owner
 
--- users
+-- FlattenPostStats
+select
+  "dsql_root"."accounts" as "accounts"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'id',
+        "accounts_c1b9ad84"."id",
+        'post_count',
+        "posts_json_cd19cb80"."post_count",
+        'latest_post',
+        "posts_json_cd19cb80"."latest_post"
+      ) as "accounts"
+    from
+      "public"."users" as "accounts_c1b9ad84"
+      left join LATERAL (
+        select
+          COUNT(*) as "post_count",
+          MAX("posts_cd19cb80"."created_at") as "latest_post"
+        from
+          "public"."posts" as "posts_cd19cb80"
+        where
+          "posts_cd19cb80"."user_id" = "accounts_c1b9ad84"."id"
+          and ("posts_cd19cb80"."title" like $1)
+      ) as "posts_json_cd19cb80" on true
+    limit
+      1
+  ) as "dsql_root" on true
+-- parameters: params.title
+
+-- FlattenRoot
 select
   TO_JSON(COUNT(*)) as "user_count",
   TO_JSON(MIN("users_99fc7350"."name")) as "first_name"

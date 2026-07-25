@@ -2,32 +2,48 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: render_sql(&bowl).await
 ---
--- movie_info_idx
+-- ConditionalBypass
 select
   COALESCE(
-    JSON_AGG(
-      JSON_BUILD_OBJECT('id', "movie_info_idx_1b1fd7c6"."id")
-    ),
+    JSON_AGG(JSON_BUILD_OBJECT('id', "title_d4d9f554"."id")),
     '[]'
-  ) as "movie_info_idx"
+  ) as "title"
 from
   (
     select
       *
     from
-      "public"."movie_info_idx" as "movie_info_idx_1b1fd7c6"
+      "public"."title" as "title_d4d9f554"
     where
-      "movie_info_idx_1b1fd7c6"."info_type_id" = 101
-      and (
-        (not ($1))
-        or "movie_info_idx_1b1fd7c6"."id" > 0
+      (
+        ($1)
+        or (
+          "title_d4d9f554"."kind_id" = ($2)
+          and exists (
+            select
+              1
+            from
+              "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+            where
+              "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
+              and "movie_info_idx_15314ac3"."info_type_id" = "title_d4d9f554"."kind_id"
+          )
+        )
+      )
+      and exists (
+        select
+          1
+        from
+          "public"."movie_info_idx" as "movie_info_idx_15314ac3"
+        where
+          "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
       )
     limit
       10
-  ) as "movie_info_idx_1b1fd7c6"
--- parameters: params.positive_only
+  ) as "title_d4d9f554"
+-- parameters: context.can_bypass_titles, context.kind_id
 
--- title
+-- DefaultRows
 select
   "dsql_root"."title" as "title"
 from
@@ -92,43 +108,27 @@ from
   ) as "dsql_root" on true
 -- parameters: context.kind_id
 
--- title
+-- ManualRows
 select
   COALESCE(
-    JSON_AGG(JSON_BUILD_OBJECT('id', "title_d4d9f554"."id")),
+    JSON_AGG(
+      JSON_BUILD_OBJECT('id', "movie_info_idx_1b1fd7c6"."id")
+    ),
     '[]'
-  ) as "title"
+  ) as "movie_info_idx"
 from
   (
     select
       *
     from
-      "public"."title" as "title_d4d9f554"
+      "public"."movie_info_idx" as "movie_info_idx_1b1fd7c6"
     where
-      (
-        ($1)
-        or (
-          "title_d4d9f554"."kind_id" = ($2)
-          and exists (
-            select
-              1
-            from
-              "public"."movie_info_idx" as "movie_info_idx_15314ac3"
-            where
-              "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
-              and "movie_info_idx_15314ac3"."info_type_id" = "title_d4d9f554"."kind_id"
-          )
-        )
-      )
-      and exists (
-        select
-          1
-        from
-          "public"."movie_info_idx" as "movie_info_idx_15314ac3"
-        where
-          "movie_info_idx_15314ac3"."movie_id" = "title_d4d9f554"."id"
+      "movie_info_idx_1b1fd7c6"."info_type_id" = 101
+      and (
+        (not ($1))
+        or "movie_info_idx_1b1fd7c6"."id" > 0
       )
     limit
       10
-  ) as "title_d4d9f554"
--- parameters: context.can_bypass_titles, context.kind_id
+  ) as "movie_info_idx_1b1fd7c6"
+-- parameters: params.positive_only

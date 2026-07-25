@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[68..77]: selection output key `repeated` is ambiguous; use an alias

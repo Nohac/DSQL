@@ -220,6 +220,7 @@ fn observatory_operation_list_exposes_importing_scopes() {
             "api\tManualFilterProbe",
             "api\tMappedSensorWindow",
             "api\tMissingFlattened",
+            "api\tMultiRootOverview",
             "api\tNamespacedSensorWindow",
             "api\tNetworkTopology",
             "api\tOptionalLikeProbe",
@@ -278,6 +279,15 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         &["--context", tenant],
     );
     insta::assert_snapshot!("observatory_topology", topology);
+
+    let multi_root = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "MultiRootOverview",
+        &["--context", tenant],
+    );
+    insta::assert_snapshot!("observatory_multi_root_overview", multi_root);
 
     let readings = execute_observatory(
         &observatory,
@@ -630,8 +640,8 @@ fn sql_prints_configured_operations_in_output_order() {
     let output = dsql(&dir, &["sql"]);
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let stdout = stdout(&output);
-    let actors = stdout.find("-- actors").expect("actors SQL heading");
-    let title = stdout.find("-- title").expect("title SQL heading");
+    let actors = stdout.find("-- Actors").expect("Actors SQL heading");
+    let title = stdout.find("-- Titles").expect("Titles SQL heading");
     assert!(actors < title, "SQL headings are sorted, got {stdout}");
     insta::assert_snapshot!(stdout);
 

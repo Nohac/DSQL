@@ -14,7 +14,7 @@ use dsql_core::facts::Span;
 use dsql_core::plan::{
     CollectionPlan, CollectionResultPlan, FragmentPlanFact, OperationSeed, PolicyAccess,
     PolicyApplicationPlan, PolicyAssignmentState, PolicyEnforcement, PolicyFieldAccess,
-    PolicyFieldTarget, QueryPlan, SelectionPlan, SelectionPlanItem, SpreadUse,
+    PolicyFieldTarget, QueryPlan, QueryRootPlan, SelectionPlan, SelectionPlanItem, SpreadUse,
 };
 use dsql_core::resolution::SelectionCardinality;
 use dsql_core::sql::GeneratedSql;
@@ -70,12 +70,7 @@ pub(crate) fn operation_metadata(
     inputs: &OperationInputs<'_>,
 ) -> Result<OperationMetadata> {
     Ok(OperationMetadata {
-        name: operation_name(
-            &inputs.seed.query_name,
-            &inputs.plan.output_name,
-            inputs.seed.root_count,
-            inputs.seed.root_index,
-        ),
+        name: inputs.seed.query_name.clone(),
         kind: DefinitionKind::Query.as_ref().to_string(),
         sql: SqlMetadata {
             dialect: SqlDialect::Postgres.as_ref().to_string(),
@@ -200,7 +195,9 @@ fn policy_metadata(
         )
         .collect::<BTreeSet<_>>();
     let mut planned = Vec::new();
-    collect_policy_applications(&inputs.plan.collection, &mut planned);
+    for root in &inputs.plan.roots {
+        collect_policy_applications(&root.collection, &mut planned);
+    }
     let mut grouped = BTreeMap::<(String, String), Vec<&PolicyApplicationPlan>>::new();
     for application in planned {
         grouped
@@ -387,6 +384,17 @@ struct ResultAccessContext<'a> {
 
 fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
     let mut fields = Vec::new();
+    for root in &plan.roots {
+        collect_root_result_fields(catalog, root, &mut fields)?;
+    }
+    Ok(ResultShape { fields })
+}
+
+fn collect_root_result_fields(
+    catalog: &Catalog,
+    plan: &QueryRootPlan,
+    fields: &mut Vec<ResultField>,
+) -> Result<()> {
     let nullable = collection_result_nullable(&plan.collection);
     let access = collection_policy_access(&plan.collection);
     if plan.flattened {
@@ -401,7 +409,7 @@ fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
                 policy_nullable_fields: &plan.collection.policy_nullable_fields,
                 policy_field_access: &actual_field_access(&plan.collection),
             },
-            &mut fields,
+            fields,
         )?;
     } else {
         collect_collection_fields(
@@ -416,10 +424,10 @@ fn result_shape(catalog: &Catalog, plan: &QueryPlan) -> Result<ResultShape> {
                 policy_nullable_fields: &[],
                 policy_field_access: &[],
             },
-            &mut fields,
+            fields,
         )?;
     }
-    Ok(ResultShape { fields })
+    Ok(())
 }
 
 fn fragment_result_shape(
@@ -855,19 +863,6 @@ fn dynamic_inputs(bindings: &[VariableBinding]) -> Vec<DynamicInputMetadata> {
             fields: Vec::new(),
         })
         .collect()
-}
-
-pub(crate) fn operation_name(
-    query_name: &str,
-    output_name: &str,
-    count: usize,
-    index: usize,
-) -> String {
-    if count == 1 {
-        query_name.to_string()
-    } else {
-        format!("{query_name}_{output_name}_{index}")
-    }
 }
 
 fn join_path(parent: &str, name: &str) -> String {

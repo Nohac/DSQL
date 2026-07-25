@@ -8,26 +8,21 @@ use crate::entities::expression::ComparisonOp;
 use crate::facts::Span;
 use crate::resolution::ResolvedSelectionShape;
 
-/// One planned query root as a fact, derived per query definition by the
-/// planning system, gated on [`PlanDemand`].
+/// One planned query definition as a fact, derived by the planning system
+/// and gated on [`PlanDemand`].
 ///
 /// [`PlanDemand`]: crate::facts::PlanDemand
 #[derive(Component, Debug, Clone, Hash, PartialEq)]
 #[component(hash)]
 pub struct QueryPlanFact(pub QueryPlan);
 
-/// Artifact-assembly context riding each plan entity: which definition and
-/// root the plan came from, so generators can name and source-map the
-/// operation without re-walking facts.
+/// Artifact-assembly context riding each plan entity, so generators can
+/// source-map the operation without re-walking facts.
 #[derive(Component, Debug, Clone, Hash, PartialEq)]
 #[component(hash)]
 pub struct OperationSeed {
     /// The defining query's name.
     pub query_name: String,
-    /// Index of this root selection within the query definition.
-    pub root_index: usize,
-    /// How many root selections the definition has.
-    pub root_count: usize,
     /// Span of the whole definition in its file.
     pub def_span: Span,
     /// The definition's resolution scope.
@@ -169,11 +164,17 @@ pub struct PlanDiagnostic {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct QueryPlan {
+    /// Root selections in source order.
+    pub roots: Vec<QueryRootPlan>,
+    /// Server-only values required by policies that can affect any root.
+    pub policy_context: Vec<PolicyContextRequirement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct QueryRootPlan {
     pub output_name: String,
     pub flattened: bool,
     pub collection: CollectionPlan,
-    /// Server-only values required by policies that can affect this root.
-    pub policy_context: Vec<PolicyContextRequirement>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

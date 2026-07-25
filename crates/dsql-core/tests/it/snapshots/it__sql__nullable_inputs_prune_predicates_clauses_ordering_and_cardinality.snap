@@ -2,7 +2,24 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: render_sql(&bowl).await
 ---
--- users
+-- DefaultedUnique
+select
+  "dsql_root"."users" as "users"
+from
+  (
+    select
+      1) as "dsql_singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT('id', "users_99fc7350"."id") as "users"
+    from
+      "public"."users" as "users_99fc7350"
+    where
+      "users_99fc7350"."id" = ($1)
+  ) as "dsql_root" on true
+-- parameters: params.id
+
+-- NullableInputs
 select
   COALESCE(
     JSON_AGG(
@@ -67,20 +84,3 @@ from
   ) as "users_99fc7350"
 -- parameters: params.id, params.from, params.to, params.limit
 -- variant params.direction: asc=>asc, desc=>desc
-
--- users
-select
-  "dsql_root"."users" as "users"
-from
-  (
-    select
-      1) as "dsql_singleton"
-  left join LATERAL (
-    select
-      JSON_BUILD_OBJECT('id', "users_99fc7350"."id") as "users"
-    from
-      "public"."users" as "users_99fc7350"
-    where
-      "users_99fc7350"."id" = ($1)
-  ) as "dsql_root" on true
--- parameters: params.id

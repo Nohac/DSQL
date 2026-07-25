@@ -17,4 +17,5 @@ tokio = { workspace = true }
 [dev-dependencies]
 facet-value = { workspace = true }
 fd-lock = { workspace = true }
+indoc = { workspace = true }
 insta = { workspace = true }

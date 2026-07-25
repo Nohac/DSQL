@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: render_sql(&bowl).await
 ---
--- featured
+-- FeaturedMovieQuery
 select
   "dsql_root"."featured" as "featured"
 from

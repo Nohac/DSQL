@@ -2,76 +2,83 @@
 source: crates/dsql-core/tests/it/sql.rs
 expression: render_sql(&bowl).await
 ---
--- groups
+-- NumericMetrics
 select
-  COALESCE(
-    JSON_AGG(
+  "dsql_operation_root_0"."metrics" as "metrics",
+  "dsql_operation_root_1"."groups" as "groups",
+  "dsql_operation_root_2"."summary" as "summary"
+from
+  (
+    select
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'amount',
+            CAST("metrics_b773e828"."amount" as text),
+            'ratio',
+            "metrics_b773e828"."ratio"
+          )
+        ),
+        '[]'
+      ) as "metrics"
+    from
+      (
+        select
+          *
+        from
+          "public"."metrics" as "metrics_b773e828"
+        where
+          "metrics_b773e828"."amount" >= 12345678901234567890.12345678901234567890
+        limit
+          10
+      ) as "metrics_b773e828"
+  ) as "dsql_operation_root_0"
+  cross join (
+    select
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'amount_group',
+            "groups_ddd104a7_groups_36433875"."amount_group",
+            'ratio_group',
+            "groups_ddd104a7_groups_36433875"."ratio_group",
+            'count',
+            "groups_ddd104a7_groups_36433875"."count",
+            'total_amount',
+            "groups_ddd104a7_groups_36433875"."total_amount",
+            'average_ratio',
+            "groups_ddd104a7_groups_36433875"."average_ratio"
+          )
+        ),
+        '[]'
+      ) as "groups"
+    from
+      (
+        select
+          CAST("groups_ddd104a7"."amount" as text) as "amount_group",
+          "groups_ddd104a7"."ratio" as "ratio_group",
+          COUNT(*) as "count",
+          CAST(SUM("groups_ddd104a7"."amount") as text) as "total_amount",
+          AVG("groups_ddd104a7"."ratio") as "average_ratio"
+        from
+          "public"."metrics" as "groups_ddd104a7"
+        group by
+          "groups_ddd104a7"."amount",
+          "groups_ddd104a7"."ratio"
+      ) as "groups_ddd104a7_groups_36433875"
+  ) as "dsql_operation_root_1"
+  cross join (
+    select
       JSON_BUILD_OBJECT(
-        'amount_group',
-        "groups_ddd104a7_groups_36433875"."amount_group",
-        'ratio_group',
-        "groups_ddd104a7_groups_36433875"."ratio_group",
-        'count',
-        "groups_ddd104a7_groups_36433875"."count",
         'total_amount',
-        "groups_ddd104a7_groups_36433875"."total_amount",
+        CAST(SUM("summary_bea0cdc1"."amount") as text),
+        'average_amount',
+        CAST(AVG("summary_bea0cdc1"."amount") as text),
+        'total_ratio',
+        SUM("summary_bea0cdc1"."ratio"),
         'average_ratio',
-        "groups_ddd104a7_groups_36433875"."average_ratio"
-      )
-    ),
-    '[]'
-  ) as "groups"
-from
-  (
-    select
-      CAST("groups_ddd104a7"."amount" as text) as "amount_group",
-      "groups_ddd104a7"."ratio" as "ratio_group",
-      COUNT(*) as "count",
-      CAST(SUM("groups_ddd104a7"."amount") as text) as "total_amount",
-      AVG("groups_ddd104a7"."ratio") as "average_ratio"
+        AVG("summary_bea0cdc1"."ratio")
+      ) as "summary"
     from
-      "public"."metrics" as "groups_ddd104a7"
-    group by
-      "groups_ddd104a7"."amount",
-      "groups_ddd104a7"."ratio"
-  ) as "groups_ddd104a7_groups_36433875"
-
--- metrics
-select
-  COALESCE(
-    JSON_AGG(
-      JSON_BUILD_OBJECT(
-        'amount',
-        CAST("metrics_b773e828"."amount" as text),
-        'ratio',
-        "metrics_b773e828"."ratio"
-      )
-    ),
-    '[]'
-  ) as "metrics"
-from
-  (
-    select
-      *
-    from
-      "public"."metrics" as "metrics_b773e828"
-    where
-      "metrics_b773e828"."amount" >= 12345678901234567890.12345678901234567890
-    limit
-      10
-  ) as "metrics_b773e828"
-
--- summary
-select
-  JSON_BUILD_OBJECT(
-    'total_amount',
-    CAST(SUM("summary_bea0cdc1"."amount") as text),
-    'average_amount',
-    CAST(AVG("summary_bea0cdc1"."amount") as text),
-    'total_ratio',
-    SUM("summary_bea0cdc1"."ratio"),
-    'average_ratio',
-    AVG("summary_bea0cdc1"."ratio")
-  ) as "summary"
-from
-  "public"."metrics" as "summary_bea0cdc1"
+      "public"."metrics" as "summary_bea0cdc1"
+  ) as "dsql_operation_root_2"

@@ -359,8 +359,10 @@ The `result` of `compile`/`filesChanged`:
   `` dsql(`…`) ``, not the content between the backticks). `resolver`
   identifies the configured embedding/binding contract for the host;
   `target` is the one opaque artifact id selected by language analysis.
-  Expression ranges within a file never overlap. Rewrite rules live
-  under Callsites and freshness.
+  Every target names exactly one entry in the same result's `artifacts`
+  array; violating that invariant fails the compile before publication.
+  Expression ranges within a file never overlap. Rewrite rules live under
+  Callsites and freshness.
   Embedded definitions' *artifact metadata* additionally records
   `content_range` on their source-map entry — the exact byte range of
   the document content between the backticks — so renderers that key

@@ -546,6 +546,7 @@ dependencies = [
  "facet-json",
  "facet-value",
  "fd-lock",
+ "indoc",
  "insta",
  "thiserror",
  "tokio",
