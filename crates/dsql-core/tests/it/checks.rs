@@ -118,6 +118,30 @@ async fn valid_pagination_and_collection_default_edges_check_cleanly() {
 }
 
 #[tokio::test]
+async fn literal_pagination_values_use_the_postgres_bigint_domain() {
+    let bowl = checked_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "literal-pagination.dsql",
+        indoc::indoc! {r#"
+            query InvalidLiteralPagination {
+              negative: public::users(limit -1) { id }
+              negative_offset: public::users(offset -1) { id }
+              oversized_limit: public::users(limit 9223372036854775808) { id }
+              too_large: public::users(offset 9223372036854775808) { id }
+            }
+            query ValidLiteralPagination {
+              zero: public::users(limit 0) { id }
+              maximum: public::users(offset 9223372036854775807) { id }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
 async fn fragment_contracts_use_exact_refinement_identities_and_reject_prefix_collisions() {
     let bowl = checked_bowl(Catalog::hardcoded()).await;
     insert_source(

@@ -66,6 +66,18 @@ pub enum OrderDirection {
     Variable(VariableRef),
 }
 
+/// Largest literal pagination value accepted by the PostgreSQL planning layer.
+pub(crate) const MAX_PAGINATION_VALUE: i64 = i64::MAX;
+
+/// Parses one query-authored pagination value in PostgreSQL's bigint domain.
+pub(crate) fn parse_pagination_value(value: &str) -> Option<u64> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|value| *value >= 0)
+        .map(|value| value as u64)
+}
+
 /// Owns the clause rules (and consumes `clause_list`, `clause`,
 /// `order_item`, and `sort_direction` from them).
 pub struct Clause;
@@ -905,14 +917,18 @@ fn check_non_negative_integer(
     }
     let valid = matches!(
         expr,
-        Expr::Literal { value: LiteralValue::Number(value), .. } if value.parse::<u64>().is_ok()
+        Expr::Literal { value: LiteralValue::Number(value), .. }
+            if parse_pagination_value(value).is_some()
     ) || matches!(expr, Expr::Variable { .. });
     if !valid {
         ctx.error(
             entity,
             span,
             DiagnosticCode::ClauseValueTypeMismatch,
-            format!("clause `{clause}` expects a non-negative integer"),
+            format!(
+                "clause `{clause}` expects a non-negative integer no greater than {}",
+                MAX_PAGINATION_VALUE,
+            ),
         );
     }
 }

@@ -1,6 +1,6 @@
 # Validate literal pagination values
 
-**ID:** 857f53fc | **Status:** Open | **Created:** 2026-07-22T21:21:48+02:00
+**ID:** 857f53fc | **Status:** Done | **Created:** 2026-07-22T21:21:48+02:00
 
 Definition defaults reject negative and out-of-range `limit` and `offset`
 values, but query-authored numeric literals have no equivalent semantic check.

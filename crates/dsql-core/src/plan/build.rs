@@ -33,7 +33,7 @@ use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
 };
 use crate::entities::aggregate::ResolvedAggregate;
-use crate::entities::clause::{ClauseFact, OrderDirection};
+use crate::entities::clause::{ClauseFact, OrderDirection, parse_pagination_value};
 use crate::entities::definition::{DefDecl, DefKind};
 use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, VariableRef};
 use crate::entities::field_selection::{FieldSel, SelectionTree, TreeViews};
@@ -1183,6 +1183,7 @@ impl Planner<'_> {
         policy_applications: &mut Vec<PolicyApplicationPlan>,
     ) -> SelectionClauses {
         let mut clauses = SelectionClauses::default();
+        let mut invalid_pagination = false;
         let mut policy = PolicyPlanningContext {
             definition_scope,
             context: policy_context,
@@ -1267,24 +1268,36 @@ impl Planner<'_> {
                     }));
                 }
                 ClauseFact::Limit { expr } => {
-                    clauses.limit = plan_u64_value(
+                    match plan_pagination_value(
                         selection_path,
                         variable_scope,
                         VariableRole::Limit,
                         InputPathSegment::Limit,
                         expr,
-                    );
+                    ) {
+                        PlannedPaginationValue::Present(value) => clauses.limit = Some(value),
+                        PlannedPaginationValue::Absent => clauses.limit = None,
+                        PlannedPaginationValue::Invalid => invalid_pagination = true,
+                    }
                 }
                 ClauseFact::Offset { expr } => {
-                    clauses.offset = plan_u64_value(
+                    match plan_pagination_value(
                         selection_path,
                         variable_scope,
                         VariableRole::Offset,
                         InputPathSegment::Offset,
                         expr,
-                    );
+                    ) {
+                        PlannedPaginationValue::Present(value) => clauses.offset = Some(value),
+                        PlannedPaginationValue::Absent => clauses.offset = None,
+                        PlannedPaginationValue::Invalid => invalid_pagination = true,
+                    }
                 }
             }
+        }
+        if invalid_pagination {
+            clauses.limit = Some(SqlValue::Literal(0));
+            clauses.offset = None;
         }
         clauses
     }
@@ -2085,18 +2098,28 @@ fn operator_variants(variable: &VariableRef, compares_null: bool) -> Vec<SqlVari
         .collect()
 }
 
-fn plan_u64_value(
+/// A planned pagination clause, distinguishing deliberate absence from an
+/// invalid value that must make forced planning fail closed.
+enum PlannedPaginationValue {
+    Present(SqlValue),
+    Absent,
+    Invalid,
+}
+
+fn plan_pagination_value(
     selection_path: &[String],
     variable_scope: &VariablePathScope,
     role: VariableRole,
     inferred_key: InputPathSegment,
     expr: &Expr,
-) -> Option<SqlValue> {
+) -> PlannedPaginationValue {
     match expr {
         Expr::Literal {
             value: LiteralValue::Number(value),
             ..
-        } => Some(SqlValue::Literal(value.parse().unwrap_or_default())),
+        } => parse_pagination_value(value)
+            .map(|value| PlannedPaginationValue::Present(SqlValue::Literal(value)))
+            .unwrap_or(PlannedPaginationValue::Invalid),
         Expr::Variable { variable, .. } => match variable_value(
             selection_path,
             VariablePathContext {
@@ -2108,17 +2131,16 @@ fn plan_u64_value(
             variable.sigil,
             variable.name.as_deref(),
         ) {
-            VariableValue::Public(path) => Some(SqlValue::Parameter(SqlParameter { path })),
-            VariableValue::Default(InputDefault::Number(value)) => {
-                // Invalid pagination defaults are diagnosed during contract
-                // validation. Preserve a present, fail-closed clause if a
-                // caller still plans the invalid program.
-                Some(SqlValue::Literal(value.parse().unwrap_or_default()))
+            VariableValue::Public(path) => {
+                PlannedPaginationValue::Present(SqlValue::Parameter(SqlParameter { path }))
             }
-            VariableValue::Default(InputDefault::Null) => None,
-            VariableValue::Default(_) => None,
+            VariableValue::Default(InputDefault::Number(value)) => parse_pagination_value(&value)
+                .map(|value| PlannedPaginationValue::Present(SqlValue::Literal(value)))
+                .unwrap_or(PlannedPaginationValue::Invalid),
+            VariableValue::Default(InputDefault::Null) => PlannedPaginationValue::Absent,
+            VariableValue::Default(_) => PlannedPaginationValue::Invalid,
         },
-        _ => None,
+        _ => PlannedPaginationValue::Invalid,
     }
 }
 

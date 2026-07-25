@@ -402,6 +402,38 @@ async fn valid_collection_and_pagination_defaults_survive_every_binding_shape() 
 }
 
 #[tokio::test]
+async fn invalid_pagination_is_fail_closed_when_planning_is_forced() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "invalid-pagination.dsql",
+        indoc::indoc! {r#"
+            query OffsetBeforeInvalidLimit {
+              public::users(offset 5 limit -1) { id }
+            }
+            query InvalidLimitBeforeOffset {
+              public::users(limit -1 offset 5) { id }
+            }
+            query ValidLimitBeforeInvalidOffset {
+              public::users(limit 10 offset 9223372036854775808) { id }
+            }
+            query ValidBoundaries {
+              zero: public::users(limit 0) { id }
+              maximum: public::users(offset 9223372036854775807) { id }
+            }
+            query NestedIsolation {
+              public::users(limit 5) {
+                posts(limit -1) { id }
+              }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
 async fn fragment_bindings_rewrite_sql_inputs_and_inline_omitted_defaults() {
     let bowl = sql_bowl(Catalog::hardcoded()).await;
     insert_source(
