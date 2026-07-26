@@ -22,13 +22,13 @@ use bowl::{
 use super::types::{
     AggregateGroupProjection, AggregatePlan, AggregateProjection, CollectionPlan,
     CollectionResultPlan, DynamicInputContract, DynamicInputFieldPlan, DynamicInputKind,
-    DynamicPredicateOperator, ExistsKind, FilterCollection, FilterColumnScope, FilterExpr,
-    FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation, OperationSeed, OrderByPlan,
-    PolicyAccess, PolicyApplicationField, PolicyApplicationPlan, PolicyAssignmentState,
-    PolicyContextRequirement, PolicyEnforcement, PolicyFieldAccess, PolicyFieldFilter,
-    PolicyFieldTarget, PolicyIdentity, Projection, QueryPlan, QueryPlanFact, QueryRootPlan,
-    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SpreadUse, SqlParameter,
-    SqlValue, SqlVariantCase,
+    DynamicOrderDirection, DynamicPredicateOperator, ExistsKind, FilterCollection,
+    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlanFact, NestedRelation,
+    OperationSeed, OrderByPlan, PolicyAccess, PolicyApplicationField, PolicyApplicationPlan,
+    PolicyAssignmentState, PolicyContextRequirement, PolicyEnforcement, PolicyFieldAccess,
+    PolicyFieldFilter, PolicyFieldTarget, PolicyIdentity, Projection, QueryPlan, QueryPlanFact,
+    QueryRootPlan, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
+    SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
@@ -36,7 +36,9 @@ use crate::catalog::{
 use crate::entities::aggregate::ResolvedAggregate;
 use crate::entities::clause::{ClauseFact, OrderDirection, OrderTerm, parse_pagination_value};
 use crate::entities::definition::{DefDecl, DefKind};
-use crate::entities::expression::{BinaryOp, Expr, LiteralValue, PathAnchor, VariableRef};
+use crate::entities::expression::{
+    BinaryOp, DynamicInputSurface, Expr, LiteralValue, PathAnchor, VariableRef,
+};
 use crate::entities::field_selection::{FieldSel, SelectionTree, TreeViews};
 use crate::entities::policy::{
     CompiledPolicyField, CompiledPolicyIndex, CompiledPolicyTarget, PolicyIndex, PolicyKind,
@@ -52,7 +54,7 @@ use crate::entities::variable_path::{
 };
 use crate::facts::{
     BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
-    PlanDemand, PlanKey, Severity, Span, emit_diagnostic,
+    NodeKey, PlanDemand, PlanKey, Severity, Span, emit_diagnostic,
 };
 use crate::source::ScopeImports;
 
@@ -79,6 +81,7 @@ async fn plan_queries(
         &DefinitionVariables,
         &DefinitionInputRewrites,
         &DefinitionVariableOwner,
+        &NodeKey,
         &BelongsToFile,
     )>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
@@ -96,7 +99,7 @@ async fn plan_queries(
         dsql_schema::Diagnostic,
     )>,
 ) {
-    let (_, definition_variables, input_rewrites, owner, file) = defs.item();
+    let (_, definition_variables, input_rewrites, owner, node_key, file) = defs.item();
     let def_entity = owner.definition;
     let decl = &owner.declaration;
     let scope = &owner.scope;
@@ -274,6 +277,7 @@ async fn plan_queries(
             DerivedFrom::many([def_entity, catalog_entity]),
             BelongsToFile(file.0),
             DefKey(def_entity),
+            *node_key,
             QueryPlanFact(QueryPlan {
                 roots: planned_roots,
                 policy_context,
@@ -482,6 +486,24 @@ struct Planner<'a> {
     spread_input_rewrites:
         &'a BTreeMap<Entity, BTreeMap<String, crate::entities::variable::SpreadInputValue>>,
     operation_assignments: Vec<PlannedPolicyAssignment>,
+}
+
+struct DynamicSurfaceFields {
+    selected: Option<Vec<DynamicInputFieldPlan>>,
+    indexed: Vec<DynamicInputFieldPlan>,
+    selected_indexed: Option<Vec<DynamicInputFieldPlan>>,
+    searchable: Vec<DynamicInputFieldPlan>,
+}
+
+impl DynamicSurfaceFields {
+    fn get(&self, surface: DynamicInputSurface) -> Option<&[DynamicInputFieldPlan]> {
+        match surface {
+            DynamicInputSurface::Selected => self.selected.as_deref(),
+            DynamicInputSurface::Indexed => Some(&self.indexed),
+            DynamicInputSurface::SelectedIndexed => self.selected_indexed.as_deref(),
+            DynamicInputSurface::Searchable => Some(&self.searchable),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1143,10 +1165,7 @@ impl Planner<'_> {
                                 );
                                 items.push(SelectionPlanItem::Relation(NestedRelation {
                                     relation_name: reference.display_text(),
-                                    output_name: field
-                                        .alias
-                                        .clone()
-                                        .unwrap_or(relation_name),
+                                    output_name: field.alias.clone().unwrap_or(relation_name),
                                     flattened: field.flattened,
                                     relation: relation_id,
                                     collection: Box::new(CollectionPlan {
@@ -1165,18 +1184,11 @@ impl Planner<'_> {
                                 }));
                             }
                         }
-                        FieldCheckResult::NotFound => {}
-                        FieldCheckResult::AmbiguousRelation {
-                            reference,
-                            candidates,
-                        } => walk.diagnostics.push((
-                            field.name_span,
-                            DiagnosticCode::AmbiguousRelation,
-                            format!(
-                                "relation `{reference}` has multiple foreign-key paths; use one of: {}",
-                                candidates.join(", ")
-                            ),
-                        )),
+                        // Resolution checks own missing and ambiguous relation
+                        // diagnostics. Planning skips both so enabling plans in
+                        // editor bowls cannot duplicate the semantic error.
+                        FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {
+                        }
                     }
                 }
             }
@@ -1205,7 +1217,31 @@ impl Planner<'_> {
     ) -> SelectionClauses {
         let mut clauses = SelectionClauses::default();
         let mut invalid_pagination = false;
-        let dynamic_fields = self.dynamic_input_fields(result, field_filters);
+        let dynamic_fields = DynamicSurfaceFields {
+            selected: self.dynamic_input_fields(
+                table,
+                result,
+                field_filters,
+                DynamicInputSurface::Selected,
+            ),
+            indexed: self
+                .dynamic_input_fields(table, result, field_filters, DynamicInputSurface::Indexed)
+                .unwrap_or_default(),
+            selected_indexed: self.dynamic_input_fields(
+                table,
+                result,
+                field_filters,
+                DynamicInputSurface::SelectedIndexed,
+            ),
+            searchable: self
+                .dynamic_input_fields(
+                    table,
+                    result,
+                    field_filters,
+                    DynamicInputSurface::Searchable,
+                )
+                .unwrap_or_default(),
+        };
         let mut policy = PolicyPlanningContext {
             definition_scope,
             context: policy_context,
@@ -1226,7 +1262,7 @@ impl Planner<'_> {
                         selection_path,
                         variable_scope,
                         expr,
-                        dynamic_fields.as_deref(),
+                        &dynamic_fields,
                         field_filters,
                         policy.context,
                         dynamic_inputs,
@@ -1245,16 +1281,14 @@ impl Planner<'_> {
                             &mut policy,
                         )
                     });
-                    if let Some(filter) = &mut clauses.filter
-                        && let Some(fields) = &dynamic_fields
-                    {
-                        attach_dynamic_fields(filter, fields);
+                    if let Some(filter) = &mut clauses.filter {
+                        attach_dynamic_fields(filter, &dynamic_fields);
                     }
                 }
                 ClauseFact::OrderBy { items } => {
                     clauses.order_by.extend(items.iter().filter_map(|item| {
                         let OrderTerm::Column(item) = item else {
-                            let OrderTerm::Dynamic(variable) = item else {
+                            let OrderTerm::Dynamic { variable, surface } = item else {
                                 return None;
                             };
                             let name = variable.name.as_deref()?;
@@ -1269,25 +1303,42 @@ impl Planner<'_> {
                                 variable.sigil,
                                 Some(name),
                             );
-                            let Some(fields) = dynamic_fields.as_deref() else {
+                            let Some(fields) = dynamic_fields.get(*surface) else {
                                 diagnostics.push((
                                     variable.span,
                                     DiagnosticCode::InvalidDynamicInput,
-                                    "`on selected` requires a row selection body".to_string(),
+                                    format!(
+                                        "`on {}` requires a row selection body",
+                                        surface.as_str()
+                                    ),
                                 ));
                                 return None;
                             };
+                            if fields.is_empty() {
+                                diagnostics.push((
+                                    variable.span,
+                                    DiagnosticCode::InvalidDynamicInput,
+                                    format!(
+                                        "`on {}` exposes no fields on this source",
+                                        surface.as_str()
+                                    ),
+                                ));
+                                return None;
+                            }
                             let order_fields = fields
                                 .iter()
                                 .cloned()
                                 .map(|mut field| {
                                     field.operators.clear();
+                                    field.directions =
+                                        DynamicOrderDirection::ALL.into_iter().collect();
                                     field
                                 })
                                 .collect::<Vec<_>>();
-                            self.register_dynamic_contract(
+                            Self::register_dynamic_contract(
                                 &path,
                                 DynamicInputKind::Order,
+                                *surface,
                                 &order_fields,
                                 variable.span,
                                 dynamic_inputs,
@@ -1296,6 +1347,7 @@ impl Planner<'_> {
                             require_dynamic_field_context(fields, field_filters, policy.context);
                             return Some(OrderByPlan::Dynamic {
                                 path,
+                                surface: *surface,
                                 fields: order_fields,
                             });
                         };
@@ -1387,33 +1439,63 @@ impl Planner<'_> {
 
     fn dynamic_input_fields(
         &self,
+        table: TableId,
         result: &CollectionResultPlan,
         field_filters: &[PolicyFieldFilter],
+        surface: DynamicInputSurface,
     ) -> Option<Vec<DynamicInputFieldPlan>> {
-        let CollectionResultPlan::Rows(selection) = result else {
-            return None;
+        let selected = match result {
+            CollectionResultPlan::Rows(selection) => Some(
+                selection
+                    .items
+                    .iter()
+                    .filter_map(|item| {
+                        let SelectionPlanItem::Projection(projection) = item else {
+                            return None;
+                        };
+                        Some((projection.output_name.clone(), projection.column))
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            CollectionResultPlan::Aggregate(_) => None,
         };
-        let mut fields = selection
-            .items
-            .iter()
-            .filter_map(|item| {
-                let SelectionPlanItem::Projection(projection) = item else {
-                    return None;
-                };
-                let column = self.catalog.column_by_id(projection.column)?;
+        let exposed = match surface {
+            DynamicInputSurface::Selected => selected?,
+            DynamicInputSurface::SelectedIndexed => selected?
+                .into_iter()
+                .filter(|(_, column)| self.catalog.column_is_independently_indexed(*column))
+                .collect(),
+            DynamicInputSurface::Indexed => self
+                .catalog
+                .columns_for_table(table)
+                .filter(|column| self.catalog.column_is_independently_indexed(column.id))
+                .map(|column| (column.name.clone(), column.id))
+                .collect(),
+            DynamicInputSurface::Searchable => self
+                .catalog
+                .columns_for_table(table)
+                .filter(|column| self.catalog.column_is_searchable(column.id))
+                .map(|column| (column.name.clone(), column.id))
+                .collect(),
+        };
+        let mut fields = exposed
+            .into_iter()
+            .filter_map(|(key, column_id)| {
+                let column = self.catalog.column_by_id(column_id)?;
                 let access = field_filters
                     .iter()
-                    .find(|filter| filter.target == PolicyFieldTarget::Column(projection.column))
+                    .find(|filter| filter.target == PolicyFieldTarget::Column(column_id))
                     .map_or(PolicyAccess::Unconditional, |filter| {
                         PolicyAccess::for_guard(&filter.filter)
                     });
                 Some(DynamicInputFieldPlan {
-                    key: projection.output_name.clone(),
-                    column: projection.column,
+                    key,
+                    column: column_id,
                     data_type: column.data_type,
                     nullable: !column.not_null || access != PolicyAccess::Unconditional,
                     access,
                     operators: dynamic_predicate_operators(column.data_type),
+                    directions: Vec::new(),
                 })
             })
             .collect::<Vec<_>>();
@@ -1430,25 +1512,35 @@ impl Planner<'_> {
         selection_path: &[String],
         variable_scope: &VariablePathScope,
         expr: &Expr,
-        fields: Option<&[DynamicInputFieldPlan]>,
+        fields: &DynamicSurfaceFields,
         field_filters: &[PolicyFieldFilter],
         policy_context: &mut Vec<PolicyContextRequirement>,
         dynamic_inputs: &mut Vec<DynamicInputContract>,
         diagnostics: &mut PlanDiagnostics,
     ) {
         match expr {
-            Expr::DynamicPredicate { variable, .. } => {
+            Expr::DynamicPredicate {
+                variable, surface, ..
+            } => {
                 if variable.name.is_none() {
                     return;
                 }
-                let Some(fields) = fields else {
+                let Some(fields) = fields.get(*surface) else {
                     diagnostics.push((
                         variable.span,
                         DiagnosticCode::InvalidDynamicInput,
-                        "`on selected` requires a row selection body".to_string(),
+                        format!("`on {}` requires a row selection body", surface.as_str()),
                     ));
                     return;
                 };
+                if fields.is_empty() {
+                    diagnostics.push((
+                        variable.span,
+                        DiagnosticCode::InvalidDynamicInput,
+                        format!("`on {}` exposes no fields on this source", surface.as_str()),
+                    ));
+                    return;
+                }
                 let path = variable_path(
                     selection_path,
                     VariablePathContext {
@@ -1460,9 +1552,10 @@ impl Planner<'_> {
                     variable.sigil,
                     variable.name.as_deref(),
                 );
-                self.register_dynamic_contract(
+                Self::register_dynamic_contract(
                     &path,
                     DynamicInputKind::Predicate,
+                    *surface,
                     fields,
                     variable.span,
                     dynamic_inputs,
@@ -1567,9 +1660,9 @@ impl Planner<'_> {
     }
 
     fn register_dynamic_contract(
-        &self,
         path: &str,
         kind: DynamicInputKind,
+        surface: DynamicInputSurface,
         fields: &[DynamicInputFieldPlan],
         span: Span,
         dynamic_inputs: &mut Vec<DynamicInputContract>,
@@ -1584,8 +1677,17 @@ impl Planner<'_> {
                 span,
                 DiagnosticCode::InvalidDynamicInput,
                 format!(
-                    "selected field `{}` conflicts with a dynamic predicate composition key; alias the field",
-                    field.key
+                    "{} field `{}` conflicts with a dynamic predicate composition key; {}",
+                    surface.as_str(),
+                    field.key,
+                    if matches!(
+                        surface,
+                        DynamicInputSurface::Selected | DynamicInputSurface::SelectedIndexed
+                    ) {
+                        "alias the selected field"
+                    } else {
+                        "select and alias the column, then use a selected preset"
+                    }
                 ),
             ));
             return;
@@ -1593,16 +1695,24 @@ impl Planner<'_> {
         let candidate = DynamicInputContract {
             path: path.to_string(),
             kind,
+            surface,
             fields: fields.to_vec(),
         };
         if let Some(existing) = dynamic_inputs.iter().find(|contract| contract.path == path) {
             if existing != &candidate {
+                let conflict = if existing.surface != candidate.surface {
+                    format!(
+                        "preset `{}` conflicts with preset `{}`",
+                        candidate.surface.as_str(),
+                        existing.surface.as_str()
+                    )
+                } else {
+                    "the expanded capability surface is incompatible".to_string()
+                };
                 diagnostics.push((
                     span,
                     DiagnosticCode::InvalidDynamicInput,
-                    format!(
-                        "dynamic input `{path}` is reused with an incompatible capability surface"
-                    ),
+                    format!("dynamic input `{path}` is reused: {conflict}"),
                 ));
             }
         } else {
@@ -1622,7 +1732,9 @@ impl Planner<'_> {
         match expr {
             Expr::Error { .. } => None,
             Expr::PredicateRef { .. } => None,
-            Expr::DynamicPredicate { variable, .. } => Some(FilterExpr::DynamicPredicate {
+            Expr::DynamicPredicate {
+                variable, surface, ..
+            } => Some(FilterExpr::DynamicPredicate {
                 path: variable_path(
                     selection_path,
                     VariablePathContext {
@@ -1634,6 +1746,7 @@ impl Planner<'_> {
                     variable.sigil,
                     variable.name.as_deref(),
                 ),
+                surface: *surface,
                 fields: Vec::new(),
             }),
             Expr::Variable { variable, .. } => {
@@ -2590,11 +2703,17 @@ fn require_dynamic_field_context(
     }
 }
 
-fn attach_dynamic_fields(filter: &mut FilterExpr, fields: &[DynamicInputFieldPlan]) {
+fn attach_dynamic_fields(filter: &mut FilterExpr, fields: &DynamicSurfaceFields) {
     match filter {
         FilterExpr::DynamicPredicate {
-            fields: planned, ..
-        } => fields.clone_into(planned),
+            surface,
+            fields: planned,
+            ..
+        } => {
+            if let Some(fields) = fields.get(*surface) {
+                fields.clone_into(planned);
+            }
+        }
         FilterExpr::Optional { operand, .. }
         | FilterExpr::Not(operand)
         | FilterExpr::NullTest { operand, .. } => attach_dynamic_fields(operand, fields),

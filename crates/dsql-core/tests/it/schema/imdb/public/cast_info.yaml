@@ -71,22 +71,27 @@ foreign_keys:
         - id
 indexes:
   - name: cast_info_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true
   - name: person_id_cast_info
-    columns:
-      - person_id
+    access_method: btree
+    keys:
+      - column: person_id
     unique: false
   - name: movie_id_cast_info
-    columns:
-      - movie_id
+    access_method: btree
+    keys:
+      - column: movie_id
     unique: false
   - name: person_role_id_cast_info
-    columns:
-      - person_role_id
+    access_method: btree
+    keys:
+      - column: person_role_id
     unique: false
   - name: role_id_cast_info
-    columns:
-      - role_id
+    access_method: btree
+    keys:
+      - column: role_id
     unique: false

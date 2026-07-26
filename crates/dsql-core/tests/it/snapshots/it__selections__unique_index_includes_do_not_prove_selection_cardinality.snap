@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/selections.rs
+expression: render_selection_shapes(&bowl).await
+---
+table key: AtMostOne proof=unique(tenant_id) nullable=true limit=none
+table include: Collection proof=none nullable=false limit=none

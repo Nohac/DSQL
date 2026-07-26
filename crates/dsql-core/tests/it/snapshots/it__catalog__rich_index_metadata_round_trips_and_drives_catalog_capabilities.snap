@@ -1,0 +1,72 @@
+---
+source: crates/dsql-core/tests/it/catalog.rs
+expression: yaml
+---
+---
+schema: public
+name: documents
+object_type: table
+columns:
+  - name: tenant_id
+    database_type: uuid
+    data_type: uuid
+    not_null: true
+  - name: title
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: body
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: summary
+    database_type: text
+    data_type: text
+    not_null: true
+  - name: caption
+    database_type: text
+    data_type: text
+    not_null: true
+indexes:
+  - name: documents_tenant_title_idx
+    access_method: btree
+    keys:
+      - column: tenant_id
+        operator_class: pg_catalog.uuid_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+      - column: title
+        operator_class: pg_catalog.text_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: desc
+          nulls: first
+    included_columns:
+      - summary
+    unique: true
+  - name: documents_body_search_idx
+    access_method: gin
+    keys:
+      - column: body
+        operator_class: public.gin_trgm_ops
+        capabilities:
+          - like
+    unique: false
+  - name: documents_caption_lookup_idx
+    access_method: btree
+    keys:
+      - column: caption
+        operator_class: pg_catalog.text_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+    unique: false

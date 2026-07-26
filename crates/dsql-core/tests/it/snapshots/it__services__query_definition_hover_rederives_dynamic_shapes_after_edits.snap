@@ -1,0 +1,57 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+expression: "format!(\"before:\\n{before}\\n\\nafter:\\n{after}\")"
+---
+before:
+### Query `DynamicReadingSearch`
+
+#### Variables
+
+```yaml
+params:
+  order: # ordered array of one-field entries; default []
+    id: enum("asc", "desc", "asc_nulls_first", "asc_nulls_last", "desc_nulls_first", "desc_nulls_last")
+  search: # default {}
+    and: [<predicate>]
+    or: [<predicate>]
+    not: <predicate>
+    id:
+      eq: uuid
+      neq: uuid
+      in: uuid[]
+      not_in: uuid[]
+      is_null: boolean
+```
+
+after:
+### Query `DynamicReadingSearch`
+
+#### Variables
+
+```yaml
+params:
+  order: # ordered array of one-field entries; default []
+    contact: enum("asc", "desc", "asc_nulls_first", "asc_nulls_last", "desc_nulls_first", "desc_nulls_last")
+    recorded: enum("asc", "desc", "asc_nulls_first", "asc_nulls_last", "desc_nulls_first", "desc_nulls_last")
+  search: # default {}
+    and: [<predicate>]
+    or: [<predicate>]
+    not: <predicate>
+    contact:
+      eq: text
+      neq: text
+      like: text
+      in: text[]
+      not_in: text[]
+      is_null: boolean
+    recorded:
+      eq: timestamptz
+      neq: timestamptz
+      gt: timestamptz
+      gte: timestamptz
+      lt: timestamptz
+      lte: timestamptz
+      in: timestamptz[]
+      not_in: timestamptz[]
+      is_null: boolean
+```

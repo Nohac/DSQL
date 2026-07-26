@@ -2,6 +2,9 @@
 //! absent entirely without a lint configuration.
 
 use bowl::{Bowl, Entity, Query, Singleton};
+use dsql_core::catalog::{
+    Catalog, DatabaseMetadata, SchemaMetadata, insert_catalog, table_metadata_from_yaml,
+};
 use dsql_core::facts::{DiagnosticsDemand, Severity};
 use dsql_core::language_bowl;
 use dsql_core::lint::LintConfig;
@@ -10,14 +13,102 @@ use dsql_core::source::insert_source;
 use crate::{imdb_catalog, render_diagnostic_facts};
 
 async fn linted_bowl(config: Option<LintConfig>) -> Bowl {
+    linted_bowl_with_catalog(config, imdb_catalog()).await
+}
+
+async fn linted_bowl_with_catalog(config: Option<LintConfig>, catalog: Catalog) -> Bowl {
     let bowl = language_bowl().await;
-    dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
+    insert_catalog(&bowl, catalog).await;
     bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
         .await;
     if let Some(config) = config {
         bowl.insert((Singleton::<LintConfig>::new(), config)).await;
     }
     bowl
+}
+
+#[tokio::test]
+async fn included_columns_remain_unindexed_for_linting() {
+    let parents = table_metadata_from_yaml(
+        r#"---
+schema: public
+name: parents
+object_type: table
+columns:
+  - name: id
+    database_type: int4
+    data_type: int
+    not_null: true
+constraints:
+  - name: parents_pkey
+    kind: primary_key
+    columns: [id]
+foreign_keys: []
+indexes:
+  - name: parents_pkey
+    access_method: btree
+    keys:
+      - column: id
+        capabilities: [equality]
+    unique: true
+"#,
+    )
+    .expect("embedded parent metadata parses");
+    let records = table_metadata_from_yaml(
+        r#"---
+schema: public
+name: records
+object_type: table
+columns:
+  - name: parent_id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: included_value
+    database_type: int4
+    data_type: int
+    not_null: true
+constraints: []
+foreign_keys:
+  - name: records_parent_id_fkey
+    columns: [parent_id]
+    references:
+      schema: public
+      table: parents
+      columns: [id]
+indexes:
+  - name: records_parent_id_idx
+    access_method: btree
+    keys:
+      - column: parent_id
+        capabilities: [equality]
+    included_columns: [included_value]
+    unique: false
+"#,
+    )
+    .expect("embedded table metadata parses");
+    let catalog = DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![parents, records],
+        }],
+        types: Vec::new(),
+    }
+    .to_catalog()
+    .expect("embedded catalog builds");
+    let bowl = linted_bowl_with_catalog(Some(LintConfig::default()), catalog).await;
+    insert_source(
+        &bowl,
+        "include-lint.dsql",
+        indoc::indoc! {r#"
+            query IncludeLint {
+              parents(where .records.included_value == 1) { id }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
 /// `aka_title->episode_of_id` joins over `episode_of_id`, which has no

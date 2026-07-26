@@ -72,7 +72,6 @@ pub struct Column {
     pub data_type: DataType,
     pub not_null: bool,
     pub is_unique: bool,
-    pub is_indexed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -193,8 +192,54 @@ pub struct UniquenessSupport {
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct Index {
     pub name: Option<String>,
-    pub columns: Vec<ColumnId>,
+    pub access_method: String,
+    pub keys: Vec<IndexKey>,
+    pub included_columns: Vec<ColumnId>,
     pub is_unique: bool,
+}
+
+/// One ordered key participating in a physical database index.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct IndexKey {
+    pub column: ColumnId,
+    pub operator_class: Option<String>,
+    pub capabilities: Vec<IndexKeyCapability>,
+    pub order: Option<IndexOrder>,
+}
+
+/// Provider-neutral operation class supported by an [`IndexKey`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum IndexKeyCapability {
+    Equality,
+    Range,
+    Like,
+}
+
+/// Physical ordering retained for an orderable [`IndexKey`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Facet)]
+pub struct IndexOrder {
+    pub direction: IndexOrderDirection,
+    pub nulls: IndexNullsPosition,
+}
+
+/// Physical direction of one orderable index key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum IndexOrderDirection {
+    Asc,
+    Desc,
+}
+
+/// Physical null placement of one orderable index key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum IndexNullsPosition {
+    First,
+    Last,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
@@ -306,20 +351,30 @@ impl Catalog {
             indexes.sort_by(|left, right| {
                 (
                     &left.name,
+                    &left.access_method,
                     left.is_unique,
-                    column_tuple_key(self, &left.columns),
+                    index_key(self, left),
                 )
                     .cmp(&(
                         &right.name,
+                        &right.access_method,
                         right.is_unique,
-                        column_tuple_key(self, &right.columns),
+                        index_key(self, right),
                     ))
             });
             indexes.len().hash(&mut hasher);
             for index in indexes {
                 index.name.hash(&mut hasher);
+                index.access_method.hash(&mut hasher);
                 index.is_unique.hash(&mut hasher);
-                hash_column_tuple(self, &index.columns, &mut hasher);
+                index.keys.len().hash(&mut hasher);
+                for key in &index.keys {
+                    self.columns[key.column.0].key.hash(&mut hasher);
+                    key.operator_class.hash(&mut hasher);
+                    key.capabilities.hash(&mut hasher);
+                    key.order.hash(&mut hasher);
+                }
+                hash_column_tuple(self, &index.included_columns, &mut hasher);
             }
         }
         let mut columns = self.columns.iter().collect::<Vec<_>>();
@@ -338,7 +393,6 @@ impl Catalog {
             column.data_type.hash(&mut hasher);
             column.not_null.hash(&mut hasher);
             column.is_unique.hash(&mut hasher);
-            column.is_indexed.hash(&mut hasher);
             column.visible.hash(&mut hasher);
             hash_support(column.declaration.as_ref(), &mut hasher);
             hash_support(column.description_support.as_ref(), &mut hasher);
@@ -389,6 +443,36 @@ impl Catalog {
         }
         hasher.finish()
     }
+}
+
+type IndexKeySortKey = (
+    ColumnKey,
+    Option<String>,
+    Vec<IndexKeyCapability>,
+    Option<IndexOrder>,
+);
+type IndexSortKey = (Vec<IndexKeySortKey>, Vec<ColumnKey>);
+
+fn index_key(catalog: &Catalog, index: &Index) -> IndexSortKey {
+    (
+        index
+            .keys
+            .iter()
+            .map(|key| {
+                (
+                    catalog.columns[key.column.0].key.clone(),
+                    key.operator_class.clone(),
+                    key.capabilities.clone(),
+                    key.order,
+                )
+            })
+            .collect(),
+        index
+            .included_columns
+            .iter()
+            .map(|column| catalog.columns[column.0].key.clone())
+            .collect(),
+    )
 }
 
 fn relation_key<'a>(
@@ -524,7 +608,6 @@ impl Column {
         data_type: DataType,
         not_null: bool,
         is_unique: bool,
-        is_indexed: bool,
     ) -> Self {
         Self {
             id,
@@ -544,7 +627,6 @@ impl Column {
             data_type,
             not_null,
             is_unique,
-            is_indexed,
         }
     }
 }

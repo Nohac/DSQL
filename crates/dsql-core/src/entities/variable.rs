@@ -1424,7 +1424,7 @@ impl Inference<'_> {
                 ClauseFact::OrderBy { items } => {
                     for item in items {
                         match item {
-                            OrderTerm::Dynamic(variable) => self.push_binding(
+                            OrderTerm::Dynamic { variable, .. } => self.push_binding(
                                 &path.parts,
                                 BindingContext {
                                     role: VariableRole::DynamicOrder,

@@ -214,6 +214,9 @@ pub struct DsqlSchema {
     query_plan: (
         QueryPlanFact,
         OperationSeed,
+        // Direct join back to the lowered definition for editor services;
+        // lowered definition entities do not carry DefKey.
+        NodeKey,
         DefKey,
         BelongsToFile,
         DerivedFrom,

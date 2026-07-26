@@ -21,6 +21,10 @@ pub fn is_name_token(token: Token) -> bool {
             | Token::Apply
             | Token::When
             | Token::Field
+            | Token::Selected
+            | Token::Indexed
+            | Token::SelectedIndexed
+            | Token::Searchable
     )
 }
 
@@ -30,7 +34,6 @@ fn is_variable_name_token(token: Token) -> bool {
             token,
             Token::Query
                 | Token::Fragment
-                | Token::On
                 | Token::Where
                 | Token::Order
                 | Token::By

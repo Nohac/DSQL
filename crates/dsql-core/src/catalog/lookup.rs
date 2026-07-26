@@ -1,6 +1,6 @@
 use super::{
-    Catalog, Column, ColumnId, FieldCheckResult, FieldRef, Relation, RelationField, RelationId,
-    Table, TableId, TableRef, TableResolution,
+    Catalog, Column, ColumnId, FieldCheckResult, FieldRef, Index, Relation, RelationField,
+    RelationId, Table, TableId, TableRef, TableResolution,
 };
 
 impl Catalog {
@@ -120,11 +120,53 @@ impl Catalog {
                 .unique_constraints
                 .iter()
                 .any(|constraint| column_set_covers(columns, constraint))
-                || table
+                || table.indexes.iter().any(|index| {
+                    index.is_unique
+                        && !index.keys.is_empty()
+                        && index.keys.iter().all(|key| columns.contains(&key.column))
+                })
+        })
+    }
+
+    /// Whether a column participates in any true index key.
+    pub fn column_participates_in_index(&self, column: ColumnId) -> bool {
+        self.column_by_id(column)
+            .and_then(|column| self.table_by_id(column.table))
+            .is_some_and(|table| {
+                table
                     .indexes
                     .iter()
-                    .any(|index| index.is_unique && column_set_covers(columns, &index.columns))
-        })
+                    .any(|index| index.keys.iter().any(|key| key.column == column))
+            })
+    }
+
+    /// Whether a column is independently addressable by a physical index.
+    pub fn column_is_independently_indexed(&self, column: ColumnId) -> bool {
+        self.column_by_id(column)
+            .and_then(|column| self.table_by_id(column.table))
+            .is_some_and(|table| {
+                table.indexes.iter().any(|index| {
+                    index.keys.iter().enumerate().any(|(position, key)| {
+                        key.column == column && index_key_is_independently_usable(index, position)
+                    })
+                })
+            })
+    }
+
+    /// Whether an independently usable text index key supports `like`.
+    pub fn column_is_searchable(&self, column: ColumnId) -> bool {
+        self.column_by_id(column)
+            .filter(|column| column.data_type == super::DataType::Text)
+            .and_then(|column| self.table_by_id(column.table))
+            .is_some_and(|table| {
+                table.indexes.iter().any(|index| {
+                    index.keys.iter().enumerate().any(|(position, key)| {
+                        key.column == column
+                            && key.capabilities.contains(&super::IndexKeyCapability::Like)
+                            && index_key_is_independently_usable(index, position)
+                    })
+                })
+            })
     }
 
     pub fn check_field_ref(&self, table: TableId, field: FieldRef<'_>) -> FieldCheckResult<'_> {
@@ -173,6 +215,14 @@ impl Catalog {
             },
         }
     }
+}
+
+fn index_key_is_independently_usable(index: &Index, position: usize) -> bool {
+    position == 0
+        || matches!(
+            index.access_method.as_str(),
+            "gin" | "gist" | "spgist" | "brin" | "hash"
+        )
 }
 
 fn column_set_covers(columns: &[ColumnId], unique_columns: &[ColumnId]) -> bool {

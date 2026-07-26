@@ -1,6 +1,7 @@
 DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 ALTER DATABASE observatory SET timezone = 'UTC';
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 CREATE TABLE tenants (
   id uuid PRIMARY KEY,
@@ -56,7 +57,11 @@ CREATE TABLE readings (
 );
 
 CREATE INDEX readings_sensor_time_idx ON readings
-  (tenant_id, network_code, station_code, sensor_code, recorded_at DESC);
+  (tenant_id, network_code, station_code, sensor_code, recorded_at DESC)
+  INCLUDE (value);
+
+CREATE INDEX sensors_code_search_idx ON sensors
+  USING gin (code gin_trgm_ops);
 
 CREATE VIEW active_stations AS
 SELECT tenant_id, network_code, code, name

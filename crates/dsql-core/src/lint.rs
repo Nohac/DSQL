@@ -138,10 +138,7 @@ async fn lint_predicates(
         else {
             continue;
         };
-        let Some(column_info) = catalog.column_by_id(*column) else {
-            continue;
-        };
-        if column_info.is_indexed {
+        if catalog.column_participates_in_index(*column) {
             continue;
         }
         let path_label = format!(
@@ -188,7 +185,8 @@ fn unindexed_join_columns(catalog: &Catalog, relation: &Relation) -> Vec<String>
         .chain(relation.target_columns.iter())
         .filter_map(|column_id| {
             let column = catalog.column_by_id(*column_id)?;
-            (!column.is_indexed).then(|| column_label(catalog, column.id))
+            (!catalog.column_participates_in_index(column.id))
+                .then(|| column_label(catalog, column.id))
         })
         .collect()
 }

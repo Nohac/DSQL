@@ -47,14 +47,17 @@ foreign_keys:
         - id
 indexes:
   - name: movie_info_idx_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true
   - name: movie_id_movie_info_idx
-    columns:
-      - movie_id
+    access_method: btree
+    keys:
+      - column: movie_id
     unique: false
   - name: info_type_id_movie_info_idx
-    columns:
-      - info_type_id
+    access_method: btree
+    keys:
+      - column: info_type_id
     unique: false

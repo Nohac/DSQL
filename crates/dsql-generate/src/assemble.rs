@@ -167,10 +167,11 @@ fn dynamic_input_metadata(
                         .iter()
                         .map(|operator| operator.as_str().to_string())
                         .collect(),
-                    directions: match contract.kind {
-                        dsql_core::plan::DynamicInputKind::Predicate => Vec::new(),
-                        dsql_core::plan::DynamicInputKind::Order => dynamic_order_directions(),
-                    },
+                    directions: field
+                        .directions
+                        .iter()
+                        .map(|direction| direction.as_str().to_string())
+                        .collect(),
                 });
             }
             let sites = inputs
@@ -196,7 +197,7 @@ fn dynamic_input_metadata(
                     dsql_core::plan::DynamicInputKind::Order => "order",
                 }
                 .to_string(),
-                surface: "selected".to_string(),
+                surface: contract.surface.as_str().to_string(),
                 fields,
                 sites,
             })
@@ -248,20 +249,6 @@ fn sql_variant_case_metadata(case: &dsql_core::plan::SqlVariantCase) -> SqlVaria
         value: case.value.clone(),
         text: case.text.clone(),
     }
-}
-
-fn dynamic_order_directions() -> Vec<String> {
-    [
-        "asc",
-        "desc",
-        "asc_nulls_first",
-        "asc_nulls_last",
-        "desc_nulls_first",
-        "desc_nulls_last",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
 }
 
 pub(crate) fn fragment_metadata(

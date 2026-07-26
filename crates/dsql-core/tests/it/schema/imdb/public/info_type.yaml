@@ -18,6 +18,7 @@ constraints:
       - id
 indexes:
   - name: info_type_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true

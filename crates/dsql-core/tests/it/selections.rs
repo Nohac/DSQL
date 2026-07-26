@@ -359,6 +359,61 @@ indexes: []
     insta::assert_snapshot!(render_selection_shapes(&bowl).await);
 }
 
+#[tokio::test]
+async fn unique_index_includes_do_not_prove_selection_cardinality() {
+    let table = table_metadata_from_yaml(
+        r#"---
+schema: public
+name: memberships
+object_type: table
+columns:
+  - name: tenant_id
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: user_id
+    database_type: int4
+    data_type: int
+    not_null: true
+constraints: []
+foreign_keys: []
+indexes:
+  - name: memberships_tenant_id_key
+    access_method: btree
+    keys:
+      - column: tenant_id
+        capabilities: [equality]
+    included_columns: [user_id]
+    unique: true
+"#,
+    )
+    .expect("embedded table metadata parses");
+    let catalog = DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![table],
+        }],
+        types: Vec::new(),
+    }
+    .to_catalog()
+    .expect("embedded catalog builds");
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, catalog).await;
+    insert_source(
+        &bowl,
+        "included-cardinality.dsql",
+        indoc::indoc! {r#"
+            query IncludedCardinality {
+              key: memberships(where .tenant_id == $$tenant) { user_id }
+              include: memberships(where .user_id == $$user) { tenant_id }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_selection_shapes(&bowl).await);
+}
+
 #[test]
 fn catalog_descriptions_round_trip_through_schema_yaml() {
     let table = table_metadata_from_yaml(

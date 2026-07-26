@@ -206,12 +206,15 @@ pub async fn arm_generate_demands(bowl: &bowl::Bowl) {
         .await;
 }
 
-/// Arms the demand set editor sessions need: diagnostics for publishing
-/// and variables for hover.
+/// Arms the demand set editor sessions need: diagnostics for publishing,
+/// variables for occurrence hover, and plans for definition-level inferred
+/// capability shapes and plan-stage diagnostics. SQL remains generation-only.
 pub async fn arm_editor_demands(bowl: &bowl::Bowl) {
     bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
         .await;
     bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
+    bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
         .await;
 }
 

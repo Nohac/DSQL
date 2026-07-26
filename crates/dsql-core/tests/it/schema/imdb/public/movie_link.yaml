@@ -51,18 +51,22 @@ foreign_keys:
         - id
 indexes:
   - name: movie_link_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true
   - name: movie_id_movie_link
-    columns:
-      - movie_id
+    access_method: btree
+    keys:
+      - column: movie_id
     unique: false
   - name: linked_movie_id_movie_link
-    columns:
-      - linked_movie_id
+    access_method: btree
+    keys:
+      - column: linked_movie_id
     unique: false
   - name: link_type_id_movie_link
-    columns:
-      - link_type_id
+    access_method: btree
+    keys:
+      - column: link_type_id
     unique: false

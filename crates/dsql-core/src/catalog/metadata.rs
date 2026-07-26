@@ -1,6 +1,7 @@
 use super::{
     Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyDirection, ForeignKeyId, Index,
-    Relation, RelationCardinality, RelationId, RelationSupports, Schema, SchemaId, Table, TableId,
+    IndexKey, IndexKeyCapability, IndexOrder, Relation, RelationCardinality, RelationId,
+    RelationSupports, Schema, SchemaId, Table, TableId,
 };
 use facet::Facet;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -80,8 +81,23 @@ pub struct ForeignKeyReferenceMetadata {
 pub struct IndexMetadata {
     #[facet(skip_serializing_if = Option::is_none)]
     pub name: Option<String>,
-    pub columns: Vec<String>,
+    pub access_method: String,
+    pub keys: Vec<IndexKeyMetadata>,
+    #[facet(default, skip_serializing_if = Vec::is_empty)]
+    pub included_columns: Vec<String>,
     pub unique: bool,
+}
+
+/// One ordered provider index key before catalog identity resolution.
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct IndexKeyMetadata {
+    pub column: String,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub operator_class: Option<String>,
+    #[facet(default, skip_serializing_if = Vec::is_empty)]
+    pub capabilities: Vec<IndexKeyCapability>,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub order: Option<IndexOrder>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -159,7 +175,7 @@ pub fn metadata_from_yaml(input: &str) -> Result<DatabaseMetadata, facet_yaml::D
 }
 
 pub fn metadata_to_yaml(metadata: &DatabaseMetadata) -> Result<String, String> {
-    facet_yaml::to_string(metadata).map_err(|error| error.to_string())
+    serialize_yaml(metadata)
 }
 
 pub fn table_metadata_from_yaml(
@@ -169,7 +185,7 @@ pub fn table_metadata_from_yaml(
 }
 
 pub fn table_metadata_to_yaml(table: &TableMetadata) -> Result<String, String> {
-    facet_yaml::to_string(table).map_err(|error| error.to_string())
+    serialize_yaml(table)
 }
 
 pub fn type_metadata_file_from_yaml(
@@ -179,7 +195,15 @@ pub fn type_metadata_file_from_yaml(
 }
 
 pub fn type_metadata_file_to_yaml(types: &TypeMetadataFile) -> Result<String, String> {
-    facet_yaml::to_string(types).map_err(|error| error.to_string())
+    serialize_yaml(types)
+}
+
+fn serialize_yaml<T: Facet<'static>>(value: &T) -> Result<String, String> {
+    // facet_yaml currently leaves a space after mapping keys whose values start
+    // on the next line; normalize that serializer quirk before publication.
+    facet_yaml::to_string(value)
+        .map(|yaml| yaml.replace(": \n", ":\n"))
+        .map_err(|error| error.to_string())
 }
 
 impl DatabaseMetadata {
@@ -291,7 +315,6 @@ impl Catalog {
                         column_metadata.data_type,
                         column_metadata.not_null,
                         false,
-                        false,
                     ));
                 }
             }
@@ -329,9 +352,6 @@ impl Catalog {
                             );
                         }
                     }
-                    for column_id in constraint_columns {
-                        columns[column_id.0].is_indexed = true;
-                    }
                 }
 
                 for index in &table_metadata.indexes {
@@ -341,11 +361,23 @@ impl Catalog {
                         table_schema,
                         &table_metadata.name,
                         index_name,
-                        &index.columns,
+                        &index
+                            .keys
+                            .iter()
+                            .map(|key| key.column.clone())
+                            .collect::<Vec<_>>(),
                     )?;
-                    for column_id in &index_columns {
-                        columns[column_id.0].is_indexed = true;
-                    }
+                    let included_columns = if index.included_columns.is_empty() {
+                        Vec::new()
+                    } else {
+                        resolve_local_columns(
+                            &column_ids,
+                            table_schema,
+                            &table_metadata.name,
+                            index_name,
+                            &index.included_columns,
+                        )?
+                    };
                     if index.unique {
                         push_unique_constraint(
                             &mut table_unique_constraints[table_id.0],
@@ -357,7 +389,24 @@ impl Catalog {
                     }
                     table_indexes[table_id.0].push(Index {
                         name: index.name.clone(),
-                        columns: index_columns,
+                        access_method: index.access_method.clone(),
+                        keys: index
+                            .keys
+                            .iter()
+                            .zip(index_columns)
+                            .map(|(key, column)| {
+                                let mut capabilities = key.capabilities.clone();
+                                capabilities.sort();
+                                capabilities.dedup();
+                                IndexKey {
+                                    column,
+                                    operator_class: key.operator_class.clone(),
+                                    capabilities,
+                                    order: key.order,
+                                }
+                            })
+                            .collect(),
+                        included_columns,
                         is_unique: index.unique,
                     });
                 }
@@ -510,10 +559,11 @@ fn column_set_is_unique(table: &Table, columns: &[ColumnId]) -> bool {
         .unique_constraints
         .iter()
         .any(|constraint| column_set_covers(columns, constraint))
-        || table
-            .indexes
-            .iter()
-            .any(|index| index.is_unique && column_set_covers(columns, &index.columns))
+        || table.indexes.iter().any(|index| {
+            index.is_unique
+                && !index.keys.is_empty()
+                && index.keys.iter().all(|key| columns.contains(&key.column))
+        })
 }
 
 fn column_set_covers(columns: &[ColumnId], unique_columns: &[ColumnId]) -> bool {

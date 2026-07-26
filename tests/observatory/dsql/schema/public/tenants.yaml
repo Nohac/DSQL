@@ -22,10 +22,26 @@ constraints:
       - id
 indexes:
   - name: tenants_name_key
-    columns:
-      - name
+    access_method: btree
+    keys:
+      - column: name
+        operator_class: pg_catalog.text_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: true
   - name: tenants_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
+        operator_class: pg_catalog.uuid_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: true

@@ -39,14 +39,17 @@ foreign_keys:
         - id
 indexes:
   - name: movie_keyword_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true
   - name: movie_id_movie_keyword
-    columns:
-      - movie_id
+    access_method: btree
+    keys:
+      - column: movie_id
     unique: false
   - name: keyword_id_movie_keyword
-    columns:
-      - keyword_id
+    access_method: btree
+    keys:
+      - column: keyword_id
     unique: false

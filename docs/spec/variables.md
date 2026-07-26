@@ -1,7 +1,7 @@
 # Variables
 
 Status: implemented for inferred scalar and collection variables, defaults,
-nullability, fragment bindings, and the initial bounded dynamic input scope.
+nullability, fragment bindings, and bounded dynamic input capability presets.
 Provider-defined types and the deferred extensions called out below remain
 unfinished.
 
@@ -784,17 +784,21 @@ capability surface, makes relationship depth unclear, and can turn a fixed DSQL
 query into a broad dynamic query builder.
 
 Instead, dynamic predicates and order inputs are bounded by the DSQL document.
-The initial feature deliberately has one surface form:
+DSQL provides four compiler-owned capability presets:
 
 ```dsql
 query Fields(
   $$search = {}
+  $$indexed_search = {}
   $$order = []
+  $$indexed_order = []
 ) {
   fields(
     where .context_id == $$context_id
       and $$search on selected
-    order by $$order on selected
+      and $$indexed_search on indexed
+    order by $$order on selected,
+      $$indexed_order on indexed
     limit $$limit
     offset $$offset
   ) {
@@ -815,42 +819,90 @@ where $$enabled
 
 `on` is reserved from `variable_name` in every variable position: `$$on`,
 `$on`, fragment bindings named `on`, and operator variables named `on` are
-invalid. The other currently admitted keywords remain valid variable names:
+invalid. The preset names are contextual rather than reserved:
+`$selected`, `$$indexed`, `$selected_indexed`, and `$searchable` are ordinary
+variable names when they do not follow `on`. The other currently admitted
+keywords remain valid variable names:
 `query`, `fragment`, `where`, `order`, `by`, `limit`, `offset`, `asc`, `desc`,
 and the contextual keywords `not`, `in`, `is`, `exists`, `filter`, `condition`,
-`apply`, `when`, and `field`. A sigil immediately followed by `on selected`
-therefore starts an anonymous dynamic input; the initial slice parses that shape
-so it can diagnose anonymous dynamic inputs as unsupported.
+`apply`, `when`, and `field`. A sigil immediately followed by `on` and a preset
+therefore starts an anonymous dynamic input; that shape is diagnosed because
+bounded dynamic inputs must be named.
 
 The initial contract has these boundaries:
 
 - only named top-level `$$name` inputs are accepted;
 - the containing definition must be a query;
-- `selected` is the only accepted surface;
-- `selected` is shallow;
+- `selected`, `indexed`, `selected_indexed`, and `searchable` are accepted;
+- every preset is shallow;
 - anonymous dynamic inputs, fragment-local dynamic inputs, explicit allowlists,
-  additional presets, and deep relation traversal are diagnostics or deferred
-  syntax rather than partially supported behavior.
+  project-defined presets, and deep relation traversal are diagnostics or
+  deferred syntax rather than partially supported behavior.
 
 Keeping dynamic inputs on query definitions makes every public capability
 surface explicit in one generated operation. Fragment lifting may extend the
-same contract later, but the compiler must reject an initial-slice dynamic input
-inside a fragment instead of silently containing or widening it.
+same contract later, but the compiler rejects dynamic inputs inside a fragment
+instead of silently containing or widening them.
 
 A dynamic predicate usage must be the complete predicate or occur in positive
 conjunctive position beneath `and`. A usage beneath `or` or `not` is a
-diagnostic in the initial slice. The public dynamic object may still contain its
-own recursive `or` and `not` nodes. This restriction lets an empty whole input
+diagnostic. The public dynamic object may still contain its own recursive `or`
+and `not` nodes. This restriction lets an empty whole input
 behave as structural absence without replacing an `or` operand with `TRUE`;
 supporting arbitrary source-level boolean placement requires a later
 presence-aware SQL plan.
 
-The predicate root is the `where` clause owned by the selection whose body
-defines `selected`. A dynamic usage inside an `exists` source's nested
-`where` clause is a diagnostic in the initial slice because that source has no
-selection body from which to derive the surface.
+The predicate root is the `where` clause owned by the selection. A dynamic
+usage inside an `exists` source's nested `where` clause is a diagnostic because
+that nested source does not declare a public dynamic input surface.
 
-### Selected Capability Surface
+### Capability Presets
+
+All four presets expand at compile time into a normalized list of public keys,
+catalog columns, logical types, predicate operators or order directions,
+nullability, and conditional-access metadata:
+
+- `selected` contains scalar projections directly present in the effective
+  selection body after fragment expansion. A projection alias is its public
+  key.
+- `indexed` contains visible source columns independently addressable by a
+  usable physical index. It uses catalog column names and does not require a
+  row selection body.
+- `selected_indexed` is the intersection of `selected` and `indexed`. It keeps
+  selected aliases and therefore requires a row selection body.
+- `searchable` contains visible text-like source columns independently
+  addressable by a physical index key whose metadata advertises the `like`
+  capability. It uses catalog column names and does not require a row selection
+  body.
+
+For ordered index families such as `btree` and unknown/custom access methods,
+only the leading key is independently addressable. For `gin`, `gist`, `spgist`,
+`brin`, and `hash`, each true key is independently addressable. Included
+columns are never preset fields. These names describe stable catalog capability
+classes; they do not promise that every supplied runtime value or compound
+predicate will avoid a scan.
+
+`selected` and `selected_indexed` are invalid on an aggregate source because an
+aggregate has no row selection body. `indexed` and `searchable` remain valid in
+an aggregate source clause list:
+
+```dsql
+query SearchSummary(
+  $$search = {}
+  $$indexed = {}
+) {
+  users(
+    where $$search on searchable
+      and $$indexed on indexed
+  ) | aggregate {
+    count
+  }
+}
+```
+
+A preset that expands to no fields is a diagnostic rather than a generated
+empty type. A dynamic usage inside an `exists` source remains invalid because
+that nested source does not declare a public dynamic input surface.
 
 `$$search on selected` is one predicate atom. It means:
 
@@ -866,11 +918,18 @@ selection body from which to derive the surface.
   logical type;
 - nested relation fields are not included by default.
 
+The catalog-backed presets apply the same rules, but expose source column names
+instead of selection aliases. If a catalog-backed name collides with `and`,
+`or`, or `not`, the query author must select and alias that column and use
+`selected` or `selected_indexed`.
+
 Selections that resolve to the same public key must already satisfy the normal
 result-shape collision rules. A reused named dynamic input is valid only when
-every usage has the same normalized kind and capability contract: public field
-keys, resolved logical types, operators or directions, nullability, and
-conditional-access metadata. Otherwise the compiler requires separate names.
+every usage has the same preset spelling, normalized kind, and capability
+contract: public field keys, resolved logical types, operators or directions,
+nullability, and conditional-access metadata. Two presets that happen to
+expand identically are still distinct authored contracts. Otherwise the
+compiler requires separate names.
 
 Conceptual generated predicate input:
 
@@ -977,10 +1036,11 @@ prunes their complete predicate atom. A dynamic caller expresses absence by
 omitting an operator key; nullable null is accepted only for the complete
 dynamic input and maps to its empty identity.
 
-`order by $$order on selected` means:
+`order by $$order on <preset>` means:
 
 - `$$order` is a top-level generated parameter.
-- the allowed order fields are the same shallow selected scalar surface;
+- the allowed order fields are the same shallow field set exposed by that
+  preset;
 - the input is an array, and its element order is SQL precedence order;
 - each array element must contain exactly one field;
 - directions are `asc`, `desc`, `asc_nulls_first`, `asc_nulls_last`,
@@ -1145,7 +1205,6 @@ The following are useful additive extensions, but are outside the initial
 feature:
 
 - explicit surfaces such as `on { selected .task.name like }`;
-- built-in presets such as `indexed`, `selected_indexed`, and `searchable`;
 - project-defined presets;
 - explicit or automatic deep relation traversal;
 - rich non-empty object/list defaults;

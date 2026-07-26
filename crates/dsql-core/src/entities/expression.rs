@@ -63,6 +63,7 @@ pub enum Expr {
     /// One bounded dynamic predicate input such as `$$search on selected`.
     DynamicPredicate {
         variable: VariableRef,
+        surface: DynamicInputSurface,
         span: Span,
     },
     /// A bare reusable-condition reference. Query predicates reject these;
@@ -83,6 +84,42 @@ pub enum Expr {
     Error {
         span: Span,
     },
+}
+
+/// Compiler-owned bounded-dynamic capability preset.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum DynamicInputSurface {
+    Selected,
+    Indexed,
+    SelectedIndexed,
+    Searchable,
+}
+
+impl DynamicInputSurface {
+    /// Every built-in preset in deterministic completion order.
+    pub const ALL: [Self; 4] = [
+        Self::Indexed,
+        Self::Searchable,
+        Self::Selected,
+        Self::SelectedIndexed,
+    ];
+
+    /// Canonical DSQL source spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Selected => "selected",
+            Self::Indexed => "indexed",
+            Self::SelectedIndexed => "selected_indexed",
+            Self::Searchable => "searchable",
+        }
+    }
+
+    /// Whether `value` is the canonical spelling of a built-in preset.
+    pub fn is_spelling(value: &str) -> bool {
+        Self::ALL
+            .into_iter()
+            .any(|surface| surface.as_str() == value)
+    }
 }
 
 impl Expr {
@@ -275,6 +312,7 @@ pub(crate) fn build_expr(cst: &CstData, source: &str, node: NodeRef) -> Expr {
         },
         Node::Rule(Rule::DynamicInput, _) => Expr::DynamicPredicate {
             variable: build_variable_ref(cst, source, node),
+            surface: dynamic_input_surface(cst, node),
             span,
         },
         Node::Rule(Rule::PredicateName, _) => Expr::PredicateRef {
@@ -282,6 +320,28 @@ pub(crate) fn build_expr(cst: &CstData, source: &str, node: NodeRef) -> Expr {
             span,
         },
         _ => Expr::Error { span },
+    }
+}
+
+pub(crate) fn dynamic_input_surface(cst: &CstData, node: NodeRef) -> DynamicInputSurface {
+    use crate::grammar::lexer::Token;
+
+    let token = cst
+        .children(node)
+        .find(|child| cst.match_rule(*child, Rule::DynamicSurface))
+        .and_then(|surface| {
+            cst.children(surface)
+                .find_map(|child| match cst.get(child) {
+                    Node::Token(token, _) => Some(token),
+                    _ => None,
+                })
+        });
+    match token {
+        Some(Token::Indexed) => DynamicInputSurface::Indexed,
+        Some(Token::SelectedIndexed) => DynamicInputSurface::SelectedIndexed,
+        Some(Token::Searchable) => DynamicInputSurface::Searchable,
+        Some(Token::Selected) | None => DynamicInputSurface::Selected,
+        _ => DynamicInputSurface::Selected,
     }
 }
 
@@ -665,8 +725,10 @@ impl std::fmt::Display for Expr {
                 Ok(())
             }
             Expr::Variable { variable, .. } => f.write_str(&render_variable(variable)),
-            Expr::DynamicPredicate { variable, .. } => {
-                write!(f, "{} on selected", render_variable(variable))
+            Expr::DynamicPredicate {
+                variable, surface, ..
+            } => {
+                write!(f, "{} on {}", render_variable(variable), surface.as_str())
             }
             Expr::PredicateRef { name, .. } => f.write_str(name),
             Expr::Aggregate {

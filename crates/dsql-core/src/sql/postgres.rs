@@ -2,10 +2,11 @@ use crate::catalog::{Catalog, Column, ColumnId, DataType, Relation, RelationId, 
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
     AggregatePlan, CollectionPlan, CollectionResultPlan, DynamicInputFieldPlan, DynamicInputKind,
-    DynamicPredicateOperator, ExistsKind, FilterCollection, FilterColumnScope, FilterExpr,
-    FilterLiteral, FilterOp, NestedRelation, OrderByPlan, PolicyContextRequirement,
-    PolicyFieldFilter, PolicyFieldTarget, QueryPlan, QueryRootPlan, SelectionClauses,
-    SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue, SqlVariantCase,
+    DynamicOrderDirection, DynamicPredicateOperator, ExistsKind, FilterCollection,
+    FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, NestedRelation, OrderByPlan,
+    PolicyContextRequirement, PolicyFieldFilter, PolicyFieldTarget, QueryPlan, QueryRootPlan,
+    SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan, SqlParameter, SqlValue,
+    SqlVariantCase,
 };
 use crate::resolution::SelectionCardinality;
 use sea_query::{
@@ -50,7 +51,7 @@ pub struct GeneratedDynamicInputSite {
     pub fields: Vec<GeneratedDynamicInputSiteField>,
 }
 
-/// Site-specific readable SQL capabilities for one selected scalar.
+/// Site-specific readable SQL capabilities for one preset scalar.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GeneratedDynamicInputSiteField {
     pub key: String,
@@ -825,7 +826,7 @@ fn ordered_json_agg(
                     }
                 }
             }
-            OrderByPlan::Dynamic { path, fields } => {
+            OrderByPlan::Dynamic { path, fields, .. } => {
                 let fields = generated_dynamic_order_fields(catalog, context, fields, template)?;
                 let marker = template.dynamic_site(
                     path,
@@ -1166,7 +1167,7 @@ fn apply_order_limit_offset(
                     );
                 }
             },
-            OrderByPlan::Dynamic { path, fields } => {
+            OrderByPlan::Dynamic { path, fields, .. } => {
                 let fields = generated_dynamic_order_fields(catalog, context, fields, template)?;
                 let marker = template.dynamic_site(
                     path,
@@ -1463,7 +1464,7 @@ fn filter_value_expr(
             masked_column_expression(catalog, source, *column_id, template)?
         }
         FilterExpr::Parameter(parameter) => Expr::cust(template.parameter(parameter)),
-        FilterExpr::DynamicPredicate { path, fields } => {
+        FilterExpr::DynamicPredicate { path, fields, .. } => {
             let fields =
                 generated_dynamic_predicate_fields(catalog, scope.current, fields, template)?;
             Expr::cust(template.dynamic_site(
@@ -1824,20 +1825,14 @@ fn generated_dynamic_order_fields(
         .iter()
         .map(|field| {
             let expression = dynamic_field_expression(catalog, source, field.column, template)?;
-            let directions = [
-                ("asc", "ASC"),
-                ("desc", "DESC"),
-                ("asc_nulls_first", "ASC NULLS FIRST"),
-                ("asc_nulls_last", "ASC NULLS LAST"),
-                ("desc_nulls_first", "DESC NULLS FIRST"),
-                ("desc_nulls_last", "DESC NULLS LAST"),
-            ]
-            .into_iter()
-            .map(|(value, direction)| SqlVariantCase {
-                value: value.to_string(),
-                text: format!("({expression}) {direction}"),
-            })
-            .collect();
+            let directions = field
+                .directions
+                .iter()
+                .map(|direction| SqlVariantCase {
+                    value: direction.as_str().to_string(),
+                    text: format!("({expression}) {}", dynamic_order_sql(*direction)),
+                })
+                .collect();
             Ok(GeneratedDynamicInputSiteField {
                 key: field.key.clone(),
                 data_type: field.data_type,
@@ -1846,6 +1841,17 @@ fn generated_dynamic_order_fields(
             })
         })
         .collect()
+}
+
+fn dynamic_order_sql(direction: DynamicOrderDirection) -> &'static str {
+    match direction {
+        DynamicOrderDirection::Asc => "ASC",
+        DynamicOrderDirection::Desc => "DESC",
+        DynamicOrderDirection::AscNullsFirst => "ASC NULLS FIRST",
+        DynamicOrderDirection::AscNullsLast => "ASC NULLS LAST",
+        DynamicOrderDirection::DescNullsFirst => "DESC NULLS FIRST",
+        DynamicOrderDirection::DescNullsLast => "DESC NULLS LAST",
+    }
 }
 
 fn dynamic_field_expression(

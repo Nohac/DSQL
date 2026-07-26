@@ -88,7 +88,11 @@ fn formatter_cases_match_expected_output() {
         ),
         (
             "bounded_dynamic_inputs",
-            "query Search($$search={} $$order=[]){public::users(where .id>0 and $$search on selected order by name asc,$$order on selected,id desc){id label:name}}",
+            "query Search($$search={} $$indexed={} $$selected_indexed={} $$searchable={} $$order=[]){public::users(where .id>0 and $$search on selected and $$indexed on indexed and $$selected_indexed on selected_indexed and $$searchable on searchable order by name asc,$$order on indexed,id desc){id label:name}}",
+        ),
+        (
+            "dynamic_surface_contextual_names",
+            "query searchable($selected=1 $$indexed=2){selected(where .indexed $searchable[==] $selected){selected indexed selected_indexed searchable}}",
         ),
         (
             "variable_contract_comments",

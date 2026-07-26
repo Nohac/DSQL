@@ -51,10 +51,12 @@ foreign_keys:
         - id
 indexes:
   - name: aka_name_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true
   - name: person_id_aka_name
-    columns:
-      - person_id
+    access_method: btree
+    keys:
+      - column: person_id
     unique: false

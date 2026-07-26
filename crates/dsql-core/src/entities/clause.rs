@@ -12,8 +12,8 @@ use bowl::{
 
 use crate::catalog::CatalogSnapshot;
 use crate::entities::expression::{
-    Expr, PathAnchor, VariableRef, build_expr, build_filter_assignment, build_variable_ref,
-    expr_child,
+    DynamicInputSurface, Expr, PathAnchor, VariableRef, build_expr, build_filter_assignment,
+    build_variable_ref, dynamic_input_surface, expr_child,
 };
 use crate::entities::{direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
@@ -63,7 +63,10 @@ pub struct OrderItem {
 #[derive(Debug, Clone, Hash, PartialEq)]
 pub enum OrderTerm {
     Column(OrderItem),
-    Dynamic(VariableRef),
+    Dynamic {
+        variable: VariableRef,
+        surface: DynamicInputSurface,
+    },
 }
 
 #[derive(Debug, Clone, Hash, PartialEq)]
@@ -262,7 +265,10 @@ fn order_items(cst: &CstData, source: &str, node: NodeRef) -> Vec<OrderTerm> {
         .filter(|child| cst.match_rule(*child, Rule::OrderItem))
         .map(|item| {
             if let Some(dynamic) = direct_rule(cst, item, Rule::DynamicInput) {
-                return OrderTerm::Dynamic(build_variable_ref(cst, source, dynamic));
+                return OrderTerm::Dynamic {
+                    variable: build_variable_ref(cst, source, dynamic),
+                    surface: dynamic_input_surface(cst, dynamic),
+                };
             }
             let field_span = direct_rule(cst, item, Rule::QualifiedName)
                 .map(|name| node_span(cst, name))
@@ -326,14 +332,14 @@ pub(crate) fn check_clause(
         }
         ClauseFact::OrderBy { items } => {
             for variable in items.iter().filter_map(|item| match item {
-                OrderTerm::Dynamic(variable) => Some(variable),
+                OrderTerm::Dynamic { variable, .. } => Some(variable),
                 OrderTerm::Column(_) => None,
             }) {
                 check_dynamic_input_owner(ctx, entity, variable, "order");
             }
             for item in items.iter().filter_map(|item| match item {
                 OrderTerm::Column(item) => Some(item),
-                OrderTerm::Dynamic(_) => None,
+                OrderTerm::Dynamic { .. } => None,
             }) {
                 let resolved_item =
                     resolved.and_then(|resolved| resolved.order_item_at(item.field_span));
@@ -393,7 +399,7 @@ fn check_dynamic_predicate_placement(
     use crate::facts::DiagnosticCode;
 
     match expr {
-        Expr::DynamicPredicate { variable, span } => {
+        Expr::DynamicPredicate { variable, span, .. } => {
             check_dynamic_input_owner(ctx, entity, variable, "predicate");
             match placement {
                 DynamicPredicatePlacement::Conjunctive => {}
@@ -403,12 +409,11 @@ fn check_dynamic_predicate_placement(
                     DiagnosticCode::InvalidDynamicInput,
                     "bounded dynamic predicates must be the whole predicate or occur in positive `and` position".to_string(),
                 ),
-                DynamicPredicatePlacement::MissingSelectedSurface => ctx.error(
+                DynamicPredicatePlacement::MissingDynamicInputSurface => ctx.error(
                     entity,
                     *span,
                     DiagnosticCode::InvalidDynamicInput,
-                    "bounded dynamic predicates inside `exists` have no selected row surface"
-                        .to_string(),
+                    "bounded dynamic predicates inside `exists` require the nested source to declare a public dynamic input surface".to_string(),
                 ),
             }
         }
@@ -417,8 +422,8 @@ fn check_dynamic_predicate_placement(
                 DynamicPredicatePlacement::Conjunctive if matches!(op, BinaryOp::And) => {
                     DynamicPredicatePlacement::Conjunctive
                 }
-                DynamicPredicatePlacement::MissingSelectedSurface => {
-                    DynamicPredicatePlacement::MissingSelectedSurface
+                DynamicPredicatePlacement::MissingDynamicInputSurface => {
+                    DynamicPredicatePlacement::MissingDynamicInputSurface
                 }
                 DynamicPredicatePlacement::Conjunctive
                 | DynamicPredicatePlacement::InvalidBoolean => {
@@ -442,7 +447,7 @@ fn check_dynamic_predicate_placement(
                     ctx,
                     entity,
                     predicate,
-                    DynamicPredicatePlacement::MissingSelectedSurface,
+                    DynamicPredicatePlacement::MissingDynamicInputSurface,
                 );
             }
         }
@@ -466,13 +471,13 @@ fn check_dynamic_predicate_placement(
 enum DynamicPredicatePlacement {
     Conjunctive,
     InvalidBoolean,
-    MissingSelectedSurface,
+    MissingDynamicInputSurface,
 }
 
 impl DynamicPredicatePlacement {
     fn nested(self) -> Self {
         match self {
-            Self::MissingSelectedSurface => Self::MissingSelectedSurface,
+            Self::MissingDynamicInputSurface => Self::MissingDynamicInputSurface,
             Self::Conjunctive | Self::InvalidBoolean => Self::InvalidBoolean,
         }
     }

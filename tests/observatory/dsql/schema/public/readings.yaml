@@ -67,14 +67,60 @@ foreign_keys:
         - code
 indexes:
   - name: readings_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
+        operator_class: pg_catalog.int8_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: true
   - name: readings_sensor_time_idx
-    columns:
-      - tenant_id
-      - network_code
-      - station_code
-      - sensor_code
-      - recorded_at
+    access_method: btree
+    keys:
+      - column: tenant_id
+        operator_class: pg_catalog.uuid_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+      - column: network_code
+        operator_class: pg_catalog.text_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+      - column: station_code
+        operator_class: pg_catalog.text_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+      - column: sensor_code
+        operator_class: pg_catalog.text_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+      - column: recorded_at
+        operator_class: pg_catalog.timestamptz_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: desc
+          nulls: first
+    included_columns:
+      - value
     unique: false

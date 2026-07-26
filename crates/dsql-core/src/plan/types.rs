@@ -5,6 +5,7 @@ use bowl::{Component, Entity};
 use crate::catalog::{ColumnId, DataType, RelationId, TableId, TableKey};
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::entities::expression::ComparisonOp;
+use crate::entities::expression::DynamicInputSurface;
 use crate::facts::Span;
 use crate::resolution::ResolvedSelectionShape;
 
@@ -397,6 +398,7 @@ pub struct SelectionClauses {
 pub struct DynamicInputContract {
     pub path: String,
     pub kind: DynamicInputKind,
+    pub surface: DynamicInputSurface,
     pub fields: Vec<DynamicInputFieldPlan>,
 }
 
@@ -407,7 +409,7 @@ pub enum DynamicInputKind {
     Order,
 }
 
-/// One selected scalar exposed by a bounded dynamic contract.
+/// One scalar exposed by a bounded dynamic capability preset.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DynamicInputFieldPlan {
     pub key: String,
@@ -416,9 +418,10 @@ pub struct DynamicInputFieldPlan {
     pub nullable: bool,
     pub access: PolicyAccess,
     pub operators: Vec<DynamicPredicateOperator>,
+    pub directions: Vec<DynamicOrderDirection>,
 }
 
-/// One compiler-owned predicate operation exposed for a selected scalar.
+/// One compiler-owned predicate operation exposed for a preset scalar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DynamicPredicateOperator {
     Eq,
@@ -450,6 +453,41 @@ impl DynamicPredicateOperator {
     }
 }
 
+/// One public direction accepted by a bounded dynamic order entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DynamicOrderDirection {
+    Asc,
+    Desc,
+    AscNullsFirst,
+    AscNullsLast,
+    DescNullsFirst,
+    DescNullsLast,
+}
+
+impl DynamicOrderDirection {
+    /// Canonical source and generated-metadata spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+            Self::AscNullsFirst => "asc_nulls_first",
+            Self::AscNullsLast => "asc_nulls_last",
+            Self::DescNullsFirst => "desc_nulls_first",
+            Self::DescNullsLast => "desc_nulls_last",
+        }
+    }
+
+    /// Every accepted direction in deterministic public order.
+    pub const ALL: [Self; 6] = [
+        Self::Asc,
+        Self::Desc,
+        Self::AscNullsFirst,
+        Self::AscNullsLast,
+        Self::DescNullsFirst,
+        Self::DescNullsLast,
+    ];
+}
+
 /// One static or runtime-expanded ordering term in source precedence order.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum OrderByPlan {
@@ -459,6 +497,7 @@ pub enum OrderByPlan {
     },
     Dynamic {
         path: String,
+        surface: DynamicInputSurface,
         fields: Vec<DynamicInputFieldPlan>,
     },
 }
@@ -492,6 +531,7 @@ pub enum FilterExpr {
     /// One bounded predicate object rendered by the execution runtime.
     DynamicPredicate {
         path: String,
+        surface: DynamicInputSurface,
         fields: Vec<DynamicInputFieldPlan>,
     },
     Binary {

@@ -252,7 +252,7 @@ async fn order_by_offers_columns_and_directions() {
 }
 
 #[tokio::test]
-async fn bounded_dynamic_inputs_complete_the_selected_surface_keyword() {
+async fn bounded_dynamic_inputs_complete_capability_presets() {
     let predicate = completions(
         "query Q($$search = {}) {\n  public::users(where $$search on |) {\n    id\n  }\n}\n",
     )

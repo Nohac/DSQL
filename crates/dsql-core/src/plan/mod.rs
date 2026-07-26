@@ -6,9 +6,9 @@ mod types;
 pub use build::register_planning;
 pub use types::{
     AggregatePlan, AggregateProjection, CollectionPlan, CollectionResultPlan, DynamicInputContract,
-    DynamicInputFieldPlan, DynamicInputKind, DynamicPredicateOperator, ExistsKind,
-    FilterCollection, FilterColumnScope, FilterExpr, FilterLiteral, FilterOp, FragmentPlan,
-    FragmentPlanFact, NestedRelation, OperationSeed, OrderByPlan, PlanDiagnostic,
+    DynamicInputFieldPlan, DynamicInputKind, DynamicOrderDirection, DynamicPredicateOperator,
+    ExistsKind, FilterCollection, FilterColumnScope, FilterExpr, FilterLiteral, FilterOp,
+    FragmentPlan, FragmentPlanFact, NestedRelation, OperationSeed, OrderByPlan, PlanDiagnostic,
     PlanDiagnosticKind, PlannedFile, PolicyAccess, PolicyApplicationField, PolicyApplicationPlan,
     PolicyAssignmentState, PolicyContextRequirement, PolicyEnforcement, PolicyFieldAccess,
     PolicyFieldFilter, PolicyFieldTarget, PolicyIdentity, Projection, QueryPlan, QueryPlanFact,

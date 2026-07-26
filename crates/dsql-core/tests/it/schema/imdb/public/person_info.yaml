@@ -47,14 +47,17 @@ foreign_keys:
         - id
 indexes:
   - name: person_info_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true
   - name: person_id_person_info
-    columns:
-      - person_id
+    access_method: btree
+    keys:
+      - column: person_id
     unique: false
   - name: info_type_id_person_info
-    columns:
-      - info_type_id
+    access_method: btree
+    keys:
+      - column: info_type_id
     unique: false

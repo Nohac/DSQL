@@ -26,6 +26,9 @@ use crate::facts::{
 };
 use crate::format::CstFormatter;
 use crate::grammar::parser::{NodeRef, Rule};
+use crate::plan::{
+    DynamicInputContract, DynamicInputKind, DynamicPredicateOperator, QueryPlanFact,
+};
 use crate::resolution::{ResolvedFragmentTarget, ResolvedTableTarget};
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
 use crate::source::{ResolutionScope, ScopeImports, SourceText};
@@ -119,9 +122,9 @@ impl LanguageEntity for Definition {
         reg.system(check_import_collisions.run_during(Phase::Complete));
         reg.system(check_import_ambiguities.run_during(Phase::Complete));
         reg.system(check_fragment_targets);
-        // Fully tracked (a per-file bound join, no views), so it needs no
-        // phase barrier: replanning orders it after enrichment and the
-        // lowered facts it joins.
+        // Fully tracked (per-file and per-definition bound joins, no views),
+        // so it needs no phase barrier: replanning orders it after enrichment,
+        // variable inference, and the optional plan capability contract.
         reg.system(hover_definitions);
     }
 }
@@ -509,10 +512,15 @@ type DefInFile<'a> = (Entity, &'a DefDecl, &'a NodeKey, Option<&'a FragmentTarge
 type VariablesForDefinition<'a> =
     Option<Query<(Entity, &'a DefinitionVariables), Where<BowlEq<NodeKey>>>>;
 
+/// Optional query plan for the definition row currently paired by [`NodeKey`].
+/// It is absent when plan demand is not armed or the query cannot be planned.
+type PlanForDefinition<'a> = Option<Query<(Entity, &'a QueryPlanFact), Where<BowlEq<NodeKey>>>>;
+
 async fn hover_definitions(
     query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
     defs: Query<DefInFile<'_>, Where<BowlEq<BelongsToFile>>>,
     variables: VariablesForDefinition<'_>,
+    plan: PlanForDefinition<'_>,
     mut commands: Commands<(dsql_schema::HoverCandidate,)>,
 ) {
     let (request, _file, cursor) = query.item();
@@ -522,12 +530,15 @@ async fn hover_definitions(
         return;
     }
 
+    let dynamic_inputs = plan
+        .map(|plan| plan.item().1.0.dynamic_inputs.as_slice())
+        .unwrap_or_default();
     let (priority, text) = match (decl.kind, target, variables) {
         (DefKind::Query, _, Some(variables)) => {
             let (_, variables) = variables.item();
             (
                 priority::QUERY_SIGNATURE,
-                describe_query_variables(&decl.name, variables),
+                describe_query_variables(&decl.name, variables, dynamic_inputs),
             )
         }
         (DefKind::Query, _, None) => (priority::DEFINITION, format!("query `{}`", decl.name)),
@@ -541,8 +552,12 @@ async fn hover_definitions(
     emit_hover_candidate(&mut commands, request, priority, text);
 }
 
-fn describe_query_variables(name: &str, variables: &DefinitionVariables) -> String {
-    let shape = variable_shape(&variables.bindings);
+fn describe_query_variables(
+    name: &str,
+    variables: &DefinitionVariables,
+    dynamic_inputs: &[DynamicInputContract],
+) -> String {
+    let shape = variable_shape(&variables.bindings, dynamic_inputs);
     if shape.is_empty() {
         format!("### Query `{name}`\n\nNo variables.")
     } else {
@@ -553,16 +568,31 @@ fn describe_query_variables(name: &str, variables: &DefinitionVariables) -> Stri
 #[derive(Default)]
 struct VariableShapeNode {
     children: BTreeMap<String, VariableShapeNode>,
-    value: Option<String>,
+    value: Option<VariableShapeValue>,
 }
 
-fn variable_shape(bindings: &[VariableBinding]) -> String {
+enum VariableShapeValue {
+    Scalar(String),
+    Dynamic {
+        binding: VariableBinding,
+        contract: DynamicInputContract,
+    },
+}
+
+fn variable_shape(bindings: &[VariableBinding], dynamic_inputs: &[DynamicInputContract]) -> String {
     let mut root = VariableShapeNode::default();
     for binding in bindings {
+        let value = dynamic_contract(binding, dynamic_inputs).map_or_else(
+            || VariableShapeValue::Scalar(variable_type_label(binding)),
+            |contract| VariableShapeValue::Dynamic {
+                binding: binding.clone(),
+                contract: contract.clone(),
+            },
+        );
         insert_variable_shape(
             &mut root,
             &binding.path.split('.').collect::<Vec<_>>(),
-            &variable_type_label(binding),
+            value,
         );
     }
     let mut output = String::new();
@@ -570,15 +600,29 @@ fn variable_shape(bindings: &[VariableBinding]) -> String {
     output
 }
 
-fn insert_variable_shape(node: &mut VariableShapeNode, path: &[&str], data_type: &str) {
+fn dynamic_contract<'a>(
+    binding: &VariableBinding,
+    dynamic_inputs: &'a [DynamicInputContract],
+) -> Option<&'a DynamicInputContract> {
+    let kind = match binding.role {
+        VariableRole::DynamicPredicate => DynamicInputKind::Predicate,
+        VariableRole::DynamicOrder => DynamicInputKind::Order,
+        _ => return None,
+    };
+    dynamic_inputs
+        .iter()
+        .find(|contract| contract.path == binding.path && contract.kind == kind)
+}
+
+fn insert_variable_shape(node: &mut VariableShapeNode, path: &[&str], value: VariableShapeValue) {
     let Some((head, tail)) = path.split_first() else {
-        node.value = Some(data_type.to_string());
+        node.value = Some(value);
         return;
     };
     insert_variable_shape(
         node.children.entry((*head).to_string()).or_default(),
         tail,
-        data_type,
+        value,
     );
 }
 
@@ -587,12 +631,20 @@ fn render_variable_shape(node: &VariableShapeNode, indent: usize, output: &mut S
         output.push_str(&"  ".repeat(indent));
         output.push_str(key);
         if child.children.is_empty() {
-            output.push_str(": ");
-            output.push_str(child.value.as_deref().unwrap_or("unknown"));
-            output.push('\n');
+            match &child.value {
+                Some(VariableShapeValue::Scalar(value)) => {
+                    output.push_str(": ");
+                    output.push_str(value);
+                    output.push('\n');
+                }
+                Some(VariableShapeValue::Dynamic { binding, contract }) => {
+                    render_dynamic_shape(binding, contract, indent, output);
+                }
+                None => output.push_str(": unknown\n"),
+            }
         } else {
             output.push_str(":\n");
-            if let Some(value) = &child.value {
+            if let Some(VariableShapeValue::Scalar(value)) = &child.value {
                 output.push_str(&"  ".repeat(indent + 1));
                 output.push_str("value: ");
                 output.push_str(value);
@@ -603,8 +655,89 @@ fn render_variable_shape(node: &VariableShapeNode, indent: usize, output: &mut S
     }
 }
 
+fn render_dynamic_shape(
+    binding: &VariableBinding,
+    contract: &DynamicInputContract,
+    indent: usize,
+    output: &mut String,
+) {
+    output.push(':');
+    let mut annotations = Vec::new();
+    if contract.kind == DynamicInputKind::Order {
+        annotations.push("ordered array of one-field entries".to_string());
+    }
+    if binding.nullable {
+        annotations.push("nullable".to_string());
+    }
+    if let Some(default) = &binding.default {
+        annotations.push(format!("default {}", input_default_label(default)));
+    }
+    if !annotations.is_empty() {
+        output.push_str(" # ");
+        output.push_str(&annotations.join("; "));
+    }
+    output.push('\n');
+
+    match contract.kind {
+        DynamicInputKind::Predicate => {
+            write_shape_line(output, indent + 1, "and", "[<predicate>]");
+            write_shape_line(output, indent + 1, "or", "[<predicate>]");
+            write_shape_line(output, indent + 1, "not", "<predicate>");
+            for field in &contract.fields {
+                output.push_str(&"  ".repeat(indent + 1));
+                output.push_str(&field.key);
+                output.push_str(":\n");
+                for operator in &field.operators {
+                    write_shape_line(
+                        output,
+                        indent + 2,
+                        operator.as_str(),
+                        &dynamic_operand_type(field.data_type.as_str(), *operator),
+                    );
+                }
+            }
+        }
+        DynamicInputKind::Order => {
+            for field in &contract.fields {
+                let directions = format!(
+                    "enum({})",
+                    field
+                        .directions
+                        .iter()
+                        .map(|direction| format!("\"{}\"", direction.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                write_shape_line(output, indent + 1, &field.key, &directions);
+            }
+        }
+    }
+}
+
+fn dynamic_operand_type(data_type: &str, operator: DynamicPredicateOperator) -> String {
+    match operator {
+        DynamicPredicateOperator::In | DynamicPredicateOperator::NotIn => {
+            format!("{data_type}[]")
+        }
+        DynamicPredicateOperator::IsNull => "boolean".to_string(),
+        _ => data_type.to_string(),
+    }
+}
+
+fn write_shape_line(output: &mut String, indent: usize, key: &str, value: &str) {
+    output.push_str(&"  ".repeat(indent));
+    output.push_str(key);
+    output.push_str(": ");
+    output.push_str(value);
+    output.push('\n');
+}
+
 fn variable_type_label(binding: &VariableBinding) -> String {
-    let mut label = if matches!(
+    let mut label = if binding.role == VariableRole::DynamicPredicate {
+        "bounded predicate".to_string()
+    } else if binding.role == VariableRole::DynamicOrder {
+        "bounded order".to_string()
+    } else if matches!(
         binding.role,
         VariableRole::ComparisonOperator | VariableRole::SortDirection
     ) {

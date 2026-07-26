@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/lints.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Info[45..59]: predicate path `.records.included_value` filters on unindexed column `records.included_value`; nested scans can be slow

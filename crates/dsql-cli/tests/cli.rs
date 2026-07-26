@@ -487,12 +487,19 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         "DynamicReadingSearch",
         &[
             "--variables",
-            r#"{"params":{"search":{"flagged":{"eq":true}},"order":[{"id":"desc"}]}}"#,
+            r#"{"params":{"search":{"flagged":{"eq":true}},"indexed_search":{"id":{"gte":4}},"selected_indexed_search":{"id":{"lte":12}},"order":[{"id":"desc"}],"indexed_order":[{"tenant_id":"asc"}],"sensor_search":{"code":{"like":"temp%"}},"sensor_order":[{"code":"asc"}]}}"#,
             "--context",
             visible,
         ],
     );
     assert_eq!(observatory_root_reading_ids(&dynamic), [12, 8, 4]);
+    assert_eq!(
+        string(field(
+            field(&output_json(&dynamic), "matching_sensors"),
+            "code"
+        )),
+        "temperature"
+    );
 
     for operation in [
         "ContainedSensorWindow",

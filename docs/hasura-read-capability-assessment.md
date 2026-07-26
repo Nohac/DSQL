@@ -81,12 +81,12 @@ assessment.
 ### Dynamic boolean filters
 
 - Observed in 78 queries.
-- Implemented for named top-level inputs bounded by the shallow
-  `on selected` surface, including recursive boolean composition, typed
-  operators, runtime validation, generated metadata, and SQL lowering.
-- Explicit allowlists, deep relation traversal, and fragment-local dynamic
-  inputs remain deferred extensions rather than migration blockers for the
-  initial selected-field shape.
+- Implemented for named top-level inputs bounded by the shallow `selected`,
+  `indexed`, `selected_indexed`, and `searchable` presets, including recursive
+  boolean composition, typed operators, runtime validation, generated metadata,
+  and SQL lowering.
+- Explicit allowlists, project-defined presets, deep relation traversal, and
+  fragment-local dynamic inputs remain deferred extensions.
 
 ### Dynamic ordering
 
@@ -387,25 +387,24 @@ surface and the estimated 168-query core read surface.
 
 #### 4. Bounded dynamic filters and ordering
 
-Status: implemented for named top-level inputs over the shallow
-`on selected` surface described in [Variables](spec/variables.md).
+Status: implemented for named top-level inputs over the four shallow presets
+described in [Variables](spec/variables.md).
 
 Implemented behavior:
 
 - compiler-derived field/operator capabilities;
-- shallow selected-field exposure;
+- shallow selected-field and physical-index-derived exposure;
 - typed `and`, `or`, and `not` composition;
 - list-valued operators;
 - ordered multi-column sort inputs;
 - explicit null ordering;
-- reuse of one named input across compatible selected-row usages;
+- reuse of one named input across compatible usages of the same preset;
 - generated validators that reject fields and operators outside the compiled
   capability surface.
 
-Explicit authored allowlists/presets, fragment-local inputs, and deep relation
-surfaces remain deferred. Sharing one capability across a selected-row root and
-an aggregate/page-metadata root belongs to page composition because an
-aggregate source has no row selection body for `on selected`.
+Explicit authored allowlists and project-defined presets, fragment-local inputs,
+and deep relation surfaces remain deferred. `indexed` and `searchable` work on
+aggregate sources; body-derived `selected` and `selected_indexed` do not.
 
 #### 5. Optional inputs, defaults, and conditional clause participation
 

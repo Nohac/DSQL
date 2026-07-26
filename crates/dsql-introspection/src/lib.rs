@@ -3,11 +3,12 @@
 
 use dsql_core::catalog::{
     ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata,
-    ForeignKeyReferenceMetadata, IndexMetadata, ObjectType, SchemaMetadata, TableConstraintKind,
-    TableConstraintMetadata, TableMetadata, TypeMetadata,
+    ForeignKeyReferenceMetadata, IndexKeyCapability, IndexKeyMetadata, IndexMetadata,
+    IndexNullsPosition, IndexOrder, IndexOrderDirection, ObjectType, SchemaMetadata,
+    TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeMetadata,
 };
 use sqlx::{FromRow, Pool, Postgres, postgres::PgPoolOptions};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IntrospectionError {
@@ -48,12 +49,21 @@ struct PostgresForeignKey {
 }
 
 #[derive(Debug, FromRow)]
-struct PostgresIndex {
+struct PostgresIndexKey {
     schema_name: String,
     table_name: String,
     index_name: String,
-    columns: Vec<String>,
+    access_method: String,
     is_unique: bool,
+    key_position: i64,
+    key_count: i64,
+    column_name: String,
+    operator_class: Option<String>,
+    native_operators: Vec<String>,
+    orderable: Option<bool>,
+    ascending: Option<bool>,
+    nulls_first: Option<bool>,
+    included_columns: Vec<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -151,26 +161,66 @@ SELECT
     ns.nspname AS schema_name,
     tbl.relname AS table_name,
     idx_tbl.relname AS index_name,
-    array_agg(col.attname ORDER BY idx_key.ordinality) AS columns,
-    idx.indisunique AS is_unique
+    am.amname AS access_method,
+    idx.indisunique AS is_unique,
+    idx_key.ordinality::bigint AS key_position,
+    idx.indnkeyatts::bigint AS key_count,
+    col.attname AS column_name,
+    opc_ns.nspname || '.' || opc.opcname AS operator_class,
+    COALESCE(
+      array_agg(DISTINCT opr.oprname::text)
+        FILTER (WHERE opr.oprname IS NOT NULL),
+      ARRAY[]::text[]
+    ) AS native_operators,
+    pg_index_column_has_property(
+      idx.indexrelid, idx_key.ordinality::int, 'orderable'
+    ) AS orderable,
+    pg_index_column_has_property(
+      idx.indexrelid, idx_key.ordinality::int, 'asc'
+    ) AS ascending,
+    pg_index_column_has_property(
+      idx.indexrelid, idx_key.ordinality::int, 'nulls_first'
+    ) AS nulls_first,
+    ARRAY(
+      SELECT include_col.attname::text
+      FROM unnest(idx.indkey::int2[]) WITH ORDINALITY
+        AS include_key(attnum, ordinality)
+      JOIN pg_attribute include_col
+        ON include_col.attrelid = tbl.oid
+        AND include_col.attnum = include_key.attnum
+      WHERE include_key.ordinality > idx.indnkeyatts
+      ORDER BY include_key.ordinality
+    ) AS included_columns
 FROM
     pg_index idx
     JOIN pg_class tbl ON idx.indrelid = tbl.oid
     JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
     JOIN pg_class idx_tbl ON idx.indexrelid = idx_tbl.oid
+    JOIN pg_am am ON am.oid = idx_tbl.relam
     JOIN unnest(idx.indkey::int2[]) WITH ORDINALITY AS idx_key(attnum, ordinality)
       ON idx_key.attnum > 0
     JOIN pg_attribute col ON col.attrelid = tbl.oid AND col.attnum = idx_key.attnum
+    LEFT JOIN unnest(idx.indclass::oid[]) WITH ORDINALITY AS idx_class(opclass, ordinality)
+      ON idx_class.ordinality = idx_key.ordinality
+    LEFT JOIN pg_opclass opc ON opc.oid = idx_class.opclass
+    LEFT JOIN pg_namespace opc_ns ON opc_ns.oid = opc.opcnamespace
+    LEFT JOIN pg_amop amop ON amop.amopfamily = opc.opcfamily
+    LEFT JOIN pg_operator opr ON opr.oid = amop.amopopr
 WHERE
     tbl.relkind IN ('r', 'v', 'm')
     AND ns.nspname NOT LIKE 'pg_%'
     AND ns.nspname <> 'information_schema'
+    AND idx.indisvalid
+    AND idx.indisready
     AND idx.indexprs IS NULL
     AND idx.indpred IS NULL
+    AND idx_key.ordinality <= idx.indnkeyatts
 GROUP BY
-    ns.nspname, tbl.relname, idx_tbl.relname, idx.indisunique
+    ns.nspname, tbl.relname, idx_tbl.relname, am.amname, idx.indisunique,
+    idx_key.ordinality, col.attname, opc_ns.nspname, opc.opcname,
+    idx.indexrelid, idx.indkey, idx.indnkeyatts, tbl.oid
 ORDER BY
-    ns.nspname, tbl.relname, idx_tbl.relname;
+    ns.nspname, tbl.relname, idx_tbl.relname, idx_key.ordinality;
 "#;
 
 const PG_TYPE_INTROSPECTION_QUERY: &str = r#"
@@ -213,7 +263,7 @@ pub async fn introspect_postgres_pool(
     let foreign_key_rows = sqlx::query_as::<_, PostgresForeignKey>(PG_FOREIGN_KEY_QUERY)
         .fetch_all(pool)
         .await?;
-    let index_rows = sqlx::query_as::<_, PostgresIndex>(PG_INDEX_QUERY)
+    let index_rows = sqlx::query_as::<_, PostgresIndexKey>(PG_INDEX_QUERY)
         .fetch_all(pool)
         .await?;
     let type_rows = sqlx::query_as::<_, PostgresType>(PG_TYPE_INTROSPECTION_QUERY)
@@ -233,7 +283,7 @@ fn metadata_from_rows(
     schema_rows: Vec<FlatColumn>,
     constraint_rows: Vec<PostgresConstraint>,
     foreign_key_rows: Vec<PostgresForeignKey>,
-    index_rows: Vec<PostgresIndex>,
+    index_rows: Vec<PostgresIndexKey>,
     type_rows: Vec<PostgresType>,
 ) -> DatabaseMetadata {
     let mut type_map = HashMap::<String, TypeMetadata>::new();
@@ -305,15 +355,82 @@ fn metadata_from_rows(
         });
     }
 
+    struct IndexAccumulator {
+        metadata: IndexMetadata,
+        expected_key_count: Option<usize>,
+        valid: bool,
+    }
+
+    let mut indexes = BTreeMap::<(String, String, String), IndexAccumulator>::new();
     for row in index_rows {
-        let Some(table) = table_mut(&mut schema_map, &row.schema_name, &row.table_name) else {
+        let mut capabilities = Vec::new();
+        if row.native_operators.iter().any(|operator| operator == "=") {
+            capabilities.push(IndexKeyCapability::Equality);
+        }
+        if row
+            .native_operators
+            .iter()
+            .any(|operator| matches!(operator.as_str(), "<" | "<=" | ">" | ">="))
+        {
+            capabilities.push(IndexKeyCapability::Range);
+        }
+        if row.native_operators.iter().any(|operator| operator == "~~") {
+            capabilities.push(IndexKeyCapability::Like);
+        }
+        let order = (row.orderable == Some(true)).then(|| IndexOrder {
+            direction: if row.ascending == Some(false) {
+                IndexOrderDirection::Desc
+            } else {
+                IndexOrderDirection::Asc
+            },
+            nulls: if row.nulls_first == Some(true) {
+                IndexNullsPosition::First
+            } else {
+                IndexNullsPosition::Last
+            },
+        });
+        let key = (
+            row.schema_name.clone(),
+            row.table_name.clone(),
+            row.index_name.clone(),
+        );
+        let expected_key_count = usize::try_from(row.key_count)
+            .ok()
+            .filter(|count| *count > 0);
+        let index = indexes.entry(key).or_insert_with(|| IndexAccumulator {
+            metadata: IndexMetadata {
+                name: Some(row.index_name),
+                access_method: row.access_method,
+                keys: Vec::new(),
+                included_columns: row.included_columns,
+                unique: row.is_unique,
+            },
+            expected_key_count,
+            valid: expected_key_count.is_some(),
+        });
+        if index.expected_key_count != expected_key_count {
+            index.valid = false;
+        }
+        let position = usize::try_from(row.key_position.saturating_sub(1)).unwrap_or(usize::MAX);
+        if index.valid && position == index.metadata.keys.len() {
+            index.metadata.keys.push(IndexKeyMetadata {
+                column: row.column_name,
+                operator_class: row.operator_class,
+                capabilities,
+                order,
+            });
+        } else {
+            index.valid = false;
+        }
+    }
+    for ((schema_name, table_name, _), index) in indexes {
+        if !index.valid || index.expected_key_count != Some(index.metadata.keys.len()) {
+            continue;
+        }
+        let Some(table) = table_mut(&mut schema_map, &schema_name, &table_name) else {
             continue;
         };
-        table.indexes.push(IndexMetadata {
-            name: Some(row.index_name),
-            columns: row.columns,
-            unique: row.is_unique,
-        });
+        table.indexes.push(index.metadata);
     }
 
     let mut metadata = DatabaseMetadata {
@@ -398,13 +515,40 @@ mod tests {
                 referenced_table_name: "kind_type".into(),
                 referenced_columns: vec!["id".into()],
             }],
-            vec![PostgresIndex {
-                schema_name: "public".into(),
-                table_name: "title".into(),
-                index_name: "title_pkey".into(),
-                columns: vec!["id".into()],
-                is_unique: true,
-            }],
+            vec![
+                PostgresIndexKey {
+                    schema_name: "public".into(),
+                    table_name: "kind_type".into(),
+                    index_name: "kind_type_incomplete_key".into(),
+                    access_method: "btree".into(),
+                    is_unique: true,
+                    key_position: 1,
+                    key_count: 2,
+                    column_name: "id".into(),
+                    operator_class: Some("pg_catalog.int4_ops".into()),
+                    native_operators: vec!["=".into(), "<".into()],
+                    orderable: Some(true),
+                    ascending: Some(true),
+                    nulls_first: Some(false),
+                    included_columns: Vec::new(),
+                },
+                PostgresIndexKey {
+                    schema_name: "public".into(),
+                    table_name: "title".into(),
+                    index_name: "title_pkey".into(),
+                    access_method: "btree".into(),
+                    is_unique: true,
+                    key_position: 1,
+                    key_count: 1,
+                    column_name: "id".into(),
+                    operator_class: Some("pg_catalog.int4_ops".into()),
+                    native_operators: vec!["=".into(), "<".into()],
+                    orderable: Some(true),
+                    ascending: Some(true),
+                    nulls_first: Some(false),
+                    included_columns: vec!["kind_id".into()],
+                },
+            ],
             vec![
                 PostgresType {
                     internal_type: "int4".into(),
@@ -430,6 +574,10 @@ mod tests {
             .map(|table| table.name.as_str())
             .collect();
         assert_eq!(names, ["kind_type", "title"], "tables sort by name");
+        assert!(
+            schema.tables[0].indexes.is_empty(),
+            "an index missing its final declared key is dropped entirely"
+        );
 
         let title = &schema.tables[1];
         assert_eq!(
@@ -445,6 +593,24 @@ mod tests {
         assert_eq!(title.foreign_keys.len(), 1);
         assert_eq!(title.foreign_keys[0].references.table, "kind_type");
         assert_eq!(title.indexes.len(), 1);
+        assert_eq!(title.indexes[0].access_method, "btree");
+        assert_eq!(title.indexes[0].included_columns, ["kind_id"]);
+        assert_eq!(title.indexes[0].keys.len(), 1);
+        assert_eq!(
+            title.indexes[0].keys[0].operator_class.as_deref(),
+            Some("pg_catalog.int4_ops")
+        );
+        assert_eq!(
+            title.indexes[0].keys[0].capabilities,
+            [IndexKeyCapability::Equality, IndexKeyCapability::Range,]
+        );
+        assert_eq!(
+            title.indexes[0].keys[0].order,
+            Some(IndexOrder {
+                direction: IndexOrderDirection::Asc,
+                nulls: IndexNullsPosition::Last,
+            })
+        );
 
         assert_eq!(metadata.types.len(), 1, "type operations merge per type");
         let operations: Vec<&str> = metadata.types[0]
@@ -453,6 +619,19 @@ mod tests {
             .map(String::as_str)
             .collect();
         assert_eq!(operations, ["<", "="]);
+
+        let catalog = metadata.to_catalog().expect("metadata builds a catalog");
+        let kind_type = catalog
+            .table("public", "kind_type")
+            .expect("kind_type resolves");
+        let kind_type_id = catalog
+            .columns_for_table(kind_type.id)
+            .find(|column| column.name == "id")
+            .expect("kind_type.id resolves");
+        assert!(
+            !catalog.column_set_is_unique(kind_type.id, &[kind_type_id.id]),
+            "an incomplete unique index cannot prove catalog uniqueness"
+        );
     }
 
     /// Rows against tables the column pass never produced (e.g. filtered

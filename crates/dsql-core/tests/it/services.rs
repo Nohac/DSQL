@@ -4,7 +4,7 @@
 
 use bowl::{Bowl, Singleton};
 use dsql_core::catalog::insert_catalog;
-use dsql_core::facts::VariablesDemand;
+use dsql_core::facts::{VariablesDemand, arm_editor_demands};
 use dsql_core::language_bowl;
 use dsql_core::service::{DefinitionRequest, DefinitionTarget, HoverInfo, HoverRequest, Position};
 use dsql_core::source::{FilePath, insert_source};
@@ -138,18 +138,37 @@ async fn query_definition_hover_reports_inferred_variables() {
             id
           }
         }
+        query DynamicReadingSearch(
+          $$selected_search = {}
+          $$indexed_search = {}
+          $$searchable_search = {}
+          $$selected_order = []
+          $$selected_indexed_order = []
+        ) {
+          public::users(
+            where $$selected_search on selected
+              and $$indexed_search on indexed
+              and $$searchable_search on searchable
+            order by $$selected_order on selected,
+              $$selected_indexed_order on selected_indexed
+          ) {
+            id
+            display: name
+          }
+        }
     "#};
 
     let bowl = language_bowl().await;
     insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
-    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
-        .await;
+    arm_editor_demands(&bowl).await;
     insert_source(&bowl, FIXTURE, source).await;
 
     let query = source.find("MovieDetailPageQuery").expect("test text");
     let no_variables = source.find("NoVariables").expect("test text");
+    let dynamic = source.find("DynamicReadingSearch").expect("test text");
     let with_variables = hover(&bowl, query).await;
     let without_variables = hover(&bowl, no_variables).await;
+    let with_dynamic_shape = hover(&bowl, dynamic).await;
 
     let bowl_without_demand = language_bowl().await;
     insert_catalog(
@@ -161,8 +180,52 @@ async fn query_definition_hover_reports_inferred_variables() {
     let without_demand = hover(&bowl_without_demand, query).await;
 
     insta::assert_snapshot!(format!(
-        "with variables:\n{with_variables}\n\nwithout variables:\n{without_variables}\n\nwithout variable demand:\n{without_demand}"
+        "with variables:\n{with_variables}\n\nwith dynamic shape:\n{with_dynamic_shape}\n\nwithout variables:\n{without_variables}\n\nwithout variable demand:\n{without_demand}"
     ));
+}
+
+#[tokio::test]
+async fn query_definition_hover_rederives_dynamic_shapes_after_edits() {
+    let initial = indoc::indoc! {r#"
+        query DynamicReadingSearch($$search = {} $$order = []) {
+          public::users(
+            where $$search on selected
+            order by $$order on selected
+          ) {
+            id
+          }
+        }
+    "#};
+    let updated = indoc::indoc! {r#"
+        query DynamicReadingSearch($$search = {} $$order = []) {
+          public::users(
+            where $$search on selected
+            order by $$order on selected
+          ) {
+            contact: email
+            recorded: created_at
+          }
+        }
+    "#};
+
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
+    arm_editor_demands(&bowl).await;
+    let file = insert_source(&bowl, FIXTURE, initial).await;
+    let before = hover(
+        &bowl,
+        initial.find("DynamicReadingSearch").expect("test text"),
+    )
+    .await;
+
+    set_source_text(&bowl, file, updated).await;
+    let after = hover(
+        &bowl,
+        updated.find("DynamicReadingSearch").expect("test text"),
+    )
+    .await;
+
+    insta::assert_snapshot!(format!("before:\n{before}\n\nafter:\n{after}"));
 }
 
 #[tokio::test]

@@ -1,4 +1,4 @@
-token Query='query' Fragment='fragment' Filter='filter' Condition='condition' On='on' Selected='selected' Apply='apply' When='when' Field='field' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or' Not='not' In='in' Is='is' Exists='exists';
+token Query='query' Fragment='fragment' Filter='filter' Condition='condition' On='on' Selected='selected' Indexed='indexed' SelectedIndexed='selected_indexed' Searchable='searchable' Apply='apply' When='when' Field='field' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or' Not='not' In='in' Is='is' Exists='exists';
 token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' LeftArrow='<-' Arrow='->' Colon=':' At='@' Comma=',' Pipe='|' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$' Question='?' Assign='=';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
@@ -9,7 +9,7 @@ skip Whitespace Comment;
 start document;
 
 document: definition*;
-contextual_name: 'not' | 'in' | 'is' | 'exists' | 'filter' | 'condition' | 'apply' | 'when' | 'field';
+contextual_name: 'not' | 'in' | 'is' | 'exists' | 'filter' | 'condition' | 'apply' | 'when' | 'field' | 'selected' | 'indexed' | 'selected_indexed' | 'searchable';
 variable_name: Name | contextual_name | 'query' | 'fragment' | 'where' | 'order' | 'by' | 'limit' | 'offset' | 'asc' | 'desc';
 definition^:
   query_def
@@ -42,7 +42,8 @@ relation_ref: qualified_name ['->' (Name | contextual_name)];
 scoped_path_segment: qualified_name ['->' (Name | contextual_name)];
 scoped_path: ('.' | '..' | '~') scoped_path_segment ('.' scoped_path_segment)*;
 value_variable: '$$' [?1 variable_name] | '$' (':' Name / [?2 variable_name]);
-dynamic_input: '$$' [variable_name] 'on' 'selected';
+dynamic_input: '$$' [variable_name] 'on' dynamic_surface;
+dynamic_surface: 'selected' | 'indexed' | 'selected_indexed' | 'searchable';
 comparison_operator: '==' | '!=' | '>' | '>=' | '<' | '<=' | 'like';
 operator_variable: ('$' | '$$') [variable_name] '[' comparison_operator (?1 ',' comparison_operator)* [','] ']';
 binary_operator: comparison_operator | ?1 operator_variable;

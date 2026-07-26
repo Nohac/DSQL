@@ -83,14 +83,17 @@ foreign_keys:
         - id
 indexes:
   - name: aka_title_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true
   - name: movie_id_aka_title
-    columns:
-      - movie_id
+    access_method: btree
+    keys:
+      - column: movie_id
     unique: false
   - name: kind_id_aka_title
-    columns:
-      - kind_id
+    access_method: btree
+    keys:
+      - column: kind_id
     unique: false

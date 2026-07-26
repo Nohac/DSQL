@@ -2,7 +2,8 @@ query RecentReadings(
   $$ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
   $$direction = "desc"
 ) {
-  readings(where .id in $$ids
+  readings(
+    where .id in $$ids
     order by flagged asc, id $$direction
     limit 10
   ) {
@@ -11,7 +12,8 @@ query RecentReadings(
 }
 
 query TypedReading {
-  readings(where .network_code == $$network
+  readings(
+    where .network_code == $$network
     and .recorded_at >= $$since
     and .value >= $$minimum
     and .confidence >= $$confidence
@@ -51,7 +53,8 @@ query MultiRootOverview {
 }
 
 query PrivacyProbe {
-  readings(where .confidence == $$confidence
+  readings(
+    where .confidence == $$confidence
     or .confidence is null
     or .confidence in $$confidences
     limit 1
@@ -69,13 +72,21 @@ query ManualFilterProbe(
   }
 }
 
-query OptionalPredicateProbe($$minimum? = null) {
-  readings(where $$minimum <= .id or .flagged == true order by id asc) {
+query OptionalPredicateProbe(
+  $$minimum? = null
+) {
+  readings(
+    where $$minimum <= .id
+    or .flagged == true
+    order by id asc
+  ) {
     id
   }
 }
 
-query OptionalLikeProbe($$code?) {
+query OptionalLikeProbe(
+  $$code?
+) {
   sensors(where .code like $$code order by code asc limit 1) {
     code
   }
@@ -83,11 +94,21 @@ query OptionalLikeProbe($$code?) {
 
 query DynamicReadingSearch(
   $$search = {}
+  $$indexed_search = {}
+  $$selected_indexed_search = {}
   $$order = []
+  $$indexed_order = []
+  $$selected_indexed_order = []
+  $$sensor_search = {}
+  $$sensor_order = []
 ) {
   readings(
     where $$search on selected
-    order by $$order on selected
+    and $$indexed_search on indexed
+    and $$selected_indexed_search on selected_indexed
+    order by $$order on selected,
+      $$indexed_order on indexed,
+      $$selected_indexed_order on selected_indexed
     limit 5
   ) {
     id
@@ -96,10 +117,18 @@ query DynamicReadingSearch(
     confidence
     flagged
   }
+  matching_sensors: sensors(
+    where $$sensor_search on searchable
+    order by $$sensor_order on searchable
+    limit 1
+  ) {
+    code
+  }
 }
 
 query EmptyAggregateCount {
-  sensors(where .code == "humidity"
+  sensors(
+    where .code == "humidity"
     and (.readings | count) == 0
     limit 1
   ) {
@@ -108,7 +137,8 @@ query EmptyAggregateCount {
 }
 
 query EmptyAggregateMinimum {
-  sensors(where .code == "humidity"
+  sensors(
+    where .code == "humidity"
     and (.readings | min .recorded_at) != $$never
     limit 1
   ) {

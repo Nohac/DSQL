@@ -51,10 +51,12 @@ foreign_keys:
         - id
 indexes:
   - name: complete_cast_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true
   - name: movie_id_complete_cast
-    columns:
-      - movie_id
+    access_method: btree
+    keys:
+      - column: movie_id
     unique: false

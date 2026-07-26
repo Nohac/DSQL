@@ -65,7 +65,10 @@ fn lower_rule(
         | Rule::ScopedPathSegment => Expression::lower(ctx, node, commands),
 
         // Consumed by FieldSelection lowering from the field_selection node.
-        Rule::ContextualName | Rule::FieldSelectionTail | Rule::FieldSuffix => None,
+        Rule::ContextualName
+        | Rule::DynamicSurface
+        | Rule::FieldSelectionTail
+        | Rule::FieldSuffix => None,
         // Consumed by Policy lowering from the definition root.
         Rule::PolicyTarget
         | Rule::ShapeTarget
@@ -264,6 +267,7 @@ pub fn format_rule(
         // Structural rules: laid out by the engine or their owner.
         Rule::FieldSelectionTail
         | Rule::ContextualName
+        | Rule::DynamicSurface
         | Rule::FieldSuffix
         | Rule::AggregateField
         | Rule::AggregateGroupKey

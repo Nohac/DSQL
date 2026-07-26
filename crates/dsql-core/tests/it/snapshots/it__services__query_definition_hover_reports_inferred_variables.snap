@@ -1,6 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/services.rs
-expression: "format!(\"with variables:\\n{with_variables}\\n\\nwithout variables:\\n{without_variables}\\n\\nwithout variable demand:\\n{without_demand}\")"
+expression: "format!(\"with variables:\\n{with_variables}\\n\\nwith dynamic shape:\\n{with_dynamic_shape}\\n\\nwithout variables:\\n{without_variables}\\n\\nwithout variable demand:\\n{without_demand}\")"
 ---
 with variables:
 ### Query `MovieDetailPageQuery`
@@ -16,6 +16,66 @@ input:
 params:
   direction: enum("asc", "desc") = "desc"
   movieId: uuid | null = null
+```
+
+with dynamic shape:
+### Query `DynamicReadingSearch`
+
+#### Variables
+
+```yaml
+params:
+  indexed_search: # default {}
+    and: [<predicate>]
+    or: [<predicate>]
+    not: <predicate>
+    id:
+      eq: uuid
+      neq: uuid
+      in: uuid[]
+      not_in: uuid[]
+      is_null: boolean
+    name:
+      eq: text
+      neq: text
+      like: text
+      in: text[]
+      not_in: text[]
+      is_null: boolean
+  searchable_search: # default {}
+    and: [<predicate>]
+    or: [<predicate>]
+    not: <predicate>
+    name:
+      eq: text
+      neq: text
+      like: text
+      in: text[]
+      not_in: text[]
+      is_null: boolean
+  selected_indexed_order: # ordered array of one-field entries; default []
+    display: enum("asc", "desc", "asc_nulls_first", "asc_nulls_last", "desc_nulls_first", "desc_nulls_last")
+    id: enum("asc", "desc", "asc_nulls_first", "asc_nulls_last", "desc_nulls_first", "desc_nulls_last")
+  selected_order: # ordered array of one-field entries; default []
+    display: enum("asc", "desc", "asc_nulls_first", "asc_nulls_last", "desc_nulls_first", "desc_nulls_last")
+    id: enum("asc", "desc", "asc_nulls_first", "asc_nulls_last", "desc_nulls_first", "desc_nulls_last")
+  selected_search: # default {}
+    and: [<predicate>]
+    or: [<predicate>]
+    not: <predicate>
+    display:
+      eq: text
+      neq: text
+      like: text
+      in: text[]
+      not_in: text[]
+      is_null: boolean
+    id:
+      eq: uuid
+      neq: uuid
+      in: uuid[]
+      not_in: uuid[]
+      is_null: boolean
 ```
 
 without variables:

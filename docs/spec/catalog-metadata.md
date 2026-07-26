@@ -69,7 +69,17 @@ foreign_keys:
 
 indexes:
   - name: memberships_user_idx
-    columns: [tenant_id, user_id]
+    access_method: btree
+    keys:
+      - column: tenant_id
+        operator_class: pg_catalog.int4_ops
+        capabilities: [equality, range]
+        order: { direction: asc, nulls: last }
+      - column: user_id
+        operator_class: pg_catalog.int4_ops
+        capabilities: [equality, range]
+        order: { direction: asc, nulls: last }
+    included_columns: [role]
     unique: true
 ```
 
@@ -193,15 +203,47 @@ represented as a SQL constraint.
 ```yaml
 indexes:
   - name: memberships_user_idx
-    columns: [tenant_id, user_id]
+    access_method: btree
+    keys:
+      - column: tenant_id
+        operator_class: pg_catalog.int4_ops
+        capabilities: [equality, range]
+        order: { direction: asc, nulls: last }
+      - column: user_id
+        operator_class: pg_catalog.int4_ops
+        capabilities: [equality, range]
+        order: { direction: asc, nulls: last }
+    included_columns: [role]
     unique: true
 ```
 
-Indexes may be used for linting and planning hints. A unique index can prove
-at-most-one cardinality when it applies to the same local column set as a
-foreign key. Partial indexes, expression indexes, and operator classes are not
-modeled in this first pass; they should not be used to prove relation
-cardinality until the metadata can represent their predicates and expressions.
+Index metadata preserves:
+
+- `access_method`: provider access method such as `btree`, `gin`, or `gist`;
+- `keys`: ordered true index keys;
+- `keys[].operator_class`: optional provider-qualified operator class;
+- `keys[].capabilities`: provider-neutral `equality`, `range`, and `like`
+  capabilities;
+- `keys[].order`: optional physical direction and null placement for orderable
+  keys;
+- `included_columns`: stored columns that are not index keys;
+- `unique`: whether the true key tuple is unique.
+
+Indexes drive unindexed-access lints and the `indexed`,
+`selected_indexed`, and `searchable` bounded-dynamic presets described in
+[Variables](variables.md). Included columns never count as index participation,
+independent lookup keys, search capability, or uniqueness proofs.
+
+A unique index can prove at-most-one cardinality only from its complete ordered
+`keys` tuple. `included_columns` do not participate in that proof.
+
+PostgreSQL introspection includes valid, ready, non-partial indexes whose keys
+are plain columns. It excludes expression and partial indexes until their
+expressions and predicates have a provider-neutral representation. PostgreSQL
+operator-family membership supplies capabilities: native `~~` support becomes
+`like`; ordinary `btree` pattern operator classes are not treated as general
+substring search. Index key order and `INCLUDE` columns are read separately via
+`indnkeyatts`.
 
 ## Relation Cardinality
 

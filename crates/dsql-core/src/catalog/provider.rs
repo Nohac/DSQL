@@ -1,5 +1,6 @@
 use super::{
-    Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyDirection, ForeignKeyId, ObjectType,
+    Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyDirection, ForeignKeyId, Index,
+    IndexKey, IndexKeyCapability, IndexNullsPosition, IndexOrder, IndexOrderDirection, ObjectType,
     Relation, RelationCardinality, RelationId, RelationSupports, Schema, SchemaId, Table, TableId,
 };
 
@@ -43,7 +44,10 @@ impl Catalog {
                     vec![users_id, users_name, users_email, users_created_at],
                     vec![users_id],
                     vec![vec![users_id]],
-                    Vec::new(),
+                    vec![
+                        btree_index("users_pkey", users_id, true),
+                        searchable_index("users_name_search_idx", users_name),
+                    ],
                     vec![RelationId(1)],
                 ),
                 Table::new(
@@ -62,7 +66,7 @@ impl Catalog {
                     ],
                     vec![posts_id],
                     vec![vec![posts_id]],
-                    Vec::new(),
+                    vec![btree_index("posts_pkey", posts_id, true)],
                     vec![RelationId(0)],
                 ),
                 Table::new(
@@ -75,7 +79,7 @@ impl Catalog {
                     vec![other_users_id, other_users_name],
                     vec![other_users_id],
                     vec![vec![other_users_id]],
-                    Vec::new(),
+                    vec![btree_index("other_users_pkey", other_users_id, true)],
                     Vec::new(),
                 ),
             ],
@@ -91,7 +95,6 @@ impl Catalog {
                     DataType::Uuid,
                     true,
                     true,
-                    true,
                 ),
                 Column::new(
                     users_name,
@@ -104,7 +107,6 @@ impl Catalog {
                     DataType::Text,
                     true,
                     false,
-                    false,
                 ),
                 Column::new(
                     users_email,
@@ -115,7 +117,6 @@ impl Catalog {
                     None,
                     "text",
                     DataType::Text,
-                    false,
                     false,
                     false,
                 ),
@@ -130,7 +131,6 @@ impl Catalog {
                     DataType::Timestamptz,
                     true,
                     false,
-                    false,
                 ),
                 Column::new(
                     posts_id,
@@ -141,7 +141,6 @@ impl Catalog {
                     None,
                     "uuid",
                     DataType::Uuid,
-                    true,
                     true,
                     true,
                 ),
@@ -156,7 +155,6 @@ impl Catalog {
                     DataType::Text,
                     true,
                     false,
-                    false,
                 ),
                 Column::new(
                     posts_body,
@@ -168,7 +166,6 @@ impl Catalog {
                     "text",
                     DataType::Text,
                     true,
-                    false,
                     false,
                 ),
                 Column::new(
@@ -182,7 +179,6 @@ impl Catalog {
                     DataType::Uuid,
                     true,
                     false,
-                    false,
                 ),
                 Column::new(
                     posts_created_at,
@@ -194,7 +190,6 @@ impl Catalog {
                     "timestamptz",
                     DataType::Timestamptz,
                     true,
-                    false,
                     false,
                 ),
                 Column::new(
@@ -208,7 +203,6 @@ impl Catalog {
                     DataType::Uuid,
                     true,
                     true,
-                    true,
                 ),
                 Column::new(
                     other_users_name,
@@ -220,7 +214,6 @@ impl Catalog {
                     "text",
                     DataType::Text,
                     true,
-                    false,
                     false,
                 ),
             ],
@@ -266,5 +259,38 @@ impl Catalog {
             ],
             uniqueness_supports: Vec::new(),
         }
+    }
+}
+
+fn btree_index(name: &str, column: ColumnId, is_unique: bool) -> Index {
+    Index {
+        name: Some(name.to_string()),
+        access_method: "btree".to_string(),
+        keys: vec![IndexKey {
+            column,
+            operator_class: None,
+            capabilities: vec![IndexKeyCapability::Equality, IndexKeyCapability::Range],
+            order: Some(IndexOrder {
+                direction: IndexOrderDirection::Asc,
+                nulls: IndexNullsPosition::Last,
+            }),
+        }],
+        included_columns: Vec::new(),
+        is_unique,
+    }
+}
+
+fn searchable_index(name: &str, column: ColumnId) -> Index {
+    Index {
+        name: Some(name.to_string()),
+        access_method: "gin".to_string(),
+        keys: vec![IndexKey {
+            column,
+            operator_class: Some("public.gin_trgm_ops".to_string()),
+            capabilities: vec![IndexKeyCapability::Like],
+            order: None,
+        }],
+        included_columns: Vec::new(),
+        is_unique: false,
     }
 }

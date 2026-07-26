@@ -915,9 +915,9 @@ fn attach_provider_supports(metadata: &DatabaseMetadata, schema_dir: &Path, cata
                     continue;
                 }
                 let columns = index
-                    .columns
+                    .keys
                     .iter()
-                    .filter_map(|column| column_id(catalog, table, column))
+                    .filter_map(|key| column_id(catalog, table, &key.column))
                     .collect::<Vec<_>>();
                 let name = index.name.clone().unwrap_or_else(|| "index".to_string());
                 catalog.uniqueness_supports.push(UniquenessSupport {

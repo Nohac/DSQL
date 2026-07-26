@@ -44,9 +44,10 @@ async fn render_clauses(bowl: &Bowl) -> String {
                     let items: Vec<String> = items
                         .iter()
                         .map(|term| match term {
-                            OrderTerm::Dynamic(variable) => format!(
-                                "$${} on selected",
-                                variable.name.as_deref().unwrap_or_default()
+                            OrderTerm::Dynamic { variable, surface } => format!(
+                                "$${} on {}",
+                                variable.name.as_deref().unwrap_or_default(),
+                                surface.as_str()
                             ),
                             OrderTerm::Column(item) => {
                                 let direction = match &item.direction {
@@ -111,7 +112,7 @@ async fn operator_variables_lower_inside_expressions() {
     insta::assert_snapshot!(render_clauses(&bowl).await);
 }
 
-/// Inferred keys such as `limit` remain usable as explicit variable names
+/// Inferred keys and contextual dynamic-surface words remain usable as names
 /// when directly adjacent to their sigil.
 #[tokio::test]
 async fn keyword_named_variables_lower_when_adjacent_to_the_sigil() {
@@ -120,7 +121,20 @@ async fn keyword_named_variables_lower_when_adjacent_to_the_sigil() {
     insert_source(
         &bowl,
         "keyword-variable.dsql",
-        "query Wart {\n  title(limit $$limit) {\n    id\n  }\n}\n",
+        indoc::indoc! {r#"
+            query searchable {
+              selected(
+                where .indexed $searchable[==] $selected
+                and .selected_indexed == $$indexed
+                limit $$limit
+              ) {
+                selected
+                indexed
+                selected_indexed
+                searchable
+              }
+            }
+        "#},
     )
     .await;
 

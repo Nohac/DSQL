@@ -55,18 +55,22 @@ foreign_keys:
         - id
 indexes:
   - name: movie_companies_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true
   - name: movie_id_movie_companies
-    columns:
-      - movie_id
+    access_method: btree
+    keys:
+      - column: movie_id
     unique: false
   - name: company_id_movie_companies
-    columns:
-      - company_id
+    access_method: btree
+    keys:
+      - column: company_id
     unique: false
   - name: company_type_id_movie_companies
-    columns:
-      - company_type_id
+    access_method: btree
+    keys:
+      - column: company_type_id
     unique: false

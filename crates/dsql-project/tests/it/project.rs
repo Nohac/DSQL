@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use bowl::{Entity, Query};
 use dsql_core::catalog::{
     ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata, ForeignKeyDirection,
-    ForeignKeyReferenceMetadata, IndexMetadata, ObjectType, RelationCardinality, SchemaMetadata,
-    TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeMetadata,
+    ForeignKeyReferenceMetadata, IndexKeyMetadata, IndexMetadata, ObjectType, RelationCardinality,
+    SchemaMetadata, TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeMetadata,
 };
 use dsql_core::facts::{Diagnostic, Severity, arm_generate_demands};
 use dsql_core::source::SourceKind;
@@ -511,7 +511,14 @@ async fn catalog_overlays_reject_unknown_keys_and_redundant_unique_indexes() {
     summary.object_type = ObjectType::MaterializedView;
     summary.indexes.push(IndexMetadata {
         name: Some("account_summary_account_id_idx".to_string()),
-        columns: vec!["account_id".to_string()],
+        access_method: "btree".to_string(),
+        keys: vec![IndexKeyMetadata {
+            column: "account_id".to_string(),
+            operator_class: None,
+            capabilities: Vec::new(),
+            order: None,
+        }],
+        included_columns: vec!["label".to_string()],
         unique: true,
     });
     dsql_project::store_metadata_dir(&metadata, &schema)

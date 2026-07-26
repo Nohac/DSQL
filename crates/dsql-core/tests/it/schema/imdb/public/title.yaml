@@ -75,10 +75,12 @@ foreign_keys:
         - id
 indexes:
   - name: title_pkey
-    columns:
-      - id
+    access_method: btree
+    keys:
+      - column: id
     unique: true
   - name: kind_id_title
-    columns:
-      - kind_id
+    access_method: btree
+    keys:
+      - column: kind_id
     unique: false

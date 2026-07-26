@@ -30,6 +30,7 @@ use bowl::{
 use crate::catalog::{FieldCheckResult, FieldRef, TableId, TableRef};
 use crate::entities::definition::DefDecl;
 use crate::entities::document::ParsedFile;
+use crate::entities::expression::DynamicInputSurface;
 use crate::entities::field_selection::{SelectionTree, TreeViews};
 use crate::entities::variable::VariableSource;
 use crate::facts::{BelongsToFile, DefKey, NodeKey, Span};
@@ -466,10 +467,13 @@ async fn enrich_completion_requests(
         .iter()
         .filter(|_| !names_only)
         .filter(|keyword| policy_keyword_applies(site, keyword))
+        .filter(|keyword| dynamic_preset_keyword_applies(&spine, keyword))
     {
-        let alphabetic = keyword.chars().all(|c| c.is_ascii_alphabetic());
+        let identifier_like = keyword
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_');
         let comparison = matches!(keyword.as_str(), "==" | "!=" | ">" | ">=" | "<" | "<=");
-        if !alphabetic && !comparison {
+        if !identifier_like && !comparison {
             // An editor gains nothing from completing `{`.
             continue;
         }
@@ -521,6 +525,11 @@ async fn enrich_completion_requests(
             None
         },
     });
+}
+
+fn dynamic_preset_keyword_applies(spine: &[(Rule, NodeRef)], keyword: &str) -> bool {
+    !DynamicInputSurface::is_spelling(keyword)
+        || spine.iter().any(|(rule, _)| *rule == Rule::DynamicInput)
 }
 
 fn definition_header_contains(cst: &crate::grammar::parser::CstData, cursor: usize) -> bool {

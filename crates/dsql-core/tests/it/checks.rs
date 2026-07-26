@@ -151,6 +151,32 @@ async fn invalid_bounded_dynamic_input_owners_and_positions_are_reported() {
 }
 
 #[tokio::test]
+async fn empty_or_body_dependent_dynamic_presets_are_reported() {
+    let bowl = checked_bowl(Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "invalid-dynamic-presets.dsql",
+        indoc::indoc! {r#"
+            query EmptySelectedIndexed($$order = []) {
+              public::users(order by $$order on selected_indexed) { email }
+            }
+            query EmptySearchable($$search = {}) {
+              posts(where $$search on searchable) { id }
+            }
+            query SelectedAggregate($$search = {}) {
+              public::users(where $$search on selected) | aggregate { count }
+            }
+            query UnresolvedSource {
+              missing(where $$search on indexed) { id }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
 async fn valid_pagination_and_collection_default_edges_check_cleanly() {
     let bowl = checked_bowl(Catalog::hardcoded()).await;
     insert_source(

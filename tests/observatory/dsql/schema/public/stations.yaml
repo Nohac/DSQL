@@ -57,8 +57,30 @@ foreign_keys:
         - code
 indexes:
   - name: stations_pkey
-    columns:
-      - tenant_id
-      - network_code
-      - code
+    access_method: btree
+    keys:
+      - column: tenant_id
+        operator_class: pg_catalog.uuid_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+      - column: network_code
+        operator_class: pg_catalog.text_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+      - column: code
+        operator_class: pg_catalog.text_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: true

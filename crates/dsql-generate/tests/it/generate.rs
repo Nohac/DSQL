@@ -60,8 +60,17 @@ constraints:
 foreign_keys: []
 indexes:
   - name: users_pkey
-    columns: [id]
+    access_method: btree
+    keys:
+      - column: id
     unique: true
+  - name: users_name_search_idx
+    access_method: gin
+    keys:
+      - column: name
+        operator_class: public.gin_trgm_ops
+        capabilities: [like]
+    unique: false
 "#;
 const POSTS_SCHEMA: &str = r#"---
 schema: public
@@ -97,7 +106,9 @@ foreign_keys:
       columns: [id]
 indexes:
   - name: posts_pkey
-    columns: [id]
+    access_method: btree
+    keys:
+      - column: id
     unique: true
 "#;
 const MEMBERSHIPS_SCHEMA: &str = r#"---
@@ -124,7 +135,10 @@ constraints:
 foreign_keys: []
 indexes:
   - name: memberships_pkey
-    columns: [tenant_id, user_id]
+    access_method: btree
+    keys:
+      - column: tenant_id
+      - column: user_id
     unique: true
 "#;
 
@@ -623,15 +637,35 @@ async fn bounded_dynamic_inputs_flow_through_sql_and_metadata() {
                   field name where $:is_admin
                 }
                 query DynamicUsers(
-                  $$search = {}
-                  $$order = []
+                  $$selected_search = {}
+                  $$indexed_search = {}
+                  $$searchable_search = {}
+                  $$selected_order = []
+                  $$indexed_order = []
+                  $$selected_indexed_order = []
+                  $$searchable_order = []
+                  $$aggregate_search = {}
+                  $$aggregate_indexed_search = {}
                 ) {
                   users(
-                    where $$search on selected
-                    order by name asc, $$order on selected, id desc
+                    where $$selected_search on selected
+                      and $$indexed_search on indexed
+                      and $$searchable_search on searchable
+                    order by name asc,
+                      $$selected_order on selected,
+                      $$indexed_order on indexed,
+                      $$selected_indexed_order on selected_indexed,
+                      $$searchable_order on searchable,
+                      id desc
                   ) {
                     id
                     label: name
+                  }
+                  summary: users(
+                    where $$aggregate_search on searchable
+                      and $$aggregate_indexed_search on indexed
+                  ) | aggregate {
+                    count
                   }
                 }
             "#},
@@ -675,9 +709,34 @@ async fn reused_dynamic_inputs_require_identical_selected_surfaces() {
         .expect_err("incompatible dynamic surfaces must fail generation");
     let message = error.to_string();
     assert!(
-        message.contains("params.search") && message.contains("incompatible capability surface"),
+        message.contains("params.search")
+            && message.contains("expanded capability surface is incompatible"),
         "unexpected dynamic surface conflict: {message}",
     );
+}
+
+#[tokio::test]
+async fn reused_dynamic_inputs_require_identical_preset_spellings() {
+    let bowl = memory_bowl(
+        catalog_from_tables([USERS_SCHEMA]),
+        vec![document(
+            "queries/frontend/incompatible-preset.dsql",
+            indoc::indoc! {r#"
+                query IncompatiblePreset($$search = {}) {
+                  selected: users(where $$search on selected_indexed) { id name }
+                  catalog: users(where $$search on indexed) { id name }
+                }
+            "#},
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let error = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect_err("one dynamic input must use one preset spelling");
+
+    insta::assert_snapshot!(error);
 }
 
 #[tokio::test]
@@ -701,7 +760,7 @@ async fn dynamic_predicates_reject_selected_aliases_reserved_for_composition() {
         .expect_err("reserved predicate composition keys must fail generation");
     let message = error.to_string();
     assert!(
-        message.contains("selected field `not`") && message.contains("alias the field"),
+        message.contains("selected field `not`") && message.contains("alias the selected field"),
         "unexpected reserved dynamic field error: {message}",
     );
 }

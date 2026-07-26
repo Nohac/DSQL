@@ -6,6 +6,6 @@ Error[182..196]: bounded dynamic predicate inputs must be named top-level query 
 Error[210..224]: bounded dynamic order inputs must be named top-level query inputs
 Error[365..385]: bounded dynamic predicates must be the whole predicate or occur in positive `and` position
 Error[469..489]: bounded dynamic predicates must be the whole predicate or occur in positive `and` position
-Error[589..609]: bounded dynamic predicates inside `exists` have no selected row surface
+Error[589..609]: bounded dynamic predicates inside `exists` require the nested source to declare a public dynamic input surface
 Error[63..83]: bounded dynamic predicate inputs are not supported in fragments
 Error[97..116]: bounded dynamic order inputs are not supported in fragments

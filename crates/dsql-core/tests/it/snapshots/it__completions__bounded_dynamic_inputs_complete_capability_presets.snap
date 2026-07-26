@@ -3,7 +3,13 @@ source: crates/dsql-core/tests/it/completions.rs
 expression: "format!(\"predicate:\\n{predicate}\\n\\norder:\\n{order}\")"
 ---
 predicate:
+Keyword indexed
+Keyword searchable
 Keyword selected
+Keyword selected_indexed
 
 order:
+Keyword indexed
+Keyword searchable
 Keyword selected
+Keyword selected_indexed
