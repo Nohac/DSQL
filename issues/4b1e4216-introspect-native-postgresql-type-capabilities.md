@@ -1,0 +1,37 @@
+# Introspect native PostgreSQL type capabilities
+
+**ID:** 4b1e4216 | **Status:** Open | **Created:** 2026-07-26T11:48:49+02:00
+
+Type capabilities are asserted by a hardcoded table even though PostgreSQL can
+state them. `type_map.yaml` already stores an `operations` set per type, and
+nothing reads it. Meanwhile operator legality is decided by a match arm that
+cannot know whether `citext` supports `like` or whether a range type supports
+ordering.
+
+Populate capability records from the provider. The index query already derives
+per-key `native_operators` from `pg_amop` and `pg_operator`, so the pattern
+exists in the introspection crate; the type query needs the equivalent over a
+type's default operator families.
+
+Column rows should also carry `atttypid` and `atttypmod` so a column points at a
+type identity rather than a name, and `format_type(atttypid, atttypmod)` should
+be retained for display so `varchar(20)` and `numeric(10,2)` survive to hover and
+generated documentation.
+
+Introspection must capture capabilities into the generated catalog. Compilation
+stays offline and derives everything from committed YAML.
+
+Sequenced after b50babe0.
+
+Acceptance criteria:
+
+- `type_map.yaml` records type kind, category, and a derived capability set per
+  type.
+- Capability records are built from provider facts, with the hardcoded table
+  retained only as the fallback for fixtures and tests that have no provider.
+- Column metadata references a type identity and retains its formatted display
+  name including type modifiers.
+- A capability change in the database is visible after `dsql introspect` without
+  a compiler change.
+- Introspection tests cover a type whose operator set differs from the hardcoded
+  assumption.
