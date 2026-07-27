@@ -142,9 +142,8 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// Ids advance monotonically, identical content republishes as a no-op,
-/// and stranded immutable manifests skip their ids instead of reusing
-/// them.
+/// Ids advance monotonically and stranded immutable manifests skip their
+/// ids instead of reusing them.
 #[test]
 fn generation_ids_never_recycle() {
     let dir = build_dir("ids");
@@ -179,6 +178,19 @@ fn generation_ids_never_recycle() {
     std::fs::write(dir.join("manifest.json"), "not json").expect("corrupt pointer");
     let third = publish(&dir, &snapshot(vec![artifact("A", "three")])).expect("third publish");
     assert_eq!(third.generation_id, 9, "ids advance from the disk scan");
+
+    // An obsolete pointer contract is not a source of current generation
+    // state. The immutable-manifest scan still preserves monotonic ids.
+    std::fs::write(
+        dir.join("manifest.json"),
+        r#"{"version":5,"generationId":50,"operations":[],"fragments":[]}"#,
+    )
+    .expect("obsolete pointer");
+    let fourth = publish(&dir, &snapshot(vec![artifact("A", "four")])).expect("fourth publish");
+    assert_eq!(
+        fourth.generation_id, 10,
+        "obsolete pointer versions are ignored"
+    );
     no_temp_files(&dir);
 
     std::fs::remove_dir_all(&dir).ok();

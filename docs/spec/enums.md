@@ -110,6 +110,10 @@ shape of columns.
 Configuration is deliberately structural. It cannot contain SQL, predicates,
 transforms, or provider expressions. A project that needs a filtered or
 transformed value set defines a database view and uses that view as `source`.
+Open scalar types with structural wire, literal, pattern, and operator
+semantics use [`[[catalog.types]]`](catalog-metadata.md#project-type-declarations)
+instead. Scalar declarations cannot claim a closed variant set, and enum
+declarations cannot widen scalar operator capabilities.
 
 The source object's database comment supplies the enum type description. The
 configured description column supplies per-variant descriptions. Labels are

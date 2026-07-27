@@ -23,11 +23,11 @@ use dsql_core::sql::{GeneratedDynamicInputSite, GeneratedDynamicValueKind, Gener
 use dsql_metadata::{
     DefinitionKind, DynamicInputField, DynamicInputMetadata, DynamicInputSite,
     DynamicInputSiteField, DynamicPredicateOperatorMetadata, FragmentMetadata,
-    FragmentSpreadMetadata, InputDefault, InputField, OperationMetadata, PolicyApplicationMetadata,
-    PolicyFieldAccessMetadata, PolicyMetadata, ProviderTypeMetadata, ResultField, ResultFieldKind,
-    ResultShape, ResultValueShape, ResultValueTypeMetadata, SourceMapEntry, SourceRange,
-    SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
-    WireMetadata,
+    FragmentSpreadMetadata, InputDefault, InputField, InputValidationMetadata, OperationMetadata,
+    PolicyApplicationMetadata, PolicyFieldAccessMetadata, PolicyMetadata, ProviderTypeMetadata,
+    ResultField, ResultFieldKind, ResultShape, ResultValueShape, ResultValueTypeMetadata,
+    SourceMapEntry, SourceRange, SqlDialect, SqlMetadata, SqlParameterMetadata,
+    SqlVariantCaseMetadata, SqlVariantMetadata, WireMetadata,
 };
 
 use crate::pipeline::{GenerateError, Result};
@@ -171,6 +171,10 @@ fn dynamic_input_metadata(
                     wire: catalog_type.map_or_else(
                         || wire_metadata_for_data_type(field.data_type),
                         wire_metadata_for_catalog_type,
+                    ),
+                    validation: catalog_type.map_or_else(
+                        || validation_metadata_for_data_type(field.data_type),
+                        validation_metadata_for_catalog_type,
                     ),
                     nullable: field.nullable,
                     access: access_label(field.access).to_string(),
@@ -884,6 +888,7 @@ fn input_fields(
             }
             .to_string(),
             wire: binding_wire(catalog, binding),
+            validation: binding_validation(catalog, binding),
             collection: binding.collection.then_some(true),
             enum_values: binding.enum_values.clone(),
             required: binding.required,
@@ -915,6 +920,13 @@ fn binding_wire(catalog: &Catalog, binding: &VariableBinding) -> WireMetadata {
         return wire_metadata_for_catalog_type(data_type);
     }
     wire_metadata_for_data_type(binding.data_type)
+}
+
+fn binding_validation(catalog: &Catalog, binding: &VariableBinding) -> InputValidationMetadata {
+    if let Some(data_type) = binding_catalog_type(catalog, binding) {
+        return validation_metadata_for_catalog_type(data_type);
+    }
+    validation_metadata_for_data_type(binding.data_type)
 }
 
 fn logical_type_for_catalog_type(data_type: &CatalogType) -> &str {
@@ -1007,6 +1019,18 @@ fn wire_metadata_for_data_type(data_type: DataType) -> WireMetadata {
     }
 }
 
+fn validation_metadata_for_catalog_type(data_type: &CatalogType) -> InputValidationMetadata {
+    InputValidationMetadata {
+        pattern: data_type.capabilities.literals.pattern.clone(),
+    }
+}
+
+fn validation_metadata_for_data_type(data_type: DataType) -> InputValidationMetadata {
+    InputValidationMetadata {
+        pattern: Catalog::builtin_capabilities(data_type).literals.pattern,
+    }
+}
+
 fn provider_type_metadata(key: &TypeKey) -> ProviderTypeMetadata {
     ProviderTypeMetadata {
         schema: key.schema.clone(),
@@ -1033,6 +1057,7 @@ fn context_fields(
                 path: binding.path.clone(),
                 data_type: binding_logical_type(catalog, binding).to_string(),
                 wire: binding_wire(catalog, binding),
+                validation: binding_validation(catalog, binding),
                 collection: binding.collection.then_some(true),
                 enum_values: binding.enum_values.clone(),
                 required: true,
@@ -1068,6 +1093,14 @@ fn context_fields(
                                 .map(provider_type_metadata),
                         },
                         wire_metadata_for_catalog_type,
+                    ),
+                validation: requirement
+                    .provider_type
+                    .as_ref()
+                    .and_then(|key| catalog.type_by_key(key))
+                    .map_or_else(
+                        || validation_metadata_for_data_type(requirement.data_type),
+                        validation_metadata_for_catalog_type,
                     ),
                 collection: requirement.collection.then_some(true),
                 enum_values: Vec::new(),

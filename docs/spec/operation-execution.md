@@ -134,6 +134,13 @@ Input refinements determine requiredness, nullability, and defaults in emitted
 metadata. The maintained Rust and TypeScript materializers consume that same
 contract; adapters must not reinterpret it independently.
 
+An authored `catalog.types` pattern is part of that compiler-produced input
+contract. It runs after wire validation for supplied scalar values, every
+non-null collection member, declaration defaults, and bounded dynamic operands.
+Pattern failure is an input error before SQL execution. The compiler validates
+the portable pattern once at project load; runtimes never accept an invalid
+pattern as an unvalidated fallback.
+
 Result metadata carries the same wire classification. `bigint`, `numeric`, and
 provider-defined `text_cast` scalars are explicitly cast to PostgreSQL `text`
 before JSON construction so host runtimes receive their exact public string

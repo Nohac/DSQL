@@ -1,0 +1,6 @@
+---
+source: crates/dsql-generate/tests/it/generate.rs
+expression: "error.to_string().replace(&dir.display().to_string(), \"<project>\")"
+---
+the project has 1 error diagnostics; fix them before generating:
+<project>/dsql/queries/events.dsql:49..59: field `.event_date` expects Date string matching pattern `^[0-9]{4}-[0-9]{2}-[0-9]{2}$` but predicate uses string

@@ -880,7 +880,8 @@ fn project_error_parts(error: &dsql_project::ProjectError) -> (Option<String>, S
         ProjectError::Read { path, .. }
         | ProjectError::Parse { path, .. }
         | ProjectError::Write { path, .. }
-        | ProjectError::CatalogOverlay { path, .. } => Some(path.display().to_string()),
+        | ProjectError::CatalogOverlay { path, .. }
+        | ProjectError::CatalogType { path, .. } => Some(path.display().to_string()),
         ProjectError::MissingRoot(_)
         | ProjectError::CurrentDir(_)
         | ProjectError::CatalogBuild(_)

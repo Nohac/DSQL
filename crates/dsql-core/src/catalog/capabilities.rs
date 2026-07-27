@@ -7,7 +7,9 @@
 //! widening [`DataType::from_database_type`].
 
 use facet::Facet;
-use std::collections::BTreeSet;
+use regex::Regex;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Mutex, OnceLock};
 
 pub use dsql_metadata::WireEncoding;
 
@@ -35,6 +37,7 @@ pub struct ScalarAcceptance {
     pub kinds: Vec<LiteralKind>,
     pub validation: ScalarValidation,
     pub description: String,
+    pub pattern: Option<String>,
 }
 
 impl ScalarAcceptance {
@@ -42,13 +45,86 @@ impl ScalarAcceptance {
         if !self.kinds.contains(&kind) {
             return false;
         }
-        match self.validation {
+        let accepted = match self.validation {
             ScalarValidation::Any => true,
             ScalarValidation::Integer => value.parse::<i64>().is_ok(),
             ScalarValidation::SafeInteger => value
                 .parse::<i64>()
                 .is_ok_and(|value| (MIN_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value)),
             ScalarValidation::FiniteFloat => value.parse::<f64>().is_ok_and(f64::is_finite),
+        };
+        accepted
+            && self
+                .pattern
+                .as_deref()
+                .is_none_or(|pattern| pattern_matches(pattern, value))
+    }
+
+    /// Narrows this acceptance surface to one authored nominal contract.
+    pub fn narrow(&mut self, name: &str, kind: LiteralKind, pattern: Option<String>) {
+        self.kinds = vec![kind];
+        self.description = pattern.as_ref().map_or_else(
+            || format!("{name} {}", kind.as_str()),
+            |pattern| format!("{name} {} matching pattern `{pattern}`", kind.as_str()),
+        );
+        self.pattern = pattern;
+    }
+}
+
+fn pattern_matches(pattern: &str, value: &str) -> bool {
+    // Runtime execution repeats this cache in dsql-execute. Project loading
+    // guarantees both consumers receive only the shared portable subset.
+    static PATTERNS: OnceLock<Mutex<HashMap<String, Regex>>> = OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut patterns = match patterns.lock() {
+        Ok(patterns) => patterns,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(compiled) = patterns.get(pattern) {
+        return compiled.is_match(value);
+    }
+    let Ok(compiled) = Regex::new(pattern) else {
+        return false;
+    };
+    let matches = compiled.is_match(value);
+    patterns.insert(pattern.to_string(), compiled);
+    matches
+}
+
+impl TypeCapabilities {
+    /// Inherits configured scalar semantics through a domain while preserving
+    /// the domain's provider-owned comparison surface.
+    pub fn inherit_mapped_domain(&mut self, base: &Self) {
+        self.name.clone_from(&base.name);
+        self.aliases.clone_from(&base.aliases);
+        self.wire = base.wire;
+        self.literals.clone_from(&base.literals);
+        self.defaults.clone_from(&base.defaults);
+        self.aggregates.clone_from(&base.aggregates);
+        self.operators
+            .retain(|operator| base.operators.contains(operator));
+        self.orderable &= base.orderable;
+    }
+
+    /// Applies one validated authored mapping. Callers must establish that
+    /// every requested capability narrows the provider-owned baseline.
+    pub fn apply_mapping(
+        &mut self,
+        name: String,
+        literal: LiteralKind,
+        pattern: Option<String>,
+        operators: Option<Vec<ComparisonOp>>,
+        orderable: Option<bool>,
+    ) {
+        self.name = name.clone();
+        self.aliases = vec![name.clone()];
+        self.literals.narrow(&name, literal, pattern.clone());
+        self.defaults.narrow(&name, literal, pattern);
+        if let Some(operators) = operators {
+            self.operators = operators;
+        }
+        if orderable == Some(false) {
+            self.orderable = false;
         }
     }
 }
@@ -104,11 +180,13 @@ impl TypeCapabilities {
                 kinds: definition.literal_kinds.to_vec(),
                 validation: definition.literal_validation,
                 description: definition.literal_description.to_string(),
+                pattern: None,
             },
             defaults: ScalarAcceptance {
                 kinds: definition.default_kinds.to_vec(),
                 validation: definition.default_validation,
                 description: definition.default_description.to_string(),
+                pattern: None,
             },
             aggregates: definition.aggregates.clone(),
         }

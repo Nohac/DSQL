@@ -1,0 +1,22 @@
+---
+source: crates/dsql-project/tests/it/project.rs
+expression: rendered
+---
+malformed provider key: <project>/dsql/dsql.toml catalog.types[0].pg: must be exactly `schema.type`
+missing provider type: <project>/dsql/dsql.toml catalog.types[0].pg: provider type `public.missing` was not found
+invalid nominal name: <project>/dsql/dsql.toml catalog.types[0].name: must match `[A-Z][A-Za-z0-9_]*`
+builtin nominal collision: <project>/dsql/dsql.toml catalog.types[0].name: nominal name `Text` collides with a compiler-owned type
+duplicate nominal name: <project>/dsql/dsql.toml catalog.types[1].name: nominal name `Date` is also declared by catalog.types[0]
+duplicate provider mapping: <project>/dsql/dsql.toml catalog.types[1].pg: provider type `pg_catalog.date` is already declared by catalog.types[0]
+array target: <project>/dsql/dsql.toml catalog.types[0].pg: array types inherit their element mapping and cannot be declared directly
+incompatible wire: <project>/dsql/dsql.toml catalog.types[0].wire: wire `uuid` is incompatible with provider encoding `text_cast`
+unknown wire value: failed to parse <project>/dsql/dsql.toml: unexpected token: got legacy, expected known enum variant at catalog.types[0].wire
+incompatible literal: <project>/dsql/dsql.toml catalog.types[0].literal: literal `boolean` is incompatible with wire `text`
+pattern on non-string literal: <project>/dsql/dsql.toml catalog.types[0].pattern: patterns require `wire = "text"` and `literal = "string"`
+pattern on non-text wire: <project>/dsql/dsql.toml catalog.types[0].pattern: patterns require `wire = "text"` and `literal = "string"`
+non-portable pattern: <project>/dsql/dsql.toml catalog.types[0].pattern: escape `\d` is not in the portable regex subset
+wildcard pattern: <project>/dsql/dsql.toml catalog.types[0].pattern: wildcard `.` is not in the portable regex subset; use an explicit negated character class
+bare closing brace: <project>/dsql/dsql.toml catalog.types[0].pattern: contains an unmatched `}`
+duplicate operator: <project>/dsql/dsql.toml catalog.types[0].operators: operator `eq` is duplicated
+unsupported operator: <project>/dsql/dsql.toml catalog.types[0].operators: provider type does not support operator `like`
+widened orderability: <project>/dsql/dsql.toml catalog.types[0].orderable: may only be omitted or set to false

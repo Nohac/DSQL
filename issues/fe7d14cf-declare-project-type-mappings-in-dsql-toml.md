@@ -1,6 +1,6 @@
 # Declare project type mappings in dsql.toml
 
-**ID:** fe7d14cf | **Status:** Open | **Created:** 2026-07-26T11:48:49+02:00
+**ID:** fe7d14cf | **Status:** Done | **Created:** 2026-07-26T11:48:49+02:00
 
 Projects cannot name a PostgreSQL type the compiler does not already know. A
 `date` or `citext` column is reported as `unknown` in generated metadata, which
@@ -17,7 +17,7 @@ pg = "pg_catalog.date"
 name = "Date"
 wire = "text"
 literal = "string"
-pattern = '^\d{4}-\d{2}-\d{2}$'
+pattern = '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
 ```
 
 `name` is the nominal logical type that appears in generated metadata, `wire`
@@ -43,3 +43,7 @@ Acceptance criteria:
   bump; the version story is stated in docs/spec/codegen.md.
 - docs/spec/catalog-metadata.md documents the declaration and its interaction
   with the generated `type_map.yaml`.
+
+Implemented with strict `[[catalog.types]]` validation, effective domain and
+array propagation, manifest v6 input-validation metadata, and shared Rust and
+TypeScript runtime pattern conformance. Older manifest contracts are rejected.

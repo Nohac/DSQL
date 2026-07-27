@@ -524,7 +524,7 @@ impl ContractContext<'_> {
         inference
             .bindings
             .sort_by_key(|(span, _)| (span.start, span.end));
-        let refinement_problems = refine_bindings(decl, &mut inference.bindings);
+        let refinement_problems = refine_bindings(decl, &mut inference.bindings, self.catalog);
         problems.extend(refinement_problems);
         let mut merge_problems = Vec::new();
         let effective = merge_bindings(&inference.bindings, decl, &mut merge_problems);
@@ -1033,6 +1033,7 @@ async fn diagnose_variable_problems(
 fn refine_bindings(
     decl: &DefDecl,
     bindings: &mut [(Span, VariableBinding)],
+    catalog: &Catalog,
 ) -> Vec<VariableProblem> {
     let mut problems = Vec::new();
     let mut refined = HashSet::new();
@@ -1087,7 +1088,7 @@ fn refine_bindings(
             .iter()
             .filter(|(_, binding)| refinement_matches(refinement, binding))
         {
-            if let Some(message) = validate_refinement(refinement, binding) {
+            if let Some(message) = validate_refinement(refinement, binding, catalog) {
                 problems.push(VariableProblem {
                     span: refinement.span,
                     code: DiagnosticCode::InvalidVariableRefinement,
@@ -1127,7 +1128,11 @@ fn refinement_matches(refinement: &InputRefinement, binding: &VariableBinding) -
     }
 }
 
-fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) -> Option<String> {
+fn validate_refinement(
+    refinement: &InputRefinement,
+    binding: &VariableBinding,
+    catalog: &Catalog,
+) -> Option<String> {
     if !binding.refinable {
         return Some(format!(
             "input `{}` inherits a fragment root contract and cannot be refined at the caller",
@@ -1155,7 +1160,12 @@ fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) 
     let Some(default) = &refinement.default else {
         return None;
     };
-    let capabilities = Catalog::builtin_capabilities(binding.data_type);
+    let capabilities = binding
+        .provider_type
+        .as_ref()
+        .and_then(|key| catalog.type_by_key(key))
+        .map(|data_type| data_type.capabilities.clone())
+        .unwrap_or_else(|| Catalog::builtin_capabilities(binding.data_type));
     if matches!(default, InputDefault::Null) {
         return (!refinement.nullable).then(|| {
             format!(
@@ -1215,7 +1225,7 @@ fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) 
         Some(format!(
             "default for `{}` does not match inferred type {}{}",
             refinement.name,
-            binding.data_type.as_str(),
+            capabilities.name,
             if binding.collection { "[]" } else { "" }
         ))
     }

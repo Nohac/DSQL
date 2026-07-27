@@ -180,7 +180,7 @@ indexes:
     unique: true
 "#;
 
-fn provider_scalar_catalog() -> Catalog {
+fn provider_scalar_metadata() -> DatabaseMetadata {
     let provider_type = |name: &str, category: &str| TypeMetadata {
         internal_type: name.to_string(),
         readable_type: name.to_string(),
@@ -226,8 +226,12 @@ fn provider_scalar_catalog() -> Catalog {
             provider_type("int8", "N"),
         ],
     }
-    .to_catalog()
-    .expect("provider scalar catalog builds")
+}
+
+fn provider_scalar_catalog() -> Catalog {
+    provider_scalar_metadata()
+        .to_catalog()
+        .expect("provider scalar catalog builds")
 }
 
 fn structured_type_catalog() -> Catalog {
@@ -554,6 +558,14 @@ fn copy_tree(source: &Path, target: &Path) {
             std::fs::copy(&from, &to).expect("fixture file copies");
         }
     }
+}
+
+fn write_test_file(root: &Path, relative: &str, contents: &str) {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("test file parent");
+    }
+    std::fs::write(path, contents).expect("test file writes");
 }
 
 #[tokio::test]
@@ -936,6 +948,105 @@ async fn provider_scalar_wire_identity_flows_through_generated_metadata() {
         .expect("provider scalar operation artifact");
 
     insta::assert_snapshot!(artifact.serialized);
+}
+
+#[tokio::test]
+async fn configured_catalog_types_flow_through_generated_metadata() {
+    let scratch = tempfile::tempdir().expect("configured-type scratch directory");
+    let dir = scratch.path();
+    write_test_file(
+        dir,
+        "dsql/dsql.toml",
+        indoc::indoc! {r#"
+            database_url = "x"
+
+            [[catalog.types]]
+            pg = "pg_catalog.date"
+            name = "Date"
+            wire = "text"
+            literal = "string"
+            pattern = '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+            operators = ["eq", "ne"]
+            orderable = false
+        "#},
+    );
+    dsql_project::store_metadata_dir(&provider_scalar_metadata(), &dir.join("dsql/schema"))
+        .await
+        .expect("configured-type metadata stores");
+    write_test_file(
+        dir,
+        "dsql/queries/events.dsql",
+        indoc::indoc! {r#"
+            query MappedEvents($$date = "2026-07-27") {
+              events(where .event_date == $$date) {
+                event_date
+                event_dates
+              }
+            }
+
+            query DynamicMappedEvents($$search = {}) {
+              events(where $$search on selected) {
+                event_date
+              }
+            }
+        "#},
+    );
+
+    let project = Project::load_from(dir)
+        .await
+        .expect("configured-type project loads");
+    let output = generate_project(&project, GenerateOptions::default(), MatchLockMode::Update)
+        .await
+        .expect("configured-type project generates");
+    let manifest = std::fs::read_to_string(&output.manifest_path).expect("manifest reads");
+    let manifest: dsql_metadata::BuildManifest =
+        facet_json::from_str(&manifest).expect("manifest parses");
+    let entry = manifest
+        .operations
+        .iter()
+        .find(|entry| entry.name == "MappedEvents")
+        .expect("mapped operation is published");
+    let artifact = std::fs::read_to_string(project.root.join("build").join(&entry.path))
+        .expect("mapped operation artifact reads");
+    let dynamic_entry = manifest
+        .operations
+        .iter()
+        .find(|entry| entry.name == "DynamicMappedEvents")
+        .expect("mapped dynamic operation is published");
+    let dynamic_artifact =
+        std::fs::read_to_string(project.root.join("build").join(&dynamic_entry.path))
+            .expect("mapped dynamic operation artifact reads");
+
+    insta::assert_snapshot!(artifact);
+    insta::assert_snapshot!("configured_catalog_type_dynamic_input", dynamic_artifact);
+    write_test_file(
+        dir,
+        "dsql/queries/events.dsql",
+        "query MappedEvents($$date = \"tomorrow\") { events(where .event_date == $$date) { event_date } }",
+    );
+    let error = generate_project(&project, GenerateOptions::default(), MatchLockMode::Update)
+        .await
+        .expect_err("mapped pattern rejects an invalid declaration default");
+    insta::assert_snapshot!(
+        "configured_catalog_type_rejects_bad_default",
+        error
+            .to_string()
+            .replace(&dir.display().to_string(), "<project>")
+    );
+    write_test_file(
+        dir,
+        "dsql/queries/events.dsql",
+        "query MappedEvents { events(where .event_date == \"tomorrow\") { event_date } }",
+    );
+    let error = generate_project(&project, GenerateOptions::default(), MatchLockMode::Update)
+        .await
+        .expect_err("mapped pattern rejects an invalid literal");
+    insta::assert_snapshot!(
+        "configured_catalog_type_rejects_bad_literal",
+        error
+            .to_string()
+            .replace(&dir.display().to_string(), "<project>")
+    );
 }
 
 #[tokio::test]

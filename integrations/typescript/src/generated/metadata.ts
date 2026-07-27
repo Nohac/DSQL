@@ -1,4 +1,4 @@
-export const BUILD_MANIFEST_VERSION = 5 as const;
+export const BUILD_MANIFEST_VERSION = 6 as const;
 
 export interface BuildManifest {
   version: number;
@@ -53,8 +53,8 @@ export interface SourceMapEntry {
    * content between the host's backticks (the extractor's `content`
    * capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
    * offsets into the host file; identical across definitions from the
-   * same embedded expression. Required for embedded sources in manifest
-   * version 5; absent for standalone `.dsql` sources.
+   * same embedded expression. Required for embedded sources and absent
+   * for standalone `.dsql` sources.
    */
   content_range?: SourceRange;
 }
@@ -158,10 +158,16 @@ export interface DynamicInputField {
   catalog_path: string;
   data_type: string;
   wire: WireMetadata;
+  validation: InputValidationMetadata;
   nullable: boolean;
   access: string;
   operators: string[];
   directions: string[];
+}
+
+/** Compiler-owned validation applied after a value matches its wire encoding. */
+export interface InputValidationMetadata {
+  pattern?: string;
 }
 
 /** Public JSON encoding plus an optional PostgreSQL text-cast target. */
@@ -183,6 +189,7 @@ export interface InputField {
   path: string;
   data_type: string;
   wire: WireMetadata;
+  validation: InputValidationMetadata;
   collection?: boolean;
   enum_values: string[];
   required: boolean;

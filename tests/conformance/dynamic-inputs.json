@@ -15,6 +15,7 @@
         "path": "params.tenant",
         "data_type": "int",
         "wire": { "encoding": "integer" },
+        "validation": {},
         "enum_values": [],
         "required": true,
         "nullable": false
@@ -23,6 +24,7 @@
         "path": "params.search",
         "data_type": "dynamic_predicate",
         "wire": { "encoding": "unsupported" },
+        "validation": {},
         "enum_values": [],
         "required": false,
         "nullable": true,
@@ -32,6 +34,7 @@
         "path": "params.order",
         "data_type": "dynamic_order",
         "wire": { "encoding": "unsupported" },
+        "validation": {},
         "enum_values": [],
         "required": false,
         "nullable": true,
@@ -51,6 +54,7 @@
             "catalog_path": "public.readings.amount",
             "data_type": "numeric",
             "wire": { "encoding": "numeric" },
+            "validation": {},
             "nullable": false,
             "access": "unconditional",
             "operators": ["eq"],
@@ -61,6 +65,7 @@
             "catalog_path": "public.readings.id",
             "data_type": "int",
             "wire": { "encoding": "integer" },
+            "validation": {},
             "nullable": false,
             "access": "unconditional",
             "operators": ["eq", "in", "not_in", "is_null"],
@@ -71,6 +76,7 @@
             "catalog_path": "public.readings.name",
             "data_type": "text",
             "wire": { "encoding": "text" },
+            "validation": { "pattern": "^[A-Z]" },
             "nullable": false,
             "access": "unconditional",
             "operators": ["like"],
@@ -81,6 +87,7 @@
             "catalog_path": "public.readings.wide_id",
             "data_type": "bigint",
             "wire": { "encoding": "big_integer" },
+            "validation": {},
             "nullable": false,
             "access": "unconditional",
             "operators": ["eq", "in"],
@@ -91,6 +98,7 @@
             "catalog_path": "public.readings.recorded_at",
             "data_type": "timestamptz",
             "wire": { "encoding": "timestamptz" },
+            "validation": {},
             "nullable": false,
             "access": "unconditional",
             "operators": ["eq"],
@@ -300,6 +308,7 @@
             "catalog_path": "public.readings.id",
             "data_type": "int",
             "wire": { "encoding": "integer" },
+            "validation": {},
             "nullable": false,
             "access": "unconditional",
             "operators": [],
@@ -460,6 +469,18 @@
         }
       },
       "error": "params.search.wide_id.eq"
+    },
+    {
+      "name": "dynamic mapped pattern rejects an operand",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": {
+            "name": { "like": "alice%" }
+          }
+        }
+      },
+      "error": "params.search.name.like"
     },
     {
       "name": "unknown selected field is rejected",

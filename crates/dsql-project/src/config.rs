@@ -40,6 +40,12 @@ pub enum ProjectError {
         item_path: String,
         message: String,
     },
+    #[error("{path} {item_path}: {message}")]
+    CatalogType {
+        path: PathBuf,
+        item_path: String,
+        message: String,
+    },
     #[error(
         "document {path} is assigned to resolver `{first_resolver}` in scope `{first_scope}` and resolver `{second_resolver}` in scope `{second_scope}`"
     )]
@@ -97,11 +103,14 @@ pub struct Config {
     /// Lint severities.
     #[facet(default)]
     pub lint: LintSectionConfig,
+    /// Authored nominal semantics for provider catalog types.
+    #[facet(default)]
+    pub catalog: CatalogConfig,
 }
 
 impl Config {
-    /// Whether an entirely unconfigured project uses the legacy recursive
-    /// `.dsql` discovery fallback. Cold discovery deliberately keeps its
+    /// Whether an entirely unconfigured project uses recursive `.dsql`
+    /// discovery. Cold discovery deliberately keeps its
     /// directory walk, while warm ownership represents the same intent as a
     /// glob; centralizing the predicate prevents empty named scopes from
     /// accidentally enabling either fallback.
@@ -139,6 +148,70 @@ impl Config {
         };
         ScopeImports(scopes)
     }
+}
+
+/// The `[catalog]` section.
+#[derive(Clone, Debug, Default, Facet)]
+#[facet(deny_unknown_fields)]
+pub struct CatalogConfig {
+    #[facet(default)]
+    pub types: Vec<CatalogTypeConfig>,
+}
+
+/// One `[[catalog.types]]` nominal mapping.
+#[derive(Clone, Debug, Facet)]
+#[facet(deny_unknown_fields)]
+pub struct CatalogTypeConfig {
+    pub pg: String,
+    pub name: String,
+    pub wire: CatalogTypeWire,
+    pub literal: CatalogTypeLiteral,
+    #[facet(default)]
+    pub pattern: Option<String>,
+    #[facet(default)]
+    pub operators: Option<Vec<CatalogTypeOperator>>,
+    #[facet(default)]
+    pub orderable: Option<bool>,
+}
+
+/// Public JSON representation requested by one catalog type mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum CatalogTypeWire {
+    Uuid,
+    Text,
+    Timestamptz,
+    Integer,
+    BigInteger,
+    Numeric,
+    Float,
+    Boolean,
+    Json,
+}
+
+/// DSQL literal kind accepted by one catalog type mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum CatalogTypeLiteral {
+    String,
+    Number,
+    Boolean,
+}
+
+/// Provider-backed comparison capability retained by one mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum CatalogTypeOperator {
+    Eq,
+    Ne,
+    Gt,
+    Ge,
+    Lt,
+    Le,
+    Like,
 }
 
 /// The `[lint]` section.
@@ -328,8 +401,10 @@ impl Project {
         &self,
         metadata: &DatabaseMetadata,
     ) -> Result<Catalog> {
-        super::overlay::load_effective_catalog(metadata, &self.schema, &self.overlays)
-            .await
+        let catalog =
+            super::overlay::load_effective_catalog(metadata, &self.schema, &self.overlays).await?;
+        let config_path = self.root.join("dsql.toml");
+        super::catalog_types::apply_catalog_types(catalog, &self.config.catalog.types, &config_path)
             .map(|catalog| catalog.with_default_schema(self.config.default_schema.clone()))
     }
 }

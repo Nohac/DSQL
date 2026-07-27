@@ -3,8 +3,8 @@ use facet::Facet;
 #[cfg(feature = "render")]
 const BUILD_MANIFEST_SCHEMA_ID: &str = "https://dsql.dev/schemas/build-manifest.schema.json";
 
-/// Manifest format version 5: result fields carry an explicit value shape.
-pub const BUILD_MANIFEST_VERSION: u32 = 5;
+/// Manifest format version 6: every public scalar input carries validation metadata.
+pub const BUILD_MANIFEST_VERSION: u32 = 6;
 #[cfg(feature = "render")]
 const JSON_SCHEMA_DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
@@ -215,6 +215,7 @@ pub struct InputField {
     pub path: String,
     pub data_type: String,
     pub wire: WireMetadata,
+    pub validation: InputValidationMetadata,
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub collection: Option<bool>,
     pub enum_values: Vec<String>,
@@ -237,6 +238,13 @@ pub struct WireMetadata {
 pub struct ProviderTypeMetadata {
     pub schema: String,
     pub name: String,
+}
+
+/// Compiler-owned validation applied after a value matches its wire encoding.
+#[derive(Clone, Debug, Facet)]
+pub struct InputValidationMetadata {
+    #[facet(skip_serializing_if = Option::is_none)]
+    pub pattern: Option<String>,
 }
 
 /// A typed compile-time replacement for one omitted public input.
@@ -269,6 +277,7 @@ pub struct DynamicInputField {
     pub catalog_path: String,
     pub data_type: String,
     pub wire: WireMetadata,
+    pub validation: InputValidationMetadata,
     pub nullable: bool,
     pub access: String,
     pub operators: Vec<String>,
@@ -363,8 +372,8 @@ pub struct SourceMapEntry {
     /// content between the host's backticks (the extractor's `content`
     /// capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
     /// offsets into the host file; identical across definitions from the
-    /// same embedded expression. Required for embedded sources in manifest
-    /// version 5; absent for standalone `.dsql` sources.
+    /// same embedded expression. Required for embedded sources and absent
+    /// for standalone `.dsql` sources.
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub content_range: Option<SourceRange>,
 }

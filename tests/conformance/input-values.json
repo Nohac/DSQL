@@ -5,6 +5,7 @@
       "path": "params.value",
       "data_type": "int",
       "wire": { "encoding": "integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -18,6 +19,7 @@
       "path": "params.value",
       "data_type": "int",
       "wire": { "encoding": "integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -31,6 +33,7 @@
       "path": "params.value",
       "data_type": "int",
       "wire": { "encoding": "integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -44,6 +47,7 @@
       "path": "params.value",
       "data_type": "int",
       "wire": { "encoding": "integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -58,6 +62,7 @@
       "data_type": "int",
       "wire": { "encoding": "integer" },
       "collection": true,
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -72,6 +77,7 @@
       "data_type": "int",
       "wire": { "encoding": "integer" },
       "collection": true,
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -85,6 +91,7 @@
       "path": "params.value",
       "data_type": "int",
       "wire": { "encoding": "integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": true
@@ -98,6 +105,7 @@
       "path": "params.value",
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -111,6 +119,7 @@
       "path": "params.value",
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -125,6 +134,7 @@
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
       "collection": true,
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -142,6 +152,7 @@
       "path": "params.value",
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -155,6 +166,7 @@
       "path": "params.value",
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -168,6 +180,7 @@
       "path": "params.value",
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -181,6 +194,7 @@
       "path": "params.value",
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -194,6 +208,7 @@
       "path": "params.value",
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -210,6 +225,7 @@
         "encoding": "text_cast",
         "provider_type": { "schema": "pg_catalog", "name": "date" }
       },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -226,6 +242,7 @@
         "encoding": "text_cast",
         "provider_type": { "schema": "pg_catalog", "name": "date" }
       },
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -243,11 +260,92 @@
         "provider_type": { "schema": "pg_catalog", "name": "date" }
       },
       "collection": true,
+      "validation": {},
       "enum_values": [],
       "required": true,
       "nullable": false
     },
     "bindings": { "params": { "value": ["2026-07-27", null] } },
     "expected": ["2026-07-27", null]
+  },
+  {
+    "name": "mapped text pattern",
+    "field": {
+      "path": "params.value",
+      "data_type": "Date",
+      "wire": {
+        "encoding": "text_cast",
+        "provider_type": { "schema": "pg_catalog", "name": "date" }
+      },
+      "validation": { "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": "2026-07-27" } },
+    "expected": "2026-07-27"
+  },
+  {
+    "name": "mapped text pattern rejects unicode digits",
+    "field": {
+      "path": "params.value",
+      "data_type": "Date",
+      "wire": {
+        "encoding": "text_cast",
+        "provider_type": { "schema": "pg_catalog", "name": "date" }
+      },
+      "validation": { "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": "٢٠٢٦-07-27" } },
+    "error": "valid Date"
+  },
+  {
+    "name": "mapped patterns use search semantics",
+    "field": {
+      "path": "params.value",
+      "data_type": "Tag",
+      "wire": { "encoding": "text" },
+      "validation": { "pattern": "cat" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": "bobcat" } },
+    "expected": "bobcat"
+  },
+  {
+    "name": "mapped patterns match explicit unicode code points",
+    "field": {
+      "path": "params.value",
+      "data_type": "Glyph",
+      "wire": { "encoding": "text" },
+      "validation": { "pattern": "^[😀]$" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": "😀" } },
+    "expected": "😀"
+  },
+  {
+    "name": "mapped collection pattern rejects a member",
+    "field": {
+      "path": "params.value",
+      "data_type": "Date",
+      "wire": {
+        "encoding": "text_cast",
+        "provider_type": { "schema": "pg_catalog", "name": "date" }
+      },
+      "collection": true,
+      "validation": { "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": ["2026-07-27", "tomorrow"] } },
+    "error": "array of valid Date"
   }
 ]

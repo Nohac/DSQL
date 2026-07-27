@@ -5,8 +5,8 @@ use dsql_execute::{
 use dsql_metadata::{
     DefinitionKind, DynamicInputField, DynamicInputMetadata, DynamicInputSite,
     DynamicInputSiteField, DynamicPredicateOperatorMetadata, InputDefault, InputField,
-    OperationMetadata, ResultShape, SqlDialect, SqlMetadata, SqlParameterMetadata,
-    SqlVariantCaseMetadata, SqlVariantMetadata, WireEncoding, WireMetadata,
+    InputValidationMetadata, OperationMetadata, ResultShape, SqlDialect, SqlMetadata,
+    SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata, WireEncoding, WireMetadata,
 };
 use facet_value::{Value, value};
 
@@ -34,6 +34,7 @@ fn field(path: &str, data_type: &str, collection: bool, enum_values: &[&str]) ->
         path: path.to_string(),
         data_type: data_type.to_string(),
         wire: wire(data_type),
+        validation: InputValidationMetadata { pattern: None },
         collection: collection.then_some(true),
         enum_values: enum_values
             .iter()
@@ -213,6 +214,7 @@ fn dynamic_operation() -> OperationMetadata {
                         catalog_path: "public.users.id".to_string(),
                         data_type: "int".to_string(),
                         wire: wire("int"),
+                        validation: InputValidationMetadata { pattern: None },
                         nullable: false,
                         access: "unconditional".to_string(),
                         operators: vec!["in".to_string(), "is_null".to_string()],
@@ -223,6 +225,7 @@ fn dynamic_operation() -> OperationMetadata {
                         catalog_path: "public.users.name".to_string(),
                         data_type: "text".to_string(),
                         wire: wire("text"),
+                        validation: InputValidationMetadata { pattern: None },
                         nullable: false,
                         access: "unconditional".to_string(),
                         operators: vec!["like".to_string()],
@@ -240,6 +243,7 @@ fn dynamic_operation() -> OperationMetadata {
                     catalog_path: "public.users.name".to_string(),
                     data_type: "text".to_string(),
                     wire: wire("text"),
+                    validation: InputValidationMetadata { pattern: None },
                     nullable: false,
                     access: "unconditional".to_string(),
                     operators: Vec::new(),

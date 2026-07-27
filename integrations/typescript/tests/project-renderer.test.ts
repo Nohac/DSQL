@@ -32,13 +32,13 @@ const project = defineDsqlProject({
   directives: {},
 });
 
-test("version 4 manifests are rejected explicitly", () => {
+test("version 5 manifests are rejected explicitly", () => {
   const root = mkdtempSync(join(tmpdir(), "dsql-old-manifest-"));
   const manifest = join(root, "manifest.json");
   writeFileSync(
     manifest,
     JSON.stringify({
-      version: 4,
+      version: 5,
       generationId: 1,
       operations: [],
       fragments: [],
@@ -46,7 +46,7 @@ test("version 4 manifests are rejected explicitly", () => {
   );
 
   expect(() => loadBuildArtifacts(manifest)).toThrow(
-    "unsupported dsql build manifest version 4; expected 5",
+    "unsupported dsql build manifest version 5; expected 6",
   );
 });
 
@@ -237,7 +237,7 @@ test("embedded callsites require definitions and receive their target mapping", 
   const api = {
     ...emptyArtifacts("api", true),
     manifest: {
-      version: 5 as const,
+      version: 6 as const,
       generationId: 1,
       operations: [
         {
@@ -328,7 +328,7 @@ function emptyArtifacts(
     sourceFileScopes: [],
     artifactGroups: [],
     manifest: {
-      version: 5,
+      version: 6,
       generationId: 1,
       operations: [],
       fragments: [],
@@ -351,7 +351,7 @@ function compileResult(
     currentManifestPath: "dsql/build/manifest.json",
     projectContractHash,
     manifest: {
-      version: 5,
+      version: 6,
       generationId: 1,
       operations: [],
       fragments: [],

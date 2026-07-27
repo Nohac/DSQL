@@ -184,6 +184,61 @@ declared provider identity for display and any required input cast. Database
 arrays retain an element edge and are result values distinct from DSQL input
 collections. Their outer catalog type never masquerades as a scalar input.
 
+## Project Type Declarations
+
+Provider scalar types whose public semantics are not compiler-owned are named
+structurally in `dsql/dsql.toml`:
+
+```toml
+[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "text"
+literal = "string"
+pattern = '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+operators = ["eq", "ne"]
+orderable = false
+```
+
+- `pg` is the exact schema-qualified key from generated `type_map.yaml`.
+- `name` is a project-unique host-safe nominal name matching
+  `[A-Z][A-Za-z0-9_]*`; compiler-owned logical names and aliases are reserved.
+- `wire` declares the existing public encoding class. It must agree with the
+  provider-derived encoding and cannot introduce a new conversion.
+- `literal` narrows the DSQL literal and declaration-default kind to `string`,
+  `number`, or `boolean`.
+- `pattern`, when present, requires `wire = "text"` and
+  `literal = "string"` and further validates string literals, defaults,
+  runtime scalar inputs, and every non-null collection member before execution.
+- `operators` may only remove provider-supported comparison operators.
+  `orderable` may only be omitted or set to `false`.
+
+The project loader rejects malformed or duplicate provider keys, missing types,
+array declarations, duplicate or compiler-owned names, incompatible wire and
+literal classes, non-portable patterns, and any capability widening. Errors
+name `dsql.toml` and the exact `catalog.types[index].field`.
+
+Domains inherit an effective mapped base type, then an exact declaration for a
+domain may rename or narrow it further. Database arrays cannot be declared
+directly; their element metadata follows the effective mapped scalar or domain.
+This preserves provider identity for SQL casts while exposing one nominal
+logical identity to generated artifacts.
+
+Patterns use regular-expression search semantics unless explicitly anchored.
+They are restricted to a conservative Rust-and-JavaScript subset: shorthand
+and Unicode property classes, lookaround and other `(?...)` groups except
+`(?:...)`, backreferences, nested classes, and class set operations are
+rejected. The wildcard `.` is also rejected because Rust and JavaScript differ
+on carriage-return handling; use an explicit negated class such as `[^\n]`
+when that is the intended contract. Use explicit ASCII classes such as
+`[0-9]` when ASCII is intended. Both maintained runtimes compile the same
+source, and JavaScript uses Unicode mode so explicit Unicode code points match
+the Rust behavior.
+
+Table-backed and native closed value sets use the separate nominal contract in
+[Enumerated Types](enums.md); `catalog.types` does not replace enum
+declarations.
+
 ## Constraints
 
 Table-level constraints describe uniqueness guarantees over an ordered column

@@ -1,6 +1,7 @@
 //! Project loading: `dsql.toml` discovery and parsing, schema catalog
 //! loading, document discovery, and bowl assembly for adapters.
 
+mod catalog_types;
 mod config;
 mod documents;
 mod embedding;
@@ -9,6 +10,7 @@ mod open;
 mod overlay;
 
 pub use config::{
+    CatalogConfig, CatalogTypeConfig, CatalogTypeLiteral, CatalogTypeOperator, CatalogTypeWire,
     Config, DocumentConfig, EmbeddingConfig, EmbeddingStrategy, GenerateConfig, LintSectionConfig,
     LintSeverity, Project, ProjectError, ScopeConfig, TypescriptGenerateConfig, find_root,
     init_project, validate_reserved_root,

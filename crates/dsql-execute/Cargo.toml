@@ -7,6 +7,7 @@ edition.workspace = true
 dsql-metadata = { workspace = true }
 facet-json = { workspace = true }
 facet-value = { workspace = true }
+regex = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres"] }
 sqlx-postgres = { workspace = true, features = ["uuid", "chrono", "bigdecimal", "json"] }
 thiserror = { workspace = true }

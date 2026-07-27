@@ -7,11 +7,13 @@ use std::path::{Path, PathBuf};
 
 use bowl::{Entity, Query};
 use dsql_core::catalog::{
-    ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata, ForeignKeyDirection,
-    ForeignKeyReferenceMetadata, IndexKeyMetadata, IndexMetadata, ObjectType, RelationCardinality,
+    CatalogTypeShape, CatalogValueShape, ColumnMetadata, DataType, DatabaseMetadata,
+    ForeignKeyConstraintMetadata, ForeignKeyDirection, ForeignKeyReferenceMetadata,
+    IndexKeyMetadata, IndexMetadata, ObjectType, ProviderTypeFacts, RelationCardinality,
     SchemaMetadata, TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeKey,
-    TypeMetadata, TypeStructureMetadata,
+    TypeMetadata, TypeStructureMetadata, WireEncoding,
 };
+use dsql_core::entities::expression::ComparisonOp;
 use dsql_core::facts::{Diagnostic, Severity, arm_generate_demands};
 use dsql_core::source::SourceKind;
 use dsql_core::sql::GeneratedSqlFact;
@@ -146,6 +148,448 @@ async fn store_overlay_catalog(root: &Path) {
     dsql_project::store_metadata_dir(&metadata, &root.join("dsql/schema"))
         .await
         .expect("overlay fixture catalog stores");
+}
+
+fn mapped_type_metadata() -> DatabaseMetadata {
+    let operations: BTreeSet<String> = ["=", "<>", "<", "<=", ">", ">="]
+        .into_iter()
+        .map(ToString::to_string)
+        .collect();
+    let provider = |kind: &str, category: &str| ProviderTypeFacts {
+        kind: kind.to_string(),
+        category: category.to_string(),
+        effective_kind: None,
+        effective_category: None,
+        orderable: true,
+    };
+    DatabaseMetadata {
+        schemas: Vec::new(),
+        types: vec![
+            TypeMetadata {
+                internal_type: "uuid".to_string(),
+                readable_type: "uuid".to_string(),
+                schema: "pg_catalog".to_string(),
+                structure: TypeStructureMetadata::scalar(),
+                provider: Some(provider("b", "U")),
+                operations: operations.clone(),
+            },
+            TypeMetadata {
+                internal_type: "int4".to_string(),
+                readable_type: "integer".to_string(),
+                schema: "pg_catalog".to_string(),
+                structure: TypeStructureMetadata::scalar(),
+                provider: Some(provider("b", "N")),
+                operations: operations.clone(),
+            },
+            TypeMetadata {
+                internal_type: "date".to_string(),
+                readable_type: "date".to_string(),
+                schema: "pg_catalog".to_string(),
+                structure: TypeStructureMetadata::scalar(),
+                provider: Some(provider("b", "D")),
+                operations: operations.clone(),
+            },
+            TypeMetadata {
+                internal_type: "date_alias".to_string(),
+                readable_type: "date_alias".to_string(),
+                schema: "public".to_string(),
+                structure: TypeStructureMetadata::domain(TypeKey::new("pg_catalog", "date")),
+                provider: Some(ProviderTypeFacts {
+                    kind: "d".to_string(),
+                    category: "D".to_string(),
+                    effective_kind: Some("b".to_string()),
+                    effective_category: Some("D".to_string()),
+                    orderable: true,
+                }),
+                operations: operations.clone(),
+            },
+            TypeMetadata {
+                internal_type: "event_date".to_string(),
+                readable_type: "event_date".to_string(),
+                schema: "public".to_string(),
+                structure: TypeStructureMetadata::domain(TypeKey::new("pg_catalog", "date")),
+                provider: Some(ProviderTypeFacts {
+                    kind: "d".to_string(),
+                    category: "D".to_string(),
+                    effective_kind: Some("b".to_string()),
+                    effective_category: Some("D".to_string()),
+                    orderable: true,
+                }),
+                operations: operations.clone(),
+            },
+            TypeMetadata {
+                internal_type: "_event_date".to_string(),
+                readable_type: "event_date[]".to_string(),
+                schema: "public".to_string(),
+                structure: TypeStructureMetadata::array(TypeKey::new("public", "event_date")),
+                provider: Some(provider("b", "A")),
+                operations,
+            },
+        ],
+    }
+}
+
+async fn store_mapped_type_metadata(root: &Path) {
+    dsql_project::store_metadata_dir(&mapped_type_metadata(), &root.join("dsql/schema"))
+        .await
+        .expect("mapped type metadata stores");
+}
+
+async fn catalog_type_error(declarations: &str) -> String {
+    let config = format!("database_url = \"x\"\n\n{declarations}");
+    let scratch = scratch_project(&config);
+    store_mapped_type_metadata(scratch.path()).await;
+    let error = match Project::load_from(scratch.path()).await {
+        Ok(project) => project
+            .load_catalog()
+            .await
+            .expect_err("invalid catalog type declaration fails"),
+        Err(error) => error,
+    };
+    error
+        .to_string()
+        .replace(&scratch.path().display().to_string(), "<project>")
+}
+
+#[tokio::test]
+async fn catalog_type_mappings_name_narrow_and_propagate() {
+    let scratch = scratch_project(indoc::indoc! {r#"
+        database_url = "x"
+
+        [[catalog.types]]
+        pg = "pg_catalog.date"
+        name = "Date"
+        wire = "text"
+        literal = "string"
+        pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        operators = ["eq", "ne"]
+        orderable = false
+
+        [[catalog.types]]
+        pg = "public.event_date"
+        name = "EventDate"
+        wire = "text"
+        literal = "string"
+        pattern = "^event:"
+        operators = ["eq"]
+        orderable = false
+    "#});
+    store_mapped_type_metadata(scratch.path()).await;
+
+    let project = Project::load_from(scratch.path())
+        .await
+        .expect("mapped project loads");
+    let catalog = project.load_catalog().await.expect("mapping composes");
+    let date = catalog
+        .type_by_key(&TypeKey::new("pg_catalog", "date"))
+        .expect("date exists");
+    assert_eq!(date.capabilities.name, "Date");
+    assert_eq!(date.capabilities.aliases, ["Date"]);
+    assert_eq!(date.capabilities.wire, WireEncoding::TextCast);
+    assert_eq!(
+        date.capabilities.operators,
+        [ComparisonOp::Eq, ComparisonOp::Ne]
+    );
+    assert!(!date.capabilities.orderable);
+    assert_eq!(
+        date.capabilities.literals.pattern.as_deref(),
+        Some("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+    );
+    assert_eq!(
+        date.capabilities.literals.description,
+        "Date string matching pattern `^[0-9]{4}-[0-9]{2}-[0-9]{2}$`"
+    );
+    assert_eq!(
+        date.capabilities.defaults.description,
+        "Date string matching pattern `^[0-9]{4}-[0-9]{2}-[0-9]{2}$`"
+    );
+    assert!(
+        date.capabilities
+            .literals
+            .accepts(dsql_core::catalog::LiteralKind::String, "2026-07-27")
+    );
+    assert!(
+        !date
+            .capabilities
+            .literals
+            .accepts(dsql_core::catalog::LiteralKind::String, "٢۰٢٦-07-27")
+    );
+
+    let inherited_domain = catalog
+        .type_by_key(&TypeKey::new("public", "date_alias"))
+        .expect("inherited domain exists");
+    assert!(matches!(
+        inherited_domain.shape,
+        CatalogTypeShape::Domain { .. }
+    ));
+    assert_eq!(inherited_domain.capabilities.name, "Date");
+    assert_eq!(
+        inherited_domain.capabilities.operators,
+        [ComparisonOp::Eq, ComparisonOp::Ne]
+    );
+    assert!(!inherited_domain.capabilities.orderable);
+
+    let domain = catalog
+        .type_by_key(&TypeKey::new("public", "event_date"))
+        .expect("domain exists");
+    assert!(matches!(domain.shape, CatalogTypeShape::Domain { .. }));
+    assert_eq!(domain.capabilities.name, "EventDate");
+    assert_eq!(domain.capabilities.operators, [ComparisonOp::Eq]);
+    assert!(!domain.capabilities.orderable);
+    assert_eq!(
+        domain.capabilities.literals.pattern.as_deref(),
+        Some("^event:")
+    );
+
+    let array = catalog
+        .type_by_key(&TypeKey::new("public", "_event_date"))
+        .expect("array exists");
+    let shape = catalog.value_shape_for_type(array.id);
+    assert!(
+        matches!(shape, Some(CatalogValueShape::DatabaseArray { .. })),
+        "mapped domain array should retain its database-array shape"
+    );
+    if let Some(CatalogValueShape::DatabaseArray { element }) = shape {
+        assert_eq!(element.capabilities.name, "EventDate");
+    }
+}
+
+#[tokio::test]
+async fn catalog_type_patterns_accept_portable_quantifier_forms() {
+    let scratch = scratch_project(indoc::indoc! {r#"
+        database_url = "x"
+
+        [[catalog.types]]
+        pg = "pg_catalog.date"
+        name = "ExactDigits"
+        wire = "text"
+        literal = "string"
+        pattern = "^[0-9]{4}$"
+
+        [[catalog.types]]
+        pg = "public.date_alias"
+        name = "OpenDigits"
+        wire = "text"
+        literal = "string"
+        pattern = "^[0-9]{2,}$"
+
+        [[catalog.types]]
+        pg = "public.event_date"
+        name = "RangeDigits"
+        wire = "text"
+        literal = "string"
+        pattern = "^[0-9]{2,3}$"
+    "#});
+    store_mapped_type_metadata(scratch.path()).await;
+
+    let project = Project::load_from(scratch.path())
+        .await
+        .expect("portable quantifier configuration loads");
+    let catalog = project
+        .load_catalog()
+        .await
+        .expect("portable quantifier patterns compile");
+    assert_eq!(
+        catalog
+            .type_by_key(&TypeKey::new("public", "date_alias"))
+            .map(|data_type| data_type.capabilities.name.as_str()),
+        Some("OpenDigits")
+    );
+}
+
+#[tokio::test]
+async fn catalog_type_mappings_reject_invalid_or_widening_declarations() {
+    let cases = [
+        (
+            "malformed provider key",
+            r#"[[catalog.types]]
+pg = "date"
+name = "Date"
+wire = "text"
+literal = "string"
+"#,
+        ),
+        (
+            "missing provider type",
+            r#"[[catalog.types]]
+pg = "public.missing"
+name = "Missing"
+wire = "text"
+literal = "string"
+"#,
+        ),
+        (
+            "invalid nominal name",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "date-value"
+wire = "text"
+literal = "string"
+"#,
+        ),
+        (
+            "builtin nominal collision",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Text"
+wire = "text"
+literal = "string"
+"#,
+        ),
+        (
+            "duplicate nominal name",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "text"
+literal = "string"
+
+[[catalog.types]]
+pg = "public.event_date"
+name = "Date"
+wire = "text"
+literal = "string"
+"#,
+        ),
+        (
+            "duplicate provider mapping",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "text"
+literal = "string"
+
+[[catalog.types]]
+pg = "pg_catalog.date"
+name = "OtherDate"
+wire = "text"
+literal = "string"
+"#,
+        ),
+        (
+            "array target",
+            r#"[[catalog.types]]
+pg = "public._event_date"
+name = "EventDates"
+wire = "text"
+literal = "string"
+"#,
+        ),
+        (
+            "incompatible wire",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "uuid"
+literal = "string"
+"#,
+        ),
+        (
+            "unknown wire value",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "legacy"
+literal = "string"
+"#,
+        ),
+        (
+            "incompatible literal",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "text"
+literal = "boolean"
+"#,
+        ),
+        (
+            "pattern on non-string literal",
+            r#"[[catalog.types]]
+pg = "pg_catalog.int4"
+name = "Count"
+wire = "integer"
+literal = "number"
+pattern = "^[0-9]+$"
+"#,
+        ),
+        (
+            "pattern on non-text wire",
+            r#"[[catalog.types]]
+pg = "pg_catalog.uuid"
+name = "Identifier"
+wire = "uuid"
+literal = "string"
+pattern = "^[0-9a-f]+$"
+"#,
+        ),
+        (
+            "non-portable pattern",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "text"
+literal = "string"
+pattern = '^\d+$'
+"#,
+        ),
+        (
+            "wildcard pattern",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "text"
+literal = "string"
+pattern = "^.$"
+"#,
+        ),
+        (
+            "bare closing brace",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "text"
+literal = "string"
+pattern = "^a}$"
+"#,
+        ),
+        (
+            "duplicate operator",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "text"
+literal = "string"
+operators = ["eq", "eq"]
+"#,
+        ),
+        (
+            "unsupported operator",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "text"
+literal = "string"
+operators = ["like"]
+"#,
+        ),
+        (
+            "widened orderability",
+            r#"[[catalog.types]]
+pg = "pg_catalog.date"
+name = "Date"
+wire = "text"
+literal = "string"
+orderable = true
+"#,
+        ),
+    ];
+    let mut rendered = String::new();
+    for (label, declarations) in cases {
+        let error = catalog_type_error(declarations).await;
+        rendered.push_str(&format!("{label}: {error}\n"));
+    }
+
+    insta::assert_snapshot!(rendered);
 }
 
 #[tokio::test]

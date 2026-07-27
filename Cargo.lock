@@ -562,6 +562,7 @@ dependencies = [
  "facet-json",
  "facet-value",
  "insta",
+ "regex",
  "sqlx",
  "sqlx-postgres",
  "thiserror",
@@ -583,6 +584,7 @@ dependencies = [
  "indoc",
  "insta",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror",
  "tokio",
 ]
@@ -634,6 +636,7 @@ dependencies = [
  "glob",
  "indoc",
  "insta",
+ "regex",
  "tempfile",
  "thiserror",
  "tokio",

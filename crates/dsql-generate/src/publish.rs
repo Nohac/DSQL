@@ -66,16 +66,6 @@ struct MatchLockVersion {
     version: u32,
 }
 
-/// Minimal publication pointer header used only to avoid reusing generation
-/// identifiers. This is not an artifact compatibility reader.
-#[derive(facet::Facet)]
-struct PointerManifest {
-    #[facet(default)]
-    version: u32,
-    #[facet(default, rename = "generationId")]
-    generation_id: u64,
-}
-
 const LOCK_FILE: &str = ".lock";
 const LOCK_DEADLINE: Duration = Duration::from_secs(3);
 const LOCK_POLL: Duration = Duration::from_millis(50);
@@ -182,9 +172,8 @@ fn sync_parent(path: &Path) -> std::io::Result<()> {
 /// immutable-manifest scan, so a corrupt pointer can never recycle ids).
 fn pointer_generation(build_dir: &Path) -> Option<u64> {
     let raw = std::fs::read_to_string(build_dir.join(MANIFEST_FILE)).ok()?;
-    let manifest: PointerManifest = facet_json::from_str(&raw).ok()?;
-    let _ = manifest.version;
-    Some(manifest.generation_id)
+    let manifest: BuildManifest = facet_json::from_str(&raw).ok()?;
+    (manifest.version == BUILD_MANIFEST_VERSION).then_some(manifest.generation_id)
 }
 
 /// Every `manifest.<id>.json` id present on disk, committed or stranded.

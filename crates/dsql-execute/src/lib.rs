@@ -1,13 +1,15 @@
 //! Native PostgreSQL execution for compiled [`dsql_metadata::OperationMetadata`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
 
 use dsql_metadata::{
     DefinitionKind, DynamicInputField, DynamicInputMetadata, DynamicInputSite,
     DynamicInputSiteField, InputDefault, InputField, OperationMetadata, WireEncoding, WireMetadata,
 };
 use facet_value::{VArray, VObject, Value};
+use regex::Regex;
 use sqlx::postgres::{PgArguments, PgPool, PgPoolOptions};
 use sqlx::query::QueryScalar;
 use sqlx::types::{
@@ -703,7 +705,7 @@ fn validate_dynamic_scalar(
             });
         }
     };
-    if valid {
+    if valid && pattern_is_valid(field.validation.pattern.as_deref(), value) {
         Ok(())
     } else {
         Err(invalid(path, &format!("a valid {data_type} value")))
@@ -822,7 +824,7 @@ fn validate_input_wire(field: &InputField, value: &Value) -> Result<(), ExecuteE
 }
 
 fn input_scalar_is_valid(field: &InputField, value: &Value) -> bool {
-    match field_wire(field) {
+    let valid = match field_wire(field) {
         WireEncoding::Uuid => {
             string_value(value).is_some_and(|value| Uuid::parse_str(value).is_ok())
         }
@@ -838,7 +840,34 @@ fn input_scalar_is_valid(field: &InputField, value: &Value) -> bool {
         WireEncoding::Boolean => value.as_bool().is_some(),
         WireEncoding::Json => true,
         WireEncoding::Integer | WireEncoding::Unsupported => false,
+    };
+    valid && pattern_is_valid(field.validation.pattern.as_deref(), value)
+}
+
+fn pattern_is_valid(pattern: Option<&str>, value: &Value) -> bool {
+    let Some(pattern) = pattern else {
+        return true;
+    };
+    let Some(value) = string_value(value) else {
+        return false;
+    };
+    // Compile-time literal checks repeat this cache in dsql-core. Project
+    // loading guarantees both consumers receive only the portable subset.
+    static PATTERNS: OnceLock<Mutex<HashMap<String, Regex>>> = OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut patterns = match patterns.lock() {
+        Ok(patterns) => patterns,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(compiled) = patterns.get(pattern) {
+        return compiled.is_match(value);
     }
+    let Ok(compiled) = Regex::new(pattern) else {
+        return false;
+    };
+    let matches = compiled.is_match(value);
+    patterns.insert(pattern.to_string(), compiled);
+    matches
 }
 
 fn lookup_path<'a>(
@@ -869,6 +898,12 @@ fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Val
             if !field.enum_values.is_empty() && !field.enum_values.contains(&value) {
                 return Err(invalid(&field.path, "a declared string default"));
             }
+            if !pattern_is_valid(field.validation.pattern.as_deref(), &Value::from(&value)) {
+                return Err(invalid(
+                    &field.path,
+                    &format!("a valid {} default", field.data_type),
+                ));
+            }
             Ok(Value::from(value))
         }
         "number" => {
@@ -878,29 +913,42 @@ fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Val
             let Some(value) = default.value.as_deref() else {
                 return Err(invalid(&field.path, "a valid number default"));
             };
-            match field.data_type.as_str() {
-                "int" => value
+            match field.wire.encoding {
+                WireEncoding::Integer => value
                     .parse::<i64>()
                     .ok()
                     .filter(|value| is_safe_integer(*value))
                     .map(Value::from)
                     .ok_or_else(|| invalid(&field.path, "a safe integer default")),
-                "float" => value
+                WireEncoding::Float => value
                     .parse::<f64>()
                     .ok()
                     .filter(|value| value.is_finite())
                     .map(Value::from)
                     .ok_or_else(|| invalid(&field.path, "a finite float default")),
-                "numeric" => BigDecimal::from_str(value)
+                WireEncoding::Numeric => BigDecimal::from_str(value)
                     .map(|_| Value::from(value))
                     .map_err(|_| invalid(&field.path, "a numeric default")),
-                _ => Err(invalid(&field.path, "a compatible number default")),
+                WireEncoding::Uuid
+                | WireEncoding::Text
+                | WireEncoding::Timestamptz
+                | WireEncoding::BigInteger
+                | WireEncoding::Boolean
+                | WireEncoding::Json
+                | WireEncoding::TextCast
+                | WireEncoding::Unsupported => {
+                    Err(invalid(&field.path, "a compatible number default"))
+                }
             }
         }
-        "boolean" if field.collection != Some(true) && field.data_type == "boolean" => default
-            .boolean
-            .map(Value::from)
-            .ok_or_else(|| invalid(&field.path, "a valid boolean default")),
+        "boolean"
+            if field.collection != Some(true) && field.wire.encoding == WireEncoding::Boolean =>
+        {
+            default
+                .boolean
+                .map(Value::from)
+                .ok_or_else(|| invalid(&field.path, "a valid boolean default"))
+        }
         "null" => Ok(Value::NULL),
         "collection" if field.collection == Some(true) || field.data_type == "dynamic_order" => {
             let items = default

@@ -147,8 +147,11 @@ combine both sources internally while retaining their provenance.
 
 Generated public input metadata must preserve each inferred leaf's path,
 logical type, collection shape, semantic role, requiredness, nullability, and
-typed default. Every input, dynamic-input, and result field carries a required
-wire record and, for provider text casts, the schema-qualified provider type.
+typed default. Every ordinary and dynamic input field also carries a required
+validation record; an empty record means wire-only validation, while a
+compiler-authored `pattern` narrows string values and defaults. Every input,
+dynamic-input, and result field carries a required wire record and, for
+provider text casts, the schema-qualified provider type.
 Structural result and input fields use the explicit `unsupported` encoding;
 missing wire metadata is an invalid artifact, not a cue to infer from the
 logical type name.
@@ -763,11 +766,13 @@ The metadata does not need to mirror the internal compiler IR. It should be a
 consumer-friendly contract for generated clients, endpoint adapters, validation,
 debug tooling, and editor features.
 
-Before the first public release, manifest version 5 is a compiler-package
+Before the first public release, manifest version 6 is a compiler-package
 contract rather than a backwards-compatible interchange promise: maintained
 compiler, daemon, and renderer components move together, and a required metadata
 addition causes a version bump and artifact regeneration. Consumers reject
 other versions explicitly; they never synthesize missing execution data.
+Version 6 requires validation metadata on every ordinary and bounded dynamic
+input field. There is no reader for older manifest contracts.
 
 Useful metadata areas:
 

@@ -3,6 +3,7 @@ import type {
   DynamicInputMetadata,
   DynamicInputSite,
   DynamicInputSiteField,
+  InputValidationMetadata,
   WireMetadata,
 } from "./generated/metadata.ts";
 
@@ -170,6 +171,7 @@ export type DsqlInputField = {
   readonly path: string;
   readonly data_type: string;
   readonly wire: WireMetadata;
+  readonly validation: InputValidationMetadata;
   readonly collection?: boolean;
   readonly enum_values?: readonly string[];
   readonly required: boolean;
@@ -548,7 +550,7 @@ function validateDsqlDynamicScalar(
             : wire === "boolean"
               ? typeof value === "boolean"
               : wire === "json";
-  if (!valid) {
+  if (!valid || !matchesDsqlPattern(field.validation, value)) {
     throw new Error(`dsql input ${path} must be a valid ${dataType}`);
   }
 }
@@ -561,6 +563,26 @@ const DSQL_NUMERIC = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 const DSQL_BIG_INTEGER = /^[+-]?\d+$/;
 const DSQL_I64_MIN = -(1n << 63n);
 const DSQL_I64_MAX = (1n << 63n) - 1n;
+const DSQL_PATTERNS = new Map<string, RegExp>();
+
+function matchesDsqlPattern(
+  validation: InputValidationMetadata,
+  value: unknown,
+): boolean {
+  const pattern = validation.pattern;
+  if (pattern === undefined) {
+    return true;
+  }
+  if (typeof value !== "string") {
+    return false;
+  }
+  let compiled = DSQL_PATTERNS.get(pattern);
+  if (compiled === undefined) {
+    compiled = new RegExp(pattern, "u");
+    DSQL_PATTERNS.set(pattern, compiled);
+  }
+  return compiled.test(value);
+}
 
 function isDsqlBigInteger(value: unknown): value is string {
   if (typeof value !== "string" || !DSQL_BIG_INTEGER.test(value)) {
@@ -701,10 +723,14 @@ function validateDsqlInput(field: DsqlInputField, value: unknown): void {
         `operation input ${field.path} must be an array of ${field.data_type}`,
       );
     }
-    for (const item of value) {
-      if (item !== null) {
-        validateDsqlScalar(field, item);
-      }
+    if (
+      !value.every(
+        (item) => item === null || isDsqlScalarValid(field, item),
+      )
+    ) {
+      throw new Error(
+        `operation input ${field.path} must be an array of valid ${field.data_type} values`,
+      );
     }
     return;
   }
@@ -712,6 +738,17 @@ function validateDsqlInput(field: DsqlInputField, value: unknown): void {
 }
 
 function validateDsqlScalar(field: DsqlInputField, value: unknown): void {
+  if (!isDsqlScalarValid(field, value)) {
+    throw new Error(
+      `operation input ${field.path} must be a valid ${field.data_type}`,
+    );
+  }
+}
+
+function isDsqlScalarValid(
+  field: DsqlInputField,
+  value: unknown,
+): boolean {
   const wire = field.wire.encoding;
   const valid =
     wire === "text" || wire === "text_cast"
@@ -729,13 +766,9 @@ function validateDsqlScalar(field: DsqlInputField, value: unknown): void {
               : wire === "numeric"
                 ? typeof value === "string" && DSQL_NUMERIC.test(value)
                 : wire === "boolean"
-                  ? typeof value === "boolean"
-                  : wire === "json";
-  if (!valid) {
-    throw new Error(
-      `operation input ${field.path} must be a valid ${field.data_type}`,
-    );
-  }
+              ? typeof value === "boolean"
+              : wire === "json";
+  return valid && matchesDsqlPattern(field.validation, value);
 }
 
 function dsqlDefaultValue(
@@ -754,13 +787,19 @@ function dsqlDefaultValue(
       ) {
         return invalidDsqlDefault(field, "a declared string default");
       }
+      if (!matchesDsqlPattern(field.validation, defaultValue.value)) {
+        return invalidDsqlDefault(
+          field,
+          `a valid ${field.data_type} default`,
+        );
+      }
       return defaultValue.value;
     }
     case "number": {
       if (field.collection === true || defaultValue.value === undefined) {
         return invalidDsqlDefault(field, "a valid number default");
       }
-      if (field.data_type === "int") {
+      if (field.wire.encoding === "integer") {
         if (!/^[+-]?\d+$/.test(defaultValue.value)) {
           return invalidDsqlDefault(field, "an integer default");
         }
@@ -773,7 +812,7 @@ function dsqlDefaultValue(
         }
         return Number(integer);
       }
-      if (field.data_type === "float") {
+      if (field.wire.encoding === "float") {
         const value = Number(defaultValue.value);
         if (
           !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(
@@ -785,7 +824,7 @@ function dsqlDefaultValue(
         }
         return value;
       }
-      if (field.data_type === "numeric") {
+      if (field.wire.encoding === "numeric") {
         if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(defaultValue.value)) {
           return invalidDsqlDefault(field, "a numeric default");
         }
@@ -796,7 +835,7 @@ function dsqlDefaultValue(
     case "boolean": {
       if (
         field.collection === true ||
-        field.data_type !== "boolean" ||
+        field.wire.encoding !== "boolean" ||
         defaultValue.boolean === undefined
       ) {
         return invalidDsqlDefault(field, "a valid boolean default");

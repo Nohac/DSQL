@@ -1147,7 +1147,7 @@ function createArtifacts(
     sourceFileScopes: [],
     artifactGroups: [],
     manifest: {
-      version: 5,
+      version: 6,
       generationId: 1,
       operations: operations.map((operation) => ({
         name: operation.name,
