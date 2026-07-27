@@ -8,6 +8,7 @@ use dsql_core::catalog::{
     TypeMetadataFile, table_metadata_from_yaml, table_metadata_to_yaml,
     type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
+use dsql_core::entities::aggregate::AggregateFunction;
 
 fn column(name: &str, provider_type: TypeKey, data_type: DataType) -> ColumnMetadata {
     ColumnMetadata {
@@ -46,6 +47,57 @@ fn provider_type(schema: &str, name: &str) -> TypeMetadata {
         schema: schema.to_string(),
         operations: BTreeSet::new(),
     }
+}
+
+fn render_builtin_capabilities() -> String {
+    DataType::ALL
+        .into_iter()
+        .map(|data_type| {
+            let capabilities = Catalog::builtin_capabilities(data_type);
+            let aliases = capabilities.aliases.join(", ");
+            let operators = capabilities
+                .operators
+                .iter()
+                .map(|operator| operator.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let literals = capabilities
+                .literals
+                .kinds
+                .iter()
+                .map(|kind| kind.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let defaults = capabilities
+                .defaults
+                .kinds
+                .iter()
+                .map(|kind| kind.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let aggregate = |function| {
+                capabilities
+                    .aggregates
+                    .result(function, data_type)
+                    .map_or("-", DataType::as_str)
+            };
+            format!(
+                "{data_type:?}\n  name: {}\n  aliases: [{aliases}]\n  description: {}\n  operators: [{operators}]\n  orderable: {}\n  literals: [{literals}] / {:?} / {}\n  defaults: [{defaults}] / {:?} / {}\n  aggregates: min={} max={} sum={} avg={}",
+                capabilities.name,
+                capabilities.description,
+                capabilities.orderable,
+                capabilities.literals.validation,
+                capabilities.literals.description,
+                capabilities.defaults.validation,
+                capabilities.defaults.description,
+                aggregate(AggregateFunction::Min),
+                aggregate(AggregateFunction::Max),
+                aggregate(AggregateFunction::Sum),
+                aggregate(AggregateFunction::Avg),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn render_resolution(catalog: &Catalog, reference: &str) -> String {
@@ -133,7 +185,7 @@ indexes:
     keys:
       - column: tenant_id
         operator_class: pg_catalog.uuid_ops
-        capabilities: [equality, range]
+        capabilities: [equality, range, like]
         order:
           direction: asc
           nulls: last
@@ -194,6 +246,9 @@ indexes:
         catalog.column_is_independently_indexed(columns[0].id),
         "the leading btree key is independently usable"
     );
+    // The test-only index capability isolates the catalog type gate: UUID does
+    // not support LIKE even when an independently usable key claims it does.
+    assert!(!catalog.column_is_searchable(columns[0].id));
     assert!(
         !catalog.column_is_independently_indexed(columns[1].id),
         "a trailing btree key is not independently usable"
@@ -324,24 +379,40 @@ fn catalog_type_declaration_order_and_unused_rows_are_fingerprint_neutral() {
     ];
     let first = provider_type("alpha", "text");
     let second = provider_type("beta", "uuid");
-    let baseline = metadata(columns.clone(), vec![first.clone(), second.clone()])
+    let baseline_catalog = metadata(columns.clone(), vec![first.clone(), second.clone()])
         .to_catalog()
-        .expect("baseline catalog builds")
-        .semantic_fingerprint();
+        .expect("baseline catalog builds");
+    let baseline = baseline_catalog.semantic_fingerprint();
     let reordered = metadata(columns.clone(), vec![second.clone(), first.clone()])
         .to_catalog()
         .expect("reordered catalog builds")
         .semantic_fingerprint();
-    let with_unused = metadata(
+    let mut with_unused_catalog = metadata(
         columns,
         vec![first, second, provider_type("unused", "bool")],
     )
     .to_catalog()
-    .expect("catalog with unused type builds")
-    .semantic_fingerprint();
+    .expect("catalog with unused type builds");
+    let with_unused = with_unused_catalog.semantic_fingerprint();
 
     assert_eq!(baseline, reordered);
     assert_eq!(baseline, with_unused);
+
+    let mut changed_capabilities = baseline_catalog;
+    changed_capabilities.types[0].capabilities.orderable = false;
+    assert_ne!(baseline, changed_capabilities.semantic_fingerprint());
+
+    let unused_type = with_unused_catalog
+        .types
+        .last_mut()
+        .expect("unused provider type exists");
+    unused_type.capabilities.orderable = false;
+    assert_eq!(baseline, with_unused_catalog.semantic_fingerprint());
+}
+
+#[test]
+fn builtin_type_capabilities_are_declared_in_one_matrix() {
+    insta::assert_snapshot!(render_builtin_capabilities());
 }
 
 #[test]

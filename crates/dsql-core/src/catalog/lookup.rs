@@ -1,6 +1,6 @@
 use super::{
     Catalog, CatalogType, Column, ColumnId, DataType, FieldCheckResult, FieldRef, Index, Relation,
-    RelationField, RelationId, Table, TableId, TableRef, TableResolution, TypeId,
+    RelationField, RelationId, Table, TableId, TableRef, TableResolution, TypeCapabilities, TypeId,
 };
 
 impl Catalog {
@@ -72,6 +72,28 @@ impl Catalog {
     pub fn type_for_column(&self, id: ColumnId) -> Option<&CatalogType> {
         self.column_by_id(id)
             .and_then(|column| self.type_by_id(column.type_id))
+    }
+
+    /// Resolves exact provider capabilities for one validated column.
+    pub fn capabilities_for_column(&self, id: ColumnId) -> Option<&TypeCapabilities> {
+        self.type_for_column(id)
+            .map(|data_type| &data_type.capabilities)
+    }
+
+    /// Returns compiler fallback semantics for a synthetic logical value.
+    ///
+    /// Provider-backed values must use [`Catalog::capabilities_for_column`] so
+    /// later introspected capability differences are not erased.
+    pub fn builtin_capabilities(data_type: DataType) -> TypeCapabilities {
+        TypeCapabilities::builtin(data_type)
+    }
+
+    /// Resolves a canonical DSQL type name or supported PostgreSQL alias.
+    ///
+    /// Arbitrary provider names are deliberately excluded: an unmapped type
+    /// must remain unresolved rather than silently becoming `unknown`.
+    pub fn resolve_logical_type_name(name: &str) -> Option<DataType> {
+        super::capabilities::data_type_from_logical_name(name)
     }
 
     /// Returns the logical type for a validated catalog column.
@@ -177,7 +199,12 @@ impl Catalog {
     /// Whether an independently usable text index key supports `like`.
     pub fn column_is_searchable(&self, column: ColumnId) -> bool {
         self.column_by_id(column)
-            .filter(|column| self.data_type_for_column(column.id) == super::DataType::Text)
+            .filter(|column| {
+                self.capabilities_for_column(column.id)
+                    .is_some_and(|capabilities| {
+                        capabilities.supports(crate::entities::expression::ComparisonOp::Like)
+                    })
+            })
             .and_then(|column| self.table_by_id(column.table))
             .is_some_and(|table| {
                 table.indexes.iter().any(|index| {

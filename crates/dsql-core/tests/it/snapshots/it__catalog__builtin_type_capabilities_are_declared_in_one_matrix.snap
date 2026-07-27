@@ -1,0 +1,93 @@
+---
+source: crates/dsql-core/tests/it/catalog.rs
+expression: render_builtin_capabilities()
+---
+Uuid
+  name: uuid
+  aliases: [uuid]
+  description: UUID
+  operators: [==, !=]
+  orderable: true
+  literals: [string] / Any / string
+  defaults: [string] / Any / string
+  aggregates: min=- max=- sum=- avg=-
+
+Text
+  name: text
+  aliases: [text, varchar, bpchar, char, name]
+  description: text
+  operators: [==, !=, like]
+  orderable: true
+  literals: [string] / Any / string
+  defaults: [string] / Any / string
+  aggregates: min=text max=text sum=- avg=-
+
+Timestamptz
+  name: timestamptz
+  aliases: [timestamptz, timestamp with time zone]
+  description: timestamp with time zone
+  operators: [==, !=, >, >=, <, <=]
+  orderable: true
+  literals: [string] / Any / string
+  defaults: [string] / Any / string
+  aggregates: min=timestamptz max=timestamptz sum=- avg=-
+
+Int
+  name: int
+  aliases: [int, int2, int4, int8, integer, smallint, bigint]
+  description: integer
+  operators: [==, !=, >, >=, <, <=]
+  orderable: true
+  literals: [number] / Integer / number
+  defaults: [number] / SafeInteger / safe integer
+  aggregates: min=int max=int sum=numeric avg=numeric
+
+Numeric
+  name: numeric
+  aliases: [numeric, decimal]
+  description: exact numeric
+  operators: [==, !=, >, >=, <, <=]
+  orderable: true
+  literals: [number] / Any / number
+  defaults: [number] / Any / number
+  aggregates: min=- max=- sum=numeric avg=numeric
+
+Float
+  name: float
+  aliases: [float, float4, real, float8, double precision]
+  description: floating-point number
+  operators: [==, !=, >, >=, <, <=]
+  orderable: true
+  literals: [number] / Any / number
+  defaults: [number] / FiniteFloat / finite number
+  aggregates: min=- max=- sum=float avg=float
+
+Boolean
+  name: boolean
+  aliases: [boolean, bool]
+  description: boolean
+  operators: [==, !=]
+  orderable: true
+  literals: [boolean] / Any / boolean
+  defaults: [boolean] / Any / boolean
+  aggregates: min=- max=- sum=- avg=-
+
+Json
+  name: json
+  aliases: [json, jsonb]
+  description: JSON
+  operators: [==, !=]
+  orderable: true
+  literals: [string] / Any / string
+  defaults: [] / Any / value
+  aggregates: min=- max=- sum=- avg=-
+
+Unknown
+  name: unknown
+  aliases: [unknown]
+  description: unmapped provider type
+  operators: [==, !=]
+  orderable: true
+  literals: [string, number, boolean] / Any / value
+  defaults: [string, number, boolean] / Any / value
+  aggregates: min=- max=- sum=- avg=-

@@ -638,11 +638,11 @@ fn build_catalog_types(
                     }
                     let type_id = TypeId(types.len());
                     type_ids.insert(column.provider_type.clone(), type_id);
-                    types.push(CatalogType {
-                        id: type_id,
-                        key: column.provider_type.clone(),
-                        data_type: column.data_type,
-                    });
+                    types.push(CatalogType::builtin(
+                        type_id,
+                        column.provider_type.clone(),
+                        column.data_type,
+                    ));
                 }
             }
         }
@@ -660,11 +660,7 @@ fn build_catalog_types(
         let type_id = TypeId(types.len());
         let data_type = DataType::from_database_type(&metadata_type.internal_type);
         type_ids.insert(key.clone(), type_id);
-        types.push(CatalogType {
-            id: type_id,
-            key,
-            data_type,
-        });
+        types.push(CatalogType::builtin(type_id, key, data_type));
     }
 
     for schema in &metadata.schemas {

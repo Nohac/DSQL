@@ -51,6 +51,7 @@ indexes:
         capabilities:
           - equality
           - range
+          - like
         order:
           direction: asc
           nulls: last

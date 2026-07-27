@@ -1,8 +1,7 @@
 use super::{
     ColumnId, ColumnKey, ForeignKeyId, ObjectType, RelationId, SchemaId, SchemaKey, TableId,
-    TableKey, TypeId, TypeKey,
+    TableKey, TypeCapabilities, TypeId, TypeKey,
 };
-use crate::entities::expression::ComparisonOp;
 use facet::Facet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -64,6 +63,8 @@ pub struct CatalogType {
     pub key: TypeKey,
     /// Public logical type consumed by language semantics.
     pub data_type: DataType,
+    /// Query-facing behavior supplied by the compiler or provider.
+    pub capabilities: TypeCapabilities,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -399,18 +400,30 @@ impl Catalog {
                     .then_with(|| left.key.column.cmp(&right.key.column))
             })
         });
+        let mut referenced_types = columns
+            .iter()
+            .map(|column| column.type_id)
+            .collect::<Vec<_>>();
+        referenced_types
+            .sort_by(|left, right| self.types[left.0].key.cmp(&self.types[right.0].key));
+        referenced_types.dedup();
         for column in columns {
             column.key.hash(&mut hasher);
             column.description.hash(&mut hasher);
             let data_type = &self.types[column.type_id.0];
             data_type.key.hash(&mut hasher);
-            data_type.data_type.hash(&mut hasher);
             column.not_null.hash(&mut hasher);
             column.is_unique.hash(&mut hasher);
             column.visible.hash(&mut hasher);
             hash_support(column.declaration.as_ref(), &mut hasher);
             hash_support(column.description_support.as_ref(), &mut hasher);
             hash_supports(&column.exposure_support, &mut hasher);
+        }
+        for type_id in referenced_types {
+            let data_type = &self.types[type_id.0];
+            data_type.key.hash(&mut hasher);
+            data_type.data_type.hash(&mut hasher);
+            data_type.capabilities.hash(&mut hasher);
         }
         let mut relations = self.relations.iter().collect::<Vec<_>>();
         relations.sort_by(|left, right| {
@@ -643,80 +656,37 @@ impl Column {
     }
 }
 
-impl DataType {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Uuid => "uuid",
-            Self::Text => "text",
-            Self::Timestamptz => "timestamptz",
-            Self::Int => "int",
-            Self::Numeric => "numeric",
-            Self::Float => "float",
-            Self::Boolean => "boolean",
-            Self::Json => "json",
-            Self::Unknown => "unknown",
+impl CatalogType {
+    /// Constructs a provider type using the compiler-owned fallback table.
+    pub fn builtin(id: TypeId, key: TypeKey, data_type: DataType) -> Self {
+        Self {
+            id,
+            key,
+            data_type,
+            capabilities: TypeCapabilities::builtin(data_type),
         }
+    }
+}
+
+impl DataType {
+    pub const ALL: [Self; 9] = [
+        Self::Uuid,
+        Self::Text,
+        Self::Timestamptz,
+        Self::Int,
+        Self::Numeric,
+        Self::Float,
+        Self::Boolean,
+        Self::Json,
+        Self::Unknown,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        super::capabilities::data_type_name(self)
     }
 
     pub fn from_database_type(database_type: &str) -> Self {
-        match database_type {
-            "bool" | "boolean" => Self::Boolean,
-            "int2" | "int4" | "int8" | "integer" | "smallint" | "bigint" => Self::Int,
-            "numeric" | "decimal" => Self::Numeric,
-            "float4" | "real" | "float8" | "double precision" => Self::Float,
-            "json" | "jsonb" => Self::Json,
-            "text" | "varchar" | "bpchar" | "char" | "name" => Self::Text,
-            "timestamptz" | "timestamp with time zone" => Self::Timestamptz,
-            "uuid" => Self::Uuid,
-            _ => Self::Unknown,
-        }
-    }
-
-    pub fn operator_ops(self) -> &'static [ComparisonOp] {
-        match self {
-            Self::Int | Self::Numeric | Self::Float | Self::Timestamptz => &[
-                ComparisonOp::Eq,
-                ComparisonOp::Ne,
-                ComparisonOp::Gt,
-                ComparisonOp::Ge,
-                ComparisonOp::Lt,
-                ComparisonOp::Le,
-            ],
-            Self::Text => &[ComparisonOp::Eq, ComparisonOp::Ne, ComparisonOp::Like],
-            Self::Uuid | Self::Boolean | Self::Json | Self::Unknown => {
-                &[ComparisonOp::Eq, ComparisonOp::Ne]
-            }
-        }
-    }
-
-    pub fn accepts_literal_kind(self, literal: LiteralKind) -> bool {
-        match self {
-            Self::Int | Self::Numeric | Self::Float => literal == LiteralKind::Number,
-            Self::Boolean => literal == LiteralKind::Boolean,
-            Self::Text | Self::Uuid | Self::Timestamptz | Self::Json => {
-                literal == LiteralKind::String
-            }
-            Self::Unknown => true,
-        }
-    }
-
-    pub fn accepts_literal_value(self, literal: LiteralKind, value: &str) -> bool {
-        if !self.accepts_literal_kind(literal) {
-            return false;
-        }
-        match (self, literal) {
-            (Self::Int, LiteralKind::Number) => value.parse::<i64>().is_ok(),
-            _ => true,
-        }
-    }
-
-    pub fn expected_literal_description(self) -> &'static str {
-        match self {
-            Self::Int | Self::Numeric | Self::Float => "number",
-            Self::Boolean => "boolean",
-            Self::Text | Self::Uuid | Self::Timestamptz | Self::Json => "string",
-            Self::Unknown => "value",
-        }
+        super::capabilities::data_type_from_database_name(database_type)
     }
 }
 

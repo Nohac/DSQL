@@ -88,21 +88,13 @@ impl Catalog {
                 ),
             ],
             types: vec![
-                CatalogType {
-                    id: uuid,
-                    key: TypeKey::new("pg_catalog", "uuid"),
-                    data_type: DataType::Uuid,
-                },
-                CatalogType {
-                    id: text,
-                    key: TypeKey::new("pg_catalog", "text"),
-                    data_type: DataType::Text,
-                },
-                CatalogType {
-                    id: timestamptz,
-                    key: TypeKey::new("pg_catalog", "timestamptz"),
-                    data_type: DataType::Timestamptz,
-                },
+                CatalogType::builtin(uuid, TypeKey::new("pg_catalog", "uuid"), DataType::Uuid),
+                CatalogType::builtin(text, TypeKey::new("pg_catalog", "text"), DataType::Text),
+                CatalogType::builtin(
+                    timestamptz,
+                    TypeKey::new("pg_catalog", "timestamptz"),
+                    DataType::Timestamptz,
+                ),
             ],
             columns: vec![
                 Column::new(

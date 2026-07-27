@@ -649,17 +649,15 @@ pub(crate) fn resolve_aggregate_value(
                 return resolved;
             };
             resolve_value_operand(catalog, table, operand, &mut resolved, problems);
-            let supported = resolved.data_type.is_some_and(|data_type| match function {
-                AggregateFunction::Min | AggregateFunction::Max => matches!(
-                    data_type,
-                    DataType::Int | DataType::Text | DataType::Timestamptz
-                ),
-                AggregateFunction::Sum | AggregateFunction::Avg => matches!(
-                    data_type,
-                    DataType::Int | DataType::Numeric | DataType::Float
-                ),
-                AggregateFunction::Count | AggregateFunction::Exists => false,
-            });
+            let result_type = resolved
+                .operand
+                .and_then(|column| catalog.capabilities_for_column(column))
+                .and_then(|capabilities| {
+                    capabilities
+                        .aggregates
+                        .result(function, resolved.data_type?)
+                });
+            let supported = result_type.is_some();
             if let Some(data_type) = resolved.data_type
                 && !supported
             {
@@ -671,12 +669,8 @@ pub(crate) fn resolve_aggregate_value(
                     },
                 });
             }
-            if matches!(function, AggregateFunction::Sum | AggregateFunction::Avg) {
-                resolved.data_type = resolved.data_type.map(|data_type| match data_type {
-                    DataType::Float => DataType::Float,
-                    DataType::Int | DataType::Numeric => DataType::Numeric,
-                    other => other,
-                });
+            if let Some(result_type) = result_type {
+                resolved.data_type = Some(result_type);
             }
             resolved.nullable = mode == AggregateMode::Ungrouped
                 || resolved

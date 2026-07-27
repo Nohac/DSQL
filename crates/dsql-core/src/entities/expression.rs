@@ -9,6 +9,7 @@
 
 use crate::schema::AstFacts;
 use bowl::{Commands, Entity, Registrar};
+use facet::Facet;
 
 use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
@@ -173,7 +174,9 @@ pub struct FilterAssignmentExpr {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
 pub enum ComparisonOp {
     Eq,
     Ne,

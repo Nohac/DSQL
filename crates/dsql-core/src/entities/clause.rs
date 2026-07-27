@@ -4,6 +4,8 @@
 //! One entity covers all four clause kinds — they share shape, checks, and
 //! planning surface; [`ClauseFact`] branches where they differ.
 
+use std::borrow::Cow;
+
 use crate::schema::{AstFacts, dsql_schema};
 use bowl::{
     Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, Registrar, SystemExt, Where,
@@ -728,7 +730,7 @@ fn check_membership_types(
         );
         return;
     }
-    let Some(data_type) = resolved_expr_type(ctx, resolved, lhs) else {
+    let Some((_, capabilities)) = resolved_expr_semantics(ctx, resolved, lhs) else {
         return;
     };
     let Expr::List { items, .. } = rhs else {
@@ -744,7 +746,7 @@ fn check_membership_types(
     };
     for item in items {
         if let Expr::Literal { value, span } = item {
-            check_literal_for_data_type(ctx, entity, data_type, lhs, value, *span);
+            check_literal_for_capabilities(ctx, entity, &capabilities, lhs, value, *span);
         } else {
             ctx.error(
                 entity,
@@ -756,10 +758,10 @@ fn check_membership_types(
     }
 }
 
-fn check_literal_for_data_type(
+fn check_literal_for_capabilities(
     ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
     entity: bowl::Entity,
-    data_type: crate::catalog::DataType,
+    capabilities: &crate::catalog::TypeCapabilities,
     path: &Expr,
     value: &crate::entities::expression::LiteralValue,
     span: Span,
@@ -775,14 +777,14 @@ fn check_literal_for_data_type(
         LiteralValue::Bool(false) => (LiteralKind::Boolean, "false"),
         LiteralValue::Null => return,
     };
-    if !data_type.accepts_literal_value(actual, raw_value) {
+    if !capabilities.literals.accepts(actual, raw_value) {
         ctx.error(
             entity,
             span,
             DiagnosticCode::PredicateTypeMismatch,
             format!(
                 "field `{path}` expects {} but membership uses {}",
-                data_type.expected_literal_description(),
+                capabilities.literals.description,
                 actual.as_str()
             ),
         );
@@ -840,10 +842,10 @@ fn check_aggregate_comparison_operator(
         }
         _ => return,
     };
-    let Some(data_type) = resolved_expr_type(ctx, resolved, aggregate) else {
+    let Some((data_type, capabilities)) = resolved_expr_semantics(ctx, resolved, aggregate) else {
         return;
     };
-    if !data_type.operator_ops().contains(&op) {
+    if !capabilities.supports(op) {
         ctx.error(
             entity,
             aggregate.span(),
@@ -881,7 +883,7 @@ fn check_operator_variable(
         );
         return;
     }
-    let Some(data_type) = resolved_expr_type(ctx, resolved, path) else {
+    let Some((data_type, capabilities)) = resolved_expr_semantics(ctx, resolved, path) else {
         return;
     };
     let Some(allowed) = &operator.operators else {
@@ -920,7 +922,7 @@ fn check_operator_variable(
         );
     }
     for op in allowed {
-        if !data_type.operator_ops().contains(op) {
+        if !capabilities.supports(*op) {
             ctx.error(
                 entity,
                 operator.span,
@@ -955,10 +957,10 @@ fn check_binary_predicate_types(
         }
         _ => return,
     };
-    let Some(data_type) = resolved_expr_type(ctx, resolved, path) else {
+    let Some((_, capabilities)) = resolved_expr_semantics(ctx, resolved, path) else {
         return;
     };
-    if matches!(path, Expr::Aggregate { .. }) && !data_type.operator_ops().contains(&op) {
+    if matches!(path, Expr::Aggregate { .. }) && !capabilities.supports(op) {
         return;
     }
     let (actual, raw_value) = match literal {
@@ -981,27 +983,28 @@ fn check_binary_predicate_types(
             return;
         }
     };
-    if op == ComparisonOp::Like && data_type != DataType::Text {
+    if op == ComparisonOp::Like && !capabilities.supports(ComparisonOp::Like) {
+        let text = crate::catalog::Catalog::builtin_capabilities(DataType::Text);
         ctx.error(
             entity,
             literal_span,
             DiagnosticCode::PredicateTypeMismatch,
             format!(
                 "field `{path}` expects {} but predicate uses {}",
-                DataType::Text.expected_literal_description(),
+                text.literals.description,
                 actual.as_str()
             ),
         );
         return;
     }
-    if !data_type.accepts_literal_value(actual, raw_value) {
+    if !capabilities.literals.accepts(actual, raw_value) {
         ctx.error(
             entity,
             literal_span,
             DiagnosticCode::PredicateTypeMismatch,
             format!(
                 "field `{path}` expects {} but predicate uses {}",
-                data_type.expected_literal_description(),
+                capabilities.literals.description,
                 actual.as_str()
             ),
         );
@@ -1019,6 +1022,31 @@ fn resolved_path_type(
     ctx.catalog
         .column_by_id(column)
         .map(|column| ctx.catalog.data_type_for_column(column.id))
+}
+
+fn resolved_expr_semantics<'a>(
+    ctx: &crate::entities::field_selection::CheckCtx<'a, '_>,
+    resolved: Option<&crate::resolution::ResolvedClause>,
+    expr: &Expr,
+) -> Option<(
+    crate::catalog::DataType,
+    Cow<'a, crate::catalog::TypeCapabilities>,
+)> {
+    match expr {
+        Expr::Path { .. } => {
+            let column = resolved?.path_at(expr.span())?.terminal.column()?;
+            let data_type = ctx.catalog.type_for_column(column)?;
+            Some((data_type.data_type, Cow::Borrowed(&data_type.capabilities)))
+        }
+        Expr::Aggregate { .. } => {
+            let data_type = resolved_expr_type(ctx, resolved, expr)?;
+            Some((
+                data_type,
+                Cow::Owned(crate::catalog::Catalog::builtin_capabilities(data_type)),
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn resolved_expr_type(

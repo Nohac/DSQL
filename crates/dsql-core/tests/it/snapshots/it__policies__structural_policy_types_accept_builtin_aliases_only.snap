@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[346..352]: unknown logical type `citext` in policy target

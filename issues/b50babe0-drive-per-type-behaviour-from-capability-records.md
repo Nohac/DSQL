@@ -1,6 +1,6 @@
 # Drive per-type behaviour from capability records
 
-**ID:** b50babe0 | **Status:** Open | **Created:** 2026-07-26T11:48:49+02:00
+**ID:** b50babe0 | **Status:** Done | **Created:** 2026-07-26T11:48:49+02:00
 
 Per-type semantics are spread across exhaustive matches in unrelated modules:
 legal operators and literal compatibility in the catalog, `like` support gated on
@@ -30,3 +30,9 @@ Acceptance criteria:
 - No exhaustive `match` on `DataType` remains outside the table that builds
   capability records.
 - Existing checking, plan, SQL, and metadata snapshots are unchanged.
+
+Resolved by attaching compiler-owned fallback capabilities to each catalog type
+and routing predicate checks, dynamic operators, aggregates, policy type names,
+searchability, and input defaults through that record. The catalog fingerprint
+tracks capabilities only for referenced types. Provider-populated capabilities
+remain sequenced under 4b1e4216.

@@ -1,0 +1,359 @@
+//! Compiler-owned fallback semantics for built-in logical types.
+//!
+//! Provider introspection replaces these assertions in issue 4b1e4216. Until
+//! then this table is the single source for per-type behavior. Canonical DSQL
+//! names and PostgreSQL input names are kept separately so policy declarations
+//! accept both without widening [`DataType::from_database_type`].
+
+use facet::Facet;
+
+use super::{DataType, LiteralKind};
+use crate::entities::aggregate::AggregateFunction;
+use crate::entities::expression::ComparisonOp;
+
+pub const MIN_SAFE_INTEGER: i64 = -9_007_199_254_740_991;
+pub const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
+/// Validation applied after a scalar's literal kind has matched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum ScalarValidation {
+    Any,
+    Integer,
+    SafeInteger,
+    FiniteFloat,
+}
+
+/// Accepted source kinds and value validation for one scalar surface.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct ScalarAcceptance {
+    pub kinds: Vec<LiteralKind>,
+    pub validation: ScalarValidation,
+    pub description: String,
+}
+
+impl ScalarAcceptance {
+    pub fn accepts(&self, kind: LiteralKind, value: &str) -> bool {
+        if !self.kinds.contains(&kind) {
+            return false;
+        }
+        match self.validation {
+            ScalarValidation::Any => true,
+            ScalarValidation::Integer => value.parse::<i64>().is_ok(),
+            ScalarValidation::SafeInteger => value
+                .parse::<i64>()
+                .is_ok_and(|value| (MIN_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value)),
+            ScalarValidation::FiniteFloat => value.parse::<f64>().is_ok_and(f64::is_finite),
+        }
+    }
+}
+
+/// Operand-dependent aggregate results supported by one catalog type.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct AggregateCapabilities {
+    pub minimum: bool,
+    pub maximum: bool,
+    pub sum: Option<DataType>,
+    pub average: Option<DataType>,
+}
+
+impl AggregateCapabilities {
+    pub fn result(&self, function: AggregateFunction, operand: DataType) -> Option<DataType> {
+        match function {
+            AggregateFunction::Min if self.minimum => Some(operand),
+            AggregateFunction::Max if self.maximum => Some(operand),
+            AggregateFunction::Sum => self.sum,
+            AggregateFunction::Avg => self.average,
+            AggregateFunction::Count | AggregateFunction::Exists => None,
+            AggregateFunction::Min | AggregateFunction::Max => None,
+        }
+    }
+}
+
+/// Effective compiler semantics attached to one provider type.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct TypeCapabilities {
+    pub name: String,
+    pub aliases: Vec<String>,
+    /// Human-readable provider-ready description of the logical type.
+    pub description: String,
+    pub operators: Vec<ComparisonOp>,
+    pub orderable: bool,
+    pub literals: ScalarAcceptance,
+    pub defaults: ScalarAcceptance,
+    pub aggregates: AggregateCapabilities,
+}
+
+impl TypeCapabilities {
+    pub fn builtin(data_type: DataType) -> Self {
+        let definition = builtin_definition(data_type);
+        Self {
+            name: definition.name.to_string(),
+            aliases: definition.aliases().map(ToString::to_string).collect(),
+            description: definition.description.to_string(),
+            operators: definition.operators.to_vec(),
+            orderable: definition.orderable,
+            literals: ScalarAcceptance {
+                kinds: definition.literal_kinds.to_vec(),
+                validation: definition.literal_validation,
+                description: definition.literal_description.to_string(),
+            },
+            defaults: ScalarAcceptance {
+                kinds: definition.default_kinds.to_vec(),
+                validation: definition.default_validation,
+                description: definition.default_description.to_string(),
+            },
+            aggregates: definition.aggregates.clone(),
+        }
+    }
+
+    pub fn supports(&self, operator: ComparisonOp) -> bool {
+        self.operators.contains(&operator)
+    }
+}
+
+struct BuiltinTypeDefinition {
+    data_type: DataType,
+    name: &'static str,
+    database_names: &'static [&'static str],
+    description: &'static str,
+    operators: &'static [ComparisonOp],
+    orderable: bool,
+    literal_kinds: &'static [LiteralKind],
+    literal_validation: ScalarValidation,
+    literal_description: &'static str,
+    default_kinds: &'static [LiteralKind],
+    default_validation: ScalarValidation,
+    default_description: &'static str,
+    aggregates: AggregateCapabilities,
+}
+
+impl BuiltinTypeDefinition {
+    fn aliases(&self) -> impl Iterator<Item = &'static str> + '_ {
+        std::iter::once(self.name).chain(
+            self.database_names
+                .iter()
+                .copied()
+                .filter(|alias| *alias != self.name),
+        )
+    }
+}
+
+const EQ: &[ComparisonOp] = &[ComparisonOp::Eq, ComparisonOp::Ne];
+const ORDERED: &[ComparisonOp] = &[
+    ComparisonOp::Eq,
+    ComparisonOp::Ne,
+    ComparisonOp::Gt,
+    ComparisonOp::Ge,
+    ComparisonOp::Lt,
+    ComparisonOp::Le,
+];
+const TEXT: &[ComparisonOp] = &[ComparisonOp::Eq, ComparisonOp::Ne, ComparisonOp::Like];
+const STRING: &[LiteralKind] = &[LiteralKind::String];
+const NUMBER: &[LiteralKind] = &[LiteralKind::Number];
+const BOOLEAN: &[LiteralKind] = &[LiteralKind::Boolean];
+const ANY_SCALAR: &[LiteralKind] = &[
+    LiteralKind::String,
+    LiteralKind::Number,
+    LiteralKind::Boolean,
+];
+const NONE: &[LiteralKind] = &[];
+
+const NO_AGGREGATES: AggregateCapabilities = AggregateCapabilities {
+    minimum: false,
+    maximum: false,
+    sum: None,
+    average: None,
+};
+const MIN_MAX: AggregateCapabilities = AggregateCapabilities {
+    minimum: true,
+    maximum: true,
+    sum: None,
+    average: None,
+};
+
+static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
+    BuiltinTypeDefinition {
+        data_type: DataType::Uuid,
+        name: "uuid",
+        database_names: &["uuid"],
+        description: "UUID",
+        operators: EQ,
+        orderable: true,
+        literal_kinds: STRING,
+        literal_validation: ScalarValidation::Any,
+        literal_description: "string",
+        default_kinds: STRING,
+        default_validation: ScalarValidation::Any,
+        default_description: "string",
+        aggregates: NO_AGGREGATES,
+    },
+    BuiltinTypeDefinition {
+        data_type: DataType::Text,
+        name: "text",
+        database_names: &["text", "varchar", "bpchar", "char", "name"],
+        description: "text",
+        operators: TEXT,
+        orderable: true,
+        literal_kinds: STRING,
+        literal_validation: ScalarValidation::Any,
+        literal_description: "string",
+        default_kinds: STRING,
+        default_validation: ScalarValidation::Any,
+        default_description: "string",
+        aggregates: MIN_MAX,
+    },
+    BuiltinTypeDefinition {
+        data_type: DataType::Timestamptz,
+        name: "timestamptz",
+        database_names: &["timestamptz", "timestamp with time zone"],
+        description: "timestamp with time zone",
+        operators: ORDERED,
+        orderable: true,
+        literal_kinds: STRING,
+        literal_validation: ScalarValidation::Any,
+        literal_description: "string",
+        default_kinds: STRING,
+        default_validation: ScalarValidation::Any,
+        default_description: "string",
+        aggregates: MIN_MAX,
+    },
+    BuiltinTypeDefinition {
+        data_type: DataType::Int,
+        name: "int",
+        database_names: &["int2", "int4", "int8", "integer", "smallint", "bigint"],
+        description: "integer",
+        operators: ORDERED,
+        orderable: true,
+        literal_kinds: NUMBER,
+        literal_validation: ScalarValidation::Integer,
+        literal_description: "number",
+        default_kinds: NUMBER,
+        default_validation: ScalarValidation::SafeInteger,
+        default_description: "safe integer",
+        aggregates: AggregateCapabilities {
+            minimum: true,
+            maximum: true,
+            sum: Some(DataType::Numeric),
+            average: Some(DataType::Numeric),
+        },
+    },
+    BuiltinTypeDefinition {
+        data_type: DataType::Numeric,
+        name: "numeric",
+        database_names: &["numeric", "decimal"],
+        description: "exact numeric",
+        operators: ORDERED,
+        orderable: true,
+        literal_kinds: NUMBER,
+        literal_validation: ScalarValidation::Any,
+        literal_description: "number",
+        default_kinds: NUMBER,
+        default_validation: ScalarValidation::Any,
+        default_description: "number",
+        aggregates: AggregateCapabilities {
+            minimum: false,
+            maximum: false,
+            sum: Some(DataType::Numeric),
+            average: Some(DataType::Numeric),
+        },
+    },
+    BuiltinTypeDefinition {
+        data_type: DataType::Float,
+        name: "float",
+        database_names: &["float4", "real", "float8", "double precision"],
+        description: "floating-point number",
+        operators: ORDERED,
+        orderable: true,
+        literal_kinds: NUMBER,
+        literal_validation: ScalarValidation::Any,
+        literal_description: "number",
+        default_kinds: NUMBER,
+        default_validation: ScalarValidation::FiniteFloat,
+        default_description: "finite number",
+        aggregates: AggregateCapabilities {
+            minimum: false,
+            maximum: false,
+            sum: Some(DataType::Float),
+            average: Some(DataType::Float),
+        },
+    },
+    BuiltinTypeDefinition {
+        data_type: DataType::Boolean,
+        name: "boolean",
+        database_names: &["bool", "boolean"],
+        description: "boolean",
+        operators: EQ,
+        orderable: true,
+        literal_kinds: BOOLEAN,
+        literal_validation: ScalarValidation::Any,
+        literal_description: "boolean",
+        default_kinds: BOOLEAN,
+        default_validation: ScalarValidation::Any,
+        default_description: "boolean",
+        aggregates: NO_AGGREGATES,
+    },
+    BuiltinTypeDefinition {
+        data_type: DataType::Json,
+        name: "json",
+        database_names: &["json", "jsonb"],
+        description: "JSON",
+        operators: EQ,
+        orderable: true,
+        literal_kinds: STRING,
+        literal_validation: ScalarValidation::Any,
+        literal_description: "string",
+        default_kinds: NONE,
+        default_validation: ScalarValidation::Any,
+        default_description: "value",
+        aggregates: NO_AGGREGATES,
+    },
+    BuiltinTypeDefinition {
+        data_type: DataType::Unknown,
+        name: "unknown",
+        database_names: &[],
+        description: "unmapped provider type",
+        operators: EQ,
+        orderable: true,
+        literal_kinds: ANY_SCALAR,
+        literal_validation: ScalarValidation::Any,
+        literal_description: "value",
+        default_kinds: ANY_SCALAR,
+        default_validation: ScalarValidation::Any,
+        default_description: "value",
+        aggregates: NO_AGGREGATES,
+    },
+];
+
+fn builtin_definition(data_type: DataType) -> &'static BuiltinTypeDefinition {
+    match data_type {
+        DataType::Uuid => &BUILTIN_TYPES[0],
+        DataType::Text => &BUILTIN_TYPES[1],
+        DataType::Timestamptz => &BUILTIN_TYPES[2],
+        DataType::Int => &BUILTIN_TYPES[3],
+        DataType::Numeric => &BUILTIN_TYPES[4],
+        DataType::Float => &BUILTIN_TYPES[5],
+        DataType::Boolean => &BUILTIN_TYPES[6],
+        DataType::Json => &BUILTIN_TYPES[7],
+        DataType::Unknown => &BUILTIN_TYPES[8],
+    }
+}
+
+pub(super) fn data_type_name(data_type: DataType) -> &'static str {
+    builtin_definition(data_type).name
+}
+
+pub(super) fn data_type_from_database_name(name: &str) -> DataType {
+    BUILTIN_TYPES
+        .iter()
+        .find(|definition| definition.database_names.contains(&name))
+        .map_or(DataType::Unknown, |definition| definition.data_type)
+}
+
+pub(super) fn data_type_from_logical_name(name: &str) -> Option<DataType> {
+    BUILTIN_TYPES
+        .iter()
+        .find(|definition| definition.aliases().any(|alias| alias == name))
+        .map(|definition| definition.data_type)
+}

@@ -18,7 +18,8 @@ use bowl::{
 };
 
 use crate::catalog::{
-    CatalogSnapshot, DataType, FieldCheckResult, FieldRef, TableRef, TableResolution,
+    Catalog, CatalogSnapshot, DataType, FieldCheckResult, FieldRef, LiteralKind, MAX_SAFE_INTEGER,
+    MIN_SAFE_INTEGER, ScalarValidation, TableRef, TableResolution, TypeCapabilities,
 };
 use crate::entities::clause::{ClauseFact, OrderDirection, OrderTerm};
 use crate::entities::definition::{DefDecl, DefKind};
@@ -45,9 +46,6 @@ use crate::service::completion::{
 };
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
 use crate::source::{ResolutionScope, ScopeImports};
-
-const MIN_SAFE_INTEGER: i64 = -9_007_199_254_740_991;
-const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 /// One variable occurrence, lowered from `value_variable` or
 /// `operator_variable`. The inference stage (phase 7) groups these by name
@@ -1153,6 +1151,7 @@ fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) 
     let Some(default) = &refinement.default else {
         return None;
     };
+    let capabilities = Catalog::builtin_capabilities(binding.data_type);
     if matches!(default, InputDefault::Null) {
         return (!refinement.nullable).then(|| {
             format!(
@@ -1190,7 +1189,9 @@ fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) 
             MAX_SAFE_INTEGER,
         ));
     }
-    if binding.data_type == DataType::Int && !integer_default_is_safe(default) {
+    if capabilities.defaults.validation == ScalarValidation::SafeInteger
+        && !integer_default_is_safe(default)
+    {
         return Some(format!(
             "integer default for `{}` must be between {MIN_SAFE_INTEGER} and {MAX_SAFE_INTEGER}",
             refinement.name,
@@ -1204,7 +1205,7 @@ fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) 
             refinement.name
         ));
     }
-    if input_default_matches(default, binding) {
+    if input_default_matches(default, binding, &capabilities) {
         None
     } else {
         Some(format!(
@@ -1216,7 +1217,11 @@ fn validate_refinement(refinement: &InputRefinement, binding: &VariableBinding) 
     }
 }
 
-fn input_default_matches(default: &InputDefault, binding: &VariableBinding) -> bool {
+fn input_default_matches(
+    default: &InputDefault,
+    binding: &VariableBinding,
+    capabilities: &TypeCapabilities,
+) -> bool {
     if !binding.enum_values.is_empty() {
         return matches!(
             default,
@@ -1228,28 +1233,22 @@ fn input_default_matches(default: &InputDefault, binding: &VariableBinding) -> b
             !matches!(
                 item,
                 InputDefault::Null | InputDefault::Collection(_) | InputDefault::EmptyObject
-            ) && input_default_scalar_matches(item, binding.data_type)
+            ) && input_default_scalar_matches(item, capabilities)
         }),
         InputDefault::EmptyObject => false,
         InputDefault::Collection(_) => false,
-        scalar if !binding.collection => input_default_scalar_matches(scalar, binding.data_type),
+        scalar if !binding.collection => input_default_scalar_matches(scalar, capabilities),
         _ => false,
     }
 }
 
-fn input_default_scalar_matches(default: &InputDefault, data_type: DataType) -> bool {
+fn input_default_scalar_matches(default: &InputDefault, capabilities: &TypeCapabilities) -> bool {
     match default {
-        InputDefault::String(_) => matches!(
-            data_type,
-            DataType::Text | DataType::Uuid | DataType::Timestamptz | DataType::Unknown
-        ),
-        InputDefault::Number(value) => match data_type {
-            DataType::Int => parse_safe_integer(value).is_some(),
-            DataType::Float => value.parse::<f64>().is_ok_and(f64::is_finite),
-            DataType::Numeric | DataType::Unknown => true,
-            _ => false,
-        },
-        InputDefault::Boolean(_) => matches!(data_type, DataType::Boolean | DataType::Unknown),
+        InputDefault::String(value) => capabilities.defaults.accepts(LiteralKind::String, value),
+        InputDefault::Number(value) => capabilities.defaults.accepts(LiteralKind::Number, value),
+        InputDefault::Boolean(value) => capabilities
+            .defaults
+            .accepts(LiteralKind::Boolean, if *value { "true" } else { "false" }),
         InputDefault::Null => true,
         InputDefault::Collection(_) | InputDefault::EmptyObject => false,
     }

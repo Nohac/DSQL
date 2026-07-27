@@ -1776,8 +1776,7 @@ fn resolve_shape_target(
                 }),
             );
         }
-        let data_type = logical_type(&field.type_name);
-        if data_type == DataType::Unknown && field.type_name != "unknown" {
+        let Some(data_type) = Catalog::resolve_logical_type_name(&field.type_name) else {
             return (
                 Vec::new(),
                 resolved,
@@ -1786,7 +1785,7 @@ fn resolve_shape_target(
                     span: field.type_span,
                 }),
             );
-        }
+        };
         resolved.push((field.name.clone(), data_type));
     }
     let matches = catalog
@@ -1803,21 +1802,6 @@ fn resolve_shape_target(
         .collect();
     let _ = span;
     (matches, resolved, None)
-}
-
-fn logical_type(name: &str) -> DataType {
-    match name {
-        "uuid" => DataType::Uuid,
-        "text" => DataType::Text,
-        "timestamptz" => DataType::Timestamptz,
-        "int" => DataType::Int,
-        "numeric" => DataType::Numeric,
-        "float" => DataType::Float,
-        "boolean" => DataType::Boolean,
-        "json" => DataType::Json,
-        "unknown" => DataType::Unknown,
-        other => DataType::from_database_type(other),
-    }
 }
 
 async fn check_policy_definitions(

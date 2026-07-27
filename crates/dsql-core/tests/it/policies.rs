@@ -4,7 +4,10 @@
 use std::collections::BTreeMap;
 
 use bowl::{Query, Singleton};
-use dsql_core::catalog::insert_catalog;
+use dsql_core::catalog::{
+    ColumnMetadata, DataType, DatabaseMetadata, ObjectType, SchemaMetadata, TableMetadata, TypeKey,
+    insert_catalog,
+};
 use dsql_core::entities::policy::PolicyIndex;
 use dsql_core::facts::{PlanDemand, arm_editor_demands};
 use dsql_core::language_bowl;
@@ -100,6 +103,60 @@ async fn invalid_filter_definitions_and_assignments_fail_closed() {
               title(filter Enforced when false filter Enforced) { id }
               name(filter Enforced) { id }
             }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn structural_policy_types_accept_builtin_aliases_only() {
+    let bowl = language_bowl().await;
+    let column = |name: &str, database_type: &str| ColumnMetadata {
+        name: name.to_string(),
+        description: None,
+        provider_type: TypeKey::new("pg_catalog", database_type),
+        database_type: database_type.to_string(),
+        data_type: DataType::from_database_type(database_type),
+        not_null: true,
+    };
+    let catalog = DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![TableMetadata {
+                schema: "public".to_string(),
+                name: "records".to_string(),
+                object_type: ObjectType::Table,
+                description: None,
+                columns: vec![
+                    column("integer_value", "int8"),
+                    column("float_value", "float8"),
+                    column("text_value", "varchar"),
+                    column("json_value", "jsonb"),
+                    column("custom", "citext"),
+                ],
+                constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        }],
+        types: Vec::new(),
+    }
+    .to_catalog()
+    .expect("provider-only type catalog builds");
+    insert_catalog(&bowl, catalog).await;
+    arm_editor_demands(&bowl).await;
+    insert_source(
+        &bowl,
+        "type-aliases.dsql",
+        indoc::indoc! {r#"
+            filter CanonicalInt on { .integer_value: int } { where true }
+            filter CanonicalFloat on { .float_value: float } { where true }
+            filter DatabaseInt on { .integer_value: int8 } { where true }
+            filter DatabaseText on { .text_value: varchar } { where true }
+            filter DatabaseJson on { .json_value: jsonb } { where true }
+            filter ProviderOnly on { .custom: citext } { where true }
         "#},
     )
     .await;

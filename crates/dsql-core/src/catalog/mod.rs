@@ -1,3 +1,4 @@
+mod capabilities;
 mod component;
 mod keys;
 mod lookup;
@@ -5,6 +6,10 @@ mod metadata;
 mod provider;
 mod types;
 
+pub use capabilities::{
+    AggregateCapabilities, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, ScalarAcceptance, ScalarValidation,
+    TypeCapabilities,
+};
 pub use component::{CatalogSnapshot, CatalogSourceRoot, insert_catalog};
 pub use keys::{
     ColumnId, ColumnKey, ForeignKeyId, RelationId, SchemaId, SchemaKey, TableId, TableKey, TypeId,

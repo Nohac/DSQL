@@ -1483,6 +1483,7 @@ impl Planner<'_> {
             .filter_map(|(key, column_id)| {
                 let column = self.catalog.column_by_id(column_id)?;
                 let data_type = self.catalog.data_type_for_column(column_id);
+                let capabilities = self.catalog.capabilities_for_column(column_id)?;
                 let access = field_filters
                     .iter()
                     .find(|filter| filter.target == PolicyFieldTarget::Column(column_id))
@@ -1495,7 +1496,7 @@ impl Planner<'_> {
                     data_type,
                     nullable: !column.not_null || access != PolicyAccess::Unconditional,
                     access,
-                    operators: dynamic_predicate_operators(data_type),
+                    operators: dynamic_predicate_operators(capabilities),
                     directions: Vec::new(),
                 })
             })
@@ -2666,10 +2667,10 @@ fn extend_unique_context(
 }
 
 fn dynamic_predicate_operators(
-    data_type: crate::catalog::DataType,
+    capabilities: &crate::catalog::TypeCapabilities,
 ) -> Vec<DynamicPredicateOperator> {
-    let mut operators = data_type
-        .operator_ops()
+    let mut operators = capabilities
+        .operators
         .iter()
         .map(|operator| match operator {
             crate::entities::expression::ComparisonOp::Eq => DynamicPredicateOperator::Eq,
