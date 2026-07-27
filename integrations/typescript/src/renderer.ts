@@ -17,3 +17,8 @@ export type {
   TypeScriptDefinitionsOptions,
 } from "./project.ts";
 export type { DsqlOutputMode } from "./node.ts";
+export type {
+  DsqlNamedReference,
+  DsqlScalarMapping,
+  DsqlScalarMappings,
+} from "./render/types.ts";

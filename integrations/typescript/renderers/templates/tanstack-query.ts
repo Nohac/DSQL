@@ -6,32 +6,32 @@ import {
 import type { UseQueryOptions, UseQueryResult } from "@tanstack/react-query";
 import type {
   DsqlOperation,
+  DsqlOperationContext,
   DsqlOperationResult,
+  DsqlOperationWireResult,
   DsqlVariables,
+  DsqlWireVariables,
 } from "@dsql/typescript/runtime";
-import { dsqlQueryKey } from "@dsql/typescript/runtime";
+import {
+  dsqlQueryKey,
+  dsqlQueryKeyForWire,
+  dsqlResultSelector,
+  materializeDsqlOperationVariables,
+  parseDsqlResult,
+} from "@dsql/typescript/runtime";
 import type { DsqlServerVariables } from "./tanstack-start";
 
-export type DsqlQueryVariables<
-  Params,
-  Input,
-> = {
-  readonly params: Params;
-  readonly input: Input;
-};
+type AnyDsqlOperation = DsqlOperation<any, any, any, any, any>;
 
-type DsqlVariableOptions<Params, Input> =
-  DsqlVariables<DsqlOperation<unknown, Params, Input>>;
-
-type DsqlOptionsArgument<Params, Input, Context, Options> =
-  [Context] extends [Record<string, never>]
-    ? {} extends DsqlVariableOptions<Params, Input>
+type DsqlOptionsArgument<Operation extends AnyDsqlOperation, Options> =
+  [DsqlOperationContext<Operation>] extends [Record<string, never>]
+    ? {} extends DsqlVariables<Operation>
       ? readonly [options?: Options]
       : readonly [options: Options]
     : readonly [options: Options];
 
-type DsqlContextScopeOptions<Context> =
-  [Context] extends [Record<string, never>]
+type DsqlContextScopeOptions<Operation extends AnyDsqlOperation> =
+  [DsqlOperationContext<Operation>] extends [Record<string, never>]
     ? { readonly contextScope?: string }
     : { readonly contextScope: string };
 
@@ -46,114 +46,121 @@ export type DsqlQueryKey<Variables> = readonly [
  * `contextScope` is an opaque, non-secret identity for the trusted server
  * context. It participates only in the client cache key and is never sent to
  * the server function.
+ *
+ * TanStack stores the raw wire result in its cache and dehydration payload.
+ * `select` parses configured host scalars before applying the caller selector.
+ * Consequently direct cache APIs such as `getQueryData`, `ensureQueryData`,
+ * and `prefetchQuery` observe the raw wire result; call `parseDsqlResult` when
+ * consuming their returned data directly.
  */
-
 export type DsqlQueryOptions<
-  Params,
-  Input,
-  Context,
-  Result,
+  Operation extends AnyDsqlOperation,
+  Selected = DsqlOperationResult<Operation>,
 > = Omit<
   UseQueryOptions<
-    Result,
+    DsqlOperationWireResult<Operation>,
     Error,
-    Result,
-    DsqlQueryKey<DsqlQueryVariables<Params, Input>>
+    Selected,
+    DsqlQueryKey<DsqlWireVariables<Operation>>
   >,
-  "queryKey" | "queryFn"
-> & {
-} & DsqlVariableOptions<Params, Input> & DsqlContextScopeOptions<Context>;
+  "queryKey" | "queryFn" | "select"
+> &
+  DsqlVariables<Operation> &
+  DsqlContextScopeOptions<Operation> & {
+    readonly select?: (
+      result: DsqlOperationResult<Operation>,
+    ) => Selected;
+  };
 
-export type DsqlExecuteOptions<
-  Params,
-  Input,
-> = DsqlVariableOptions<Params, Input>;
+export type DsqlExecuteOptions<Operation extends AnyDsqlOperation> =
+  DsqlVariables<Operation>;
 
-type DsqlServerFunction<Operation extends DsqlOperation<any, any, any, any>> = (
-  options: {
-    readonly data: DsqlServerVariables<Operation>;
-  },
-) => Promise<DsqlOperationResult<Operation>>;
+type DsqlServerFunction<Operation extends AnyDsqlOperation> = (options: {
+  readonly data: DsqlServerVariables<Operation>;
+}) => Promise<DsqlOperationWireResult<Operation>>;
 
-export function queryKey<Variables>(
-  operation: DsqlOperation<any, any, any, any>,
-  variables: Variables,
+export function queryKey<Operation extends AnyDsqlOperation>(
+  operation: Operation,
+  variables: DsqlVariables<Operation>,
   contextScope?: string,
-): DsqlQueryKey<Variables> {
+): DsqlQueryKey<DsqlWireVariables<Operation>> {
   return dsqlQueryKey(operation, variables, contextScope);
 }
 
-export function queryOptions<Result, Params, Input, Context>(
-  operation: DsqlOperation<Result, Params, Input, Context>,
+export function queryOptions<
+  Operation extends AnyDsqlOperation,
+  Selected = DsqlOperationResult<Operation>,
+>(
+  operation: Operation,
   ...args: DsqlOptionsArgument<
-    NoInfer<Params>,
-    NoInfer<Input>,
-    NoInfer<Context>,
-    DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Context>, NoInfer<Result>>
+    Operation,
+    DsqlQueryOptions<Operation, Selected>
   >
 ) {
-  const [options = {} as DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Context>, NoInfer<Result>>] = args;
+  const [options = {} as DsqlQueryOptions<Operation, Selected>] = args;
   const {
     contextScope,
-    params = {} as Params,
-    input = {} as Input,
+    params = {},
+    input = {},
+    select,
     ...tanStackOptions
   } = options;
-  const variables = { params, input };
+  const variables = { params, input } as DsqlVariables<Operation>;
+  const wireVariables = materializeDsqlOperationVariables(
+    operation,
+    variables,
+  );
   const serverFn = serverFunctionFor(operation);
   return tanStackQueryOptions({
     ...tanStackOptions,
-    queryKey: queryKey(operation, variables, contextScope),
-    queryFn: () => serverFn({ data: variables }),
+    queryKey: dsqlQueryKeyForWire(
+      operation,
+      wireVariables,
+      contextScope,
+    ),
+    queryFn: () => serverFn({ data: wireVariables }),
+    select: dsqlResultSelector(operation, select),
   });
 }
 
-export function executeQuery<Result, Params, Input, Context>(
-  operation: DsqlOperation<Result, Params, Input, Context>,
+export async function executeQuery<Operation extends AnyDsqlOperation>(
+  operation: Operation,
   ...args: DsqlOptionsArgument<
-    NoInfer<Params>,
-    NoInfer<Input>,
-    Record<string, never>,
-    DsqlExecuteOptions<NoInfer<Params>, NoInfer<Input>>
+    Operation,
+    DsqlExecuteOptions<Operation>
   >
-): Promise<Result> {
-  const [options = {} as DsqlExecuteOptions<NoInfer<Params>, NoInfer<Input>>] = args;
+): Promise<DsqlOperationResult<Operation>> {
+  const [options = {} as DsqlExecuteOptions<Operation>] = args;
   const {
-    params = {} as Params,
-    input = {} as Input,
+    params = {},
+    input = {},
   } = options;
+  const variables = { params, input } as DsqlVariables<Operation>;
+  const wireVariables = materializeDsqlOperationVariables(
+    operation,
+    variables,
+  );
   const serverFn = serverFunctionFor(operation);
-  return serverFn({ data: { params, input } });
+  const wireResult = await serverFn({ data: wireVariables });
+  return parseDsqlResult(operation, wireResult);
 }
 
-export function useQuery<Result, Params, Input, Context>(
-  operation: DsqlOperation<Result, Params, Input, Context>,
+export function useQuery<
+  Operation extends AnyDsqlOperation,
+  Selected = DsqlOperationResult<Operation>,
+>(
+  operation: Operation,
   ...args: DsqlOptionsArgument<
-    NoInfer<Params>,
-    NoInfer<Input>,
-    NoInfer<Context>,
-    DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Context>, NoInfer<Result>>
+    Operation,
+    DsqlQueryOptions<Operation, Selected>
   >
-): UseQueryResult<Result, Error> {
-  const [options = {} as DsqlQueryOptions<NoInfer<Params>, NoInfer<Input>, NoInfer<Context>, NoInfer<Result>>] = args;
-  const {
-    contextScope,
-    params = {} as Params,
-    input = {} as Input,
-    ...tanStackOptions
-  } = options;
-  const variables = { params, input };
-  const serverFn = serverFunctionFor(operation);
+): UseQueryResult<Selected, Error> {
   return useTanStackQuery(
-    tanStackQueryOptions({
-      ...tanStackOptions,
-      queryKey: queryKey(operation, variables, contextScope),
-      queryFn: () => serverFn({ data: variables }),
-    }),
-  ) as UseQueryResult<Result, Error>;
+    queryOptions<Operation, Selected>(operation, ...args),
+  ) as UseQueryResult<Selected, Error>;
 }
 
-function serverFunctionFor<Operation extends DsqlOperation<any, any, any, any>>(
+function serverFunctionFor<Operation extends AnyDsqlOperation>(
   operation: Operation,
 ): DsqlServerFunction<Operation> {
   const serverFn = serverFunctions[operation.name];

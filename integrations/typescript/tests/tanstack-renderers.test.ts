@@ -51,6 +51,7 @@ test("tanstack start uses imported validator expressions when provided", async (
     mode: "test",
     command: "build",
     outputMode: "readable",
+    scalars: {},
   };
   await tanstackStart({
     validatorFor(operation) {
@@ -93,6 +94,9 @@ test("tanstack start uses imported validator expressions when provided", async (
   expect(source).toContain(
     "await context.dsql.provideContext({ operation, variables })",
   );
+  expect(source).toContain("DsqlWireVariables<Operation>");
+  expect(source).toContain("Promise<DsqlOperationWireResult<Operation>>");
+  expect(source).toContain("context: materialized.context");
   const querySource = readFileSync(
     join(root, "src/generated/dsql/tanstack-query.ts"),
     "utf8",
@@ -102,7 +106,7 @@ test("tanstack start uses imported validator expressions when provided", async (
   );
   expect(querySource).toContain("readonly contextScope: string");
   expect(querySource).toContain(
-    "queryKey: queryKey(operation, variables, contextScope)",
+    "queryKey: dsqlQueryKeyForWire(",
   );
   expect(querySource).not.toContain("data: { contextScope");
   const operationSource = readFileSync(
@@ -140,7 +144,9 @@ function assertGeneratedQueryConsumerTypes(
     join(root, "react-query.d.ts"),
     `
 export type UseQueryOptions<Result, ErrorType, Selected, Key> = {};
-export type UseQueryResult<Result, ErrorType> = {};
+export type UseQueryResult<Result, ErrorType> = {
+  readonly data: Result | undefined;
+};
 export function queryOptions<Options>(options: Options): Options;
 export function useQuery<Options>(options: Options): unknown;
 `,
@@ -156,10 +162,10 @@ export const MovieInfoLookupOperation =
   writeFileSync(
     join(generatedDirectory, "tanstack-start.ts"),
     `
-import type { DsqlOperation, DsqlVariables } from "@dsql/typescript/runtime";
+import type { DsqlOperation, DsqlWireVariables } from "@dsql/typescript/runtime";
 export type DsqlServerVariables<
-  Operation extends DsqlOperation<any, any, any, any>,
-> = DsqlVariables<Operation>;
+  Operation extends DsqlOperation<any, any, any, any, any>,
+> = DsqlWireVariables<Operation>;
 export const MovieInfoLookupServerFn = async () => undefined;
 `,
   );
@@ -214,6 +220,30 @@ useQuery(contextOperation);
 // @ts-expect-error trusted context requires an explicit cache scope
 useQuery(contextOperation, {});
 useQuery(contextOperation, { contextScope: "tenant" });
+
+type DateValue = { readonly iso: string };
+declare const mappedOperation: DsqlOperation<
+  { readonly released: DateValue },
+  { readonly since: DateValue },
+  Record<string, never>,
+  Record<string, never>,
+  import("@dsql/typescript/runtime").DsqlWireContract<
+    { readonly released: string },
+    { readonly since: string },
+    Record<string, never>
+  >
+>;
+const selected = useQuery(mappedOperation, {
+  params: { since: { iso: "2026-01-01" } },
+  select: (result) => result.released.iso,
+});
+const selectedData: string | undefined = selected.data;
+// @ts-expect-error public callers pass host values, never wire values
+useQuery(mappedOperation, { params: { since: "2026-01-01" } });
+const executed: Promise<{ readonly released: DateValue }> = executeQuery(
+  mappedOperation,
+  { params: { since: { iso: "2026-01-01" } } },
+);
 `,
   );
 

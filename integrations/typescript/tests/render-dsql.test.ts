@@ -100,7 +100,7 @@ test("renders inline per-definition dsql modules", async () => {
     "utf8",
   );
   expect(index).toBe(
-    'export { dsql } from "@dsql/typescript/runtime";\nexport type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationContext, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlVariables } from "@dsql/typescript/runtime";\nexport * from "./MovieFields.fragment";\nexport * from "./MovieInfoLookup";\n',
+    'export { dsql, dsqlQueryKey, dsqlQueryKeyForWire, dsqlResultSelector, materializeDsqlOperationVariables, parseDsqlResult } from "@dsql/typescript/runtime";\nexport type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationContext, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlOperationWireInput, DsqlOperationWireParams, DsqlOperationWireResult, DsqlScalarParser, DsqlScalarSerializer, DsqlVariables, DsqlWireContract, DsqlWireVariables } from "@dsql/typescript/runtime";\nexport * from "./MovieFields.fragment";\nexport * from "./MovieInfoLookup";\n',
   );
 });
 
@@ -160,6 +160,8 @@ test("renders bounded dynamic input types and server execution metadata", async 
     {
       path: "params.search",
       data_type: "dynamic_predicate",
+      wire: { encoding: "unsupported" },
+      validation: {},
       enum_values: [],
       required: false,
       nullable: false,
@@ -168,6 +170,8 @@ test("renders bounded dynamic input types and server execution metadata", async 
     {
       path: "params.order",
       data_type: "dynamic_order",
+      wire: { encoding: "unsupported" },
+      validation: {},
       enum_values: [],
       required: false,
       nullable: false,
@@ -184,13 +188,39 @@ test("renders bounded dynamic input types and server execution metadata", async 
           key: "name",
           catalog_path: "public.users.name",
           data_type: "text",
+          wire: { encoding: "text" },
+          validation: {},
           nullable: false,
           access: "unconditional",
           operators: ["eq", "like", "in", "is_null"],
           directions: [],
         },
       ],
-      sites: [],
+      sites: [
+        {
+          marker: "{{dynamic:0}}",
+          identity_sql: "TRUE",
+          fields: [
+            {
+              key: "name",
+              operators: [
+                { name: "eq", value_kind: "scalar", cases: [] },
+                { name: "like", value_kind: "scalar", cases: [] },
+                { name: "in", value_kind: "collection", cases: [] },
+                {
+                  name: "is_null",
+                  value_kind: "boolean",
+                  cases: [
+                    { value: "true", text: "name IS NULL" },
+                    { value: "false", text: "name IS NOT NULL" },
+                  ],
+                },
+              ],
+              directions: [],
+            },
+          ],
+        },
+      ],
     },
     {
       path: "params.order",
@@ -201,13 +231,33 @@ test("renders bounded dynamic input types and server execution metadata", async 
           key: "name",
           catalog_path: "public.users.name",
           data_type: "text",
+          wire: { encoding: "text" },
+          validation: {},
           nullable: false,
           access: "unconditional",
           operators: [],
           directions: ["asc", "desc_nulls_last"],
         },
       ],
-      sites: [],
+      sites: [
+        {
+          marker: "{{dynamic:1}}",
+          identity_sql: "NULL::integer",
+          fields: [
+            {
+              key: "name",
+              operators: [],
+              directions: [
+                { value: "asc", text: "name ASC" },
+                {
+                  value: "desc_nulls_last",
+                  text: "name DESC NULLS LAST",
+                },
+              ],
+            },
+          ],
+        },
+      ],
     },
   ];
 
@@ -234,6 +284,82 @@ test("renders bounded dynamic input types and server execution metadata", async 
   );
   expect(source).toContain("dynamicInputs:");
   expect(source).not.toContain("dynamic_inputs:");
+});
+
+test("rejects missing or inconsistent dynamic operator value kinds", async () => {
+  const root = createRoot();
+  const operation = operationMetadata("DynamicKinds");
+  operation.params = [
+    {
+      path: "params.filter",
+      data_type: "dynamic_predicate",
+      wire: { encoding: "unsupported" },
+      validation: {},
+      enum_values: [],
+      required: true,
+      nullable: false,
+    },
+  ];
+  operation.dynamic_inputs = [
+    {
+      path: "params.filter",
+      kind: "predicate",
+      surface: "selected",
+      fields: [
+        {
+          key: "name",
+          catalog_path: "public.users.name",
+          data_type: "text",
+          wire: { encoding: "text" },
+          validation: {},
+          nullable: false,
+          access: "unconditional",
+          operators: ["eq"],
+          directions: [],
+        },
+      ],
+      sites: [],
+    },
+  ];
+  const artifacts = artifactsWithOperation(root, operation);
+
+  await expect(
+    renderDsql(artifacts, {
+      root,
+      queriesDir: "src/generated/dsql/queries",
+    }),
+  ).rejects.toThrow("has no generated SQL usage sites");
+
+  operation.dynamic_inputs[0]!.sites = [
+    {
+      marker: "{{dynamic:0}}",
+      identity_sql: "TRUE",
+      fields: [
+        {
+          key: "name",
+          operators: [{ name: "eq", value_kind: "scalar", cases: [] }],
+          directions: [],
+        },
+      ],
+    },
+    {
+      marker: "{{dynamic:1}}",
+      identity_sql: "TRUE",
+      fields: [
+        {
+          key: "name",
+          operators: [{ name: "eq", value_kind: "collection", cases: [] }],
+          directions: [],
+        },
+      ],
+    },
+  ];
+  await expect(
+    renderDsql(artifacts, {
+      root,
+      queriesDir: "src/generated/dsql/queries",
+    }),
+  ).rejects.toThrow("disagrees on value kind across SQL sites");
 });
 
 test("renders exact numeric, bigint, and finite/non-finite float wire types", async () => {
@@ -280,6 +406,8 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
       {
         path: "params.minimum",
         data_type: "numeric",
+        wire: { encoding: "numeric" },
+        validation: {},
         enum_values: [],
         required: true,
         nullable: false,
@@ -287,6 +415,8 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
       {
         path: "params.threshold",
         data_type: "float",
+        wire: { encoding: "float" },
+        validation: {},
         enum_values: [],
         required: true,
         nullable: false,
@@ -294,6 +424,8 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
       {
         path: "params.amounts",
         data_type: "numeric",
+        wire: { encoding: "numeric" },
+        validation: {},
         collection: true,
         enum_values: [],
         required: true,
@@ -302,6 +434,8 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
       {
         path: "params.minimum_count",
         data_type: "bigint",
+        wire: { encoding: "big_integer" },
+        validation: {},
         enum_values: [],
         required: true,
         nullable: false,
@@ -309,6 +443,8 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
       {
         path: "params.counts",
         data_type: "bigint",
+        wire: { encoding: "big_integer" },
+        validation: {},
         collection: true,
         enum_values: [],
         required: true,
@@ -337,12 +473,422 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
     'ratio: number | "NaN" | "Infinity" | "-Infinity" | null;',
   );
   expect(rendered).toContain("minimum: string;");
-  expect(rendered).toContain(
-    'threshold: number | "NaN" | "Infinity" | "-Infinity";',
-  );
+  expect(rendered).toContain("threshold: number;");
   expect(rendered).toContain("amounts: Array<string | null>;");
   expect(rendered).toContain("minimum_count: string;");
   expect(rendered).toContain("counts: Array<string | null>;");
+});
+
+test("maps project scalars across host types and runtime boundaries", async () => {
+  const root = createRoot();
+  const operation = operationMetadata("MappedScalars");
+  operation.result.fields = [
+    {
+      path: "released",
+      name: "released",
+      parent_path: "",
+      kind: "scalar",
+      value_type: {
+        shape: "scalar",
+        name: "calendar_date",
+        wire: { encoding: "text_cast" },
+      },
+      nullable: false,
+    },
+    {
+      path: "opaque",
+      name: "opaque",
+      parent_path: "",
+      kind: "scalar",
+      value_type: {
+        shape: "scalar",
+        name: "opaque_token",
+        wire: { encoding: "text" },
+      },
+      nullable: false,
+    },
+    {
+      path: "plain",
+      name: "plain",
+      parent_path: "",
+      kind: "scalar",
+      value_type: {
+        shape: "scalar",
+        name: "plain_token",
+        wire: { encoding: "text" },
+      },
+      nullable: false,
+    },
+  ];
+  operation.params = [
+    {
+      path: "params.since",
+      data_type: "calendar_date",
+      wire: { encoding: "text_cast" },
+      validation: {},
+      enum_values: [],
+      required: true,
+      nullable: false,
+    },
+    {
+      path: "params.label",
+      data_type: "display_text",
+      wire: { encoding: "text" },
+      validation: {},
+      enum_values: [],
+      required: true,
+      nullable: false,
+    },
+    {
+      path: "params.direction",
+      data_type: "display_text",
+      wire: { encoding: "text" },
+      validation: {},
+      enum_values: ["asc", "desc"],
+      required: true,
+      nullable: false,
+    },
+    {
+      path: "params.filter",
+      data_type: "dynamic_predicate",
+      wire: { encoding: "unsupported" },
+      validation: {},
+      enum_values: [],
+      required: true,
+      nullable: false,
+    },
+  ];
+  operation.context = [
+    {
+      path: "context.cutoff",
+      data_type: "calendar_date",
+      wire: { encoding: "text_cast" },
+      validation: {},
+      enum_values: [],
+      required: true,
+      nullable: false,
+    },
+  ];
+  operation.dynamic_inputs = [
+    {
+      path: "params.filter",
+      kind: "predicate",
+      surface: "selected",
+      fields: [
+        {
+          key: "released",
+          catalog_path: "public.movies.released",
+          data_type: "calendar_date",
+          wire: { encoding: "text_cast" },
+          validation: {},
+          nullable: false,
+          access: "unconditional",
+          operators: ["eq"],
+          directions: [],
+        },
+      ],
+      sites: [
+        {
+          marker: "{{dynamic:0}}",
+          identity_sql: "TRUE",
+          fields: [
+            {
+              key: "released",
+              operators: [
+                {
+                  name: "eq",
+                  value_kind: "scalar",
+                  before_value: "released = ",
+                  cases: [],
+                },
+              ],
+              directions: [],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  await renderDsql(artifactsWithOperation(root, operation), {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+    scalars: {
+      calendar_date: {
+        type: { from: "./scalars", name: "CalendarDate" },
+        parse: { from: "./scalars", name: "parseCalendarDate" },
+        serialize: { from: "./scalars", name: "serializeCalendarDate" },
+      },
+      opaque_token: {
+        type: { from: "./scalars", name: "OpaqueToken" },
+      },
+      display_text: {
+        type: { from: "./scalars", name: "CalendarDate" },
+        parse: { from: "./scalars", name: "parseCalendarDate" },
+        serialize: { from: "./scalars", name: "serializeCalendarDate" },
+      },
+    },
+  });
+  const source = readFileSync(
+    join(root, "src/generated/dsql/queries/MappedScalars.ts"),
+    "utf8",
+  );
+
+  expect(source).toContain(
+    'import type { CalendarDate as __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_type } from "./scalars";',
+  );
+  expect(source).toContain(
+    'import { parseCalendarDate as __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_parse } from "./scalars";',
+  );
+  expect(source).toContain(
+    'import { serializeCalendarDate as __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_serialize } from "./scalars";',
+  );
+  expect(source).toContain(
+    "released: __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_type;",
+  );
+  expect(source).toContain(
+    "opaque: __dsql_scalar_6f_70_61_71_75_65_5f_74_6f_6b_65_6e_type;",
+  );
+  expect(source).toContain("plain: string;");
+  expect(source).toContain(
+    "export type MappedScalarsWireResult = {\n  released: string;\n  opaque: string;\n  plain: string;\n};",
+  );
+  expect(source).toContain(
+    "export type MappedScalarsParamsFilterDynamicInput",
+  );
+  expect(source).toContain(
+    "label: __dsql_scalar_64_69_73_70_6c_61_79_5f_74_65_78_74_type;",
+  );
+  expect(source).toContain('direction: "asc" | "desc";');
+  const inputsLine = source
+    .split("\n")
+    .find((line) => line.trimStart().startsWith("inputs:"));
+  expect(inputsLine).toContain(
+    '{"path":"params.direction","data_type":"display_text","wire":{"encoding":"text"},"validation":{},"enum_values":["asc","desc"],"required":true,"nullable":false}',
+  );
+  expect(inputsLine).toContain(
+    '"path":"params.label","data_type":"display_text"',
+  );
+  expect(inputsLine).toContain(
+    "serialize:__dsql_scalar_64_69_73_70_6c_61_79_5f_74_65_78_74_serialize",
+  );
+  const dynamicContractsLine = source
+    .split("\n")
+    .find((line) => line.trimStart().startsWith("dynamicInputContracts:"));
+  expect(dynamicContractsLine).toContain(
+    '"operators":[{"name":"eq","value_kind":"scalar"}]',
+  );
+  expect(dynamicContractsLine).not.toContain("before_value");
+  expect(dynamicContractsLine).not.toContain("after_value");
+  expect(dynamicContractsLine).not.toContain("cases");
+  expect(dynamicContractsLine).not.toContain("identity_sql");
+  expect(dynamicContractsLine).not.toContain("sites");
+  expect(source).toContain(
+    "serialize:__dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_serialize satisfies DsqlScalarSerializer",
+  );
+  expect(source).toContain(
+    "parse:__dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_parse satisfies DsqlScalarParser",
+  );
+  expect(source).toContain(
+    "export type MappedScalarsContext = {\n  cutoff: __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_type;\n};",
+  );
+  assertMappedOperationTypeChecks(root);
+});
+
+test("maps project scalars inside fragment result and variable types", async () => {
+  const root = createRoot();
+  const fragment = fragmentMetadata("MovieFields");
+  fragment.result.fields = [
+    {
+      path: "released",
+      name: "released",
+      parent_path: "",
+      kind: "scalar",
+      value_type: {
+        shape: "scalar",
+        name: "calendar_date",
+        wire: { encoding: "text_cast" },
+      },
+      nullable: false,
+    },
+  ];
+  fragment.params = [
+    {
+      path: "params.since",
+      data_type: "calendar_date",
+      wire: { encoding: "text_cast" },
+      validation: {},
+      enum_values: [],
+      required: true,
+      nullable: false,
+    },
+  ];
+  fragment.input = [
+    {
+      path: "input.until",
+      data_type: "calendar_date",
+      wire: { encoding: "text_cast" },
+      validation: {},
+      enum_values: [],
+      required: true,
+      nullable: false,
+    },
+  ];
+  const base = createArtifacts(root);
+  const artifacts = {
+    ...base,
+    fragments: [fragment],
+    fragmentsByName: new Map([[fragment.name, fragment]]),
+  };
+
+  await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+    scalars: {
+      calendar_date: {
+        type: { from: "./scalars", name: "CalendarDate" },
+        parse: { from: "./scalars", name: "parseCalendarDate" },
+        serialize: { from: "./scalars", name: "serializeCalendarDate" },
+      },
+    },
+  });
+  const source = readFileSync(
+    join(root, "src/generated/dsql/queries/MovieFields.fragment.ts"),
+    "utf8",
+  );
+
+  expect(source).toContain(
+    'import type { CalendarDate as __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_type } from "./scalars";',
+  );
+  expect(source).toContain(
+    "export type MovieFieldsFragmentResult = {\n  released: __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_type;\n};",
+  );
+  expect(source).toContain(
+    "export type MovieFieldsFragmentParams = {\n  since: __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_type;\n};",
+  );
+  expect(source).toContain(
+    "export type MovieFieldsFragmentInput = {\n  until: __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_type;\n};",
+  );
+  expect(source).not.toContain("parseCalendarDate");
+  expect(source).not.toContain("serializeCalendarDate");
+});
+
+test("rejects invalid project scalar mappings", async () => {
+  const root = createRoot();
+  const operation = operationMetadata("ScalarValidation");
+  operation.result.fields = [
+    {
+      path: "value",
+      name: "value",
+      parent_path: "",
+      kind: "scalar",
+      value_type: {
+        shape: "scalar",
+        name: "custom",
+        wire: { encoding: "text" },
+      },
+      nullable: false,
+    },
+  ];
+  operation.params.push({
+    path: "params.value",
+    data_type: "custom",
+    wire: { encoding: "integer" },
+    validation: {},
+    enum_values: [],
+    required: true,
+    nullable: false,
+  });
+  const artifacts = artifactsWithOperation(root, operation);
+  const options = {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  };
+  const type = { from: "./scalars", name: "Custom" };
+
+  await expect(
+    renderDsql(artifacts, {
+      ...options,
+      scalars: { missing: { type } },
+    }),
+  ).rejects.toThrow("does not match any generated logical type");
+  await expect(
+    renderDsql(artifacts, {
+      ...options,
+      scalars: {
+        custom: {
+          type,
+          parse: { from: "./scalars", name: "parseCustom" },
+        },
+      },
+    }),
+  ).rejects.toThrow("must declare parse and serialize together");
+  await expect(
+    renderDsql(artifacts, {
+      ...options,
+      scalars: { dynamic_predicate: { type } },
+    }),
+  ).rejects.toThrow("names a structural compiler type");
+  await expect(
+    renderDsql(artifacts, {
+      ...options,
+      scalars: { custom: { type } },
+    }),
+  ).rejects.toThrow("spans inconsistent wire encodings: integer, text");
+
+  operation.params[0] = {
+    ...operation.params[0],
+    data_type: "unsupported_custom",
+    wire: { encoding: "unsupported" },
+  };
+  await expect(
+    renderDsql(artifacts, {
+      ...options,
+      scalars: {
+        unsupported_custom: { type },
+      },
+    }),
+  ).rejects.toThrow("targets an unsupported wire encoding");
+});
+
+test("imports a context-only scalar serializer before inline payloads", async () => {
+  const root = createRoot();
+  const operation = operationMetadata("ContextScalar");
+  operation.context = [
+    {
+      path: "context.cutoff",
+      data_type: "calendar_date",
+      wire: { encoding: "text_cast" },
+      validation: {},
+      enum_values: [],
+      required: true,
+      nullable: false,
+    },
+  ];
+
+  await renderDsql(artifactsWithOperation(root, operation), {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+    scalars: {
+      calendar_date: {
+        type: { from: "./scalars", name: "CalendarDate" },
+        parse: { from: "./scalars", name: "parseCalendarDate" },
+        serialize: { from: "./scalars", name: "serializeCalendarDate" },
+      },
+    },
+  });
+  const source = readFileSync(
+    join(root, "src/generated/dsql/queries/ContextScalar.ts"),
+    "utf8",
+  );
+
+  expect(source).toContain("DsqlScalarSerializer");
+  expect(source).toContain(
+    'import { serializeCalendarDate as __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_serialize } from "./scalars";',
+  );
+  expect(source).toContain(
+    "contextInputs: [{...{\"path\":\"context.cutoff\"",
+  );
 });
 
 test("renders database arrays separately from relation and input collections", async () => {
@@ -381,6 +927,8 @@ test("renders database arrays separately from relation and input collections", a
       {
         path: "params.labels",
         data_type: "text",
+        wire: { encoding: "text" },
+        validation: {},
         collection: true,
         enum_values: [],
         required: true,
@@ -403,7 +951,7 @@ test("renders database arrays separately from relation and input collections", a
     "utf8",
   );
   expect(source).toContain(
-    'import type { DsqlDatabaseArray, DsqlExecutionPayload, DsqlOperation } from "@dsql/typescript/runtime";',
+    'import type { DsqlExecutionPayload, DsqlDatabaseArray, DsqlOperation, DsqlWireContract } from "@dsql/typescript/runtime";',
   );
   expect(source).toContain("labels: DsqlDatabaseArray<string>;");
   expect(source).toContain("big_values: DsqlDatabaseArray<string> | null;");
@@ -456,9 +1004,14 @@ test("renders database arrays separately from relation and input collections", a
     'import type { ArrayFieldsFragmentResult } from "./ArrayFields.fragment";',
   );
   expect(spreadSource).toContain(
-    'import type { DsqlExecutionPayload, DsqlOperation } from "@dsql/typescript/runtime";',
+    'import type { DsqlExecutionPayload, DsqlDatabaseArray, DsqlOperation, DsqlWireContract } from "@dsql/typescript/runtime";',
   );
-  expect(spreadSource).not.toContain("DsqlDatabaseArray");
+  expect(spreadSource).toContain(
+    "export type SpreadArraysResult = ArrayFieldsFragmentResult;",
+  );
+  expect(spreadSource).toContain(
+    "export type SpreadArraysWireResult = {\n  labels: DsqlDatabaseArray<string>;\n};",
+  );
 });
 
 test("renders defaulted and nullable inputs as optional TypeScript properties", async () => {
@@ -476,6 +1029,8 @@ test("renders defaulted and nullable inputs as optional TypeScript properties", 
       {
         path: "params.limit",
         data_type: "int",
+        wire: { encoding: "integer" },
+        validation: {},
         enum_values: [],
         required: false,
         nullable: true,
@@ -486,6 +1041,8 @@ test("renders defaulted and nullable inputs as optional TypeScript properties", 
       {
         path: "input.search.clause.minimum",
         data_type: "int",
+        wire: { encoding: "integer" },
+        validation: {},
         enum_values: [],
         required: false,
         nullable: false,
@@ -1209,6 +1766,61 @@ async function evaluateGeneratedModule(
   >;
 }
 
+function assertMappedOperationTypeChecks(root: string): void {
+  const queries = join(root, "src/generated/dsql/queries");
+  writeFileSync(
+    join(queries, "scalars.ts"),
+    `
+export type CalendarDate = { readonly iso: string };
+export type OpaqueToken = string & { readonly __opaqueToken: unique symbol };
+export function parseCalendarDate(value: string): CalendarDate {
+  return { iso: value };
+}
+export function serializeCalendarDate(value: CalendarDate): string {
+  return value.iso;
+}
+`,
+  );
+  writeFileSync(
+    join(root, "runtime.ts"),
+    readFileSync(new URL("../src/runtime.ts", import.meta.url), "utf8"),
+  );
+  mkdirSync(join(root, "generated"));
+  writeFileSync(
+    join(root, "generated/metadata.ts"),
+    readFileSync(
+      new URL("../src/generated/metadata.ts", import.meta.url),
+      "utf8",
+    ),
+  );
+  const program = ts.createProgram(
+    [
+      join(queries, "MappedScalars.ts"),
+      join(queries, "scalars.ts"),
+    ],
+    {
+      baseUrl: root,
+      exactOptionalPropertyTypes: true,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+      paths: {
+        "@dsql/typescript/runtime": ["runtime.ts"],
+      },
+      skipLibCheck: true,
+      strict: true,
+      target: ts.ScriptTarget.ES2022,
+    },
+  );
+  expect(
+    ts
+      .getPreEmitDiagnostics(program)
+      .map((diagnostic) =>
+        ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+      ),
+  ).toEqual([]);
+}
+
 function operationMetadata(name: string): BuildArtifacts["operations"][number] {
   return {
     name,
@@ -1244,6 +1856,8 @@ function operationMetadata(name: string): BuildArtifacts["operations"][number] {
       {
         path: "params.id",
         data_type: "int",
+        wire: { encoding: "integer" },
+        validation: {},
         enum_values: [],
         required: true,
         nullable: false,
@@ -1254,6 +1868,8 @@ function operationMetadata(name: string): BuildArtifacts["operations"][number] {
       {
         path: "context.user_id",
         data_type: "uuid",
+        wire: { encoding: "uuid" },
+        validation: {},
         enum_values: [],
         required: true,
         nullable: false,

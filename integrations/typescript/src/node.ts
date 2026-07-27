@@ -44,12 +44,20 @@ export type {
   DsqlRange,
   DsqlSourceFileScope,
 } from "./daemon.ts";
-export { artifactKey, renderDsql } from "./render/types.ts";
+export {
+  artifactKey,
+  renderDsql,
+  scalarMappingsForArtifacts,
+  validateDsqlScalarMappings,
+} from "./render/types.ts";
 import { artifactKey } from "./render/types.ts";
 export type {
   DsqlRenderDefinitionResult,
   DsqlRenderedFile,
   DsqlRenderResult,
+  DsqlNamedReference,
+  DsqlScalarMapping,
+  DsqlScalarMappings,
   RenderDsqlOptions,
 } from "./render/types.ts";
 

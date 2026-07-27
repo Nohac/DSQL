@@ -69,12 +69,65 @@ const generators = () => [
 
 export default project.renderer({
   output: targetOutput("src/generated/dsql"),
+  scalars: {
+    calendar_date: {
+      type: { from: "@/scalars", name: "CalendarDate" },
+      parse: { from: "@/scalars", name: "parseCalendarDate" },
+      serialize: { from: "@/scalars", name: "serializeCalendarDate" },
+    },
+  },
   targets: {
     api: { generators: generators() },
     frontend: { generators: generators() },
   },
 });
 ```
+
+### Host Scalar Mappings
+
+The compiler owns logical scalar identities, supported operations, validation,
+and wire encodings. The project renderer may map an exact logical name to a
+host-language type without changing any of those database semantics:
+
+```ts
+export default project.renderer({
+  output: targetOutput("src/generated/dsql"),
+  scalars: {
+    calendar_date: {
+      type: { from: "@/scalars", name: "CalendarDate" },
+      parse: { from: "@/scalars", name: "parseCalendarDate" },
+      serialize: { from: "@/scalars", name: "serializeCalendarDate" },
+    },
+    user_id: {
+      type: { from: "@/scalars", name: "UserId" },
+    },
+  },
+  targets: {
+    // ...
+  },
+});
+```
+
+References are named imports because generated modules, not the renderer
+process, execute the codecs. `parse` and `serialize` must be declared together.
+A type-only mapping is valid for a wire-compatible branded type such as
+`UserId`; it performs no runtime conversion. Unknown logical names,
+inconsistent or unsupported wire encodings, structural compiler types, and
+partial codec pairs are generation errors.
+
+Generated operations expose separate host and wire result, params, and input
+types. Public query helpers accept host values, serialize them exactly once
+before cache-key construction and RPC, and parse raw wire results at the
+observer or direct-execution boundary. Trusted context is supplied as host
+values on the server and serialized exactly once before execution. Codec
+functions must therefore be pure and available in every environment where
+their generated module is imported.
+
+TanStack Query deliberately stores raw wire results in its cache and
+dehydration payload. Generated `useQuery` and `queryOptions` observers parse
+them through a stable selector. Direct cache APIs such as `getQueryData`,
+`ensureQueryData`, and `prefetchQuery` return wire data; pass that value to
+`parseDsqlResult(operation, value)` before consuming host scalar types.
 
 The generated `project` makes missing, misspelled, and non-terminal targets
 TypeScript errors. Runtime generation also compares its compiler-owned contract
@@ -411,17 +464,18 @@ The executor interface is intentionally provider agnostic.
 ### Validation Hooks
 
 Adapters can use identity validation or call user-authored validators. DSQL does
-not depend on a validation library.
+not depend on a validation library. Validation runs after client-side scalar
+serialization, so validators receive `DsqlWireVariables`, not host values.
 
 ```ts
 import { z } from "zod";
-import type { DsqlVariables } from "@dsql/typescript/runtime";
+import type { DsqlWireVariables } from "@dsql/typescript/runtime";
 import { MovieInfoLookupOperation } from "./generated/dsql/frontend/queries";
 
 export const MovieInfoVariablesSchema = z.object({
   params: z.object({ id: z.number().int() }),
   input: z.object({}),
-}) satisfies z.ZodType<DsqlVariables<typeof MovieInfoLookupOperation>>;
+}) satisfies z.ZodType<DsqlWireVariables<typeof MovieInfoLookupOperation>>;
 ```
 
 ```ts

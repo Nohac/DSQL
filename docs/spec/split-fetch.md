@@ -95,15 +95,19 @@ its own pagination params.
 Possible generated TypeScript use:
 
 ```ts
-const users = useQuery(UsersPage.queryOptions({ limit: 20 }));
+const users = useQuery(UsersPageOperation, {
+  params: { limit: 20 },
+});
 
-const posts = useQuery(
-  UserPosts.queryOptions({
+const posts = useQuery(UserPostsOperation, {
+  input: {
     parent: users.data.users[index],
+  },
+  params: {
     first: 10,
-    after: cursor
-  })
-);
+    after: cursor,
+  },
+});
 ```
 
 The child query key should include the fetchable unit, parent identity, local

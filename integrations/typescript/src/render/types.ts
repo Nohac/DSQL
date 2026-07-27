@@ -9,6 +9,7 @@ import type {
   OperationManifestEntry,
   OperationMetadata,
   ResultField,
+  WireEncoding,
 } from "../generated/metadata.ts";
 import type { BuildArtifacts } from "../node.ts";
 import type { DsqlOutputMode } from "../node.ts";
@@ -30,7 +31,28 @@ export type RenderDsqlOptions = {
   readonly embeddedSources?: ReadonlyMap<string, string>;
   /** Generated-source presentation; defaults to readable. */
   readonly outputMode?: DsqlOutputMode;
+  /** Project-owned host representations keyed by logical scalar name. */
+  readonly scalars?: DsqlScalarMappings;
 };
+
+/** One named export that generated TypeScript imports directly. */
+export type DsqlNamedReference = {
+  readonly from: string;
+  readonly name: string;
+};
+
+/**
+ * One host representation for a compiler logical scalar. Codec hooks are
+ * paired because a logical type has one representation in both directions.
+ */
+export type DsqlScalarMapping = {
+  readonly type: DsqlNamedReference;
+  readonly parse?: DsqlNamedReference;
+  readonly serialize?: DsqlNamedReference;
+};
+
+/** Logical scalar name to project-owned TypeScript representation. */
+export type DsqlScalarMappings = Readonly<Record<string, DsqlScalarMapping>>;
 
 export type DsqlRenderedFile = {
   readonly path: string;
@@ -56,6 +78,150 @@ export function artifactKey(kind: "operation" | "fragment", name: string): strin
   return `${kind}/${name}`;
 }
 
+type ScalarOccurrence = {
+  readonly name: string;
+  readonly wire: WireEncoding;
+};
+
+/** Validates project-owned scalar mappings against one complete artifact view. */
+export function validateDsqlScalarMappings(
+  artifacts: BuildArtifacts,
+  mappings: DsqlScalarMappings,
+): void {
+  const occurrences = scalarOccurrences(artifacts);
+  for (const [logicalName, mapping] of Object.entries(mappings)) {
+    if (SPECIAL_INPUT_TYPES.has(logicalName) || logicalName === "object") {
+      throw new Error(
+        `dsql scalar mapping ${logicalName} names a structural compiler type`,
+      );
+    }
+    validateNamedReference(mapping.type, `${logicalName}.type`);
+    if ((mapping.parse === undefined) !== (mapping.serialize === undefined)) {
+      throw new Error(
+        `dsql scalar mapping ${logicalName} must declare parse and serialize together`,
+      );
+    }
+    if (mapping.parse) {
+      validateNamedReference(mapping.parse, `${logicalName}.parse`);
+    }
+    if (mapping.serialize) {
+      validateNamedReference(mapping.serialize, `${logicalName}.serialize`);
+    }
+
+    const matching = occurrences.filter(
+      (occurrence) => occurrence.name === logicalName,
+    );
+    if (matching.length === 0) {
+      throw new Error(
+        `dsql scalar mapping ${logicalName} does not match any generated logical type`,
+      );
+    }
+    if (matching.some((occurrence) => occurrence.wire === "unsupported")) {
+      throw new Error(
+        `dsql scalar mapping ${logicalName} targets an unsupported wire encoding`,
+      );
+    }
+    const wires = new Set(matching.map((occurrence) => occurrence.wire));
+    if (wires.size > 1) {
+      throw new Error(
+        `dsql scalar mapping ${logicalName} spans inconsistent wire encodings: ${[
+          ...wires,
+        ]
+          .sort()
+          .join(", ")}`,
+      );
+    }
+  }
+}
+
+/**
+ * Keeps globally validated mappings that one target's artifact closure uses.
+ * Shared renderer configuration therefore does not false-reject a target that
+ * happens not to use another target's scalar.
+ */
+export function scalarMappingsForArtifacts(
+  artifacts: BuildArtifacts,
+  mappings: DsqlScalarMappings,
+): DsqlScalarMappings {
+  const names = new Set(
+    scalarOccurrences(artifacts).map((occurrence) => occurrence.name),
+  );
+  return Object.fromEntries(
+    Object.entries(mappings).filter(([name]) => names.has(name)),
+  );
+}
+
+function scalarOccurrences(artifacts: BuildArtifacts): ScalarOccurrence[] {
+  const occurrences: ScalarOccurrence[] = [];
+  const inputs = (fields: readonly InputField[]) => {
+    for (const field of fields) {
+      if (!SPECIAL_INPUT_TYPES.has(field.data_type)) {
+        occurrences.push({
+          name: field.data_type,
+          wire: field.wire.encoding,
+        });
+      }
+    }
+  };
+  const results = (fields: readonly ResultField[]) => {
+    for (const field of fields) {
+      if (field.kind === RESULT_KIND_SCALAR) {
+        occurrences.push({
+          name: field.value_type.name,
+          wire: field.value_type.wire.encoding,
+        });
+      }
+    }
+  };
+  for (const operation of artifacts.operations) {
+    inputs([...operation.params, ...operation.input, ...operation.context]);
+    for (const dynamic of operation.dynamic_inputs) {
+      if (dynamic.kind !== "predicate") {
+        continue;
+      }
+      for (const field of dynamic.fields) {
+        occurrences.push({
+          name: field.data_type,
+          wire: field.wire.encoding,
+        });
+      }
+    }
+    results(operation.result.fields);
+  }
+  for (const fragment of artifacts.fragments) {
+    inputs([...fragment.params, ...fragment.input]);
+    for (const dynamic of fragment.dynamic_inputs) {
+      if (dynamic.kind !== "predicate") {
+        continue;
+      }
+      for (const field of dynamic.fields) {
+        occurrences.push({
+          name: field.data_type,
+          wire: field.wire.encoding,
+        });
+      }
+    }
+    results(fragment.result.fields);
+  }
+  return occurrences;
+}
+
+function validateNamedReference(
+  reference: DsqlNamedReference,
+  path: string,
+): void {
+  if (reference.from.trim().length === 0) {
+    throw new Error(`dsql scalar mapping ${path}.from must not be empty`);
+  }
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(reference.name)) {
+    throw new Error(
+      `dsql scalar mapping ${path}.name ${JSON.stringify(
+        reference.name,
+      )} is not an identifier`,
+    );
+  }
+}
+
 export type DsqlRenderResult = {
   readonly scope?: {
     readonly name: string;
@@ -79,6 +245,81 @@ const INPUT_PREFIX = "input";
 const CONTEXT_PREFIX = "context";
 const FLOAT_TS_TYPE = 'number | "NaN" | "Infinity" | "-Infinity"';
 const UNKNOWN_TS_TYPE = "unknown";
+const SPECIAL_INPUT_TYPES = new Set(["dynamic_predicate", "dynamic_order"]);
+
+type ScalarDirection = "input" | "result";
+type ScalarRole = "type" | "parse" | "serialize";
+
+class ScalarModuleContext {
+  readonly #mappings: DsqlScalarMappings;
+  readonly #imports = new Set<string>();
+  #usesParser = false;
+  #usesSerializer = false;
+
+  constructor(mappings: DsqlScalarMappings) {
+    this.#mappings = mappings;
+  }
+
+  typeFor(
+    logicalName: string,
+    wire: WireEncoding,
+    direction: ScalarDirection,
+    mapped = true,
+  ): string {
+    const mapping = mapped ? this.#mappings[logicalName] : undefined;
+    if (!mapping) {
+      return wireType(wire, direction);
+    }
+    const alias = scalarAlias(logicalName, "type");
+    this.#imports.add(
+      `import type { ${mapping.type.name} as ${alias} } from ${JSON.stringify(mapping.type.from)};`,
+    );
+    return alias;
+  }
+
+  serializerFor(
+    logicalName: string,
+    wire: WireEncoding,
+    mapped = true,
+  ): string | undefined {
+    const mapping = mapped ? this.#mappings[logicalName] : undefined;
+    if (!mapping?.serialize) {
+      return undefined;
+    }
+    const hostType = this.typeFor(logicalName, wire, "input");
+    const alias = scalarAlias(logicalName, "serialize");
+    this.#imports.add(
+      `import { ${mapping.serialize.name} as ${alias} } from ${JSON.stringify(mapping.serialize.from)};`,
+    );
+    this.#usesSerializer = true;
+    return `${alias} satisfies DsqlScalarSerializer<${hostType}, ${wireType(wire, "input")}>`;
+  }
+
+  parserFor(logicalName: string, wire: WireEncoding): string | undefined {
+    const mapping = this.#mappings[logicalName];
+    if (!mapping?.parse) {
+      return undefined;
+    }
+    const hostType = this.typeFor(logicalName, wire, "result");
+    const alias = scalarAlias(logicalName, "parse");
+    this.#imports.add(
+      `import { ${mapping.parse.name} as ${alias} } from ${JSON.stringify(mapping.parse.from)};`,
+    );
+    this.#usesParser = true;
+    return `${alias} satisfies DsqlScalarParser<${wireType(wire, "result")}, ${hostType}>`;
+  }
+
+  imports(): string[] {
+    return [...this.#imports].sort();
+  }
+
+  runtimeTypes(): string[] {
+    return [
+      ...(this.#usesParser ? ["DsqlScalarParser"] : []),
+      ...(this.#usesSerializer ? ["DsqlScalarSerializer"] : []),
+    ];
+  }
+}
 
 type InputRoot =
   | typeof PARAMS_PREFIX
@@ -89,6 +330,8 @@ export async function renderDsql(
   artifacts: BuildArtifacts,
   options: RenderDsqlOptions,
 ): Promise<DsqlRenderResult> {
+  const scalars = options.scalars ?? {};
+  validateDsqlScalarMappings(artifacts, scalars);
   const root = resolve(options.root);
   const queriesDir = resolveOutputDir(root, options.queriesDir);
   const executionDir = options.executionDir
@@ -115,6 +358,7 @@ export async function renderDsql(
         embeddedSource: options.embeddedSources?.get(
           artifactKey("fragment", fragment.name),
         ),
+        scalars,
       }),
     );
     queryExports.push(exportStatement(plan.fileStem));
@@ -147,6 +391,7 @@ export async function renderDsql(
         embeddedSource: options.embeddedSources?.get(
           artifactKey("operation", operation.name),
         ),
+        scalars,
       }),
     );
     queryExports.push(exportStatement(plan.fileStem));
@@ -157,6 +402,7 @@ export async function renderDsql(
         renderOperationExecutionModule(operation, {
           operationImport: relativeModuleSpecifier(executionPath, operationPath),
           outputMode: options.outputMode ?? "readable",
+          scalars,
         }),
       );
       executionExports.push(exportStatement(plan.fileStem));
@@ -223,69 +469,129 @@ function renderOperationModule(
     readonly includeExecutionPayload: boolean;
     readonly outputMode: DsqlOutputMode;
     readonly embeddedSource?: string | undefined;
+    readonly scalars: DsqlScalarMappings;
   },
 ): string {
+  const scalarContext = new ScalarModuleContext(options.scalars);
   const name = toPascalCase(operation.name);
   const manifestEntry = manifestEntryFor(artifacts, operation);
   const resultType = `${name}Result`;
+  const wireResultType = `${name}WireResult`;
   const paramsType = `${name}Params`;
+  const wireParamsType = `${name}WireParams`;
   const inputType = `${name}Input`;
+  const wireInputType = `${name}WireInput`;
   const contextType = `${name}Context`;
-  const runtimeImports = ["DsqlOperation"];
-  if (options.includeExecutionPayload) {
-    runtimeImports.unshift("DsqlExecutionPayload");
-  }
   // Rendered before the imports: `used` collects exactly the fragment
   // result types the composition referenced.
   const resultCtx = resultTypeContext(
     operation.result.fields,
     operation.fragment_spreads,
     artifacts.fragments,
+    scalarContext,
+    true,
   );
   const resultLiteral = resultTypeLiteral(resultCtx);
-  if (resultUsesDatabaseArray(resultCtx)) {
-    runtimeImports.unshift("DsqlDatabaseArray");
-  }
+  const wireResultCtx = resultTypeContext(
+    operation.result.fields,
+    [],
+    artifacts.fragments,
+    scalarContext,
+    false,
+  );
+  const wireResultLiteral = resultTypeLiteral(wireResultCtx);
+  const dynamicTypes = dynamicInputTypeDefinitions(operation, scalarContext);
+  const paramsLiteral = paramsTypeLiteral(
+    operation.params,
+    scalarContext,
+    true,
+    operation.dynamic_inputs,
+    operation.name,
+  );
+  const wireParamsLiteral = paramsTypeLiteral(
+    operation.params,
+    scalarContext,
+    false,
+    operation.dynamic_inputs,
+    operation.name,
+  );
+  const inputLiteral = inputTypeLiteral(
+    operation.input,
+    scalarContext,
+    true,
+    operation.fragment_spreads,
+    artifacts.fragments,
+  );
+  const wireInputLiteral = inputTypeLiteral(
+    operation.input,
+    scalarContext,
+    false,
+  );
+  const contextLiteral = contextTypeLiteral(operation.context, scalarContext);
+  const publicInputs = renderInputFields(
+    [...operation.params, ...operation.input],
+    scalarContext,
+  );
+  const dynamicInputContracts = renderDynamicInputContracts(
+    operation.dynamic_inputs,
+    scalarContext,
+  );
+  const resultFields = renderResultContracts(
+    operation.result.fields,
+    scalarContext,
+  );
+  const executionPayload = options.includeExecutionPayload
+    ? renderExecutionPayload(operation, `${name}Operation`, {
+        exportedName: `${name}ExecutionPayload`,
+        outputMode: options.outputMode,
+        scalarContext,
+      })
+    : undefined;
+  const runtimeImports = [
+    ...(options.includeExecutionPayload ? ["DsqlExecutionPayload"] : []),
+    ...(resultUsesDatabaseArray(resultCtx) ||
+    resultUsesDatabaseArray(wireResultCtx)
+      ? ["DsqlDatabaseArray"]
+      : []),
+    "DsqlOperation",
+    ...scalarContext.runtimeTypes(),
+    "DsqlWireContract",
+  ];
   const statements = [
     `import type { ${runtimeImports.join(", ")} } from "@dsql/typescript/runtime";`,
+    ...scalarContext.imports(),
     ...fragmentTypeImports(resultCtx, operation),
     "",
     `export type ${resultType} = ${resultLiteral};`,
     "",
-    ...dynamicInputTypeDefinitions(operation),
-    `export type ${paramsType} = ${paramsTypeLiteral(
-      operation.params,
-      operation.dynamic_inputs,
-      operation.name,
-    )};`,
+    `export type ${wireResultType} = ${wireResultLiteral};`,
     "",
-    `export type ${inputType} = ${inputTypeLiteral(
-      operation.input,
-      operation.fragment_spreads,
-      artifacts.fragments,
-    )};`,
+    ...dynamicTypes,
+    `export type ${paramsType} = ${paramsLiteral};`,
     "",
-    `export type ${contextType} = ${contextTypeLiteral(operation.context)};`,
+    `export type ${wireParamsType} = ${wireParamsLiteral};`,
     "",
-    `export const ${name}Operation: DsqlOperation<${resultType}, ${paramsType}, ${inputType}, ${contextType}> = {
+    `export type ${inputType} = ${inputLiteral};`,
+    "",
+    `export type ${wireInputType} = ${wireInputLiteral};`,
+    "",
+    `export type ${contextType} = ${contextLiteral};`,
+    "",
+    `export const ${name}Operation: DsqlOperation<${resultType}, ${paramsType}, ${inputType}, ${contextType}, DsqlWireContract<${wireResultType}, ${wireParamsType}, ${wireInputType}>> = {
   id: ${JSON.stringify(manifestEntry.hash)},
   name: ${JSON.stringify(operation.name)},
   kind: ${JSON.stringify(DEFINITION_KIND_QUERY)},
   requiresContext: ${operation.context.length > 0},
-  inputs: ${JSON.stringify([...operation.params, ...operation.input])}
+  inputs: ${publicInputs},
+  dynamicInputContracts: ${dynamicInputContracts},
+  resultFields: ${resultFields}
 };`,
     "",
     renderSourceRegistryAugmentation(options.embeddedSource, `${name}Operation`),
   ];
 
-  if (options.includeExecutionPayload) {
-    statements.push(
-      "",
-      renderExecutionPayload(operation, `${name}Operation`, {
-        exportedName: `${name}ExecutionPayload`,
-        outputMode: options.outputMode,
-      }),
-    );
+  if (executionPayload) {
+    statements.push("", executionPayload);
   }
 
   return `${statements.join("\n")}\n`;
@@ -340,17 +646,23 @@ function renderOperationExecutionModule(
   options: {
     readonly operationImport: string;
     readonly outputMode: DsqlOutputMode;
+    readonly scalars: DsqlScalarMappings;
   },
 ): string {
+  const scalarContext = new ScalarModuleContext(options.scalars);
   const name = toPascalCase(operation.name);
+  const payload = renderExecutionPayload(operation, `${name}Operation`, {
+    exportedName: `${name}ExecutionPayload`,
+    outputMode: options.outputMode,
+    scalarContext,
+  });
+  const runtimeImports = ["DsqlExecutionPayload", ...scalarContext.runtimeTypes()];
   return [
-    `import type { DsqlExecutionPayload } from "@dsql/typescript/runtime";`,
+    `import type { ${runtimeImports.join(", ")} } from "@dsql/typescript/runtime";`,
+    ...scalarContext.imports(),
     `import { ${name}Operation } from ${JSON.stringify(options.operationImport)};`,
     "",
-    renderExecutionPayload(operation, `${name}Operation`, {
-      exportedName: `${name}ExecutionPayload`,
-      outputMode: options.outputMode,
-    }),
+    payload,
     "",
   ].join("\n");
 }
@@ -361,6 +673,7 @@ function renderExecutionPayload(
   options: {
     readonly exportedName: string;
     readonly outputMode: DsqlOutputMode;
+    readonly scalarContext: ScalarModuleContext;
   },
 ): string {
   const sql =
@@ -372,7 +685,7 @@ function renderExecutionPayload(
   parameters: ${JSON.stringify(operation.sql.parameters)},
   variants: ${JSON.stringify(sqlVariants(operation))},
   dynamicInputs: ${JSON.stringify(operation.dynamic_inputs)},
-  inputs: ${JSON.stringify([...operation.params, ...operation.input, ...operation.context])},
+  contextInputs: ${renderInputFields(operation.context, options.scalarContext)},
   sql: ${sql}
 };`;
 }
@@ -401,8 +714,10 @@ function renderFragmentModule(
   fragment: FragmentMetadata,
   options: {
     readonly embeddedSource?: string | undefined;
+    readonly scalars: DsqlScalarMappings;
   },
 ): string {
+  const scalarContext = new ScalarModuleContext(options.scalars);
   const name = toPascalCase(fragment.name);
   const resultType = fragmentResultTypeName(fragment.name);
   const paramsType = fragmentParamsTypeName(fragment.name);
@@ -415,21 +730,36 @@ function renderFragmentModule(
     fragment.result.fields,
     fragment.fragment_spreads,
     artifacts.fragments,
+    scalarContext,
+    true,
   );
   const resultLiteral = resultTypeLiteral(resultCtx);
   const runtimeTypes = ["DsqlFragmentDefinition"];
   if (resultUsesDatabaseArray(resultCtx)) {
     runtimeTypes.unshift("DsqlDatabaseArray");
   }
+  const paramsLiteral = paramsTypeLiteral(
+    fragment.params,
+    scalarContext,
+    true,
+    [],
+    fragment.name,
+  );
+  const inputLiteral = inputTypeLiteral(
+    fragment.input,
+    scalarContext,
+    true,
+  );
   return [
     `import type { ${runtimeTypes.join(", ")} } from "@dsql/typescript/runtime";`,
+    ...scalarContext.imports(),
     ...fragmentTypeImports(resultCtx),
     "",
     `export type ${resultType} = ${resultLiteral};`,
     "",
-    `export type ${paramsType} = ${paramsTypeLiteral(fragment.params)};`,
+    `export type ${paramsType} = ${paramsLiteral};`,
     "",
-    `export type ${inputType} = ${inputTypeLiteral(fragment.input)};`,
+    `export type ${inputType} = ${inputLiteral};`,
     "",
     `export type ${variablesType} = ${fragmentVariablesTypeLiteral(
       paramsType,
@@ -503,8 +833,15 @@ function buildRenderPlan(artifacts: BuildArtifacts): {
     const fileStem = name;
     const exports = [
       `${name}Result`,
+      `${name}WireResult`,
       `${name}Params`,
+      `${name}WireParams`,
       `${name}Input`,
+      `${name}WireInput`,
+      ...operation.dynamic_inputs.flatMap((input) => [
+        dynamicInputTypeName(operation.name, input.path, true),
+        dynamicInputTypeName(operation.name, input.path, false),
+      ]),
       `${name}Operation`,
       `${name}ExecutionPayload`,
     ];
@@ -575,8 +912,8 @@ function renderBarrel(
 ): string {
   const runtimeExports = options.includeRuntime
     ? [
-        'export { dsql } from "@dsql/typescript/runtime";',
-        'export type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationContext, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlVariables } from "@dsql/typescript/runtime";',
+        'export { dsql, dsqlQueryKey, dsqlQueryKeyForWire, dsqlResultSelector, materializeDsqlOperationVariables, parseDsqlResult } from "@dsql/typescript/runtime";',
+        'export type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationContext, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlOperationWireInput, DsqlOperationWireParams, DsqlOperationWireResult, DsqlScalarParser, DsqlScalarSerializer, DsqlVariables, DsqlWireContract, DsqlWireVariables } from "@dsql/typescript/runtime";',
       ]
     : [];
   return `${[...runtimeExports, ...[...exports].sort()].join("\n")}\n`;
@@ -654,12 +991,16 @@ type ResultTypeCtx = {
   readonly fragmentsByName: ReadonlyMap<string, FragmentMetadata>;
   readonly provided: ReadonlySet<string>;
   readonly used: Set<string>;
+  readonly scalars: ScalarModuleContext;
+  readonly mapped: boolean;
 };
 
 function resultTypeContext(
   fields: readonly ResultField[],
   spreads: readonly FragmentSpreadMetadata[],
   fragments: readonly FragmentMetadata[],
+  scalars: ScalarModuleContext,
+  mapped: boolean,
 ): ResultTypeCtx {
   const fragmentsByName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
   const provided = new Set<string>();
@@ -669,7 +1010,15 @@ function resultTypeContext(
       provided.add(spread.path === "" ? field.path : `${spread.path}.${field.path}`);
     }
   }
-  return { fields, spreads, fragmentsByName, provided, used: new Set() };
+  return {
+    fields,
+    spreads,
+    fragmentsByName,
+    provided,
+    used: new Set(),
+    scalars,
+    mapped,
+  };
 }
 
 /** Adds `name` and every fragment its ROOT spreads reach (cycle-safe) —
@@ -754,18 +1103,22 @@ function resultTypeLiteral(ctx: ResultTypeCtx): string {
 
 function paramsTypeLiteral(
   fields: readonly InputField[],
+  scalars: ScalarModuleContext,
+  mapped: boolean,
   dynamicInputs: readonly DynamicInputMetadata[] = [],
   operationName = "",
 ): string {
   return inputFieldsTypeLiteral(
     fields,
     PARAMS_PREFIX,
+    scalars,
+    mapped,
     [],
     [],
     new Map(
       dynamicInputs.map((input) => [
         input.path,
-        dynamicInputTypeName(operationName, input.path),
+        dynamicInputTypeName(operationName, input.path, mapped),
       ]),
     ),
   );
@@ -773,19 +1126,42 @@ function paramsTypeLiteral(
 
 function inputTypeLiteral(
   fields: readonly InputField[],
+  scalars: ScalarModuleContext,
+  mapped: boolean,
   fragmentSpreads: readonly FragmentSpreadMetadata[] = [],
   fragments: readonly FragmentMetadata[] = [],
 ): string {
-  return inputFieldsTypeLiteral(fields, INPUT_PREFIX, fragmentSpreads, fragments);
+  return inputFieldsTypeLiteral(
+    fields,
+    INPUT_PREFIX,
+    scalars,
+    mapped,
+    fragmentSpreads,
+    fragments,
+    new Map(),
+  );
 }
 
-function contextTypeLiteral(fields: readonly InputField[]): string {
-  return inputFieldsTypeLiteral(fields, CONTEXT_PREFIX);
+function contextTypeLiteral(
+  fields: readonly InputField[],
+  scalars: ScalarModuleContext,
+): string {
+  return inputFieldsTypeLiteral(
+    fields,
+    CONTEXT_PREFIX,
+    scalars,
+    true,
+    [],
+    [],
+    new Map(),
+  );
 }
 
 function inputFieldsTypeLiteral(
   fields: readonly InputField[],
   prefix: InputRoot,
+  scalars: ScalarModuleContext,
+  mapped: boolean,
   fragmentSpreads: readonly FragmentSpreadMetadata[] = [],
   fragments: readonly FragmentMetadata[] = [],
   dynamicTypes: ReadonlyMap<string, string> = new Map(),
@@ -813,38 +1189,60 @@ function inputFieldsTypeLiteral(
     }
     root.insert(
       path,
-      dynamicTypes.get(field.path) ?? inputFieldType(field),
+      dynamicTypes.get(field.path) ?? inputFieldType(field, scalars, mapped),
       field.required,
     );
   }
   return root.toTypeLiteral();
 }
 
-function dynamicInputTypeDefinitions(operation: OperationMetadata): string[] {
+function dynamicInputTypeDefinitions(
+  operation: OperationMetadata,
+  scalars: ScalarModuleContext,
+): string[] {
   if (operation.dynamic_inputs.length === 0) {
     return [];
   }
-  return operation.dynamic_inputs.flatMap((input) => [
-    `export type ${dynamicInputTypeName(operation.name, input.path)} = ${dynamicInputTypeLiteral(
-      operation.name,
-      input,
-    )};`,
-    "",
-  ]);
+  return operation.dynamic_inputs.flatMap((input) => {
+    const hostName = dynamicInputTypeName(operation.name, input.path, true);
+    const wireName = dynamicInputTypeName(operation.name, input.path, false);
+    return [
+      `export type ${hostName} = ${dynamicInputTypeLiteral(
+        operation.name,
+        input,
+        scalars,
+        true,
+      )};`,
+      "",
+      `export type ${wireName} = ${dynamicInputTypeLiteral(
+        operation.name,
+        input,
+        scalars,
+        false,
+      )};`,
+      "",
+    ];
+  });
 }
 
-function dynamicInputTypeName(operationName: string, path: string): string {
+function dynamicInputTypeName(
+  operationName: string,
+  path: string,
+  mapped: boolean,
+): string {
   return `${toPascalCase(operationName)}${path
     .split(".")
     .map(toPascalCase)
-    .join("")}DynamicInput`;
+    .join("")}${mapped ? "" : "Wire"}DynamicInput`;
 }
 
 function dynamicInputTypeLiteral(
   operationName: string,
   input: DynamicInputMetadata,
+  scalars: ScalarModuleContext,
+  mapped: boolean,
 ): string {
-  const typeName = dynamicInputTypeName(operationName, input.path);
+  const typeName = dynamicInputTypeName(operationName, input.path, mapped);
   if (input.kind === "order") {
     const entries = input.fields.map((field) =>
       objectType([
@@ -865,19 +1263,26 @@ function dynamicInputTypeLiteral(
     { name: "or", type: `Array<${typeName}>`, optional: true },
     { name: "not", type: typeName, optional: true },
   ];
+  const operatorKinds = dynamicOperatorKinds(input);
   for (const field of input.fields) {
-    const scalar = dataType(field.data_type);
+    const scalar = scalars.typeFor(
+      field.data_type,
+      field.wire.encoding,
+      "input",
+      mapped,
+    );
     properties.push({
       name: field.key,
       type: objectTypeWithOptional(
         field.operators.map((operator) => ({
           name: operator,
-          type:
-            operator === "is_null"
-              ? "boolean"
-              : operator === "in" || operator === "not_in"
-                ? `Array<${scalar}>`
-                : scalar,
+          type: dynamicOperatorType(
+            operatorKinds,
+            input.path,
+            field.key,
+            operator,
+            scalar,
+          ),
           optional: true,
         })),
       ),
@@ -885,6 +1290,135 @@ function dynamicInputTypeLiteral(
     });
   }
   return objectTypeWithOptional(properties);
+}
+
+type DynamicOperatorValueKind = "scalar" | "collection" | "boolean";
+
+function dynamicOperatorKinds(
+  input: DynamicInputMetadata,
+): ReadonlyMap<string, ReadonlyMap<string, DynamicOperatorValueKind>> {
+  const fields = new Map(
+    input.fields.map((field) => [
+      field.key,
+      new Map<string, DynamicOperatorValueKind>(),
+    ]),
+  );
+  if (input.kind === "order") {
+    return fields;
+  }
+  if (input.sites.length === 0) {
+    throw new Error(
+      `dsql dynamic input ${input.path} has no generated SQL usage sites`,
+    );
+  }
+
+  for (const site of input.sites) {
+    for (const siteField of site.fields) {
+      const declared = input.fields.find(
+        (field) => field.key === siteField.key,
+      );
+      const kinds = fields.get(siteField.key);
+      if (!declared || !kinds) {
+        throw new Error(
+          `dsql dynamic input ${input.path} site ${site.marker} has unknown field ${siteField.key}`,
+        );
+      }
+      for (const operator of siteField.operators) {
+        if (!declared.operators.includes(operator.name)) {
+          throw new Error(
+            `dsql dynamic input ${input.path}.${siteField.key} site ${site.marker} has undeclared operator ${operator.name}`,
+          );
+        }
+        const kind = dynamicOperatorValueKind(
+          input.path,
+          siteField.key,
+          operator.name,
+          operator.value_kind,
+        );
+        const previous = kinds.get(operator.name);
+        if (previous !== undefined && previous !== kind) {
+          throw new Error(
+            `dsql dynamic input ${input.path}.${siteField.key}.${operator.name} disagrees on value kind across SQL sites`,
+          );
+        }
+        kinds.set(operator.name, kind);
+      }
+    }
+  }
+
+  for (const field of input.fields) {
+    const kinds = fields.get(field.key);
+    for (const operator of field.operators) {
+      if (!kinds?.has(operator)) {
+        throw new Error(
+          `dsql dynamic input ${input.path}.${field.key}.${operator} has no generated SQL operator metadata`,
+        );
+      }
+    }
+  }
+  return fields;
+}
+
+function dynamicOperatorValueKind(
+  inputPath: string,
+  field: string,
+  operator: string,
+  value: string,
+): DynamicOperatorValueKind {
+  if (value === "scalar" || value === "collection" || value === "boolean") {
+    return value;
+  }
+  throw new Error(
+    `dsql dynamic input ${inputPath}.${field}.${operator} has unknown value kind ${value}`,
+  );
+}
+
+function dynamicOperatorType(
+  kinds: ReadonlyMap<
+    string,
+    ReadonlyMap<string, DynamicOperatorValueKind>
+  >,
+  inputPath: string,
+  field: string,
+  operator: string,
+  scalar: string,
+): string {
+  const kind = requiredDynamicOperatorKind(
+    kinds,
+    inputPath,
+    field,
+    operator,
+  );
+  if (kind === "boolean") {
+    return "boolean";
+  }
+  if (kind === "collection") {
+    return `Array<${scalar}>`;
+  }
+  if (kind === "scalar") {
+    return scalar;
+  }
+  throw new Error(
+    `dsql dynamic input ${inputPath}.${field}.${operator} has unsupported value kind ${kind}`,
+  );
+}
+
+function requiredDynamicOperatorKind(
+  kinds: ReadonlyMap<
+    string,
+    ReadonlyMap<string, DynamicOperatorValueKind>
+  >,
+  inputPath: string,
+  field: string,
+  operator: string,
+): DynamicOperatorValueKind {
+  const kind = kinds.get(field)?.get(operator);
+  if (kind !== undefined) {
+    return kind;
+  }
+  throw new Error(
+    `dsql dynamic input ${inputPath}.${field}.${operator} has no value kind`,
+  );
 }
 
 function operationFragmentInputBranches(
@@ -953,11 +1487,20 @@ function operationFragmentInputBranches(
     }));
 }
 
-function inputFieldType(field: InputField): string {
+function inputFieldType(
+  field: InputField,
+  scalars: ScalarModuleContext,
+  mapped: boolean,
+): string {
   const elementType =
     field.enum_values.length > 0
       ? field.enum_values.map((value) => JSON.stringify(value)).join(" | ")
-      : dataType(field.data_type);
+      : scalars.typeFor(
+          field.data_type,
+          field.wire.encoding,
+          "input",
+          mapped,
+        );
   const type = field.collection === true ? `Array<${elementType} | null>` : elementType;
   return withNullability(type, field.nullable);
 }
@@ -972,7 +1515,12 @@ function publicInputPath(path: string, prefix: InputRoot): string[] {
 
 function propertyType(ctx: ResultTypeCtx, field: ResultField): [string, string] {
   if (field.kind === RESULT_KIND_SCALAR) {
-    const scalar = dataType(field.value_type.name);
+    const scalar = ctx.scalars.typeFor(
+      field.value_type.name,
+      field.value_type.wire.encoding,
+      "result",
+      ctx.mapped,
+    );
     const value =
       field.value_type.shape === RESULT_VALUE_SHAPE_DATABASE_ARRAY
         ? `DsqlDatabaseArray<${scalar}>`
@@ -1097,27 +1645,140 @@ function withNullability(type: string, nullable: boolean): string {
   return nullable ? `${type} | null` : type;
 }
 
-function dataType(type: string): string {
-  switch (type) {
-    case "boolean":
-      return "boolean";
-    case "int":
-      return "number";
-    case "bigint":
-      return "string";
-    case "float":
-      return FLOAT_TS_TYPE;
+function wireType(wire: WireEncoding, direction: ScalarDirection): string {
+  switch (wire) {
+    case "text":
+    case "text_cast":
+    case "uuid":
+    case "timestamptz":
+    case "big_integer":
     case "numeric":
       return "string";
+    case "integer":
+      return "number";
+    case "float":
+      return direction === "result" ? FLOAT_TS_TYPE : "number";
+    case "boolean":
+      return "boolean";
     case "json":
-      return UNKNOWN_TS_TYPE;
-    case "text":
-    case "timestamptz":
-    case "uuid":
-      return "string";
-    default:
+    case "unsupported":
       return UNKNOWN_TS_TYPE;
   }
+}
+
+function scalarAlias(logicalName: string, role: ScalarRole): string {
+  const identity = [...logicalName]
+    .map((character) => character.codePointAt(0)?.toString(16) ?? "0")
+    .join("_");
+  return `__dsql_scalar_${identity}_${role}`;
+}
+
+function renderInputFields(
+  fields: readonly InputField[],
+  scalars: ScalarModuleContext,
+): string {
+  return `[${fields
+    .map((field) => {
+      const serializer =
+        field.enum_values.length === 0
+          ? scalars.serializerFor(
+              field.data_type,
+              field.wire.encoding,
+            )
+          : undefined;
+      return renderRuntimeValue(field, "serialize", serializer);
+    })
+    .join(",")}]`;
+}
+
+function renderDynamicInputContracts(
+  inputs: readonly DynamicInputMetadata[],
+  scalars: ScalarModuleContext,
+): string {
+  const contracts = inputs.map((input) => {
+    const operatorKinds = dynamicOperatorKinds(input);
+    return {
+      path: input.path,
+      kind: input.kind,
+      fields: input.fields.map((field) => {
+        const value = {
+          key: field.key,
+          data_type: field.data_type,
+          wire: field.wire,
+          validation: field.validation,
+          operators: field.operators.map((operator) => ({
+            name: operator,
+            value_kind: requiredDynamicOperatorKind(
+              operatorKinds,
+              input.path,
+              field.key,
+              operator,
+            ),
+          })),
+        };
+        return {
+          value,
+          serializer:
+            input.kind === "predicate"
+              ? scalars.serializerFor(
+                  field.data_type,
+                  field.wire.encoding,
+                )
+              : undefined,
+        };
+      }),
+    };
+  });
+  return `[${contracts
+    .map(
+      (input) =>
+        `{"path":${JSON.stringify(input.path)},"kind":${JSON.stringify(
+          input.kind,
+        )},"fields":[${input.fields
+          .map((field) =>
+            renderRuntimeValue(field.value, "serialize", field.serializer),
+          )
+          .join(",")}]}`,
+    )
+    .join(",")}]`;
+}
+
+function renderResultContracts(
+  fields: readonly ResultField[],
+  scalars: ScalarModuleContext,
+): string {
+  return `[${fields
+    .map((field) => {
+      const value = {
+        path: field.path,
+        parent_path: field.parent_path,
+        name: field.name,
+        kind: field.kind,
+        shape: field.value_type.shape,
+        nullable: field.nullable,
+        data_type: field.value_type.name,
+      };
+      const parser =
+        field.kind === RESULT_KIND_SCALAR
+          ? scalars.parserFor(
+              field.value_type.name,
+              field.value_type.wire.encoding,
+            )
+          : undefined;
+      return renderRuntimeValue(value, "parse", parser);
+    })
+    .join(",")}]`;
+}
+
+function renderRuntimeValue(
+  value: unknown,
+  property: "parse" | "serialize",
+  expression: string | undefined,
+): string {
+  const serialized = JSON.stringify(value);
+  return expression === undefined
+    ? serialized
+    : `{...${serialized},${property}:${expression}}`;
 }
 
 function toPascalCase(value: string): string {

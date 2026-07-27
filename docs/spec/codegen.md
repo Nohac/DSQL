@@ -61,24 +61,35 @@ const UsersPage = dsql`
 `;
 ```
 
-A Vite, Babel, SWC, or similar plugin could compile the tagged template into a
-typed query object.
+A host binding rewrites the tagged expression to a generated, SQL-free
+operation handle.
 
-Possible generated shape:
+Generated shape:
 
 ```ts
-const UsersPage = defineDsqlQuery({
+export const UsersPageOperation: DsqlOperation<
+  UsersPageResult,
+  UsersPageParams,
+  UsersPageInput,
+  UsersPageContext,
+  DsqlWireContract<
+    UsersPageWireResult,
+    UsersPageWireParams,
+    UsersPageWireInput
+  >
+> = {
+  id: "...",
   name: "UsersPage",
-  sql: "...",
-  result: {} as UsersPageResult,
-  params: {} as UsersPageParams,
-  contextRequirements: {} as UsersPageContextRequirements,
-  metadata: {}
-});
+  kind: "query",
+  requiresContext: false,
+  inputs: [],
+  dynamicInputContracts: [],
+  resultFields: [],
+};
 ```
 
-`contextRequirements` describes server binding requirements; it is not a value
-accepted from the generated client.
+The optional phantom type properties are not populated. Trusted context is a
+server-owned type contract and is not accepted from the generated client.
 
 This should be a host integration target, not a requirement of the core
 language. The compiler should expose enough metadata that different adapters can
@@ -89,19 +100,22 @@ choose their own runtime shape.
 For TanStack Query or similar data-fetching libraries, generated helpers should
 be able to produce stable query options.
 
-Possible use:
+Generated use:
 
 ```ts
-const users = useQuery(UsersPage.queryOptions({ limit: 20 }));
+const users = useQuery(UsersPageOperation, {
+  params: { limit: 20 },
+});
 ```
 
 Equivalent explicit shape:
 
 ```ts
-const users = useQuery({
-  queryKey: UsersPage.key({ limit: 20 }),
-  queryFn: () => UsersPage.fetch({ limit: 20 })
-});
+const users = useTanStackQuery(
+  queryOptions(UsersPageOperation, {
+    params: { limit: 20 },
+  }),
+);
 ```
 
 The generated helper can use DSQL metadata for:
@@ -163,6 +177,27 @@ contract came from. Root lifting changes paths but must not discard defaults.
 Retaining bounded dynamic capability surfaces is part of the eventual fragment
 extension; the initial bounded-dynamic slice rejects dynamic inputs owned by
 fragments.
+
+### Host Scalar Representations
+
+Host renderers may map an exact compiler-owned logical scalar name to a
+project-owned host type. A mapping changes representation only: it cannot add
+literals, operators, casts, validation capabilities, or database semantics.
+Each mapping names an importable host type and either names both parse and
+serialize functions or neither. A type-only mapping is restricted by contract
+to wire-compatible branded types; a codec mapping converts at the generated
+runtime boundary.
+
+The TypeScript renderer validates mappings once against the complete artifact
+set, rejects unknown, structural, unsupported, or wire-inconsistent logical
+types, and filters the validated map for each generated target. Generated
+operation modules expose distinct host and wire result, params, and input
+types. Public variables are serialized once before cache identity and RPC.
+Trusted server context is serialized once during SQL materialization. Raw wire
+results remain the transport and cache representation and are parsed only at
+the direct-consumer or observer boundary. Fragment result types remain
+host-facing composition aids; operation wire result types are fully expanded
+and do not rely on fragment intersections.
 
 Requiredness and nullability produce distinct host types. For example, a query
 header containing:

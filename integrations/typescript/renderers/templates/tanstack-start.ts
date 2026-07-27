@@ -8,36 +8,37 @@ import type {
   DsqlExecutionPayload,
   DsqlOperation,
   DsqlOperationContext,
-  DsqlOperationResult,
-  DsqlVariables,
+  DsqlOperationWireResult,
+  DsqlWireVariables,
 } from "@dsql/typescript/runtime";
 import { materializeDsqlQuery } from "@dsql/typescript/runtime";
 
 export type DsqlServerVariables<
-  Operation extends DsqlOperation<any, any, any, any>,
-> = DsqlVariables<Operation>;
+  Operation extends DsqlOperation<any, any, any, any, any>,
+> = DsqlWireVariables<Operation>;
 
 export type DsqlExecutionRequest<
-  Operation extends DsqlOperation<any, any, any, any>,
+  Operation extends DsqlOperation<any, any, any, any, any>,
 > = {
   readonly operation: Operation;
-  readonly variables: DsqlVariables<Operation>;
-  readonly context: DsqlOperationContext<Operation>;
+  readonly variables: DsqlWireVariables<Operation>;
+  /** Trusted context after generated host-to-wire serializers run. */
+  readonly context: unknown;
   readonly sql: string;
   readonly values: unknown[];
 };
 
 export type DsqlServerExecutor = <
-  Operation extends DsqlOperation<any, any, any, any>,
+  Operation extends DsqlOperation<any, any, any, any, any>,
 >(
   request: DsqlExecutionRequest<Operation>,
-) => Promise<DsqlOperationResult<Operation>>;
+) => Promise<DsqlOperationWireResult<Operation>>;
 
 export type DsqlContextProvider = <
-  Operation extends DsqlOperation<any, any, any, any>,
+  Operation extends DsqlOperation<any, any, any, any, any>,
 >(request: {
   readonly operation: Operation;
-  readonly variables: DsqlVariables<Operation>;
+  readonly variables: DsqlWireVariables<Operation>;
 }) => Promise<DsqlOperationContext<Operation>> | DsqlOperationContext<Operation>;
 
 export type DsqlServerContext = {
@@ -47,10 +48,12 @@ export type DsqlServerContext = {
   };
 };
 
-async function executeDsqlOperation<Operation extends DsqlOperation<any, any, any, any>>(
+async function executeDsqlOperation<
+  Operation extends DsqlOperation<any, any, any, any, any>,
+>(
   operation: Operation,
-  variables: DsqlVariables<Operation>,
-): Promise<DsqlOperationResult<Operation>> {
+  variables: DsqlWireVariables<Operation>,
+): Promise<DsqlOperationWireResult<Operation>> {
   const context = getGlobalStartContext() as Partial<DsqlServerContext> | undefined;
   const executeQuery = context?.dsql?.executeQuery;
   if (!executeQuery) {
@@ -71,14 +74,14 @@ async function executeDsqlOperation<Operation extends DsqlOperation<any, any, an
   return executeQuery({
     operation,
     variables,
-    context: trustedContext,
+    context: materialized.context,
     sql: materialized.sql,
     values: [...materialized.values],
   });
 }
 
 const executionPayloadFor = createServerOnlyFn(
-  async <Operation extends DsqlOperation<any, any, any, any>>(
+  async <Operation extends DsqlOperation<any, any, any, any, any>>(
     operation: Operation,
   ): Promise<DsqlExecutionPayload<Operation>> => {
     const { executionPayloads } = await import("./tanstack-start.server");

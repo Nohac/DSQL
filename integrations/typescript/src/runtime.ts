@@ -1,5 +1,4 @@
 import type {
-  DynamicInputField,
   DynamicInputMetadata,
   DynamicInputSite,
   DynamicInputSiteField,
@@ -15,11 +14,34 @@ import type {
  */
 export type DsqlDatabaseArray<T> = Array<T | DsqlDatabaseArray<T> | null>;
 
+export type DsqlWireContract<
+  Result = unknown,
+  Params = Record<string, never>,
+  Input = Record<string, never>,
+> = {
+  readonly result: Result;
+  readonly params: Params;
+  readonly input: Input;
+};
+
+export type DsqlScalarSerializer<Host = unknown, Wire = unknown> = (
+  value: Host,
+) => Wire;
+
+export type DsqlScalarParser<Wire = unknown, Host = unknown> = (
+  value: Wire,
+) => Host;
+
 export type DsqlOperation<
   Result = unknown,
   Params = Record<string, never>,
   Input = Record<string, never>,
   Context = Record<string, never>,
+  Wire extends DsqlWireContract<any, any, any> = DsqlWireContract<
+    Result,
+    Params,
+    Input
+  >,
 > = {
   readonly id: string;
   readonly name: string;
@@ -28,38 +50,87 @@ export type DsqlOperation<
   readonly requiresContext: boolean;
   /** Public input metadata used for defaults and stable client cache keys. */
   readonly inputs: readonly DsqlInputField[];
+  /** Narrow client contract for serializing bounded dynamic operands. */
+  readonly dynamicInputContracts: readonly DsqlDynamicInputContract[];
+  /** Narrow client contract for parsing raw result JSON. */
+  readonly resultFields: readonly DsqlResultContractField[];
   readonly result?: Result;
   readonly params?: Params;
   readonly input?: Input;
   readonly context?: Context;
+  readonly wire?: Wire;
 };
 
 export type DsqlOperationResult<Operation> =
-  Operation extends DsqlOperation<infer Result, any, any, any> ? Result : never;
+  Operation extends DsqlOperation<infer Result, any, any, any, any>
+    ? Result
+    : never;
 
 export type DsqlOperationParams<Operation> =
-  Operation extends DsqlOperation<any, infer Params, any, any>
+  Operation extends DsqlOperation<any, infer Params, any, any, any>
     ? Params
     : Record<string, never>;
 
 export type DsqlOperationInput<Operation> =
-  Operation extends DsqlOperation<any, any, infer Input, any>
+  Operation extends DsqlOperation<any, any, infer Input, any, any>
     ? Input
     : Record<string, never>;
 
 export type DsqlOperationContext<Operation> =
-  Operation extends DsqlOperation<any, any, any, infer Context>
+  Operation extends DsqlOperation<any, any, any, infer Context, any>
     ? Context
     : Record<string, never>;
 
+export type DsqlOperationWireResult<Operation> =
+  Operation extends DsqlOperation<
+    any,
+    any,
+    any,
+    any,
+    DsqlWireContract<infer Result, any, any>
+  >
+    ? Result
+    : never;
+
+export type DsqlOperationWireParams<Operation> =
+  Operation extends DsqlOperation<
+    any,
+    any,
+    any,
+    any,
+    DsqlWireContract<any, infer Params, any>
+  >
+    ? Params
+    : Record<string, never>;
+
+export type DsqlOperationWireInput<Operation> =
+  Operation extends DsqlOperation<
+    any,
+    any,
+    any,
+    any,
+    DsqlWireContract<any, any, infer Input>
+  >
+    ? Input
+    : Record<string, never>;
+
 export type DsqlVariables<
-  Operation extends DsqlOperation<any, any, any, any>,
+  Operation extends DsqlOperation<any, any, any, any, any>,
 > = ({} extends DsqlOperationParams<Operation>
   ? { readonly params?: DsqlOperationParams<Operation> }
   : { readonly params: DsqlOperationParams<Operation> }) &
   ({} extends DsqlOperationInput<Operation>
     ? { readonly input?: DsqlOperationInput<Operation> }
     : { readonly input: DsqlOperationInput<Operation> });
+
+export type DsqlWireVariables<
+  Operation extends DsqlOperation<any, any, any, any, any>,
+> = ({} extends DsqlOperationWireParams<Operation>
+  ? { readonly params?: DsqlOperationWireParams<Operation> }
+  : { readonly params: DsqlOperationWireParams<Operation> }) &
+  ({} extends DsqlOperationWireInput<Operation>
+    ? { readonly input?: DsqlOperationWireInput<Operation> }
+    : { readonly input: DsqlOperationWireInput<Operation> });
 
 export type DsqlQueryKey<Variables> = readonly [
   "dsql",
@@ -68,24 +139,41 @@ export type DsqlQueryKey<Variables> = readonly [
   Variables,
 ];
 
-export function dsqlQueryKey<Variables>(
-  operation: DsqlOperation<any, any, any, any>,
-  variables: Variables,
+export function dsqlQueryKey<
+  Operation extends DsqlOperation<any, any, any, any, any>,
+>(
+  operation: Operation,
+  variables: DsqlVariables<Operation>,
   contextScope?: string,
-): DsqlQueryKey<Variables> {
+): DsqlQueryKey<DsqlWireVariables<Operation>> {
+  return dsqlQueryKeyForWire(
+    operation,
+    materializeDsqlOperationVariables(operation, variables),
+    contextScope,
+  );
+}
+
+/** Builds a cache key from variables that already crossed the host/wire boundary. */
+export function dsqlQueryKeyForWire<
+  Operation extends DsqlOperation<any, any, any, any, any>,
+>(
+  operation: Operation,
+  variables: DsqlWireVariables<Operation>,
+  contextScope?: string,
+): DsqlQueryKey<DsqlWireVariables<Operation>> {
   if (operation.requiresContext && contextScope === undefined) {
     throw new Error(
       `dsql operation ${operation.name} requires contextScope for cache identity`,
     );
   }
   const materialized = canonicalDsqlCacheValue(
-    materializeDsqlBindings(operation.inputs, variables),
-  );
+    variables,
+  ) as DsqlWireVariables<Operation>;
   return [
     "dsql",
     operation.name,
     contextScope ?? null,
-    materialized as Variables,
+    materialized,
   ] as const;
 }
 
@@ -177,22 +265,57 @@ export type DsqlInputField = {
   readonly required: boolean;
   readonly nullable: boolean;
   readonly default?: DsqlInputDefault;
+  /** Project-owned host-to-wire conversion; absent for wire-shaped values. */
+  readonly serialize?: DsqlScalarSerializer<any, unknown>;
+};
+
+export type DsqlDynamicInputFieldContract = {
+  readonly key: string;
+  readonly data_type: string;
+  readonly wire: WireMetadata;
+  readonly validation: InputValidationMetadata;
+  readonly operators: readonly DsqlDynamicInputOperatorContract[];
+  readonly serialize?: DsqlScalarSerializer<any, unknown>;
+};
+
+export type DsqlDynamicInputOperatorContract = {
+  readonly name: string;
+  readonly value_kind: "scalar" | "collection" | "boolean";
+};
+
+export type DsqlDynamicInputContract = {
+  readonly path: string;
+  readonly kind: "predicate" | "order";
+  readonly fields: readonly DsqlDynamicInputFieldContract[];
+};
+
+export type DsqlResultContractField = {
+  readonly path: string;
+  readonly parent_path: string;
+  readonly name: string;
+  readonly kind: "scalar" | "object" | "array";
+  readonly shape: "scalar" | "database_array" | "object";
+  readonly nullable: boolean;
+  readonly data_type: string;
+  readonly parse?: DsqlScalarParser<any, any>;
 };
 
 export type DsqlExecutionPayload<
-  Operation extends DsqlOperation<any, any, any, any> = DsqlOperation<any, any, any, any>,
+  Operation extends DsqlOperation<any, any, any, any, any> = DsqlOperation,
 > = {
   readonly operation: Operation;
   readonly sql: string;
   readonly parameters: readonly DsqlSqlParameter[];
   readonly variants: DsqlSqlVariants;
   readonly dynamicInputs: readonly DynamicInputMetadata[];
-  readonly inputs: readonly DsqlInputField[];
+  readonly contextInputs: readonly DsqlInputField[];
 };
 
 export type DsqlMaterializedQuery = {
   readonly sql: string;
   readonly values: readonly unknown[];
+  /** Trusted context after its one host-to-wire conversion. */
+  readonly context: unknown;
 };
 
 export function dsql<const Source extends string>(
@@ -215,27 +338,230 @@ export function dsql(): DsqlDefinition {
 }
 
 export function materializeDsqlQuery<
-  Operation extends DsqlOperation<any, any, any, any>,
+  Operation extends DsqlOperation<any, any, any, any, any>,
 >(
   payload: DsqlExecutionPayload<Operation>,
-  variables: DsqlVariables<Operation>,
+  variables: DsqlWireVariables<Operation>,
   context: DsqlOperationContext<Operation>,
 ): DsqlMaterializedQuery {
-  const bindings = materializeDsqlBindings(payload.inputs, {
-    ...variables,
-    context,
-  });
+  let bindings = materializeDsqlBindings(
+    payload.operation.inputs,
+    variables,
+    "wire",
+  );
+  bindings = materializeDsqlDynamicBindings(
+    payload.operation.dynamicInputContracts,
+    bindings,
+    "wire",
+  );
+  bindings = materializeDsqlBindings(
+    payload.contextInputs,
+    setDsqlPath(bindings, "context", context),
+    "host",
+  );
   const fixedValues = collectDsqlParameterValues(payload.parameters, bindings);
   const dynamic = applyDsqlDynamicInputs(
     applyDsqlVariants(payload.sql, payload.variants, bindings),
     payload.dynamicInputs,
+    payload.operation.dynamicInputContracts,
     bindings,
     fixedValues.length,
   );
   return {
     sql: dynamic.sql,
     values: [...fixedValues, ...dynamic.values],
+    context: getDsqlPath(bindings, "context"),
   };
+}
+
+/**
+ * Converts host public variables to the exact JSON/wire representation used
+ * for cache identity and RPC transport. Serializers are pure, non-idempotent
+ * boundaries; callers must never materialize an already-wire value again.
+ */
+export function materializeDsqlOperationVariables<
+  Operation extends DsqlOperation<any, any, any, any, any>,
+>(
+  operation: Operation,
+  variables: DsqlVariables<Operation>,
+): DsqlWireVariables<Operation> {
+  const ordinary = materializeDsqlBindings(
+    operation.inputs,
+    variables,
+    "host",
+  );
+  return materializeDsqlDynamicBindings(
+    operation.dynamicInputContracts,
+    ordinary,
+    "host",
+  ) as DsqlWireVariables<Operation>;
+}
+
+const DSQL_PARSED_RESULTS = new WeakMap<
+  object,
+  WeakMap<object, unknown>
+>();
+const DSQL_RESULT_SELECTORS = new WeakMap<
+  object,
+  {
+    withoutProjection?: (value: any) => any;
+    readonly projections: WeakMap<(value: any) => any, (value: any) => any>;
+  }
+>();
+
+/** Parses one raw compiler-shaped JSON result into its configured host types. */
+export function parseDsqlResult<
+  Operation extends DsqlOperation<any, any, any, any, any>,
+>(
+  operation: Operation,
+  raw: DsqlOperationWireResult<Operation>,
+): DsqlOperationResult<Operation> {
+  if (!isDsqlEnvelope(raw)) {
+    throw new Error(`dsql result for ${operation.name} must be an object`);
+  }
+  let operationCache = DSQL_PARSED_RESULTS.get(operation);
+  if (!operationCache) {
+    operationCache = new WeakMap();
+    DSQL_PARSED_RESULTS.set(operation, operationCache);
+  }
+  const cached = operationCache.get(raw);
+  if (cached !== undefined) {
+    return cached as DsqlOperationResult<Operation>;
+  }
+
+  const children = new Map<string, DsqlResultContractField[]>();
+  for (const field of operation.resultFields) {
+    const group = children.get(field.parent_path) ?? [];
+    group.push(field);
+    children.set(field.parent_path, group);
+  }
+  const parsed = parseDsqlResultObject(raw, "", children);
+  operationCache.set(raw, parsed);
+  return parsed as DsqlOperationResult<Operation>;
+}
+
+/**
+ * Stable TanStack observer selector. Raw JSON remains in the query cache;
+ * parsing and an optional user projection happen only at the consumer edge.
+ */
+export function dsqlResultSelector<
+  Operation extends DsqlOperation<any, any, any, any, any>,
+  Selected = DsqlOperationResult<Operation>,
+>(
+  operation: Operation,
+  select?: (result: DsqlOperationResult<Operation>) => Selected,
+): (wire: DsqlOperationWireResult<Operation>) => Selected {
+  let selectors = DSQL_RESULT_SELECTORS.get(operation);
+  if (!selectors) {
+    selectors = { projections: new WeakMap() };
+    DSQL_RESULT_SELECTORS.set(operation, selectors);
+  }
+  const cached = select
+    ? selectors.projections.get(select)
+    : selectors.withoutProjection;
+  if (cached) {
+    return cached as (wire: DsqlOperationWireResult<Operation>) => Selected;
+  }
+  const selector = (wire: DsqlOperationWireResult<Operation>) => {
+    const parsed = parseDsqlResult(operation, wire);
+    return select ? select(parsed) : (parsed as Selected);
+  };
+  if (select) {
+    selectors.projections.set(select, selector);
+  } else {
+    selectors.withoutProjection = selector;
+  }
+  return selector;
+}
+
+function parseDsqlResultObject(
+  value: Record<string, unknown>,
+  path: string,
+  children: ReadonlyMap<string, readonly DsqlResultContractField[]>,
+): Record<string, unknown> {
+  let parsed = value;
+  for (const field of children.get(path) ?? []) {
+    if (!Object.hasOwn(value, field.name)) {
+      throw new Error(`dsql result is missing ${field.path}`);
+    }
+    const current = value[field.name];
+    const next = parseDsqlResultField(field, current, children);
+    if (next !== current) {
+      if (parsed === value) {
+        parsed = { ...value };
+      }
+      parsed[field.name] = next;
+    }
+  }
+  return parsed;
+}
+
+function parseDsqlResultField(
+  field: DsqlResultContractField,
+  value: unknown,
+  children: ReadonlyMap<string, readonly DsqlResultContractField[]>,
+): unknown {
+  if (value === null) {
+    if (!field.nullable) {
+      throw new Error(`non-null dsql result is null at ${field.path}`);
+    }
+    return null;
+  }
+  if (field.kind === "array") {
+    if (!Array.isArray(value)) {
+      throw new Error(`dsql result ${field.path} must be an array`);
+    }
+    return value.map((item) => {
+      if (!isDsqlEnvelope(item)) {
+        throw new Error(`dsql result ${field.path} must contain objects`);
+      }
+      return parseDsqlResultObject(item, field.path, children);
+    });
+  }
+  if (field.kind === "object") {
+    if (!isDsqlEnvelope(value)) {
+      throw new Error(`dsql result ${field.path} must be an object`);
+    }
+    return parseDsqlResultObject(value, field.path, children);
+  }
+  if (field.shape === "database_array") {
+    return parseDsqlDatabaseArray(field, value);
+  }
+  return parseDsqlScalarResult(field, value);
+}
+
+function parseDsqlDatabaseArray(
+  field: DsqlResultContractField,
+  value: unknown,
+): unknown {
+  if (!Array.isArray(value)) {
+    throw new Error(`dsql result ${field.path} must be a database array`);
+  }
+  return value.map((item) =>
+    item === null
+      ? null
+      : Array.isArray(item)
+        ? parseDsqlDatabaseArray(field, item)
+        : parseDsqlScalarResult(field, item),
+  );
+}
+
+function parseDsqlScalarResult(
+  field: DsqlResultContractField,
+  value: unknown,
+): unknown {
+  const parse = field.parse;
+  if (!parse) {
+    return value;
+  }
+  try {
+    return parse(value);
+  } catch (error) {
+    throw new Error(
+      `dsql result parser failed at ${field.path} (${field.data_type})`,
+      { cause: error },
+    );
+  }
 }
 
 export function applyDsqlVariants(
@@ -267,12 +593,23 @@ export function applyDsqlVariants(
 function applyDsqlDynamicInputs(
   sql: string,
   inputs: readonly DynamicInputMetadata[],
+  contracts: readonly DsqlDynamicInputContract[],
   bindings: unknown,
   fixedParameterCount: number,
 ): { readonly sql: string; readonly values: readonly unknown[] } {
   let renderedSql = sql;
   const values: unknown[] = [];
   for (const input of inputs) {
+    if (
+      !contracts.some(
+        (contract) =>
+          contract.path === input.path && contract.kind === input.kind,
+      )
+    ) {
+      invalidDsqlDynamicMetadata(
+        `input ${input.path} has no client materialization contract`,
+      );
+    }
     let value = getDsqlPath(bindings, input.path);
     if (value === null) {
       value = input.kind === "predicate" ? {} : [];
@@ -389,8 +726,6 @@ function renderDsqlDynamicPredicate(
         `dsql input ${path}.${key} must be a field-operator object`,
       );
     }
-    const inputField = dsqlDynamicField(input, key);
-    const dataType = inputField.data_type;
     for (const operatorName of Object.keys(item).sort()) {
       const operand = item[operatorName];
       const operator = field.operators.find(
@@ -401,11 +736,7 @@ function renderDsqlDynamicPredicate(
           `invalid dsql dynamic operator at ${path}.${key}.${operatorName}`,
         );
       }
-      const operandPath = `${path}.${key}.${operatorName}`;
       if (operator.value_kind === "boolean") {
-        if (typeof operand !== "boolean") {
-          throw new Error(`dsql input ${operandPath} must be a boolean`);
-        }
         const selected = operator.cases.find(
           (candidate) => candidate.value === String(operand),
         );
@@ -418,19 +749,14 @@ function renderDsqlDynamicPredicate(
         continue;
       }
       if (operator.value_kind === "collection") {
-        if (!Array.isArray(operand)) {
-          throw new Error(`dsql input ${operandPath} must be an array`);
-        }
-        for (const value of operand) {
-          validateDsqlDynamicScalar(inputField, value, operandPath);
-        }
-        if (operand.length === 0) {
+        const values = operand as readonly unknown[];
+        // Empty-collection identity is SQL operator semantics. The compiler
+        // does not yet expose it separately from the operator name.
+        if (values.length === 0) {
           predicates.push(operatorName === "in" ? "FALSE" : "TRUE");
           continue;
         }
-      } else if (operator.value_kind === "scalar") {
-        validateDsqlDynamicScalar(inputField, operand, operandPath);
-      } else {
+      } else if (operator.value_kind !== "scalar") {
         invalidDsqlDynamicMetadata(
           `operator ${operatorName} has unknown value kind ${operator.value_kind}`,
         );
@@ -498,16 +824,6 @@ function dsqlDynamicSiteField(
   );
 }
 
-function dsqlDynamicField(
-  input: DynamicInputMetadata,
-  key: string,
-): DynamicInputField {
-  return (
-    input.fields.find((field) => field.key === key) ??
-    invalidDsqlDynamicMetadata(`input ${input.path} has no field ${key}`)
-  );
-}
-
 function dsqlDynamicParameter(
   state: DynamicRenderState,
   value: unknown,
@@ -523,7 +839,10 @@ function dsqlDynamicParameter(
 }
 
 function validateDsqlDynamicScalar(
-  field: DynamicInputField,
+  field: Pick<
+    DsqlDynamicInputFieldContract,
+    "data_type" | "wire" | "validation"
+  >,
   value: unknown,
   path: string,
 ): void {
@@ -648,6 +967,7 @@ function invalidDsqlDynamicMetadata(message: string): never {
 export function materializeDsqlBindings(
   fields: readonly DsqlInputField[],
   bindings: unknown,
+  representation: "host" | "wire",
 ): unknown {
   let materialized = bindings;
   for (const field of fields) {
@@ -658,12 +978,14 @@ export function materializeDsqlBindings(
     }
 
     let value = lookup.kind === "found" ? lookup.value : undefined;
+    let defaulted = false;
     if (lookup.kind === "missing") {
       if (trustedContext) {
         throw new Error(`missing trusted dsql context at ${field.path}`);
       }
       if (field.default !== undefined) {
         value = dsqlDefaultValue(field, field.default);
+        defaulted = true;
         materialized = setDsqlPath(materialized, field.path, value);
       } else if (field.required) {
         throw new Error(`missing dsql input at ${field.path}`);
@@ -678,6 +1000,16 @@ export function materializeDsqlBindings(
       );
     }
     if (
+      representation === "host" &&
+      !defaulted &&
+      value !== null &&
+      value !== undefined &&
+      field.serialize
+    ) {
+      value = serializeDsqlInputValue(field, value);
+      materialized = setDsqlPath(materialized, field.path, value);
+    }
+    if (
       value === null &&
       (field.data_type === "dynamic_predicate" ||
         field.data_type === "dynamic_order")
@@ -688,6 +1020,173 @@ export function materializeDsqlBindings(
     validateDsqlInput(field, value);
   }
   return materialized;
+}
+
+function serializeDsqlInputValue(
+  field: DsqlInputField,
+  value: unknown,
+): unknown {
+  const serialize = field.serialize;
+  if (!serialize) {
+    return value;
+  }
+  try {
+    if (field.collection === true) {
+      if (!Array.isArray(value)) {
+        return value;
+      }
+      return value.map((item) => (item === null ? null : serialize(item)));
+    }
+    return serialize(value);
+  } catch (error) {
+    throw new Error(
+      `dsql input serializer failed at ${field.path} (${field.data_type})`,
+      { cause: error },
+    );
+  }
+}
+
+function materializeDsqlDynamicBindings(
+  inputs: readonly DsqlDynamicInputContract[],
+  bindings: unknown,
+  representation: "host" | "wire",
+): unknown {
+  let materialized = bindings;
+  for (const input of inputs) {
+    const lookup = lookupDsqlPath(materialized, input.path);
+    if (lookup.kind === "invalid") {
+      throw new Error(`invalid dsql input envelope at ${input.path}`);
+    }
+    if (lookup.kind === "missing") {
+      throw new Error(`missing dsql dynamic input at ${input.path}`);
+    }
+    const value =
+      input.kind === "predicate"
+        ? materializeDsqlDynamicPredicate(
+            input,
+            lookup.value,
+            input.path,
+            representation,
+          )
+        : lookup.value;
+    materialized = setDsqlPath(materialized, input.path, value);
+  }
+  return materialized;
+}
+
+function materializeDsqlDynamicPredicate(
+  input: DsqlDynamicInputContract,
+  value: unknown,
+  path: string,
+  representation: "host" | "wire",
+): unknown {
+  if (!isDsqlEnvelope(value)) {
+    throw new Error(`dsql input ${path} must be a dynamic predicate object`);
+  }
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "and" || key === "or") {
+      if (!Array.isArray(item)) {
+        throw new Error(`dsql input ${path}.${key} must be an array`);
+      }
+      result[key] = item.map((child, index) =>
+        materializeDsqlDynamicPredicate(
+          input,
+          child,
+          `${path}.${key}[${index}]`,
+          representation,
+        ),
+      );
+      continue;
+    }
+    if (key === "not") {
+      result[key] = materializeDsqlDynamicPredicate(
+        input,
+        item,
+        `${path}.not`,
+        representation,
+      );
+      continue;
+    }
+    const field = input.fields.find((candidate) => candidate.key === key);
+    if (!field) {
+      throw new Error(`unknown dsql dynamic field at ${path}.${key}`);
+    }
+    if (!isDsqlEnvelope(item)) {
+      throw new Error(
+        `dsql input ${path}.${key} must be a field-operator object`,
+      );
+    }
+    result[key] = Object.fromEntries(
+      Object.entries(item).map(([operatorName, operand]) => {
+        const operator = field.operators.find(
+          (candidate) => candidate.name === operatorName,
+        );
+        const operandPath = `${path}.${key}.${operatorName}`;
+        if (!operator) {
+          throw new Error(`unknown dsql dynamic operator at ${operandPath}`);
+        }
+        if (operator.value_kind === "boolean") {
+          if (typeof operand !== "boolean") {
+            throw new Error(`dsql input ${operandPath} must be a boolean`);
+          }
+          return [operatorName, operand];
+        }
+        if (operator.value_kind === "collection") {
+          if (!Array.isArray(operand)) {
+            throw new Error(`dsql input ${operandPath} must be an array`);
+          }
+          return [
+            operatorName,
+            operand.map((member) =>
+              materializeDsqlDynamicScalar(
+                field,
+                member,
+                operandPath,
+                representation,
+              ),
+            ),
+          ];
+        }
+        if (operator.value_kind !== "scalar") {
+          throw new Error(
+            `unknown dsql dynamic operator value kind at ${operandPath}`,
+          );
+        }
+        return [
+          operatorName,
+          materializeDsqlDynamicScalar(
+            field,
+            operand,
+            operandPath,
+            representation,
+          ),
+        ];
+      }),
+    );
+  }
+  return result;
+}
+
+function materializeDsqlDynamicScalar(
+  field: DsqlDynamicInputFieldContract,
+  value: unknown,
+  path: string,
+  representation: "host" | "wire",
+): unknown {
+  let wireValue = value;
+  if (representation === "host" && field.serialize) {
+    try {
+      wireValue = field.serialize(value);
+    } catch (error) {
+      throw new Error(
+        `dsql input serializer failed at ${path} (${field.data_type})`,
+        { cause: error },
+      );
+    }
+  }
+  validateDsqlDynamicScalar(field, wireValue, path);
+  return wireValue;
 }
 
 function validateDsqlInput(field: DsqlInputField, value: unknown): void {

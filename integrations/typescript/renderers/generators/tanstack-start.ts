@@ -16,6 +16,10 @@ type RenderOptions = {
   readonly validatorFor?: DsqlValidatorResolver;
 };
 
+/**
+ * Resolves a validator for the serialized `DsqlWireVariables` accepted by
+ * the generated server function.
+ */
 export type DsqlValidatorResolver = (
   operation: BuildArtifacts["operations"][number],
 ) => DsqlValidatorExpression | "identity" | undefined;

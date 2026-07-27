@@ -3,6 +3,8 @@ import type { DsqlProjectContractFingerprint } from "./daemon.ts";
 import {
   projectRelative,
   renderDsql,
+  scalarMappingsForArtifacts,
+  validateDsqlScalarMappings,
   type BuildArtifacts,
   type DsqlDesiredFile,
   type DsqlOutputMode,
@@ -10,6 +12,7 @@ import {
   type DsqlRendererContext,
   type DsqlRenderModule,
   type DsqlRenderResult,
+  type DsqlScalarMappings,
 } from "./node.ts";
 
 export type DsqlProjectScope = {
@@ -53,6 +56,8 @@ export type DsqlProjectGeneratorContext<Target extends string = string> = {
   readonly mode: string;
   readonly command: "serve" | "build";
   readonly outputMode: DsqlOutputMode;
+  /** Globally validated host scalar representations for this renderer. */
+  readonly scalars: DsqlScalarMappings;
 };
 
 export type DsqlProjectGenerator<Target extends string = string> = {
@@ -78,6 +83,7 @@ type DsqlIgnoredTarget = {
 
 type ProjectRendererConfig<Target extends string> = {
   readonly output: DsqlTargetOutput;
+  readonly scalars?: DsqlScalarMappings;
   readonly targets: { readonly [Name in Target]: TargetDecision<Name> };
 };
 
@@ -189,6 +195,10 @@ export function typescriptDefinitions(
         ...(executionDir ? { executionDir } : {}),
         embeddedSources: context.embeddedSources,
         outputMode: context.outputMode,
+        scalars: scalarMappingsForArtifacts(
+          context.artifacts,
+          context.scalars,
+        ),
       });
       for (const file of rendered.files) {
         const path = normalizeRelativePath(
@@ -220,6 +230,8 @@ function createProjectRenderer<
     projectContractHash: contract.contractHash,
     ownedRoots: config.output.ownedRoots,
     async render(context) {
+      const scalars = config.scalars ?? {};
+      validateDsqlScalarMappings(context.artifacts, scalars);
       const groups = validateCompilerScopes(
         contract,
         context.artifacts.artifactGroups,
@@ -262,6 +274,7 @@ function createProjectRenderer<
               mode: context.mode,
               command: context.command,
               outputMode: context.outputMode,
+              scalars,
             });
           } catch (error) {
             throw new Error(

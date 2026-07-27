@@ -298,6 +298,71 @@ test("embedded callsites require definitions and receive their target mapping", 
   ).toBe(true);
 });
 
+test("project scalar mappings validate globally and filter per target", async () => {
+  const mapped = operationMetadata();
+  mapped.name = "Mapped";
+  mapped.result.fields = [
+    {
+      path: "released",
+      name: "released",
+      parent_path: "",
+      kind: "scalar",
+      value_type: {
+        shape: "scalar",
+        name: "calendar_date",
+        wire: { encoding: "text_cast" },
+      },
+      nullable: false,
+    },
+  ];
+  const api = artifactsWithOperation("api", mapped);
+  const frontend = emptyArtifacts("frontend", true);
+  const renderer = project.renderer({
+    output: targetOutput("src/generated/dsql"),
+    scalars: {
+      calendar_date: {
+        type: { from: "@/scalars", name: "CalendarDate" },
+        parse: { from: "@/scalars", name: "parseCalendarDate" },
+        serialize: { from: "@/scalars", name: "serializeCalendarDate" },
+      },
+    },
+    targets: {
+      api: {
+        generators: [project.generator(typescriptDefinitions())],
+      },
+      frontend: {
+        generators: [project.generator(typescriptDefinitions())],
+      },
+    },
+  });
+  const context = rendererContext([
+    api,
+    frontend,
+    emptyArtifacts("shared", false),
+  ]);
+  const rendered = await renderer.render({
+    ...context,
+    artifacts: {
+      ...context.artifacts,
+      operations: [mapped],
+      operationsByName: new Map([[mapped.name, mapped]]),
+    },
+  });
+
+  const mappedSource = rendered.files.find(
+    (file) => file.path === "src/generated/dsql/api/queries/Mapped.ts",
+  )?.contents;
+  expect(mappedSource).toContain(
+    "released: __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_type;",
+  );
+  expect(
+    rendered.files.some(
+      (file) =>
+        file.path === "src/generated/dsql/frontend/queries/index.ts",
+    ),
+  ).toBe(true);
+});
+
 function rendererContext(
   artifactGroups: readonly BuildArtifacts[],
   callsites: DsqlCompileResult["callsites"] = [],
@@ -338,6 +403,36 @@ function emptyArtifacts(
     fragments: [],
     fragmentsByName: new Map(),
     artifactIds: new Map(),
+  };
+}
+
+function artifactsWithOperation(
+  scope: string,
+  operation: BuildArtifacts["operations"][number],
+): BuildArtifacts {
+  const artifacts = emptyArtifacts(scope, true);
+  return {
+    ...artifacts,
+    manifest: {
+      ...artifacts.manifest,
+      operations: [
+        {
+          name: operation.name,
+          kind: "query",
+          path: `operations/${operation.name}.json`,
+          hash: "0".repeat(64),
+          source: "queries/movie.dsql",
+        },
+      ],
+    },
+    operations: [operation],
+    operationsByName: new Map([[operation.name, operation]]),
+    artifactIds: new Map([
+      [
+        `operation/${operation.name}`,
+        `${scope}/operation/${operation.name}`,
+      ],
+    ]),
   };
 }
 

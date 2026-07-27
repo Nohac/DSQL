@@ -12,12 +12,64 @@ import {
   applyDsqlVariants,
   collectDsqlParameterValues,
   dsqlQueryKey,
+  dsqlResultSelector,
   getDsqlPath,
   materializeDsqlBindings,
+  materializeDsqlOperationVariables,
   materializeDsqlQuery,
+  parseDsqlResult,
+  type DsqlDatabaseArray,
   type DsqlExecutionPayload,
   type DsqlOperation,
+  type DsqlWireContract,
 } from "../src/runtime";
+
+const emptyOperationContracts = {
+  dynamicInputContracts: [],
+  resultFields: [],
+} as const;
+
+type DynamicValueKind = "scalar" | "collection" | "boolean";
+
+function dynamicOperatorContracts(
+  input: {
+    readonly sites: readonly {
+      readonly fields: readonly {
+        readonly key: string;
+        readonly operators: readonly {
+          readonly name: string;
+          readonly value_kind: string;
+        }[];
+      }[];
+    }[];
+  },
+  fieldKey: string,
+  names: readonly string[],
+): Array<{ readonly name: string; readonly value_kind: DynamicValueKind }> {
+  return names.map((name) => {
+    const kinds = new Set(
+      input.sites.flatMap((site) =>
+        site.fields
+          .filter((field) => field.key === fieldKey)
+          .flatMap((field) =>
+            field.operators
+              .filter((operator) => operator.name === name)
+              .map((operator) => operator.value_kind),
+          ),
+      ),
+    );
+    const [kind] = [...kinds];
+    if (
+      kinds.size !== 1 ||
+      (kind !== "scalar" && kind !== "collection" && kind !== "boolean")
+    ) {
+      throw new Error(
+        `test metadata has no unique value kind for ${fieldKey}.${name}`,
+      );
+    }
+    return { name, value_kind: kind };
+  });
+}
 
 const movieInputs = [
   {
@@ -62,6 +114,7 @@ const MovieInfoOperation = {
   kind: "query",
   requiresContext: true,
   inputs: movieInputs,
+  ...emptyOperationContracts,
 } satisfies MovieOperation;
 
 const payload = {
@@ -80,8 +133,7 @@ const payload = {
     },
   },
   dynamicInputs: [],
-  inputs: [
-    ...movieInputs,
+  contextInputs: [
     {
       path: "context.tenant_id",
       data_type: "uuid",
@@ -117,6 +169,9 @@ test("materializes sql variants and ordered parameter values", () => {
   ).toEqual({
     sql: "select * from movie_info where id = $1 and tenant_id = $2",
     values: [42, "018f6f19-795f-7c3d-b1b3-8f177ab8a322"],
+    context: {
+      tenant_id: "018f6f19-795f-7c3d-b1b3-8f177ab8a322",
+    },
   });
 });
 
@@ -154,6 +209,7 @@ const OptionalOperation = {
   kind: "query",
   requiresContext: false,
   inputs: optionalInputs,
+  ...emptyOperationContracts,
 } satisfies OptionalOperation;
 
 const optionalPayload = {
@@ -167,7 +223,7 @@ const optionalPayload = {
     },
   },
   dynamicInputs: [],
-  inputs: optionalInputs,
+  contextInputs: [],
 } satisfies DsqlExecutionPayload<OptionalOperation>;
 
 test("materializes defaults and nullable sql variants without mutating inputs", () => {
@@ -175,6 +231,7 @@ test("materializes defaults and nullable sql variants without mutating inputs", 
   expect(materializeDsqlQuery(optionalPayload, variables, {})).toEqual({
     sql: "select * from movie_info order by case when 'null' = 'asc' then id end asc limit $1",
     values: [10],
+    context: {},
   });
   expect(variables).toEqual({});
 
@@ -183,6 +240,7 @@ test("materializes defaults and nullable sql variants without mutating inputs", 
   ).toEqual({
     sql: "select * from movie_info order by case when 'null' = 'asc' then id end asc limit $1",
     values: [null],
+    context: {},
   });
 });
 
@@ -316,6 +374,22 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
         nullable: false,
       },
     ],
+    dynamicInputContracts: dynamicInputs.map((input) => ({
+      path: input.path,
+      kind: input.kind,
+      fields: input.fields.map((field) => ({
+        key: field.key,
+        data_type: field.data_type,
+        wire: field.wire,
+        validation: field.validation,
+        operators: dynamicOperatorContracts(
+          input,
+          field.key,
+          field.operators,
+        ),
+      })),
+    })),
+    resultFields: [],
   } satisfies DsqlOperation;
   const dynamicPayload = {
     operation,
@@ -323,7 +397,7 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
     parameters: [{ path: "params.tenant" }],
     variants: {},
     dynamicInputs,
-    inputs: operation.inputs,
+    contextInputs: [],
   } satisfies DsqlExecutionPayload;
 
   expect(
@@ -344,24 +418,67 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
   ).toEqual({
     sql: "select $1 where (((u.name LIKE $2)) AND ((u.id = ANY($3)))) and (((u2.name LIKE $2)) AND ((u2.id = ANY($3)))) order by u.name DESC NULLS LAST",
     values: [7, "A%", [1, 2]],
+    context: {},
   });
 
+  expect(() =>
+    materializeDsqlQuery(
+      {
+        ...dynamicPayload,
+        operation: {
+          ...operation,
+          dynamicInputContracts: operation.dynamicInputContracts.filter(
+            (input) => input.path !== "params.search",
+          ),
+        },
+      },
+      {
+        params: {
+          tenant: 7,
+          search: { name: { like: "A%" } },
+          order: [],
+        },
+      },
+      {},
+    ),
+  ).toThrow(
+    "invalid dsql dynamic metadata: input params.search has no client materialization contract",
+  );
+
+  const replaceIdType = <Field extends { readonly key: string }>(
+    field: Field,
+    dataType: string,
+  ) =>
+    field.key === "id"
+      ? {
+          ...field,
+          data_type: dataType,
+          wire: {
+            encoding: dataType === "int" ? "integer" : dataType,
+          },
+        }
+      : field;
   const withIdDataType = (dataType: string) => ({
     ...dynamicPayload,
+    operation: {
+      ...operation,
+      dynamicInputContracts: operation.dynamicInputContracts.map((input) =>
+        input.path === "params.search"
+          ? {
+              ...input,
+              fields: input.fields.map((field) =>
+                replaceIdType(field, dataType),
+              ),
+            }
+          : input,
+      ),
+    },
     dynamicInputs: dynamicPayload.dynamicInputs.map((input) =>
       input.path === "params.search"
         ? {
             ...input,
             fields: input.fields.map((field) =>
-              field.key === "id"
-                ? {
-                    ...field,
-                    data_type: dataType,
-                    wire: {
-                      encoding: dataType === "int" ? "integer" : dataType,
-                    },
-                  }
-                : field,
+              replaceIdType(field, dataType),
             ),
           }
         : input,
@@ -397,9 +514,31 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
   ]);
   expect(() => materializeId("numeric", "12.3.4")).toThrow("valid numeric");
 
+  const dateWire = {
+    encoding: "text_cast",
+    provider_type: {
+      schema: "pg_catalog",
+      name: "date",
+    },
+  } as const;
+  const textCastBase = withIdDataType("text");
   const textCastPayload = {
-    ...dynamicPayload,
-    dynamicInputs: dynamicPayload.dynamicInputs.map((input) =>
+    ...textCastBase,
+    operation: {
+      ...textCastBase.operation,
+      dynamicInputContracts: textCastBase.operation.dynamicInputContracts.map(
+        (input) =>
+          input.path === "params.search"
+            ? {
+                ...input,
+                fields: input.fields.map((field) =>
+                  field.key === "id" ? { ...field, wire: dateWire } : field,
+                ),
+              }
+            : input,
+      ),
+    },
+    dynamicInputs: textCastBase.dynamicInputs.map((input) =>
       input.path === "params.search"
         ? {
             ...input,
@@ -407,14 +546,7 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
               field.key === "id"
                 ? {
                     ...field,
-                    data_type: "text",
-                    wire: {
-                      encoding: "text_cast",
-                      provider_type: {
-                        schema: "pg_catalog",
-                        name: "date",
-                      },
-                    },
+                    wire: dateWire,
                   }
                 : field,
             ),
@@ -444,7 +576,7 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
 test("matches the shared typed-default conformance cases", () => {
   for (const testCase of defaultCases) {
     const materialize = () =>
-      materializeDsqlBindings([testCase.field], {});
+      materializeDsqlBindings([testCase.field], {}, "wire");
     if ("expected" in testCase) {
       expect(materialize(), testCase.name).toEqual({
         params: { value: testCase.expected },
@@ -458,7 +590,11 @@ test("matches the shared typed-default conformance cases", () => {
 test("matches the shared supplied-value conformance cases", () => {
   for (const testCase of inputCases) {
     const materialize = () =>
-      materializeDsqlBindings([testCase.field], testCase.bindings);
+      materializeDsqlBindings(
+        [testCase.field],
+        testCase.bindings,
+        "wire",
+      );
     if ("expected" in testCase) {
       const materialized = materialize();
       expect(
@@ -478,6 +614,24 @@ test("matches the shared bounded dynamic input conformance cases", () => {
     kind: "query",
     requiresContext: false,
     inputs: dynamicCases.operation.params,
+    dynamicInputContracts: dynamicCases.operation.dynamic_inputs.map(
+      (input) => ({
+        path: input.path,
+        kind: input.kind,
+        fields: input.fields.map((field) => ({
+          key: field.key,
+          data_type: field.data_type,
+          wire: field.wire,
+          validation: field.validation,
+          operators: dynamicOperatorContracts(
+            input,
+            field.key,
+            field.operators,
+          ),
+        })),
+      }),
+    ),
+    resultFields: [],
   };
   const payload: DsqlExecutionPayload<typeof operation> = {
     operation,
@@ -485,7 +639,7 @@ test("matches the shared bounded dynamic input conformance cases", () => {
     parameters: dynamicCases.operation.sql.parameters,
     variants: {},
     dynamicInputs: dynamicCases.operation.dynamic_inputs,
-    inputs: dynamicCases.operation.params,
+    contextInputs: [],
   };
 
   for (const testCase of dynamicCases.cases) {
@@ -495,6 +649,7 @@ test("matches the shared bounded dynamic input conformance cases", () => {
       expect(materialize(), testCase.name).toEqual({
         sql: testCase.expected_sql,
         values: testCase.expected_values,
+        context: {},
       });
     } else {
       expect(materialize, testCase.name).toThrow(testCase.error);
@@ -510,7 +665,11 @@ test("materializes copy-on-write and preserves unrelated host values", () => {
   const untouched = { date, bytes, map, set };
   const bindings = { params: {}, untouched };
 
-  const materialized = materializeDsqlBindings(optionalInputs, bindings) as {
+  const materialized = materializeDsqlBindings(
+    optionalInputs,
+    bindings,
+    "wire",
+  ) as {
     readonly params: { readonly direction: null; readonly limit: number };
     readonly untouched: typeof untouched;
   };
@@ -522,7 +681,7 @@ test("materializes copy-on-write and preserves unrelated host values", () => {
   expect(materialized.untouched.bytes).toBe(bytes);
   expect(materialized.untouched.map).toBe(map);
   expect(materialized.untouched.set).toBe(set);
-  expect(materializeDsqlBindings([], bindings)).toBe(bindings);
+  expect(materializeDsqlBindings([], bindings, "wire")).toBe(bindings);
 });
 
 test("rejects invalid envelopes, unused required fields, and context defaults", () => {
@@ -536,7 +695,9 @@ test("rejects invalid envelopes, unused required fields, and context defaults", 
     default: { kind: "number", value: "7" },
   } as const;
   for (const params of [null, 5]) {
-    expect(() => materializeDsqlBindings([defaulted], { params })).toThrow(
+    expect(() =>
+      materializeDsqlBindings([defaulted], { params }, "wire"),
+    ).toThrow(
       "invalid dsql input envelope at params.nested.value",
     );
   }
@@ -553,6 +714,7 @@ test("rejects invalid envelopes, unused required fields, and context defaults", 
         },
       ],
       {},
+      "wire",
     ),
   ).toThrow("missing dsql input at params.unused");
   const requiredNullable = {
@@ -567,10 +729,15 @@ test("rejects invalid envelopes, unused required fields, and context defaults", 
     materializeDsqlBindings(
       [requiredNullable],
       { params: { info: null } },
+      "wire",
     ),
   ).toEqual({ params: { info: null } });
   expect(() =>
-    materializeDsqlBindings([requiredNullable], { params: {} }),
+    materializeDsqlBindings(
+      [requiredNullable],
+      { params: {} },
+      "wire",
+    ),
   ).toThrow("missing dsql input at params.info");
   expect(() =>
     materializeDsqlBindings(
@@ -586,6 +753,7 @@ test("rejects invalid envelopes, unused required fields, and context defaults", 
         },
       ],
       { context: {} },
+      "wire",
     ),
   ).toThrow("missing trusted dsql context at context.tenant_id");
 });
@@ -623,6 +791,8 @@ test("cache keys materialize defaults and canonical dynamic identities", () => {
         nullable: true,
       },
     ],
+    dynamicInputContracts: [],
+    resultFields: [],
   } as const satisfies DsqlOperation;
 
   const omittedDefault = dsqlQueryKey(operation, {
@@ -635,6 +805,283 @@ test("cache keys materialize defaults and canonical dynamic identities", () => {
   expect(omittedDefault[3]).toEqual({
     params: { limit: 10, search: {}, order: [] },
   });
+});
+
+test("serializes host inputs once before cache and server boundaries", () => {
+  type DateValue = { readonly iso: string };
+  type MappedOperation = DsqlOperation<
+    Record<string, never>,
+    {
+      readonly since: DateValue;
+      readonly dates: Array<DateValue | null>;
+      readonly filter: {
+        readonly released?: { readonly eq?: DateValue };
+      };
+    },
+    Record<string, never>,
+    { readonly cutoff: DateValue },
+    DsqlWireContract<
+      Record<string, never>,
+      {
+        readonly since: string;
+        readonly dates: Array<string | null>;
+        readonly filter: {
+          readonly released?: { readonly eq?: string };
+        };
+      },
+      Record<string, never>
+    >
+  >;
+  const calls: string[] = [];
+  const serialize = (value: DateValue): string => {
+    calls.push(value.iso);
+    return value.iso;
+  };
+  const operation = {
+    id: "mapped-input",
+    name: "MappedInput",
+    kind: "query",
+    requiresContext: true,
+    inputs: [
+      {
+        path: "params.since",
+        data_type: "date",
+        wire: { encoding: "text_cast" },
+        validation: {},
+        required: true,
+        nullable: false,
+        serialize,
+      },
+      {
+        path: "params.dates",
+        data_type: "date",
+        wire: { encoding: "text_cast" },
+        validation: {},
+        collection: true,
+        required: true,
+        nullable: false,
+        serialize,
+      },
+      {
+        path: "params.filter",
+        data_type: "dynamic_predicate",
+        wire: { encoding: "unsupported" },
+        validation: {},
+        required: true,
+        nullable: false,
+      },
+    ],
+    dynamicInputContracts: [
+      {
+        path: "params.filter",
+        kind: "predicate",
+        fields: [
+          {
+            key: "released",
+            data_type: "date",
+            wire: { encoding: "text_cast" },
+            validation: {},
+            operators: [{ name: "eq", value_kind: "scalar" }],
+            serialize,
+          },
+        ],
+      },
+    ],
+    resultFields: [],
+  } satisfies MappedOperation;
+  const hostVariables = {
+    params: {
+      since: { iso: "2026-01-01" },
+      dates: [{ iso: "2026-02-02" }, null],
+      filter: { released: { eq: { iso: "2026-03-03" } } },
+    },
+  } as const;
+
+  const wireVariables = materializeDsqlOperationVariables(
+    operation,
+    hostVariables,
+  );
+  expect(wireVariables).toEqual({
+    params: {
+      since: "2026-01-01",
+      dates: ["2026-02-02", null],
+      filter: { released: { eq: "2026-03-03" } },
+    },
+  });
+  expect(calls).toEqual(["2026-01-01", "2026-02-02", "2026-03-03"]);
+  expect(hostVariables.params.since).toEqual({ iso: "2026-01-01" });
+
+  const materialized = materializeDsqlQuery(
+    {
+      operation,
+      sql: "select $1, $2",
+      parameters: [
+        { path: "params.since" },
+        { path: "context.cutoff" },
+      ],
+      variants: {},
+      dynamicInputs: [],
+      contextInputs: [
+        {
+          path: "context.cutoff",
+          data_type: "date",
+          wire: { encoding: "text_cast" },
+          validation: {},
+          required: true,
+          nullable: false,
+          serialize,
+        },
+      ],
+    },
+    wireVariables,
+    { cutoff: { iso: "2026-04-04" } },
+  );
+  expect(materialized).toEqual({
+    sql: "select $1, $2",
+    values: ["2026-01-01", "2026-04-04"],
+    context: { cutoff: "2026-04-04" },
+  });
+  expect(calls).toEqual([
+    "2026-01-01",
+    "2026-02-02",
+    "2026-03-03",
+    "2026-04-04",
+  ]);
+});
+
+test("parses mapped results recursively and memoizes observer selectors", () => {
+  type DateValue = { readonly iso: string };
+  type HostResult = {
+    readonly released: DateValue;
+    readonly movies: Array<{
+      readonly premiered: DateValue | null;
+      readonly dates: DsqlDatabaseArray<DateValue>;
+    }>;
+  };
+  type WireResult = {
+    readonly released: string;
+    readonly movies: Array<{
+      readonly premiered: string | null;
+      readonly dates: DsqlDatabaseArray<string>;
+    }>;
+  };
+  let parseCalls = 0;
+  const parse = (value: unknown): DateValue => {
+    parseCalls += 1;
+    if (typeof value !== "string") {
+      throw new Error("date wire value must be a string");
+    }
+    return { iso: value };
+  };
+  const operation = {
+    id: "mapped-result",
+    name: "MappedResult",
+    kind: "query",
+    requiresContext: false,
+    inputs: [],
+    dynamicInputContracts: [],
+    resultFields: [
+      {
+        path: "released",
+        parent_path: "",
+        name: "released",
+        kind: "scalar",
+        shape: "scalar",
+        nullable: false,
+        data_type: "date",
+        parse,
+      },
+      {
+        path: "movies",
+        parent_path: "",
+        name: "movies",
+        kind: "array",
+        shape: "object",
+        nullable: false,
+        data_type: "object",
+      },
+      {
+        path: "movies.premiered",
+        parent_path: "movies",
+        name: "premiered",
+        kind: "scalar",
+        shape: "scalar",
+        nullable: true,
+        data_type: "date",
+        parse,
+      },
+      {
+        path: "movies.dates",
+        parent_path: "movies",
+        name: "dates",
+        kind: "scalar",
+        shape: "database_array",
+        nullable: false,
+        data_type: "date",
+        parse,
+      },
+    ],
+  } satisfies DsqlOperation<
+    HostResult,
+    Record<string, never>,
+    Record<string, never>,
+    Record<string, never>,
+    DsqlWireContract<
+      WireResult,
+      Record<string, never>,
+      Record<string, never>
+    >
+  >;
+  const wire: WireResult = {
+    released: "2026-01-01",
+    movies: [
+      {
+        premiered: null,
+        dates: ["2026-02-02", ["2026-03-03", null]],
+      },
+    ],
+  };
+
+  const first = parseDsqlResult(operation, wire);
+  const second = parseDsqlResult(operation, wire);
+  expect(first).toBe(second);
+  expect(first).toEqual({
+    released: { iso: "2026-01-01" },
+    movies: [
+      {
+        premiered: null,
+        dates: [
+          { iso: "2026-02-02" },
+          [{ iso: "2026-03-03" }, null],
+        ],
+      },
+    ],
+  });
+  expect(wire.released).toBe("2026-01-01");
+  expect(parseCalls).toBe(3);
+
+  const select = (result: HostResult) => result.released.iso;
+  const firstSelector = dsqlResultSelector(operation, select);
+  const secondSelector = dsqlResultSelector(operation, select);
+  const otherSelector = dsqlResultSelector(
+    operation,
+    (result) => result.released.iso,
+  );
+  const firstParser = dsqlResultSelector(operation);
+  const secondParser = dsqlResultSelector(operation);
+  expect(firstSelector).toBe(secondSelector);
+  expect(otherSelector).not.toBe(firstSelector);
+  expect(firstParser).toBe(secondParser);
+  expect(firstSelector(wire)).toBe("2026-01-01");
+  expect(firstParser(wire)).toBe(first);
+  expect(parseCalls).toBe(3);
+
+  expect(() =>
+    parseDsqlResult(operation, {
+      ...wire,
+      released: null,
+    } as unknown as WireResult),
+  ).toThrow("non-null dsql result is null at released");
 });
 
 test("requires trusted context separately from public variables", () => {
