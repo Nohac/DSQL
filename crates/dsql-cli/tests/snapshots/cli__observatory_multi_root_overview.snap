@@ -4,10 +4,10 @@ expression: multi_root
 ---
 {
   "latest": {
-    "id": 12
+    "id": "12"
   },
   "reading_summary": {
-    "count": 6
+    "count": "6"
   },
-  "sensor_count": 2
+  "sensor_count": "2"
 }

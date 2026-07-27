@@ -518,6 +518,7 @@ dependencies = [
  "bowl",
  "codespan-reporting",
  "facet",
+ "facet-json",
  "facet-yaml",
  "glob",
  "indoc",

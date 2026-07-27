@@ -763,7 +763,7 @@ The metadata does not need to mirror the internal compiler IR. It should be a
 consumer-friendly contract for generated clients, endpoint adapters, validation,
 debug tooling, and editor features.
 
-Before the first public release, manifest version 3 is a compiler-package
+Before the first public release, manifest version 4 is a compiler-package
 contract rather than a backwards-compatible interchange promise: maintained
 compiler, daemon, and renderer components move together, and a required metadata
 addition causes a version bump and artifact regeneration. Consumers reject

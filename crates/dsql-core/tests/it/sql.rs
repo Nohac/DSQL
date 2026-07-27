@@ -694,6 +694,8 @@ async fn provider_scalars_use_schema_qualified_text_casts_everywhere() {
                 where .event_date == $$date
                   and .local_time >= $$start
                   and .address in $$addresses
+                  and .big_id >= $$minimum_big_id
+                  and .big_id <= 9223372036854775807
                   and $$search on selected
                 order by local_time asc
                 limit 1
@@ -701,6 +703,7 @@ async fn provider_scalars_use_schema_qualified_text_casts_everywhere() {
                 event_date
                 local_time
                 address
+                big_id
               }
             }
         "#},

@@ -368,7 +368,7 @@ The `result` of `compile`/`filesChanged`:
   the document content between the backticks — so renderers that key
   generated types by source text slice it from the host by extractor
   authority instead of re-detecting anything (absent for plain `.dsql`
-  files and part of the manifest version 3 contract).
+  files and part of the current manifest contract).
 - `diagnostics` is a **complete snapshot at or above the initialized
   `diagnosticLevel` on every compile response** (success and `Diagnostics`
   failure). At the default `info` level, warnings and infos appear on success.

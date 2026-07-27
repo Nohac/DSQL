@@ -1,4 +1,4 @@
-export const BUILD_MANIFEST_VERSION = 3 as const;
+export const BUILD_MANIFEST_VERSION = 4 as const;
 
 export interface BuildManifest {
   version: number;

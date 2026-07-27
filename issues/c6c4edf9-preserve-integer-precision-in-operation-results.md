@@ -1,6 +1,6 @@
 # Preserve integer precision in operation results
 
-**ID:** c6c4edf9 | **Status:** Open | **Created:** 2026-07-26T11:48:49+02:00
+**ID:** c6c4edf9 | **Status:** Done | **Created:** 2026-07-26T11:48:49+02:00
 
 Integer inputs are constrained to the JSON-safe domain and rejected outside it
 (docs/spec/operation-execution.md). Results have no matching guarantee. `int2`,
@@ -26,3 +26,11 @@ Acceptance criteria:
 - Generated TypeScript for the affected fields matches the chosen encoding.
 - Execution tests cover a value beyond 2^53 in both a selected column and an
   aggregate result.
+
+## Resolution
+
+PostgreSQL `int8`/`bigint` and aggregate `count` use the distinct `bigint`
+logical type and `big_integer` wire encoding. Public results are decimal
+strings, inputs accept signed 64-bit decimal strings, and generated TypeScript
+uses `string`. Manifest version 4 makes the contract change explicit and older
+manifests are rejected.

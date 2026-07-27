@@ -89,6 +89,7 @@ JSON input encodings are:
 | `text` | string | runtime, before execution |
 | `timestamptz` | RFC 3339 string | runtime, before execution |
 | `integer` | integer number between `-9007199254740991` and `9007199254740991` | runtime, before execution |
+| `big_integer` | decimal string in the signed 64-bit range | runtime, before execution |
 | `numeric` | decimal string, preserving arbitrary precision | runtime, before execution |
 | `float` | finite number | runtime, before execution |
 | `boolean` | boolean | runtime, before execution |
@@ -121,19 +122,24 @@ A collection uses an array of the corresponding scalar encoding. Supplied
 collections may contain `null` elements; declaration collection defaults may
 not. The `int` range is the exact-integer domain of IEEE-754 doubles, which JSON
 numbers take when parsed by JavaScript. Both supplied values and declaration
-defaults outside it are rejected before database execution. Use `numeric` when
-an exact value outside that range is required.
+defaults outside it are rejected before database execution. PostgreSQL
+`int8`/`bigint` instead uses logical `bigint` and the `big_integer` wire: public
+inputs and declaration defaults are decimal strings from
+`-9223372036854775808` through `9223372036854775807`. PostgreSQL receives a
+native `int8` parameter after runtime validation. DSQL-authored predicate
+literals remain numeric source literals and may use the full signed 64-bit
+range.
 
 Input refinements determine requiredness, nullability, and defaults in emitted
 metadata. The maintained Rust and TypeScript materializers consume that same
 contract; adapters must not reinterpret it independently.
 
-Result metadata carries the same wire classification. `numeric` and
+Result metadata carries the same wire classification. `bigint`, `numeric`, and
 provider-defined `text_cast` scalars are explicitly cast to PostgreSQL `text`
 before JSON construction so host runtimes receive their exact public string
-representation. Other native encodings use PostgreSQL's ordinary JSON
-representation. Wide-integer result handling is specified separately from the
-JSON-safe integer input domain.
+representation. In particular, selected `int8` values and `count`/`min`/`max`
+results over `int8` never cross JSON as IEEE-754 numbers. Other native
+encodings use PostgreSQL's ordinary JSON representation.
 
 ## Test database
 

@@ -77,6 +77,16 @@
             "directions": []
           },
           {
+            "key": "wide_id",
+            "catalog_path": "public.readings.wide_id",
+            "data_type": "bigint",
+            "wire": { "encoding": "big_integer" },
+            "nullable": false,
+            "access": "unconditional",
+            "operators": ["eq", "in"],
+            "directions": []
+          },
+          {
             "key": "recorded_at",
             "catalog_path": "public.readings.recorded_at",
             "data_type": "timestamptz",
@@ -145,6 +155,25 @@
                     "name": "like",
                     "value_kind": "scalar",
                     "before_value": "u.name LIKE ",
+                    "cases": []
+                  }
+                ],
+                "directions": []
+              },
+              {
+                "key": "wide_id",
+                "operators": [
+                  {
+                    "name": "eq",
+                    "value_kind": "scalar",
+                    "before_value": "u.wide_id = ",
+                    "cases": []
+                  },
+                  {
+                    "name": "in",
+                    "value_kind": "collection",
+                    "before_value": "u.wide_id = ANY(",
+                    "after_value": ")",
                     "cases": []
                   }
                 ],
@@ -221,6 +250,25 @@
                     "name": "like",
                     "value_kind": "scalar",
                     "before_value": "u2.name LIKE ",
+                    "cases": []
+                  }
+                ],
+                "directions": []
+              },
+              {
+                "key": "wide_id",
+                "operators": [
+                  {
+                    "name": "eq",
+                    "value_kind": "scalar",
+                    "before_value": "u2.wide_id = ",
+                    "cases": []
+                  },
+                  {
+                    "name": "in",
+                    "value_kind": "collection",
+                    "before_value": "u2.wide_id = ANY(",
+                    "after_value": ")",
                     "cases": []
                   }
                 ],
@@ -380,6 +428,38 @@
       },
       "expected_sql": "select $1 where (u.amount = $2 AND u.recorded_at = $3) and (u2.amount = $2 AND u2.recorded_at = $3) order by NULL::integer",
       "expected_values": [7, "1.", "2024-02-29T23:59:59Z"]
+    },
+    {
+      "name": "bigint scalar and collection values retain decimal strings",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": {
+            "wide_id": {
+              "eq": "9223372036854775807",
+              "in": ["-9223372036854775808", "9223372036854775807"]
+            }
+          }
+        }
+      },
+      "expected_sql": "select $1 where (u.wide_id = $2 AND u.wide_id = ANY($3)) and (u2.wide_id = $2 AND u2.wide_id = ANY($3)) order by NULL::integer",
+      "expected_values": [
+        7,
+        "9223372036854775807",
+        ["-9223372036854775808", "9223372036854775807"]
+      ]
+    },
+    {
+      "name": "overflowing dynamic bigint is rejected",
+      "bindings": {
+        "params": {
+          "tenant": 7,
+          "search": {
+            "wide_id": { "eq": "9223372036854775808" }
+          }
+        }
+      },
+      "error": "params.search.wide_id.eq"
     },
     {
       "name": "unknown selected field is rejected",

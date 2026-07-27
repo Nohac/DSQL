@@ -334,7 +334,7 @@ async fn numeric_and_float_literals_follow_their_logical_types() {
 
 #[tokio::test]
 async fn integer_defaults_use_the_json_safe_number_domain() {
-    let bowl = checked_bowl(numeric_catalog()).await;
+    let bowl = checked_bowl(provider_scalar_catalog()).await;
     insert_source(
         &bowl,
         "integer-defaults.dsql",
@@ -343,20 +343,20 @@ async fn integer_defaults_use_the_json_safe_number_domain() {
               $$minimum = -9007199254740991
               $$maximum = 9007199254740991
             ) {
-              metrics(
-                where .exists >= $$minimum and .exists <= $$maximum
-              ) { exists }
+              events(
+                where .small_id >= $$minimum and .small_id <= $$maximum
+              ) { small_id }
             }
             query InvalidIntegerDefaults(
               $$below = -9007199254740992
               $$above = 9007199254740992
               $$values = [1, 9007199254740992]
             ) {
-              metrics(
-                where .exists == $$below
-                  or .exists == $$above
-                  or .exists in $$values
-              ) { exists }
+              events(
+                where .small_id == $$below
+                  or .small_id == $$above
+                  or .small_id in $$values
+              ) { small_id }
             }
         "#},
     )

@@ -1,0 +1,14 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+expression: wide_integer
+---
+{
+  "summary": {
+    "maximum": "9007199254740993"
+  },
+  "wide_integer_values": [
+    {
+      "value": "9007199254740993"
+    }
+  ]
+}

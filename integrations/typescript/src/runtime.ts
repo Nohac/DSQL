@@ -531,6 +531,8 @@ function validateDsqlDynamicScalar(
           ? typeof value === "string" && isDsqlRfc3339Timestamp(value)
       : wire === "integer"
         ? Number.isSafeInteger(value)
+        : wire === "big_integer"
+          ? isDsqlBigInteger(value)
         : wire === "float"
           ? typeof value === "number" && Number.isFinite(value)
           : wire === "numeric"
@@ -548,6 +550,17 @@ const DSQL_UUID =
 const DSQL_RFC_3339_TIMESTAMP =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
 const DSQL_NUMERIC = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+const DSQL_BIG_INTEGER = /^[+-]?\d+$/;
+const DSQL_I64_MIN = -(1n << 63n);
+const DSQL_I64_MAX = (1n << 63n) - 1n;
+
+function isDsqlBigInteger(value: unknown): value is string {
+  if (typeof value !== "string" || !DSQL_BIG_INTEGER.test(value)) {
+    return false;
+  }
+  const integer = BigInt(value);
+  return integer >= DSQL_I64_MIN && integer <= DSQL_I64_MAX;
+}
 
 function isDsqlRfc3339Timestamp(value: string): boolean {
   const match = DSQL_RFC_3339_TIMESTAMP.exec(value);
@@ -701,6 +714,8 @@ function validateDsqlScalar(field: DsqlInputField, value: unknown): void {
           ? typeof value === "string" && isDsqlRfc3339Timestamp(value)
           : wire === "integer"
             ? Number.isSafeInteger(value)
+            : wire === "big_integer"
+              ? isDsqlBigInteger(value)
             : wire === "float"
               ? typeof value === "number" && Number.isFinite(value)
               : wire === "numeric"

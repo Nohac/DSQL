@@ -68,15 +68,17 @@ from
             select
               JSON_BUILD_OBJECT(
                 'count',
-                COUNT(*),
+                CAST(COUNT(*) as text),
                 'visible',
-                COUNT(
-                  (
-                    case
-                      when ($3) then "info_stats_dc4bad77"."info"
-                      else null
-                    end
-                  )
+                CAST(
+                  COUNT(
+                    (
+                      case
+                        when ($3) then "info_stats_dc4bad77"."info"
+                        else null
+                      end
+                    )
+                  ) as text
                 ),
                 'first',
                 MIN(
@@ -202,7 +204,7 @@ from
               else null
             end
           ) as "title_group",
-          COUNT(*) as "count"
+          CAST(COUNT(*) as text) as "count"
         from
           "public"."title" as "grouped_272ef66c"
         group by

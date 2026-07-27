@@ -274,7 +274,7 @@ async fn aggregate_predicate_inputs_use_resolved_result_types_and_paths() {
         indoc::indoc! {r#"
             query AggregatePredicateInputs {
               title(
-                where (.movie_info_idx | count) >= $minimum
+                where (.movie_info_idx | count) >= $$minimum_posts
                   and (.movie_info_idx | min .info) >= $$earliest
                   and (.movie_info_idx | sum .info_type_id) >= $total
                 limit 1

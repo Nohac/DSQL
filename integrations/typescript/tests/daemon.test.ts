@@ -72,7 +72,7 @@ const EMPTY_RESULT = {
   changed: true,
   manifestPath: "dsql/build/manifest.1.json",
   currentManifestPath: "dsql/build/manifest.json",
-  manifest: { version: 3, generationId: 1, operations: [], fragments: [] },
+  manifest: { version: 4, generationId: 1, operations: [], fragments: [] },
   artifacts: [],
   groups: [],
   sourceFileScopes: [],

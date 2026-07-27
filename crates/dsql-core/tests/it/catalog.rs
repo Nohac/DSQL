@@ -147,6 +147,23 @@ fn render_resolution(catalog: &Catalog, reference: &str) -> String {
 }
 
 #[test]
+fn bigint_has_one_stable_serialized_name() {
+    let yaml = facet_yaml::to_string(&DataType::BigInt).expect("bigint serializes to YAML");
+    let json = facet_json::to_string(&DataType::BigInt).expect("bigint serializes to JSON");
+
+    assert_eq!(yaml.trim(), "---\nbigint");
+    assert_eq!(json, "\"bigint\"");
+    assert_eq!(
+        facet_yaml::from_str::<DataType>(&yaml).expect("bigint parses from YAML"),
+        DataType::BigInt
+    );
+    assert_eq!(
+        facet_json::from_str::<DataType>(&json).expect("bigint parses from JSON"),
+        DataType::BigInt
+    );
+}
+
+#[test]
 fn unqualified_tables_resolve_across_visible_schemas() {
     let catalog = Catalog::hardcoded().with_default_schema("other_schema");
     let rendered = [
@@ -401,6 +418,16 @@ fn catalog_type_arena_rejects_invalid_metadata() {
     )
     .to_catalog()
     .expect_err("strict metadata rejects a logical mismatch");
+    let stale_bigint = metadata(
+        vec![column(
+            "value",
+            TypeKey::new("pg_catalog", "int8"),
+            DataType::Int,
+        )],
+        vec![provider_type("pg_catalog", "int8")],
+    )
+    .to_catalog()
+    .expect_err("an int8 cache from the old logical contract is rejected");
     let fixture_conflict = metadata(
         vec![
             column("first", TypeKey::new("fixture", "value"), DataType::Text),
@@ -411,7 +438,9 @@ fn catalog_type_arena_rejects_invalid_metadata() {
     .to_catalog()
     .expect_err("fixture synthesis rejects conflicting logical types");
 
-    insta::assert_snapshot!(format!("{missing}\n{mismatch}\n{fixture_conflict}"));
+    insta::assert_snapshot!(format!(
+        "{missing}\n{mismatch}\n{stale_bigint}\n{fixture_conflict}"
+    ));
 }
 
 #[test]

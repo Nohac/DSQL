@@ -165,16 +165,17 @@ Initial function semantics:
 
 | Form | Meaning | Empty input | Logical type | Nullable |
 |---|---|---|---|---|
-| `count` | Count source rows, like `count(*)` | `0` | `int` | no |
-| `count .field` | Count non-null field values | `0` | `int` | no |
+| `count` | Count source rows, like `count(*)` | `"0"` | `bigint` | no |
+| `count .field` | Count non-null field values | `"0"` | `bigint` | no |
 | `exists` | Whether at least one source row exists | `false` | `boolean` | no |
 | `min .field` | Minimum field value | `null` | field type | yes |
 | `max .field` | Maximum field value | `null` | field type | yes |
 | `sum .field` | Sum numeric values | `null` | `numeric`, or `float` for float operands | yes |
 | `avg .field` | Average numeric values | `null` | `numeric`, or `float` for float operands | yes |
 
-PostgreSQL returns `bigint` for both count forms. They use dsql's current
-logical `int` contract, including its existing host-number precision limits.
+PostgreSQL returns `bigint` for both count forms. DSQL exposes that as an exact
+decimal string on the `big_integer` wire, including in aggregate predicate
+inputs.
 
 `count` and `exists` infer the output keys `count` and `exists`. Operand forms
 require an explicit alias in the first implementation; the compiler does not
@@ -191,12 +192,11 @@ source. Relationship traversal, parent/root anchors, and object-valued operands
 are diagnostics. Each function accepts only operand types supported by the
 selected database provider.
 
-`count .field` accepts any scalar column. The `min` and `max` allowlist is
-`int`, `text`, and `timestamptz`. `sum` and `avg` accept `int`, `numeric`, and
-`float`. Exact `int` and `numeric` operands produce logical `numeric`; float
-operands produce logical `float`. Operand forms require aliases. `boolean`,
-`json`, `uuid`, and `unknown` are diagnostics until provider capability
-metadata explicitly supports them.
+`count .field` accepts any scalar column. `min` and `max` preserve the
+operand's logical type, including `bigint`; supported functions come from the
+effective provider capabilities. `sum` and `avg` widen integer and bigint
+operands to logical `numeric`, while float operands produce logical `float`.
+Operand forms require aliases.
 
 ### Numeric And Float Wire Types
 
@@ -209,10 +209,10 @@ them through a JSON or JavaScript number. Numeric inputs use the same string
 contract; PostgreSQL infers or receives the target numeric type from the
 expression in which the parameter is used.
 
-`sum` also exposes integer operands as logical `numeric`: PostgreSQL widens
-integer sums, and the result may exceed JavaScript's exact integer range even
-when every input value fits. Keeping the widened result on the lossless string
-wire contract avoids silently rounding valid sums.
+`sum` also exposes integer and bigint operands as logical `numeric`: PostgreSQL
+widens integer sums, and the result may exceed JavaScript's exact integer range
+even when every input value fits. Keeping the widened result on the lossless
+string wire contract avoids silently rounding valid sums.
 
 PostgreSQL `real`/`float4` and `double precision`/`float8` use the distinct
 logical `float` type. Finite values remain JSON numbers. PostgreSQL serializes

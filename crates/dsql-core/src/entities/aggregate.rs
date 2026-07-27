@@ -626,7 +626,7 @@ pub(crate) fn resolve_aggregate_value(
             if let Some(operand) = operand {
                 resolve_value_operand(catalog, table, operand, &mut resolved, problems);
             }
-            resolved.data_type = Some(DataType::Int);
+            resolved.data_type = Some(DataType::BigInt);
         }
         AggregateFunction::Exists => {
             resolved.data_type = Some(DataType::Boolean);

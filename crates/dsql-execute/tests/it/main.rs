@@ -13,6 +13,7 @@ fn wire(data_type: &str) -> WireMetadata {
     WireMetadata {
         encoding: match data_type {
             "int" => "integer",
+            "bigint" => "big_integer",
             "dynamic_predicate" | "dynamic_order" => "unsupported",
             other => other,
         }

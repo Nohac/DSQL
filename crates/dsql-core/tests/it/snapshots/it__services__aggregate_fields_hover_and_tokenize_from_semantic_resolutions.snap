@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/services.rs
 expression: "format!(\"count: {}\\nalias: {}\\nfunction: {}\\noperand: {}\\ngroup alias: {}\\ngroup column: {}\\n\\ntokens:\\n{tokens}\",\nhover(&bowl, count).await, hover(&bowl, alias).await,\nhover(&bowl, function).await, hover(&bowl, operand).await,\nhover(&bowl, group_alias).await, hover(&bowl, group_column).await,)"
 ---
-count: aggregate function `count`: int
+count: aggregate function `count`: bigint
 alias: aggregate field `first_name`: text (nullable)
 function: aggregate function `min`: text (nullable)
 operand: column `name`: text (not null)

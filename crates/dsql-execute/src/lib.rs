@@ -695,6 +695,7 @@ fn validate_dynamic_scalar(
             string_value(value).is_some_and(|value| DateTime::parse_from_rfc3339(value).is_ok())
         }
         "integer" => integer_value(value).is_some_and(is_safe_integer),
+        "big_integer" => big_integer_value(value).is_some(),
         "numeric" => string_value(value).is_some_and(|value| BigDecimal::from_str(value).is_ok()),
         "float" => float_value(value).is_some_and(f64::is_finite),
         "boolean" => value.as_bool().is_some(),
@@ -831,6 +832,7 @@ fn input_scalar_is_valid(field: &InputField, value: &Value) -> bool {
         "timestamptz" => {
             string_value(value).is_some_and(|value| DateTime::parse_from_rfc3339(value).is_ok())
         }
+        "big_integer" => big_integer_value(value).is_some(),
         "numeric" => string_value(value).is_some_and(|value| BigDecimal::from_str(value).is_ok()),
         "float" => float_value(value).is_some(),
         "boolean" => value.as_bool().is_some(),
@@ -978,6 +980,7 @@ fn bind_scalar<'q>(
                 .map_err(|_| error())?,
         )),
         "integer" => Ok(query.bind(integer_value(value).ok_or_else(error)?)),
+        "big_integer" => Ok(query.bind(big_integer_value(value).ok_or_else(error)?)),
         "numeric" => Ok(query.bind(
             BigDecimal::from_str(string_value(value).ok_or_else(error)?).map_err(|_| error())?,
         )),
@@ -1001,6 +1004,7 @@ fn bind_null_scalar<'q>(
         "text_cast" => Ok(query.bind(None::<String>)),
         "timestamptz" => Ok(query.bind(None::<DateTime<FixedOffset>>)),
         "integer" => Ok(query.bind(None::<i64>)),
+        "big_integer" => Ok(query.bind(None::<i64>)),
         "numeric" => Ok(query.bind(None::<BigDecimal>)),
         "float" => Ok(query.bind(None::<f64>)),
         "boolean" => Ok(query.bind(None::<bool>)),
@@ -1073,6 +1077,9 @@ fn bind_collection<'q>(
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
+        "big_integer" => {
+            Ok(query.bind(parse_strings(values, str::parse::<i64>).ok_or_else(error)?))
+        }
         "numeric" => Ok(query.bind(parse_strings(values, BigDecimal::from_str).ok_or_else(error)?)),
         "float" => Ok(query.bind(
             values
@@ -1127,6 +1134,7 @@ fn bind_null_collection<'q>(
         "text_cast" => Ok(query.bind(None::<Vec<Option<String>>>)),
         "timestamptz" => Ok(query.bind(None::<Vec<Option<DateTime<FixedOffset>>>>)),
         "integer" => Ok(query.bind(None::<Vec<Option<i64>>>)),
+        "big_integer" => Ok(query.bind(None::<Vec<Option<i64>>>)),
         "numeric" => Ok(query.bind(None::<Vec<Option<BigDecimal>>>)),
         "float" => Ok(query.bind(None::<Vec<Option<f64>>>)),
         "boolean" => Ok(query.bind(None::<Vec<Option<bool>>>)),
@@ -1165,6 +1173,10 @@ fn integer_value(value: &Value) -> Option<i64> {
         .as_number()
         .filter(|value| value.is_integer())
         .and_then(|value| value.to_i64())
+}
+
+fn big_integer_value(value: &Value) -> Option<i64> {
+    string_value(value)?.parse().ok()
 }
 
 fn is_safe_integer(value: i64) -> bool {

@@ -37,7 +37,7 @@ Timestamptz
 
 Int
   name: int
-  aliases: [int, int2, int4, int8, integer, smallint, bigint]
+  aliases: [int, int2, int4, integer, smallint]
   description: integer
   wire: Integer
   operators: [==, !=, >, >=, <, <=]
@@ -45,6 +45,17 @@ Int
   literals: [number] / Integer / number
   defaults: [number] / SafeInteger / safe integer
   aggregates: min=int max=int sum=numeric avg=numeric
+
+BigInt
+  name: bigint
+  aliases: [bigint, int8]
+  description: 64-bit integer
+  wire: BigInteger
+  operators: [==, !=, >, >=, <, <=]
+  orderable: true
+  literals: [number] / Integer / integer
+  defaults: [string] / Integer / signed 64-bit integer string
+  aggregates: min=bigint max=bigint sum=numeric avg=numeric
 
 Numeric
   name: numeric

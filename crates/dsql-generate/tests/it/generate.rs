@@ -68,6 +68,14 @@ columns:
     database_type: inet
     data_type: unknown
     not_null: true
+  - name: big_id
+    provider_type:
+      schema: pg_catalog
+      name: int8
+    formatted_type: bigint
+    database_type: int8
+    data_type: bigint
+    not_null: true
 constraints: []
 foreign_keys: []
 indexes: []
@@ -187,7 +195,11 @@ fn provider_scalar_catalog() -> Catalog {
                     .expect("provider scalar table parses"),
             ],
         }],
-        types: vec![provider_type("date", "D"), provider_type("inet", "I")],
+        types: vec![
+            provider_type("date", "D"),
+            provider_type("inet", "I"),
+            provider_type("int8", "N"),
+        ],
     }
     .to_catalog()
     .expect("provider scalar catalog builds")
@@ -721,7 +733,7 @@ async fn provider_scalar_wire_identity_flows_through_generated_metadata() {
         provider_scalar_catalog(),
         vec![document(
             "queries/frontend/events.dsql",
-            "query Events { events(where .event_date == $$date) { event_date } }",
+            "query Events { events(where .event_date == $$date and .big_id >= $$minimum_big_id) { event_date big_id } }",
             "frontend",
         )],
         BTreeMap::new(),

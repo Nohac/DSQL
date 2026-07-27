@@ -34,7 +34,7 @@ from
   (
     select
       "edge_26e19395"."name" as "key",
-      COUNT(*) as "count"
+      CAST(COUNT(*) as text) as "count"
     from
       "public"."users" as "edge_26e19395"
     group by
@@ -59,7 +59,7 @@ from
   (
     select
       "edge_26e19395"."email" as "key",
-      COUNT(*) as "count"
+      CAST(COUNT(*) as text) as "count"
     from
       "public"."users" as "edge_26e19395"
     group by

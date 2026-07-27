@@ -1,7 +1,8 @@
 ---
 source: crates/dsql-core/tests/it/catalog.rs
-expression: "format!(\"{missing}\\n{mismatch}\\n{fixture_conflict}\")"
+expression: "format!(\"{missing}\\n{mismatch}\\n{stale_bigint}\\n{fixture_conflict}\")"
 ---
 column `public.records.value` references missing provider type `pg_catalog.uuid`; rerun `dsql introspect`
 column `public.records.value` declares logical type `uuid` but provider type `pg_catalog.text` maps to `text`; rerun `dsql introspect`
+column `public.records.value` declares logical type `int` but provider type `pg_catalog.int8` maps to `bigint`; rerun `dsql introspect`
 provider type `fixture.value` has conflicting fixture logical types `text` and `uuid`

@@ -277,6 +277,8 @@ pub enum DataType {
     Text,
     Timestamptz,
     Int,
+    #[facet(rename = "bigint")]
+    BigInt,
     Numeric,
     Float,
     Boolean,
@@ -708,11 +710,12 @@ impl CatalogType {
 }
 
 impl DataType {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Uuid,
         Self::Text,
         Self::Timestamptz,
         Self::Int,
+        Self::BigInt,
         Self::Numeric,
         Self::Float,
         Self::Boolean,

@@ -170,7 +170,7 @@ from
   ) as "root_3"
   cross join (
     select
-      TO_JSON(COUNT(*)) as "kind_count",
+      TO_JSON(CAST(COUNT(*) as text)) as "kind_count",
       TO_JSON(MIN("kind_type_639d6b68"."kind")) as "first_kind"
     from
       "public"."kind_type" as "kind_type_639d6b68"

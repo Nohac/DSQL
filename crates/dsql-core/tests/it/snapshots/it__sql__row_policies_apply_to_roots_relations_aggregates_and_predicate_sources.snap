@@ -85,7 +85,7 @@ from
       ) as "movie_info_idx_json_3575fa4a" on true
       left join LATERAL (
         select
-          JSON_BUILD_OBJECT('count', COUNT(*)) as "info_count_result_545a6d83"
+          JSON_BUILD_OBJECT('count', CAST(COUNT(*) as text)) as "info_count_result_545a6d83"
         from
           "public"."movie_info_idx" as "info_count_545a6d83"
         where

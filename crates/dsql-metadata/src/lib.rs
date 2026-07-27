@@ -2,9 +2,8 @@ use facet::Facet;
 
 const BUILD_MANIFEST_SCHEMA_ID: &str = "https://dsql.dev/schemas/build-manifest.schema.json";
 
-/// Manifest format version 3: provider wire encodings and fragment-spread
-/// provenance are required in every artifact.
-pub const BUILD_MANIFEST_VERSION: u32 = 3;
+/// Manifest format version 4: wide integers use an exact decimal-string wire.
+pub const BUILD_MANIFEST_VERSION: u32 = 4;
 const JSON_SCHEMA_DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
 #[derive(Debug, Facet)]
@@ -318,7 +317,7 @@ pub struct SourceMapEntry {
     /// capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
     /// offsets into the host file; identical across definitions from the
     /// same embedded expression. Required for embedded sources in manifest
-    /// version 3; absent for standalone `.dsql` sources.
+    /// version 4; absent for standalone `.dsql` sources.
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub content_range: Option<SourceRange>,
 }

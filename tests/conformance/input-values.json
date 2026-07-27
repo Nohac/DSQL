@@ -93,6 +93,115 @@
     "expected": null
   },
   {
+    "name": "minimum bigint",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": "-9223372036854775808" } },
+    "expected": "-9223372036854775808"
+  },
+  {
+    "name": "maximum bigint",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": "9223372036854775807" } },
+    "expected": "9223372036854775807"
+  },
+  {
+    "name": "bigint collection with null member",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "collection": true,
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": {
+      "params": {
+        "value": ["-9223372036854775808", null, "9223372036854775807"]
+      }
+    },
+    "expected": ["-9223372036854775808", null, "9223372036854775807"]
+  },
+  {
+    "name": "bigint overflow",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": "9223372036854775808" } },
+    "error": "valid bigint"
+  },
+  {
+    "name": "bigint decimal",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": "1.0" } },
+    "error": "valid bigint"
+  },
+  {
+    "name": "bigint leading whitespace",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": " 1" } },
+    "error": "valid bigint"
+  },
+  {
+    "name": "empty bigint",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": "" } },
+    "error": "valid bigint"
+  },
+  {
+    "name": "bigint rejects json number",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": 1 } },
+    "error": "valid bigint"
+  },
+  {
     "name": "provider text cast",
     "field": {
       "path": "params.value",

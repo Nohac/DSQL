@@ -1083,6 +1083,8 @@ function dataType(type: string): string {
       return "boolean";
     case "int":
       return "number";
+    case "bigint":
+      return "string";
     case "float":
       return FLOAT_TS_TYPE;
     case "numeric":

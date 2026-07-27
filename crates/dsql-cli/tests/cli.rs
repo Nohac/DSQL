@@ -49,13 +49,6 @@ fn field<'a>(value: &'a Value, name: &str) -> &'a Value {
         .expect("JSON object has expected field")
 }
 
-fn integer(value: &Value) -> i64 {
-    value
-        .as_number()
-        .and_then(|number| number.to_i64())
-        .expect("JSON value is an integer")
-}
-
 fn string(value: &Value) -> &str {
     value
         .as_string()
@@ -63,23 +56,23 @@ fn string(value: &Value) -> &str {
         .expect("JSON value is a string")
 }
 
-fn observatory_reading_ids(output: &str) -> Vec<i64> {
+fn observatory_reading_ids(output: &str) -> Vec<String> {
     let output = output_json(output);
     field(field(&output, "sensors"), "readings")
         .as_array()
         .expect("sensor reading window")
         .iter()
-        .map(|reading| integer(field(reading, "id")))
+        .map(|reading| string(field(reading, "id")).to_string())
         .collect()
 }
 
-fn observatory_root_reading_ids(output: &str) -> Vec<i64> {
+fn observatory_root_reading_ids(output: &str) -> Vec<String> {
     let output = output_json(output);
     field(&output, "readings")
         .as_array()
         .expect("root reading collection")
         .iter()
-        .map(|reading| integer(field(reading, "id")))
+        .map(|reading| string(field(reading, "id")).to_string())
         .collect()
 }
 
@@ -251,6 +244,7 @@ fn observatory_operation_list_exposes_importing_scopes() {
             "analytics\tFlatReadingSummary",
             "analytics\tReadingSummary",
             "api\tContainedSensorWindow",
+            "api\tCountPredicate",
             "api\tDynamicReadingSearch",
             "api\tEmptyAggregateCount",
             "api\tEmptyAggregateMinimum",
@@ -266,6 +260,7 @@ fn observatory_operation_list_exposes_importing_scopes() {
             "api\tPrivacyProbe",
             "api\tRecentReadings",
             "api\tTypedReading",
+            "api\tWideIntegerPrecision",
         ]
     );
 
@@ -427,7 +422,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         .expect("visible confidence groups");
     assert_eq!(visible_groups.len(), 5);
     assert!(visible_groups.iter().any(|group| {
-        field(group, "confidence").is_null() && integer(field(group, "count")) == 2
+        field(group, "confidence").is_null() && string(field(group, "count")) == "2"
     }));
 
     let hidden_groups = execute_observatory(
@@ -439,7 +434,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
     );
     assert_eq!(
         field(&output_json(&hidden_groups), "readings"),
-        &value!([{"confidence": null, "count": 6}])
+        &value!([{"confidence": null, "count": "6"}])
     );
 
     let unfiltered = execute_observatory(
@@ -450,8 +445,8 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         &["--context", tenant],
     );
     assert_eq!(
-        integer(field(field(&output_json(&unfiltered), "readings"), "id")),
-        2
+        string(field(field(&output_json(&unfiltered), "readings"), "id")),
+        "2"
     );
 
     let filtered = execute_observatory(
@@ -467,8 +462,8 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         ],
     );
     assert_eq!(
-        integer(field(field(&output_json(&filtered), "readings"), "id")),
-        4
+        string(field(field(&output_json(&filtered), "readings"), "id")),
+        "4"
     );
 
     let optional_absent = execute_observatory(
@@ -478,7 +473,10 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         "OptionalPredicateProbe",
         &["--context", tenant],
     );
-    assert_eq!(observatory_root_reading_ids(&optional_absent), [4, 8, 12]);
+    assert_eq!(
+        observatory_root_reading_ids(&optional_absent),
+        ["4", "8", "12"]
+    );
 
     let optional_present = execute_observatory(
         &observatory,
@@ -487,14 +485,14 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         "OptionalPredicateProbe",
         &[
             "--variables",
-            r#"{"params":{"minimum":10}}"#,
+            r#"{"params":{"minimum":"10"}}"#,
             "--context",
             tenant,
         ],
     );
     assert_eq!(
         observatory_root_reading_ids(&optional_present),
-        [4, 8, 10, 12]
+        ["4", "8", "10", "12"]
     );
 
     let optional_like = execute_observatory(
@@ -524,12 +522,12 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         "DynamicReadingSearch",
         &[
             "--variables",
-            r#"{"params":{"search":{"flagged":{"eq":true}},"indexed_search":{"id":{"gte":4}},"selected_indexed_search":{"id":{"lte":12}},"order":[{"id":"desc"}],"indexed_order":[{"tenant_id":"asc"}],"sensor_search":{"code":{"like":"temp%"}},"sensor_order":[{"code":"asc"}]}}"#,
+            r#"{"params":{"search":{"flagged":{"eq":true}},"indexed_search":{"id":{"gte":"4"}},"selected_indexed_search":{"id":{"lte":"12"}},"order":[{"id":"desc"}],"indexed_order":[{"tenant_id":"asc"}],"sensor_search":{"code":{"like":"temp%"}},"sensor_order":[{"code":"asc"}]}}"#,
             "--context",
             visible,
         ],
     );
-    assert_eq!(observatory_root_reading_ids(&dynamic), [12, 8, 4]);
+    assert_eq!(observatory_root_reading_ids(&dynamic), ["12", "8", "4"]);
     assert_eq!(
         string(field(
             field(&output_json(&dynamic), "matching_sensors"),
@@ -550,7 +548,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
             operation,
             &["--context", visible],
         );
-        assert_eq!(observatory_reading_ids(&window), [12, 10]);
+        assert_eq!(observatory_reading_ids(&window), ["12", "10"]);
     }
 
     let uncapped = execute_observatory(
@@ -579,7 +577,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
             visible,
         ],
     );
-    assert_eq!(observatory_reading_ids(&namespaced), [4, 6]);
+    assert_eq!(observatory_reading_ids(&namespaced), ["4", "6"]);
 
     let mapped = execute_observatory(
         &observatory,
@@ -593,7 +591,7 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
             visible,
         ],
     );
-    assert_eq!(observatory_reading_ids(&mapped), [4, 6]);
+    assert_eq!(observatory_reading_ids(&mapped), ["4", "6"]);
 
     let empty_count = execute_observatory(
         &observatory,
@@ -620,6 +618,32 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         ],
     );
     assert!(field(&output_json(&empty_minimum), "sensors").is_null());
+
+    let wide_integer = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "WideIntegerPrecision",
+        &[],
+    );
+    insta::assert_snapshot!("observatory_wide_integer_precision", wide_integer);
+
+    let count_predicate = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "CountPredicate",
+        &[
+            "--variables",
+            r#"{"params":{"minimum_posts":"2"}}"#,
+            "--context",
+            tenant,
+        ],
+    );
+    assert!(
+        !field(&output_json(&count_predicate), "sensors").is_null(),
+        "a bigint string binds into an aggregate count predicate"
+    );
 
     let missing_flattened = execute_observatory(
         &observatory,

@@ -12,9 +12,9 @@ from
     select
       JSON_BUILD_OBJECT(
         'count',
-        COUNT(*),
+        CAST(COUNT(*) as text),
         'populated_email',
-        COUNT("stats_fdeedab3"."email"),
+        CAST(COUNT("stats_fdeedab3"."email") as text),
         'any',
         COUNT(*) > 0,
         'first_name',
@@ -46,7 +46,7 @@ from
       (
         select
           "by_email_74e58642"."email" as "email_group",
-          COUNT(*) as "count",
+          CAST(COUNT(*) as text) as "count",
           MIN("by_email_74e58642"."created_at") as "earliest_signup"
         from
           "public"."users" as "by_email_74e58642"
@@ -82,7 +82,7 @@ from
         select
           JSON_BUILD_OBJECT(
             'count',
-            COUNT(*),
+            CAST(COUNT(*) as text),
             'latest',
             MAX("post_stats_f1ab13d3"."created_at")
           ) as "post_stats_result_f1ab13d3"
@@ -111,7 +111,7 @@ from
           (
             select
               "post_groups_412749f0"."title" as "title_group",
-              COUNT(*) as "count",
+              CAST(COUNT(*) as text) as "count",
               MAX("post_groups_412749f0"."created_at") as "latest"
             from
               "public"."posts" as "post_groups_412749f0"

@@ -57,7 +57,7 @@ from
         select
           CAST("groups_ddd104a7"."amount" as text) as "amount_group",
           "groups_ddd104a7"."ratio" as "ratio_group",
-          COUNT(*) as "count",
+          CAST(COUNT(*) as text) as "count",
           CAST(SUM("groups_ddd104a7"."amount") as text) as "total_amount",
           AVG("groups_ddd104a7"."ratio") as "average_ratio"
         from

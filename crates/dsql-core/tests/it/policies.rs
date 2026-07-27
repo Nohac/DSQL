@@ -153,7 +153,8 @@ async fn structural_policy_types_accept_builtin_aliases_only() {
         &bowl,
         "type-aliases.dsql",
         indoc::indoc! {r#"
-            filter CanonicalInt on { .integer_value: int } { where true }
+            filter CanonicalBigInt on { .integer_value: bigint } { where true }
+            filter WrongWidth on { .integer_value: int } { where true }
             filter CanonicalFloat on { .float_value: float } { where true }
             filter DatabaseInt on { .integer_value: int8 } { where true }
             filter DatabaseText on { .text_value: varchar } { where true }

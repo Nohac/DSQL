@@ -8,13 +8,13 @@ select
     JSON_AGG(
       JSON_BUILD_OBJECT(
         'exists',
-        "metrics_b773e828"."exists",
+        CAST("metrics_b773e828"."exists" as text),
         'in',
-        "metrics_b773e828"."exists",
+        CAST("metrics_b773e828"."exists" as text),
         'is',
-        "metrics_b773e828"."is",
+        CAST("metrics_b773e828"."is" as text),
         'not',
-        "metrics_b773e828"."not"
+        CAST("metrics_b773e828"."not" as text)
       )
       order by
         "metrics_b773e828"."exists" asc

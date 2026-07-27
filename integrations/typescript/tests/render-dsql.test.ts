@@ -236,7 +236,7 @@ test("renders bounded dynamic input types and server execution metadata", async 
   expect(source).not.toContain("dynamic_inputs:");
 });
 
-test("renders exact numeric and finite/non-finite float wire types", async () => {
+test("renders exact numeric, bigint, and finite/non-finite float wire types", async () => {
   const root = createRoot();
   const operation = {
     ...operationMetadata("NumericMetrics"),
@@ -266,6 +266,14 @@ test("renders exact numeric and finite/non-finite float wire types", async () =>
           data_type: "float",
           nullable: true,
         },
+        {
+          path: "metrics.reading_count",
+          name: "reading_count",
+          parent_path: "metrics",
+          kind: "scalar",
+          data_type: "bigint",
+          nullable: false,
+        },
       ],
     },
     params: [
@@ -291,6 +299,21 @@ test("renders exact numeric and finite/non-finite float wire types", async () =>
         required: true,
         nullable: false,
       },
+      {
+        path: "params.minimum_count",
+        data_type: "bigint",
+        enum_values: [],
+        required: true,
+        nullable: false,
+      },
+      {
+        path: "params.counts",
+        data_type: "bigint",
+        collection: true,
+        enum_values: [],
+        required: true,
+        nullable: false,
+      },
     ],
   };
   const artifacts = {
@@ -309,6 +332,7 @@ test("renders exact numeric and finite/non-finite float wire types", async () =>
   );
 
   expect(rendered).toContain("amount: string;");
+  expect(rendered).toContain("reading_count: string;");
   expect(rendered).toContain(
     'ratio: number | "NaN" | "Infinity" | "-Infinity" | null;',
   );
@@ -317,6 +341,8 @@ test("renders exact numeric and finite/non-finite float wire types", async () =>
     'threshold: number | "NaN" | "Infinity" | "-Infinity";',
   );
   expect(rendered).toContain("amounts: Array<string | null>;");
+  expect(rendered).toContain("minimum_count: string;");
+  expect(rendered).toContain("counts: Array<string | null>;");
 });
 
 test("renders defaulted and nullable inputs as optional TypeScript properties", async () => {
@@ -1005,7 +1031,7 @@ function createArtifacts(
     sourceFileScopes: [],
     artifactGroups: [],
     manifest: {
-      version: 3,
+      version: 4,
       generationId: 1,
       operations: operations.map((operation) => ({
         name: operation.name,

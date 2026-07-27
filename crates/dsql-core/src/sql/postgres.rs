@@ -2048,7 +2048,10 @@ fn json_build_object(fields: Vec<(String, Expr)>) -> Expr {
 /// Exact and provider-defined scalars cross the JSON boundary as text so host
 /// runtimes never reinterpret their representation.
 fn public_scalar_expression(expression: Expr, wire: WireEncoding) -> Expr {
-    if matches!(wire, WireEncoding::Numeric | WireEncoding::TextCast) {
+    if matches!(
+        wire,
+        WireEncoding::BigInteger | WireEncoding::Numeric | WireEncoding::TextCast
+    ) {
         expression.cast_as(Alias::new("text"))
     } else {
         expression

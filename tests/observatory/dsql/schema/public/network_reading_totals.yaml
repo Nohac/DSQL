@@ -23,5 +23,5 @@ columns:
       schema: pg_catalog
       name: int8
     database_type: int8
-    data_type: int
+    data_type: bigint
     not_null: false

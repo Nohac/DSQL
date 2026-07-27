@@ -2,7 +2,7 @@
 source: crates/dsql-cli/tests/cli.rs
 expression: stdout(&typescript)
 ---
-export const BUILD_MANIFEST_VERSION = 3 as const;
+export const BUILD_MANIFEST_VERSION = 4 as const;
 
 export interface BuildManifest {
   version: number;
@@ -57,7 +57,7 @@ export interface SourceMapEntry {
    * capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
    * offsets into the host file; identical across definitions from the
    * same embedded expression. Required for embedded sources in manifest
-   * version 3; absent for standalone `.dsql` sources.
+   * version 4; absent for standalone `.dsql` sources.
    */
   content_range?: SourceRange;
 }
@@ -263,7 +263,7 @@ export interface SourceMapEntry {
    * capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
    * offsets into the host file; identical across definitions from the
    * same embedded expression. Required for embedded sources in manifest
-   * version 3; absent for standalone `.dsql` sources.
+   * version 4; absent for standalone `.dsql` sources.
    */
   content_range?: SourceRange;
 }

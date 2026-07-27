@@ -17,7 +17,9 @@ from
         'local_time',
         CAST("events_cc4ff0da"."local_time" as text),
         'address',
-        CAST("events_cc4ff0da"."address" as text)
+        CAST("events_cc4ff0da"."address" as text),
+        'big_id',
+        CAST("events_cc4ff0da"."big_id" as text)
       ) as "events"
     from
       "public"."events" as "events_cc4ff0da"
@@ -29,6 +31,8 @@ from
         and (
           "events_cc4ff0da"."address" = ANY((($4)::text[])::"pg_catalog"."inet"[])
         )
+        and "events_cc4ff0da"."big_id" >= ($5)
+        and "events_cc4ff0da"."big_id" <= 9223372036854775807
         and ({{dynamic:0}})
       )
     order by
@@ -36,7 +40,7 @@ from
     limit
       1
   ) as "root" on true
--- parameters: context.trusted_address, params.date, params.start, params.addresses
+-- parameters: context.trusted_address, params.date, params.start, params.addresses, params.minimum_big_id
 
 -- dynamic casts
 address.eq: ("events_cc4ff0da"."address") = ((<value>)::text)::"pg_catalog"."inet"
@@ -47,6 +51,14 @@ address.lt: ("events_cc4ff0da"."address") < ((<value>)::text)::"pg_catalog"."ine
 address.lte: ("events_cc4ff0da"."address") <= ((<value>)::text)::"pg_catalog"."inet"
 address.in: ("events_cc4ff0da"."address") = ANY(((<value>)::text[])::"pg_catalog"."inet"[])
 address.not_in: ("events_cc4ff0da"."address") <> ALL(((<value>)::text[])::"pg_catalog"."inet"[])
+big_id.eq: ("events_cc4ff0da"."big_id") = <value>
+big_id.neq: ("events_cc4ff0da"."big_id") != <value>
+big_id.gt: ("events_cc4ff0da"."big_id") > <value>
+big_id.gte: ("events_cc4ff0da"."big_id") >= <value>
+big_id.lt: ("events_cc4ff0da"."big_id") < <value>
+big_id.lte: ("events_cc4ff0da"."big_id") <= <value>
+big_id.in: ("events_cc4ff0da"."big_id") = ANY(<value>)
+big_id.not_in: ("events_cc4ff0da"."big_id") <> ALL(<value>)
 event_date.eq: ("events_cc4ff0da"."event_date") = ((<value>)::text)::"pg_catalog"."date"
 event_date.neq: ("events_cc4ff0da"."event_date") != ((<value>)::text)::"pg_catalog"."date"
 event_date.gt: ("events_cc4ff0da"."event_date") > ((<value>)::text)::"pg_catalog"."date"

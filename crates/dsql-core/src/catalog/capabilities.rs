@@ -1,9 +1,10 @@
-//! Compiler-owned fallback semantics for built-in logical types.
+//! Compiler-owned semantics for built-in logical types.
 //!
-//! Provider introspection replaces these assertions in issue 4b1e4216. Until
-//! then this table is the single source for per-type behavior. Canonical DSQL
-//! names and PostgreSQL input names are kept separately so policy declarations
-//! accept both without widening [`DataType::from_database_type`].
+//! Provider introspection derives effective operators, ordering, and text-cast
+//! support. This table remains the single source for canonical wire, literal,
+//! default, and aggregate behavior. Canonical DSQL names and PostgreSQL input
+//! names are kept separately so policy declarations accept both without
+//! widening [`DataType::from_database_type`].
 
 use facet::Facet;
 use std::collections::BTreeSet;
@@ -35,6 +36,7 @@ pub enum WireEncoding {
     Text,
     Timestamptz,
     Integer,
+    BigInteger,
     Numeric,
     Float,
     Boolean,
@@ -52,6 +54,7 @@ impl WireEncoding {
             Self::Text => "text",
             Self::Timestamptz => "timestamptz",
             Self::Integer => "integer",
+            Self::BigInteger => "big_integer",
             Self::Numeric => "numeric",
             Self::Float => "float",
             Self::Boolean => "boolean",
@@ -242,7 +245,7 @@ const MIN_MAX: AggregateCapabilities = AggregateCapabilities {
     average: None,
 };
 
-static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
+static BUILTIN_TYPES: [BuiltinTypeDefinition; 10] = [
     BuiltinTypeDefinition {
         data_type: DataType::Uuid,
         name: "uuid",
@@ -294,7 +297,7 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
     BuiltinTypeDefinition {
         data_type: DataType::Int,
         name: "int",
-        database_names: &["int2", "int4", "int8", "integer", "smallint", "bigint"],
+        database_names: &["int2", "int4", "integer", "smallint"],
         description: "integer",
         wire: WireEncoding::Integer,
         operators: ORDERED,
@@ -305,6 +308,27 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
         default_kinds: NUMBER,
         default_validation: ScalarValidation::SafeInteger,
         default_description: "safe integer",
+        aggregates: AggregateCapabilities {
+            minimum: true,
+            maximum: true,
+            sum: Some(DataType::Numeric),
+            average: Some(DataType::Numeric),
+        },
+    },
+    BuiltinTypeDefinition {
+        data_type: DataType::BigInt,
+        name: "bigint",
+        database_names: &["int8", "bigint"],
+        description: "64-bit integer",
+        wire: WireEncoding::BigInteger,
+        operators: ORDERED,
+        orderable: true,
+        literal_kinds: NUMBER,
+        literal_validation: ScalarValidation::Integer,
+        literal_description: "integer",
+        default_kinds: STRING,
+        default_validation: ScalarValidation::Integer,
+        default_description: "signed 64-bit integer string",
         aggregates: AggregateCapabilities {
             minimum: true,
             maximum: true,
@@ -410,11 +434,12 @@ fn builtin_definition(data_type: DataType) -> &'static BuiltinTypeDefinition {
         DataType::Text => &BUILTIN_TYPES[1],
         DataType::Timestamptz => &BUILTIN_TYPES[2],
         DataType::Int => &BUILTIN_TYPES[3],
-        DataType::Numeric => &BUILTIN_TYPES[4],
-        DataType::Float => &BUILTIN_TYPES[5],
-        DataType::Boolean => &BUILTIN_TYPES[6],
-        DataType::Json => &BUILTIN_TYPES[7],
-        DataType::Unknown => &BUILTIN_TYPES[8],
+        DataType::BigInt => &BUILTIN_TYPES[4],
+        DataType::Numeric => &BUILTIN_TYPES[5],
+        DataType::Float => &BUILTIN_TYPES[6],
+        DataType::Boolean => &BUILTIN_TYPES[7],
+        DataType::Json => &BUILTIN_TYPES[8],
+        DataType::Unknown => &BUILTIN_TYPES[9],
     }
 }
 

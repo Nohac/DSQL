@@ -41,6 +41,8 @@ export async function seed(sql: SQL, profile: Profile): Promise<void> {
         sample % 4 = 0,
         jsonb_build_object('sequence', sample)
       FROM generate_series(1, ${rows}) AS sample`;
+    await transaction`INSERT INTO wide_integer_values (value)
+      VALUES (9007199254740993)`;
     await transaction`REFRESH MATERIALIZED VIEW network_reading_totals`;
   });
 }

@@ -67,7 +67,7 @@ from
       "public"."users" as "accounts_c1b9ad84"
       left join LATERAL (
         select
-          COUNT(*) as "post_count",
+          CAST(COUNT(*) as text) as "post_count",
           MAX("posts_cd19cb80"."created_at") as "latest_post"
         from
           "public"."posts" as "posts_cd19cb80"
@@ -82,7 +82,7 @@ from
 
 -- FlattenRoot
 select
-  TO_JSON(COUNT(*)) as "user_count",
+  TO_JSON(CAST(COUNT(*) as text)) as "user_count",
   TO_JSON(MIN("users_99fc7350"."name")) as "first_name"
 from
   "public"."users" as "users_99fc7350"

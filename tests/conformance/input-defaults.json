@@ -78,6 +78,78 @@
     "error": "integer default"
   },
   {
+    "name": "minimum bigint string",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "string", "value": "-9223372036854775808" }
+    },
+    "expected": "-9223372036854775808"
+  },
+  {
+    "name": "maximum bigint string",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "string", "value": "9223372036854775807" }
+    },
+    "expected": "9223372036854775807"
+  },
+  {
+    "name": "overflowing bigint string",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "string", "value": "9223372036854775808" }
+    },
+    "error": "valid bigint"
+  },
+  {
+    "name": "bigint rejects numeric default",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "number", "value": "1" }
+    },
+    "error": "compatible number default"
+  },
+  {
+    "name": "bigint string collection",
+    "field": {
+      "path": "params.value",
+      "data_type": "bigint",
+      "wire": { "encoding": "big_integer" },
+      "collection": true,
+      "enum_values": [],
+      "required": false,
+      "nullable": false,
+      "default": {
+        "kind": "collection",
+        "items": [
+          { "kind": "string", "value": "-9223372036854775808" },
+          { "kind": "string", "value": "9223372036854775807" }
+        ]
+      }
+    },
+    "expected": ["-9223372036854775808", "9223372036854775807"]
+  },
+  {
     "name": "finite float",
     "field": {
       "path": "params.value",

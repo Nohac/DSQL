@@ -21,6 +21,7 @@ thiserror = { workspace = true }
 lelwel = { workspace = true }
 
 [dev-dependencies]
+facet-json = { workspace = true }
 indoc = { workspace = true }
 insta = { workspace = true }
 tokio = { workspace = true }

@@ -56,6 +56,10 @@ CREATE TABLE readings (
     REFERENCES sensors(tenant_id, network_code, station_code, code)
 );
 
+CREATE TABLE wide_integer_values (
+  value bigint PRIMARY KEY
+);
+
 CREATE INDEX readings_sensor_time_idx ON readings
   (tenant_id, network_code, station_code, sensor_code, recorded_at DESC)
   INCLUDE (value);
