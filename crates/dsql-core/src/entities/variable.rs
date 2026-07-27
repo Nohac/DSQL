@@ -19,7 +19,8 @@ use bowl::{
 
 use crate::catalog::{
     Catalog, CatalogSnapshot, DataType, FieldCheckResult, FieldRef, LiteralKind, MAX_SAFE_INTEGER,
-    MIN_SAFE_INTEGER, ScalarValidation, TableRef, TableResolution, TypeCapabilities,
+    MIN_SAFE_INTEGER, ScalarValidation, TableRef, TableResolution, TypeCapabilities, TypeKey,
+    WireEncoding,
 };
 use crate::entities::clause::{ClauseFact, OrderDirection, OrderTerm};
 use crate::entities::definition::{DefDecl, DefKind};
@@ -287,6 +288,9 @@ pub struct VariableBinding {
     pub source: VariableSource,
     pub name: Option<String>,
     pub data_type: DataType,
+    pub wire: WireEncoding,
+    /// Stable provider identity for catalog-backed values.
+    pub provider_type: Option<TypeKey>,
     pub collection: bool,
     pub role: VariableRole,
     pub operators: Vec<ComparisonOp>,
@@ -439,7 +443,7 @@ struct VariableSemanticViews<'a> {
 struct ContractContext<'a> {
     tree: &'a SelectionTree<'a>,
     resolved_clauses: &'a HashMap<Entity, &'a ResolvedClause>,
-    catalog: &'a crate::catalog::Catalog,
+    catalog: &'a Catalog,
     imports: &'a ScopeImports,
     stack: Vec<Entity>,
     completed: HashMap<Entity, DefinitionContract>,
@@ -591,7 +595,7 @@ fn spread_sites<'a>(
     definition: Entity,
     decl: &DefDecl,
     tree: &'a SelectionTree<'a>,
-    catalog: &crate::catalog::Catalog,
+    catalog: &Catalog,
 ) -> Vec<(Entity, &'a SpreadDecl, SelectionPath)> {
     let mut sites = Vec::new();
     match decl.kind {
@@ -639,7 +643,7 @@ fn spread_sites<'a>(
 
 fn collect_spread_sites<'a>(
     tree: &'a SelectionTree<'a>,
-    catalog: &crate::catalog::Catalog,
+    catalog: &Catalog,
     parent: Entity,
     table: crate::catalog::TableId,
     path: SelectionPath,
@@ -1327,7 +1331,7 @@ fn path_is_prefix(prefix: &str, path: &str) -> bool {
 
 fn bindings_compatible(left: &VariableBinding, right: &VariableBinding) -> bool {
     left.source == right.source
-        && left.data_type == right.data_type
+        && binding_types_compatible(left, right)
         && left.collection == right.collection
         && left.role == right.role
         && left.operators == right.operators
@@ -1335,6 +1339,13 @@ fn bindings_compatible(left: &VariableBinding, right: &VariableBinding) -> bool 
         && left.required == right.required
         && left.nullable == right.nullable
         && left.default == right.default
+}
+
+fn binding_types_compatible(left: &VariableBinding, right: &VariableBinding) -> bool {
+    if matches!(left.wire, WireEncoding::TextCast) || matches!(right.wire, WireEncoding::TextCast) {
+        return left.wire == right.wire && left.provider_type == right.provider_type;
+    }
+    left.data_type == right.data_type && left.wire == right.wire
 }
 
 fn source_label(source: VariableSource) -> &'static str {
@@ -1372,7 +1383,7 @@ async fn diagnose_duplicate_anonymous_bindings(
 struct Inference<'a> {
     resolved_clauses: &'a HashMap<Entity, &'a ResolvedClause>,
     tree: &'a SelectionTree<'a>,
-    catalog: &'a crate::catalog::Catalog,
+    catalog: &'a Catalog,
     bindings: Vec<(Span, VariableBinding)>,
 }
 
@@ -1428,6 +1439,8 @@ impl Inference<'_> {
                                 BindingContext {
                                     role: VariableRole::DynamicOrder,
                                     data_type: DataType::Unknown,
+                                    wire: WireEncoding::Unsupported,
+                                    provider_type: None,
                                     collection: false,
                                     scope,
                                     inferred_path: &["order".to_string()],
@@ -1462,7 +1475,9 @@ impl Inference<'_> {
                                     &path.parts,
                                     BindingContext {
                                         role: VariableRole::SortDirection,
-                                        data_type: DataType::Unknown,
+                                        data_type: DataType::Text,
+                                        wire: WireEncoding::Text,
+                                        provider_type: None,
                                         collection: false,
                                         scope,
                                         inferred_path: &inferred_path,
@@ -1519,6 +1534,8 @@ impl Inference<'_> {
                     BindingContext {
                         role: VariableRole::FilterAssignment,
                         data_type: DataType::Boolean,
+                        wire: WireEncoding::Boolean,
+                        provider_type: None,
                         collection: false,
                         scope,
                         inferred_path: &[lower_snake_case(filter_name)],
@@ -1631,7 +1648,7 @@ impl Inference<'_> {
                         Expr::Variable { variable, .. },
                         value @ (Expr::Path { .. } | Expr::Aggregate { .. }),
                     ) => {
-                        if let Some((data_type, field_path)) =
+                        if let Some((data_type, wire, provider_type, field_path)) =
                             self.resolve_predicate_value(value, resolved)
                         {
                             let anonymous_key = variable
@@ -1644,6 +1661,8 @@ impl Inference<'_> {
                                 BindingContext {
                                     role: VariableRole::WhereValue,
                                     data_type,
+                                    wire,
+                                    provider_type,
                                     collection: matches!(op, BinaryOp::In | BinaryOp::NotIn),
                                     scope,
                                     inferred_path: &field_path,
@@ -1665,14 +1684,27 @@ impl Inference<'_> {
                         _ => None,
                     };
                     if let Some(path) = path
-                        && let Some((data_type, field_path)) =
+                        && let Some((data_type, wire, provider_type, field_path)) =
                             self.resolve_predicate_value(path, resolved)
                     {
-                        self.push_operator_binding(
+                        let operators = operator.operators.clone().unwrap_or_default();
+                        self.push_binding(
                             selection_path,
-                            scope,
-                            data_type,
-                            &field_path,
+                            BindingContext {
+                                role: VariableRole::ComparisonOperator,
+                                data_type,
+                                wire,
+                                provider_type,
+                                collection: false,
+                                scope,
+                                inferred_path: &field_path,
+                                anonymous_key: None,
+                                enum_values: operators
+                                    .iter()
+                                    .map(|operator| operator.as_str().to_string())
+                                    .collect(),
+                                operators,
+                            },
                             operator,
                         );
                     }
@@ -1711,6 +1743,8 @@ impl Inference<'_> {
                     BindingContext {
                         role: VariableRole::WhereValue,
                         data_type: DataType::Boolean,
+                        wire: WireEncoding::Boolean,
+                        provider_type: None,
                         collection: false,
                         scope,
                         inferred_path: &["value".to_string()],
@@ -1727,6 +1761,8 @@ impl Inference<'_> {
                     BindingContext {
                         role: VariableRole::DynamicPredicate,
                         data_type: DataType::Unknown,
+                        wire: WireEncoding::Unsupported,
+                        provider_type: None,
                         collection: false,
                         scope,
                         inferred_path: &["search".to_string()],
@@ -1753,29 +1789,41 @@ impl Inference<'_> {
         &self,
         path: &Expr,
         resolved_clause: &ResolvedClause,
-    ) -> Option<(DataType, Vec<String>)> {
+    ) -> Option<(DataType, WireEncoding, TypeKey, Vec<String>)> {
         let resolved = resolved_clause.path_at(path.span())?;
         let column = resolved.terminal.column()?;
-        // Guard the resolution-owned identity before the invariant-backed lookup.
-        self.catalog.column_by_id(column)?;
-        let data_type = self.catalog.data_type_for_column(column);
+        let data_type = self.catalog.type_for_column(column)?;
         let field_path = resolved.display_path()?.map(str::to_owned).collect();
-        Some((data_type, field_path))
+        Some((
+            data_type.data_type,
+            data_type.capabilities.wire,
+            data_type.key.clone(),
+            field_path,
+        ))
     }
 
     fn resolve_predicate_value(
         &self,
         expr: &Expr,
         resolved_clause: &ResolvedClause,
-    ) -> Option<(DataType, Vec<String>)> {
+    ) -> Option<(DataType, WireEncoding, Option<TypeKey>, Vec<String>)> {
         match expr {
-            Expr::Path { .. } => self.resolve_predicate_path(expr, resolved_clause),
+            Expr::Path { .. } => self.resolve_predicate_path(expr, resolved_clause).map(
+                |(data_type, wire, provider_type, path)| {
+                    (data_type, wire, Some(provider_type), path)
+                },
+            ),
             Expr::Aggregate { .. } => {
                 let aggregate = resolved_clause.aggregate_at(expr.span())?;
                 if !aggregate.is_valid() {
                     return None;
                 }
-                Some((aggregate.data_type?, aggregate.display_path(self.catalog)?))
+                Some((
+                    aggregate.data_type?,
+                    Catalog::builtin_capabilities(aggregate.data_type?).wire,
+                    None,
+                    aggregate.display_path(self.catalog)?,
+                ))
             }
             Expr::Binary { .. }
             | Expr::Unary { .. }
@@ -1806,6 +1854,8 @@ impl Inference<'_> {
             BindingContext {
                 role,
                 data_type: DataType::Int,
+                wire: WireEncoding::Integer,
+                provider_type: None,
                 collection: false,
                 scope,
                 inferred_path: &[inferred_key.as_ref().to_string()],
@@ -1815,50 +1865,6 @@ impl Inference<'_> {
             },
             variable,
         );
-    }
-
-    fn push_operator_binding(
-        &mut self,
-        selection_path: &[String],
-        scope: &VariablePathScope,
-        data_type: DataType,
-        inferred_path: &[String],
-        operator: &VariableRef,
-    ) {
-        let name = operator.name.clone();
-        let key = name
-            .clone()
-            .unwrap_or_else(|| InputPathSegment::Op.as_ref().to_string());
-        let allowed = operator.operators.clone().unwrap_or_default();
-        let path = variable_path(
-            selection_path,
-            VariablePathContext {
-                role: VariableRole::ComparisonOperator,
-                inferred_path,
-                anonymous_key: None,
-            },
-            scope,
-            operator.sigil,
-            Some(&key),
-        );
-        self.bindings.push((
-            operator.span,
-            VariableBinding {
-                path,
-                source: operator.sigil.into(),
-                name,
-                data_type,
-                collection: false,
-                role: VariableRole::ComparisonOperator,
-                enum_values: allowed.iter().map(|op| op.as_str().to_string()).collect(),
-                operators: allowed,
-                required: true,
-                nullable: false,
-                default: None,
-                allows_nullable: true,
-                refinable: true,
-            },
-        ));
     }
 
     fn push_binding(
@@ -1886,6 +1892,8 @@ impl Inference<'_> {
                 source: variable.sigil.into(),
                 name,
                 data_type: context.data_type,
+                wire: context.wire,
+                provider_type: context.provider_type,
                 collection: context.collection,
                 role: context.role,
                 operators: context.operators,
@@ -1918,6 +1926,8 @@ pub(crate) fn lower_snake_case(name: &str) -> String {
 struct BindingContext<'a> {
     role: VariableRole,
     data_type: DataType,
+    wire: WireEncoding,
+    provider_type: Option<TypeKey>,
     collection: bool,
     scope: &'a VariablePathScope,
     inferred_path: &'a [String],

@@ -3,6 +3,7 @@ use super::{
     SchemaKey, TableId, TableKey, TypeCapabilities, TypeId, TypeKey,
 };
 use facet::Facet;
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -12,6 +13,9 @@ pub struct Catalog {
     pub tables: Vec<Table>,
     /// Dense arena of effective provider types.
     pub types: Vec<CatalogType>,
+    /// Fast lookup for stable provider identities; reconstructed by catalog loading.
+    #[facet(skip)]
+    pub(crate) type_ids: HashMap<TypeKey, TypeId>,
     pub columns: Vec<Column>,
     pub foreign_keys: Vec<ForeignKey>,
     /// Directional relationships exposed by the effective catalog.
@@ -329,6 +333,21 @@ pub struct RelationField<'a> {
 
 impl Catalog {
     pub const DEFAULT_SCHEMA: &'static str = "public";
+
+    /// Builds an empty catalog for editor fallback contexts.
+    pub fn empty() -> Self {
+        Self {
+            default_schema: Self::DEFAULT_SCHEMA.to_string(),
+            schemas: Vec::new(),
+            tables: Vec::new(),
+            types: Vec::new(),
+            type_ids: HashMap::new(),
+            columns: Vec::new(),
+            foreign_keys: Vec::new(),
+            relations: Vec::new(),
+            uniqueness_supports: Vec::new(),
+        }
+    }
 
     pub fn with_default_schema(mut self, default_schema: impl Into<String>) -> Self {
         self.default_schema = default_schema.into();

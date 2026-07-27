@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use dsql_core::catalog::{Catalog, TableId};
-use dsql_core::entities::aggregate::AggregateMode;
+use dsql_core::catalog::{Catalog, CatalogType, DataType, TableId, TypeKey, WireEncoding};
+use dsql_core::entities::aggregate::{AggregateFunction, AggregateMode};
 use dsql_core::entities::variable::{
     InputDefault as CoreInputDefault, VariableBinding, VariableRole, VariableSource,
 };
@@ -22,9 +22,9 @@ use dsql_metadata::{
     DefinitionKind, DynamicInputField, DynamicInputMetadata, DynamicInputSite,
     DynamicInputSiteField, DynamicPredicateOperatorMetadata, FragmentMetadata,
     FragmentSpreadMetadata, InputDefault, InputField, OperationMetadata, PolicyApplicationMetadata,
-    PolicyFieldAccessMetadata, PolicyMetadata, ResultDataType, ResultField, ResultFieldKind,
-    ResultShape, SourceMapEntry, SourceRange, SqlDialect, SqlMetadata, SqlParameterMetadata,
-    SqlVariantCaseMetadata, SqlVariantMetadata,
+    PolicyFieldAccessMetadata, PolicyMetadata, ProviderTypeMetadata, ResultDataType, ResultField,
+    ResultFieldKind, ResultShape, SourceMapEntry, SourceRange, SqlDialect, SqlMetadata,
+    SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata, WireMetadata,
 };
 
 use crate::pipeline::{GenerateError, Result};
@@ -104,9 +104,10 @@ pub(crate) fn operation_metadata(
                 .collect(),
         },
         result: result_shape(catalog, inputs.plan)?,
-        params: input_fields(inputs.bindings, true),
-        input: input_fields(inputs.bindings, false),
+        params: input_fields(catalog, inputs.bindings, true),
+        input: input_fields(catalog, inputs.bindings, false),
         context: context_fields(
+            catalog,
             inputs.bindings,
             &inputs.plan.policy_context,
             &inputs.sql.policy_context,
@@ -160,6 +161,10 @@ fn dynamic_input_metadata(
                     key: field.key.clone(),
                     catalog_path: format!("{}.{}.{}", table.schema, table.name, column.name),
                     data_type: field.data_type.as_str().to_string(),
+                    wire: catalog.type_for_column(column.id).map_or_else(
+                        || wire_metadata_for_data_type(field.data_type),
+                        wire_metadata_for_catalog_type,
+                    ),
                     nullable: field.nullable,
                     access: access_label(field.access).to_string(),
                     operators: field
@@ -274,8 +279,8 @@ pub(crate) fn fragment_metadata(
             &inputs.plan.policy_field_access,
             &inputs.plan.name,
         )?,
-        params: input_fields(inputs.bindings, true),
-        input: input_fields(inputs.bindings, false),
+        params: input_fields(catalog, inputs.bindings, true),
+        input: input_fields(catalog, inputs.bindings, false),
         dynamic_inputs: Vec::new(),
         fragment_spreads: fragment_spreads(&inputs.plan.spreads),
         source_map: vec![SourceMapEntry {
@@ -602,6 +607,7 @@ fn collect_collection_fields(
         parent_path: parent_path.to_string(),
         kind: kind.as_ref().to_string(),
         data_type: ResultDataType::Object.as_ref().to_string(),
+        wire: wire_metadata_for_data_type(DataType::Unknown),
         nullable: access.inherited_nullable,
         access: access_label(access.inherited_access).to_string(),
     });
@@ -650,7 +656,11 @@ fn collect_collection_children(
                     name: key.output_name.clone(),
                     parent_path: parent_path.to_string(),
                     kind: ResultFieldKind::Scalar.as_ref().to_string(),
-                    data_type: key.data_type.as_str().to_string(),
+                    data_type: result_data_type_for_column(catalog, key.column),
+                    wire: catalog.type_for_column(key.column).map_or_else(
+                        || wire_metadata_for_data_type(key.data_type),
+                        wire_metadata_for_catalog_type,
+                    ),
                     nullable: access.inherited_nullable
                         || key.nullable
                         || policy_filters_column(access.policy_nullable_fields, key.column),
@@ -669,7 +679,8 @@ fn collect_collection_children(
                     name: field.output_name.clone(),
                     parent_path: parent_path.to_string(),
                     kind: ResultFieldKind::Scalar.as_ref().to_string(),
-                    data_type: field.data_type.as_str().to_string(),
+                    data_type: aggregate_result_data_type(catalog, field),
+                    wire: aggregate_result_wire(catalog, field),
                     nullable: access.inherited_nullable || field.nullable,
                     access: access_label(access.inherited_access.combine(field.operand.map_or(
                         PolicyAccess::Unconditional,
@@ -710,7 +721,11 @@ fn collect_result_item_fields(
                 name: projection.output_name.clone(),
                 parent_path: parent_path.to_string(),
                 kind: ResultFieldKind::Scalar.as_ref().to_string(),
-                data_type: catalog.data_type_for_column(column.id).as_str().to_string(),
+                data_type: result_data_type_for_column(catalog, column.id),
+                wire: catalog.type_for_column(column.id).map_or_else(
+                    || wire_metadata_for_data_type(catalog.data_type_for_column(column.id)),
+                    wire_metadata_for_catalog_type,
+                ),
                 nullable: access.inherited_nullable
                     || !column.not_null
                     || policy_filters_column(access.policy_nullable_fields, projection.column),
@@ -849,7 +864,11 @@ fn policy_filters_relation(
     fields.contains(&PolicyFieldTarget::Relation(relation))
 }
 
-fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField> {
+fn input_fields(
+    catalog: &Catalog,
+    bindings: &[VariableBinding],
+    top_level: bool,
+) -> Vec<InputField> {
     bindings
         .iter()
         .filter(|binding| {
@@ -861,9 +880,10 @@ fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField
             data_type: match binding.role {
                 VariableRole::DynamicPredicate => "dynamic_predicate",
                 VariableRole::DynamicOrder => "dynamic_order",
-                _ => binding.data_type.as_str(),
+                _ => binding_logical_type(catalog, binding),
             }
             .to_string(),
+            wire: binding_wire(catalog, binding),
             collection: binding.collection.then_some(true),
             enum_values: binding.enum_values.clone(),
             required: binding.required,
@@ -873,7 +893,105 @@ fn input_fields(bindings: &[VariableBinding], top_level: bool) -> Vec<InputField
         .collect()
 }
 
+fn binding_catalog_type<'a>(
+    catalog: &'a Catalog,
+    binding: &VariableBinding,
+) -> Option<&'a CatalogType> {
+    binding
+        .provider_type
+        .as_ref()
+        .and_then(|key| catalog.type_by_key(key))
+}
+
+fn binding_logical_type<'a>(catalog: &'a Catalog, binding: &'a VariableBinding) -> &'a str {
+    binding_catalog_type(catalog, binding).map_or_else(
+        || binding.data_type.as_str(),
+        |data_type| logical_type_for_catalog_type(data_type),
+    )
+}
+
+fn binding_wire(catalog: &Catalog, binding: &VariableBinding) -> WireMetadata {
+    if let Some(data_type) = binding_catalog_type(catalog, binding) {
+        return wire_metadata_for_catalog_type(data_type);
+    }
+    wire_metadata_for_data_type(binding.data_type)
+}
+
+fn logical_type_for_catalog_type(data_type: &CatalogType) -> &str {
+    if data_type.capabilities.wire == WireEncoding::TextCast {
+        DataType::Text.as_str()
+    } else {
+        &data_type.capabilities.name
+    }
+}
+
+fn result_data_type_for_column(catalog: &Catalog, column: dsql_core::catalog::ColumnId) -> String {
+    catalog.type_for_column(column).map_or_else(
+        || DataType::Unknown.as_str().to_string(),
+        |data_type| logical_type_for_catalog_type(data_type).to_string(),
+    )
+}
+
+fn aggregate_result_catalog_type<'a>(
+    catalog: &'a Catalog,
+    field: &dsql_core::plan::AggregateProjection,
+) -> Option<&'a CatalogType> {
+    matches!(
+        field.function,
+        AggregateFunction::Min | AggregateFunction::Max
+    )
+    .then_some(field.operand)
+    .flatten()
+    .and_then(|column| catalog.type_for_column(column))
+}
+
+fn aggregate_result_data_type(
+    catalog: &Catalog,
+    field: &dsql_core::plan::AggregateProjection,
+) -> String {
+    aggregate_result_catalog_type(catalog, field).map_or_else(
+        || field.data_type.as_str().to_string(),
+        |data_type| logical_type_for_catalog_type(data_type).to_string(),
+    )
+}
+
+fn aggregate_result_wire(
+    catalog: &Catalog,
+    field: &dsql_core::plan::AggregateProjection,
+) -> WireMetadata {
+    aggregate_result_catalog_type(catalog, field).map_or_else(
+        || wire_metadata_for_data_type(field.data_type),
+        wire_metadata_for_catalog_type,
+    )
+}
+
+fn wire_metadata_for_catalog_type(data_type: &CatalogType) -> WireMetadata {
+    WireMetadata {
+        encoding: data_type.capabilities.wire.as_str().to_string(),
+        provider_type: (data_type.capabilities.wire == WireEncoding::TextCast)
+            .then(|| provider_type_metadata(&data_type.key)),
+    }
+}
+
+fn wire_metadata_for_data_type(data_type: DataType) -> WireMetadata {
+    WireMetadata {
+        encoding: Catalog::builtin_capabilities(data_type)
+            .wire
+            .as_str()
+            .to_string(),
+        provider_type: None,
+    }
+}
+
+fn provider_type_metadata(key: &TypeKey) -> ProviderTypeMetadata {
+    ProviderTypeMetadata {
+        schema: key.schema.clone(),
+        name: key.name.clone(),
+    }
+}
+
 fn context_fields(
+    catalog: &Catalog,
     bindings: &[VariableBinding],
     policy_context: &[dsql_core::plan::PolicyContextRequirement],
     rendered_policy_context: &[dsql_core::plan::PolicyContextRequirement],
@@ -889,7 +1007,8 @@ fn context_fields(
             operation_name,
             InputField {
                 path: binding.path.clone(),
-                data_type: binding.data_type.as_str().to_string(),
+                data_type: binding_logical_type(catalog, binding).to_string(),
+                wire: binding_wire(catalog, binding),
                 collection: binding.collection.then_some(true),
                 enum_values: binding.enum_values.clone(),
                 required: true,
@@ -904,7 +1023,28 @@ fn context_fields(
             operation_name,
             InputField {
                 path: requirement.path.clone(),
-                data_type: requirement.data_type.as_str().to_string(),
+                data_type: requirement
+                    .provider_type
+                    .as_ref()
+                    .and_then(|key| catalog.type_by_key(key))
+                    .map_or_else(
+                        || requirement.data_type.as_str().to_string(),
+                        |data_type| logical_type_for_catalog_type(data_type).to_string(),
+                    ),
+                wire: requirement
+                    .provider_type
+                    .as_ref()
+                    .and_then(|key| catalog.type_by_key(key))
+                    .map_or_else(
+                        || WireMetadata {
+                            encoding: requirement.wire.as_str().to_string(),
+                            provider_type: requirement
+                                .provider_type
+                                .as_ref()
+                                .map(provider_type_metadata),
+                        },
+                        wire_metadata_for_catalog_type,
+                    ),
                 collection: requirement.collection.then_some(true),
                 enum_values: Vec::new(),
                 required: true,

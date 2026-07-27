@@ -67,14 +67,15 @@ absent, and null pagination or dynamic input selects the corresponding absent
 clause or identity case. Execution must preserve the pruning rules defined in
 [Nullable Predicate Uses](variables.md#nullable-predicate-uses).
 
-The executor binds PostgreSQL values according to the declared logical type and
-collection shape. Every query definition produces one generated statement that
-returns exactly one result row. A multi-root definition renders its collection,
-singular, aggregate, and flattened roots as one-row subqueries and combines
-them in source order; all roots share one parameter and variant namespace. The
-executor serializes the complete generated row as one JSON value, so
-single-root, multi-root, and multi-column flattened operations all obey the
-same metadata result shape.
+The executor binds PostgreSQL values according to the compiler-declared wire
+encoding and collection shape. Logical type names describe the public contract;
+wire metadata is the authoritative runtime encoding. Every query definition
+produces one generated statement that returns exactly one result row. A
+multi-root definition renders its collection, singular, aggregate, and
+flattened roots as one-row subqueries and combines them in source order; all
+roots share one parameter and variant namespace. The executor serializes the
+complete generated row as one JSON value, so single-root, multi-root, and
+multi-column flattened operations all obey the same metadata result shape.
 
 `PostgresExecutor::connect` creates a single-connection pool for one-shot CLI
 use. Long-lived library callers can provide their own pool through
@@ -82,16 +83,39 @@ use. Long-lived library callers can provide their own pool through
 
 JSON input encodings are:
 
-| Logical type | JSON encoding |
-| --- | --- |
-| `uuid` | UUID string |
-| `text` | string |
-| `timestamptz` | RFC 3339 string |
-| `int` | integer number between `-9007199254740991` and `9007199254740991` |
-| `numeric` | decimal string, preserving arbitrary precision |
-| `float` | number |
-| `boolean` | boolean |
-| `json` | any JSON value |
+| Wire encoding | JSON encoding | Validation |
+| --- | --- | --- |
+| `uuid` | UUID string | runtime, before execution |
+| `text` | string | runtime, before execution |
+| `timestamptz` | RFC 3339 string | runtime, before execution |
+| `integer` | integer number between `-9007199254740991` and `9007199254740991` | runtime, before execution |
+| `numeric` | decimal string, preserving arbitrary precision | runtime, before execution |
+| `float` | finite number | runtime, before execution |
+| `boolean` | boolean | runtime, before execution |
+| `json` | any JSON value | runtime serialization |
+| `text_cast` | string | PostgreSQL's input conversion |
+| `unsupported` | none | compile-time diagnostic at an input use |
+
+`text_cast` is the provider-scalar escape hatch. The compiler retains the
+schema-qualified provider type, binds the caller's string as PostgreSQL `text`,
+and emits an explicit cast such as
+`(($1)::text)::"pg_catalog"."date"`. Collections use `text[]` and an array cast
+to the same provider type. Rust and TypeScript accept the same public string
+shape; they do not duplicate PostgreSQL's parser.
+
+If PostgreSQL reports a data-exception error while executing an operation with
+`text_cast` parameters, the executor probes those casts independently. A cast
+that reproduces the error becomes a stable `InvalidProviderInput` error naming
+the input path and provider type. Errors not reproduced by an input cast remain
+database errors.
+
+Provider values that cannot safely use a scalar text cast, including arrays,
+composites, and ranges until their dedicated representations are implemented,
+have `unsupported` wire encoding. They remain selectable for inspection, but
+query predicate operands, order inputs, and bounded dynamic inputs produce
+`UnmappedType` diagnostics before generation or database connection. Invalid
+policy input contracts produce `InvalidPolicyDefinition` diagnostics at the
+policy source.
 
 A collection uses an array of the corresponding scalar encoding. Supplied
 collections may contain `null` elements; declaration collection defaults may
@@ -103,6 +127,13 @@ an exact value outside that range is required.
 Input refinements determine requiredness, nullability, and defaults in emitted
 metadata. The maintained Rust and TypeScript materializers consume that same
 contract; adapters must not reinterpret it independently.
+
+Result metadata carries the same wire classification. `numeric` and
+provider-defined `text_cast` scalars are explicitly cast to PostgreSQL `text`
+before JSON construction so host runtimes receive their exact public string
+representation. Other native encodings use PostgreSQL's ordinary JSON
+representation. Wide-integer result handling is specified separately from the
+JSON-safe integer input domain.
 
 ## Test database
 

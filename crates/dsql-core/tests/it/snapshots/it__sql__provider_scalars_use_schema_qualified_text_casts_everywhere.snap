@@ -1,0 +1,65 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: "format!(\"{rendered}\\n\\n-- dynamic casts\\n{dynamic_sites}\")"
+---
+-- ProviderScalars
+select
+  "root"."events" as "events"
+from
+  (
+    select
+      1) as "singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'event_date',
+        CAST("events_cc4ff0da"."event_date" as text),
+        'local_time',
+        CAST("events_cc4ff0da"."local_time" as text),
+        'address',
+        CAST("events_cc4ff0da"."address" as text)
+      ) as "events"
+    from
+      "public"."events" as "events_cc4ff0da"
+    where
+      "events_cc4ff0da"."address" = ((($1)::text)::"pg_catalog"."inet")
+      and (
+        "events_cc4ff0da"."event_date" = ((($2)::text)::"pg_catalog"."date")
+        and "events_cc4ff0da"."local_time" >= ((($3)::text)::"pg_catalog"."timestamp")
+        and (
+          "events_cc4ff0da"."address" = ANY((($4)::text[])::"pg_catalog"."inet"[])
+        )
+        and ({{dynamic:0}})
+      )
+    order by
+      "events_cc4ff0da"."local_time" asc
+    limit
+      1
+  ) as "root" on true
+-- parameters: context.trusted_address, params.date, params.start, params.addresses
+
+-- dynamic casts
+address.eq: ("events_cc4ff0da"."address") = ((<value>)::text)::"pg_catalog"."inet"
+address.neq: ("events_cc4ff0da"."address") != ((<value>)::text)::"pg_catalog"."inet"
+address.gt: ("events_cc4ff0da"."address") > ((<value>)::text)::"pg_catalog"."inet"
+address.gte: ("events_cc4ff0da"."address") >= ((<value>)::text)::"pg_catalog"."inet"
+address.lt: ("events_cc4ff0da"."address") < ((<value>)::text)::"pg_catalog"."inet"
+address.lte: ("events_cc4ff0da"."address") <= ((<value>)::text)::"pg_catalog"."inet"
+address.in: ("events_cc4ff0da"."address") = ANY(((<value>)::text[])::"pg_catalog"."inet"[])
+address.not_in: ("events_cc4ff0da"."address") <> ALL(((<value>)::text[])::"pg_catalog"."inet"[])
+event_date.eq: ("events_cc4ff0da"."event_date") = ((<value>)::text)::"pg_catalog"."date"
+event_date.neq: ("events_cc4ff0da"."event_date") != ((<value>)::text)::"pg_catalog"."date"
+event_date.gt: ("events_cc4ff0da"."event_date") > ((<value>)::text)::"pg_catalog"."date"
+event_date.gte: ("events_cc4ff0da"."event_date") >= ((<value>)::text)::"pg_catalog"."date"
+event_date.lt: ("events_cc4ff0da"."event_date") < ((<value>)::text)::"pg_catalog"."date"
+event_date.lte: ("events_cc4ff0da"."event_date") <= ((<value>)::text)::"pg_catalog"."date"
+event_date.in: ("events_cc4ff0da"."event_date") = ANY(((<value>)::text[])::"pg_catalog"."date"[])
+event_date.not_in: ("events_cc4ff0da"."event_date") <> ALL(((<value>)::text[])::"pg_catalog"."date"[])
+local_time.eq: ("events_cc4ff0da"."local_time") = ((<value>)::text)::"pg_catalog"."timestamp"
+local_time.neq: ("events_cc4ff0da"."local_time") != ((<value>)::text)::"pg_catalog"."timestamp"
+local_time.gt: ("events_cc4ff0da"."local_time") > ((<value>)::text)::"pg_catalog"."timestamp"
+local_time.gte: ("events_cc4ff0da"."local_time") >= ((<value>)::text)::"pg_catalog"."timestamp"
+local_time.lt: ("events_cc4ff0da"."local_time") < ((<value>)::text)::"pg_catalog"."timestamp"
+local_time.lte: ("events_cc4ff0da"."local_time") <= ((<value>)::text)::"pg_catalog"."timestamp"
+local_time.in: ("events_cc4ff0da"."local_time") = ANY(((<value>)::text[])::"pg_catalog"."timestamp"[])
+local_time.not_in: ("events_cc4ff0da"."local_time") <> ALL(((<value>)::text[])::"pg_catalog"."timestamp"[])

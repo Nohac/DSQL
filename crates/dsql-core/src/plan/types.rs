@@ -2,7 +2,7 @@
 
 use bowl::{Component, Entity};
 
-use crate::catalog::{ColumnId, DataType, RelationId, TableId, TableKey};
+use crate::catalog::{ColumnId, DataType, RelationId, TableId, TableKey, TypeKey, WireEncoding};
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::entities::expression::ComparisonOp;
 use crate::entities::expression::DynamicInputSurface;
@@ -349,7 +349,47 @@ fn filter_observes_rows(filter: &FilterExpr) -> bool {
 pub struct PolicyContextRequirement {
     pub path: String,
     pub data_type: DataType,
+    pub wire: WireEncoding,
+    pub provider_type: Option<TypeKey>,
     pub collection: bool,
+}
+
+impl PolicyContextRequirement {
+    /// Whether two uses of one trusted-context path require incompatible values.
+    pub(crate) fn conflicts_with(&self, other: &Self) -> bool {
+        if self.collection != other.collection {
+            return true;
+        }
+        if self.wire == WireEncoding::TextCast || other.wire == WireEncoding::TextCast {
+            return self.wire != other.wire || self.provider_type != other.provider_type;
+        }
+        self.data_type != other.data_type || self.wire != other.wire
+    }
+
+    pub(crate) fn conflict_message(&self, other: &Self) -> String {
+        format!(
+            "trusted context `{}` is required as both {} and {}",
+            self.path,
+            self.shape(),
+            other.shape()
+        )
+    }
+
+    fn shape(&self) -> String {
+        let data_type = self
+            .provider_type
+            .as_ref()
+            .filter(|_| self.wire == WireEncoding::TextCast)
+            .map_or_else(
+                || self.data_type.as_str().to_string(),
+                |key| format!("{}.{}", key.schema, key.name),
+            );
+        if self.collection {
+            format!("a collection of `{data_type}`")
+        } else {
+            format!("`{data_type}`")
+        }
+    }
 }
 
 /// How one collection source becomes public result data.
@@ -619,6 +659,8 @@ pub enum SqlValue {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SqlParameter {
     pub path: String,
+    pub text_cast: Option<TypeKey>,
+    pub collection: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

@@ -9,10 +9,6 @@ import inputCases from "../../../tests/conformance/input-values.json" with {
   type: "json",
 };
 import {
-  defineDsqlQuery,
-  type DsqlQueryDefinition,
-} from "../src/index";
-import {
   applyDsqlVariants,
   collectDsqlParameterValues,
   dsqlQueryKey,
@@ -27,12 +23,14 @@ const movieInputs = [
   {
     path: "input.movie_info.clause.where.id.op",
     data_type: "text",
+    wire: { encoding: "text" },
     required: true,
     nullable: false,
   },
   {
     path: "input.movie_info.clause.where.id.value",
     data_type: "int",
+    wire: { encoding: "integer" },
     required: true,
     nullable: false,
   },
@@ -85,6 +83,7 @@ const payload = {
     {
       path: "context.tenant_id",
       data_type: "uuid",
+      wire: { encoding: "uuid" },
       required: true,
       nullable: false,
     },
@@ -109,10 +108,12 @@ const variables = {
 
 test("materializes sql variants and ordered parameter values", () => {
   expect(
-    materializeDsqlQuery(payload, variables, { tenant_id: "tenant-7" }),
+    materializeDsqlQuery(payload, variables, {
+      tenant_id: "018f6f19-795f-7c3d-b1b3-8f177ab8a322",
+    }),
   ).toEqual({
     sql: "select * from movie_info where id = $1 and tenant_id = $2",
-    values: [42, "tenant-7"],
+    values: [42, "018f6f19-795f-7c3d-b1b3-8f177ab8a322"],
   });
 });
 
@@ -127,6 +128,7 @@ const optionalInputs = [
     {
       path: "params.direction",
       data_type: "text",
+      wire: { encoding: "text" },
       required: false,
       nullable: true,
       default: { kind: "null" },
@@ -134,6 +136,7 @@ const optionalInputs = [
     {
       path: "params.limit",
       data_type: "int",
+      wire: { encoding: "integer" },
       required: false,
       nullable: true,
       default: { kind: "number", value: "10" },
@@ -189,6 +192,7 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
           key: "id",
           catalog_path: "public.users.id",
           data_type: "int",
+          wire: { encoding: "integer" },
           nullable: false,
           access: "unconditional",
           operators: ["in"],
@@ -198,6 +202,7 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
           key: "name",
           catalog_path: "public.users.name",
           data_type: "text",
+          wire: { encoding: "text" },
           nullable: false,
           access: "unconditional",
           operators: ["like"],
@@ -245,6 +250,7 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
           key: "name",
           catalog_path: "public.users.name",
           data_type: "text",
+          wire: { encoding: "text" },
           nullable: false,
           access: "unconditional",
           operators: [],
@@ -280,18 +286,21 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
       {
         path: "params.tenant",
         data_type: "int",
+        wire: { encoding: "integer" },
         required: true,
         nullable: false,
       },
       {
         path: "params.search",
         data_type: "dynamic_predicate",
+        wire: { encoding: "unsupported" },
         required: true,
         nullable: false,
       },
       {
         path: "params.order",
         data_type: "dynamic_order",
+        wire: { encoding: "unsupported" },
         required: true,
         nullable: false,
       },
@@ -333,7 +342,15 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
         ? {
             ...input,
             fields: input.fields.map((field) =>
-              field.key === "id" ? { ...field, data_type: dataType } : field,
+              field.key === "id"
+                ? {
+                    ...field,
+                    data_type: dataType,
+                    wire: {
+                      encoding: dataType === "int" ? "integer" : dataType,
+                    },
+                  }
+                : field,
             ),
           }
         : input,
@@ -368,6 +385,49 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
     ["123.45e-2"],
   ]);
   expect(() => materializeId("numeric", "12.3.4")).toThrow("valid numeric");
+
+  const textCastPayload = {
+    ...dynamicPayload,
+    dynamicInputs: dynamicPayload.dynamicInputs.map((input) =>
+      input.path === "params.search"
+        ? {
+            ...input,
+            fields: input.fields.map((field) =>
+              field.key === "id"
+                ? {
+                    ...field,
+                    data_type: "text",
+                    wire: {
+                      encoding: "text_cast",
+                      provider_type: {
+                        schema: "pg_catalog",
+                        name: "date",
+                      },
+                    },
+                  }
+                : field,
+            ),
+          }
+        : input,
+    ),
+  };
+  const materializeDate = (value: unknown) =>
+    materializeDsqlQuery(
+      textCastPayload,
+      {
+        params: {
+          tenant: 7,
+          search: { id: { in: [value] } },
+          order: [],
+        },
+      },
+      {},
+    );
+  expect(materializeDate("2026-07-27").values).toEqual([
+    7,
+    ["2026-07-27"],
+  ]);
+  expect(() => materializeDate(20260727)).toThrow("valid text");
 });
 
 test("matches the shared typed-default conformance cases", () => {
@@ -458,6 +518,7 @@ test("rejects invalid envelopes, unused required fields, and context defaults", 
   const defaulted = {
     path: "params.nested.value",
     data_type: "int",
+    wire: { encoding: "integer" },
     required: false,
     nullable: false,
     default: { kind: "number", value: "7" },
@@ -473,6 +534,7 @@ test("rejects invalid envelopes, unused required fields, and context defaults", 
         {
           path: "params.unused",
           data_type: "int",
+          wire: { encoding: "integer" },
           required: true,
           nullable: false,
         },
@@ -483,6 +545,7 @@ test("rejects invalid envelopes, unused required fields, and context defaults", 
   const requiredNullable = {
     path: "params.info",
     data_type: "text",
+    wire: { encoding: "text" },
     required: true,
     nullable: true,
   } as const;
@@ -501,6 +564,7 @@ test("rejects invalid envelopes, unused required fields, and context defaults", 
         {
           path: "context.tenant_id",
           data_type: "uuid",
+          wire: { encoding: "uuid" },
           required: false,
           nullable: false,
           default: { kind: "string", value: "forged-default" },
@@ -521,6 +585,7 @@ test("cache keys materialize defaults and canonical dynamic identities", () => {
       {
         path: "params.limit",
         data_type: "int",
+        wire: { encoding: "integer" },
         required: false,
         nullable: false,
         default: { kind: "number", value: "10" },
@@ -528,12 +593,14 @@ test("cache keys materialize defaults and canonical dynamic identities", () => {
       {
         path: "params.search",
         data_type: "dynamic_predicate",
+        wire: { encoding: "unsupported" },
         required: false,
         nullable: true,
       },
       {
         path: "params.order",
         data_type: "dynamic_order",
+        wire: { encoding: "unsupported" },
         required: false,
         nullable: true,
       },
@@ -550,26 +617,6 @@ test("cache keys materialize defaults and canonical dynamic identities", () => {
   expect(omittedDefault[3]).toEqual({
     params: { limit: 10, search: {}, order: [] },
   });
-});
-
-test("legacy query definitions also materialize cache-key defaults", () => {
-  const definition = {
-    name: "LegacySearch",
-    params: [
-      {
-        path: "params.limit",
-        data_type: "int",
-        enum_values: [],
-        required: false,
-        nullable: false,
-        default: { kind: "number", value: "10" },
-      },
-    ],
-    context: [],
-  } as unknown as DsqlQueryDefinition<{ readonly limit?: number }>;
-  const query = defineDsqlQuery(definition);
-
-  expect(query.key({})).toEqual(query.key({ limit: 10 }));
 });
 
 test("requires trusted context separately from public variables", () => {

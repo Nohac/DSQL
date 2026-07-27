@@ -16,7 +16,7 @@ use dsql_core::source::{
     insert_source_scoped,
 };
 
-use crate::{imdb_catalog, render_diagnostic_facts, replace_source_text};
+use crate::{imdb_catalog, provider_scalar_catalog, render_diagnostic_facts, replace_source_text};
 
 async fn render_index(bowl: &bowl::Bowl, catalog: &dsql_core::catalog::Catalog) -> String {
     let rows = bowl.scoop::<Query<(bowl::Entity, &PolicyIndex)>>().await;
@@ -331,6 +331,32 @@ async fn trusted_context_type_conflicts_fail_across_policy_and_operation_boundar
 
     insta::assert_snapshot!(format!(
         "policy-policy:\n{policies}\n\npolicy-query:\n{query}\n\ncross-root:\n{roots}\n\nfragments:\n{fragments}"
+    ));
+}
+
+#[tokio::test]
+async fn provider_policy_context_conflicts_are_order_independent() {
+    async fn case(source: &str) -> String {
+        let bowl = language_bowl().await;
+        insert_catalog(&bowl, provider_scalar_catalog()).await;
+        arm_editor_demands(&bowl).await;
+        insert_source(&bowl, "provider-policy.dsql", source).await;
+        render_diagnostic_facts(&bowl).await
+    }
+
+    let date_then_inet =
+        case("filter Mixed on events { where .event_date == $:shared and .address == $:shared }")
+            .await;
+    let inet_then_date =
+        case("filter Mixed on events { where .address == $:shared and .event_date == $:shared }")
+            .await;
+    let matching = case(
+        "filter Matching on events { where .event_date >= $:shared and .event_date <= $:shared }",
+    )
+    .await;
+
+    insta::assert_snapshot!(format!(
+        "date then inet:\n{date_then_inet}\n\ninet then date:\n{inet_then_date}\n\nmatching:\n{matching}"
     ));
 }
 

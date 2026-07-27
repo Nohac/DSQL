@@ -12,7 +12,7 @@ use bowl::{
     With,
 };
 
-use crate::catalog::CatalogSnapshot;
+use crate::catalog::{CatalogSnapshot, WireEncoding};
 use crate::entities::expression::{
     DynamicInputSurface, Expr, PathAnchor, VariableRef, build_expr, build_filter_assignment,
     build_variable_ref, dynamic_input_surface, expr_child,
@@ -353,6 +353,8 @@ pub(crate) fn check_clause(
                         DiagnosticCode::FieldNotFound,
                         format!("field `{}` not found on table `{table_name}`", item.field),
                     );
+                } else if let Some(column) = resolved_item.and_then(|item| item.column) {
+                    check_unmapped_column_type(ctx, entity, item.field_span, column);
                 }
             }
         }
@@ -526,6 +528,7 @@ fn check_predicate_expr(
             }
         }
         Expr::Binary { op, lhs, rhs, .. } => {
+            check_unmapped_comparison_operand(ctx, resolved, entity, lhs, rhs);
             match op {
                 BinaryOp::Comparison(op) => {
                     check_aggregate_comparison_operator(ctx, resolved, entity, lhs, *op, rhs);
@@ -733,6 +736,9 @@ fn check_membership_types(
     let Some((_, capabilities)) = resolved_expr_semantics(ctx, resolved, lhs) else {
         return;
     };
+    if capabilities.wire == WireEncoding::Unsupported {
+        return;
+    }
     let Expr::List { items, .. } = rhs else {
         if !matches!(rhs, Expr::Variable { .. }) {
             ctx.error(
@@ -886,6 +892,9 @@ fn check_operator_variable(
     let Some((data_type, capabilities)) = resolved_expr_semantics(ctx, resolved, path) else {
         return;
     };
+    if capabilities.wire == WireEncoding::Unsupported {
+        return;
+    }
     let Some(allowed) = &operator.operators else {
         return;
     };
@@ -960,6 +969,9 @@ fn check_binary_predicate_types(
     let Some((_, capabilities)) = resolved_expr_semantics(ctx, resolved, path) else {
         return;
     };
+    if capabilities.wire == WireEncoding::Unsupported {
+        return;
+    }
     if matches!(path, Expr::Aggregate { .. }) && !capabilities.supports(op) {
         return;
     }
@@ -1022,6 +1034,56 @@ fn resolved_path_type(
     ctx.catalog
         .column_by_id(column)
         .map(|column| ctx.catalog.data_type_for_column(column.id))
+}
+
+fn check_unmapped_comparison_operand(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    resolved: Option<&crate::resolution::ResolvedClause>,
+    entity: bowl::Entity,
+    lhs: &Expr,
+    rhs: &Expr,
+) {
+    let path = match (lhs, rhs) {
+        (
+            path @ Expr::Path { .. },
+            Expr::Literal { .. } | Expr::Variable { .. } | Expr::List { .. },
+        )
+        | (
+            Expr::Literal { .. } | Expr::Variable { .. } | Expr::List { .. },
+            path @ Expr::Path { .. },
+        ) => path,
+        _ => return,
+    };
+    let Some(column) = resolved
+        .and_then(|resolved| resolved.path_at(path.span()))
+        .and_then(|path| path.terminal.column())
+    else {
+        return;
+    };
+    check_unmapped_column_type(ctx, entity, path.span(), column);
+}
+
+fn check_unmapped_column_type(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    entity: bowl::Entity,
+    span: Span,
+    column: crate::catalog::ColumnId,
+) {
+    let Some(data_type) = ctx.catalog.type_for_column(column) else {
+        return;
+    };
+    if data_type.capabilities.wire != WireEncoding::Unsupported {
+        return;
+    }
+    ctx.error(
+        entity,
+        span,
+        crate::facts::DiagnosticCode::UnmappedType,
+        format!(
+            "database type `{}` cannot be used as an input",
+            data_type.readable_type
+        ),
+    );
 }
 
 fn resolved_expr_semantics<'a>(

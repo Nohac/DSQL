@@ -1,7 +1,9 @@
 import type {
+  DynamicInputField,
   DynamicInputMetadata,
   DynamicInputSite,
   DynamicInputSiteField,
+  WireMetadata,
 } from "./generated/metadata.ts";
 
 export type DsqlOperation<
@@ -159,6 +161,7 @@ export type DsqlInputDefault = {
 export type DsqlInputField = {
   readonly path: string;
   readonly data_type: string;
+  readonly wire: WireMetadata;
   readonly collection?: boolean;
   readonly enum_values?: readonly string[];
   readonly required: boolean;
@@ -376,7 +379,8 @@ function renderDsqlDynamicPredicate(
         `dsql input ${path}.${key} must be a field-operator object`,
       );
     }
-    const dataType = dsqlDynamicFieldDataType(input, key);
+    const inputField = dsqlDynamicField(input, key);
+    const dataType = inputField.data_type;
     for (const operatorName of Object.keys(item).sort()) {
       const operand = item[operatorName];
       const operator = field.operators.find(
@@ -408,14 +412,14 @@ function renderDsqlDynamicPredicate(
           throw new Error(`dsql input ${operandPath} must be an array`);
         }
         for (const value of operand) {
-          validateDsqlDynamicScalar(dataType, value, operandPath);
+          validateDsqlDynamicScalar(inputField, value, operandPath);
         }
         if (operand.length === 0) {
           predicates.push(operatorName === "in" ? "FALSE" : "TRUE");
           continue;
         }
       } else if (operator.value_kind === "scalar") {
-        validateDsqlDynamicScalar(dataType, operand, operandPath);
+        validateDsqlDynamicScalar(inputField, operand, operandPath);
       } else {
         invalidDsqlDynamicMetadata(
           `operator ${operatorName} has unknown value kind ${operator.value_kind}`,
@@ -484,12 +488,12 @@ function dsqlDynamicSiteField(
   );
 }
 
-function dsqlDynamicFieldDataType(
+function dsqlDynamicField(
   input: DynamicInputMetadata,
   key: string,
-): string {
+): DynamicInputField {
   return (
-    input.fields.find((field) => field.key === key)?.data_type ??
+    input.fields.find((field) => field.key === key) ??
     invalidDsqlDynamicMetadata(`input ${input.path} has no field ${key}`)
   );
 }
@@ -509,29 +513,31 @@ function dsqlDynamicParameter(
 }
 
 function validateDsqlDynamicScalar(
-  dataType: string,
+  field: DynamicInputField,
   value: unknown,
   path: string,
 ): void {
+  const dataType = field.data_type;
   if (value === null || value === undefined) {
     throw new Error(`dsql input ${path} must be a non-null ${dataType}`);
   }
+  const wire = field.wire.encoding;
   const valid =
-    dataType === "text"
+    wire === "text" || wire === "text_cast"
       ? typeof value === "string"
-      : dataType === "uuid"
+      : wire === "uuid"
         ? typeof value === "string" && DSQL_UUID.test(value)
-        : dataType === "timestamptz"
+        : wire === "timestamptz"
           ? typeof value === "string" && isDsqlRfc3339Timestamp(value)
-      : dataType === "int"
+      : wire === "integer"
         ? Number.isSafeInteger(value)
-        : dataType === "float"
+        : wire === "float"
           ? typeof value === "number" && Number.isFinite(value)
-          : dataType === "numeric"
+          : wire === "numeric"
             ? typeof value === "string" && DSQL_NUMERIC.test(value)
-            : dataType === "boolean"
+            : wire === "boolean"
               ? typeof value === "boolean"
-              : dataType === "json";
+              : wire === "json";
   if (!valid) {
     throw new Error(`dsql input ${path} must be a valid ${dataType}`);
   }
@@ -636,31 +642,76 @@ export function materializeDsqlBindings(
       const identity = field.data_type === "dynamic_predicate" ? {} : [];
       materialized = setDsqlPath(materialized, field.path, identity);
     }
-    validateDsqlSafeInteger(field, value);
+    validateDsqlInput(field, value);
   }
   return materialized;
 }
 
-function validateDsqlSafeInteger(
-  field: DsqlInputField,
-  value: unknown,
-): void {
-  if (value === null || value === undefined || field.data_type !== "int") {
+function validateDsqlInput(field: DsqlInputField, value: unknown): void {
+  if (
+    value === null ||
+    value === undefined ||
+    field.data_type === "dynamic_predicate" ||
+    field.data_type === "dynamic_order"
+  ) {
     return;
   }
-  if (field.collection === true) {
-    if (
-      !Array.isArray(value) ||
-      !value.every((item) => item === null || Number.isSafeInteger(item))
-    ) {
-      throw new Error(
-        `operation input ${field.path} must be an array of safe integers`,
-      );
+  const wire = field.wire.encoding;
+  if (wire === "integer") {
+    if (field.collection === true) {
+      if (
+        !Array.isArray(value) ||
+        !value.every((item) => item === null || Number.isSafeInteger(item))
+      ) {
+        throw new Error(
+          `operation input ${field.path} must be an array of safe integers`,
+        );
+      }
+      return;
+    }
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(`operation input ${field.path} must be a safe integer`);
     }
     return;
   }
-  if (!Number.isSafeInteger(value)) {
-    throw new Error(`operation input ${field.path} must be a safe integer`);
+  if (field.collection === true) {
+    if (!Array.isArray(value)) {
+      throw new Error(
+        `operation input ${field.path} must be an array of ${field.data_type}`,
+      );
+    }
+    for (const item of value) {
+      if (item !== null) {
+        validateDsqlScalar(field, item);
+      }
+    }
+    return;
+  }
+  validateDsqlScalar(field, value);
+}
+
+function validateDsqlScalar(field: DsqlInputField, value: unknown): void {
+  const wire = field.wire.encoding;
+  const valid =
+    wire === "text" || wire === "text_cast"
+      ? typeof value === "string"
+      : wire === "uuid"
+        ? typeof value === "string" && DSQL_UUID.test(value)
+        : wire === "timestamptz"
+          ? typeof value === "string" && isDsqlRfc3339Timestamp(value)
+          : wire === "integer"
+            ? Number.isSafeInteger(value)
+            : wire === "float"
+              ? typeof value === "number" && Number.isFinite(value)
+              : wire === "numeric"
+                ? typeof value === "string" && DSQL_NUMERIC.test(value)
+                : wire === "boolean"
+                  ? typeof value === "boolean"
+                  : wire === "json";
+  if (!valid) {
+    throw new Error(
+      `operation input ${field.path} must be a valid ${field.data_type}`,
+    );
   }
 }
 

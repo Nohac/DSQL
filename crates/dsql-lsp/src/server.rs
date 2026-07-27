@@ -327,20 +327,7 @@ impl LanguageServer for Backend {
             }
         };
         if !populated {
-            insert_catalog(
-                &self.bowl,
-                Catalog {
-                    default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
-                    schemas: Vec::new(),
-                    tables: Vec::new(),
-                    types: Vec::new(),
-                    columns: Vec::new(),
-                    foreign_keys: Vec::new(),
-                    relations: Vec::new(),
-                    uniqueness_supports: Vec::new(),
-                },
-            )
-            .await;
+            insert_catalog(&self.bowl, Catalog::empty()).await;
         }
         arm_editor_demands(&self.bowl).await;
 

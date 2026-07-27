@@ -8,18 +8,24 @@ MaterializedOperation {
         BoundParameter {
             path: "params.tenant",
             data_type: "int",
+            wire: "integer",
+            provider_type: None,
             collection: false,
             value: 7,
         },
         BoundParameter {
             path: "params.search.and[0].name.like",
             data_type: "text",
+            wire: "text",
+            provider_type: None,
             collection: false,
             value: "A%",
         },
         BoundParameter {
             path: "params.search.or[0].id.in",
             data_type: "int",
+            wire: "integer",
+            provider_type: None,
             collection: true,
             value: [
                 1,

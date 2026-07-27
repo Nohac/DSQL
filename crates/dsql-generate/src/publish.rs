@@ -66,8 +66,8 @@ struct MatchLockVersion {
     version: u32,
 }
 
-/// Pointer reader tolerating version-1 manifests (no `generationId`);
-/// the public [`BuildManifest`] requires the field in version 2.
+/// Minimal publication pointer header used only to avoid reusing generation
+/// identifiers. This is not an artifact compatibility reader.
 #[derive(facet::Facet)]
 struct PointerManifest {
     #[facet(default)]

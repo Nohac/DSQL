@@ -1,6 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/variables.rs
-
+assertion_line: 132
 expression: "format!(\"{scalar}\\n\\n---\\n\\n{operator}\\n\\n---\\n\\n{order_by_direction}\\n\\n---\\n\\n{fragment}\")"
 ---
 scalar
@@ -22,8 +22,8 @@ input.posts.clause.limit Structured Limit Int None operators=[] enum=[]
 ---
 
 order_by_direction
-input.posts.clause.order_by.created_at.direction.created_dir Structured SortDirection Unknown Some("created_dir") operators=[] enum=[asc|desc]
-params.direction TopLevel SortDirection Unknown None operators=[] enum=[asc|desc]
+input.posts.clause.order_by.created_at.direction.created_dir Structured SortDirection Text Some("created_dir") operators=[] enum=[asc|desc]
+params.direction TopLevel SortDirection Text None operators=[] enum=[asc|desc]
 
 ---
 

@@ -1,9 +1,10 @@
+export const BUILD_MANIFEST_VERSION = 3 as const;
+
 export interface BuildManifest {
   version: number;
   /**
    * The project-monotonic generation this manifest commits
-   * (docs/spec/build-daemon.md). Required in version 2; version-1
-   * pointers are read through a private compatibility reader.
+   * (docs/spec/build-daemon.md).
    */
   generationId: number;
   operations: OperationManifestEntry[];
@@ -51,7 +52,8 @@ export interface SourceMapEntry {
    * content between the host's backticks (the extractor's `content`
    * capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
    * offsets into the host file; identical across definitions from the
-   * same embedded expression. Additive to manifest version 2.
+   * same embedded expression. Required for embedded sources in manifest
+   * version 3; absent for standalone `.dsql` sources.
    */
   content_range?: SourceRange;
 }
@@ -154,15 +156,29 @@ export interface DynamicInputField {
   key: string;
   catalog_path: string;
   data_type: string;
+  wire: WireMetadata;
   nullable: boolean;
   access: string;
   operators: string[];
   directions: string[];
 }
 
+/** Public JSON encoding plus an optional PostgreSQL text-cast target. */
+export interface WireMetadata {
+  encoding: string;
+  provider_type?: ProviderTypeMetadata;
+}
+
+/** Schema-qualified PostgreSQL type identity used only for generated casts. */
+export interface ProviderTypeMetadata {
+  schema: string;
+  name: string;
+}
+
 export interface InputField {
   path: string;
   data_type: string;
+  wire: WireMetadata;
   collection?: boolean;
   enum_values: string[];
   required: boolean;
@@ -189,6 +205,7 @@ export interface ResultField {
   parent_path: string;
   kind: string;
   data_type: string;
+  wire: WireMetadata;
   nullable: boolean;
   /** `unconditional`, `context_only`, or `row_dependent`. */
   access: string;
@@ -226,10 +243,9 @@ export interface FragmentMetadata {
   /**
    * Fragment spreads the body expanded, path-qualified like the
    * operation-level field (the empty path is the fragment root):
-   * renderers compose fragment types by reuse from this. Additive to
-   * manifest version 2 — readers treat absence as empty.
+   * renderers compose fragment types by reuse from this.
    */
-  fragment_spreads?: FragmentSpreadMetadata[];
+  fragment_spreads: FragmentSpreadMetadata[];
   source_map: SourceMapEntry[];
 }
 
@@ -242,7 +258,8 @@ export interface SourceMapEntry {
    * content between the host's backticks (the extractor's `content`
    * capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
    * offsets into the host file; identical across definitions from the
-   * same embedded expression. Additive to manifest version 2.
+   * same embedded expression. Required for embedded sources in manifest
+   * version 3; absent for standalone `.dsql` sources.
    */
   content_range?: SourceRange;
 }
@@ -299,15 +316,29 @@ export interface DynamicInputField {
   key: string;
   catalog_path: string;
   data_type: string;
+  wire: WireMetadata;
   nullable: boolean;
   access: string;
   operators: string[];
   directions: string[];
 }
 
+/** Public JSON encoding plus an optional PostgreSQL text-cast target. */
+export interface WireMetadata {
+  encoding: string;
+  provider_type?: ProviderTypeMetadata;
+}
+
+/** Schema-qualified PostgreSQL type identity used only for generated casts. */
+export interface ProviderTypeMetadata {
+  schema: string;
+  name: string;
+}
+
 export interface InputField {
   path: string;
   data_type: string;
+  wire: WireMetadata;
   collection?: boolean;
   enum_values: string[];
   required: boolean;
@@ -334,6 +365,7 @@ export interface ResultField {
   parent_path: string;
   kind: string;
   data_type: string;
+  wire: WireMetadata;
   nullable: boolean;
   /** `unconditional`, `context_only`, or `row_dependent`. */
   access: string;

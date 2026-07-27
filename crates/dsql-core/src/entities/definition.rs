@@ -574,7 +574,7 @@ struct VariableShapeNode {
 enum VariableShapeValue {
     Scalar(String),
     Dynamic {
-        binding: VariableBinding,
+        binding: Box<VariableBinding>,
         contract: DynamicInputContract,
     },
 }
@@ -585,7 +585,7 @@ fn variable_shape(bindings: &[VariableBinding], dynamic_inputs: &[DynamicInputCo
         let value = dynamic_contract(binding, dynamic_inputs).map_or_else(
             || VariableShapeValue::Scalar(variable_type_label(binding)),
             |contract| VariableShapeValue::Dynamic {
-                binding: binding.clone(),
+                binding: Box::new(binding.clone()),
                 contract: contract.clone(),
             },
         );

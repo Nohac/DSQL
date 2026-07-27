@@ -33,6 +33,7 @@ impl Catalog {
 
         Self {
             default_schema: Self::DEFAULT_SCHEMA.to_string(),
+            type_ids: Default::default(),
             schemas: vec![
                 Schema::new(public, "public", vec![users, posts]),
                 Schema::new(other_schema, "other_schema", vec![other_users]),

@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use dsql_metadata::{
-    DynamicInputMetadata, DynamicInputSite, DynamicInputSiteField, InputDefault, InputField,
-    OperationMetadata,
+    DynamicInputField, DynamicInputMetadata, DynamicInputSite, DynamicInputSiteField, InputDefault,
+    InputField, OperationMetadata, WireMetadata,
 };
 use facet_value::{VArray, VObject, Value};
 use sqlx::postgres::{PgArguments, PgPool, PgPoolOptions};
@@ -55,6 +55,8 @@ pub struct MaterializedOperation {
 pub struct BoundParameter {
     pub path: String,
     pub data_type: String,
+    pub wire: String,
+    pub provider_type: Option<(String, String)>,
     pub collection: bool,
     pub value: Value,
 }
@@ -73,6 +75,8 @@ pub enum ExecuteError {
     InvalidVariant { path: String, value: String },
     #[error("operation input `{path}` uses unsupported logical type `{data_type}`")]
     UnsupportedType { path: String, data_type: String },
+    #[error("operation input `{path}` is not valid for provider type `{data_type}`")]
+    InvalidProviderInput { path: String, data_type: String },
     #[error("operation dynamic input metadata is invalid: {0}")]
     InvalidDynamicMetadata(String),
     #[error("operation kind `{0}` cannot be executed as a PostgreSQL query")]
@@ -123,15 +127,62 @@ impl PostgresExecutor {
         for parameter in &materialized.parameters {
             query = bind(query, parameter)?;
         }
-        query
-            .fetch_one(&self.pool)
-            .await?
-            .map_or(Ok(Value::NULL), |output| {
-                let mut output: Value = facet_json::from_str(&output)
-                    .map_err(|error| ExecuteError::InvalidOutput(error.to_string()))?;
-                sort_object_keys(&mut output);
-                Ok(output)
-            })
+        let output = match query.fetch_one(&self.pool).await {
+            Ok(output) => output,
+            Err(error) => {
+                if database_error_is_class(&error, "22")
+                    && let Some(invalid) = self
+                        .probe_text_cast_parameters(&materialized.parameters)
+                        .await
+                {
+                    return Err(invalid);
+                }
+                return Err(ExecuteError::Database(error));
+            }
+        };
+        output.map_or(Ok(Value::NULL), |output| {
+            let mut output: Value = facet_json::from_str(&output)
+                .map_err(|error| ExecuteError::InvalidOutput(error.to_string()))?;
+            sort_object_keys(&mut output);
+            Ok(output)
+        })
+    }
+
+    async fn probe_text_cast_parameters(
+        &self,
+        parameters: &[BoundParameter],
+    ) -> Option<ExecuteError> {
+        for parameter in parameters {
+            if parameter.wire != "text_cast" || parameter.value.is_null() {
+                continue;
+            }
+            let Some((schema, name)) = &parameter.provider_type else {
+                continue;
+            };
+            let type_name = format!(
+                "\"{}\".\"{}\"",
+                schema.replace('"', "\"\""),
+                name.replace('"', "\"\"")
+            );
+            let sql = if parameter.collection {
+                format!("select ((($1)::text[])::{type_name}[])::text")
+            } else {
+                format!("select ((($1)::text)::{type_name})::text")
+            };
+            let query = sqlx::query_scalar::<Postgres, Option<String>>(AssertSqlSafe(sql));
+            let Ok(query) = bind(query, parameter) else {
+                continue;
+            };
+            if let Err(error) = query.fetch_optional(&self.pool).await
+                && database_error_is_class(&error, "22")
+            {
+                return Some(ExecuteError::InvalidProviderInput {
+                    path: parameter.path.clone(),
+                    data_type: format!("{schema}.{name}"),
+                });
+            }
+        }
+        None
     }
 }
 
@@ -199,6 +250,8 @@ pub fn materialize(
             Ok(BoundParameter {
                 path: parameter.path.clone(),
                 data_type: field.data_type.clone(),
+                wire: field_wire(field).to_string(),
+                provider_type: field_provider_type(field),
                 collection: field.collection == Some(true),
                 value: materialized_value(&values, &parameter.path)?.clone(),
             })
@@ -400,16 +453,13 @@ fn render_dynamic_predicate(
                     let operand_path = format!("{path}.{field_key}.{operator_name}");
                     let predicate = match operator.value_kind.as_str() {
                         "scalar" => {
-                            validate_dynamic_scalar(
-                                &field_data_type(input, field_key)?,
-                                operand,
-                                &operand_path,
-                            )?;
+                            let field = dynamic_field(input, field_key)?;
+                            validate_dynamic_scalar(field, operand, &operand_path)?;
                             let placeholder = dynamic_parameter(
                                 parameters,
                                 operand_index,
                                 &operand_path,
-                                &field_data_type(input, field_key)?,
+                                field,
                                 false,
                                 operand,
                             )?;
@@ -420,11 +470,8 @@ fn render_dynamic_predicate(
                             )
                         }
                         "collection" => {
-                            validate_dynamic_collection(
-                                &field_data_type(input, field_key)?,
-                                operand,
-                                &operand_path,
-                            )?;
+                            let field = dynamic_field(input, field_key)?;
+                            validate_dynamic_collection(field, operand, &operand_path)?;
                             let Some(items) = operand.as_array() else {
                                 return Err(invalid(&operand_path, "a collection"));
                             };
@@ -439,7 +486,7 @@ fn render_dynamic_predicate(
                                     parameters,
                                     operand_index,
                                     &operand_path,
-                                    &field_data_type(input, field_key)?,
+                                    field,
                                     true,
                                     operand,
                                 )?;
@@ -536,12 +583,14 @@ fn dynamic_site_field<'a>(
         })
 }
 
-fn field_data_type(input: &DynamicInputMetadata, key: &str) -> Result<String, ExecuteError> {
+fn dynamic_field<'a>(
+    input: &'a DynamicInputMetadata,
+    key: &str,
+) -> Result<&'a DynamicInputField, ExecuteError> {
     input
         .fields
         .iter()
         .find(|field| field.key == key)
-        .map(|field| field.data_type.clone())
         .ok_or_else(|| {
             ExecuteError::InvalidDynamicMetadata(format!(
                 "input `{}` has no field `{key}`",
@@ -550,18 +599,37 @@ fn field_data_type(input: &DynamicInputMetadata, key: &str) -> Result<String, Ex
         })
 }
 
+fn field_wire(field: &InputField) -> &str {
+    &field.wire.encoding
+}
+
+fn dynamic_field_wire(field: &DynamicInputField) -> &str {
+    &field.wire.encoding
+}
+
+fn field_provider_type(field: &InputField) -> Option<(String, String)> {
+    field_provider_type_from_wire(&field.wire)
+}
+
+fn field_provider_type_from_wire(wire: &WireMetadata) -> Option<(String, String)> {
+    let provider = wire.provider_type.as_ref()?;
+    Some((provider.schema.clone(), provider.name.clone()))
+}
+
 fn dynamic_parameter(
     parameters: &mut Vec<BoundParameter>,
     operand_index: &mut usize,
     path: &str,
-    data_type: &str,
+    field: &DynamicInputField,
     collection: bool,
     value: &Value,
 ) -> Result<String, ExecuteError> {
     if *operand_index == parameters.len() {
         parameters.push(BoundParameter {
             path: path.to_string(),
-            data_type: data_type.to_string(),
+            data_type: field.data_type.clone(),
+            wire: dynamic_field_wire(field).to_string(),
+            provider_type: field_provider_type_from_wire(&field.wire),
             collection,
             value: value.clone(),
         });
@@ -571,7 +639,9 @@ fn dynamic_parameter(
                 "dynamic operand allocation is not contiguous".to_string(),
             ));
         };
-        if existing.data_type != data_type
+        if existing.data_type != field.data_type
+            || existing.wire != dynamic_field_wire(field)
+            || existing.provider_type != field_provider_type_from_wire(&field.wire)
             || existing.collection != collection
             || existing.value != *value
         {
@@ -589,38 +659,47 @@ fn parenthesized_join(items: Vec<String>, separator: &str) -> String {
 }
 
 fn validate_dynamic_collection(
-    data_type: &str,
+    field: &DynamicInputField,
     value: &Value,
     path: &str,
 ) -> Result<(), ExecuteError> {
     let Some(items) = value.as_array() else {
-        return Err(invalid(path, &format!("an array of {data_type} values")));
+        return Err(invalid(
+            path,
+            &format!("an array of {} values", field.data_type),
+        ));
     };
     for item in items {
         if item.is_null() {
             return Err(invalid(path, "a collection without null elements"));
         }
-        validate_dynamic_scalar(data_type, item, path)?;
+        validate_dynamic_scalar(field, item, path)?;
     }
     Ok(())
 }
 
-fn validate_dynamic_scalar(data_type: &str, value: &Value, path: &str) -> Result<(), ExecuteError> {
+fn validate_dynamic_scalar(
+    field: &DynamicInputField,
+    value: &Value,
+    path: &str,
+) -> Result<(), ExecuteError> {
+    let data_type = field.data_type.as_str();
     if value.is_null() {
         return Err(invalid(path, &format!("a non-null {data_type} value")));
     }
-    let valid = match data_type {
+    let valid = match dynamic_field_wire(field) {
         "uuid" => string_value(value).is_some_and(|value| Uuid::parse_str(value).is_ok()),
         "text" => string_value(value).is_some(),
+        "text_cast" => string_value(value).is_some(),
         "timestamptz" => {
             string_value(value).is_some_and(|value| DateTime::parse_from_rfc3339(value).is_ok())
         }
-        "int" => integer_value(value).is_some_and(is_safe_integer),
+        "integer" => integer_value(value).is_some_and(is_safe_integer),
         "numeric" => string_value(value).is_some_and(|value| BigDecimal::from_str(value).is_ok()),
         "float" => float_value(value).is_some_and(f64::is_finite),
         "boolean" => value.as_bool().is_some(),
         "json" => true,
-        data_type => {
+        _ => {
             return Err(ExecuteError::UnsupportedType {
                 path: path.to_string(),
                 data_type: data_type.to_string(),
@@ -681,11 +760,12 @@ fn input_value(
         ));
     }
     validate_safe_integer(field, &value)?;
+    validate_input_wire(field, &value)?;
     Ok(Some(value))
 }
 
 fn validate_safe_integer(field: &InputField, value: &Value) -> Result<(), ExecuteError> {
-    if value.is_null() || field.data_type != "int" {
+    if value.is_null() || field_wire(field) != "integer" {
         return Ok(());
     }
     if field.collection == Some(true) {
@@ -704,6 +784,59 @@ fn validate_safe_integer(field: &InputField, value: &Value) -> Result<(), Execut
         Ok(())
     } else {
         Err(invalid(&field.path, "a safe integer"))
+    }
+}
+
+fn validate_input_wire(field: &InputField, value: &Value) -> Result<(), ExecuteError> {
+    if value.is_null()
+        || field_wire(field) == "integer"
+        || matches!(
+            field.data_type.as_str(),
+            "dynamic_predicate" | "dynamic_order"
+        )
+    {
+        return Ok(());
+    }
+    if field.collection == Some(true) {
+        let Some(values) = value.as_array() else {
+            return Err(invalid(
+                &field.path,
+                &format!("an array of {}", field.data_type),
+            ));
+        };
+        for value in values {
+            if !value.is_null() && !input_scalar_is_valid(field, value) {
+                return Err(invalid(
+                    &field.path,
+                    &format!("an array of valid {} values", field.data_type),
+                ));
+            }
+        }
+        return Ok(());
+    }
+    if input_scalar_is_valid(field, value) {
+        Ok(())
+    } else {
+        Err(invalid(
+            &field.path,
+            &format!("a valid {}", field.data_type),
+        ))
+    }
+}
+
+fn input_scalar_is_valid(field: &InputField, value: &Value) -> bool {
+    match field_wire(field) {
+        "uuid" => string_value(value).is_some_and(|value| Uuid::parse_str(value).is_ok()),
+        "text" | "text_cast" => string_value(value).is_some(),
+        "timestamptz" => {
+            string_value(value).is_some_and(|value| DateTime::parse_from_rfc3339(value).is_ok())
+        }
+        "numeric" => string_value(value).is_some_and(|value| BigDecimal::from_str(value).is_ok()),
+        "float" => float_value(value).is_some(),
+        "boolean" => value.as_bool().is_some(),
+        "json" => true,
+        "integer" | "unsupported" => false,
+        _ => false,
     }
 }
 
@@ -819,6 +952,13 @@ fn invalid(path: &str, expected: &str) -> ExecuteError {
     }
 }
 
+fn database_error_is_class(error: &sqlx::Error, class: &str) -> bool {
+    error
+        .as_database_error()
+        .and_then(|error| error.code())
+        .is_some_and(|code| code.starts_with(class))
+}
+
 fn bind_scalar<'q>(
     query: Query<'q>,
     parameter: &'q BoundParameter,
@@ -828,24 +968,25 @@ fn bind_scalar<'q>(
     if value.is_null() {
         return bind_null_scalar(query, parameter);
     }
-    match parameter.data_type.as_str() {
+    match parameter.wire.as_str() {
         "uuid" => Ok(query
             .bind(Uuid::parse_str(string_value(value).ok_or_else(error)?).map_err(|_| error())?)),
         "text" => Ok(query.bind(string_value(value).ok_or_else(error)?)),
+        "text_cast" => Ok(query.bind(string_value(value).ok_or_else(error)?)),
         "timestamptz" => Ok(query.bind(
             DateTime::parse_from_rfc3339(string_value(value).ok_or_else(error)?)
                 .map_err(|_| error())?,
         )),
-        "int" => Ok(query.bind(integer_value(value).ok_or_else(error)?)),
+        "integer" => Ok(query.bind(integer_value(value).ok_or_else(error)?)),
         "numeric" => Ok(query.bind(
             BigDecimal::from_str(string_value(value).ok_or_else(error)?).map_err(|_| error())?,
         )),
         "float" => Ok(query.bind(float_value(value).ok_or_else(error)?)),
         "boolean" => Ok(query.bind(value.as_bool().ok_or_else(error)?)),
         "json" => Ok(query.bind(Json(json_value(parameter)?))),
-        data_type => Err(ExecuteError::UnsupportedType {
+        _ => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
-            data_type: data_type.to_string(),
+            data_type: parameter.data_type.clone(),
         }),
     }
 }
@@ -854,18 +995,19 @@ fn bind_null_scalar<'q>(
     query: Query<'q>,
     parameter: &BoundParameter,
 ) -> Result<Query<'q>, ExecuteError> {
-    match parameter.data_type.as_str() {
+    match parameter.wire.as_str() {
         "uuid" => Ok(query.bind(None::<Uuid>)),
         "text" => Ok(query.bind(None::<String>)),
+        "text_cast" => Ok(query.bind(None::<String>)),
         "timestamptz" => Ok(query.bind(None::<DateTime<FixedOffset>>)),
-        "int" => Ok(query.bind(None::<i64>)),
+        "integer" => Ok(query.bind(None::<i64>)),
         "numeric" => Ok(query.bind(None::<BigDecimal>)),
         "float" => Ok(query.bind(None::<f64>)),
         "boolean" => Ok(query.bind(None::<bool>)),
         "json" => Ok(query.bind(None::<Json<Box<JsonRawValue>>>)),
-        data_type => Err(ExecuteError::UnsupportedType {
+        _ => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
-            data_type: data_type.to_string(),
+            data_type: parameter.data_type.clone(),
         }),
     }
 }
@@ -889,9 +1031,22 @@ fn bind_collection<'q>(
             &format!("an array of {}", parameter.data_type),
         )
     };
-    match parameter.data_type.as_str() {
+    match parameter.wire.as_str() {
         "uuid" => Ok(query.bind(parse_strings(values, Uuid::parse_str).ok_or_else(error)?)),
         "text" => Ok(query.bind(
+            values
+                .iter()
+                .map(|value| {
+                    if value.is_null() {
+                        Some(None)
+                    } else {
+                        string_value(value).map(|value| Some(value.to_string()))
+                    }
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(error)?,
+        )),
+        "text_cast" => Ok(query.bind(
             values
                 .iter()
                 .map(|value| {
@@ -907,7 +1062,7 @@ fn bind_collection<'q>(
         "timestamptz" => {
             Ok(query.bind(parse_strings(values, DateTime::parse_from_rfc3339).ok_or_else(error)?))
         }
-        "int" => Ok(query.bind(
+        "integer" => Ok(query.bind(
             values
                 .iter()
                 .map(|value| {
@@ -955,9 +1110,9 @@ fn bind_collection<'q>(
                 .collect::<Result<Vec<_>, ExecuteError>>()?;
             Ok(query.bind(values))
         }
-        data_type => Err(ExecuteError::UnsupportedType {
+        _ => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
-            data_type: data_type.to_string(),
+            data_type: parameter.data_type.clone(),
         }),
     }
 }
@@ -966,18 +1121,19 @@ fn bind_null_collection<'q>(
     query: Query<'q>,
     parameter: &BoundParameter,
 ) -> Result<Query<'q>, ExecuteError> {
-    match parameter.data_type.as_str() {
+    match parameter.wire.as_str() {
         "uuid" => Ok(query.bind(None::<Vec<Option<Uuid>>>)),
         "text" => Ok(query.bind(None::<Vec<Option<String>>>)),
+        "text_cast" => Ok(query.bind(None::<Vec<Option<String>>>)),
         "timestamptz" => Ok(query.bind(None::<Vec<Option<DateTime<FixedOffset>>>>)),
-        "int" => Ok(query.bind(None::<Vec<Option<i64>>>)),
+        "integer" => Ok(query.bind(None::<Vec<Option<i64>>>)),
         "numeric" => Ok(query.bind(None::<Vec<Option<BigDecimal>>>)),
         "float" => Ok(query.bind(None::<Vec<Option<f64>>>)),
         "boolean" => Ok(query.bind(None::<Vec<Option<bool>>>)),
         "json" => Ok(query.bind(None::<Vec<Option<Json<Box<JsonRawValue>>>>>)),
-        data_type => Err(ExecuteError::UnsupportedType {
+        _ => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
-            data_type: data_type.to_string(),
+            data_type: parameter.data_type.clone(),
         }),
     }
 }

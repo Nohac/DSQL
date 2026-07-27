@@ -14,6 +14,7 @@
       {
         "path": "params.tenant",
         "data_type": "int",
+        "wire": { "encoding": "integer" },
         "enum_values": [],
         "required": true,
         "nullable": false
@@ -21,6 +22,7 @@
       {
         "path": "params.search",
         "data_type": "dynamic_predicate",
+        "wire": { "encoding": "unsupported" },
         "enum_values": [],
         "required": false,
         "nullable": true,
@@ -29,6 +31,7 @@
       {
         "path": "params.order",
         "data_type": "dynamic_order",
+        "wire": { "encoding": "unsupported" },
         "enum_values": [],
         "required": false,
         "nullable": true,
@@ -47,6 +50,7 @@
             "key": "amount",
             "catalog_path": "public.readings.amount",
             "data_type": "numeric",
+            "wire": { "encoding": "numeric" },
             "nullable": false,
             "access": "unconditional",
             "operators": ["eq"],
@@ -56,6 +60,7 @@
             "key": "id",
             "catalog_path": "public.readings.id",
             "data_type": "int",
+            "wire": { "encoding": "integer" },
             "nullable": false,
             "access": "unconditional",
             "operators": ["eq", "in", "not_in", "is_null"],
@@ -65,6 +70,7 @@
             "key": "name",
             "catalog_path": "public.readings.name",
             "data_type": "text",
+            "wire": { "encoding": "text" },
             "nullable": false,
             "access": "unconditional",
             "operators": ["like"],
@@ -74,6 +80,7 @@
             "key": "recorded_at",
             "catalog_path": "public.readings.recorded_at",
             "data_type": "timestamptz",
+            "wire": { "encoding": "timestamptz" },
             "nullable": false,
             "access": "unconditional",
             "operators": ["eq"],
@@ -244,6 +251,7 @@
             "key": "id",
             "catalog_path": "public.readings.id",
             "data_type": "int",
+            "wire": { "encoding": "integer" },
             "nullable": false,
             "access": "unconditional",
             "operators": [],

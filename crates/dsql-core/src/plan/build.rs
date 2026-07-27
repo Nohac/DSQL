@@ -32,6 +32,7 @@ use super::types::{
 };
 use crate::catalog::{
     Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
+    TypeKey, WireEncoding,
 };
 use crate::entities::aggregate::ResolvedAggregate;
 use crate::entities::clause::{ClauseFact, OrderDirection, OrderTerm, parse_pagination_value};
@@ -368,9 +369,11 @@ async fn diagnose_policy_query_context_conflicts(
     let binding_requirement = PolicyContextRequirement {
         path: binding.path.clone(),
         data_type: binding.data_type,
+        wire: binding.wire,
+        provider_type: binding.provider_type.clone(),
         collection: binding.collection,
     };
-    if !context_requirements_conflict(requirement, &binding_requirement) {
+    if !requirement.conflicts_with(&binding_requirement) {
         return;
     }
     emit_diagnostic(
@@ -382,7 +385,7 @@ async fn diagnose_policy_query_context_conflicts(
             severity: Severity::Error,
             source: DiagnosticSource::Plan,
             code: DiagnosticCode::TrustedContextTypeConflict,
-            message: context_conflict_message(requirement, &binding_requirement),
+            message: requirement.conflict_message(&binding_requirement),
         },
     );
 }
@@ -690,10 +693,16 @@ impl Planner<'_> {
                     context.push(PolicyContextRequirement {
                         path: path.clone(),
                         data_type: crate::catalog::DataType::Boolean,
+                        wire: WireEncoding::Boolean,
+                        provider_type: None,
                         collection: false,
                     });
                 }
-                Some(FilterExpr::Parameter(SqlParameter { path }))
+                Some(FilterExpr::Parameter(SqlParameter {
+                    path,
+                    text_cast: None,
+                    collection: false,
+                }))
             }
             Expr::Literal {
                 value: LiteralValue::Bool(value),
@@ -1543,6 +1552,26 @@ impl Planner<'_> {
                     ));
                     return;
                 }
+                let mut unsupported = fields
+                    .iter()
+                    .filter_map(|field| {
+                        let data_type = self.catalog.type_for_column(field.column)?;
+                        (data_type.capabilities.wire == WireEncoding::Unsupported)
+                            .then(|| format!("{} ({})", field.key, data_type.readable_type))
+                    })
+                    .collect::<Vec<_>>();
+                unsupported.sort();
+                if !unsupported.is_empty() {
+                    diagnostics.push((
+                        variable.span,
+                        DiagnosticCode::UnmappedType,
+                        format!(
+                            "bounded dynamic input exposes unsupported fields: {}",
+                            unsupported.join(", ")
+                        ),
+                    ));
+                    return;
+                }
                 let path = variable_path(
                     selection_path,
                     VariablePathContext {
@@ -1901,7 +1930,7 @@ impl Planner<'_> {
                             variable,
                         ) {
                             VariableValue::Public(path) => {
-                                FilterCollection::Parameter(SqlParameter { path })
+                                FilterCollection::Parameter(self.sql_parameter(&path))
                             }
                             VariableValue::Default(InputDefault::Collection(items)) => {
                                 FilterCollection::List(
@@ -2170,6 +2199,16 @@ impl Planner<'_> {
             FilterExpr::Optional {
                 parameter: SqlParameter {
                     path: path.to_string(),
+                    text_cast: self
+                        .variables
+                        .iter()
+                        .find(|binding| binding.path == path)
+                        .and_then(|binding| self.binding_text_cast(binding)),
+                    collection: self
+                        .variables
+                        .iter()
+                        .find(|binding| binding.path == path)
+                        .is_some_and(|binding| binding.collection),
                 },
                 operand: Box::new(filter),
             }
@@ -2180,7 +2219,7 @@ impl Planner<'_> {
 
     fn public_filter_value(&self, value: VariableValue) -> Option<FilterExpr> {
         match value {
-            VariableValue::Public(path) => Some(FilterExpr::Parameter(SqlParameter { path })),
+            VariableValue::Public(path) => Some(FilterExpr::Parameter(self.sql_parameter(&path))),
             VariableValue::Default(InputDefault::Null) => Some(FilterExpr::Absent),
             VariableValue::Default(default) => input_default_filter(&default),
         }
@@ -2191,6 +2230,23 @@ impl Planner<'_> {
             .iter()
             .find(|binding| binding.path == path)
             .is_some_and(|binding| binding.nullable)
+    }
+
+    fn sql_parameter(&self, path: &str) -> SqlParameter {
+        let binding = self.variables.iter().find(|binding| binding.path == path);
+        SqlParameter {
+            path: path.to_string(),
+            text_cast: binding.and_then(|binding| self.binding_text_cast(binding)),
+            collection: binding.is_some_and(|binding| binding.collection),
+        }
+    }
+
+    fn binding_text_cast(&self, binding: &VariableBinding) -> Option<TypeKey> {
+        let key = binding.provider_type.as_ref()?;
+        self.catalog
+            .type_by_key(key)
+            .is_some_and(|data_type| data_type.capabilities.wire == WireEncoding::TextCast)
+            .then(|| key.clone())
     }
 
     fn plan_filter_expr_with_path(
@@ -2571,7 +2627,11 @@ fn plan_pagination_value(
             variable.name.as_deref(),
         ) {
             VariableValue::Public(path) => {
-                PlannedPaginationValue::Present(SqlValue::Parameter(SqlParameter { path }))
+                PlannedPaginationValue::Present(SqlValue::Parameter(SqlParameter {
+                    path,
+                    text_cast: None,
+                    collection: false,
+                }))
             }
             VariableValue::Default(InputDefault::Number(value)) => parse_pagination_value(&value)
                 .map(|value| PlannedPaginationValue::Present(SqlValue::Literal(value)))
@@ -2819,11 +2879,11 @@ fn deduplicate_policy_context(
     let mut by_path: BTreeMap<String, PolicyContextRequirement> = BTreeMap::new();
     for requirement in context {
         if let Some(existing) = by_path.get(&requirement.path) {
-            if context_requirements_conflict(existing, &requirement) {
+            if existing.conflicts_with(&requirement) {
                 diagnostics.push((
                     span,
                     DiagnosticCode::TrustedContextTypeConflict,
-                    context_conflict_message(existing, &requirement),
+                    existing.conflict_message(&requirement),
                 ));
             }
         } else {
@@ -2831,33 +2891,6 @@ fn deduplicate_policy_context(
         }
     }
     by_path.into_values().collect()
-}
-
-fn context_requirements_conflict(
-    left: &PolicyContextRequirement,
-    right: &PolicyContextRequirement,
-) -> bool {
-    left.data_type != right.data_type || left.collection != right.collection
-}
-
-fn context_conflict_message(
-    left: &PolicyContextRequirement,
-    right: &PolicyContextRequirement,
-) -> String {
-    format!(
-        "trusted context `{}` is required as both {} and {}",
-        left.path,
-        context_requirement_shape(left),
-        context_requirement_shape(right)
-    )
-}
-
-fn context_requirement_shape(requirement: &PolicyContextRequirement) -> String {
-    if requirement.collection {
-        format!("a collection of `{}`", requirement.data_type.as_str())
-    } else {
-        format!("`{}`", requirement.data_type.as_str())
-    }
 }
 
 fn filter_parameter_paths(filter: &FilterExpr) -> BTreeSet<&str> {

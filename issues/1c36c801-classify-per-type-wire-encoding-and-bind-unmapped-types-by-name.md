@@ -1,6 +1,6 @@
 # Classify per-type wire encoding and bind unmapped types by name
 
-**ID:** 1c36c801 | **Status:** Open | **Created:** 2026-07-26T11:48:49+02:00
+**ID:** 1c36c801 | **Status:** Done | **Created:** 2026-07-26T11:48:49+02:00
 
 Parameter binding is a closed match over eight logical type names in the executor
 and again in the TypeScript runtime. Any other type reaches
@@ -22,6 +22,15 @@ pre-execution validation available for types that declare a pattern (fe7d14cf),
 and specify the resulting error shape.
 
 Sequenced after 4b1e4216.
+
+Resolved with compiler-owned wire classifications carried through inferred
+bindings, generated metadata, SQL templates, the Rust executor, and the
+TypeScript runtime. Provider scalar and enum types without native bindings use
+schema-qualified text casts; incompatible provider input errors are normalized
+after a targeted PostgreSQL cast probe. Live execution coverage includes
+`date`, timestamp without time zone, `inet`, and collection operands. Manifest
+version 3 requires wire metadata on every field; maintained consumers reject
+older manifests instead of reconstructing encodings from logical names.
 
 Acceptance criteria:
 

@@ -1,4 +1,7 @@
-use crate::catalog::{Catalog, Column, ColumnId, DataType, Relation, RelationId, Table, TableId};
+use crate::catalog::{
+    Catalog, Column, ColumnId, DataType, Relation, RelationId, Table, TableId, TypeKey,
+    WireEncoding,
+};
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
     AggregatePlan, CollectionPlan, CollectionResultPlan, DynamicInputFieldPlan, DynamicInputKind,
@@ -206,17 +209,24 @@ impl SqlTemplateContext {
     }
 
     fn parameter(&mut self, parameter: &SqlParameter) -> String {
-        if let Some(index) = self
+        let placeholder = if let Some(index) = self
             .parameters
             .iter()
             .position(|candidate| candidate.path == parameter.path)
         {
-            return format!("${}", index + 1);
-        }
-        self.parameters.push(GeneratedSqlParameter {
-            path: parameter.path.clone(),
-        });
-        format!("${}", self.parameters.len())
+            format!("${}", index + 1)
+        } else {
+            self.parameters.push(GeneratedSqlParameter {
+                path: parameter.path.clone(),
+            });
+            format!("${}", self.parameters.len())
+        };
+        parameter
+            .text_cast
+            .as_ref()
+            .map_or(placeholder.clone(), |target| {
+                text_cast_parameter(&placeholder, target, parameter.collection)
+            })
     }
 
     fn require_policy_context(&mut self, requirements: &[PolicyContextRequirement]) {
@@ -926,7 +936,7 @@ fn generate_aggregate(
             field.output_name.clone(),
             public_scalar_expression(
                 aggregate_expression(field, catalog, current_view, template)?,
-                field.data_type,
+                aggregate_wire(catalog, field),
             ),
         ));
     }
@@ -963,7 +973,14 @@ fn generate_grouped_aggregate(
     for key in &aggregate.group_keys {
         let grouped_column = masked_column_expression(catalog, context, key.column, template)?;
         grouped.expr_as(
-            public_scalar_expression(grouped_column.clone(), key.data_type),
+            public_scalar_expression(
+                grouped_column.clone(),
+                catalog
+                    .type_for_column(key.column)
+                    .map_or(WireEncoding::Unsupported, |data_type| {
+                        data_type.capabilities.wire
+                    }),
+            ),
             Alias::new(&key.output_name),
         );
         grouped.add_group_by([grouped_column]);
@@ -972,7 +989,7 @@ fn generate_grouped_aggregate(
         grouped.expr_as(
             public_scalar_expression(
                 aggregate_expression(field, catalog, context, template)?,
-                field.data_type,
+                aggregate_wire(catalog, field),
             ),
             Alias::new(&field.output_name),
         );
@@ -1739,28 +1756,45 @@ fn generated_dynamic_predicate_fields(
         .iter()
         .map(|field| {
             let expression = dynamic_field_expression(catalog, source, field.column, template)?;
+            let text_cast = catalog.type_for_column(field.column).and_then(|data_type| {
+                (data_type.capabilities.wire == WireEncoding::TextCast).then_some(&data_type.key)
+            });
             let operators = field
                 .operators
                 .iter()
                 .map(|operator| {
                     let (value_kind, before_value, after_value, cases) = match operator {
-                        DynamicPredicateOperator::Eq => dynamic_scalar(&expression, "="),
-                        DynamicPredicateOperator::Neq => dynamic_scalar(&expression, "!="),
-                        DynamicPredicateOperator::Gt => dynamic_scalar(&expression, ">"),
-                        DynamicPredicateOperator::Gte => dynamic_scalar(&expression, ">="),
-                        DynamicPredicateOperator::Lt => dynamic_scalar(&expression, "<"),
-                        DynamicPredicateOperator::Lte => dynamic_scalar(&expression, "<="),
-                        DynamicPredicateOperator::Like => dynamic_scalar(&expression, "like"),
+                        DynamicPredicateOperator::Eq => dynamic_scalar(&expression, "=", text_cast),
+                        DynamicPredicateOperator::Neq => {
+                            dynamic_scalar(&expression, "!=", text_cast)
+                        }
+                        DynamicPredicateOperator::Gt => dynamic_scalar(&expression, ">", text_cast),
+                        DynamicPredicateOperator::Gte => {
+                            dynamic_scalar(&expression, ">=", text_cast)
+                        }
+                        DynamicPredicateOperator::Lt => dynamic_scalar(&expression, "<", text_cast),
+                        DynamicPredicateOperator::Lte => {
+                            dynamic_scalar(&expression, "<=", text_cast)
+                        }
+                        DynamicPredicateOperator::Like => {
+                            dynamic_scalar(&expression, "like", text_cast)
+                        }
                         DynamicPredicateOperator::In => (
                             GeneratedDynamicValueKind::Collection,
-                            Some(format!("({expression}) = ANY(")),
-                            Some(")".to_string()),
+                            Some(format!(
+                                "({expression}) = ANY({}",
+                                dynamic_cast_before(text_cast)
+                            )),
+                            Some(format!("{})", dynamic_cast_after(text_cast, true))),
                             Vec::new(),
                         ),
                         DynamicPredicateOperator::NotIn => (
                             GeneratedDynamicValueKind::Collection,
-                            Some(format!("({expression}) <> ALL(")),
-                            Some(")".to_string()),
+                            Some(format!(
+                                "({expression}) <> ALL({}",
+                                dynamic_cast_before(text_cast)
+                            )),
+                            Some(format!("{})", dynamic_cast_after(text_cast, true))),
                             Vec::new(),
                         ),
                         DynamicPredicateOperator::IsNull => (
@@ -1801,6 +1835,7 @@ fn generated_dynamic_predicate_fields(
 fn dynamic_scalar(
     expression: &str,
     operator: &str,
+    text_cast: Option<&TypeKey>,
 ) -> (
     GeneratedDynamicValueKind,
     Option<String>,
@@ -1809,8 +1844,11 @@ fn dynamic_scalar(
 ) {
     (
         GeneratedDynamicValueKind::Scalar,
-        Some(format!("({expression}) {operator} ")),
-        None,
+        Some(format!(
+            "({expression}) {operator} {}",
+            dynamic_cast_before(text_cast)
+        )),
+        text_cast.map(|_| dynamic_cast_after(text_cast, false)),
         Vec::new(),
     )
 }
@@ -1930,7 +1968,11 @@ fn selection_field_expressions(
                     projection.output_name.clone(),
                     public_scalar_expression(
                         masked_column_expression(catalog, context, projection.column, template)?,
-                        catalog.data_type_for_column(column.id),
+                        catalog
+                            .type_for_column(column.id)
+                            .map_or(WireEncoding::Unsupported, |data_type| {
+                                data_type.capabilities.wire
+                            }),
                     ),
                 ));
             }
@@ -2003,14 +2045,54 @@ fn json_build_object(fields: Vec<(String, Expr)>) -> Expr {
 }
 
 /// Converts one scalar expression to its public JSON wire representation.
-/// Exact numerics cross the JSON boundary as text so host runtimes cannot
-/// silently round them through an IEEE-754 number.
-fn public_scalar_expression(expression: Expr, data_type: DataType) -> Expr {
-    if data_type == DataType::Numeric {
+/// Exact and provider-defined scalars cross the JSON boundary as text so host
+/// runtimes never reinterpret their representation.
+fn public_scalar_expression(expression: Expr, wire: WireEncoding) -> Expr {
+    if matches!(wire, WireEncoding::Numeric | WireEncoding::TextCast) {
         expression.cast_as(Alias::new("text"))
     } else {
         expression
     }
+}
+
+fn aggregate_wire(catalog: &Catalog, field: &crate::plan::AggregateProjection) -> WireEncoding {
+    if matches!(
+        field.function,
+        AggregateFunction::Min | AggregateFunction::Max
+    ) && let Some(operand) = field.operand
+        && let Some(data_type) = catalog.type_for_column(operand)
+    {
+        return data_type.capabilities.wire;
+    }
+    Catalog::builtin_capabilities(field.data_type).wire
+}
+
+fn text_cast_parameter(placeholder: &str, target: &TypeKey, collection: bool) -> String {
+    let array = if collection { "[]" } else { "" };
+    format!(
+        "(({placeholder})::text{array})::{}{}",
+        quoted_type_key(target),
+        array
+    )
+}
+
+fn dynamic_cast_before(target: Option<&TypeKey>) -> &'static str {
+    if target.is_some() { "((" } else { "" }
+}
+
+fn dynamic_cast_after(target: Option<&TypeKey>, collection: bool) -> String {
+    target.map_or_else(String::new, |target| {
+        let array = if collection { "[]" } else { "" };
+        format!(")::text{array})::{}{array}", quoted_type_key(target))
+    })
+}
+
+fn quoted_type_key(key: &TypeKey) -> String {
+    format!(
+        "\"{}\".\"{}\"",
+        key.schema.replace('"', "\"\""),
+        key.name.replace('"', "\"\"")
+    )
 }
 
 /// Gives root-flattened result columns the same public JSON value encoding

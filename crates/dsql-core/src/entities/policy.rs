@@ -14,7 +14,7 @@ use bowl::{
 
 use crate::catalog::{
     Catalog, CatalogSnapshot, DataType, FieldCheckResult, FieldRef, RelationCardinality, TableId,
-    TableRef, TableResolution,
+    TableRef, TableResolution, TypeKey, WireEncoding,
 };
 use crate::entities::definition::DefIndex;
 use crate::entities::document::ParsedFile;
@@ -215,6 +215,15 @@ pub struct CompiledPolicyReference {
 #[component(hash)]
 pub struct CompiledPolicyIndex {
     pub entries: Vec<CompiledPolicyEntry>,
+    pub problems: Vec<PolicyCompileProblem>,
+}
+
+/// One policy compilation failure that must remain visible to diagnostics.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PolicyCompileProblem {
+    pub entity: Entity,
+    pub span: Span,
+    pub message: String,
 }
 
 /// Body-sensitive policy input colocated with [`DefIndex`] so planning keeps
@@ -1237,6 +1246,7 @@ async fn compile_policies(
         .map(|(entity, declaration)| (*entity, declaration))
         .collect::<BTreeMap<_, _>>();
     let mut entries = Vec::new();
+    let mut problems = Vec::new();
 
     for entry in policy_index
         .entries
@@ -1257,6 +1267,7 @@ async fn compile_policies(
                 scope: &entry.scope,
                 context: Vec::new(),
                 conditions: BTreeSet::new(),
+                problems: Vec::new(),
                 failed: false,
             };
             let row = PolicyRowContext::root(*table);
@@ -1264,14 +1275,27 @@ async fn compile_policies(
                 .apply
                 .as_ref()
                 .and_then(|apply| apply.condition.as_ref())
-                .and_then(|condition| compiler.expr(condition, Some(row), Some(DataType::Boolean)));
-            let row_rule = declaration
-                .row_rules
-                .first()
-                .and_then(|rule| compiler.expr(rule, Some(row), Some(DataType::Boolean)));
+                .and_then(|condition| {
+                    compiler.expr(
+                        condition,
+                        Some(row),
+                        Some(PolicyExpectedType::builtin(DataType::Boolean)),
+                    )
+                });
+            let row_rule = declaration.row_rules.first().and_then(|rule| {
+                compiler.expr(
+                    rule,
+                    Some(row),
+                    Some(PolicyExpectedType::builtin(DataType::Boolean)),
+                )
+            });
             let mut field_rules = Vec::new();
             for rule in &declaration.field_rules {
-                let condition = compiler.expr(&rule.condition, Some(row), Some(DataType::Boolean));
+                let condition = compiler.expr(
+                    &rule.condition,
+                    Some(row),
+                    Some(PolicyExpectedType::builtin(DataType::Boolean)),
+                );
                 let fields = rule
                     .fields
                     .iter()
@@ -1281,6 +1305,13 @@ async fn compile_policies(
                     field_rules.push(CompiledPolicyFieldRule { fields, condition });
                 }
             }
+            problems.extend(compiler.problems.drain(..).map(|(span, message)| {
+                PolicyCompileProblem {
+                    entity: entry.entity,
+                    span,
+                    message,
+                }
+            }));
             if compiler.failed {
                 continue;
             }
@@ -1306,7 +1337,9 @@ async fn compile_policies(
             targets,
         });
     }
-    let compiled = CompiledPolicyIndex { entries };
+    problems.sort();
+    problems.dedup();
+    let compiled = CompiledPolicyIndex { entries, problems };
     commands
         .entity(policy_index_entity)
         .insert(compiled.clone());
@@ -1324,6 +1357,7 @@ struct PolicyCompiler<'a> {
     scope: &'a str,
     context: Vec<PolicyContextRequirement>,
     conditions: BTreeSet<CompiledPolicyReference>,
+    problems: Vec<(Span, String)>,
     failed: bool,
 }
 
@@ -1331,8 +1365,41 @@ struct PolicyCompiler<'a> {
 struct CompiledPath {
     value: FilterExpr,
     data_type: DataType,
+    wire: WireEncoding,
+    provider_type: TypeKey,
     relation_scope: FilterColumnScope,
     relations: Vec<(crate::catalog::RelationId, TableId)>,
+}
+
+#[derive(Clone, Debug)]
+struct PolicyExpectedType {
+    data_type: DataType,
+    wire: WireEncoding,
+    provider_type: Option<TypeKey>,
+}
+
+impl PolicyExpectedType {
+    fn builtin(data_type: DataType) -> Self {
+        Self {
+            data_type,
+            wire: Catalog::builtin_capabilities(data_type).wire,
+            provider_type: None,
+        }
+    }
+
+    fn from_path(path: &CompiledPath) -> Self {
+        Self {
+            data_type: path.data_type,
+            wire: path.wire,
+            provider_type: Some(path.provider_type.clone()),
+        }
+    }
+
+    fn text_cast(&self) -> Option<TypeKey> {
+        (self.wire == WireEncoding::TextCast)
+            .then(|| self.provider_type.clone())
+            .flatten()
+    }
 }
 
 impl PolicyCompiler<'_> {
@@ -1354,7 +1421,7 @@ impl PolicyCompiler<'_> {
         &mut self,
         expr: &Expr,
         row: Option<PolicyRowContext>,
-        expected: Option<DataType>,
+        expected: Option<PolicyExpectedType>,
     ) -> Option<FilterExpr> {
         match expr {
             Expr::Error { .. } | Expr::Aggregate { .. } | Expr::DynamicPredicate { .. } => {
@@ -1377,17 +1444,27 @@ impl PolicyCompiler<'_> {
                 let Some(rule) = declaration.row_rules.first() else {
                     return self.fail();
                 };
-                self.expr(rule, row, Some(DataType::Boolean))
+                self.expr(
+                    rule,
+                    row,
+                    Some(PolicyExpectedType::builtin(DataType::Boolean)),
+                )
             }
-            Expr::Variable { variable, .. } => {
-                self.context_parameter(variable, expected.unwrap_or(DataType::Boolean), false)
-            }
+            Expr::Variable { variable, .. } => self.context_parameter(
+                variable,
+                expected.unwrap_or_else(|| PolicyExpectedType::builtin(DataType::Boolean)),
+                false,
+            ),
             Expr::Path { .. } => {
                 let path = self.path(expr, row)?;
                 Some(self.wrap_relations(path.value.clone(), &path))
             }
             Expr::Unary { operand, .. } => self
-                .expr(operand, row, Some(DataType::Boolean))
+                .expr(
+                    operand,
+                    row,
+                    Some(PolicyExpectedType::builtin(DataType::Boolean)),
+                )
                 .map(|operand| FilterExpr::Not(Box::new(operand))),
             Expr::NullTest {
                 operand, negated, ..
@@ -1415,7 +1492,11 @@ impl PolicyCompiler<'_> {
                 let filter = predicate
                     .as_deref()
                     .and_then(|predicate| {
-                        self.expr(predicate, Some(row.nested(table)), Some(DataType::Boolean))
+                        self.expr(
+                            predicate,
+                            Some(row.nested(table)),
+                            Some(PolicyExpectedType::builtin(DataType::Boolean)),
+                        )
                     })
                     .map(Box::new);
                 Some(FilterExpr::Exists {
@@ -1447,13 +1528,21 @@ impl PolicyCompiler<'_> {
     ) -> Option<FilterExpr> {
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
             return Some(FilterExpr::Binary {
-                left: Box::new(self.expr(lhs, row, Some(DataType::Boolean))?),
+                left: Box::new(self.expr(
+                    lhs,
+                    row,
+                    Some(PolicyExpectedType::builtin(DataType::Boolean)),
+                )?),
                 op: if matches!(op, BinaryOp::And) {
                     FilterOp::And
                 } else {
                     FilterOp::Or
                 },
-                right: Box::new(self.expr(rhs, row, Some(DataType::Boolean))?),
+                right: Box::new(self.expr(
+                    rhs,
+                    row,
+                    Some(PolicyExpectedType::builtin(DataType::Boolean)),
+                )?),
             });
         }
 
@@ -1474,12 +1563,18 @@ impl PolicyCompiler<'_> {
                     Expr::List { items, .. } => FilterCollection::List(
                         items
                             .iter()
-                            .map(|item| self.expr(item, row, Some(path.data_type)))
+                            .map(|item| {
+                                self.expr(item, row, Some(PolicyExpectedType::from_path(&path)))
+                            })
                             .collect::<Option<Vec<_>>>()?,
                     ),
-                    Expr::Variable { variable, .. } => FilterCollection::Parameter(
-                        self.context_parameter_value(variable, path.data_type, true)?,
-                    ),
+                    Expr::Variable { variable, .. } => {
+                        FilterCollection::Parameter(self.context_parameter_value(
+                            variable,
+                            PolicyExpectedType::from_path(&path),
+                            true,
+                        )?)
+                    }
                     _ => return self.fail(),
                 };
                 let membership = FilterExpr::Membership {
@@ -1489,7 +1584,7 @@ impl PolicyCompiler<'_> {
                 };
                 return Some(self.wrap_relations(membership, &path));
             }
-            let other = self.expr(other, row, Some(path.data_type))?;
+            let other = self.expr(other, row, Some(PolicyExpectedType::from_path(&path)))?;
             let (left, right) = if reversed {
                 (other, path.value.clone())
             } else {
@@ -1544,6 +1639,7 @@ impl PolicyCompiler<'_> {
                     table = relation.table.id;
                 }
                 FieldCheckResult::Column(column) if index + 1 == segments.len() => {
+                    let catalog_type = self.catalog.type_for_column(column.id)?;
                     let scope = if relations.is_empty() {
                         match anchor {
                             PathAnchor::Current => FilterColumnScope::Current,
@@ -1558,7 +1654,9 @@ impl PolicyCompiler<'_> {
                             scope,
                             column: column.id,
                         },
-                        data_type: self.catalog.data_type_for_column(column.id),
+                        data_type: catalog_type.data_type,
+                        wire: catalog_type.capabilities.wire,
+                        provider_type: catalog_type.key.clone(),
                         relation_scope: match anchor {
                             PathAnchor::Current => FilterColumnScope::Current,
                             PathAnchor::Root => FilterColumnScope::Root,
@@ -1637,17 +1735,17 @@ impl PolicyCompiler<'_> {
     fn context_parameter(
         &mut self,
         variable: &VariableRef,
-        data_type: DataType,
+        expected: PolicyExpectedType,
         collection: bool,
     ) -> Option<FilterExpr> {
-        self.context_parameter_value(variable, data_type, collection)
+        self.context_parameter_value(variable, expected, collection)
             .map(FilterExpr::Parameter)
     }
 
     fn context_parameter_value(
         &mut self,
         variable: &VariableRef,
-        data_type: DataType,
+        expected: PolicyExpectedType,
         collection: bool,
     ) -> Option<SqlParameter> {
         if variable.sigil != Sigil::Context {
@@ -1655,23 +1753,33 @@ impl PolicyCompiler<'_> {
         }
         let name = variable.name.as_deref()?;
         let path = format!("context.{name}");
-        if let Some(existing) = self.context.iter_mut().find(|item| item.path == path) {
-            if existing.data_type == DataType::Unknown {
-                existing.data_type = data_type;
-            } else if data_type != DataType::Unknown && existing.data_type != data_type {
-                return self.fail();
-            }
-            if existing.collection != collection {
+        if let Some(existing) = self.context.iter().find(|item| item.path == path) {
+            let requirement = PolicyContextRequirement {
+                path: path.clone(),
+                data_type: expected.data_type,
+                wire: expected.wire,
+                provider_type: expected.provider_type.clone(),
+                collection,
+            };
+            if existing.conflicts_with(&requirement) {
+                self.problems
+                    .push((variable.span, existing.conflict_message(&requirement)));
                 return self.fail();
             }
         } else {
             self.context.push(PolicyContextRequirement {
                 path: path.clone(),
-                data_type,
+                data_type: expected.data_type,
+                wire: expected.wire,
+                provider_type: expected.provider_type.clone(),
                 collection,
             });
         }
-        Some(SqlParameter { path })
+        Some(SqlParameter {
+            path,
+            text_cast: expected.text_cast(),
+            collection,
+        })
     }
 
     fn fail<T>(&mut self) -> Option<T> {
@@ -1807,14 +1915,14 @@ fn resolve_shape_target(
 async fn check_policy_definitions(
     _: Query<Entity, With<DiagnosticsDemand>>,
     policies: Query<(Entity, &PolicyDecl, &BelongsToFile, &ResolutionScope)>,
-    index: Query<(Entity, &PolicyIndex)>,
+    index: Query<(Entity, &PolicyIndex, &CompiledPolicyIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     embedded: View<'_, (Entity, &BelongsToHost)>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
     let (entity, decl, file, scope) = policies.item();
-    let (index_entity, index) = index.item();
+    let (index_entity, index, compiled) = index.item();
     let (_, imports) = imports.item();
     let (catalog_entity, snapshot) = catalog.item();
     let Some(entry) = index.entry(entity) else {
@@ -1843,6 +1951,14 @@ async fn check_policy_definitions(
                 decl.kind
             ),
         );
+    }
+
+    for problem in compiled
+        .problems
+        .iter()
+        .filter(|problem| problem.entity == entity)
+    {
+        emit(problem.span, problem.message.clone());
     }
 
     diagnose_target_problem(decl, entry, &mut emit);
@@ -2209,7 +2325,25 @@ impl<Emit: FnMut(Span, String)> PolicyValidation<'_, Emit> {
                 selector: segment.relation_path.as_deref(),
             };
             match self.catalog.check_field_ref(table, reference) {
-                FieldCheckResult::Column(_) if index + 1 == segments.len() => return,
+                FieldCheckResult::Column(column) if index + 1 == segments.len() => {
+                    if self
+                        .catalog
+                        .type_for_column(column.id)
+                        .is_some_and(|data_type| {
+                            data_type.capabilities.wire == WireEncoding::Unsupported
+                        })
+                    {
+                        let data_type = self
+                            .catalog
+                            .type_for_column(column.id)
+                            .map_or("unknown", |data_type| data_type.readable_type.as_str());
+                        (self.emit)(
+                            segment.span,
+                            format!("database type `{data_type}` cannot be used as an input"),
+                        );
+                    }
+                    return;
+                }
                 FieldCheckResult::Relation(relation) if index + 1 < segments.len() => {
                     table = relation.table.id;
                 }

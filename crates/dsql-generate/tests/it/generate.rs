@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use bowl::Bowl;
 use dsql_core::catalog::{
-    Catalog, DatabaseMetadata, SchemaMetadata, TableMetadata, table_metadata_from_yaml,
+    Catalog, DatabaseMetadata, ProviderTypeFacts, SchemaMetadata, TableMetadata, TypeMetadata,
+    table_metadata_from_yaml,
 };
 use dsql_core::embedding::ExtractionRegistry;
 use dsql_core::input::{LanguageDocument, LanguageInputs, populate_language_bowl};
@@ -42,6 +43,31 @@ columns:
     database_type: float8
     data_type: float
     not_null: false
+constraints: []
+foreign_keys: []
+indexes: []
+"#;
+const PROVIDER_SCALAR_SCHEMA: &str = r#"---
+schema: public
+name: events
+object_type: table
+columns:
+  - name: event_date
+    provider_type:
+      schema: pg_catalog
+      name: date
+    formatted_type: date
+    database_type: date
+    data_type: unknown
+    not_null: true
+  - name: address
+    provider_type:
+      schema: pg_catalog
+      name: inet
+    formatted_type: inet
+    database_type: inet
+    data_type: unknown
+    not_null: true
 constraints: []
 foreign_keys: []
 indexes: []
@@ -135,6 +161,37 @@ indexes:
       - column: id
     unique: true
 "#;
+
+fn provider_scalar_catalog() -> Catalog {
+    let provider_type = |name: &str, category: &str| TypeMetadata {
+        internal_type: name.to_string(),
+        readable_type: name.to_string(),
+        schema: "pg_catalog".to_string(),
+        provider: Some(ProviderTypeFacts {
+            kind: "b".to_string(),
+            category: category.to_string(),
+            effective_kind: None,
+            effective_category: None,
+            orderable: true,
+        }),
+        operations: ["=", "<>", ">", ">=", "<", "<="]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>(),
+    };
+    DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![
+                table_metadata_from_yaml(PROVIDER_SCALAR_SCHEMA)
+                    .expect("provider scalar table parses"),
+            ],
+        }],
+        types: vec![provider_type("date", "D"), provider_type("inet", "I")],
+    }
+    .to_catalog()
+    .expect("provider scalar catalog builds")
+}
 const MEMBERSHIPS_SCHEMA: &str = r#"---
 schema: public
 name: memberships
@@ -656,6 +713,55 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
     artifacts.sort();
 
     insta::assert_snapshot!(artifacts.join("\n---\n"));
+}
+
+#[tokio::test]
+async fn provider_scalar_wire_identity_flows_through_generated_metadata() {
+    let bowl = memory_bowl(
+        provider_scalar_catalog(),
+        vec![document(
+            "queries/frontend/events.dsql",
+            "query Events { events(where .event_date == $$date) { event_date } }",
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let artifact = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("assembly succeeds")
+        .snapshot
+        .artifacts
+        .into_iter()
+        .find(|artifact| artifact.name == "Events")
+        .expect("provider scalar operation artifact");
+
+    insta::assert_snapshot!(artifact.serialized);
+}
+
+#[tokio::test]
+async fn provider_policy_context_conflicts_block_generation() {
+    let bowl = memory_bowl(
+        provider_scalar_catalog(),
+        vec![document(
+            "queries/frontend/policy.dsql",
+            indoc::indoc! {r#"
+                filter Mixed on events {
+                  where .event_date == $:shared and .address == $:shared
+                }
+                query Events { events { event_date } }
+            "#},
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+
+    let error = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect_err("an invalid compiled policy must block generation");
+
+    insta::assert_snapshot!(error.to_string());
 }
 
 #[tokio::test]

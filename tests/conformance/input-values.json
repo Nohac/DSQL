@@ -4,6 +4,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -16,6 +17,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -28,6 +30,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -40,6 +43,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": true,
       "nullable": false
@@ -52,6 +56,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "collection": true,
       "enum_values": [],
       "required": true,
@@ -65,6 +70,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "collection": true,
       "enum_values": [],
       "required": true,
@@ -78,11 +84,61 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": true,
       "nullable": true
     },
     "bindings": { "params": { "value": null } },
     "expected": null
+  },
+  {
+    "name": "provider text cast",
+    "field": {
+      "path": "params.value",
+      "data_type": "text",
+      "wire": {
+        "encoding": "text_cast",
+        "provider_type": { "schema": "pg_catalog", "name": "date" }
+      },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": "2026-07-27" } },
+    "expected": "2026-07-27"
+  },
+  {
+    "name": "provider text cast rejects numbers",
+    "field": {
+      "path": "params.value",
+      "data_type": "text",
+      "wire": {
+        "encoding": "text_cast",
+        "provider_type": { "schema": "pg_catalog", "name": "date" }
+      },
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": 20260727 } },
+    "error": "valid text"
+  },
+  {
+    "name": "provider text cast collection",
+    "field": {
+      "path": "params.value",
+      "data_type": "text",
+      "wire": {
+        "encoding": "text_cast",
+        "provider_type": { "schema": "pg_catalog", "name": "date" }
+      },
+      "collection": true,
+      "enum_values": [],
+      "required": true,
+      "nullable": false
+    },
+    "bindings": { "params": { "value": ["2026-07-27", null] } },
+    "expected": ["2026-07-27", null]
   }
 ]

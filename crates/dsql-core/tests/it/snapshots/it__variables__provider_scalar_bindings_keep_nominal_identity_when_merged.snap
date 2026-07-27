@@ -1,0 +1,19 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+assertion_line: 423
+expression: "format!(\"diagnostics:\\n{}\\n\\nbindings:\\n{bindings}\",\nrender_diagnostic_facts(&bowl).await,)"
+---
+diagnostics:
+Error[90..98]: query `DistinctProviderTypes` infers incompatible contracts for `params.shared` (first used at 65..73)
+
+bindings:
+params.shared TextCast pg_catalog.date Unknown
+params.shared TextCast pg_catalog.inet Unknown
+params.text_alias Text pg_catalog.varchar Text
+params.text_alias Text pg_catalog.text Text
+params.integer_alias Integer pg_catalog.int4 Int
+params.integer_alias Integer pg_catalog.int8 Int
+params.boolean_alias Boolean pg_catalog.bool Boolean
+params.boolean_alias Boolean <none> Boolean
+params.same_provider TextCast pg_catalog.date Unknown
+params.same_provider TextCast pg_catalog.date Unknown

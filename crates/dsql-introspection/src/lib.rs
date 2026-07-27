@@ -87,6 +87,8 @@ struct PostgresType {
     type_schema: String,
     type_kind: String,
     type_category: String,
+    effective_kind: String,
+    effective_category: String,
     operations: Vec<String>,
     orderable: bool,
 }
@@ -328,6 +330,8 @@ SELECT
     type_ns.nspname AS type_schema,
     typ.typtype::text AS type_kind,
     typ.typcategory::text AS type_category,
+    effective.typtype::text AS effective_kind,
+    effective.typcategory::text AS effective_category,
     COALESCE(
         array_agg(DISTINCT native.operation ORDER BY native.operation)
             FILTER (WHERE native.operation IS NOT NULL),
@@ -346,6 +350,7 @@ SELECT
 FROM
     pg_type typ
     JOIN pg_namespace type_ns ON type_ns.oid = typ.typnamespace
+    JOIN effective_type effective ON effective.source_oid = typ.oid
     LEFT JOIN native_operations native ON native.source_oid = typ.oid
     LEFT JOIN pg_class type_rel ON type_rel.oid = typ.typrelid
     LEFT JOIN pg_type element_type ON element_type.oid = typ.typelem
@@ -371,7 +376,8 @@ WHERE
         )
     )
 GROUP BY
-    typ.oid, typ.typname, typ.typtype, typ.typcategory, type_ns.nspname
+    typ.oid, typ.typname, typ.typtype, typ.typcategory,
+    effective.typtype, effective.typcategory, type_ns.nspname
 ORDER BY
     type_ns.nspname, typ.typname;
 "#
@@ -451,6 +457,8 @@ fn metadata_from_rows(
                 provider: Some(ProviderTypeFacts {
                     kind: row.type_kind,
                     category: row.type_category,
+                    effective_kind: Some(row.effective_kind),
+                    effective_category: Some(row.effective_category),
                     orderable: row.orderable,
                 }),
                 operations: BTreeSet::new(),
@@ -734,6 +742,8 @@ mod tests {
                     type_schema: "pg_catalog".into(),
                     type_kind: "b".into(),
                     type_category: "N".into(),
+                    effective_kind: "b".into(),
+                    effective_category: "N".into(),
                     operations: vec!["=".into(), "<".into()],
                     orderable: true,
                 },
@@ -744,6 +754,8 @@ mod tests {
                     type_schema: "alpha".into(),
                     type_kind: "e".into(),
                     type_category: "E".into(),
+                    effective_kind: "e".into(),
+                    effective_category: "E".into(),
                     operations: vec![
                         "<".into(),
                         "<=".into(),
@@ -761,6 +773,8 @@ mod tests {
                     type_schema: "beta".into(),
                     type_kind: "e".into(),
                     type_category: "E".into(),
+                    effective_kind: "e".into(),
+                    effective_category: "E".into(),
                     operations: vec!["=".into()],
                     orderable: true,
                 },
@@ -771,6 +785,8 @@ mod tests {
                     type_schema: "pg_catalog".into(),
                     type_kind: "b".into(),
                     type_category: "A".into(),
+                    effective_kind: "b".into(),
+                    effective_category: "A".into(),
                     operations: vec!["<>".into(), "=".into()],
                     orderable: true,
                 },
@@ -781,6 +797,8 @@ mod tests {
                     type_schema: "pg_catalog".into(),
                     type_kind: "r".into(),
                     type_category: "R".into(),
+                    effective_kind: "r".into(),
+                    effective_category: "R".into(),
                     operations: vec!["<".into(), "<>".into(), "=".into(), ">".into()],
                     orderable: true,
                 },
@@ -791,6 +809,8 @@ mod tests {
                     type_schema: "pg_catalog".into(),
                     type_kind: "m".into(),
                     type_category: "R".into(),
+                    effective_kind: "m".into(),
+                    effective_category: "R".into(),
                     operations: vec!["<".into(), "<>".into(), "=".into(), ">".into()],
                     orderable: true,
                 },
@@ -880,6 +900,8 @@ mod tests {
             Some(ProviderTypeFacts {
                 kind: "e".to_string(),
                 category: "E".to_string(),
+                effective_kind: Some("e".to_string()),
+                effective_category: Some("E".to_string()),
                 orderable: true,
             })
         );
@@ -888,6 +910,8 @@ mod tests {
             Some(ProviderTypeFacts {
                 kind: "b".to_string(),
                 category: "N".to_string(),
+                effective_kind: Some("b".to_string()),
+                effective_category: Some("N".to_string()),
                 orderable: true,
             })
         );
@@ -902,6 +926,8 @@ mod tests {
             Some(ProviderTypeFacts {
                 kind: "b".to_string(),
                 category: "A".to_string(),
+                effective_kind: Some("b".to_string()),
+                effective_category: Some("A".to_string()),
                 orderable: true,
             }),
             "array capabilities survive the polymorphic anyarray family"
@@ -911,6 +937,8 @@ mod tests {
             Some(ProviderTypeFacts {
                 kind: "m".to_string(),
                 category: "R".to_string(),
+                effective_kind: Some("m".to_string()),
+                effective_category: Some("R".to_string()),
                 orderable: true,
             }),
             "multirange capabilities survive the polymorphic family"
@@ -920,6 +948,8 @@ mod tests {
             Some(ProviderTypeFacts {
                 kind: "r".to_string(),
                 category: "R".to_string(),
+                effective_kind: Some("r".to_string()),
+                effective_category: Some("R".to_string()),
                 orderable: true,
             }),
             "range capabilities survive the polymorphic family"

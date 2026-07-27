@@ -6,6 +6,7 @@ Uuid
   name: uuid
   aliases: [uuid]
   description: UUID
+  wire: Uuid
   operators: [==, !=]
   orderable: true
   literals: [string] / Any / string
@@ -16,6 +17,7 @@ Text
   name: text
   aliases: [text, varchar, bpchar, char, name]
   description: text
+  wire: Text
   operators: [==, !=, like]
   orderable: true
   literals: [string] / Any / string
@@ -26,6 +28,7 @@ Timestamptz
   name: timestamptz
   aliases: [timestamptz, timestamp with time zone]
   description: timestamp with time zone
+  wire: Timestamptz
   operators: [==, !=, >, >=, <, <=]
   orderable: true
   literals: [string] / Any / string
@@ -36,6 +39,7 @@ Int
   name: int
   aliases: [int, int2, int4, int8, integer, smallint, bigint]
   description: integer
+  wire: Integer
   operators: [==, !=, >, >=, <, <=]
   orderable: true
   literals: [number] / Integer / number
@@ -46,6 +50,7 @@ Numeric
   name: numeric
   aliases: [numeric, decimal]
   description: exact numeric
+  wire: Numeric
   operators: [==, !=, >, >=, <, <=]
   orderable: true
   literals: [number] / Any / number
@@ -56,6 +61,7 @@ Float
   name: float
   aliases: [float, float4, real, float8, double precision]
   description: floating-point number
+  wire: Float
   operators: [==, !=, >, >=, <, <=]
   orderable: true
   literals: [number] / Any / number
@@ -66,6 +72,7 @@ Boolean
   name: boolean
   aliases: [boolean, bool]
   description: boolean
+  wire: Boolean
   operators: [==, !=]
   orderable: true
   literals: [boolean] / Any / boolean
@@ -76,6 +83,7 @@ Json
   name: json
   aliases: [json, jsonb]
   description: JSON
+  wire: Json
   operators: [==, !=]
   orderable: true
   literals: [string] / Any / string
@@ -86,8 +94,9 @@ Unknown
   name: unknown
   aliases: [unknown]
   description: unmapped provider type
+  wire: Unsupported
   operators: [==, !=]
   orderable: true
-  literals: [string, number, boolean] / Any / value
-  defaults: [string, number, boolean] / Any / value
+  literals: [] / Any / value
+  defaults: [] / Any / value
   aggregates: min=- max=- sum=- avg=-

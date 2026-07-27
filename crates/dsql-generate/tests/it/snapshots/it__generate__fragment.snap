@@ -2,4 +2,4 @@
 source: crates/dsql-generate/tests/it/generate.rs
 expression: fragment
 ---
-{"name":"TitleBits","kind":"fragment","table":"title","result":{"fields":[{"path":"id","name":"id","parent_path":"","kind":"scalar","data_type":"int","nullable":false,"access":"unconditional"},{"path":"title","name":"title","parent_path":"","kind":"scalar","data_type":"text","nullable":false,"access":"unconditional"}]},"params":[],"input":[],"dynamic_inputs":[],"fragment_spreads":[],"source_map":[{"id":"TitleBits","file":"queries/shared/fragments.dsql","range":{"start":0,"end":44}}]}
+{"name":"TitleBits","kind":"fragment","table":"title","result":{"fields":[{"path":"id","name":"id","parent_path":"","kind":"scalar","data_type":"int","wire":{"encoding":"integer"},"nullable":false,"access":"unconditional"},{"path":"title","name":"title","parent_path":"","kind":"scalar","data_type":"text","wire":{"encoding":"text"},"nullable":false,"access":"unconditional"}]},"params":[],"input":[],"dynamic_inputs":[],"fragment_spreads":[],"source_map":[{"id":"TitleBits","file":"queries/shared/fragments.dsql","range":{"start":0,"end":44}}]}

@@ -4,6 +4,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": false,
       "nullable": false,
@@ -16,6 +17,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": false,
       "nullable": false,
@@ -28,6 +30,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": false,
       "nullable": false,
@@ -40,6 +43,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": false,
       "nullable": false,
@@ -52,6 +56,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": false,
       "nullable": false,
@@ -64,6 +69,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "enum_values": [],
       "required": false,
       "nullable": false,
@@ -76,6 +82,7 @@
     "field": {
       "path": "params.value",
       "data_type": "float",
+      "wire": { "encoding": "float" },
       "enum_values": [],
       "required": false,
       "nullable": false,
@@ -88,6 +95,7 @@
     "field": {
       "path": "params.value",
       "data_type": "float",
+      "wire": { "encoding": "float" },
       "enum_values": [],
       "required": false,
       "nullable": false,
@@ -100,6 +108,7 @@
     "field": {
       "path": "params.value",
       "data_type": "numeric",
+      "wire": { "encoding": "numeric" },
       "enum_values": [],
       "required": false,
       "nullable": false,
@@ -115,6 +124,7 @@
     "field": {
       "path": "params.value",
       "data_type": "numeric",
+      "wire": { "encoding": "numeric" },
       "enum_values": [],
       "required": false,
       "nullable": false,
@@ -127,6 +137,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "collection": true,
       "enum_values": [],
       "required": false,
@@ -146,6 +157,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "collection": true,
       "enum_values": [],
       "required": false,
@@ -165,6 +177,7 @@
     "field": {
       "path": "params.value",
       "data_type": "int",
+      "wire": { "encoding": "integer" },
       "collection": true,
       "enum_values": [],
       "required": false,
@@ -178,6 +191,7 @@
     "field": {
       "path": "params.value",
       "data_type": "boolean",
+      "wire": { "encoding": "boolean" },
       "enum_values": [],
       "required": false,
       "nullable": false,

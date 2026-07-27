@@ -10,7 +10,7 @@ use dsql_core::facts::{DefKey, Span, VariablesDemand, arm_editor_demands};
 use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 
-use crate::{imdb_catalog, render_diagnostic_facts};
+use crate::{imdb_catalog, provider_scalar_catalog, render_diagnostic_facts};
 
 async fn variables_bowl() -> Bowl {
     let bowl = language_bowl().await;
@@ -364,4 +364,64 @@ async fn cross_file_fragment_clauses_preserve_variable_inference() {
     .await;
 
     insta::assert_snapshot!(render_definition_bindings(&bowl).await);
+}
+
+#[tokio::test]
+async fn provider_scalar_bindings_keep_nominal_identity_when_merged() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, provider_scalar_catalog()).await;
+    arm_editor_demands(&bowl).await;
+    insert_source(
+        &bowl,
+        "provider-bindings.dsql",
+        indoc::indoc! {r#"
+            query DistinctProviderTypes {
+              events(
+                where .event_date == $$shared and .address == $$shared
+              ) { event_date }
+            }
+            query CompatibleAliases {
+              current: events(
+                where .short_label == $$text_alias
+                  and .long_label == $$text_alias
+                  and .small_id == $$integer_alias
+                  and .big_id == $$integer_alias
+                  and .active == $$boolean_alias
+                  and $$boolean_alias
+                  and .event_date == $$same_provider
+              ) { event_date }
+              archived: event_archive(
+                where .event_date == $$same_provider
+              ) { event_date }
+            }
+        "#},
+    )
+    .await;
+
+    let rows = bowl
+        .scoop::<Query<(Entity, &Span, &VariableBinding)>>()
+        .await;
+    let bindings = rows
+        .collect()
+        .into_iter()
+        .map(|(_, _, binding)| {
+            format!(
+                "{} {:?} {} {:?}",
+                binding.path,
+                binding.wire,
+                binding
+                    .provider_type
+                    .as_ref()
+                    .map_or("<none>".to_string(), |key| {
+                        format!("{}.{}", key.schema, key.name)
+                    }),
+                binding.data_type,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(format!(
+        "diagnostics:\n{}\n\nbindings:\n{bindings}",
+        render_diagnostic_facts(&bowl).await,
+    ));
 }

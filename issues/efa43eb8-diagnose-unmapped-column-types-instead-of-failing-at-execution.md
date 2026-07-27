@@ -1,6 +1,6 @@
 # Diagnose unmapped column types instead of failing at execution
 
-**ID:** efa43eb8 | **Status:** Open | **Created:** 2026-07-26T11:48:49+02:00
+**ID:** efa43eb8 | **Status:** Done | **Created:** 2026-07-26T11:48:49+02:00
 
 `DataType::from_database_type` maps 18 PostgreSQL type names and returns
 `Unknown` for everything else, including `date`, `timestamp` without time zone,
@@ -17,6 +17,14 @@ knows the column type is unmapped and should say so.
 Report unmapped column types where they are used, at compile time. Selecting such
 a column may remain permitted; binding a parameter against one must not compile
 silently.
+
+Resolved by assigning unsupported provider shapes an explicit `unsupported`
+wire encoding and emitting `UnmappedType` diagnostics at query predicate,
+order, and bounded-dynamic input sites. Policy compilation reports
+`InvalidPolicyDefinition` at the conflicting policy input. Selection remains
+legal. Unknown types no longer accept arbitrary literals, and the CLI
+integration coverage proves the diagnostic is emitted before a database
+connection is attempted.
 
 Acceptance criteria:
 

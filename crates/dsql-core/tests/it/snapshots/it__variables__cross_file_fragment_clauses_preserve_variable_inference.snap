@@ -1,13 +1,14 @@
 ---
 source: crates/dsql-core/tests/it/variables.rs
+assertion_line: 366
 expression: render_definition_bindings(&bowl).await
 ---
 RankedFields
   input.RatingFilter.input.ratings.clause.limit.count Structured Limit Int required=true nullable=false default=None
-  input.RatingFilter.input.ratings.clause.order_by.id.direction.direction Structured SortDirection Unknown required=true nullable=false default=None
+  input.RatingFilter.input.ratings.clause.order_by.id.direction.direction Structured SortDirection Text required=true nullable=false default=None
   input.RatingFilter.input.ratings.clause.where.info_type_id.type Structured WhereValue Int required=true nullable=false default=None
 
 RatingFilter
   input.ratings.clause.limit.count Structured Limit Int required=true nullable=false default=None
-  input.ratings.clause.order_by.id.direction.direction Structured SortDirection Unknown required=true nullable=false default=None
+  input.ratings.clause.order_by.id.direction.direction Structured SortDirection Text required=true nullable=false default=None
   input.ratings.clause.where.info_type_id.type Structured WhereValue Int required=true nullable=false default=None

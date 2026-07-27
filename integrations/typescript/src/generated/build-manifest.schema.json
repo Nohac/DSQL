@@ -38,7 +38,7 @@
     "generationId": {
       "type": "integer",
       "minimum": 0,
-      "description": "The project-monotonic generation this manifest commits\n (docs/spec/build-daemon.md). Required in version 2; version-1\n pointers are read through a private compatibility reader."
+      "description": "The project-monotonic generation this manifest commits\n (docs/spec/build-daemon.md)."
     },
     "operations": {
       "type": "array",

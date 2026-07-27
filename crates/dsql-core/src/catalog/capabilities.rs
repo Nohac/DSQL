@@ -26,6 +26,42 @@ pub enum ScalarValidation {
     FiniteFloat,
 }
 
+/// How one scalar crosses the public JSON and PostgreSQL parameter boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
+#[facet(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum WireEncoding {
+    Uuid,
+    Text,
+    Timestamptz,
+    Integer,
+    Numeric,
+    Float,
+    Boolean,
+    Json,
+    /// Bind a JSON string as PostgreSQL `text`, then cast to the provider type.
+    TextCast,
+    /// Selecting the value is allowed, but it cannot be used as an input.
+    Unsupported,
+}
+
+impl WireEncoding {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Uuid => "uuid",
+            Self::Text => "text",
+            Self::Timestamptz => "timestamptz",
+            Self::Integer => "integer",
+            Self::Numeric => "numeric",
+            Self::Float => "float",
+            Self::Boolean => "boolean",
+            Self::Json => "json",
+            Self::TextCast => "text_cast",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
 /// Accepted source kinds and value validation for one scalar surface.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
 pub struct ScalarAcceptance {
@@ -79,6 +115,7 @@ pub struct TypeCapabilities {
     pub aliases: Vec<String>,
     /// Human-readable provider-ready description of the logical type.
     pub description: String,
+    pub wire: WireEncoding,
     pub operators: Vec<ComparisonOp>,
     pub orderable: bool,
     pub literals: ScalarAcceptance,
@@ -93,6 +130,7 @@ impl TypeCapabilities {
             name: definition.name.to_string(),
             aliases: definition.aliases().map(ToString::to_string).collect(),
             description: definition.description.to_string(),
+            wire: definition.wire,
             operators: definition.operators.to_vec(),
             orderable: definition.orderable,
             literals: ScalarAcceptance {
@@ -116,8 +154,9 @@ impl TypeCapabilities {
     /// Builds effective comparison and ordering behavior from provider facts.
     pub(crate) fn provider(
         data_type: DataType,
+        readable_type: &str,
+        provider: &super::ProviderTypeFacts,
         operations: &BTreeSet<String>,
-        orderable: bool,
     ) -> Self {
         const PROVIDER_OPERATORS: [(&str, ComparisonOp); 7] = [
             ("=", ComparisonOp::Eq),
@@ -129,11 +168,20 @@ impl TypeCapabilities {
             ("~~", ComparisonOp::Like),
         ];
         let mut capabilities = Self::builtin(data_type);
+        if data_type == DataType::Unknown && provider.supports_text_cast() {
+            let text = Self::builtin(DataType::Text);
+            capabilities.name = text.name;
+            capabilities.aliases = text.aliases;
+            capabilities.description = readable_type.to_string();
+            capabilities.wire = WireEncoding::TextCast;
+            capabilities.literals = text.literals;
+            capabilities.defaults = text.defaults;
+        }
         capabilities.operators = PROVIDER_OPERATORS
             .into_iter()
             .filter_map(|(written, operator)| operations.contains(written).then_some(operator))
             .collect();
-        capabilities.orderable = orderable;
+        capabilities.orderable = provider.orderable;
         capabilities
     }
 }
@@ -143,6 +191,7 @@ struct BuiltinTypeDefinition {
     name: &'static str,
     database_names: &'static [&'static str],
     description: &'static str,
+    wire: WireEncoding,
     operators: &'static [ComparisonOp],
     orderable: bool,
     literal_kinds: &'static [LiteralKind],
@@ -178,11 +227,6 @@ const TEXT: &[ComparisonOp] = &[ComparisonOp::Eq, ComparisonOp::Ne, ComparisonOp
 const STRING: &[LiteralKind] = &[LiteralKind::String];
 const NUMBER: &[LiteralKind] = &[LiteralKind::Number];
 const BOOLEAN: &[LiteralKind] = &[LiteralKind::Boolean];
-const ANY_SCALAR: &[LiteralKind] = &[
-    LiteralKind::String,
-    LiteralKind::Number,
-    LiteralKind::Boolean,
-];
 const NONE: &[LiteralKind] = &[];
 
 const NO_AGGREGATES: AggregateCapabilities = AggregateCapabilities {
@@ -204,6 +248,7 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
         name: "uuid",
         database_names: &["uuid"],
         description: "UUID",
+        wire: WireEncoding::Uuid,
         operators: EQ,
         orderable: true,
         literal_kinds: STRING,
@@ -219,6 +264,7 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
         name: "text",
         database_names: &["text", "varchar", "bpchar", "char", "name"],
         description: "text",
+        wire: WireEncoding::Text,
         operators: TEXT,
         orderable: true,
         literal_kinds: STRING,
@@ -234,6 +280,7 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
         name: "timestamptz",
         database_names: &["timestamptz", "timestamp with time zone"],
         description: "timestamp with time zone",
+        wire: WireEncoding::Timestamptz,
         operators: ORDERED,
         orderable: true,
         literal_kinds: STRING,
@@ -249,6 +296,7 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
         name: "int",
         database_names: &["int2", "int4", "int8", "integer", "smallint", "bigint"],
         description: "integer",
+        wire: WireEncoding::Integer,
         operators: ORDERED,
         orderable: true,
         literal_kinds: NUMBER,
@@ -269,6 +317,7 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
         name: "numeric",
         database_names: &["numeric", "decimal"],
         description: "exact numeric",
+        wire: WireEncoding::Numeric,
         operators: ORDERED,
         orderable: true,
         literal_kinds: NUMBER,
@@ -289,6 +338,7 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
         name: "float",
         database_names: &["float4", "real", "float8", "double precision"],
         description: "floating-point number",
+        wire: WireEncoding::Float,
         operators: ORDERED,
         orderable: true,
         literal_kinds: NUMBER,
@@ -309,6 +359,7 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
         name: "boolean",
         database_names: &["bool", "boolean"],
         description: "boolean",
+        wire: WireEncoding::Boolean,
         operators: EQ,
         orderable: true,
         literal_kinds: BOOLEAN,
@@ -324,6 +375,7 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
         name: "json",
         database_names: &["json", "jsonb"],
         description: "JSON",
+        wire: WireEncoding::Json,
         operators: EQ,
         orderable: true,
         literal_kinds: STRING,
@@ -339,12 +391,13 @@ static BUILTIN_TYPES: [BuiltinTypeDefinition; 9] = [
         name: "unknown",
         database_names: &[],
         description: "unmapped provider type",
+        wire: WireEncoding::Unsupported,
         operators: EQ,
         orderable: true,
-        literal_kinds: ANY_SCALAR,
+        literal_kinds: NONE,
         literal_validation: ScalarValidation::Any,
         literal_description: "value",
-        default_kinds: ANY_SCALAR,
+        default_kinds: NONE,
         default_validation: ScalarValidation::Any,
         default_description: "value",
         aggregates: NO_AGGREGATES,

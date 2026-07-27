@@ -17,6 +17,7 @@ import type {
   OperationManifestEntry,
   OperationMetadata,
 } from "./generated/metadata.ts";
+import { BUILD_MANIFEST_VERSION } from "./generated/metadata.ts";
 import type {
   DsqlCallsite,
   DsqlCompileResult,
@@ -96,6 +97,7 @@ export function buildArtifactsFromGenerated(
   result: DsqlCompileResult,
   options: { readonly projectBase: string },
 ): BuildArtifacts {
+  assertBuildManifestVersion(result.manifest);
   const byId = new Map(result.artifacts.map((artifact) => [artifact.id, artifact]));
   for (const group of result.groups) {
     for (const id of group.artifacts) {
@@ -745,7 +747,7 @@ export async function runDsqlGeneratorFromEnv(
   return true;
 }
 
-/** Loads the flat on-disk manifest (version 2) and its artifacts. */
+/** Loads the flat on-disk manifest and its artifacts. */
 export function loadBuildArtifacts(manifestPath: string): BuildArtifacts {
   const manifest = readBuildManifest(manifestPath);
   const operations = manifest.operations.map((entry) =>
@@ -772,7 +774,18 @@ export function loadBuildArtifacts(manifestPath: string): BuildArtifacts {
 }
 
 export function readBuildManifest(path: string): BuildManifest {
-  return readJson(path) as BuildManifest;
+  const manifest = readJson(path) as BuildManifest;
+  assertBuildManifestVersion(manifest);
+  return manifest;
+}
+
+function assertBuildManifestVersion(manifest: BuildManifest): void {
+  if (manifest.version !== BUILD_MANIFEST_VERSION) {
+    throw new Error(
+      `unsupported dsql build manifest version ${String(manifest.version)}; ` +
+        `expected ${BUILD_MANIFEST_VERSION}`,
+    );
+  }
 }
 
 export function readOperationMetadata(

@@ -9,8 +9,8 @@ use dsql_core::language_bowl;
 use dsql_core::source::{insert_embedding_source, insert_source};
 
 use crate::{
-    fixture, imdb_catalog, numeric_catalog, render_diagnostic_facts, replace_source_text,
-    set_source_text,
+    fixture, imdb_catalog, numeric_catalog, provider_scalar_catalog, render_diagnostic_facts,
+    replace_source_text, set_source_text,
 };
 
 async fn checked_bowl(catalog: Catalog) -> Bowl {
@@ -142,6 +142,31 @@ async fn invalid_bounded_dynamic_input_owners_and_positions_are_reported() {
               public::users(
                 where exists .posts(where $$search on selected)
               ) { id name }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn unsupported_provider_types_are_diagnosed_only_at_input_sites() {
+    let bowl = checked_bowl(provider_scalar_catalog()).await;
+    insert_source(
+        &bowl,
+        "provider-types.dsql",
+        indoc::indoc! {r#"
+            query SelectedOnly {
+              events { opaque }
+            }
+            query InvalidUses($$search = {}) {
+              events(
+                where .opaque == $$value and $$search on selected
+                order by opaque asc
+              ) {
+                opaque
+              }
             }
         "#},
     )

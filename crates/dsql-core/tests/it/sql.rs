@@ -9,7 +9,10 @@ use dsql_core::plan::QueryPlanFact;
 use dsql_core::source::{insert_embedding_source, insert_source};
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 
-use crate::{fixture, imdb_catalog, numeric_catalog, render_diagnostic_facts, set_source_text};
+use crate::{
+    fixture, imdb_catalog, numeric_catalog, provider_scalar_catalog, render_diagnostic_facts,
+    set_source_text,
+};
 
 async fn sql_bowl(catalog: Catalog) -> Bowl {
     sql_bowl_with_limit(catalog, Some(10)).await
@@ -673,6 +676,59 @@ async fn exact_and_floating_numbers_use_their_public_wire_types() {
     .await;
 
     insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn provider_scalars_use_schema_qualified_text_casts_everywhere() {
+    let bowl = sql_bowl(provider_scalar_catalog()).await;
+    insert_source(
+        &bowl,
+        "provider-scalars.dsql",
+        indoc::indoc! {r#"
+            filter AddressGate on events {
+              apply where true
+              where .address == $:trusted_address
+            }
+            query ProviderScalars($$search = {}) {
+              events(
+                where .event_date == $$date
+                  and .local_time >= $$start
+                  and .address in $$addresses
+                  and $$search on selected
+                order by local_time asc
+                limit 1
+              ) {
+                event_date
+                local_time
+                address
+              }
+            }
+        "#},
+    )
+    .await;
+
+    let rendered = render_sql(&bowl).await;
+    let generated = bowl.scoop::<Query<(Entity, &GeneratedSqlFact)>>().await;
+    let dynamic_sites = generated
+        .collect()
+        .into_iter()
+        .flat_map(|(_, fact)| &fact.0.dynamic_sites)
+        .flat_map(|site| {
+            site.fields.iter().flat_map(|field| {
+                field.operators.iter().filter_map(|operator| {
+                    let before = operator.before_value.as_deref()?;
+                    let after = operator.after_value.as_deref().unwrap_or_default();
+                    Some(format!(
+                        "{}.{}: {before}<value>{after}",
+                        field.key,
+                        operator.name.as_str()
+                    ))
+                })
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(format!("{rendered}\n\n-- dynamic casts\n{dynamic_sites}"));
 }
 
 #[tokio::test]

@@ -30,6 +30,9 @@
 - AVOID shortening variable names, e.g., use `version` instead of `ver`, and `requires_python`
   instead of `rp`
 - PREFER [`TypeName`] references when writing Rust doc comments
+- Before 1.0, refactors are replacement changes: remove superseded behavior and NEVER add
+  compatibility bridges, legacy fallbacks, or silent version tolerance unless explicitly requested.
+  Breaking contract changes must bump their version and reject older versions clearly.
 
 ## Issues
 

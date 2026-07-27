@@ -65,6 +65,8 @@ fn provider_type_with_facts(
         provider: Some(ProviderTypeFacts {
             kind: "b".to_string(),
             category: "U".to_string(),
+            effective_kind: None,
+            effective_category: None,
             orderable,
         }),
         operations: operations
@@ -107,9 +109,10 @@ fn render_builtin_capabilities() -> String {
                     .map_or("-", DataType::as_str)
             };
             format!(
-                "{data_type:?}\n  name: {}\n  aliases: [{aliases}]\n  description: {}\n  operators: [{operators}]\n  orderable: {}\n  literals: [{literals}] / {:?} / {}\n  defaults: [{defaults}] / {:?} / {}\n  aggregates: min={} max={} sum={} avg={}",
+                "{data_type:?}\n  name: {}\n  aliases: [{aliases}]\n  description: {}\n  wire: {:?}\n  operators: [{operators}]\n  orderable: {}\n  literals: [{literals}] / {:?} / {}\n  defaults: [{defaults}] / {:?} / {}\n  aggregates: min={} max={} sum={} avg={}",
                 capabilities.name,
                 capabilities.description,
+                capabilities.wire,
                 capabilities.orderable,
                 capabilities.literals.validation,
                 capabilities.literals.description,
@@ -365,6 +368,18 @@ fn catalog_columns_share_only_qualified_type_identities() {
 }
 
 #[test]
+fn catalog_type_lookup_survives_a_skipped_derived_index() {
+    let key = TypeKey::new("pg_catalog", "uuid");
+    // The hand-authored fixture intentionally leaves the derived index empty.
+    let catalog = Catalog::hardcoded();
+
+    assert_eq!(
+        catalog.type_by_key(&key).map(|data_type| &data_type.key),
+        Some(&key)
+    );
+}
+
+#[test]
 fn catalog_type_arena_rejects_invalid_metadata() {
     let missing = metadata(
         vec![column(
@@ -441,6 +456,8 @@ fn catalog_type_declaration_order_and_unused_rows_are_fingerprint_neutral() {
     changed_provider.types[0].provider = Some(ProviderTypeFacts {
         kind: "b".to_string(),
         category: "S".to_string(),
+        effective_kind: None,
+        effective_category: None,
         orderable: true,
     });
     assert_ne!(baseline, changed_provider.semantic_fingerprint());
@@ -464,6 +481,8 @@ fn catalog_type_declaration_order_and_unused_rows_are_fingerprint_neutral() {
         .provider = Some(ProviderTypeFacts {
         kind: "b".to_string(),
         category: "B".to_string(),
+        effective_kind: None,
+        effective_category: None,
         orderable: true,
     });
     assert_eq!(baseline, with_unused_catalog.semantic_fingerprint());
@@ -511,14 +530,59 @@ fn provider_comparison_capabilities_override_compiler_fallbacks() {
     )
     .to_catalog()
     .expect("extension provider metadata builds");
+    let provider_domain = metadata(
+        vec![column(
+            "label",
+            TypeKey::new("public", "label_domain"),
+            DataType::Unknown,
+        )],
+        vec![TypeMetadata {
+            internal_type: "label_domain".to_string(),
+            readable_type: "public.label_domain".to_string(),
+            schema: "public".to_string(),
+            provider: Some(ProviderTypeFacts {
+                kind: "d".to_string(),
+                category: "U".to_string(),
+                effective_kind: Some("b".to_string()),
+                effective_category: Some("S".to_string()),
+                orderable: true,
+            }),
+            operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
+        }],
+    )
+    .to_catalog()
+    .expect("domain provider metadata builds");
+    let provider_array = metadata(
+        vec![column(
+            "labels",
+            TypeKey::new("pg_catalog", "_text"),
+            DataType::Unknown,
+        )],
+        vec![TypeMetadata {
+            internal_type: "_text".to_string(),
+            readable_type: "text[]".to_string(),
+            schema: "pg_catalog".to_string(),
+            provider: Some(ProviderTypeFacts {
+                kind: "b".to_string(),
+                category: "A".to_string(),
+                effective_kind: None,
+                effective_category: None,
+                orderable: true,
+            }),
+            operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
+        }],
+    )
+    .to_catalog()
+    .expect("array provider metadata builds");
 
     let render = |catalog: &Catalog| {
         let data_type = &catalog.types[0];
         format!(
-            "{} ({:?}/{:?}) operators=[{}] orderable={}",
+            "{} ({:?}/{:?}) wire={:?} operators=[{}] orderable={}",
             data_type.readable_type,
             data_type.provider,
             data_type.data_type,
+            data_type.capabilities.wire,
             data_type
                 .capabilities
                 .operators
@@ -530,10 +594,12 @@ fn provider_comparison_capabilities_override_compiler_fallbacks() {
         )
     };
     insta::assert_snapshot!(format!(
-        "legacy json: {}\nprovider json: {}\nprovider citext: {}",
+        "legacy json: {}\nprovider json: {}\nprovider citext: {}\nprovider domain: {}\nprovider array: {}",
         render(&legacy_json),
         render(&provider_json),
         render(&provider_citext),
+        render(&provider_domain),
+        render(&provider_array),
     ));
 }
 
@@ -555,6 +621,8 @@ fn qualified_provider_type_metadata_round_trips() {
                 provider: Some(ProviderTypeFacts {
                     kind: "e".to_string(),
                     category: "E".to_string(),
+                    effective_kind: None,
+                    effective_category: None,
                     orderable: true,
                 }),
                 operations: BTreeSet::from(["=".to_string()]),

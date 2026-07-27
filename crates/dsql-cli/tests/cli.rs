@@ -198,6 +198,43 @@ fn operation_execute_validates_inputs_before_connecting() {
 }
 
 #[test]
+fn operation_execute_reports_unmapped_types_before_connecting() {
+    let dir = scratch_copy("execute-unmapped-type");
+    let schema = dir.join("dsql/schema/public/title.yaml");
+    let raw = std::fs::read_to_string(&schema).expect("title schema readable");
+    let column = "  - name: opaque\n    provider_type:\n      schema: public\n      name: opaque_record\n    database_type: opaque_record\n    data_type: unknown\n    not_null: true\n";
+    let raw = raw.replacen("constraints:", &format!("{column}constraints:"), 1);
+    std::fs::write(&schema, raw).expect("unsupported column added");
+    std::fs::write(
+        dir.join("dsql/queries/unmapped.dsql"),
+        "query Unmapped { title(where .opaque == $$value limit 1) { id } }\n",
+    )
+    .expect("unmapped query");
+
+    let output = dsql_with_database(
+        &dir,
+        "postgres://invalid:invalid@127.0.0.1:1/invalid",
+        &[
+            "operation",
+            "execute",
+            "Unmapped",
+            "--scope",
+            "default",
+            "--variables",
+            r#"{"params":{"value":"x"}}"#,
+        ],
+    );
+    assert!(!output.status.success());
+    let message = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(
+        message.contains("opaque_record") && message.contains("cannot be used as an input"),
+        "compiler diagnostic must precede database connection: {message}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn observatory_operation_list_exposes_importing_scopes() {
     let observatory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/observatory");
     let listed = dsql(&observatory, &["operation", "list"]);

@@ -1,6 +1,7 @@
 use super::{
     Catalog, CatalogType, Column, ColumnId, DataType, FieldCheckResult, FieldRef, Index, Relation,
     RelationField, RelationId, Table, TableId, TableRef, TableResolution, TypeCapabilities, TypeId,
+    TypeKey,
 };
 
 impl Catalog {
@@ -66,6 +67,15 @@ impl Catalog {
     /// Resolves one dense catalog type identity.
     pub fn type_by_id(&self, id: TypeId) -> Option<&CatalogType> {
         self.types.get(id.0)
+    }
+
+    /// Resolves one stable schema-qualified provider type identity.
+    pub fn type_by_key(&self, key: &TypeKey) -> Option<&CatalogType> {
+        self.type_ids
+            .get(key)
+            .and_then(|id| self.type_by_id(*id))
+            // A skipped or stale derived index must remain correct.
+            .or_else(|| self.types.iter().find(|data_type| data_type.key == *key))
     }
 
     /// Resolves the effective type record for one catalog column.

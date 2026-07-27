@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 import type { DsqlCompileResult } from "../src/daemon";
 import {
+  loadBuildArtifacts,
   renderDsqlCompileResult,
   type BuildArtifacts,
   type DsqlRendererContext,
@@ -29,6 +30,24 @@ const project = defineDsqlProject({
   },
   targets: ["api", "frontend"],
   directives: {},
+});
+
+test("version 2 manifests are rejected explicitly", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsql-old-manifest-"));
+  const manifest = join(root, "manifest.json");
+  writeFileSync(
+    manifest,
+    JSON.stringify({
+      version: 2,
+      generationId: 1,
+      operations: [],
+      fragments: [],
+    }),
+  );
+
+  expect(() => loadBuildArtifacts(manifest)).toThrow(
+    "unsupported dsql build manifest version 2; expected 3",
+  );
 });
 
 test("project renderer dispatches ordered generators only to terminal targets", async () => {
@@ -218,7 +237,7 @@ test("embedded callsites require definitions and receive their target mapping", 
   const api = {
     ...emptyArtifacts("api", true),
     manifest: {
-      version: 2 as const,
+      version: 3 as const,
       generationId: 1,
       operations: [
         {
@@ -309,7 +328,7 @@ function emptyArtifacts(
     sourceFileScopes: [],
     artifactGroups: [],
     manifest: {
-      version: 2,
+      version: 3,
       generationId: 1,
       operations: [],
       fragments: [],
@@ -332,7 +351,7 @@ function compileResult(
     currentManifestPath: "dsql/build/manifest.json",
     projectContractHash,
     manifest: {
-      version: 2,
+      version: 3,
       generationId: 1,
       operations: [],
       fragments: [],

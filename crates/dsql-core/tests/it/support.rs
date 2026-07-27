@@ -1,13 +1,14 @@
 //! Shared helpers for the integration harness: fixture loading and
 //! snapshot-stable renderers.
 
+use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use bowl::{Bowl, Entity, Mut, Query};
 use codespan_reporting::diagnostic::Severity;
 use dsql_core::catalog::{
-    Catalog, ColumnMetadata, DataType, DatabaseMetadata, ObjectType, SchemaMetadata, TableMetadata,
-    TypeKey, table_metadata_from_yaml,
+    Catalog, ColumnMetadata, DataType, DatabaseMetadata, ObjectType, ProviderTypeFacts,
+    SchemaMetadata, TableMetadata, TypeKey, TypeMetadata, table_metadata_from_yaml,
 };
 use dsql_core::grammar::parser::Diagnostic;
 use dsql_core::source::SourceText;
@@ -292,6 +293,87 @@ pub fn numeric_catalog() -> Catalog {
     }
     .to_catalog()
     .expect("numeric fixture catalog must build")
+    .with_default_schema(Catalog::DEFAULT_SCHEMA)
+}
+
+/// Provider-backed scalar types plus one deliberately unsupported composite.
+pub fn provider_scalar_catalog() -> Catalog {
+    let type_metadata = |name: &str, kind: &str, category: &str| TypeMetadata {
+        internal_type: name.to_string(),
+        readable_type: format!("pg_catalog.{name}"),
+        schema: "pg_catalog".to_string(),
+        provider: Some(ProviderTypeFacts {
+            kind: kind.to_string(),
+            category: category.to_string(),
+            effective_kind: None,
+            effective_category: None,
+            orderable: true,
+        }),
+        operations: ["=", "<>", ">", ">=", "<", "<="]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>(),
+    };
+    let column = |name: &str, provider_name: &str| ColumnMetadata {
+        name: name.to_string(),
+        description: None,
+        provider_type: TypeKey::new("pg_catalog", provider_name),
+        formatted_type: None,
+        type_modifier: None,
+        database_type: provider_name.to_string(),
+        data_type: DataType::from_database_type(provider_name),
+        not_null: true,
+    };
+    DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![
+                TableMetadata {
+                    schema: "public".to_string(),
+                    name: "events".to_string(),
+                    object_type: ObjectType::Table,
+                    description: None,
+                    columns: vec![
+                        column("event_date", "date"),
+                        column("local_time", "timestamp"),
+                        column("address", "inet"),
+                        column("opaque", "opaque_record"),
+                        column("short_label", "varchar"),
+                        column("long_label", "text"),
+                        column("small_id", "int4"),
+                        column("big_id", "int8"),
+                        column("active", "bool"),
+                    ],
+                    constraints: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                },
+                TableMetadata {
+                    schema: "public".to_string(),
+                    name: "event_archive".to_string(),
+                    object_type: ObjectType::Table,
+                    description: None,
+                    columns: vec![column("event_date", "date")],
+                    constraints: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                },
+            ],
+        }],
+        types: vec![
+            type_metadata("date", "b", "D"),
+            type_metadata("timestamp", "b", "D"),
+            type_metadata("inet", "b", "I"),
+            type_metadata("opaque_record", "c", "C"),
+            type_metadata("varchar", "b", "S"),
+            type_metadata("text", "b", "S"),
+            type_metadata("int4", "b", "N"),
+            type_metadata("int8", "b", "N"),
+            type_metadata("bool", "b", "B"),
+        ],
+    }
+    .to_catalog()
+    .expect("provider scalar fixture catalog must build")
     .with_default_schema(Catalog::DEFAULT_SCHEMA)
 }
 

@@ -2,9 +2,9 @@ use facet::Facet;
 
 const BUILD_MANIFEST_SCHEMA_ID: &str = "https://dsql.dev/schemas/build-manifest.schema.json";
 
-/// Manifest format version 2: `generationId` plus content-addressed
-/// artifact paths (docs/spec/build-daemon.md, Transactionality).
-pub const BUILD_MANIFEST_VERSION: u32 = 2;
+/// Manifest format version 3: provider wire encodings and fragment-spread
+/// provenance are required in every artifact.
+pub const BUILD_MANIFEST_VERSION: u32 = 3;
 const JSON_SCHEMA_DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
 #[derive(Debug, Facet)]
@@ -53,8 +53,7 @@ pub enum ResultDataType {
 pub struct BuildManifest {
     pub version: u32,
     /// The project-monotonic generation this manifest commits
-    /// (docs/spec/build-daemon.md). Required in version 2; version-1
-    /// pointers are read through a private compatibility reader.
+    /// (docs/spec/build-daemon.md).
     #[facet(rename = "generationId")]
     pub generation_id: u64,
     pub operations: Vec<OperationManifestEntry>,
@@ -106,9 +105,7 @@ pub struct FragmentMetadata {
     pub dynamic_inputs: Vec<DynamicInputMetadata>,
     /// Fragment spreads the body expanded, path-qualified like the
     /// operation-level field (the empty path is the fragment root):
-    /// renderers compose fragment types by reuse from this. Additive to
-    /// manifest version 2 — readers treat absence as empty.
-    #[facet(default)]
+    /// renderers compose fragment types by reuse from this.
     pub fragment_spreads: Vec<FragmentSpreadMetadata>,
     pub source_map: Vec<SourceMapEntry>,
 }
@@ -161,6 +158,7 @@ pub struct ResultField {
     pub parent_path: String,
     pub kind: String,
     pub data_type: String,
+    pub wire: WireMetadata,
     pub nullable: bool,
     /// `unconditional`, `context_only`, or `row_dependent`.
     pub access: String,
@@ -170,6 +168,7 @@ pub struct ResultField {
 pub struct InputField {
     pub path: String,
     pub data_type: String,
+    pub wire: WireMetadata,
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub collection: Option<bool>,
     pub enum_values: Vec<String>,
@@ -177,6 +176,21 @@ pub struct InputField {
     pub nullable: bool,
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub default: Option<InputDefault>,
+}
+
+/// Public JSON encoding plus an optional PostgreSQL text-cast target.
+#[derive(Clone, Debug, Facet)]
+pub struct WireMetadata {
+    pub encoding: String,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub provider_type: Option<ProviderTypeMetadata>,
+}
+
+/// Schema-qualified PostgreSQL type identity used only for generated casts.
+#[derive(Clone, Debug, Facet)]
+pub struct ProviderTypeMetadata {
+    pub schema: String,
+    pub name: String,
 }
 
 /// A typed compile-time replacement for one omitted public input.
@@ -208,6 +222,7 @@ pub struct DynamicInputField {
     pub key: String,
     pub catalog_path: String,
     pub data_type: String,
+    pub wire: WireMetadata,
     pub nullable: bool,
     pub access: String,
     pub operators: Vec<String>,
@@ -302,7 +317,8 @@ pub struct SourceMapEntry {
     /// content between the host's backticks (the extractor's `content`
     /// capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
     /// offsets into the host file; identical across definitions from the
-    /// same embedded expression. Additive to manifest version 2.
+    /// same embedded expression. Required for embedded sources in manifest
+    /// version 3; absent for standalone `.dsql` sources.
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub content_range: Option<SourceRange>,
 }
@@ -324,12 +340,15 @@ pub fn build_manifest_json_schema() -> Result<String, String> {
 }
 
 pub fn build_manifest_typescript() -> String {
-    let mut typescript = [
-        facet_typescript::to_typescript::<BuildManifest>(),
-        facet_typescript::to_typescript::<OperationMetadata>(),
-        facet_typescript::to_typescript::<FragmentMetadata>(),
-    ]
-    .join("\n");
+    let mut typescript = format!(
+        "export const BUILD_MANIFEST_VERSION = {BUILD_MANIFEST_VERSION} as const;\n\n{}",
+        [
+            facet_typescript::to_typescript::<BuildManifest>(),
+            facet_typescript::to_typescript::<OperationMetadata>(),
+            facet_typescript::to_typescript::<FragmentMetadata>(),
+        ]
+        .join("\n")
+    );
     typescript.truncate(typescript.trim_end().len());
     typescript.push('\n');
     typescript

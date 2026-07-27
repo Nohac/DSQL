@@ -8,7 +8,7 @@ mod types;
 
 pub use capabilities::{
     AggregateCapabilities, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, ScalarAcceptance, ScalarValidation,
-    TypeCapabilities,
+    TypeCapabilities, WireEncoding,
 };
 pub use component::{CatalogSnapshot, CatalogSourceRoot, insert_catalog};
 pub use keys::{

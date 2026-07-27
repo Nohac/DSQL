@@ -258,7 +258,7 @@ function createArtifacts(root: string): BuildArtifacts {
     sourceFileScopes: [],
     artifactGroups: [],
     manifest: {
-      version: 2,
+      version: 3,
       generationId: 1,
       operations: [
         {

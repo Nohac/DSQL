@@ -147,12 +147,19 @@ combine both sources internally while retaining their provenance.
 
 Generated public input metadata must preserve each inferred leaf's path,
 logical type, collection shape, semantic role, requiredness, nullability, and
-typed default. Definition-reference bindings also retain the originating
-definition and source span so generators and editor tooling can explain where a
-contained or lifted contract came from. Root lifting changes paths but must not
-discard defaults. Retaining bounded dynamic capability surfaces is part of the
-eventual fragment extension; the initial bounded-dynamic slice rejects dynamic
-inputs owned by fragments.
+typed default. Every input, dynamic-input, and result field carries a required
+wire record and, for provider text casts, the schema-qualified provider type.
+Structural result and input fields use the explicit `unsupported` encoding;
+missing wire metadata is an invalid artifact, not a cue to infer from the
+logical type name.
+This is one compiler-owned contract consumed by native execution and host
+runtimes; generators must not infer encodings again from logical type names.
+Definition-reference bindings also retain the originating definition and source
+span so generators and editor tooling can explain where a contained or lifted
+contract came from. Root lifting changes paths but must not discard defaults.
+Retaining bounded dynamic capability surfaces is part of the eventual fragment
+extension; the initial bounded-dynamic slice rejects dynamic inputs owned by
+fragments.
 
 Requiredness and nullability produce distinct host types. For example, a query
 header containing:
@@ -756,11 +763,11 @@ The metadata does not need to mirror the internal compiler IR. It should be a
 consumer-friendly contract for generated clients, endpoint adapters, validation,
 debug tooling, and editor features.
 
-Before the first public release, manifest version 2 is a compiler-package
+Before the first public release, manifest version 3 is a compiler-package
 contract rather than a backwards-compatible interchange promise: maintained
 compiler, daemon, and renderer components move together, and a required metadata
-addition causes artifacts to be regenerated. Compatibility readers must not
-silently synthesize missing execution data.
+addition causes a version bump and artifact regeneration. Consumers reject
+other versions explicitly; they never synthesize missing execution data.
 
 Useful metadata areas:
 
@@ -768,6 +775,8 @@ Useful metadata areas:
   typed defaults, semantic roles, and definition provenance
 - required host context keys
 - result field types and nullability
+- public wire encodings and schema-qualified provider cast targets for result,
+  input, context, and bounded dynamic fields
 - applicable filters and resolved target provenance
 - declaration defaults, trusted enforcement conditions, and query filter
   assignments

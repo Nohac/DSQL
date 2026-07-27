@@ -5,14 +5,27 @@ use dsql_execute::{
 use dsql_metadata::{
     DynamicInputField, DynamicInputMetadata, DynamicInputSite, DynamicInputSiteField,
     DynamicPredicateOperatorMetadata, InputDefault, InputField, OperationMetadata, ResultShape,
-    SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
+    SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata, WireMetadata,
 };
 use facet_value::{Value, value};
+
+fn wire(data_type: &str) -> WireMetadata {
+    WireMetadata {
+        encoding: match data_type {
+            "int" => "integer",
+            "dynamic_predicate" | "dynamic_order" => "unsupported",
+            other => other,
+        }
+        .to_string(),
+        provider_type: None,
+    }
+}
 
 fn field(path: &str, data_type: &str, collection: bool, enum_values: &[&str]) -> InputField {
     InputField {
         path: path.to_string(),
         data_type: data_type.to_string(),
+        wire: wire(data_type),
         collection: collection.then_some(true),
         enum_values: enum_values
             .iter()
@@ -191,6 +204,7 @@ fn dynamic_operation() -> OperationMetadata {
                         key: "id".to_string(),
                         catalog_path: "public.users.id".to_string(),
                         data_type: "int".to_string(),
+                        wire: wire("int"),
                         nullable: false,
                         access: "unconditional".to_string(),
                         operators: vec!["in".to_string(), "is_null".to_string()],
@@ -200,6 +214,7 @@ fn dynamic_operation() -> OperationMetadata {
                         key: "name".to_string(),
                         catalog_path: "public.users.name".to_string(),
                         data_type: "text".to_string(),
+                        wire: wire("text"),
                         nullable: false,
                         access: "unconditional".to_string(),
                         operators: vec!["like".to_string()],
@@ -216,6 +231,7 @@ fn dynamic_operation() -> OperationMetadata {
                     key: "name".to_string(),
                     catalog_path: "public.users.name".to_string(),
                     data_type: "text".to_string(),
+                    wire: wire("text"),
                     nullable: false,
                     access: "unconditional".to_string(),
                     operators: Vec::new(),
@@ -240,6 +256,22 @@ fn dynamic_operation() -> OperationMetadata {
         fragment_spreads: Vec::new(),
         source_map: Vec::new(),
     }
+}
+
+#[test]
+fn input_metadata_without_wire_encoding_is_rejected() {
+    let error = facet_json::from_str::<InputField>(
+        r#"{
+          "path": "params.value",
+          "data_type": "text",
+          "enum_values": [],
+          "required": true,
+          "nullable": false
+        }"#,
+    )
+    .expect_err("version 3 input fields require wire metadata");
+
+    insta::assert_snapshot!(error.to_string());
 }
 
 #[test]
@@ -806,18 +838,24 @@ async fn postgres_json_bindings_roundtrip_through_sqlx() {
             BoundParameter {
                 path: "params.scalar".to_string(),
                 data_type: "json".to_string(),
+                wire: "json".to_string(),
+                provider_type: None,
                 collection: false,
                 value: value!({ "nested": [1, true] }),
             },
             BoundParameter {
                 path: "params.items".to_string(),
                 data_type: "json".to_string(),
+                wire: "json".to_string(),
+                provider_type: None,
                 collection: true,
                 value: value!([{ "item": 1 }, null, ["nested"]]),
             },
             BoundParameter {
                 path: "params.absent".to_string(),
                 data_type: "json".to_string(),
+                wire: "json".to_string(),
+                provider_type: None,
                 collection: false,
                 value: Value::NULL,
             },
@@ -836,6 +874,106 @@ async fn postgres_json_bindings_roundtrip_through_sqlx() {
             "absent": null
         })
     );
+}
+
+#[tokio::test]
+async fn postgres_text_cast_bindings_cover_provider_scalars_and_collections() {
+    let Ok(database_url) = std::env::var("DSQL_OBSERVATORY_DATABASE_URL") else {
+        return;
+    };
+    let executor = PostgresExecutor::connect(&database_url)
+        .await
+        .expect("observatory connects");
+    let text_cast = |path: &str, name: &str, collection: bool, value: Value| BoundParameter {
+        path: path.to_string(),
+        data_type: "text".to_string(),
+        wire: "text_cast".to_string(),
+        provider_type: Some(("pg_catalog".to_string(), name.to_string())),
+        collection,
+        value,
+    };
+    let materialized = MaterializedOperation {
+        sql: "select (($1)::text)::date as event_date, \
+              (($2)::text)::timestamp as local_time, \
+              (($3)::text)::inet as address, \
+              (($4)::text[])::date[] as event_dates"
+            .to_string(),
+        parameters: vec![
+            text_cast("params.event_date", "date", false, value!("2026-07-27")),
+            text_cast(
+                "params.local_time",
+                "timestamp",
+                false,
+                value!("2026-07-27 12:34:56"),
+            ),
+            text_cast("params.address", "inet", false, value!("127.0.0.1")),
+            text_cast(
+                "params.event_dates",
+                "date",
+                true,
+                value!(["2026-07-27", "2026-07-28"]),
+            ),
+        ],
+    };
+
+    let output = executor
+        .execute_materialized(&materialized)
+        .await
+        .expect("provider text casts execute");
+    let object = output.as_object().expect("query returns one object");
+    assert_eq!(
+        object
+            .get("event_date")
+            .and_then(Value::as_string)
+            .map(|value| value.as_str()),
+        Some("2026-07-27")
+    );
+    assert_eq!(
+        object
+            .get("local_time")
+            .and_then(Value::as_string)
+            .map(|value| value.as_str()),
+        Some("2026-07-27T12:34:56")
+    );
+    assert!(
+        object
+            .get("address")
+            .and_then(Value::as_string)
+            .is_some_and(|value| value.as_str().starts_with("127.0.0.1"))
+    );
+    let expected_dates = value!(["2026-07-27", "2026-07-28"]);
+    assert_eq!(object.get("event_dates"), Some(&expected_dates));
+}
+
+#[tokio::test]
+async fn postgres_text_cast_failures_have_a_stable_input_error() {
+    let Ok(database_url) = std::env::var("DSQL_OBSERVATORY_DATABASE_URL") else {
+        return;
+    };
+    let executor = PostgresExecutor::connect(&database_url)
+        .await
+        .expect("observatory connects");
+    let materialized = MaterializedOperation {
+        sql: "select (($1)::text)::date as event_date".to_string(),
+        parameters: vec![BoundParameter {
+            path: "params.event_date".to_string(),
+            data_type: "text".to_string(),
+            wire: "text_cast".to_string(),
+            provider_type: Some(("pg_catalog".to_string(), "date".to_string())),
+            collection: false,
+            value: value!("not-a-date"),
+        }],
+    };
+
+    let error = executor
+        .execute_materialized(&materialized)
+        .await
+        .expect_err("invalid provider input fails");
+    assert!(matches!(
+        error,
+        ExecuteError::InvalidProviderInput { path, data_type }
+            if path == "params.event_date" && data_type == "pg_catalog.date"
+    ));
 }
 
 #[tokio::test]

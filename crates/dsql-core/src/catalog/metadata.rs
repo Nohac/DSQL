@@ -128,8 +128,22 @@ pub struct ProviderTypeFacts {
     pub kind: String,
     /// Raw one-character PostgreSQL `pg_type.typcategory` code.
     pub category: String,
+    /// Raw one-character kind of the terminal non-domain provider type.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub effective_kind: Option<String>,
+    /// Raw one-character category of the terminal non-domain provider type.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub effective_category: Option<String>,
     /// Whether an applicable default btree operator class exists.
     pub orderable: bool,
+}
+
+impl ProviderTypeFacts {
+    pub(crate) fn supports_text_cast(&self) -> bool {
+        let kind = self.effective_kind.as_deref().unwrap_or(&self.kind);
+        let category = self.effective_category.as_deref().unwrap_or(&self.category);
+        matches!(kind, "b" | "e") && category != "A"
+    }
 }
 
 impl TypeMetadata {
@@ -633,6 +647,7 @@ impl Catalog {
             schemas,
             tables,
             types,
+            type_ids,
             columns,
             foreign_keys,
             relations,
@@ -693,8 +708,9 @@ fn build_catalog_types(
         if let Some(provider) = &metadata_type.provider {
             catalog_type.capabilities = TypeCapabilities::provider(
                 data_type,
+                &metadata_type.readable_type,
+                provider,
                 &metadata_type.operations,
-                provider.orderable,
             );
         }
         types.push(catalog_type);
