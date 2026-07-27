@@ -7,6 +7,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -14,6 +16,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -21,6 +25,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -30,14 +36,6 @@ constraints:
     columns:
       - id
 foreign_keys:
-  - name: movie_keyword_movie_id_fkey
-    columns:
-      - movie_id
-    references:
-      schema: public
-      table: title
-      columns:
-        - id
   - name: movie_keyword_keyword_id_fkey
     columns:
       - keyword_id
@@ -46,19 +44,48 @@ foreign_keys:
       table: keyword
       columns:
         - id
+  - name: movie_keyword_movie_id_fkey
+    columns:
+      - movie_id
+    references:
+      schema: public
+      table: title
+      columns:
+        - id
 indexes:
-  - name: movie_keyword_pkey
-    access_method: btree
-    keys:
-      - column: id
-    unique: true
-  - name: movie_id_movie_keyword
-    access_method: btree
-    keys:
-      - column: movie_id
-    unique: false
   - name: keyword_id_movie_keyword
     access_method: btree
     keys:
       - column: keyword_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: false
+  - name: movie_id_movie_keyword
+    access_method: btree
+    keys:
+      - column: movie_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+    unique: false
+  - name: movie_keyword_pkey
+    access_method: btree
+    keys:
+      - column: id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+    unique: true

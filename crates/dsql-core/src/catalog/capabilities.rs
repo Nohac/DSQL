@@ -161,15 +161,6 @@ impl TypeCapabilities {
         provider: &super::ProviderTypeFacts,
         operations: &BTreeSet<String>,
     ) -> Self {
-        const PROVIDER_OPERATORS: [(&str, ComparisonOp); 7] = [
-            ("=", ComparisonOp::Eq),
-            ("<>", ComparisonOp::Ne),
-            (">", ComparisonOp::Gt),
-            (">=", ComparisonOp::Ge),
-            ("<", ComparisonOp::Lt),
-            ("<=", ComparisonOp::Le),
-            ("~~", ComparisonOp::Like),
-        ];
         let mut capabilities = Self::builtin(data_type);
         if data_type == DataType::Unknown && provider.supports_text_cast() {
             let text = Self::builtin(DataType::Text);
@@ -180,12 +171,60 @@ impl TypeCapabilities {
             capabilities.literals = text.literals;
             capabilities.defaults = text.defaults;
         }
-        capabilities.operators = PROVIDER_OPERATORS
+        capabilities.apply_provider_comparisons(provider, operations);
+        capabilities
+    }
+
+    /// Inherits scalar semantics through a provider domain while retaining
+    /// the domain's own comparison and ordering surface.
+    pub(crate) fn domain(
+        base: &Self,
+        readable_type: &str,
+        provider: Option<&super::ProviderTypeFacts>,
+        operations: &BTreeSet<String>,
+    ) -> Self {
+        let mut capabilities = base.clone();
+        capabilities.description = readable_type.to_string();
+        if let Some(provider) = provider {
+            capabilities.apply_provider_comparisons(provider, operations);
+        }
+        capabilities
+    }
+
+    /// Builds an array's provider comparison surface without claiming scalar
+    /// literal, default, aggregate, or input-wire behavior.
+    pub(crate) fn array(
+        readable_type: &str,
+        provider: Option<&super::ProviderTypeFacts>,
+        operations: &BTreeSet<String>,
+    ) -> Self {
+        let mut capabilities = Self::builtin(DataType::Unknown);
+        capabilities.description = readable_type.to_string();
+        if let Some(provider) = provider {
+            capabilities.apply_provider_comparisons(provider, operations);
+        }
+        capabilities
+    }
+
+    fn apply_provider_comparisons(
+        &mut self,
+        provider: &super::ProviderTypeFacts,
+        operations: &BTreeSet<String>,
+    ) {
+        const PROVIDER_OPERATORS: [(&str, ComparisonOp); 7] = [
+            ("=", ComparisonOp::Eq),
+            ("<>", ComparisonOp::Ne),
+            (">", ComparisonOp::Gt),
+            (">=", ComparisonOp::Ge),
+            ("<", ComparisonOp::Lt),
+            ("<=", ComparisonOp::Le),
+            ("~~", ComparisonOp::Like),
+        ];
+        self.operators = PROVIDER_OPERATORS
             .into_iter()
             .filter_map(|(written, operator)| operations.contains(written).then_some(operator))
             .collect();
-        capabilities.orderable = provider.orderable;
-        capabilities
+        self.orderable = provider.orderable;
     }
 }
 

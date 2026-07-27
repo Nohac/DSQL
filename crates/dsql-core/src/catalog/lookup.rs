@@ -113,7 +113,7 @@ impl Catalog {
     /// loudly instead of changing language behavior to [`DataType::Unknown`].
     pub fn data_type_for_column(&self, id: ColumnId) -> DataType {
         let column = &self.columns[id.0];
-        self.types[column.type_id.0].data_type
+        self.types[column.type_id.0].logical_data_type()
     }
 
     pub fn relation_by_id(&self, id: RelationId) -> Option<&Relation> {

@@ -1,6 +1,6 @@
 # Support array and domain column types
 
-**ID:** c8ebd9ac | **Status:** Open | **Created:** 2026-07-26T11:48:49+02:00
+**ID:** c8ebd9ac | **Status:** Done | **Created:** 2026-07-26T11:48:49+02:00
 
 Arrays and domains are common in ordinary schemas and both currently resolve to
 `Unknown`. A `text[]` column introspects as `_text`, which matches no entry in
@@ -29,3 +29,23 @@ Acceptance criteria:
   metadata; a scalar input bound to an array column is a diagnostic.
 - Catalog, plan, SQL, and metadata snapshots cover one domain column and one
   array column.
+
+## Resolution
+
+Catalog metadata now requires an explicit scalar, domain, or array structure.
+Domain bases and array elements are schema-qualified type identities resolved
+through a validated, cycle-safe catalog graph. Domains inherit scalar semantics
+while retaining their declared provider identity; database arrays remain
+distinct result shapes and cannot bind through scalar input paths.
+
+Manifest version 5 replaces result-field scalar aliases with a required
+shape-aware value contract. PostgreSQL generation preserves native arrays when
+their JSON representation is exact and casts bigint, numeric, and text-cast
+element arrays to `text[]` before JSON conversion. TypeScript renders database
+arrays recursively, including multidimensional arrays, without conflating them
+with relation collections or public input collections.
+
+The Observatory catalog and live operation suite cover text and inet domains,
+text and inet arrays, bigint values above JavaScript's safe integer limit, and
+a two-dimensional bigint array. Type maps without the required structure are
+rejected rather than upgraded.

@@ -6,7 +6,7 @@ use dsql_core::catalog::{
     ForeignKeyReferenceMetadata, IndexKeyCapability, IndexKeyMetadata, IndexMetadata,
     IndexNullsPosition, IndexOrder, IndexOrderDirection, ObjectType, ProviderTypeFacts,
     SchemaMetadata, TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeKey,
-    TypeMetadata,
+    TypeMetadata, TypeStructureKind, TypeStructureMetadata,
 };
 use sqlx::{AssertSqlSafe, Executor, FromRow, Pool, Postgres, postgres::PgPoolOptions};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -25,6 +25,16 @@ pub enum IntrospectionError {
         column: String,
         type_oid: i64,
     },
+    #[error(
+        "PostgreSQL type OID {source_oid} references missing {relation} type OID {related_oid}"
+    )]
+    IncompleteRelatedTypeSnapshot {
+        source_oid: i64,
+        relation: &'static str,
+        related_oid: i64,
+    },
+    #[error("PostgreSQL type structure contains a cycle through `{schema}.{name}`")]
+    CyclicTypeStructure { schema: String, name: String },
 }
 
 #[derive(Debug, FromRow)]
@@ -87,6 +97,8 @@ struct PostgresType {
     type_schema: String,
     type_kind: String,
     type_category: String,
+    base_type_oid: Option<i64>,
+    element_type_oid: Option<i64>,
     effective_kind: String,
     effective_category: String,
     operations: Vec<String>,
@@ -279,6 +291,43 @@ effective_type AS (
     WHERE candidate.typtype <> 'd'
     ORDER BY chain.source_oid
 ),
+selected_type(type_oid) AS (
+    SELECT typ.oid
+    FROM pg_type typ
+    JOIN pg_namespace type_ns ON type_ns.oid = typ.typnamespace
+    LEFT JOIN pg_class type_rel ON type_rel.oid = typ.typrelid
+    LEFT JOIN pg_type element_type ON element_type.oid = typ.typelem
+    LEFT JOIN pg_class element_rel ON element_rel.oid = element_type.typrelid
+    WHERE
+        type_ns.nspname <> 'pg_toast'
+        AND (
+            (
+                (typ.typtype <> 'c' OR type_rel.relkind = 'c')
+                AND (
+                    typ.typelem = 0
+                    OR element_type.typtype <> 'c'
+                    OR element_rel.relkind = 'c'
+                )
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM pg_attribute col
+                JOIN pg_class tbl ON col.attrelid = tbl.oid
+                JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+                WHERE col.atttypid = typ.oid
+                    AND {PG_INTROSPECTED_COLUMN_PREDICATE}
+            )
+        )
+
+    UNION
+
+    SELECT dependency.type_oid
+    FROM selected_type selected
+    JOIN pg_type typ ON typ.oid = selected.type_oid
+    JOIN LATERAL (
+        VALUES (NULLIF(typ.typbasetype, 0)), (NULLIF(typ.typelem, 0))
+    ) AS dependency(type_oid) ON dependency.type_oid IS NOT NULL
+),
 operand_candidates(source_oid, candidate_oid) AS (
     SELECT source_oid, candidate_oid
     FROM domain_chain
@@ -330,6 +379,8 @@ SELECT
     type_ns.nspname AS type_schema,
     typ.typtype::text AS type_kind,
     typ.typcategory::text AS type_category,
+    NULLIF(typ.typbasetype, 0)::bigint AS base_type_oid,
+    NULLIF(typ.typelem, 0)::bigint AS element_type_oid,
     effective.typtype::text AS effective_kind,
     effective.typcategory::text AS effective_category,
     COALESCE(
@@ -349,35 +400,14 @@ SELECT
     ) AS orderable
 FROM
     pg_type typ
+    JOIN selected_type selected ON selected.type_oid = typ.oid
     JOIN pg_namespace type_ns ON type_ns.oid = typ.typnamespace
     JOIN effective_type effective ON effective.source_oid = typ.oid
     LEFT JOIN native_operations native ON native.source_oid = typ.oid
-    LEFT JOIN pg_class type_rel ON type_rel.oid = typ.typrelid
-    LEFT JOIN pg_type element_type ON element_type.oid = typ.typelem
-    LEFT JOIN pg_class element_rel ON element_rel.oid = element_type.typrelid
-WHERE
-    type_ns.nspname <> 'pg_toast'
-    AND (
-        (
-            (typ.typtype <> 'c' OR type_rel.relkind = 'c')
-            AND (
-                typ.typelem = 0
-                OR element_type.typtype <> 'c'
-                OR element_rel.relkind = 'c'
-            )
-        )
-        OR EXISTS (
-            SELECT 1
-            FROM pg_attribute col
-            JOIN pg_class tbl ON col.attrelid = tbl.oid
-            JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
-            WHERE col.atttypid = typ.oid
-                AND {PG_INTROSPECTED_COLUMN_PREDICATE}
-        )
-    )
 GROUP BY
     typ.oid, typ.typname, typ.typtype, typ.typcategory,
-    effective.typtype, effective.typcategory, type_ns.nspname
+    typ.typbasetype, typ.typelem, effective.typtype, effective.typcategory,
+    type_ns.nspname
 ORDER BY
     type_ns.nspname, typ.typname;
 "#
@@ -442,18 +472,46 @@ fn metadata_from_rows(
 ) -> Result<DatabaseMetadata, IntrospectionError> {
     let mut type_map = BTreeMap::<TypeKey, TypeMetadata>::new();
     let mut type_keys_by_oid = HashMap::<i64, TypeKey>::new();
-    for row in type_rows {
+    for row in &type_rows {
         let key = TypeKey {
-            schema: row.type_schema,
-            name: row.internal_type,
+            schema: row.type_schema.clone(),
+            name: row.internal_type.clone(),
         };
         type_keys_by_oid.insert(row.type_oid, key.clone());
+    }
+    for row in type_rows {
+        let key = type_keys_by_oid.get(&row.type_oid).cloned().ok_or(
+            IntrospectionError::IncompleteTypeSnapshot {
+                schema: row.type_schema.clone(),
+                table: "<type map>".to_string(),
+                column: row.internal_type.clone(),
+                type_oid: row.type_oid,
+            },
+        )?;
+        let structure = if row.type_kind == "d" {
+            TypeStructureMetadata::domain(related_type_key(
+                &type_keys_by_oid,
+                row.type_oid,
+                row.base_type_oid,
+                "base",
+            )?)
+        } else if row.type_category == "A" {
+            TypeStructureMetadata::array(related_type_key(
+                &type_keys_by_oid,
+                row.type_oid,
+                row.element_type_oid,
+                "element",
+            )?)
+        } else {
+            TypeStructureMetadata::scalar()
+        };
         type_map
             .entry(key.clone())
             .or_insert_with(|| TypeMetadata {
                 internal_type: key.name,
                 readable_type: row.readable_type,
                 schema: key.schema,
+                structure,
                 provider: Some(ProviderTypeFacts {
                     kind: row.type_kind,
                     category: row.type_category,
@@ -495,7 +553,7 @@ fn metadata_from_rows(
             name: row.column_name,
             description: row.column_description,
             database_type: provider_type.name.clone(),
-            data_type: DataType::from_database_type(&provider_type.name),
+            data_type: logical_data_type(&provider_type, &type_map, &mut BTreeSet::new())?,
             provider_type,
             formatted_type: Some(row.formatted_type),
             type_modifier: Some(row.type_modifier),
@@ -626,6 +684,56 @@ fn metadata_from_rows(
     Ok(metadata)
 }
 
+fn related_type_key(
+    keys_by_oid: &HashMap<i64, TypeKey>,
+    source_oid: i64,
+    related_oid: Option<i64>,
+    relation: &'static str,
+) -> Result<TypeKey, IntrospectionError> {
+    let Some(related_oid) = related_oid else {
+        return Err(IntrospectionError::IncompleteRelatedTypeSnapshot {
+            source_oid,
+            relation,
+            related_oid: 0,
+        });
+    };
+    keys_by_oid.get(&related_oid).cloned().ok_or(
+        IntrospectionError::IncompleteRelatedTypeSnapshot {
+            source_oid,
+            relation,
+            related_oid,
+        },
+    )
+}
+
+fn logical_data_type(
+    key: &TypeKey,
+    types: &BTreeMap<TypeKey, TypeMetadata>,
+    visiting: &mut BTreeSet<TypeKey>,
+) -> Result<DataType, IntrospectionError> {
+    let Some(data_type) = types.get(key) else {
+        return Ok(DataType::Unknown);
+    };
+    if !visiting.insert(key.clone()) {
+        return Err(IntrospectionError::CyclicTypeStructure {
+            schema: key.schema.clone(),
+            name: key.name.clone(),
+        });
+    }
+    let resolved = match data_type.structure.kind {
+        TypeStructureKind::Scalar => DataType::from_database_type(&data_type.internal_type),
+        TypeStructureKind::Domain => {
+            let Some(base) = data_type.structure.related_type.as_ref() else {
+                return Ok(DataType::Unknown);
+            };
+            logical_data_type(base, types, visiting)?
+        }
+        TypeStructureKind::Array => DataType::Unknown,
+    };
+    visiting.remove(key);
+    Ok(resolved)
+}
+
 fn table_mut<'a>(
     schemas: &'a mut HashMap<String, HashMap<String, TableMetadata>>,
     schema_name: &str,
@@ -742,6 +850,8 @@ mod tests {
                     type_schema: "pg_catalog".into(),
                     type_kind: "b".into(),
                     type_category: "N".into(),
+                    base_type_oid: None,
+                    element_type_oid: None,
                     effective_kind: "b".into(),
                     effective_category: "N".into(),
                     operations: vec!["=".into(), "<".into()],
@@ -754,6 +864,8 @@ mod tests {
                     type_schema: "alpha".into(),
                     type_kind: "e".into(),
                     type_category: "E".into(),
+                    base_type_oid: None,
+                    element_type_oid: None,
                     effective_kind: "e".into(),
                     effective_category: "E".into(),
                     operations: vec![
@@ -773,6 +885,8 @@ mod tests {
                     type_schema: "beta".into(),
                     type_kind: "e".into(),
                     type_category: "E".into(),
+                    base_type_oid: None,
+                    element_type_oid: None,
                     effective_kind: "e".into(),
                     effective_category: "E".into(),
                     operations: vec!["=".into()],
@@ -785,6 +899,8 @@ mod tests {
                     type_schema: "pg_catalog".into(),
                     type_kind: "b".into(),
                     type_category: "A".into(),
+                    base_type_oid: None,
+                    element_type_oid: Some(23),
                     effective_kind: "b".into(),
                     effective_category: "A".into(),
                     operations: vec!["<>".into(), "=".into()],
@@ -797,6 +913,8 @@ mod tests {
                     type_schema: "pg_catalog".into(),
                     type_kind: "r".into(),
                     type_category: "R".into(),
+                    base_type_oid: None,
+                    element_type_oid: None,
                     effective_kind: "r".into(),
                     effective_category: "R".into(),
                     operations: vec!["<".into(), "<>".into(), "=".into(), ">".into()],
@@ -809,6 +927,8 @@ mod tests {
                     type_schema: "pg_catalog".into(),
                     type_kind: "m".into(),
                     type_category: "R".into(),
+                    base_type_oid: None,
+                    element_type_oid: None,
                     effective_kind: "m".into(),
                     effective_category: "R".into(),
                     operations: vec!["<".into(), "<>".into(), "=".into(), ">".into()],
@@ -987,6 +1107,140 @@ mod tests {
         )
         .expect("an empty catalog snapshot is complete");
         assert!(metadata.schemas.is_empty());
+    }
+
+    #[test]
+    fn domain_and_array_structure_is_preserved() {
+        let metadata = metadata_from_rows(
+            vec![
+                FlatColumn {
+                    schema_name: "public".into(),
+                    table_name: "records".into(),
+                    table_description: None,
+                    column_name: "label".into(),
+                    column_description: None,
+                    type_oid: 90_001,
+                    type_modifier: -1,
+                    formatted_type: "public.label_domain".into(),
+                    not_null: true,
+                    object_type: "r".into(),
+                },
+                FlatColumn {
+                    schema_name: "public".into(),
+                    table_name: "records".into(),
+                    table_description: None,
+                    column_name: "labels".into(),
+                    column_description: None,
+                    type_oid: 1_009,
+                    type_modifier: -1,
+                    formatted_type: "text[]".into(),
+                    not_null: true,
+                    object_type: "r".into(),
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![
+                PostgresType {
+                    type_oid: 25,
+                    internal_type: "text".into(),
+                    readable_type: "text".into(),
+                    type_schema: "pg_catalog".into(),
+                    type_kind: "b".into(),
+                    type_category: "S".into(),
+                    base_type_oid: None,
+                    element_type_oid: None,
+                    effective_kind: "b".into(),
+                    effective_category: "S".into(),
+                    operations: vec!["=".into()],
+                    orderable: true,
+                },
+                PostgresType {
+                    type_oid: 90_001,
+                    internal_type: "label_domain".into(),
+                    readable_type: "public.label_domain".into(),
+                    type_schema: "public".into(),
+                    type_kind: "d".into(),
+                    type_category: "S".into(),
+                    base_type_oid: Some(25),
+                    element_type_oid: None,
+                    effective_kind: "b".into(),
+                    effective_category: "S".into(),
+                    operations: vec!["=".into()],
+                    orderable: true,
+                },
+                PostgresType {
+                    type_oid: 1_009,
+                    internal_type: "_text".into(),
+                    readable_type: "text[]".into(),
+                    type_schema: "pg_catalog".into(),
+                    type_kind: "b".into(),
+                    type_category: "A".into(),
+                    base_type_oid: None,
+                    element_type_oid: Some(25),
+                    effective_kind: "b".into(),
+                    effective_category: "A".into(),
+                    operations: vec!["=".into()],
+                    orderable: true,
+                },
+            ],
+        )
+        .expect("structural type snapshot is complete");
+
+        let table = &metadata.schemas[0].tables[0];
+        assert_eq!(table.columns[0].data_type, DataType::Text);
+        assert_eq!(table.columns[1].data_type, DataType::Unknown);
+        let domain = metadata
+            .types
+            .iter()
+            .find(|data_type| data_type.internal_type == "label_domain")
+            .expect("domain metadata");
+        assert_eq!(domain.structure.kind, TypeStructureKind::Domain);
+        assert_eq!(
+            domain.structure.related_type,
+            Some(TypeKey::new("pg_catalog", "text"))
+        );
+        let array = metadata
+            .types
+            .iter()
+            .find(|data_type| data_type.internal_type == "_text")
+            .expect("array metadata");
+        assert_eq!(array.structure.kind, TypeStructureKind::Array);
+        assert_eq!(
+            array.structure.related_type,
+            Some(TypeKey::new("pg_catalog", "text"))
+        );
+    }
+
+    #[test]
+    fn missing_structural_type_dependencies_fail_the_snapshot() {
+        let error = metadata_from_rows(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![PostgresType {
+                type_oid: 90_001,
+                internal_type: "label_domain".into(),
+                readable_type: "public.label_domain".into(),
+                type_schema: "public".into(),
+                type_kind: "d".into(),
+                type_category: "S".into(),
+                base_type_oid: Some(25),
+                element_type_oid: None,
+                effective_kind: "b".into(),
+                effective_category: "S".into(),
+                operations: Vec::new(),
+                orderable: true,
+            }],
+        )
+        .expect_err("a domain base must exist in the same snapshot");
+
+        assert_eq!(
+            error.to_string(),
+            "PostgreSQL type OID 90001 references missing base type OID 25"
+        );
     }
 
     #[test]

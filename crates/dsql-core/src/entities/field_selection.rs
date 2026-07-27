@@ -1582,7 +1582,7 @@ async fn complete_selections(
                 push(CompletionItem {
                     label: column.name.clone(),
                     kind: CompletionKind::Column,
-                    detail: Some(catalog.data_type_for_column(column.id).as_str().to_string()),
+                    detail: Some(column.formatted_type.clone()),
                     documentation: column.description.clone(),
                     insert_text: None,
                 });

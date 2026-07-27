@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use bowl::{Bowl, Singleton};
 use dsql_core::catalog::{
     ColumnMetadata, DataType, DatabaseMetadata, ObjectType, SchemaMetadata, TableMetadata, TypeKey,
-    TypeMetadata, insert_catalog,
+    TypeMetadata, TypeStructureMetadata, insert_catalog,
 };
 use dsql_core::facts::{VariablesDemand, arm_editor_demands};
 use dsql_core::language_bowl;
@@ -129,6 +129,7 @@ async fn column_hover_uses_the_provider_formatted_type() {
             internal_type: "varchar".to_string(),
             readable_type: "character varying".to_string(),
             schema: "pg_catalog".to_string(),
+            structure: TypeStructureMetadata::scalar(),
             provider: None,
             operations: BTreeSet::new(),
         }],

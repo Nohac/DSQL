@@ -297,7 +297,7 @@ mod host_requests {
         let id = HOST.find("    id").expect("fixture text") + 4;
         assert_eq!(
             hover_at(&bowl, id).await.text,
-            "column `id`: int (not null)"
+            "column `id`: integer (not null)"
         );
 
         // The fragment definition's name, in the third template.

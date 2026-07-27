@@ -90,7 +90,7 @@ binding's job - do **not** also configure a `[generate.typescript] cmd`,
 or the flat command channel and the grouped daemon channel render
 divergent output. One-shot generation is the explicit
 `bun dsql/generate.ts`, which drives its own daemon (see below). The
-legacy flat `cmd` channel remains supported for projects without a binding, but
+The flat `cmd` channel remains supported for projects without a binding, but
 it must use a separate environment-driven entrypoint such as
 `renderers/types.ts`; never point it at the daemon-owning `dsql/generate.ts`:
 

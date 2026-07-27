@@ -3,6 +3,11 @@ CREATE SCHEMA public;
 ALTER DATABASE observatory SET timezone = 'UTC';
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
+CREATE DOMAIN station_label AS text
+  CHECK (VALUE <> '');
+
+CREATE DOMAIN network_address AS inet;
+
 CREATE TABLE tenants (
   id uuid PRIMARY KEY,
   name text NOT NULL UNIQUE
@@ -58,6 +63,17 @@ CREATE TABLE readings (
 
 CREATE TABLE wide_integer_values (
   value bigint PRIMARY KEY
+);
+
+CREATE TABLE structured_type_values (
+  id integer PRIMARY KEY,
+  label station_label NOT NULL,
+  address network_address NOT NULL,
+  labels text[] NOT NULL,
+  wide_values bigint[] NOT NULL,
+  wide_matrix bigint[] NOT NULL,
+  addresses inet[] NOT NULL,
+  sensor_rows sensors[] NOT NULL
 );
 
 CREATE INDEX readings_sensor_time_idx ON readings

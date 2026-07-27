@@ -1795,7 +1795,7 @@ impl Inference<'_> {
         let data_type = self.catalog.type_for_column(column)?;
         let field_path = resolved.display_path()?.map(str::to_owned).collect();
         Some((
-            data_type.data_type,
+            data_type.logical_data_type(),
             data_type.capabilities.wire,
             data_type.key.clone(),
             field_path,

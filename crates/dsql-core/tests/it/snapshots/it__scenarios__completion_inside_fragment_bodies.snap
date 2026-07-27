@@ -1,11 +1,10 @@
 ---
 source: crates/dsql-core/tests/it/scenarios.rs
-assertion_line: 272
 expression: "scenario.complete(\"f.dsql\", markers[0]).await"
 ---
 context: SelectionBody table=kind_type scope=default replace=<none>
-Column id — int
-Column kind — text
+Column id — integer
+Column kind — character varying(15)
 Relation aka_title — relation to public.aka_title via kind_id
 Relation title — relation to public.title via kind_id
 Fragment Bits — fragment on kind_type (inserts `...Bits`)

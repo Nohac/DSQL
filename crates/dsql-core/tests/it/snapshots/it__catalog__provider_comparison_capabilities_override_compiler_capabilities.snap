@@ -1,9 +1,9 @@
 ---
 source: crates/dsql-core/tests/it/catalog.rs
-expression: "format!(\"legacy json: {}\\nprovider json: {}\\nprovider citext: {}\\nprovider domain: {}\\nprovider array: {}\",\nrender(&legacy_json), render(&provider_json), render(&provider_citext),\nrender(&provider_domain), render(&provider_array),)"
+expression: "format!(\"provider-less json: {}\\nprovider json: {}\\nprovider citext: {}\\nprovider domain: {}\\nprovider array: {}\",\nrender(&providerless_json), render(&provider_json), render(&provider_citext),\nrender(&provider_domain), render(&provider_array),)"
 ---
-legacy json: json (None/Json) wire=Json operators=[==, !=] orderable=true
+provider-less json: json (None/Json) wire=Json operators=[==, !=] orderable=true
 provider json: pg_catalog.json (Some(ProviderTypeFacts { kind: "b", category: "U", effective_kind: None, effective_category: None, orderable: false })/Json) wire=Json operators=[] orderable=false
 provider citext: public.citext (Some(ProviderTypeFacts { kind: "b", category: "U", effective_kind: None, effective_category: None, orderable: true })/Unknown) wire=TextCast operators=[==, !=, like] orderable=true
-provider domain: public.label_domain (Some(ProviderTypeFacts { kind: "d", category: "U", effective_kind: Some("b"), effective_category: Some("S"), orderable: true })/Unknown) wire=TextCast operators=[==, !=] orderable=true
+provider domain: public.label_domain (Some(ProviderTypeFacts { kind: "d", category: "U", effective_kind: Some("b"), effective_category: Some("S"), orderable: true })/Text) wire=Text operators=[==, !=] orderable=true
 provider array: text[] (Some(ProviderTypeFacts { kind: "b", category: "A", effective_kind: None, effective_category: None, orderable: true })/Unknown) wire=Unsupported operators=[==, !=] orderable=true

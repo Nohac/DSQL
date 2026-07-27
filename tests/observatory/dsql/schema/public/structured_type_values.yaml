@@ -1,0 +1,95 @@
+---
+schema: public
+name: structured_type_values
+object_type: table
+columns:
+  - name: id
+    provider_type:
+      schema: pg_catalog
+      name: int4
+    formatted_type: integer
+    type_modifier: -1
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: label
+    provider_type:
+      schema: public
+      name: station_label
+    formatted_type: public.station_label
+    type_modifier: -1
+    database_type: station_label
+    data_type: text
+    not_null: true
+  - name: address
+    provider_type:
+      schema: public
+      name: network_address
+    formatted_type: public.network_address
+    type_modifier: -1
+    database_type: network_address
+    data_type: unknown
+    not_null: true
+  - name: labels
+    provider_type:
+      schema: pg_catalog
+      name: _text
+    formatted_type: text[]
+    type_modifier: -1
+    database_type: _text
+    data_type: unknown
+    not_null: true
+  - name: wide_values
+    provider_type:
+      schema: pg_catalog
+      name: _int8
+    formatted_type: bigint[]
+    type_modifier: -1
+    database_type: _int8
+    data_type: unknown
+    not_null: true
+  - name: wide_matrix
+    provider_type:
+      schema: pg_catalog
+      name: _int8
+    formatted_type: bigint[]
+    type_modifier: -1
+    database_type: _int8
+    data_type: unknown
+    not_null: true
+  - name: addresses
+    provider_type:
+      schema: pg_catalog
+      name: _inet
+    formatted_type: inet[]
+    type_modifier: -1
+    database_type: _inet
+    data_type: unknown
+    not_null: true
+  - name: sensor_rows
+    provider_type:
+      schema: public
+      name: _sensors
+    formatted_type: public.sensors[]
+    type_modifier: -1
+    database_type: _sensors
+    data_type: unknown
+    not_null: true
+constraints:
+  - name: structured_type_values_pkey
+    kind: primary_key
+    columns:
+      - id
+indexes:
+  - name: structured_type_values_pkey
+    access_method: btree
+    keys:
+      - column: id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+    unique: true

@@ -10,7 +10,7 @@ use dsql_core::catalog::{
     ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata, ForeignKeyDirection,
     ForeignKeyReferenceMetadata, IndexKeyMetadata, IndexMetadata, ObjectType, RelationCardinality,
     SchemaMetadata, TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeKey,
-    TypeMetadata,
+    TypeMetadata, TypeStructureMetadata,
 };
 use dsql_core::facts::{Diagnostic, Severity, arm_generate_demands};
 use dsql_core::source::SourceKind;
@@ -137,6 +137,7 @@ async fn store_overlay_catalog(root: &Path) {
                 internal_type: data_type.to_string(),
                 readable_type: data_type.to_string(),
                 schema: "pg_catalog".to_string(),
+                structure: TypeStructureMetadata::scalar(),
                 provider: None,
                 operations: BTreeSet::new(),
             })
@@ -177,6 +178,7 @@ async fn catalog_load_reports_incomplete_type_maps_with_recovery() {
             internal_type: "text".to_string(),
             readable_type: "text".to_string(),
             schema: "pg_catalog".to_string(),
+            structure: TypeStructureMetadata::scalar(),
             provider: None,
             operations: BTreeSet::new(),
         }],
@@ -193,6 +195,34 @@ async fn catalog_load_reports_incomplete_type_maps_with_recovery() {
         .expect_err("incomplete type map rejects catalog construction");
 
     insta::assert_snapshot!(error);
+}
+
+#[tokio::test]
+async fn type_maps_without_structure_are_rejected() {
+    let scratch = scratch_project("database_url = \"x\"\n");
+    write_file(
+        scratch.path(),
+        "dsql/schema/type_map.yaml",
+        indoc::indoc! {r#"
+            types:
+              - internal_type: text
+                readable_type: text
+                schema: pg_catalog
+                operations: []
+        "#},
+    );
+    let project = Project::load_from(scratch.path())
+        .await
+        .expect("project configuration loads");
+    let error = project
+        .load_catalog()
+        .await
+        .expect_err("pre-structure type maps must not be upgraded");
+    let rendered = error
+        .to_string()
+        .replace(&scratch.path().display().to_string(), "<project>");
+
+    insta::assert_snapshot!(rendered);
 }
 
 #[tokio::test]
@@ -222,6 +252,7 @@ async fn catalog_overlays_compare_schema_qualified_provider_types() {
         internal_type: "person".to_string(),
         readable_type: format!("{schema}.person"),
         schema: schema.to_string(),
+        structure: TypeStructureMetadata::scalar(),
         provider: None,
         operations: BTreeSet::new(),
     };

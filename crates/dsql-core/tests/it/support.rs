@@ -8,7 +8,8 @@ use bowl::{Bowl, Entity, Mut, Query};
 use codespan_reporting::diagnostic::Severity;
 use dsql_core::catalog::{
     Catalog, ColumnMetadata, DataType, DatabaseMetadata, ObjectType, ProviderTypeFacts,
-    SchemaMetadata, TableMetadata, TypeKey, TypeMetadata, table_metadata_from_yaml,
+    SchemaMetadata, TableMetadata, TypeKey, TypeMetadata, TypeStructureMetadata,
+    table_metadata_from_yaml,
 };
 use dsql_core::grammar::parser::Diagnostic;
 use dsql_core::source::SourceText;
@@ -302,6 +303,7 @@ pub fn provider_scalar_catalog() -> Catalog {
         internal_type: name.to_string(),
         readable_type: format!("pg_catalog.{name}"),
         schema: "pg_catalog".to_string(),
+        structure: TypeStructureMetadata::scalar(),
         provider: Some(ProviderTypeFacts {
             kind: kind.to_string(),
             category: category.to_string(),
@@ -374,6 +376,182 @@ pub fn provider_scalar_catalog() -> Catalog {
     }
     .to_catalog()
     .expect("provider scalar fixture catalog must build")
+    .with_default_schema(Catalog::DEFAULT_SCHEMA)
+}
+
+/// Provider domains and arrays used to pin structural type behavior.
+pub fn structured_type_catalog() -> Catalog {
+    let provider =
+        |schema: &str, name: &str, kind: &str, category: &str, structure: TypeStructureMetadata| {
+            TypeMetadata {
+                internal_type: name.to_string(),
+                readable_type: if schema == "pg_catalog" {
+                    name.to_string()
+                } else {
+                    format!("{schema}.{name}")
+                },
+                schema: schema.to_string(),
+                structure,
+                provider: Some(ProviderTypeFacts {
+                    kind: kind.to_string(),
+                    category: category.to_string(),
+                    effective_kind: None,
+                    effective_category: None,
+                    orderable: true,
+                }),
+                operations: ["=", "<>", ">", ">=", "<", "<="]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            }
+        };
+    let column = |name: &str, provider_type: TypeKey, data_type: DataType| ColumnMetadata {
+        name: name.to_string(),
+        description: None,
+        database_type: provider_type.name.clone(),
+        provider_type,
+        formatted_type: None,
+        type_modifier: None,
+        data_type,
+        not_null: true,
+    };
+    DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![TableMetadata {
+                schema: "public".to_string(),
+                name: "typed_values".to_string(),
+                object_type: ObjectType::Table,
+                description: None,
+                columns: vec![
+                    column(
+                        "label",
+                        TypeKey::new("public", "label_domain"),
+                        DataType::Text,
+                    ),
+                    column(
+                        "address",
+                        TypeKey::new("public", "address_domain"),
+                        DataType::Unknown,
+                    ),
+                    column(
+                        "labels",
+                        TypeKey::new("pg_catalog", "_text"),
+                        DataType::Unknown,
+                    ),
+                    column(
+                        "big_values",
+                        TypeKey::new("pg_catalog", "_int8"),
+                        DataType::Unknown,
+                    ),
+                    column(
+                        "addresses",
+                        TypeKey::new("pg_catalog", "_inet"),
+                        DataType::Unknown,
+                    ),
+                    column(
+                        "nested_label",
+                        TypeKey::new("public", "nested_label_domain"),
+                        DataType::Text,
+                    ),
+                    column(
+                        "domain_labels",
+                        TypeKey::new("public", "labels_domain"),
+                        DataType::Unknown,
+                    ),
+                    column(
+                        "labeled_values",
+                        TypeKey::new("public", "_label_domain"),
+                        DataType::Unknown,
+                    ),
+                ],
+                constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        }],
+        types: vec![
+            provider(
+                "pg_catalog",
+                "text",
+                "b",
+                "S",
+                TypeStructureMetadata::scalar(),
+            ),
+            provider(
+                "pg_catalog",
+                "int8",
+                "b",
+                "N",
+                TypeStructureMetadata::scalar(),
+            ),
+            provider(
+                "pg_catalog",
+                "inet",
+                "b",
+                "I",
+                TypeStructureMetadata::scalar(),
+            ),
+            provider(
+                "public",
+                "label_domain",
+                "d",
+                "S",
+                TypeStructureMetadata::domain(TypeKey::new("pg_catalog", "text")),
+            ),
+            provider(
+                "public",
+                "address_domain",
+                "d",
+                "I",
+                TypeStructureMetadata::domain(TypeKey::new("pg_catalog", "inet")),
+            ),
+            provider(
+                "public",
+                "nested_label_domain",
+                "d",
+                "S",
+                TypeStructureMetadata::domain(TypeKey::new("public", "label_domain")),
+            ),
+            provider(
+                "public",
+                "labels_domain",
+                "d",
+                "A",
+                TypeStructureMetadata::domain(TypeKey::new("pg_catalog", "_text")),
+            ),
+            provider(
+                "pg_catalog",
+                "_text",
+                "b",
+                "A",
+                TypeStructureMetadata::array(TypeKey::new("pg_catalog", "text")),
+            ),
+            provider(
+                "pg_catalog",
+                "_int8",
+                "b",
+                "A",
+                TypeStructureMetadata::array(TypeKey::new("pg_catalog", "int8")),
+            ),
+            provider(
+                "pg_catalog",
+                "_inet",
+                "b",
+                "A",
+                TypeStructureMetadata::array(TypeKey::new("pg_catalog", "inet")),
+            ),
+            provider(
+                "public",
+                "_label_domain",
+                "b",
+                "A",
+                TypeStructureMetadata::array(TypeKey::new("public", "label_domain")),
+            ),
+        ],
+    }
+    .to_catalog()
+    .expect("structured type fixture catalog must build")
     .with_default_schema(Catalog::DEFAULT_SCHEMA)
 }
 

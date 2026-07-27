@@ -32,8 +32,8 @@ Acceptance criteria:
 
 - `type_map.yaml` records type kind, category, and a derived capability set per
   type.
-- Capability records are built from provider facts, with the hardcoded table
-  retained only as the fallback for fixtures and tests that have no provider.
+- Capability records are built from provider facts, with the compiler-owned
+  table retained for explicitly synthetic catalogs that have no provider.
 - Column metadata references a type identity and retains its formatted display
   name including type modifiers.
 - A capability change in the database is visible after `dsql introspect` without
@@ -50,10 +50,11 @@ type, modifier, raw type kind/category, native operations, and ordering support
 without persisting OIDs.
 
 Fresh provider facts replace the compiler's comparison and ordering defaults.
-The builtin matrix remains the compatibility fallback for metadata without the
-optional provider record. DSQL still owns provider-independent behavior such as
-literal categories, defaults, and aggregate result typing.
+The builtin matrix supplies compiler semantics for explicitly provider-less
+synthetic catalogs. It is not an older-format compatibility reader. DSQL still
+owns provider-independent behavior such as literal categories, defaults, and
+aggregate result typing.
 
-Existing committed catalog fixtures deliberately retain their older
-provider-less type maps so they continue to test that fallback. Regenerating
-those snapshots from a live catalog is tracked separately.
+Maintained catalog fixtures are regenerated from live catalogs. A focused
+provider-less unit fixture keeps the compiler-owned path covered without
+accepting incomplete current catalog metadata.

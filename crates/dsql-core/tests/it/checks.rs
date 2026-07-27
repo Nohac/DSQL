@@ -10,7 +10,7 @@ use dsql_core::source::{insert_embedding_source, insert_source};
 
 use crate::{
     fixture, imdb_catalog, numeric_catalog, provider_scalar_catalog, render_diagnostic_facts,
-    replace_source_text, set_source_text,
+    replace_source_text, set_source_text, structured_type_catalog,
 };
 
 async fn checked_bowl(catalog: Catalog) -> Bowl {
@@ -166,6 +166,32 @@ async fn unsupported_provider_types_are_diagnosed_only_at_input_sites() {
                 order by opaque asc
               ) {
                 opaque
+              }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn database_arrays_are_results_but_not_scalar_inputs() {
+    let bowl = checked_bowl(structured_type_catalog()).await;
+    insert_source(
+        &bowl,
+        "structured-types.dsql",
+        indoc::indoc! {r#"
+            query ValidDomain($$label = "primary") {
+              typed_values(where .label == $$label) {
+                label
+                labels
+                big_values
+              }
+            }
+            query InvalidArrayInput {
+              typed_values(where .labels == $$labels) {
+                labels
               }
             }
         "#},

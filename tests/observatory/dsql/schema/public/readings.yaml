@@ -8,6 +8,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int8
+    formatted_type: bigint
+    type_modifier: -1
     database_type: int8
     data_type: bigint
     not_null: true
@@ -15,6 +17,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: uuid
+    formatted_type: uuid
+    type_modifier: -1
     database_type: uuid
     data_type: uuid
     not_null: true
@@ -22,6 +26,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: text
+    formatted_type: text
+    type_modifier: -1
     database_type: text
     data_type: text
     not_null: true
@@ -29,6 +35,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: text
+    formatted_type: text
+    type_modifier: -1
     database_type: text
     data_type: text
     not_null: true
@@ -36,6 +44,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: text
+    formatted_type: text
+    type_modifier: -1
     database_type: text
     data_type: text
     not_null: true
@@ -43,6 +53,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: timestamptz
+    formatted_type: timestamp with time zone
+    type_modifier: -1
     database_type: timestamptz
     data_type: timestamptz
     not_null: true
@@ -50,6 +62,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: numeric
+    formatted_type: numeric
+    type_modifier: -1
     database_type: numeric
     data_type: numeric
     not_null: true
@@ -58,6 +72,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: float8
+    formatted_type: double precision
+    type_modifier: -1
     database_type: float8
     data_type: float
     not_null: false
@@ -65,6 +81,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: bool
+    formatted_type: boolean
+    type_modifier: -1
     database_type: bool
     data_type: boolean
     not_null: true
@@ -72,6 +90,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: jsonb
+    formatted_type: jsonb
+    type_modifier: -1
     database_type: jsonb
     data_type: json
     not_null: true

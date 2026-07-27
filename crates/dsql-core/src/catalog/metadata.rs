@@ -1,8 +1,8 @@
 use super::{
-    Catalog, CatalogType, Column, ColumnId, DataType, ForeignKey, ForeignKeyDirection,
-    ForeignKeyId, Index, IndexKey, IndexKeyCapability, IndexOrder, Relation, RelationCardinality,
-    RelationId, RelationSupports, Schema, SchemaId, Table, TableId, TypeCapabilities, TypeId,
-    TypeKey,
+    Catalog, CatalogType, CatalogTypeShape, Column, ColumnId, DataType, ForeignKey,
+    ForeignKeyDirection, ForeignKeyId, Index, IndexKey, IndexKeyCapability, IndexOrder, Relation,
+    RelationCardinality, RelationId, RelationSupports, Schema, SchemaId, Table, TableId,
+    TypeCapabilities, TypeId, TypeKey,
 };
 use facet::Facet;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -49,7 +49,7 @@ pub struct ColumnMetadata {
     /// Raw PostgreSQL `atttypmod`, when supplied by introspection.
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub type_modifier: Option<i32>,
-    /// Internal PostgreSQL `typname`, used only for logical fallback mapping.
+    /// Internal PostgreSQL `typname`, used for compiler logical classification.
     pub database_type: String,
     pub data_type: DataType,
     pub not_null: bool,
@@ -115,10 +115,58 @@ pub struct TypeMetadata {
     pub internal_type: String,
     pub readable_type: String,
     pub schema: String,
+    /// Provider-neutral structural relationship for this type.
+    pub structure: TypeStructureMetadata,
     /// Raw provider facts from the same PostgreSQL catalog snapshot.
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub provider: Option<ProviderTypeFacts>,
     pub operations: BTreeSet<String>,
+}
+
+/// Structural identity of one provider type.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct TypeStructureMetadata {
+    pub kind: TypeStructureKind,
+    /// Base type for a domain or element type for an array.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub related_type: Option<TypeKey>,
+}
+
+impl TypeStructureMetadata {
+    /// Constructs a scalar type with no structural dependency.
+    pub fn scalar() -> Self {
+        Self {
+            kind: TypeStructureKind::Scalar,
+            related_type: None,
+        }
+    }
+
+    /// Constructs a domain over `base`.
+    pub fn domain(base: TypeKey) -> Self {
+        Self {
+            kind: TypeStructureKind::Domain,
+            related_type: Some(base),
+        }
+    }
+
+    /// Constructs an array of `element`.
+    pub fn array(element: TypeKey) -> Self {
+        Self {
+            kind: TypeStructureKind::Array,
+            related_type: Some(element),
+        }
+    }
+}
+
+/// Structural category retained independently of logical scalar mappings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet, strum::AsRefStr)]
+#[facet(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+#[repr(u8)]
+pub enum TypeStructureKind {
+    Scalar,
+    Domain,
+    Array,
 }
 
 /// Native PostgreSQL classification and ordering facts for one type.
@@ -190,6 +238,24 @@ pub enum CatalogBuildError {
     },
     #[error("duplicate provider type `{schema}.{name}`")]
     DuplicateType { schema: String, name: String },
+    #[error("provider type `{schema}.{name}` has invalid structure: {message}")]
+    InvalidTypeStructure {
+        schema: String,
+        name: String,
+        message: String,
+    },
+    #[error(
+        "provider type `{schema}.{name}` references missing {relation} type `{target_schema}.{target_name}`"
+    )]
+    MissingRelatedType {
+        schema: String,
+        name: String,
+        relation: &'static str,
+        target_schema: String,
+        target_name: String,
+    },
+    #[error("provider type structure contains a cycle through `{schema}.{name}`")]
+    CyclicTypeStructure { schema: String, name: String },
     #[error(transparent)]
     MissingType(Box<CatalogMissingType>),
     #[error(transparent)]
@@ -700,21 +766,35 @@ fn build_catalog_types(
             });
         }
         let type_id = TypeId(types.len());
-        let data_type = DataType::from_database_type(&metadata_type.internal_type);
         type_ids.insert(key.clone(), type_id);
-        let mut catalog_type = CatalogType::builtin(type_id, key, data_type);
-        catalog_type.readable_type = metadata_type.readable_type.clone();
-        catalog_type.provider = metadata_type.provider.clone();
-        if let Some(provider) = &metadata_type.provider {
-            catalog_type.capabilities = TypeCapabilities::provider(
-                data_type,
-                &metadata_type.readable_type,
-                provider,
-                &metadata_type.operations,
-            );
-        }
-        types.push(catalog_type);
+        types.push(CatalogType::builtin(type_id, key, DataType::Unknown));
     }
+
+    let mut resolved = vec![None; metadata.types.len()];
+    let mut states = vec![TypeResolutionState::Pending; metadata.types.len()];
+    for index in 0..metadata.types.len() {
+        resolve_catalog_type(
+            index,
+            &metadata.types,
+            &type_ids,
+            &mut states,
+            &mut resolved,
+        )?;
+    }
+    let types = resolved
+        .into_iter()
+        .enumerate()
+        .map(|(index, data_type)| {
+            data_type.ok_or_else(|| {
+                let key = metadata.types[index].key();
+                CatalogBuildError::InvalidTypeStructure {
+                    schema: key.schema,
+                    name: key.name,
+                    message: "resolution produced no catalog type".to_string(),
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     for schema in &metadata.schemas {
         for table in &schema.tables {
@@ -750,6 +830,144 @@ fn build_catalog_types(
     }
 
     Ok((types, type_ids))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TypeResolutionState {
+    Pending,
+    Resolving,
+    Resolved,
+}
+
+fn resolve_catalog_type(
+    index: usize,
+    metadata: &[TypeMetadata],
+    type_ids: &HashMap<TypeKey, TypeId>,
+    states: &mut [TypeResolutionState],
+    resolved: &mut [Option<CatalogType>],
+) -> Result<(), CatalogBuildError> {
+    let definition = &metadata[index];
+    let key = definition.key();
+    match states[index] {
+        TypeResolutionState::Resolved => return Ok(()),
+        TypeResolutionState::Resolving => {
+            return Err(CatalogBuildError::CyclicTypeStructure {
+                schema: key.schema,
+                name: key.name,
+            });
+        }
+        TypeResolutionState::Pending => {}
+    }
+    states[index] = TypeResolutionState::Resolving;
+    let type_id = TypeId(index);
+
+    let catalog_type = match definition.structure.kind {
+        TypeStructureKind::Scalar => {
+            if definition.structure.related_type.is_some() {
+                return Err(invalid_type_structure(
+                    &key,
+                    "a scalar type cannot reference a related type",
+                ));
+            }
+            let data_type = DataType::from_database_type(&definition.internal_type);
+            let capabilities = definition.provider.as_ref().map_or_else(
+                || TypeCapabilities::builtin(data_type),
+                |provider| {
+                    TypeCapabilities::provider(
+                        data_type,
+                        &definition.readable_type,
+                        provider,
+                        &definition.operations,
+                    )
+                },
+            );
+            CatalogType {
+                id: type_id,
+                key: key.clone(),
+                data_type,
+                shape: CatalogTypeShape::Scalar,
+                readable_type: definition.readable_type.clone(),
+                provider: definition.provider.clone(),
+                capabilities,
+            }
+        }
+        TypeStructureKind::Domain => {
+            let base = related_type_id(definition, &key, type_ids, "base")?;
+            resolve_catalog_type(base.0, metadata, type_ids, states, resolved)?;
+            let Some(base_type) = resolved[base.0].as_ref() else {
+                return Err(invalid_type_structure(&key, "base type did not resolve"));
+            };
+            CatalogType {
+                id: type_id,
+                key: key.clone(),
+                data_type: base_type.data_type,
+                shape: CatalogTypeShape::Domain { base },
+                readable_type: definition.readable_type.clone(),
+                provider: definition.provider.clone(),
+                capabilities: TypeCapabilities::domain(
+                    &base_type.capabilities,
+                    &definition.readable_type,
+                    definition.provider.as_ref(),
+                    &definition.operations,
+                ),
+            }
+        }
+        TypeStructureKind::Array => {
+            let element = related_type_id(definition, &key, type_ids, "element")?;
+            resolve_catalog_type(element.0, metadata, type_ids, states, resolved)?;
+            CatalogType {
+                id: type_id,
+                key: key.clone(),
+                data_type: DataType::Unknown,
+                shape: CatalogTypeShape::Array { element },
+                readable_type: definition.readable_type.clone(),
+                provider: definition.provider.clone(),
+                capabilities: TypeCapabilities::array(
+                    &definition.readable_type,
+                    definition.provider.as_ref(),
+                    &definition.operations,
+                ),
+            }
+        }
+    };
+    resolved[index] = Some(catalog_type);
+    states[index] = TypeResolutionState::Resolved;
+    Ok(())
+}
+
+fn related_type_id(
+    definition: &TypeMetadata,
+    key: &TypeKey,
+    type_ids: &HashMap<TypeKey, TypeId>,
+    relation: &'static str,
+) -> Result<TypeId, CatalogBuildError> {
+    let Some(related) = definition.structure.related_type.as_ref() else {
+        return Err(invalid_type_structure(
+            key,
+            &format!(
+                "a {} type requires a related type",
+                definition.structure.kind.as_ref()
+            ),
+        ));
+    };
+    type_ids
+        .get(related)
+        .copied()
+        .ok_or_else(|| CatalogBuildError::MissingRelatedType {
+            schema: key.schema.clone(),
+            name: key.name.clone(),
+            relation,
+            target_schema: related.schema.clone(),
+            target_name: related.name.clone(),
+        })
+}
+
+fn invalid_type_structure(key: &TypeKey, message: &str) -> CatalogBuildError {
+    CatalogBuildError::InvalidTypeStructure {
+        schema: key.schema.clone(),
+        name: key.name.clone(),
+        message: message.to_string(),
+    }
 }
 
 fn column_set_is_unique(table: &Table, columns: &[ColumnId]) -> bool {

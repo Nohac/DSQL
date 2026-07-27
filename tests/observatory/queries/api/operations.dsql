@@ -155,6 +155,23 @@ query WideIntegerPrecision {
   }
 }
 
+query StructuredTypeValues(
+  $$label = "primary"
+  $$address = "127.0.0.1"
+) {
+  structured_type_values(
+    where .label == $$label
+    and .address == $$address
+  ) {
+    label
+    address
+    labels
+    wide_values
+    wide_matrix
+    addresses
+  }
+}
+
 query CountPredicate(
   $$minimum_posts = "0"
 ) {

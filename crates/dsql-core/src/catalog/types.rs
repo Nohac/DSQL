@@ -3,7 +3,7 @@ use super::{
     SchemaKey, TableId, TableKey, TypeCapabilities, TypeId, TypeKey,
 };
 use facet::Facet;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -67,12 +67,33 @@ pub struct CatalogType {
     pub key: TypeKey,
     /// Public logical type consumed by language semantics.
     pub data_type: DataType,
+    /// Resolved provider structure. Non-scalars keep [`DataType::Unknown`] at
+    /// the outer type and expose their logical leaf through this graph.
+    pub shape: CatalogTypeShape,
     /// Provider-formatted spelling for this type without column modifiers.
     pub readable_type: String,
-    /// Native classification facts, absent for compiler-fallback fixtures.
+    /// Native classification facts, absent for synthetic compiler fixtures.
     pub provider: Option<ProviderTypeFacts>,
     /// Query-facing behavior supplied by the compiler or provider.
     pub capabilities: TypeCapabilities,
+}
+
+/// Resolved structural relationship within [`Catalog::types`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
+#[repr(u8)]
+pub enum CatalogTypeShape {
+    Scalar,
+    Domain { base: TypeId },
+    Array { element: TypeId },
+}
+
+/// Effective public value shape after domain wrappers are resolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatalogValueShape<'a> {
+    /// One scalar value with the effective provider leaf type.
+    Scalar { leaf: &'a CatalogType },
+    /// One PostgreSQL array whose elements use the effective provider leaf type.
+    DatabaseArray { element: &'a CatalogType },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
@@ -360,6 +381,48 @@ impl Catalog {
         &self.default_schema
     }
 
+    /// Resolves domains and array elements into one public value shape.
+    pub fn value_shape_for_type(&self, type_id: TypeId) -> Option<CatalogValueShape<'_>> {
+        let mut current = self.types.get(type_id.0)?;
+        loop {
+            match current.shape {
+                CatalogTypeShape::Scalar => {
+                    return Some(CatalogValueShape::Scalar { leaf: current });
+                }
+                CatalogTypeShape::Domain { base } => {
+                    current = self.types.get(base.0)?;
+                }
+                CatalogTypeShape::Array { element } => {
+                    let mut element = self.types.get(element.0)?;
+                    loop {
+                        match element.shape {
+                            CatalogTypeShape::Scalar => {
+                                return Some(CatalogValueShape::DatabaseArray { element });
+                            }
+                            CatalogTypeShape::Domain { base } => {
+                                element = self.types.get(base.0)?;
+                            }
+                            CatalogTypeShape::Array { element: nested } => {
+                                // Arrays of domains whose base is itself an
+                                // array deliberately collapse to the terminal
+                                // scalar. DsqlDatabaseArray<T> represents the
+                                // resulting arbitrary JSON nesting depth.
+                                element = self.types.get(nested.0)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolves the public value shape for one catalog column.
+    pub fn value_shape_for_column(&self, column: ColumnId) -> Option<CatalogValueShape<'_>> {
+        self.columns
+            .get(column.0)
+            .and_then(|column| self.value_shape_for_type(column.type_id))
+    }
+
     /// Computes one deterministic fingerprint over effective catalog
     /// semantics. Dense IDs and provenance byte ranges are deliberately
     /// excluded; semantic keys, visibility, proofs, and source identities
@@ -430,13 +493,24 @@ impl Catalog {
                     .then_with(|| left.key.column.cmp(&right.key.column))
             })
         });
-        let mut referenced_types = columns
+        let mut referenced_type_set = HashSet::new();
+        let mut pending_types = columns
             .iter()
             .map(|column| column.type_id)
             .collect::<Vec<_>>();
+        while let Some(type_id) = pending_types.pop() {
+            if !referenced_type_set.insert(type_id) {
+                continue;
+            }
+            match self.types[type_id.0].shape {
+                CatalogTypeShape::Scalar => {}
+                CatalogTypeShape::Domain { base } => pending_types.push(base),
+                CatalogTypeShape::Array { element } => pending_types.push(element),
+            }
+        }
+        let mut referenced_types = referenced_type_set.into_iter().collect::<Vec<_>>();
         referenced_types
             .sort_by(|left, right| self.types[left.0].key.cmp(&self.types[right.0].key));
-        referenced_types.dedup();
         for column in columns {
             column.key.hash(&mut hasher);
             column.description.hash(&mut hasher);
@@ -455,6 +529,17 @@ impl Catalog {
             let data_type = &self.types[type_id.0];
             data_type.key.hash(&mut hasher);
             data_type.data_type.hash(&mut hasher);
+            match data_type.shape {
+                CatalogTypeShape::Scalar => 0_u8.hash(&mut hasher),
+                CatalogTypeShape::Domain { base } => {
+                    1_u8.hash(&mut hasher);
+                    self.types[base.0].key.hash(&mut hasher);
+                }
+                CatalogTypeShape::Array { element } => {
+                    2_u8.hash(&mut hasher);
+                    self.types[element.0].key.hash(&mut hasher);
+                }
+            }
             data_type.readable_type.hash(&mut hasher);
             data_type.provider.hash(&mut hasher);
             data_type.capabilities.hash(&mut hasher);
@@ -695,13 +780,27 @@ impl Column {
 }
 
 impl CatalogType {
-    /// Constructs a provider type using the compiler-owned fallback table.
+    /// Logical scalar category exposed to language consumers.
+    ///
+    /// Provider values carried through the text-cast wire behave as text in
+    /// literals and host contracts while [`CatalogType::key`] retains the
+    /// exact cast target.
+    pub fn logical_data_type(&self) -> DataType {
+        if self.capabilities.wire == super::WireEncoding::TextCast {
+            DataType::Text
+        } else {
+            self.data_type
+        }
+    }
+
+    /// Constructs a provider-less type using the compiler-owned capability table.
     pub fn builtin(id: TypeId, key: TypeKey, data_type: DataType) -> Self {
         let readable_type = key.name.clone();
         Self {
             id,
             key,
             data_type,
+            shape: CatalogTypeShape::Scalar,
             readable_type,
             provider: None,
             capabilities: TypeCapabilities::builtin(data_type),

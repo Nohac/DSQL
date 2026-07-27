@@ -3,6 +3,7 @@
 
 use dsql_core::catalog::{
     IndexKeyCapability, IndexNullsPosition, IndexOrder, IndexOrderDirection, TypeKey,
+    TypeStructureKind,
 };
 use dsql_core::entities::expression::ComparisonOp;
 
@@ -176,5 +177,39 @@ fn observatory_comments_and_composite_keys_introspect_end_to_end() {
         search.keys[0]
             .capabilities
             .contains(&IndexKeyCapability::Like)
+    );
+
+    let type_metadata = |key: &TypeKey| {
+        metadata
+            .types
+            .iter()
+            .find(|data_type| data_type.key() == *key)
+            .expect("structured provider type")
+    };
+    let station_label = type_metadata(&TypeKey::new("public", "station_label"));
+    assert_eq!(station_label.structure.kind, TypeStructureKind::Domain);
+    assert_eq!(
+        station_label.structure.related_type,
+        Some(TypeKey::new("pg_catalog", "text"))
+    );
+    let text_array = type_metadata(&TypeKey::new("pg_catalog", "_text"));
+    assert_eq!(text_array.structure.kind, TypeStructureKind::Array);
+    assert_eq!(
+        text_array.structure.related_type,
+        Some(TypeKey::new("pg_catalog", "text"))
+    );
+    let bigint_array = type_metadata(&TypeKey::new("pg_catalog", "_int8"));
+    assert_eq!(bigint_array.structure.kind, TypeStructureKind::Array);
+    assert_eq!(
+        bigint_array.structure.related_type,
+        Some(TypeKey::new("pg_catalog", "int8"))
+    );
+    let sensor_row = type_metadata(&TypeKey::new("public", "sensors"));
+    assert_eq!(sensor_row.structure.kind, TypeStructureKind::Scalar);
+    let sensor_array = type_metadata(&TypeKey::new("public", "_sensors"));
+    assert_eq!(sensor_array.structure.kind, TypeStructureKind::Array);
+    assert_eq!(
+        sensor_array.structure.related_type,
+        Some(TypeKey::new("public", "sensors"))
     );
 }

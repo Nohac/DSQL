@@ -1098,7 +1098,10 @@ fn resolved_expr_semantics<'a>(
         Expr::Path { .. } => {
             let column = resolved?.path_at(expr.span())?.terminal.column()?;
             let data_type = ctx.catalog.type_for_column(column)?;
-            Some((data_type.data_type, Cow::Borrowed(&data_type.capabilities)))
+            Some((
+                data_type.logical_data_type(),
+                Cow::Borrowed(&data_type.capabilities),
+            ))
         }
         Expr::Aggregate { .. } => {
             let data_type = resolved_expr_type(ctx, resolved, expr)?;

@@ -1,0 +1,5 @@
+---
+source: crates/dsql-project/tests/it/project.rs
+expression: rendered
+---
+failed to parse <project>/dsql/schema/type_map.yaml: missing field `structure` in type `TypeMetadata` at types[0]

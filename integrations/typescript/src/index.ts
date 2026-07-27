@@ -18,6 +18,7 @@ export type {
   ProvidedContextMetadata,
   ResultField,
   ResultShape,
+  ResultValueTypeMetadata,
   SourceMapEntry,
   SourceRange,
   SqlMetadata,

@@ -1,21 +1,20 @@
 ---
 source: crates/dsql-core/tests/it/scenarios.rs
-assertion_line: 355
 expression: "sections.join(\"\\n\\n\")"
 ---
 start:
 context: SelectionBody table=title scope=default replace=[33..37]
-Column episode_nr — int
-Column episode_of_id — int
-Column id — int
-Column imdb_id — int
-Column imdb_index — text
-Column kind_id — int
-Column md5sum — text
-Column phonetic_code — text
-Column production_year — int
-Column season_nr — int
-Column series_years — text
+Column episode_nr — integer
+Column episode_of_id — integer
+Column id — integer
+Column imdb_id — integer
+Column imdb_index — character varying(12)
+Column kind_id — integer
+Column md5sum — character varying(32)
+Column phonetic_code — character varying(5)
+Column production_year — integer
+Column season_nr — integer
+Column series_years — character varying(49)
 Column title — text
 Relation aka_title->episode_of_id — relation to public.aka_title via episode_of_id
 Relation aka_title->movie_id — relation to public.aka_title via movie_id
@@ -32,17 +31,17 @@ Relation title->episode_of_id — relation to public.title via episode_of_id
 
 middle:
 context: SelectionBody table=title scope=default replace=[33..37]
-Column episode_nr — int
-Column episode_of_id — int
-Column id — int
-Column imdb_id — int
-Column imdb_index — text
-Column kind_id — int
-Column md5sum — text
-Column phonetic_code — text
-Column production_year — int
-Column season_nr — int
-Column series_years — text
+Column episode_nr — integer
+Column episode_of_id — integer
+Column id — integer
+Column imdb_id — integer
+Column imdb_index — character varying(12)
+Column kind_id — integer
+Column md5sum — character varying(32)
+Column phonetic_code — character varying(5)
+Column production_year — integer
+Column season_nr — integer
+Column series_years — character varying(49)
 Column title — text
 Relation aka_title->episode_of_id — relation to public.aka_title via episode_of_id
 Relation aka_title->movie_id — relation to public.aka_title via movie_id
@@ -59,17 +58,17 @@ Relation title->episode_of_id — relation to public.title via episode_of_id
 
 end:
 context: SelectionBody table=title scope=default replace=[33..37]
-Column episode_nr — int
-Column episode_of_id — int
-Column id — int
-Column imdb_id — int
-Column imdb_index — text
-Column kind_id — int
-Column md5sum — text
-Column phonetic_code — text
-Column production_year — int
-Column season_nr — int
-Column series_years — text
+Column episode_nr — integer
+Column episode_of_id — integer
+Column id — integer
+Column imdb_id — integer
+Column imdb_index — character varying(12)
+Column kind_id — integer
+Column md5sum — character varying(32)
+Column phonetic_code — character varying(5)
+Column production_year — integer
+Column season_nr — integer
+Column series_years — character varying(49)
 Column title — text
 Relation aka_title->episode_of_id — relation to public.aka_title via episode_of_id
 Relation aka_title->movie_id — relation to public.aka_title via movie_id

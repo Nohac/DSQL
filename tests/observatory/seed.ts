@@ -43,6 +43,26 @@ export async function seed(sql: SQL, profile: Profile): Promise<void> {
       FROM generate_series(1, ${rows}) AS sample`;
     await transaction`INSERT INTO wide_integer_values (value)
       VALUES (9007199254740993)`;
+    await transaction`INSERT INTO structured_type_values
+      (id, label, address, labels, wide_values, wide_matrix, addresses, sensor_rows)
+      VALUES (
+        1,
+        'primary',
+        '127.0.0.1',
+        ARRAY['north', 'south'],
+        ARRAY[9007199254740993, 2],
+        ARRAY[[9007199254740993, 2], [3, 4]],
+        ARRAY['127.0.0.1'::inet, '2001:db8::1'::inet],
+        ARRAY[
+          ROW(
+            '018f6f19-795f-7c3d-b1b3-8f177ab8a301'::uuid,
+            'aurora',
+            'north-1',
+            'temperature',
+            'celsius'
+          )::sensors
+        ]
+      )`;
     await transaction`REFRESH MATERIALIZED VIEW network_reading_totals`;
   });
 }

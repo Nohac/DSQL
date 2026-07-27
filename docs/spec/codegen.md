@@ -291,7 +291,7 @@ write host/framework-specific owned code. The TypeScript project entrypoint is
 the source of truth for generated TypeScript output paths; Rust configuration
 does not define a TypeScript `outDir`.
 
-The compatibility command channel receives the flat manifest through
+The environment-driven command channel receives the flat manifest through
 compiler-owned environment variables:
 
 - `DSQL_PROJECT_DIR`
@@ -763,7 +763,7 @@ The metadata does not need to mirror the internal compiler IR. It should be a
 consumer-friendly contract for generated clients, endpoint adapters, validation,
 debug tooling, and editor features.
 
-Before the first public release, manifest version 4 is a compiler-package
+Before the first public release, manifest version 5 is a compiler-package
 contract rather than a backwards-compatible interchange promise: maintained
 compiler, daemon, and renderer components move together, and a required metadata
 addition causes a version bump and artifact regeneration. Consumers reject
@@ -775,6 +775,8 @@ Useful metadata areas:
   typed defaults, semantic roles, and definition provenance
 - required host context keys
 - result field types and nullability
+- explicit result value shape (`scalar`, provider `database_array`, or relation
+  `object`), with database arrays carrying the scalar element wire contract
 - public wire encodings and schema-qualified provider cast targets for result,
   input, context, and bounded dynamic fields
 - applicable filters and resolved target provenance

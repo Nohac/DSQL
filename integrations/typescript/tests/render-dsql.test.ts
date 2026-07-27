@@ -247,7 +247,7 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
           name: "metrics",
           parent_path: "",
           kind: "array",
-          data_type: "object",
+          value_type: resultValueType("object"),
           nullable: false,
         },
         {
@@ -255,7 +255,7 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
           name: "amount",
           parent_path: "metrics",
           kind: "scalar",
-          data_type: "numeric",
+          value_type: resultValueType("numeric"),
           nullable: false,
         },
         {
@@ -263,7 +263,7 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
           name: "ratio",
           parent_path: "metrics",
           kind: "scalar",
-          data_type: "float",
+          value_type: resultValueType("float"),
           nullable: true,
         },
         {
@@ -271,7 +271,7 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
           name: "reading_count",
           parent_path: "metrics",
           kind: "scalar",
-          data_type: "bigint",
+          value_type: resultValueType("bigint"),
           nullable: false,
         },
       ],
@@ -345,6 +345,122 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
   expect(rendered).toContain("counts: Array<string | null>;");
 });
 
+test("renders database arrays separately from relation and input collections", async () => {
+  const root = createRoot();
+  const operation = {
+    ...operationMetadata("StructuredValues"),
+    result: {
+      fields: [
+        {
+          path: "values",
+          name: "values",
+          parent_path: "",
+          kind: "array",
+          value_type: resultValueType("object"),
+          nullable: false,
+        },
+        {
+          path: "values.labels",
+          name: "labels",
+          parent_path: "values",
+          kind: "scalar",
+          value_type: resultValueType("text", "database_array"),
+          nullable: false,
+        },
+        {
+          path: "values.big_values",
+          name: "big_values",
+          parent_path: "values",
+          kind: "scalar",
+          value_type: resultValueType("bigint", "database_array"),
+          nullable: true,
+        },
+      ],
+    },
+    params: [
+      {
+        path: "params.labels",
+        data_type: "text",
+        collection: true,
+        enum_values: [],
+        required: true,
+        nullable: false,
+      },
+    ],
+  };
+  const artifacts = {
+    ...createArtifacts(root, { operationNames: [operation.name] }),
+    operations: [operation],
+    operationsByName: new Map([[operation.name, operation]]),
+  } as BuildArtifacts;
+
+  await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+  });
+  const source = readFileSync(
+    join(root, "src/generated/dsql/queries/StructuredValues.ts"),
+    "utf8",
+  );
+  expect(source).toContain(
+    'import type { DsqlDatabaseArray, DsqlExecutionPayload, DsqlOperation } from "@dsql/typescript/runtime";',
+  );
+  expect(source).toContain("labels: DsqlDatabaseArray<string>;");
+  expect(source).toContain("big_values: DsqlDatabaseArray<string> | null;");
+  expect(source).toContain("labels: Array<string | null>;");
+
+  const spreadRoot = createRoot();
+  const arrayField = {
+    path: "labels",
+    name: "labels",
+    parent_path: "",
+    kind: "scalar",
+    value_type: resultValueType("text", "database_array"),
+    nullable: false,
+  };
+  const fragment = {
+    ...fragmentMetadata("ArrayFields"),
+    result: { fields: [arrayField] },
+  };
+  const spreadOperation = {
+    ...operationMetadata("SpreadArrays"),
+    result: { fields: [arrayField] },
+    fragment_spreads: [{ path: "", fragment: fragment.name }],
+  };
+  const spreadBase = createArtifacts(spreadRoot, {
+    operationNames: [spreadOperation.name],
+  });
+  const spreadArtifacts = {
+    ...spreadBase,
+    operations: [spreadOperation],
+    operationsByName: new Map([[spreadOperation.name, spreadOperation]]),
+    fragments: [fragment],
+    fragmentsByName: new Map([[fragment.name, fragment]]),
+    artifactIds: new Map([
+      [
+        `operation/${spreadOperation.name}`,
+        `default/operation/${spreadOperation.name}`,
+      ],
+      [`fragment/${fragment.name}`, `default/fragment/${fragment.name}`],
+    ]),
+  } as BuildArtifacts;
+  await renderDsql(spreadArtifacts, {
+    root: spreadRoot,
+    queriesDir: "src/generated/dsql/queries",
+  });
+  const spreadSource = readFileSync(
+    join(spreadRoot, "src/generated/dsql/queries/SpreadArrays.ts"),
+    "utf8",
+  );
+  expect(spreadSource).toContain(
+    'import type { ArrayFieldsFragmentResult } from "./ArrayFields.fragment";',
+  );
+  expect(spreadSource).toContain(
+    'import type { DsqlExecutionPayload, DsqlOperation } from "@dsql/typescript/runtime";',
+  );
+  expect(spreadSource).not.toContain("DsqlDatabaseArray");
+});
+
 test("renders defaulted and nullable inputs as optional TypeScript properties", async () => {
   const root = createRoot();
   const operation = {
@@ -411,7 +527,7 @@ test("renders policy-nullable singular and flattened results while runtime limit
           name: "singular",
           parent_path: "",
           kind: "object",
-          data_type: "object",
+          value_type: resultValueType("object"),
           nullable: true,
         },
         {
@@ -419,7 +535,7 @@ test("renders policy-nullable singular and flattened results while runtime limit
           name: "id",
           parent_path: "singular",
           kind: "scalar",
-          data_type: "int",
+          value_type: resultValueType("int"),
           nullable: false,
         },
         {
@@ -427,7 +543,7 @@ test("renders policy-nullable singular and flattened results while runtime limit
           name: "runtime",
           parent_path: "",
           kind: "array",
-          data_type: "object",
+          value_type: resultValueType("object"),
           nullable: false,
         },
         {
@@ -435,7 +551,7 @@ test("renders policy-nullable singular and flattened results while runtime limit
           name: "id",
           parent_path: "runtime",
           kind: "scalar",
-          data_type: "int",
+          value_type: resultValueType("int"),
           nullable: false,
         },
         {
@@ -443,7 +559,7 @@ test("renders policy-nullable singular and flattened results while runtime limit
           name: "owner_name",
           parent_path: "",
           kind: "scalar",
-          data_type: "text",
+          value_type: resultValueType("text"),
           nullable: true,
         },
       ],
@@ -572,7 +688,7 @@ test("same-named queries and fragments keep distinct render mappings", async () 
   ]);
 });
 
-test("embedded sources follow daemon targets and legacy ambiguity stays untyped", () => {
+test("embedded sources follow daemon targets and ambiguous mappings stay untyped", () => {
   const root = createRoot();
   const hostPath = "embedded.component";
   const querySource = "query MovieInfoLookup { movie_info { id } }";
@@ -689,7 +805,7 @@ test("fragment composition: subtraction, reuse, dedup, and path sensitivity", as
           name: "extra",
           parent_path: "",
           kind: "scalar",
-          data_type: "text",
+          value_type: resultValueType("text"),
           nullable: false,
         },
       ],
@@ -705,7 +821,7 @@ test("fragment composition: subtraction, reuse, dedup, and path sensitivity", as
           name: "kind",
           parent_path: "",
           kind: "scalar",
-          data_type: "text",
+          value_type: resultValueType("text"),
           nullable: false,
         },
       ],
@@ -724,7 +840,7 @@ test("fragment composition: subtraction, reuse, dedup, and path sensitivity", as
           name: "movie_info",
           parent_path: "",
           kind: "array",
-          data_type: "object",
+          value_type: resultValueType("object"),
           nullable: false,
         },
         // Provided by ParentBits (via ChildBits) at "movie_info".
@@ -733,7 +849,7 @@ test("fragment composition: subtraction, reuse, dedup, and path sensitivity", as
           name: "id",
           parent_path: "movie_info",
           kind: "scalar",
-          data_type: "int",
+          value_type: resultValueType("int"),
           nullable: false,
         },
         {
@@ -741,7 +857,7 @@ test("fragment composition: subtraction, reuse, dedup, and path sensitivity", as
           name: "extra",
           parent_path: "movie_info",
           kind: "scalar",
-          data_type: "text",
+          value_type: resultValueType("text"),
           nullable: false,
         },
         // The operation's own addition next to the spreads.
@@ -750,7 +866,7 @@ test("fragment composition: subtraction, reuse, dedup, and path sensitivity", as
           name: "own_field",
           parent_path: "movie_info",
           kind: "scalar",
-          data_type: "int",
+          value_type: resultValueType("int"),
           nullable: true,
         },
         // A nested relation whose selection set spreads NestedBits and
@@ -761,7 +877,7 @@ test("fragment composition: subtraction, reuse, dedup, and path sensitivity", as
           name: "kind",
           parent_path: "movie_info",
           kind: "object",
-          data_type: "object",
+          value_type: resultValueType("object"),
           nullable: false,
         },
         {
@@ -769,7 +885,7 @@ test("fragment composition: subtraction, reuse, dedup, and path sensitivity", as
           name: "kind",
           parent_path: "movie_info.kind",
           kind: "scalar",
-          data_type: "text",
+          value_type: resultValueType("text"),
           nullable: false,
         },
         {
@@ -777,7 +893,7 @@ test("fragment composition: subtraction, reuse, dedup, and path sensitivity", as
           name: "own_kind_field",
           parent_path: "movie_info.kind",
           kind: "scalar",
-          data_type: "int",
+          value_type: resultValueType("int"),
           nullable: false,
         },
       ],
@@ -1031,7 +1147,7 @@ function createArtifacts(
     sourceFileScopes: [],
     artifactGroups: [],
     manifest: {
-      version: 4,
+      version: 5,
       generationId: 1,
       operations: operations.map((operation) => ({
         name: operation.name,
@@ -1111,7 +1227,7 @@ function operationMetadata(name: string): BuildArtifacts["operations"][number] {
           name: "movie_info",
           parent_path: "",
           kind: "array",
-          data_type: "json",
+          value_type: resultValueType("object"),
           nullable: false,
         },
         {
@@ -1119,7 +1235,7 @@ function operationMetadata(name: string): BuildArtifacts["operations"][number] {
           name: "id",
           parent_path: "movie_info",
           kind: "scalar",
-          data_type: "int",
+          value_type: resultValueType("int"),
           nullable: false,
         },
       ],
@@ -1169,7 +1285,7 @@ function fragmentMetadata(name: string): BuildArtifacts["fragments"][number] {
           name: "id",
           parent_path: "",
           kind: "scalar",
-          data_type: "int",
+          value_type: resultValueType("int"),
           nullable: false,
         },
       ],
@@ -1177,6 +1293,31 @@ function fragmentMetadata(name: string): BuildArtifacts["fragments"][number] {
     params: [],
     input: [],
     dynamic_inputs: [],
+    fragment_spreads: [],
     source_map: [],
+  };
+}
+
+function resultValueType(
+  name: "object" | "boolean" | "int" | "bigint" | "float" | "numeric" | "json" | "text" | "timestamptz" | "uuid",
+  shape: "scalar" | "database_array" | "object" =
+    name === "object" ? "object" : "scalar",
+) {
+  const encodings = {
+    object: "unsupported",
+    boolean: "boolean",
+    int: "integer",
+    bigint: "big_integer",
+    float: "float",
+    numeric: "numeric",
+    json: "json",
+    text: "text",
+    timestamptz: "timestamptz",
+    uuid: "uuid",
+  } as const;
+  return {
+    shape,
+    name,
+    wire: { encoding: encodings[name] },
   };
 }

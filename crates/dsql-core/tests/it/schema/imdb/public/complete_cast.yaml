@@ -7,6 +7,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -14,6 +16,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: false
@@ -21,6 +25,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -28,6 +34,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -45,17 +53,17 @@ foreign_keys:
       table: title
       columns:
         - id
-  - name: complete_cast_subject_id_fkey
+  - name: complete_cast_status_id_fkey
     columns:
-      - subject_id
+      - status_id
     references:
       schema: public
       table: comp_cast_type
       columns:
         - id
-  - name: complete_cast_status_id_fkey
+  - name: complete_cast_subject_id_fkey
     columns:
-      - status_id
+      - subject_id
     references:
       schema: public
       table: comp_cast_type
@@ -66,9 +74,23 @@ indexes:
     access_method: btree
     keys:
       - column: id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: true
   - name: movie_id_complete_cast
     access_method: btree
     keys:
       - column: movie_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: false

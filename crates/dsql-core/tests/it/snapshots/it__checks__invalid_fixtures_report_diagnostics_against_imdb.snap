@@ -4,5 +4,5 @@ expression: render_diagnostic_facts(&bowl).await
 ---
 Error[31..43]: field `not_a_column` not found on table `title`
 Error[51..57]: field `.id` expects number but predicate uses string
-Error[55..64]: relation `aka_title` has multiple foreign-key paths; use one of: public::aka_title->movie_id, public::aka_title->episode_of_id
+Error[55..64]: relation `aka_title` has multiple foreign-key paths; use one of: public::aka_title->episode_of_id, public::aka_title->movie_id
 Error[72..76]: field `note` is a scalar (text); only relations can have clauses

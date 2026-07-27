@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use bowl::Bowl;
 use dsql_core::catalog::{
-    Catalog, DatabaseMetadata, ProviderTypeFacts, SchemaMetadata, TableMetadata, TypeMetadata,
+    Catalog, ColumnMetadata, DataType, DatabaseMetadata, ObjectType, ProviderTypeFacts,
+    SchemaMetadata, TableMetadata, TypeKey, TypeMetadata, TypeStructureMetadata,
     table_metadata_from_yaml,
 };
 use dsql_core::embedding::ExtractionRegistry;
@@ -175,6 +176,7 @@ fn provider_scalar_catalog() -> Catalog {
         internal_type: name.to_string(),
         readable_type: name.to_string(),
         schema: "pg_catalog".to_string(),
+        structure: TypeStructureMetadata::scalar(),
         provider: Some(ProviderTypeFacts {
             kind: "b".to_string(),
             category: category.to_string(),
@@ -203,6 +205,168 @@ fn provider_scalar_catalog() -> Catalog {
     }
     .to_catalog()
     .expect("provider scalar catalog builds")
+}
+
+fn structured_type_catalog() -> Catalog {
+    let provider_type =
+        |schema: &str, name: &str, kind: &str, category: &str, structure: TypeStructureMetadata| {
+            TypeMetadata {
+                internal_type: name.to_string(),
+                readable_type: if schema == "pg_catalog" {
+                    name.to_string()
+                } else {
+                    format!("{schema}.{name}")
+                },
+                schema: schema.to_string(),
+                structure,
+                provider: Some(ProviderTypeFacts {
+                    kind: kind.to_string(),
+                    category: category.to_string(),
+                    effective_kind: None,
+                    effective_category: None,
+                    orderable: true,
+                }),
+                operations: ["=", "<>", ">", ">=", "<", "<="]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            }
+        };
+    let column = |name: &str, provider_type: TypeKey, data_type: DataType| ColumnMetadata {
+        name: name.to_string(),
+        description: None,
+        database_type: provider_type.name.clone(),
+        provider_type,
+        formatted_type: None,
+        type_modifier: None,
+        data_type,
+        not_null: true,
+    };
+    DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![TableMetadata {
+                schema: "public".to_string(),
+                name: "typed_values".to_string(),
+                object_type: ObjectType::Table,
+                description: None,
+                columns: vec![
+                    column(
+                        "label",
+                        TypeKey::new("public", "label_domain"),
+                        DataType::Text,
+                    ),
+                    column(
+                        "address",
+                        TypeKey::new("public", "address_domain"),
+                        DataType::Unknown,
+                    ),
+                    column(
+                        "labels",
+                        TypeKey::new("pg_catalog", "_text"),
+                        DataType::Unknown,
+                    ),
+                    column(
+                        "big_values",
+                        TypeKey::new("pg_catalog", "_int8"),
+                        DataType::Unknown,
+                    ),
+                    column(
+                        "nested_label",
+                        TypeKey::new("public", "nested_label_domain"),
+                        DataType::Text,
+                    ),
+                    column(
+                        "domain_labels",
+                        TypeKey::new("public", "labels_domain"),
+                        DataType::Unknown,
+                    ),
+                    column(
+                        "labeled_values",
+                        TypeKey::new("public", "_label_domain"),
+                        DataType::Unknown,
+                    ),
+                ],
+                constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        }],
+        types: vec![
+            provider_type(
+                "pg_catalog",
+                "text",
+                "b",
+                "S",
+                TypeStructureMetadata::scalar(),
+            ),
+            provider_type(
+                "pg_catalog",
+                "int8",
+                "b",
+                "N",
+                TypeStructureMetadata::scalar(),
+            ),
+            provider_type(
+                "pg_catalog",
+                "inet",
+                "b",
+                "I",
+                TypeStructureMetadata::scalar(),
+            ),
+            provider_type(
+                "public",
+                "label_domain",
+                "d",
+                "S",
+                TypeStructureMetadata::domain(TypeKey::new("pg_catalog", "text")),
+            ),
+            provider_type(
+                "public",
+                "address_domain",
+                "d",
+                "I",
+                TypeStructureMetadata::domain(TypeKey::new("pg_catalog", "inet")),
+            ),
+            provider_type(
+                "public",
+                "nested_label_domain",
+                "d",
+                "S",
+                TypeStructureMetadata::domain(TypeKey::new("public", "label_domain")),
+            ),
+            provider_type(
+                "public",
+                "labels_domain",
+                "d",
+                "A",
+                TypeStructureMetadata::domain(TypeKey::new("pg_catalog", "_text")),
+            ),
+            provider_type(
+                "pg_catalog",
+                "_text",
+                "b",
+                "A",
+                TypeStructureMetadata::array(TypeKey::new("pg_catalog", "text")),
+            ),
+            provider_type(
+                "pg_catalog",
+                "_int8",
+                "b",
+                "A",
+                TypeStructureMetadata::array(TypeKey::new("pg_catalog", "int8")),
+            ),
+            provider_type(
+                "public",
+                "_label_domain",
+                "b",
+                "A",
+                TypeStructureMetadata::array(TypeKey::new("public", "label_domain")),
+            ),
+        ],
+    }
+    .to_catalog()
+    .expect("structured type catalog builds")
 }
 const MEMBERSHIPS_SCHEMA: &str = r#"---
 schema: public
@@ -747,6 +911,30 @@ async fn provider_scalar_wire_identity_flows_through_generated_metadata() {
         .into_iter()
         .find(|artifact| artifact.name == "Events")
         .expect("provider scalar operation artifact");
+
+    insta::assert_snapshot!(artifact.serialized);
+}
+
+#[tokio::test]
+async fn structured_result_values_flow_through_generated_metadata() {
+    let bowl = memory_bowl(
+        structured_type_catalog(),
+        vec![document(
+            "queries/frontend/structured.dsql",
+            "query Structured($$label = \"primary\" $$address = \"127.0.0.1\") { typed_values(where .label == $$label and .address == $$address limit 1) { label address labels big_values nested_label domain_labels labeled_values } }",
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let artifact = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("assembly succeeds")
+        .snapshot
+        .artifacts
+        .into_iter()
+        .find(|artifact| artifact.name == "Structured")
+        .expect("structured operation artifact");
 
     insta::assert_snapshot!(artifact.serialized);
 }

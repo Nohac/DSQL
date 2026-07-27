@@ -6,6 +6,14 @@ import type {
   WireMetadata,
 } from "./generated/metadata.ts";
 
+/**
+ * PostgreSQL arrays may contain null elements and any rectangular dimension
+ * count. The recursive union intentionally also admits mixed nesting depths:
+ * TypeScript cannot express rectangularity without fixing a dimension count,
+ * so this is the sound host-side overdescription.
+ */
+export type DsqlDatabaseArray<T> = Array<T | DsqlDatabaseArray<T> | null>;
+
 export type DsqlOperation<
   Result = unknown,
   Params = Record<string, never>,

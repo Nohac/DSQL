@@ -3,12 +3,15 @@
 use std::collections::BTreeSet;
 
 use dsql_core::catalog::{
-    Catalog, ColumnMetadata, DataType, DatabaseMetadata, IndexKeyCapability, ObjectType,
-    ProviderTypeFacts, SchemaMetadata, TableMetadata, TableRef, TableResolution, TypeKey,
-    TypeMetadata, TypeMetadataFile, table_metadata_from_yaml, table_metadata_to_yaml,
+    Catalog, CatalogTypeShape, CatalogValueShape, ColumnMetadata, DataType, DatabaseMetadata,
+    IndexKeyCapability, ObjectType, ProviderTypeFacts, SchemaMetadata, TableMetadata, TableRef,
+    TableResolution, TypeKey, TypeMetadata, TypeMetadataFile, TypeStructureKind,
+    TypeStructureMetadata, WireEncoding, table_metadata_from_yaml, table_metadata_to_yaml,
     type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
 use dsql_core::entities::aggregate::AggregateFunction;
+
+use super::structured_type_catalog;
 
 fn column(name: &str, provider_type: TypeKey, data_type: DataType) -> ColumnMetadata {
     ColumnMetadata {
@@ -47,6 +50,7 @@ fn provider_type(schema: &str, name: &str) -> TypeMetadata {
         internal_type: name.to_string(),
         readable_type: name.to_string(),
         schema: schema.to_string(),
+        structure: TypeStructureMetadata::scalar(),
         provider: None,
         operations: BTreeSet::new(),
     }
@@ -62,6 +66,7 @@ fn provider_type_with_facts(
         internal_type: name.to_string(),
         readable_type: format!("{schema}.{name}"),
         schema: schema.to_string(),
+        structure: TypeStructureMetadata::scalar(),
         provider: Some(ProviderTypeFacts {
             kind: "b".to_string(),
             category: "U".to_string(),
@@ -345,6 +350,7 @@ fn duplicate_provider_type_identities_are_rejected() {
         internal_type: "person".to_string(),
         readable_type: "person".to_string(),
         schema: "app".to_string(),
+        structure: TypeStructureMetadata::scalar(),
         provider: None,
         operations: BTreeSet::new(),
     };
@@ -427,7 +433,7 @@ fn catalog_type_arena_rejects_invalid_metadata() {
         vec![provider_type("pg_catalog", "int8")],
     )
     .to_catalog()
-    .expect_err("an int8 cache from the old logical contract is rejected");
+    .expect_err("an int8 cache with the wrong logical contract is rejected");
     let fixture_conflict = metadata(
         vec![
             column("first", TypeKey::new("fixture", "value"), DataType::Text),
@@ -441,6 +447,60 @@ fn catalog_type_arena_rejects_invalid_metadata() {
     insta::assert_snapshot!(format!(
         "{missing}\n{mismatch}\n{stale_bigint}\n{fixture_conflict}"
     ));
+}
+
+#[test]
+fn catalog_type_arena_rejects_invalid_structure_graphs() {
+    let mut scalar_with_base = provider_type("public", "invalid_scalar");
+    scalar_with_base.structure.related_type = Some(TypeKey::new("pg_catalog", "text"));
+
+    let mut domain_without_base = provider_type("public", "invalid_domain");
+    domain_without_base.structure.kind = TypeStructureKind::Domain;
+
+    let missing_base = TypeMetadata {
+        internal_type: "missing_base".to_string(),
+        readable_type: "public.missing_base".to_string(),
+        schema: "public".to_string(),
+        structure: TypeStructureMetadata::domain(TypeKey::new("public", "absent")),
+        provider: None,
+        operations: BTreeSet::new(),
+    };
+
+    let cycle_left = TypeMetadata {
+        internal_type: "cycle_left".to_string(),
+        readable_type: "public.cycle_left[]".to_string(),
+        schema: "public".to_string(),
+        structure: TypeStructureMetadata::array(TypeKey::new("public", "cycle_right")),
+        provider: None,
+        operations: BTreeSet::new(),
+    };
+    let cycle_right = TypeMetadata {
+        internal_type: "cycle_right".to_string(),
+        readable_type: "public.cycle_right[]".to_string(),
+        schema: "public".to_string(),
+        structure: TypeStructureMetadata::array(TypeKey::new("public", "cycle_left")),
+        provider: None,
+        operations: BTreeSet::new(),
+    };
+
+    let cases = [
+        ("scalar edge", vec![scalar_with_base]),
+        ("missing domain edge", vec![domain_without_base]),
+        ("missing base", vec![missing_base]),
+        ("cycle", vec![cycle_left, cycle_right]),
+    ];
+    let rendered = cases
+        .into_iter()
+        .map(|(name, types)| {
+            let error = metadata(Vec::new(), types)
+                .to_catalog()
+                .expect_err("invalid structure graph must fail");
+            format!("{name}: {error}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    insta::assert_snapshot!(rendered);
 }
 
 #[test]
@@ -518,13 +578,98 @@ fn catalog_type_declaration_order_and_unused_rows_are_fingerprint_neutral() {
 }
 
 #[test]
+fn catalog_fingerprint_closes_over_reachable_type_structure() {
+    let text = provider_type_with_facts("pg_catalog", "text", &["=", "<>"], true);
+    let mut text_array = provider_type_with_facts("pg_catalog", "_text", &["=", "<>"], true);
+    text_array.structure = TypeStructureMetadata::array(TypeKey::new("pg_catalog", "text"));
+    let unused = provider_type_with_facts("pg_catalog", "uuid", &["=", "<>"], true);
+    let columns = vec![column(
+        "values",
+        TypeKey::new("pg_catalog", "_text"),
+        DataType::Unknown,
+    )];
+    let baseline_catalog = metadata(
+        columns.clone(),
+        vec![text.clone(), text_array.clone(), unused.clone()],
+    )
+    .to_catalog()
+    .expect("array catalog builds");
+    let baseline = baseline_catalog.semantic_fingerprint();
+    let reordered = metadata(columns, vec![unused, text_array, text])
+        .to_catalog()
+        .expect("reordered array catalog builds")
+        .semantic_fingerprint();
+    assert_eq!(baseline, reordered);
+
+    let mut changed_element = baseline_catalog.clone();
+    let element = changed_element
+        .types
+        .iter_mut()
+        .find(|data_type| data_type.key == TypeKey::new("pg_catalog", "text"))
+        .expect("reachable array element");
+    element.capabilities.orderable = false;
+    assert_ne!(baseline, changed_element.semantic_fingerprint());
+
+    let mut changed_unused = baseline_catalog;
+    let unused = changed_unused
+        .types
+        .iter_mut()
+        .find(|data_type| data_type.key == TypeKey::new("pg_catalog", "uuid"))
+        .expect("unused provider type");
+    unused.capabilities.orderable = false;
+    assert_eq!(baseline, changed_unused.semantic_fingerprint());
+}
+
+#[test]
+fn recursive_type_structures_resolve_to_terminal_public_shapes() {
+    let catalog = structured_type_catalog();
+    let shape = |column_name: &str| {
+        let column = catalog
+            .columns
+            .iter()
+            .find(|column| column.name == column_name)
+            .expect("structured column");
+        (
+            catalog.data_type_for_column(column.id),
+            catalog
+                .value_shape_for_column(column.id)
+                .expect("public value shape"),
+        )
+    };
+
+    let (nested_domain_type, nested_domain_shape) = shape("nested_label");
+    assert_eq!(nested_domain_type, DataType::Text);
+    assert!(matches!(
+        nested_domain_shape,
+        CatalogValueShape::Scalar { leaf }
+            if leaf.key == TypeKey::new("pg_catalog", "text")
+    ));
+
+    let (domain_array_type, domain_array_shape) = shape("domain_labels");
+    assert_eq!(domain_array_type, DataType::Unknown);
+    assert!(matches!(
+        domain_array_shape,
+        CatalogValueShape::DatabaseArray { element }
+            if element.key == TypeKey::new("pg_catalog", "text")
+    ));
+
+    let (array_domain_type, array_domain_shape) = shape("labeled_values");
+    assert_eq!(array_domain_type, DataType::Unknown);
+    assert!(matches!(
+        array_domain_shape,
+        CatalogValueShape::DatabaseArray { element }
+            if element.key == TypeKey::new("pg_catalog", "text")
+    ));
+}
+
+#[test]
 fn builtin_type_capabilities_are_declared_in_one_matrix() {
     insta::assert_snapshot!(render_builtin_capabilities());
 }
 
 #[test]
-fn provider_comparison_capabilities_override_compiler_fallbacks() {
-    let legacy_json = metadata(
+fn provider_comparison_capabilities_override_compiler_capabilities() {
+    let providerless_json = metadata(
         vec![column(
             "payload",
             TypeKey::new("pg_catalog", "json"),
@@ -533,7 +678,7 @@ fn provider_comparison_capabilities_override_compiler_fallbacks() {
         vec![provider_type("pg_catalog", "json")],
     )
     .to_catalog()
-    .expect("legacy provider metadata builds");
+    .expect("provider-less compiler metadata builds");
     let provider_json = metadata(
         vec![column(
             "payload",
@@ -563,21 +708,25 @@ fn provider_comparison_capabilities_override_compiler_fallbacks() {
         vec![column(
             "label",
             TypeKey::new("public", "label_domain"),
-            DataType::Unknown,
+            DataType::Text,
         )],
-        vec![TypeMetadata {
-            internal_type: "label_domain".to_string(),
-            readable_type: "public.label_domain".to_string(),
-            schema: "public".to_string(),
-            provider: Some(ProviderTypeFacts {
-                kind: "d".to_string(),
-                category: "U".to_string(),
-                effective_kind: Some("b".to_string()),
-                effective_category: Some("S".to_string()),
-                orderable: true,
-            }),
-            operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
-        }],
+        vec![
+            provider_type_with_facts("pg_catalog", "text", &["=", "<>", "~~"], true),
+            TypeMetadata {
+                internal_type: "label_domain".to_string(),
+                readable_type: "public.label_domain".to_string(),
+                schema: "public".to_string(),
+                structure: TypeStructureMetadata::domain(TypeKey::new("pg_catalog", "text")),
+                provider: Some(ProviderTypeFacts {
+                    kind: "d".to_string(),
+                    category: "U".to_string(),
+                    effective_kind: Some("b".to_string()),
+                    effective_category: Some("S".to_string()),
+                    orderable: true,
+                }),
+                operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
+            },
+        ],
     )
     .to_catalog()
     .expect("domain provider metadata builds");
@@ -587,25 +736,31 @@ fn provider_comparison_capabilities_override_compiler_fallbacks() {
             TypeKey::new("pg_catalog", "_text"),
             DataType::Unknown,
         )],
-        vec![TypeMetadata {
-            internal_type: "_text".to_string(),
-            readable_type: "text[]".to_string(),
-            schema: "pg_catalog".to_string(),
-            provider: Some(ProviderTypeFacts {
-                kind: "b".to_string(),
-                category: "A".to_string(),
-                effective_kind: None,
-                effective_category: None,
-                orderable: true,
-            }),
-            operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
-        }],
+        vec![
+            provider_type_with_facts("pg_catalog", "text", &["=", "<>", "~~"], true),
+            TypeMetadata {
+                internal_type: "_text".to_string(),
+                readable_type: "text[]".to_string(),
+                schema: "pg_catalog".to_string(),
+                structure: TypeStructureMetadata::array(TypeKey::new("pg_catalog", "text")),
+                provider: Some(ProviderTypeFacts {
+                    kind: "b".to_string(),
+                    category: "A".to_string(),
+                    effective_kind: None,
+                    effective_category: None,
+                    orderable: true,
+                }),
+                operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
+            },
+        ],
     )
     .to_catalog()
     .expect("array provider metadata builds");
 
     let render = |catalog: &Catalog| {
-        let data_type = &catalog.types[0];
+        let data_type = catalog
+            .type_for_column(catalog.columns[0].id)
+            .expect("column type exists");
         format!(
             "{} ({:?}/{:?}) wire={:?} operators=[{}] orderable={}",
             data_type.readable_type,
@@ -623,13 +778,30 @@ fn provider_comparison_capabilities_override_compiler_fallbacks() {
         )
     };
     insta::assert_snapshot!(format!(
-        "legacy json: {}\nprovider json: {}\nprovider citext: {}\nprovider domain: {}\nprovider array: {}",
-        render(&legacy_json),
+        "provider-less json: {}\nprovider json: {}\nprovider citext: {}\nprovider domain: {}\nprovider array: {}",
+        render(&providerless_json),
         render(&provider_json),
         render(&provider_citext),
         render(&provider_domain),
         render(&provider_array),
     ));
+
+    let domain = provider_domain
+        .type_for_column(provider_domain.columns[0].id)
+        .expect("domain column type");
+    assert_eq!(domain.data_type, DataType::Text);
+    assert_eq!(domain.capabilities.wire, WireEncoding::Text);
+    assert!(matches!(domain.shape, CatalogTypeShape::Domain { .. }));
+
+    let array = provider_array
+        .type_for_column(provider_array.columns[0].id)
+        .expect("array column type");
+    assert_eq!(array.data_type, DataType::Unknown);
+    assert_eq!(array.capabilities.wire, WireEncoding::Unsupported);
+    assert!(matches!(array.shape, CatalogTypeShape::Array { .. }));
+    if let CatalogTypeShape::Array { element } = array.shape {
+        assert_eq!(provider_array.types[element.0].data_type, DataType::Text);
+    }
 }
 
 #[test]
@@ -640,6 +812,7 @@ fn qualified_provider_type_metadata_round_trips() {
                 internal_type: "person".to_string(),
                 readable_type: "alpha.person".to_string(),
                 schema: "alpha".to_string(),
+                structure: TypeStructureMetadata::scalar(),
                 provider: None,
                 operations: BTreeSet::new(),
             },
@@ -647,6 +820,7 @@ fn qualified_provider_type_metadata_round_trips() {
                 internal_type: "person".to_string(),
                 readable_type: "beta.person".to_string(),
                 schema: "beta".to_string(),
+                structure: TypeStructureMetadata::scalar(),
                 provider: Some(ProviderTypeFacts {
                     kind: "e".to_string(),
                     category: "E".to_string(),

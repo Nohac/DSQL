@@ -7,6 +7,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -14,6 +16,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -21,6 +25,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -28,6 +34,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: false
@@ -35,6 +43,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: text
+    formatted_type: text
+    type_modifier: -1
     database_type: text
     data_type: text
     not_null: false
@@ -42,6 +52,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: false
@@ -49,6 +61,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -58,20 +72,20 @@ constraints:
     columns:
       - id
 foreign_keys:
-  - name: cast_info_person_id_fkey
-    columns:
-      - person_id
-    references:
-      schema: public
-      table: name
-      columns:
-        - id
   - name: cast_info_movie_id_fkey
     columns:
       - movie_id
     references:
       schema: public
       table: title
+      columns:
+        - id
+  - name: cast_info_person_id_fkey
+    columns:
+      - person_id
+    references:
+      schema: public
+      table: name
       columns:
         - id
   - name: cast_info_person_role_id_fkey
@@ -95,24 +109,59 @@ indexes:
     access_method: btree
     keys:
       - column: id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: true
-  - name: person_id_cast_info
-    access_method: btree
-    keys:
-      - column: person_id
-    unique: false
   - name: movie_id_cast_info
     access_method: btree
     keys:
       - column: movie_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+    unique: false
+  - name: person_id_cast_info
+    access_method: btree
+    keys:
+      - column: person_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: false
   - name: person_role_id_cast_info
     access_method: btree
     keys:
       - column: person_role_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: false
   - name: role_id_cast_info
     access_method: btree
     keys:
       - column: role_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: false

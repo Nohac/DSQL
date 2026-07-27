@@ -7,6 +7,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -14,6 +16,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: varchar
+    formatted_type: character varying(32)
+    type_modifier: 36
     database_type: varchar
     data_type: text
     not_null: true
@@ -27,4 +31,11 @@ indexes:
     access_method: btree
     keys:
       - column: id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: true

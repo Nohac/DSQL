@@ -4,6 +4,6 @@ expression: "format!(\"fragment name: {}\\nroot field: {}\\ncolumn: {}\\nspread:
 ---
 fragment name: fragment `TitleFields` on `title`
 root field: table `public`.`title`
-column: column `production_year`: int
+column: column `production_year`: integer
 spread: fragment `TitleFields` on `title`
 relation: relation `kind_type` → `public`.`kind_type` via `kind_id`

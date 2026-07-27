@@ -11,7 +11,7 @@ use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
 
 use crate::{
     fixture, imdb_catalog, numeric_catalog, provider_scalar_catalog, render_diagnostic_facts,
-    set_source_text,
+    set_source_text, structured_type_catalog,
 };
 
 async fn sql_bowl(catalog: Catalog) -> Bowl {
@@ -732,6 +732,32 @@ async fn provider_scalars_use_schema_qualified_text_casts_everywhere() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(format!("{rendered}\n\n-- dynamic casts\n{dynamic_sites}"));
+}
+
+#[tokio::test]
+async fn domains_and_database_arrays_use_shape_aware_json_wires() {
+    let bowl = sql_bowl(structured_type_catalog()).await;
+    insert_source(
+        &bowl,
+        "structured-types.dsql",
+        indoc::indoc! {r#"
+            query StructuredTypes($$label = "primary", $$address = "127.0.0.1") {
+              typed_values(
+                where .label == $$label and .address == $$address
+                limit 1
+              ) {
+                label
+                address
+                labels
+                big_values
+                addresses
+              }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_sql(&bowl).await);
 }
 
 #[tokio::test]

@@ -92,7 +92,7 @@ function resultFor(
     manifestPath: "dsql/build/manifest.1.json",
     currentManifestPath: "dsql/build/manifest.json",
     manifest: {
-      version: 4,
+      version: 5,
       generationId: options.generationId ?? 1,
       operations: [
         {

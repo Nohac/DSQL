@@ -37,7 +37,7 @@ impl Session {
             std::fs::write(path, overlay).expect("overlay fixture");
             std::fs::write(
                 root.join("dsql/schema/type_map.yaml"),
-                "types:\n  - internal_type: int4\n    readable_type: integer\n    schema: pg_catalog\n    operations: []\n  - internal_type: text\n    readable_type: text\n    schema: pg_catalog\n    operations: []\n  - internal_type: varchar\n    readable_type: character varying\n    schema: pg_catalog\n    operations: []\n",
+                "types:\n  - internal_type: int4\n    readable_type: integer\n    schema: pg_catalog\n    structure:\n      kind: scalar\n    operations: []\n  - internal_type: text\n    readable_type: text\n    schema: pg_catalog\n    structure:\n      kind: scalar\n    operations: []\n  - internal_type: varchar\n    readable_type: character varying\n    schema: pg_catalog\n    structure:\n      kind: scalar\n    operations: []\n",
             )
             .expect("overlay type map");
         }

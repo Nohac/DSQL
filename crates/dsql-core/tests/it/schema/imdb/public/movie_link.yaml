@@ -7,6 +7,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -14,6 +16,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -21,6 +25,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -28,6 +34,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -37,12 +45,12 @@ constraints:
     columns:
       - id
 foreign_keys:
-  - name: movie_link_movie_id_fkey
+  - name: movie_link_link_type_id_fkey
     columns:
-      - movie_id
+      - link_type_id
     references:
       schema: public
-      table: title
+      table: link_type
       columns:
         - id
   - name: movie_link_linked_movie_id_fkey
@@ -53,32 +61,60 @@ foreign_keys:
       table: title
       columns:
         - id
-  - name: movie_link_link_type_id_fkey
+  - name: movie_link_movie_id_fkey
     columns:
-      - link_type_id
+      - movie_id
     references:
       schema: public
-      table: link_type
+      table: title
       columns:
         - id
 indexes:
-  - name: movie_link_pkey
+  - name: link_type_id_movie_link
     access_method: btree
     keys:
-      - column: id
-    unique: true
-  - name: movie_id_movie_link
-    access_method: btree
-    keys:
-      - column: movie_id
+      - column: link_type_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: false
   - name: linked_movie_id_movie_link
     access_method: btree
     keys:
       - column: linked_movie_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: false
-  - name: link_type_id_movie_link
+  - name: movie_id_movie_link
     access_method: btree
     keys:
-      - column: link_type_id
+      - column: movie_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: false
+  - name: movie_link_pkey
+    access_method: btree
+    keys:
+      - column: id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+    unique: true

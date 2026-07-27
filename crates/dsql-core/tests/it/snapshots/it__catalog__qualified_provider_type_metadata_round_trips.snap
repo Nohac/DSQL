@@ -7,10 +7,14 @@ types:
   - internal_type: person
     readable_type: alpha.person
     schema: alpha
+    structure:
+      kind: scalar
     operations: []
   - internal_type: person
     readable_type: beta.person
     schema: beta
+    structure:
+      kind: scalar
     provider:
       kind: e
       category: E

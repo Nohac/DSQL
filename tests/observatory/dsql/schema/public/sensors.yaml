@@ -7,6 +7,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: uuid
+    formatted_type: uuid
+    type_modifier: -1
     database_type: uuid
     data_type: uuid
     not_null: true
@@ -14,6 +16,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: text
+    formatted_type: text
+    type_modifier: -1
     database_type: text
     data_type: text
     not_null: true
@@ -21,6 +25,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: text
+    formatted_type: text
+    type_modifier: -1
     database_type: text
     data_type: text
     not_null: true
@@ -28,6 +34,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: text
+    formatted_type: text
+    type_modifier: -1
     database_type: text
     data_type: text
     not_null: true
@@ -35,6 +43,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: text
+    formatted_type: text
+    type_modifier: -1
     database_type: text
     data_type: text
     not_null: true

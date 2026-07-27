@@ -1654,7 +1654,7 @@ impl PolicyCompiler<'_> {
                             scope,
                             column: column.id,
                         },
-                        data_type: catalog_type.data_type,
+                        data_type: catalog_type.logical_data_type(),
                         wire: catalog_type.capabilities.wire,
                         provider_type: catalog_type.key.clone(),
                         relation_scope: match anchor {

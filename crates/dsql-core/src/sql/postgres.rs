@@ -1,6 +1,6 @@
 use crate::catalog::{
-    Catalog, Column, ColumnId, DataType, Relation, RelationId, Table, TableId, TypeKey,
-    WireEncoding,
+    Catalog, CatalogType, CatalogValueShape, Column, ColumnId, DataType, Relation, RelationId,
+    Table, TableId, TypeKey, WireEncoding,
 };
 use crate::entities::aggregate::{AggregateFunction, AggregateMode};
 use crate::plan::{
@@ -934,9 +934,10 @@ fn generate_aggregate(
     for field in &aggregate.fields {
         fields.push((
             field.output_name.clone(),
-            public_scalar_expression(
+            public_aggregate_expression(
                 aggregate_expression(field, catalog, current_view, template)?,
-                aggregate_wire(catalog, field),
+                catalog,
+                field,
             ),
         ));
     }
@@ -973,23 +974,17 @@ fn generate_grouped_aggregate(
     for key in &aggregate.group_keys {
         let grouped_column = masked_column_expression(catalog, context, key.column, template)?;
         grouped.expr_as(
-            public_scalar_expression(
-                grouped_column.clone(),
-                catalog
-                    .type_for_column(key.column)
-                    .map_or(WireEncoding::Unsupported, |data_type| {
-                        data_type.capabilities.wire
-                    }),
-            ),
+            public_column_expression(grouped_column.clone(), catalog, key.column),
             Alias::new(&key.output_name),
         );
         grouped.add_group_by([grouped_column]);
     }
     for field in &aggregate.fields {
         grouped.expr_as(
-            public_scalar_expression(
+            public_aggregate_expression(
                 aggregate_expression(field, catalog, context, template)?,
-                aggregate_wire(catalog, field),
+                catalog,
+                field,
             ),
             Alias::new(&field.output_name),
         );
@@ -1966,13 +1961,10 @@ fn selection_field_expressions(
                 let column = column(catalog, projection.column)?;
                 fields.push((
                     projection.output_name.clone(),
-                    public_scalar_expression(
+                    public_column_expression(
                         masked_column_expression(catalog, context, projection.column, template)?,
-                        catalog
-                            .type_for_column(column.id)
-                            .map_or(WireEncoding::Unsupported, |data_type| {
-                                data_type.capabilities.wire
-                            }),
+                        catalog,
+                        column.id,
                     ),
                 ));
             }
@@ -2056,6 +2048,47 @@ fn public_scalar_expression(expression: Expr, wire: WireEncoding) -> Expr {
     } else {
         expression
     }
+}
+
+fn public_column_expression(expression: Expr, catalog: &Catalog, column: ColumnId) -> Expr {
+    if let Some(data_type) = catalog.type_for_column(column) {
+        public_catalog_expression(expression, catalog, data_type)
+    } else {
+        expression
+    }
+}
+
+fn public_catalog_expression(expression: Expr, catalog: &Catalog, declared: &CatalogType) -> Expr {
+    match catalog.value_shape_for_type(declared.id) {
+        Some(CatalogValueShape::Scalar { .. }) => {
+            public_scalar_expression(expression, declared.capabilities.wire)
+        }
+        Some(CatalogValueShape::DatabaseArray { element })
+            if matches!(
+                element.capabilities.wire,
+                WireEncoding::BigInteger | WireEncoding::Numeric | WireEncoding::TextCast
+            ) =>
+        {
+            expression.cast_as(Alias::new("text[]"))
+        }
+        Some(CatalogValueShape::DatabaseArray { .. }) | None => expression,
+    }
+}
+
+fn public_aggregate_expression(
+    expression: Expr,
+    catalog: &Catalog,
+    field: &crate::plan::AggregateProjection,
+) -> Expr {
+    if matches!(
+        field.function,
+        AggregateFunction::Min | AggregateFunction::Max
+    ) && let Some(column) = field.operand
+        && let Some(data_type) = catalog.type_for_column(column)
+    {
+        return public_catalog_expression(expression, catalog, data_type);
+    }
+    public_scalar_expression(expression, aggregate_wire(catalog, field))
 }
 
 fn aggregate_wire(catalog: &Catalog, field: &crate::plan::AggregateProjection) -> WireEncoding {

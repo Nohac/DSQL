@@ -259,6 +259,7 @@ fn observatory_operation_list_exposes_importing_scopes() {
             "api\tOptionalPredicateProbe",
             "api\tPrivacyProbe",
             "api\tRecentReadings",
+            "api\tStructuredTypeValues",
             "api\tTypedReading",
             "api\tWideIntegerPrecision",
         ]
@@ -627,6 +628,18 @@ fn observatory_operations_execute_with_variants_policies_and_composite_relations
         &[],
     );
     insta::assert_snapshot!("observatory_wide_integer_precision", wide_integer);
+
+    let structured_types = execute_observatory(
+        &observatory,
+        &database_url,
+        "api",
+        "StructuredTypeValues",
+        &[
+            "--variables",
+            r#"{"params":{"label":"primary","address":"127.0.0.1"}}"#,
+        ],
+    );
+    insta::assert_snapshot!("observatory_structured_type_values", structured_types);
 
     let count_predicate = execute_observatory(
         &observatory,

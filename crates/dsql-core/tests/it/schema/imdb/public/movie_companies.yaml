@@ -7,6 +7,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -14,6 +16,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -21,6 +25,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -28,6 +34,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: int4
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
@@ -35,6 +43,8 @@ columns:
     provider_type:
       schema: pg_catalog
       name: text
+    formatted_type: text
+    type_modifier: -1
     database_type: text
     data_type: text
     not_null: false
@@ -44,14 +54,6 @@ constraints:
     columns:
       - id
 foreign_keys:
-  - name: movie_companies_movie_id_fkey
-    columns:
-      - movie_id
-    references:
-      schema: public
-      table: title
-      columns:
-        - id
   - name: movie_companies_company_id_fkey
     columns:
       - company_id
@@ -68,24 +70,60 @@ foreign_keys:
       table: company_type
       columns:
         - id
+  - name: movie_companies_movie_id_fkey
+    columns:
+      - movie_id
+    references:
+      schema: public
+      table: title
+      columns:
+        - id
 indexes:
-  - name: movie_companies_pkey
-    access_method: btree
-    keys:
-      - column: id
-    unique: true
-  - name: movie_id_movie_companies
-    access_method: btree
-    keys:
-      - column: movie_id
-    unique: false
   - name: company_id_movie_companies
     access_method: btree
     keys:
       - column: company_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: false
   - name: company_type_id_movie_companies
     access_method: btree
     keys:
       - column: company_type_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+    unique: false
+  - name: movie_companies_pkey
+    access_method: btree
+    keys:
+      - column: id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
+    unique: true
+  - name: movie_id_movie_companies
+    access_method: btree
+    keys:
+      - column: movie_id
+        operator_class: pg_catalog.int4_ops
+        capabilities:
+          - equality
+          - range
+        order:
+          direction: asc
+          nulls: last
     unique: false

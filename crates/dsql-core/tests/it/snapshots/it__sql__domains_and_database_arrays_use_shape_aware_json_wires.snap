@@ -1,0 +1,34 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: render_sql(&bowl).await
+---
+-- StructuredTypes
+select
+  "root"."typed_values" as "typed_values"
+from
+  (
+    select
+      1) as "singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT(
+        'label',
+        "typed_values_20da7b7a"."label",
+        'address',
+        CAST("typed_values_20da7b7a"."address" as text),
+        'labels',
+        "typed_values_20da7b7a"."labels",
+        'big_values',
+        CAST("typed_values_20da7b7a"."big_values" as text[]),
+        'addresses',
+        CAST("typed_values_20da7b7a"."addresses" as text[])
+      ) as "typed_values"
+    from
+      "public"."typed_values" as "typed_values_20da7b7a"
+    where
+      "typed_values_20da7b7a"."label" = ($1)
+      and "typed_values_20da7b7a"."address" = ((($2)::text)::"public"."address_domain")
+    limit
+      1
+  ) as "root" on true
+-- parameters: params.label, params.address

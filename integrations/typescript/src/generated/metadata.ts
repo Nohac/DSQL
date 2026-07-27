@@ -1,4 +1,4 @@
-export const BUILD_MANIFEST_VERSION = 4 as const;
+export const BUILD_MANIFEST_VERSION = 5 as const;
 
 export interface BuildManifest {
   version: number;
@@ -53,7 +53,7 @@ export interface SourceMapEntry {
    * capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
    * offsets into the host file; identical across definitions from the
    * same embedded expression. Required for embedded sources in manifest
-   * version 3; absent for standalone `.dsql` sources.
+   * version 5; absent for standalone `.dsql` sources.
    */
   content_range?: SourceRange;
 }
@@ -204,11 +204,22 @@ export interface ResultField {
   name: string;
   parent_path: string;
   kind: string;
-  data_type: string;
-  wire: WireMetadata;
+  value_type: ResultValueTypeMetadata;
   nullable: boolean;
   /** `unconditional`, `context_only`, or `row_dependent`. */
   access: string;
+}
+
+/** Public host-value contract for one result field. */
+export interface ResultValueTypeMetadata {
+  /** `scalar`, `database_array`, or `object`. */
+  shape: string;
+  /** Effective logical leaf name, or `object` for relation objects. */
+  name: string;
+  /** Provider spelling retained for generated documentation. */
+  display?: string;
+  /** JSON representation of the scalar or database-array element. */
+  wire: WireMetadata;
 }
 
 export interface SqlMetadata {
@@ -259,7 +270,7 @@ export interface SourceMapEntry {
    * capture). Absent for plain `.dsql` files. Half-open UTF-8 byte
    * offsets into the host file; identical across definitions from the
    * same embedded expression. Required for embedded sources in manifest
-   * version 3; absent for standalone `.dsql` sources.
+   * version 5; absent for standalone `.dsql` sources.
    */
   content_range?: SourceRange;
 }
@@ -364,9 +375,20 @@ export interface ResultField {
   name: string;
   parent_path: string;
   kind: string;
-  data_type: string;
-  wire: WireMetadata;
+  value_type: ResultValueTypeMetadata;
   nullable: boolean;
   /** `unconditional`, `context_only`, or `row_dependent`. */
   access: string;
+}
+
+/** Public host-value contract for one result field. */
+export interface ResultValueTypeMetadata {
+  /** `scalar`, `database_array`, or `object`. */
+  shape: string;
+  /** Effective logical leaf name, or `object` for relation objects. */
+  name: string;
+  /** Provider spelling retained for generated documentation. */
+  display?: string;
+  /** JSON representation of the scalar or database-array element. */
+  wire: WireMetadata;
 }

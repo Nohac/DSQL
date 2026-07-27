@@ -73,6 +73,7 @@ const DEFINITION_KIND_FRAGMENT = "fragment";
 const DEFINITION_KIND_QUERY = "query";
 const RESULT_KIND_SCALAR = "scalar";
 const RESULT_KIND_ARRAY = "array";
+const RESULT_VALUE_SHAPE_DATABASE_ARRAY = "database_array";
 const PARAMS_PREFIX = "params";
 const INPUT_PREFIX = "input";
 const CONTEXT_PREFIX = "context";
@@ -242,6 +243,9 @@ function renderOperationModule(
     artifacts.fragments,
   );
   const resultLiteral = resultTypeLiteral(resultCtx);
+  if (resultUsesDatabaseArray(resultCtx)) {
+    runtimeImports.unshift("DsqlDatabaseArray");
+  }
   const statements = [
     `import type { ${runtimeImports.join(", ")} } from "@dsql/typescript/runtime";`,
     ...fragmentTypeImports(resultCtx, operation),
@@ -406,16 +410,19 @@ function renderFragmentModule(
   const variablesType = fragmentVariablesTypeName(fragment.name);
   // Fragments composed of other fragments reuse their types instead of
   // re-inlining: the body's spread provenance (empty path = fragment
-  // root) drives the same composition operations use. Artifacts written
-  // before the field existed degrade to the inline shape.
+  // root) drives the same composition operations use.
   const resultCtx = resultTypeContext(
     fragment.result.fields,
-    fragment.fragment_spreads ?? [],
+    fragment.fragment_spreads,
     artifacts.fragments,
   );
   const resultLiteral = resultTypeLiteral(resultCtx);
+  const runtimeTypes = ["DsqlFragmentDefinition"];
+  if (resultUsesDatabaseArray(resultCtx)) {
+    runtimeTypes.unshift("DsqlDatabaseArray");
+  }
   return [
-    `import type { DsqlFragmentDefinition } from "@dsql/typescript/runtime";`,
+    `import type { ${runtimeTypes.join(", ")} } from "@dsql/typescript/runtime";`,
     ...fragmentTypeImports(resultCtx),
     "",
     `export type ${resultType} = ${resultLiteral};`,
@@ -965,14 +972,27 @@ function publicInputPath(path: string, prefix: InputRoot): string[] {
 
 function propertyType(ctx: ResultTypeCtx, field: ResultField): [string, string] {
   if (field.kind === RESULT_KIND_SCALAR) {
+    const scalar = dataType(field.value_type.name);
+    const value =
+      field.value_type.shape === RESULT_VALUE_SHAPE_DATABASE_ARRAY
+        ? `DsqlDatabaseArray<${scalar}>`
+        : scalar;
     return [
       field.name,
-      withNullability(dataType(field.data_type), field.nullable),
+      withNullability(value, field.nullable),
     ];
   }
   const type = objectTypeAt(ctx, field.path);
   const resultType = field.kind === RESULT_KIND_ARRAY ? `Array<${type}>` : type;
   return [field.name, withNullability(resultType, field.nullable)];
+}
+
+function resultUsesDatabaseArray(ctx: ResultTypeCtx): boolean {
+  return ctx.fields.some(
+    (field) =>
+      !fullyProvided(ctx, field) &&
+      field.value_type.shape === RESULT_VALUE_SHAPE_DATABASE_ARRAY,
+  );
 }
 
 function pathStartsWith(path: readonly string[], prefix: readonly string[]): boolean {

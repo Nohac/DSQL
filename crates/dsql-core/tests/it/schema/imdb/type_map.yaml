@@ -1,21 +1,2184 @@
 ---
-types: 
+types:
+  - internal_type: _cardinal_number
+    readable_type: information_schema.cardinal_number[]
+    schema: information_schema
+    structure:
+      kind: array
+      related_type:
+        schema: information_schema
+        name: cardinal_number
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _character_data
+    readable_type: information_schema.character_data[]
+    schema: information_schema
+    structure:
+      kind: array
+      related_type:
+        schema: information_schema
+        name: character_data
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _sql_identifier
+    readable_type: information_schema.sql_identifier[]
+    schema: information_schema
+    structure:
+      kind: array
+      related_type:
+        schema: information_schema
+        name: sql_identifier
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _time_stamp
+    readable_type: information_schema.time_stamp[]
+    schema: information_schema
+    structure:
+      kind: array
+      related_type:
+        schema: information_schema
+        name: time_stamp
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _yes_or_no
+    readable_type: information_schema.yes_or_no[]
+    schema: information_schema
+    structure:
+      kind: array
+      related_type:
+        schema: information_schema
+        name: yes_or_no
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: cardinal_number
+    readable_type: information_schema.cardinal_number
+    schema: information_schema
+    structure:
+      kind: domain
+      related_type:
+        schema: pg_catalog
+        name: int4
+    provider:
+      kind: d
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - "#"
+      - "%"
+      - "&"
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <<
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - ^
+      - "|"
+  - internal_type: character_data
+    readable_type: information_schema.character_data
+    schema: information_schema
+    structure:
+      kind: domain
+      related_type:
+        schema: pg_catalog
+        name: varchar
+    provider:
+      kind: d
+      category: S
+      effective_kind: b
+      effective_category: S
+      orderable: true
+    operations:
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "@@"
+      - ^@
+      - "||"
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
+  - internal_type: sql_identifier
+    readable_type: information_schema.sql_identifier
+    schema: information_schema
+    structure:
+      kind: domain
+      related_type:
+        schema: pg_catalog
+        name: name
+    provider:
+      kind: d
+      category: S
+      effective_kind: b
+      effective_category: S
+      orderable: true
+    operations:
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "@@"
+      - ^@
+      - "||"
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
+  - internal_type: time_stamp
+    readable_type: information_schema.time_stamp
+    schema: information_schema
+    structure:
+      kind: domain
+      related_type:
+        schema: pg_catalog
+        name: timestamptz
+    provider:
+      kind: d
+      category: D
+      effective_kind: b
+      effective_category: D
+      orderable: true
+    operations:
+      - "-"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: yes_or_no
+    readable_type: information_schema.yes_or_no
+    schema: information_schema
+    structure:
+      kind: domain
+      related_type:
+        schema: pg_catalog
+        name: varchar
+    provider:
+      kind: d
+      category: S
+      effective_kind: b
+      effective_category: S
+      orderable: true
+    operations:
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "@@"
+      - ^@
+      - "||"
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
   - internal_type: _aclitem
     readable_type: aclitem[]
     schema: pg_catalog
-    operations: 
-      - +
-      - "-"
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: aclitem
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _bit
+    readable_type: bit[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: bit
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _bool
+    readable_type: boolean[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: bool
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _box
+    readable_type: box[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: box
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _bpchar
+    readable_type: character[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: bpchar
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _bytea
+    readable_type: bytea[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: bytea
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _char
+    readable_type: "\"char\"[]"
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: char
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _cid
+    readable_type: cid[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: cid
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _cidr
+    readable_type: cidr[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: cidr
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _circle
+    readable_type: circle[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: circle
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _cstring
+    readable_type: cstring[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: cstring
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _date
+    readable_type: date[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: date
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _datemultirange
+    readable_type: datemultirange[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: datemultirange
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _daterange
+    readable_type: daterange[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: daterange
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _float4
+    readable_type: real[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: float4
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _float8
+    readable_type: double precision[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: float8
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _gtsvector
+    readable_type: gtsvector[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: gtsvector
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _inet
+    readable_type: inet[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: inet
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _int2
+    readable_type: smallint[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: int2
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _int2vector
+    readable_type: int2vector[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: int2vector
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _int4
+    readable_type: integer[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: int4
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _int4multirange
+    readable_type: int4multirange[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: int4multirange
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _int4range
+    readable_type: int4range[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: int4range
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _int8
+    readable_type: bigint[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: int8
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _int8multirange
+    readable_type: int8multirange[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: int8multirange
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _int8range
+    readable_type: int8range[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: int8range
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _interval
+    readable_type: interval[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: interval
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _json
+    readable_type: json[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: json
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _jsonb
+    readable_type: jsonb[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: jsonb
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _jsonpath
+    readable_type: jsonpath[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: jsonpath
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _line
+    readable_type: line[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: line
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _lseg
+    readable_type: lseg[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: lseg
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _macaddr
+    readable_type: macaddr[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: macaddr
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _macaddr8
+    readable_type: macaddr8[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: macaddr8
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _money
+    readable_type: money[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: money
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _name
+    readable_type: name[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: name
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _numeric
+    readable_type: numeric[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: numeric
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _nummultirange
+    readable_type: nummultirange[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: nummultirange
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _numrange
+    readable_type: numrange[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: numrange
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _oid
+    readable_type: oid[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: oid
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _oidvector
+    readable_type: oidvector[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: oidvector
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _path
+    readable_type: path[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: path
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _pg_lsn
+    readable_type: pg_lsn[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: pg_lsn
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _pg_snapshot
+    readable_type: pg_snapshot[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: pg_snapshot
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _point
+    readable_type: point[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: point
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _polygon
+    readable_type: polygon[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: polygon
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _record
+    readable_type: record[]
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
+  - internal_type: _refcursor
+    readable_type: refcursor[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: refcursor
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regclass
+    readable_type: regclass[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regclass
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regcollation
+    readable_type: regcollation[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regcollation
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regconfig
+    readable_type: regconfig[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regconfig
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regdictionary
+    readable_type: regdictionary[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regdictionary
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regnamespace
+    readable_type: regnamespace[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regnamespace
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regoper
+    readable_type: regoper[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regoper
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regoperator
+    readable_type: regoperator[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regoperator
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regproc
+    readable_type: regproc[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regproc
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regprocedure
+    readable_type: regprocedure[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regprocedure
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regrole
+    readable_type: regrole[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regrole
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _regtype
+    readable_type: regtype[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: regtype
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _text
+    readable_type: text[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: text
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _tid
+    readable_type: tid[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: tid
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _time
+    readable_type: time without time zone[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: time
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _timestamp
+    readable_type: timestamp without time zone[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: timestamp
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _timestamptz
+    readable_type: timestamp with time zone[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: timestamptz
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _timetz
+    readable_type: time with time zone[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: timetz
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _tsmultirange
+    readable_type: tsmultirange[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: tsmultirange
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _tsquery
+    readable_type: tsquery[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: tsquery
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _tsrange
+    readable_type: tsrange[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: tsrange
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _tstzmultirange
+    readable_type: tstzmultirange[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: tstzmultirange
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _tstzrange
+    readable_type: tstzrange[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: tstzrange
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _tsvector
+    readable_type: tsvector[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: tsvector
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _txid_snapshot
+    readable_type: txid_snapshot[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: txid_snapshot
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _uuid
+    readable_type: uuid[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: uuid
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _varbit
+    readable_type: bit varying[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: varbit
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _varchar
+    readable_type: character varying[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: varchar
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _xid
+    readable_type: xid[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: xid
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _xid8
+    readable_type: xid8[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: xid8
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
+  - internal_type: _xml
+    readable_type: xml[]
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: xml
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
       - "@>"
   - internal_type: aclitem
     readable_type: aclitem
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: false
+    operations:
       - =
+  - internal_type: any
+    readable_type: "\"any\""
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
   - internal_type: anyarray
     readable_type: anyarray
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: true
+    operations:
       - "&&"
       - <
       - <=
@@ -28,22 +2191,88 @@ types:
   - internal_type: anycompatible
     readable_type: anycompatible
     schema: pg_catalog
-    operations: 
-      - "||"
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
   - internal_type: anycompatiblearray
     readable_type: anycompatiblearray
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations:
       - "||"
+  - internal_type: anycompatiblemultirange
+    readable_type: anycompatiblemultirange
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
+  - internal_type: anycompatiblenonarray
+    readable_type: anycompatiblenonarray
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
+  - internal_type: anycompatiblerange
+    readable_type: anycompatiblerange
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
   - internal_type: anyelement
     readable_type: anyelement
     schema: pg_catalog
-    operations: 
-      - <@
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
   - internal_type: anyenum
     readable_type: anyenum
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: true
+    operations:
       - <
       - <=
       - <>
@@ -53,7 +2282,15 @@ types:
   - internal_type: anymultirange
     readable_type: anymultirange
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: true
+    operations:
       - "&&"
       - "&<"
       - "&>"
@@ -74,12 +2311,27 @@ types:
   - internal_type: anynonarray
     readable_type: anynonarray
     schema: pg_catalog
-    operations: 
-      - "||"
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
   - internal_type: anyrange
     readable_type: anyrange
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: true
+    operations:
       - "&&"
       - "&<"
       - "&>"
@@ -100,22 +2352,37 @@ types:
   - internal_type: bit
     readable_type: bit
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: V
+      effective_kind: b
+      effective_category: V
+      orderable: true
+    operations:
       - "#"
       - "&"
       - <
-      - <<
       - <=
       - <>
       - =
       - ">"
       - ">="
-      - ">>"
       - "|"
+      - "||"
   - internal_type: bool
     readable_type: boolean
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: B
+      effective_kind: b
+      effective_category: B
+      orderable: true
+    operations:
       - <
       - <=
       - <>
@@ -125,16 +2392,20 @@ types:
   - internal_type: box
     readable_type: box
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: G
+      effective_kind: b
+      effective_category: G
+      orderable: false
+    operations:
       - "#"
       - "&&"
       - "&<"
       - "&<|"
       - "&>"
-      - "*"
-      - +
-      - "-"
-      - /
       - <
       - <->
       - <<
@@ -155,7 +2426,15 @@ types:
   - internal_type: bpchar
     readable_type: character
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: S
+      effective_kind: b
+      effective_category: S
+      orderable: true
+    operations:
       - "!~"
       - "!~*"
       - "!~~"
@@ -166,6 +2445,9 @@ types:
       - =
       - ">"
       - ">="
+      - "@@"
+      - ^@
+      - "||"
       - "~"
       - ~*
       - ~<=~
@@ -177,7 +2459,15 @@ types:
   - internal_type: bytea
     readable_type: bytea
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: true
+    operations:
       - "!~~"
       - <
       - <=
@@ -190,30 +2480,91 @@ types:
   - internal_type: char
     readable_type: "\"char\""
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: Z
+      effective_kind: b
+      effective_category: Z
+      orderable: true
+    operations:
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
       - <
       - <=
       - <>
       - =
       - ">"
       - ">="
+      - "@@"
+      - ^@
+      - "||"
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
   - internal_type: cid
     readable_type: cid
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: false
+    operations:
       - =
+  - internal_type: cidr
+    readable_type: cidr
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: I
+      effective_kind: b
+      effective_category: I
+      orderable: true
+    operations:
+      - "&"
+      - "&&"
+      - "-"
+      - <
+      - <<
+      - <<=
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - ">>="
+      - "|"
   - internal_type: circle
     readable_type: circle
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: G
+      effective_kind: b
+      effective_category: G
+      orderable: false
+    operations:
       - "&&"
       - "&<"
       - "&<|"
       - "&>"
-      - "*"
-      - +
-      - "-"
-      - /
       - <
       - <->
       - <<
@@ -229,11 +2580,30 @@ types:
       - "|&>"
       - "|>>"
       - ~=
+  - internal_type: cstring
+    readable_type: cstring
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
   - internal_type: date
     readable_type: date
     schema: pg_catalog
-    operations: 
-      - +
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: D
+      effective_kind: b
+      effective_category: D
+      orderable: true
+    operations:
       - "-"
       - <
       - <=
@@ -241,24 +2611,100 @@ types:
       - =
       - ">"
       - ">="
-  - internal_type: float4
-    readable_type: real
+  - internal_type: datemultirange
+    readable_type: datemultirange
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: m
+      category: R
+      effective_kind: m
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
       - "*"
       - +
       - "-"
-      - /
+      - "-|-"
       - <
+      - <<
       - <=
       - <>
+      - <@
       - =
       - ">"
       - ">="
-  - internal_type: float8
-    readable_type: double precision
+      - ">>"
+      - "@>"
+  - internal_type: daterange
+    readable_type: daterange
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: r
+      category: R
+      effective_kind: r
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
+  - internal_type: event_trigger
+    readable_type: event_trigger
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
+  - internal_type: fdw_handler
+    readable_type: fdw_handler
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
+  - internal_type: float4
+    readable_type: real
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
       - "*"
       - +
       - "-"
@@ -270,13 +2716,67 @@ types:
       - ">"
       - ">="
       - ^
+  - internal_type: float8
+    readable_type: double precision
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - "*"
+      - +
+      - "-"
+      - /
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - ^
+  - internal_type: gtsvector
+    readable_type: gtsvector
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: false
+    operations: []
+  - internal_type: index_am_handler
+    readable_type: index_am_handler
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
   - internal_type: inet
     readable_type: inet
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: I
+      effective_kind: b
+      effective_category: I
+      orderable: true
+    operations:
       - "&"
       - "&&"
-      - +
       - "-"
       - <
       - <<
@@ -292,7 +2792,15 @@ types:
   - internal_type: int2
     readable_type: smallint
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
       - "#"
       - "%"
       - "&"
@@ -308,11 +2816,44 @@ types:
       - ">"
       - ">="
       - ">>"
+      - ^
       - "|"
+  - internal_type: int2vector
+    readable_type: int2vector
+    schema: pg_catalog
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: int2
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
+      - <
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - "@>"
   - internal_type: int4
     readable_type: integer
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
       - "#"
       - "%"
       - "&"
@@ -328,11 +2869,78 @@ types:
       - ">"
       - ">="
       - ">>"
+      - ^
       - "|"
+  - internal_type: int4multirange
+    readable_type: int4multirange
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: m
+      category: R
+      effective_kind: m
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
+  - internal_type: int4range
+    readable_type: int4range
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: r
+      category: R
+      effective_kind: r
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
   - internal_type: int8
     readable_type: bigint
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
       - "#"
       - "%"
       - "&"
@@ -341,22 +2949,97 @@ types:
       - "-"
       - /
       - <
-      - <<
       - <=
       - <>
       - =
       - ">"
       - ">="
-      - ">>"
+      - ^
       - "|"
-  - internal_type: interval
-    readable_type: interval
+  - internal_type: int8multirange
+    readable_type: int8multirange
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: m
+      category: R
+      effective_kind: m
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
       - "*"
       - +
       - "-"
-      - /
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
+  - internal_type: int8range
+    readable_type: int8range
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: r
+      category: R
+      effective_kind: r
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
+  - internal_type: internal
+    readable_type: internal
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
+  - internal_type: interval
+    readable_type: interval
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: T
+      effective_kind: b
+      effective_category: T
+      orderable: true
+    operations:
+      - +
+      - "-"
       - <
       - <=
       - <>
@@ -366,21 +3049,27 @@ types:
   - internal_type: json
     readable_type: json
     schema: pg_catalog
-    operations: 
-      - "#>"
-      - "#>>"
-      - "->"
-      - "->>"
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: false
+    operations: []
   - internal_type: jsonb
     readable_type: jsonb
     schema: pg_catalog
-    operations: 
-      - "#-"
-      - "#>"
-      - "#>>"
-      - "-"
-      - "->"
-      - "->>"
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: true
+    operations:
       - <
       - <=
       - <>
@@ -388,19 +3077,45 @@ types:
       - =
       - ">"
       - ">="
-      - "?"
-      - "?&"
-      - "?|"
       - "@>"
-      - "@?"
-      - "@@"
       - "||"
+  - internal_type: jsonpath
+    readable_type: jsonpath
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: false
+    operations: []
+  - internal_type: language_handler
+    readable_type: language_handler
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
   - internal_type: line
     readable_type: line
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: G
+      effective_kind: b
+      effective_category: G
+      orderable: false
+    operations:
       - "#"
-      - "##"
       - <->
       - =
       - "?#"
@@ -409,14 +3124,21 @@ types:
   - internal_type: lseg
     readable_type: lseg
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: G
+      effective_kind: b
+      effective_category: G
+      orderable: false
+    operations:
       - "#"
       - "##"
       - <
       - <->
       - <=
       - <>
-      - <@
       - =
       - ">"
       - ">="
@@ -426,7 +3148,15 @@ types:
   - internal_type: macaddr
     readable_type: macaddr
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: true
+    operations:
       - "&"
       - <
       - <=
@@ -438,7 +3168,15 @@ types:
   - internal_type: macaddr8
     readable_type: macaddr8
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: true
+    operations:
       - "&"
       - <
       - <=
@@ -450,8 +3188,15 @@ types:
   - internal_type: money
     readable_type: money
     schema: pg_catalog
-    operations: 
-      - "*"
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
       - +
       - "-"
       - /
@@ -464,7 +3209,15 @@ types:
   - internal_type: name
     readable_type: name
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: S
+      effective_kind: b
+      effective_category: S
+      orderable: true
+    operations:
       - "!~"
       - "!~*"
       - "!~~"
@@ -475,14 +3228,29 @@ types:
       - =
       - ">"
       - ">="
+      - "@@"
+      - ^@
+      - "||"
       - "~"
       - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
       - ~~
       - ~~*
   - internal_type: numeric
     readable_type: numeric
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
       - "%"
       - "*"
       - +
@@ -495,10 +3263,76 @@ types:
       - ">"
       - ">="
       - ^
+  - internal_type: nummultirange
+    readable_type: nummultirange
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: m
+      category: R
+      effective_kind: m
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
+  - internal_type: numrange
+    readable_type: numrange
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: r
+      category: R
+      effective_kind: r
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
   - internal_type: oid
     readable_type: oid
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
       - <
       - <=
       - <>
@@ -508,21 +3342,40 @@ types:
   - internal_type: oidvector
     readable_type: oidvector
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: array
+      related_type:
+        schema: pg_catalog
+        name: oid
+    provider:
+      kind: b
+      category: A
+      effective_kind: b
+      effective_category: A
+      orderable: true
+    operations:
+      - "&&"
       - <
       - <=
       - <>
+      - <@
       - =
       - ">"
       - ">="
+      - "@>"
   - internal_type: path
     readable_type: path
     schema: pg_catalog
-    operations: 
-      - "*"
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: G
+      effective_kind: b
+      effective_category: G
+      orderable: false
+    operations:
       - +
-      - "-"
-      - /
       - <
       - <->
       - <=
@@ -530,12 +3383,87 @@ types:
       - ">"
       - ">="
       - "?#"
-      - "@>"
+  - internal_type: pg_brin_bloom_summary
+    readable_type: pg_brin_bloom_summary
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: Z
+      effective_kind: b
+      effective_category: Z
+      orderable: false
+    operations: []
+  - internal_type: pg_brin_minmax_multi_summary
+    readable_type: pg_brin_minmax_multi_summary
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: Z
+      effective_kind: b
+      effective_category: Z
+      orderable: false
+    operations: []
+  - internal_type: pg_ddl_command
+    readable_type: pg_ddl_command
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
+  - internal_type: pg_dependencies
+    readable_type: pg_dependencies
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: Z
+      effective_kind: b
+      effective_category: Z
+      orderable: true
+    operations:
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "@@"
+      - ^@
+      - "||"
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
   - internal_type: pg_lsn
     readable_type: pg_lsn
     schema: pg_catalog
-    operations: 
-      - +
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: true
+    operations:
       - "-"
       - <
       - <=
@@ -543,11 +3471,129 @@ types:
       - =
       - ">"
       - ">="
+  - internal_type: pg_mcv_list
+    readable_type: pg_mcv_list
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: Z
+      effective_kind: b
+      effective_category: Z
+      orderable: true
+    operations:
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "@@"
+      - ^@
+      - "||"
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
+  - internal_type: pg_ndistinct
+    readable_type: pg_ndistinct
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: Z
+      effective_kind: b
+      effective_category: Z
+      orderable: true
+    operations:
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "@@"
+      - ^@
+      - "||"
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
+  - internal_type: pg_node_tree
+    readable_type: pg_node_tree
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: Z
+      effective_kind: b
+      effective_category: Z
+      orderable: true
+    operations:
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "@@"
+      - ^@
+      - "||"
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
+  - internal_type: pg_snapshot
+    readable_type: pg_snapshot
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: false
+    operations: []
   - internal_type: point
     readable_type: point
     schema: pg_catalog
-    operations: 
-      - "##"
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: G
+      effective_kind: b
+      effective_category: G
+      orderable: false
+    operations:
       - "*"
       - +
       - "-"
@@ -556,7 +3602,6 @@ types:
       - <<
       - <<|
       - <>
-      - <@
       - <^
       - ">>"
       - ">^"
@@ -567,7 +3612,15 @@ types:
   - internal_type: polygon
     readable_type: polygon
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: G
+      effective_kind: b
+      effective_category: G
+      orderable: false
+    operations:
       - "&&"
       - "&<"
       - "&<|"
@@ -584,7 +3637,15 @@ types:
   - internal_type: record
     readable_type: record
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: true
+    operations:
       - "*<"
       - "*<="
       - "*<>"
@@ -597,10 +3658,240 @@ types:
       - =
       - ">"
       - ">="
+  - internal_type: refcursor
+    readable_type: refcursor
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: false
+    operations: []
+  - internal_type: regclass
+    readable_type: regclass
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: regcollation
+    readable_type: regcollation
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: regconfig
+    readable_type: regconfig
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: regdictionary
+    readable_type: regdictionary
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: regnamespace
+    readable_type: regnamespace
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: regoper
+    readable_type: regoper
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: regoperator
+    readable_type: regoperator
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: regproc
+    readable_type: regproc
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: regprocedure
+    readable_type: regprocedure
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: regrole
+    readable_type: regrole
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: regtype
+    readable_type: regtype
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: "N"
+      effective_kind: b
+      effective_category: "N"
+      orderable: true
+    operations:
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+  - internal_type: table_am_handler
+    readable_type: table_am_handler
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
   - internal_type: text
     readable_type: text
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: S
+      effective_kind: b
+      effective_category: S
+      orderable: true
+    operations:
       - "!~"
       - "!~*"
       - "!~~"
@@ -625,7 +3916,15 @@ types:
   - internal_type: tid
     readable_type: tid
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: true
+    operations:
       - <
       - <=
       - <>
@@ -635,7 +3934,15 @@ types:
   - internal_type: time
     readable_type: time without time zone
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: D
+      effective_kind: b
+      effective_category: D
+      orderable: true
+    operations:
       - +
       - "-"
       - <
@@ -647,8 +3954,15 @@ types:
   - internal_type: timestamp
     readable_type: timestamp without time zone
     schema: pg_catalog
-    operations: 
-      - +
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: D
+      effective_kind: b
+      effective_category: D
+      orderable: true
+    operations:
       - "-"
       - <
       - <=
@@ -659,8 +3973,15 @@ types:
   - internal_type: timestamptz
     readable_type: timestamp with time zone
     schema: pg_catalog
-    operations: 
-      - +
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: D
+      effective_kind: b
+      effective_category: D
+      orderable: true
+    operations:
       - "-"
       - <
       - <=
@@ -671,19 +3992,86 @@ types:
   - internal_type: timetz
     readable_type: time with time zone
     schema: pg_catalog
-    operations: 
-      - +
-      - "-"
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: D
+      effective_kind: b
+      effective_category: D
+      orderable: true
+    operations:
       - <
       - <=
       - <>
       - =
       - ">"
       - ">="
+  - internal_type: trigger
+    readable_type: trigger
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
+  - internal_type: tsm_handler
+    readable_type: tsm_handler
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
+    operations: []
+  - internal_type: tsmultirange
+    readable_type: tsmultirange
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: m
+      category: R
+      effective_kind: m
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
   - internal_type: tsquery
     readable_type: tsquery
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: true
+    operations:
       - "&&"
       - <
       - <->
@@ -694,26 +4082,149 @@ types:
       - ">"
       - ">="
       - "@>"
-      - "@@"
-      - "@@@"
       - "||"
+  - internal_type: tsrange
+    readable_type: tsrange
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: r
+      category: R
+      effective_kind: r
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
+  - internal_type: tstzmultirange
+    readable_type: tstzmultirange
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: m
+      category: R
+      effective_kind: m
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
+  - internal_type: tstzrange
+    readable_type: tstzrange
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: r
+      category: R
+      effective_kind: r
+      effective_category: R
+      orderable: true
+    operations:
+      - "&&"
+      - "&<"
+      - "&>"
+      - "*"
+      - +
+      - "-"
+      - "-|-"
+      - <
+      - <<
+      - <=
+      - <>
+      - <@
+      - =
+      - ">"
+      - ">="
+      - ">>"
+      - "@>"
   - internal_type: tsvector
     readable_type: tsvector
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: true
+    operations:
       - <
       - <=
       - <>
       - =
       - ">"
       - ">="
-      - "@@"
-      - "@@@"
       - "||"
+  - internal_type: txid_snapshot
+    readable_type: txid_snapshot
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: false
+    operations: []
+  - internal_type: unknown
+    readable_type: unknown
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: X
+      effective_kind: p
+      effective_category: X
+      orderable: false
+    operations: []
   - internal_type: uuid
     readable_type: uuid
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: true
+    operations:
       - <
       - <=
       - <>
@@ -723,31 +4234,111 @@ types:
   - internal_type: varbit
     readable_type: bit varying
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: V
+      effective_kind: b
+      effective_category: V
+      orderable: true
+    operations:
+      - "#"
+      - "&"
       - <
       - <=
       - <>
       - =
       - ">"
       - ">="
+      - "|"
       - "||"
   - internal_type: varchar
     readable_type: character varying
     schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: S
+      effective_kind: b
+      effective_category: S
+      orderable: true
+    operations:
+      - "!~"
+      - "!~*"
+      - "!~~"
+      - "!~~*"
+      - <
+      - <=
+      - <>
+      - =
+      - ">"
+      - ">="
+      - "@@"
+      - ^@
+      - "||"
+      - "~"
+      - ~*
+      - ~<=~
+      - ~<~
+      - ~>=~
+      - ~>~
+      - ~~
+      - ~~*
+  - internal_type: void
+    readable_type: void
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: p
+      category: P
+      effective_kind: p
+      effective_category: P
+      orderable: false
     operations: []
   - internal_type: xid
     readable_type: xid
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: false
+    operations:
       - <>
       - =
   - internal_type: xid8
     readable_type: xid8
     schema: pg_catalog
-    operations: 
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: true
+    operations:
       - <
       - <=
       - <>
       - =
       - ">"
       - ">="
+  - internal_type: xml
+    readable_type: xml
+    schema: pg_catalog
+    structure:
+      kind: scalar
+    provider:
+      kind: b
+      category: U
+      effective_kind: b
+      effective_category: U
+      orderable: false
+    operations: []

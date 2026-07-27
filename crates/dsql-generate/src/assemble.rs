@@ -4,7 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use dsql_core::catalog::{Catalog, CatalogType, DataType, TableId, TypeKey, WireEncoding};
+use dsql_core::catalog::{
+    Catalog, CatalogType, CatalogValueShape, DataType, TableId, TypeKey, WireEncoding,
+};
 use dsql_core::entities::aggregate::{AggregateFunction, AggregateMode};
 use dsql_core::entities::variable::{
     InputDefault as CoreInputDefault, VariableBinding, VariableRole, VariableSource,
@@ -22,9 +24,10 @@ use dsql_metadata::{
     DefinitionKind, DynamicInputField, DynamicInputMetadata, DynamicInputSite,
     DynamicInputSiteField, DynamicPredicateOperatorMetadata, FragmentMetadata,
     FragmentSpreadMetadata, InputDefault, InputField, OperationMetadata, PolicyApplicationMetadata,
-    PolicyFieldAccessMetadata, PolicyMetadata, ProviderTypeMetadata, ResultDataType, ResultField,
-    ResultFieldKind, ResultShape, SourceMapEntry, SourceRange, SqlDialect, SqlMetadata,
-    SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata, WireMetadata,
+    PolicyFieldAccessMetadata, PolicyMetadata, ProviderTypeMetadata, ResultField, ResultFieldKind,
+    ResultShape, ResultValueShape, ResultValueTypeMetadata, SourceMapEntry, SourceRange,
+    SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
+    WireMetadata,
 };
 
 use crate::pipeline::{GenerateError, Result};
@@ -606,8 +609,7 @@ fn collect_collection_fields(
         name: name.to_string(),
         parent_path: parent_path.to_string(),
         kind: kind.as_ref().to_string(),
-        data_type: ResultDataType::Object.as_ref().to_string(),
-        wire: wire_metadata_for_data_type(DataType::Unknown),
+        value_type: object_result_value_type(),
         nullable: access.inherited_nullable,
         access: access_label(access.inherited_access).to_string(),
     });
@@ -656,11 +658,8 @@ fn collect_collection_children(
                     name: key.output_name.clone(),
                     parent_path: parent_path.to_string(),
                     kind: ResultFieldKind::Scalar.as_ref().to_string(),
-                    data_type: result_data_type_for_column(catalog, key.column),
-                    wire: catalog.type_for_column(key.column).map_or_else(
-                        || wire_metadata_for_data_type(key.data_type),
-                        wire_metadata_for_catalog_type,
-                    ),
+                    value_type: result_value_type_for_column(catalog, key.column)
+                        .unwrap_or_else(|| result_value_type_for_data_type(key.data_type)),
                     nullable: access.inherited_nullable
                         || key.nullable
                         || policy_filters_column(access.policy_nullable_fields, key.column),
@@ -679,8 +678,7 @@ fn collect_collection_children(
                     name: field.output_name.clone(),
                     parent_path: parent_path.to_string(),
                     kind: ResultFieldKind::Scalar.as_ref().to_string(),
-                    data_type: aggregate_result_data_type(catalog, field),
-                    wire: aggregate_result_wire(catalog, field),
+                    value_type: aggregate_result_value_type(catalog, field),
                     nullable: access.inherited_nullable || field.nullable,
                     access: access_label(access.inherited_access.combine(field.operand.map_or(
                         PolicyAccess::Unconditional,
@@ -721,11 +719,9 @@ fn collect_result_item_fields(
                 name: projection.output_name.clone(),
                 parent_path: parent_path.to_string(),
                 kind: ResultFieldKind::Scalar.as_ref().to_string(),
-                data_type: result_data_type_for_column(catalog, column.id),
-                wire: catalog.type_for_column(column.id).map_or_else(
-                    || wire_metadata_for_data_type(catalog.data_type_for_column(column.id)),
-                    wire_metadata_for_catalog_type,
-                ),
+                value_type: result_value_type_for_column(catalog, column.id).unwrap_or_else(|| {
+                    result_value_type_for_data_type(catalog.data_type_for_column(column.id))
+                }),
                 nullable: access.inherited_nullable
                     || !column.not_null
                     || policy_filters_column(access.policy_nullable_fields, projection.column),
@@ -918,18 +914,16 @@ fn binding_wire(catalog: &Catalog, binding: &VariableBinding) -> WireMetadata {
 }
 
 fn logical_type_for_catalog_type(data_type: &CatalogType) -> &str {
-    if data_type.capabilities.wire == WireEncoding::TextCast {
-        DataType::Text.as_str()
-    } else {
-        &data_type.capabilities.name
-    }
+    &data_type.capabilities.name
 }
 
-fn result_data_type_for_column(catalog: &Catalog, column: dsql_core::catalog::ColumnId) -> String {
-    catalog.type_for_column(column).map_or_else(
-        || DataType::Unknown.as_str().to_string(),
-        |data_type| logical_type_for_catalog_type(data_type).to_string(),
-    )
+fn object_result_value_type() -> ResultValueTypeMetadata {
+    ResultValueTypeMetadata {
+        shape: ResultValueShape::Object.as_ref().to_string(),
+        name: ResultValueShape::Object.as_ref().to_string(),
+        display: None,
+        wire: wire_metadata_for_data_type(DataType::Unknown),
+    }
 }
 
 fn aggregate_result_catalog_type<'a>(
@@ -945,24 +939,53 @@ fn aggregate_result_catalog_type<'a>(
     .and_then(|column| catalog.type_for_column(column))
 }
 
-fn aggregate_result_data_type(
+fn aggregate_result_value_type(
     catalog: &Catalog,
     field: &dsql_core::plan::AggregateProjection,
-) -> String {
+) -> ResultValueTypeMetadata {
     aggregate_result_catalog_type(catalog, field).map_or_else(
-        || field.data_type.as_str().to_string(),
-        |data_type| logical_type_for_catalog_type(data_type).to_string(),
+        || result_value_type_for_data_type(field.data_type),
+        |data_type| result_value_type_for_catalog_type(catalog, data_type),
     )
 }
 
-fn aggregate_result_wire(
+fn result_value_type_for_column(
     catalog: &Catalog,
-    field: &dsql_core::plan::AggregateProjection,
-) -> WireMetadata {
-    aggregate_result_catalog_type(catalog, field).map_or_else(
-        || wire_metadata_for_data_type(field.data_type),
-        wire_metadata_for_catalog_type,
-    )
+    column: dsql_core::catalog::ColumnId,
+) -> Option<ResultValueTypeMetadata> {
+    catalog
+        .type_for_column(column)
+        .map(|data_type| result_value_type_for_catalog_type(catalog, data_type))
+}
+
+fn result_value_type_for_catalog_type(
+    catalog: &Catalog,
+    declared: &CatalogType,
+) -> ResultValueTypeMetadata {
+    match catalog.value_shape_for_type(declared.id) {
+        Some(CatalogValueShape::Scalar { leaf }) => ResultValueTypeMetadata {
+            shape: ResultValueShape::Scalar.as_ref().to_string(),
+            name: logical_type_for_catalog_type(leaf).to_string(),
+            display: Some(declared.readable_type.clone()),
+            wire: wire_metadata_for_catalog_type(declared),
+        },
+        Some(CatalogValueShape::DatabaseArray { element }) => ResultValueTypeMetadata {
+            shape: ResultValueShape::DatabaseArray.as_ref().to_string(),
+            name: logical_type_for_catalog_type(element).to_string(),
+            display: Some(declared.readable_type.clone()),
+            wire: wire_metadata_for_catalog_type(element),
+        },
+        None => result_value_type_for_data_type(DataType::Unknown),
+    }
+}
+
+fn result_value_type_for_data_type(data_type: DataType) -> ResultValueTypeMetadata {
+    ResultValueTypeMetadata {
+        shape: ResultValueShape::Scalar.as_ref().to_string(),
+        name: data_type.as_str().to_string(),
+        display: None,
+        wire: wire_metadata_for_data_type(data_type),
+    }
 }
 
 fn wire_metadata_for_catalog_type(data_type: &CatalogType) -> WireMetadata {

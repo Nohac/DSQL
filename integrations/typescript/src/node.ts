@@ -710,8 +710,8 @@ export async function runDsqlRendererFromProject(
 }
 
 /**
- * The legacy flat-manifest generator contract, kept for
- * `[generate.typescript] cmd` compatibility: strictly environment-driven
+ * The environment-driven flat-manifest generator contract used by
+ * `[generate.typescript] cmd`: strictly environment-driven
  * (`DSQL_MANIFEST` + `DSQL_PROJECT_DIR`), no groups, no callsite hashes —
  * embedded-source slices are validated for bounds only.
  */

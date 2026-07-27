@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/catalog.rs
+expression: rendered
+---
+scalar edge: provider type `public.invalid_scalar` has invalid structure: a scalar type cannot reference a related type
+missing domain edge: provider type `public.invalid_domain` has invalid structure: a domain type requires a related type
+missing base: provider type `public.missing_base` references missing base type `public.absent`
+cycle: provider type structure contains a cycle through `public.cycle_left`

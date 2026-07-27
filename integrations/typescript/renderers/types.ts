@@ -6,7 +6,7 @@ import {
 } from "@dsql/typescript/node";
 import { dirname, join } from "node:path";
 
-// The minimal flat-manifest generator (legacy `[generate.typescript]`
+// The minimal flat-manifest generator (`[generate.typescript]`
 // cmd channel): environment-only, no groups, no registry augmentation.
 const manifestPath = process.env.DSQL_MANIFEST;
 

@@ -132,9 +132,11 @@ object name, source must use an explicit schema selector such as
 
 ## Column Metadata
 
-Column metadata describes scalar values only. Constraints belong to the
-table-level metadata because primary keys, unique constraints, indexes, and
-foreign keys can all span multiple columns.
+Column metadata identifies the provider type of each value. Scalars, domains,
+and database arrays share this column shape; their structural relationships
+live in the type map. Constraints belong to the table-level metadata because
+primary keys, unique constraints, indexes, and foreign keys can all span
+multiple columns.
 
 - `name`: database column name.
 - `description`: optional provider-neutral documentation for the column. For
@@ -144,8 +146,8 @@ foreign keys can all span multiple columns.
 - `formatted_type`: exact provider display spelling, including column
   modifiers such as `character varying(20)` or `numeric(10,2)`.
 - `type_modifier`: raw provider modifier used to derive `formatted_type`.
-- `database_type`: internal provider type name used for logical fallback
-  mapping.
+- `database_type`: internal provider type name used for compiler logical
+  classification mapping.
 - `data_type`: dsql logical type name after type mapping.
 - `not_null`: whether the column rejects null values.
 
@@ -158,6 +160,12 @@ descriptions follow the separate [Enumerated Types](enums.md) contract.
 
 Each type row is keyed by its schema-qualified `schema` and `internal_type`.
 `readable_type` is the provider-formatted spelling without a column modifier.
+The required `structure` record classifies the provider type as `scalar`,
+`domain`, or `array`. Domain and array rows also carry a required
+schema-qualified `related_type`, naming the domain base or array element. A
+missing dependency, an impossible scalar relationship, or a cycle rejects the
+catalog; the compiler does not guess or upgrade an incomplete type map.
+
 PostgreSQL introspection records raw `kind` (`pg_type.typtype`) and `category`
 (`pg_type.typcategory`) codes, whether the type has an applicable default btree
 operator class, and the sorted native operator names reachable through domain
@@ -168,8 +176,13 @@ first produces a common candidate type.
 
 The compiler derives query-facing comparison and ordering capabilities from
 these provider facts. Metadata without the optional `provider` record remains
-supported for legacy fixtures and uses the compiler-owned builtin capability
+supported for synthetic compiler fixtures and uses the compiler-owned capability
 table instead.
+
+Domains inherit logical scalar semantics from their base while retaining their
+declared provider identity for display and any required input cast. Database
+arrays retain an element edge and are result values distinct from DSQL input
+collections. Their outer catalog type never masquerades as a scalar input.
 
 ## Constraints
 
