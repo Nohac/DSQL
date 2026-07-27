@@ -1482,6 +1482,7 @@ impl Planner<'_> {
             .into_iter()
             .filter_map(|(key, column_id)| {
                 let column = self.catalog.column_by_id(column_id)?;
+                let data_type = self.catalog.data_type_for_column(column_id);
                 let access = field_filters
                     .iter()
                     .find(|filter| filter.target == PolicyFieldTarget::Column(column_id))
@@ -1491,10 +1492,10 @@ impl Planner<'_> {
                 Some(DynamicInputFieldPlan {
                     key,
                     column: column_id,
-                    data_type: column.data_type,
+                    data_type,
                     nullable: !column.not_null || access != PolicyAccess::Unconditional,
                     access,
-                    operators: dynamic_predicate_operators(column.data_type),
+                    operators: dynamic_predicate_operators(data_type),
                     directions: Vec::new(),
                 })
             })

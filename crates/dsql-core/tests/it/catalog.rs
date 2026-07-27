@@ -3,10 +3,50 @@
 use std::collections::BTreeSet;
 
 use dsql_core::catalog::{
-    Catalog, DatabaseMetadata, IndexKeyCapability, SchemaMetadata, TableRef, TableResolution,
-    TypeMetadata, TypeMetadataFile, table_metadata_from_yaml, table_metadata_to_yaml,
+    Catalog, ColumnMetadata, DataType, DatabaseMetadata, IndexKeyCapability, ObjectType,
+    SchemaMetadata, TableMetadata, TableRef, TableResolution, TypeKey, TypeMetadata,
+    TypeMetadataFile, table_metadata_from_yaml, table_metadata_to_yaml,
     type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
+
+fn column(name: &str, provider_type: TypeKey, data_type: DataType) -> ColumnMetadata {
+    ColumnMetadata {
+        name: name.to_string(),
+        description: None,
+        database_type: provider_type.name.clone(),
+        provider_type,
+        data_type,
+        not_null: true,
+    }
+}
+
+fn metadata(columns: Vec<ColumnMetadata>, types: Vec<TypeMetadata>) -> DatabaseMetadata {
+    DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![TableMetadata {
+                schema: "public".to_string(),
+                name: "records".to_string(),
+                object_type: ObjectType::Table,
+                description: None,
+                columns,
+                constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        }],
+        types,
+    }
+}
+
+fn provider_type(schema: &str, name: &str) -> TypeMetadata {
+    TypeMetadata {
+        internal_type: name.to_string(),
+        readable_type: name.to_string(),
+        schema: schema.to_string(),
+        operations: BTreeSet::new(),
+    }
+}
 
 fn render_resolution(catalog: &Catalog, reference: &str) -> String {
     match catalog.resolve_table_ref_for(TableRef::parse(reference)) {
@@ -213,6 +253,95 @@ fn duplicate_provider_type_identities_are_rejected() {
     .expect_err("duplicate qualified provider type fails");
 
     insta::assert_snapshot!(error);
+}
+
+#[test]
+fn catalog_columns_share_only_qualified_type_identities() {
+    let alpha_text = TypeKey::new("alpha", "text");
+    let beta_text = TypeKey::new("beta", "text");
+    let catalog = metadata(
+        vec![
+            column("first", alpha_text.clone(), DataType::Text),
+            column("second", alpha_text, DataType::Text),
+            column("third", beta_text, DataType::Text),
+        ],
+        vec![
+            provider_type("alpha", "text"),
+            provider_type("beta", "text"),
+        ],
+    )
+    .to_catalog()
+    .expect("catalog builds");
+
+    assert_eq!(catalog.columns[0].type_id, catalog.columns[1].type_id);
+    assert_ne!(catalog.columns[0].type_id, catalog.columns[2].type_id);
+    assert_eq!(
+        catalog.data_type_for_column(catalog.columns[0].id),
+        DataType::Text
+    );
+}
+
+#[test]
+fn catalog_type_arena_rejects_invalid_metadata() {
+    let missing = metadata(
+        vec![column(
+            "value",
+            TypeKey::new("pg_catalog", "uuid"),
+            DataType::Uuid,
+        )],
+        vec![provider_type("pg_catalog", "text")],
+    )
+    .to_catalog()
+    .expect_err("strict metadata rejects a missing type");
+    let mismatch = metadata(
+        vec![column(
+            "value",
+            TypeKey::new("pg_catalog", "text"),
+            DataType::Uuid,
+        )],
+        vec![provider_type("pg_catalog", "text")],
+    )
+    .to_catalog()
+    .expect_err("strict metadata rejects a logical mismatch");
+    let fixture_conflict = metadata(
+        vec![
+            column("first", TypeKey::new("fixture", "value"), DataType::Text),
+            column("second", TypeKey::new("fixture", "value"), DataType::Uuid),
+        ],
+        Vec::new(),
+    )
+    .to_catalog()
+    .expect_err("fixture synthesis rejects conflicting logical types");
+
+    insta::assert_snapshot!(format!("{missing}\n{mismatch}\n{fixture_conflict}"));
+}
+
+#[test]
+fn catalog_type_declaration_order_and_unused_rows_are_fingerprint_neutral() {
+    let columns = vec![
+        column("label", TypeKey::new("alpha", "text"), DataType::Text),
+        column("identifier", TypeKey::new("beta", "uuid"), DataType::Uuid),
+    ];
+    let first = provider_type("alpha", "text");
+    let second = provider_type("beta", "uuid");
+    let baseline = metadata(columns.clone(), vec![first.clone(), second.clone()])
+        .to_catalog()
+        .expect("baseline catalog builds")
+        .semantic_fingerprint();
+    let reordered = metadata(columns.clone(), vec![second.clone(), first.clone()])
+        .to_catalog()
+        .expect("reordered catalog builds")
+        .semantic_fingerprint();
+    let with_unused = metadata(
+        columns,
+        vec![first, second, provider_type("unused", "bool")],
+    )
+    .to_catalog()
+    .expect("catalog with unused type builds")
+    .semantic_fingerprint();
+
+    assert_eq!(baseline, reordered);
+    assert_eq!(baseline, with_unused);
 }
 
 #[test]

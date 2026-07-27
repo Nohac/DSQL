@@ -1,6 +1,6 @@
 # Introduce a catalog type arena addressed by TypeId
 
-**ID:** 1274316f | **Status:** Open | **Created:** 2026-07-26T11:48:49+02:00
+**ID:** 1274316f | **Status:** Done | **Created:** 2026-07-26T11:48:49+02:00
 
 Column types are held twice and neither holding is authoritative. `Column.database_type`
 is a bare PostgreSQL type name preserved for display, and `Column.data_type` is a
@@ -28,3 +28,9 @@ Acceptance criteria:
   `database_type` string and `data_type` enum.
 - Schema YAML, generated operation metadata, and all existing snapshots are
   byte-identical.
+
+Resolved by introducing a dense `CatalogType` arena, resolving every effective
+column through `TypeId`, and validating strict introspection metadata against the
+arena at catalog construction. Metadata-only `ColumnMetadata.database_type`
+remains serialized for provider display until the formatted-type work tracked by
+issue 4b1e4216; it is no longer duplicated into the effective catalog.

@@ -706,7 +706,7 @@ impl CheckCtx<'_, '_> {
             };
             match self.catalog.check_field_ref(table, reference) {
                 FieldCheckResult::Column(column) => {
-                    let data_type = column.data_type;
+                    let data_type = self.catalog.data_type_for_column(column.id);
                     if field.has_selection_set() {
                         if field.flattened {
                             self.error(
@@ -1582,7 +1582,7 @@ async fn complete_selections(
                 push(CompletionItem {
                     label: column.name.clone(),
                     kind: CompletionKind::Column,
-                    detail: Some(column.data_type.as_str().to_string()),
+                    detail: Some(catalog.data_type_for_column(column.id).as_str().to_string()),
                     documentation: column.description.clone(),
                     insert_text: None,
                 });

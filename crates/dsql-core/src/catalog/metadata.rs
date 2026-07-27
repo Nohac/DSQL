@@ -1,7 +1,7 @@
 use super::{
-    Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyDirection, ForeignKeyId, Index,
-    IndexKey, IndexKeyCapability, IndexOrder, Relation, RelationCardinality, RelationId,
-    RelationSupports, Schema, SchemaId, Table, TableId, TypeKey,
+    Catalog, CatalogType, Column, ColumnId, DataType, ForeignKey, ForeignKeyDirection,
+    ForeignKeyId, Index, IndexKey, IndexKeyCapability, IndexOrder, Relation, RelationCardinality,
+    RelationId, RelationSupports, Schema, SchemaId, Table, TableId, TypeId, TypeKey,
 };
 use facet::Facet;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -154,6 +154,19 @@ pub enum CatalogBuildError {
     },
     #[error("duplicate provider type `{schema}.{name}`")]
     DuplicateType { schema: String, name: String },
+    #[error(transparent)]
+    MissingType(Box<CatalogMissingType>),
+    #[error(transparent)]
+    TypeMismatch(Box<CatalogTypeMismatch>),
+    #[error(
+        "provider type `{schema}.{name}` has conflicting fixture logical types `{first}` and `{second}`"
+    )]
+    ConflictingFixtureType {
+        schema: String,
+        name: String,
+        first: String,
+        second: String,
+    },
     #[error("column `{schema}.{table}.{column}` was not found")]
     MissingColumn {
         schema: String,
@@ -182,6 +195,40 @@ pub enum CatalogBuildError {
         table: String,
         column: String,
     },
+}
+
+/// Display-only catalog-construction payload owned by `dsql-core`.
+///
+/// Callers match [`CatalogBuildError`] rather than destructuring these
+/// internals. The payload is boxed to keep the public error enum small.
+#[derive(Debug, Error)]
+#[error(
+    "column `{schema}.{table}.{column}` references missing provider type `{type_schema}.{type_name}`; rerun `dsql introspect`"
+)]
+pub struct CatalogMissingType {
+    schema: String,
+    table: String,
+    column: String,
+    type_schema: String,
+    type_name: String,
+}
+
+/// Display-only catalog-construction payload owned by `dsql-core`.
+///
+/// Callers match [`CatalogBuildError`] rather than destructuring these
+/// internals. The payload is boxed to keep the public error enum small.
+#[derive(Debug, Error)]
+#[error(
+    "column `{schema}.{table}.{column}` declares logical type `{declared}` but provider type `{type_schema}.{type_name}` maps to `{resolved}`; rerun `dsql introspect`"
+)]
+pub struct CatalogTypeMismatch {
+    schema: String,
+    table: String,
+    column: String,
+    type_schema: String,
+    type_name: String,
+    declared: String,
+    resolved: String,
 }
 
 pub fn metadata_from_yaml(input: &str) -> Result<DatabaseMetadata, facet_yaml::DeserializeError> {
@@ -242,6 +289,7 @@ impl Catalog {
     pub fn try_from_metadata(metadata: &DatabaseMetadata) -> Result<Self, CatalogBuildError> {
         let mut schemas = Vec::new();
         let mut tables = Vec::new();
+        let (types, type_ids) = build_catalog_types(metadata)?;
         let mut columns = Vec::new();
         let mut foreign_keys = Vec::new();
         let mut schema_ids = HashMap::<String, SchemaId>::new();
@@ -251,18 +299,6 @@ impl Catalog {
         let mut table_primary_keys = Vec::<Vec<ColumnId>>::new();
         let mut table_unique_constraints = Vec::<Vec<Vec<ColumnId>>>::new();
         let mut table_indexes = Vec::<Vec<Index>>::new();
-        let mut type_keys = HashSet::new();
-
-        for data_type in &metadata.types {
-            let key = data_type.key();
-            if !type_keys.insert(key.clone()) {
-                return Err(CatalogBuildError::DuplicateType {
-                    schema: key.schema,
-                    name: key.name,
-                });
-            }
-        }
-
         for schema_metadata in &metadata.schemas {
             if schema_ids.contains_key(&schema_metadata.name) {
                 return Err(CatalogBuildError::DuplicateSchema {
@@ -335,9 +371,7 @@ impl Catalog {
                         &table_metadata.name,
                         &column_metadata.name,
                         column_metadata.description.clone(),
-                        column_metadata.provider_type.clone(),
-                        &column_metadata.database_type,
-                        column_metadata.data_type,
+                        type_ids[&column_metadata.provider_type],
                         column_metadata.not_null,
                         false,
                     ));
@@ -571,12 +605,102 @@ impl Catalog {
             default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
             schemas,
             tables,
+            types,
             columns,
             foreign_keys,
             relations,
             uniqueness_supports: Vec::new(),
         })
     }
+}
+
+fn build_catalog_types(
+    metadata: &DatabaseMetadata,
+) -> Result<(Vec<CatalogType>, HashMap<TypeKey, TypeId>), CatalogBuildError> {
+    let mut types = Vec::<CatalogType>::new();
+    let mut type_ids = HashMap::<TypeKey, TypeId>::new();
+
+    if metadata.types.is_empty() {
+        for schema in &metadata.schemas {
+            for table in &schema.tables {
+                for column in &table.columns {
+                    if let Some(type_id) = type_ids.get(&column.provider_type) {
+                        let existing = types[type_id.0].data_type;
+                        if existing != column.data_type {
+                            return Err(CatalogBuildError::ConflictingFixtureType {
+                                schema: column.provider_type.schema.clone(),
+                                name: column.provider_type.name.clone(),
+                                first: existing.as_str().to_string(),
+                                second: column.data_type.as_str().to_string(),
+                            });
+                        }
+                        continue;
+                    }
+                    let type_id = TypeId(types.len());
+                    type_ids.insert(column.provider_type.clone(), type_id);
+                    types.push(CatalogType {
+                        id: type_id,
+                        key: column.provider_type.clone(),
+                        data_type: column.data_type,
+                    });
+                }
+            }
+        }
+        return Ok((types, type_ids));
+    }
+
+    for metadata_type in &metadata.types {
+        let key = metadata_type.key();
+        if type_ids.contains_key(&key) {
+            return Err(CatalogBuildError::DuplicateType {
+                schema: key.schema,
+                name: key.name,
+            });
+        }
+        let type_id = TypeId(types.len());
+        let data_type = DataType::from_database_type(&metadata_type.internal_type);
+        type_ids.insert(key.clone(), type_id);
+        types.push(CatalogType {
+            id: type_id,
+            key,
+            data_type,
+        });
+    }
+
+    for schema in &metadata.schemas {
+        for table in &schema.tables {
+            let table_schema = effective_table_schema(schema, table);
+            for column in &table.columns {
+                let Some(type_id) = type_ids.get(&column.provider_type) else {
+                    return Err(CatalogBuildError::MissingType(Box::new(
+                        CatalogMissingType {
+                            schema: table_schema.to_string(),
+                            table: table.name.clone(),
+                            column: column.name.clone(),
+                            type_schema: column.provider_type.schema.clone(),
+                            type_name: column.provider_type.name.clone(),
+                        },
+                    )));
+                };
+                let resolved = types[type_id.0].data_type;
+                if resolved != column.data_type {
+                    return Err(CatalogBuildError::TypeMismatch(Box::new(
+                        CatalogTypeMismatch {
+                            schema: table_schema.to_string(),
+                            table: table.name.clone(),
+                            column: column.name.clone(),
+                            type_schema: column.provider_type.schema.clone(),
+                            type_name: column.provider_type.name.clone(),
+                            declared: column.data_type.as_str().to_string(),
+                            resolved: resolved.as_str().to_string(),
+                        },
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok((types, type_ids))
 }
 
 fn column_set_is_unique(table: &Table, columns: &[ColumnId]) -> bool {

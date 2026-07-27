@@ -1018,7 +1018,7 @@ fn resolved_path_type(
     let column = resolved?.path_at(path.span())?.terminal.column()?;
     ctx.catalog
         .column_by_id(column)
-        .map(|column| column.data_type)
+        .map(|column| ctx.catalog.data_type_for_column(column.id))
 }
 
 fn resolved_expr_type(
@@ -1174,7 +1174,13 @@ async fn complete_clause_positions(
         push(CompletionItem {
             label: column.name.clone(),
             kind: CompletionKind::Column,
-            detail: Some(column.data_type.as_str().to_string()),
+            detail: Some(
+                snapshot
+                    .catalog()
+                    .data_type_for_column(column.id)
+                    .as_str()
+                    .to_string(),
+            ),
             documentation: column.description.clone(),
             insert_text: None,
         });

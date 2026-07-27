@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use dsql_core::catalog::{
     Catalog, CatalogSupport, CatalogSupportKind, ColumnId, DatabaseMetadata, ForeignKeyDirection,
     ForeignKeyId, ObjectType, Relation, RelationCardinality, RelationId, RelationSupports, TableId,
-    TableMetadata, TypeKey, TypeMetadata, UniquenessSupport,
+    TableMetadata, UniquenessSupport,
 };
 use facet::Facet;
 use tokio::fs::{read_dir, read_to_string};
@@ -195,7 +195,6 @@ fn compose(
     overlays: &[LoadedOverlay],
     catalog: &mut Catalog,
 ) -> Result<()> {
-    let type_map = provider_type_map(&metadata.types);
     let provider_tables = provider_table_map(metadata);
     let mut owners = BTreeMap::<String, (PathBuf, String)>::new();
 
@@ -320,7 +319,7 @@ fn compose(
             let Some(table) = table_id(catalog, &patch.target) else {
                 continue;
             };
-            apply_relationships(catalog, &type_map, overlay, &item, table, patch)?;
+            apply_relationships(catalog, overlay, &item, table, patch)?;
         }
     }
     validate_effective_graph(overlays, catalog)
@@ -575,7 +574,6 @@ fn apply_relation_hides(
 
 fn apply_relationships(
     catalog: &mut Catalog,
-    type_map: &BTreeMap<TypeKey, &TypeMetadata>,
     overlay: &LoadedOverlay,
     item: &str,
     table: TableId,
@@ -651,14 +649,7 @@ fn apply_relationships(
                     "relationship mapping repeats a local or target column",
                 );
             }
-            validate_column_types(
-                catalog,
-                type_map,
-                overlay,
-                &mapping_item,
-                local,
-                target_column,
-            )?;
+            validate_column_types(catalog, overlay, &mapping_item, local, target_column)?;
             local_columns.push(local);
             target_columns.push(target_column);
         }
@@ -809,7 +800,6 @@ fn validate_effective_graph(overlays: &[LoadedOverlay], catalog: &Catalog) -> Re
 
 fn validate_column_types(
     catalog: &Catalog,
-    type_map: &BTreeMap<TypeKey, &TypeMetadata>,
     overlay: &LoadedOverlay,
     item: &str,
     local: ColumnId,
@@ -817,38 +807,18 @@ fn validate_column_types(
 ) -> Result<()> {
     let local_column = &catalog.columns[local.0];
     let target_column = &catalog.columns[target.0];
-    if !type_map.contains_key(&local_column.provider_type) {
-        return overlay_error(
-            &overlay.path,
-            item,
-            format!(
-                "provider type `{}.{}` is absent; rerun `dsql introspect`",
-                local_column.provider_type.schema, local_column.provider_type.name
-            ),
-        );
-    }
-    if !type_map.contains_key(&target_column.provider_type) {
-        return overlay_error(
-            &overlay.path,
-            item,
-            format!(
-                "provider type `{}.{}` is absent; rerun `dsql introspect`",
-                target_column.provider_type.schema, target_column.provider_type.name
-            ),
-        );
-    }
-    if local_column.data_type != target_column.data_type
-        || local_column.provider_type != target_column.provider_type
-    {
+    if local_column.type_id != target_column.type_id {
+        let local_type = &catalog.types[local_column.type_id.0];
+        let target_type = &catalog.types[target_column.type_id.0];
         return overlay_error(
             &overlay.path,
             item,
             format!(
                 "relationship columns have incompatible types {}.{} and {}.{}",
-                local_column.provider_type.schema,
-                local_column.provider_type.name,
-                target_column.provider_type.schema,
-                target_column.provider_type.name
+                local_type.key.schema,
+                local_type.key.name,
+                target_type.key.schema,
+                target_type.key.name
             ),
         );
     }
@@ -1000,14 +970,6 @@ fn provider_table_map(metadata: &DatabaseMetadata) -> BTreeMap<OverlayObjectRef,
             })
         })
         .collect()
-}
-
-fn provider_type_map(types: &[TypeMetadata]) -> BTreeMap<TypeKey, &TypeMetadata> {
-    let mut map = BTreeMap::new();
-    for data_type in types {
-        map.insert(data_type.key(), data_type);
-    }
-    map
 }
 
 fn matching_foreign_keys(

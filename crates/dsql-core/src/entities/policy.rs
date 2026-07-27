@@ -826,7 +826,7 @@ async fn complete_policy_declarations(
                     fields
                         .entry(&column.name)
                         .or_default()
-                        .insert(column.data_type.as_str());
+                        .insert(catalog.data_type_for_column(column.id).as_str());
                 }
             }
             items.extend(fields.into_iter().map(|(name, types)| CompletionItem {
@@ -842,7 +842,7 @@ async fn complete_policy_declarations(
                 .visible_tables()
                 .flat_map(|table| catalog.columns_for_table(table.id))
                 .filter(|column| column.name == *field)
-                .map(|column| column.data_type.as_str())
+                .map(|column| catalog.data_type_for_column(column.id).as_str())
                 .collect::<BTreeSet<_>>();
             items.extend(types.into_iter().map(|data_type| CompletionItem {
                 label: data_type.to_string(),
@@ -860,7 +860,9 @@ async fn complete_policy_declarations(
                         .map(|column| CompletionItem {
                             label: column.name.clone(),
                             kind: CompletionKind::Column,
-                            detail: Some(column.data_type.as_str().to_string()),
+                            detail: Some(
+                                catalog.data_type_for_column(column.id).as_str().to_string(),
+                            ),
                             documentation: column.description.clone(),
                             insert_text: None,
                         }),
@@ -1556,7 +1558,7 @@ impl PolicyCompiler<'_> {
                             scope,
                             column: column.id,
                         },
-                        data_type: column.data_type,
+                        data_type: self.catalog.data_type_for_column(column.id),
                         relation_scope: match anchor {
                             PathAnchor::Current => FilterColumnScope::Current,
                             PathAnchor::Root => FilterColumnScope::Root,
@@ -1792,9 +1794,9 @@ fn resolve_shape_target(
         .iter()
         .filter(|table| {
             resolved.iter().all(|(name, data_type)| {
-                catalog
-                    .columns_for_table(table.id)
-                    .any(|column| column.name == *name && column.data_type == *data_type)
+                catalog.columns_for_table(table.id).any(|column| {
+                    column.name == *name && catalog.data_type_for_column(column.id) == *data_type
+                })
             })
         })
         .map(|table| table.id)

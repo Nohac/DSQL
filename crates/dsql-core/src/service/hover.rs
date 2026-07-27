@@ -130,10 +130,11 @@ pub mod priority {
 /// Renders one resolved catalog column for hover consumers.
 pub(crate) fn describe_column(catalog: &Catalog, column: ColumnId) -> Option<String> {
     let column = catalog.column_by_id(column)?;
+    let data_type = catalog.data_type_for_column(column.id);
     let identity = format!(
         "column `{}`: {}{}",
         column.name,
-        column.data_type.as_str(),
+        data_type.as_str(),
         if column.not_null { " (not null)" } else { "" },
     );
     Some(with_description(identity, column.description.as_deref()))

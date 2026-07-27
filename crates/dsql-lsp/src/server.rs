@@ -333,6 +333,7 @@ impl LanguageServer for Backend {
                     default_schema: Catalog::DEFAULT_SCHEMA.to_string(),
                     schemas: Vec::new(),
                     tables: Vec::new(),
+                    types: Vec::new(),
                     columns: Vec::new(),
                     foreign_keys: Vec::new(),
                     relations: Vec::new(),

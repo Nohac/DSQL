@@ -1930,7 +1930,7 @@ fn selection_field_expressions(
                     projection.output_name.clone(),
                     public_scalar_expression(
                         masked_column_expression(catalog, context, projection.column, template)?,
-                        column.data_type,
+                        catalog.data_type_for_column(column.id),
                     ),
                 ));
             }

@@ -1,6 +1,6 @@
 use super::{
-    Catalog, Column, ColumnId, FieldCheckResult, FieldRef, Index, Relation, RelationField,
-    RelationId, Table, TableId, TableRef, TableResolution,
+    Catalog, CatalogType, Column, ColumnId, DataType, FieldCheckResult, FieldRef, Index, Relation,
+    RelationField, RelationId, Table, TableId, TableRef, TableResolution, TypeId,
 };
 
 impl Catalog {
@@ -61,6 +61,27 @@ impl Catalog {
 
     pub fn column_by_id(&self, id: ColumnId) -> Option<&Column> {
         self.columns.get(id.0)
+    }
+
+    /// Resolves one dense catalog type identity.
+    pub fn type_by_id(&self, id: TypeId) -> Option<&CatalogType> {
+        self.types.get(id.0)
+    }
+
+    /// Resolves the effective type record for one catalog column.
+    pub fn type_for_column(&self, id: ColumnId) -> Option<&CatalogType> {
+        self.column_by_id(id)
+            .and_then(|column| self.type_by_id(column.type_id))
+    }
+
+    /// Returns the logical type for a validated catalog column.
+    ///
+    /// Catalog construction guarantees both dense identities are valid. An
+    /// invalid identity is a catalog-construction bug and intentionally fails
+    /// loudly instead of changing language behavior to [`DataType::Unknown`].
+    pub fn data_type_for_column(&self, id: ColumnId) -> DataType {
+        let column = &self.columns[id.0];
+        self.types[column.type_id.0].data_type
     }
 
     pub fn relation_by_id(&self, id: RelationId) -> Option<&Relation> {
@@ -156,7 +177,7 @@ impl Catalog {
     /// Whether an independently usable text index key supports `like`.
     pub fn column_is_searchable(&self, column: ColumnId) -> bool {
         self.column_by_id(column)
-            .filter(|column| column.data_type == super::DataType::Text)
+            .filter(|column| self.data_type_for_column(column.id) == super::DataType::Text)
             .and_then(|column| self.table_by_id(column.table))
             .is_some_and(|table| {
                 table.indexes.iter().any(|index| {

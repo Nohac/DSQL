@@ -710,7 +710,7 @@ fn collect_result_item_fields(
                 name: projection.output_name.clone(),
                 parent_path: parent_path.to_string(),
                 kind: ResultFieldKind::Scalar.as_ref().to_string(),
-                data_type: column.data_type.as_str().to_string(),
+                data_type: catalog.data_type_for_column(column.id).as_str().to_string(),
                 nullable: access.inherited_nullable
                     || !column.not_null
                     || policy_filters_column(access.policy_nullable_fields, projection.column),

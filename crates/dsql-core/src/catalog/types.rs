@@ -1,6 +1,6 @@
 use super::{
     ColumnId, ColumnKey, ForeignKeyId, ObjectType, RelationId, SchemaId, SchemaKey, TableId,
-    TableKey, TypeKey,
+    TableKey, TypeId, TypeKey,
 };
 use crate::entities::expression::ComparisonOp;
 use facet::Facet;
@@ -11,6 +11,8 @@ pub struct Catalog {
     pub default_schema: String,
     pub schemas: Vec<Schema>,
     pub tables: Vec<Table>,
+    /// Dense arena of effective provider types.
+    pub types: Vec<CatalogType>,
     pub columns: Vec<Column>,
     pub foreign_keys: Vec<ForeignKey>,
     /// Directional relationships exposed by the effective catalog.
@@ -53,6 +55,17 @@ pub struct Table {
     pub relations: Vec<RelationId>,
 }
 
+/// One provider type resolved into the effective catalog.
+#[derive(Clone, Debug, PartialEq, Eq, Facet)]
+pub struct CatalogType {
+    /// Dense identity within [`Catalog::types`].
+    pub id: TypeId,
+    /// Stable schema-qualified provider identity.
+    pub key: TypeKey,
+    /// Public logical type consumed by language semantics.
+    pub data_type: DataType,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct Column {
     pub id: ColumnId,
@@ -68,10 +81,8 @@ pub struct Column {
     pub description_support: Option<CatalogSupport>,
     /// Sources that changed query-facing exposure.
     pub exposure_support: Vec<CatalogSupport>,
-    /// Schema-qualified provider identity of this column's type.
-    pub provider_type: TypeKey,
-    pub database_type: String,
-    pub data_type: DataType,
+    /// Type resolved through [`Catalog::types`].
+    pub type_id: TypeId,
     pub not_null: bool,
     pub is_unique: bool,
 }
@@ -391,9 +402,9 @@ impl Catalog {
         for column in columns {
             column.key.hash(&mut hasher);
             column.description.hash(&mut hasher);
-            column.provider_type.hash(&mut hasher);
-            column.database_type.hash(&mut hasher);
-            column.data_type.hash(&mut hasher);
+            let data_type = &self.types[column.type_id.0];
+            data_type.key.hash(&mut hasher);
+            data_type.data_type.hash(&mut hasher);
             column.not_null.hash(&mut hasher);
             column.is_unique.hash(&mut hasher);
             column.visible.hash(&mut hasher);
@@ -607,9 +618,7 @@ impl Column {
         table_name: &str,
         name: &str,
         description: Option<String>,
-        provider_type: TypeKey,
-        database_type: &str,
-        data_type: DataType,
+        type_id: TypeId,
         not_null: bool,
         is_unique: bool,
     ) -> Self {
@@ -627,9 +636,7 @@ impl Column {
             declaration: None,
             description_support: None,
             exposure_support: Vec::new(),
-            provider_type,
-            database_type: database_type.to_string(),
-            data_type,
+            type_id,
             not_null,
             is_unique,
         }

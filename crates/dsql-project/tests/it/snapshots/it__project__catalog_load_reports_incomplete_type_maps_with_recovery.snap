@@ -1,0 +1,5 @@
+---
+source: crates/dsql-project/tests/it/project.rs
+expression: error
+---
+failed to build catalog: column `public.records.identifier` references missing provider type `pg_catalog.uuid`; rerun `dsql introspect`

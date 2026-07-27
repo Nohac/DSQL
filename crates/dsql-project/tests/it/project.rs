@@ -137,6 +137,51 @@ async fn store_overlay_catalog(root: &Path) {
 }
 
 #[tokio::test]
+async fn catalog_load_reports_incomplete_type_maps_with_recovery() {
+    let scratch = scratch_project("database_url = \"x\"\n");
+    let metadata = DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![TableMetadata {
+                schema: "public".to_string(),
+                name: "records".to_string(),
+                object_type: ObjectType::Table,
+                description: None,
+                columns: vec![ColumnMetadata {
+                    name: "identifier".to_string(),
+                    description: None,
+                    provider_type: TypeKey::new("pg_catalog", "uuid"),
+                    database_type: "uuid".to_string(),
+                    data_type: DataType::Uuid,
+                    not_null: true,
+                }],
+                constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        }],
+        types: vec![TypeMetadata {
+            internal_type: "text".to_string(),
+            readable_type: "text".to_string(),
+            schema: "pg_catalog".to_string(),
+            operations: BTreeSet::new(),
+        }],
+    };
+    dsql_project::store_metadata_dir(&metadata, &scratch.path().join("dsql/schema"))
+        .await
+        .expect("incomplete catalog metadata stores");
+    let project = Project::load_from(scratch.path())
+        .await
+        .expect("project configuration loads");
+    let error = project
+        .load_catalog()
+        .await
+        .expect_err("incomplete type map rejects catalog construction");
+
+    insta::assert_snapshot!(error);
+}
+
+#[tokio::test]
 async fn catalog_overlays_compare_schema_qualified_provider_types() {
     let scratch = scratch_project("database_url = \"x\"\n");
     let column = |provider_schema: &str| ColumnMetadata {

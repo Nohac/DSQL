@@ -1757,7 +1757,9 @@ impl Inference<'_> {
     ) -> Option<(DataType, Vec<String>)> {
         let resolved = resolved_clause.path_at(path.span())?;
         let column = resolved.terminal.column()?;
-        let data_type = self.catalog.column_by_id(column)?.data_type;
+        // Guard the resolution-owned identity before the invariant-backed lookup.
+        self.catalog.column_by_id(column)?;
+        let data_type = self.catalog.data_type_for_column(column);
         let field_path = resolved.display_path()?.map(str::to_owned).collect();
         Some((data_type, field_path))
     }

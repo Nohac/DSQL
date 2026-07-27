@@ -49,6 +49,11 @@ pub struct TableId(pub usize);
 #[repr(transparent)]
 pub struct ColumnId(pub usize);
 
+/// Dense identity of one type in the effective catalog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
+#[repr(transparent)]
+pub struct TypeId(pub usize);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
 #[repr(transparent)]
 pub struct ForeignKeyId(pub usize);

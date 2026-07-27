@@ -499,7 +499,7 @@ fn resolve_group_key(
         output_span: key.alias_span.unwrap_or(segment.span),
         column: column.id,
         column_span: segment.span,
-        data_type: column.data_type,
+        data_type: catalog.data_type_for_column(column.id),
         nullable: !column.not_null,
     })
 }
@@ -735,7 +735,7 @@ fn resolve_value_operand(
         return;
     };
     resolved.operand = Some(column.id);
-    resolved.data_type = Some(column.data_type);
+    resolved.data_type = Some(catalog.data_type_for_column(column.id));
 }
 
 fn push_invalid_operand(operand: &Expr, problems: &mut Vec<AggregateProblem>) {
@@ -945,7 +945,13 @@ async fn complete_aggregate_positions(
                 .map(|column| CompletionItem {
                     label: column.name.clone(),
                     kind: CompletionKind::Column,
-                    detail: Some(column.data_type.as_str().to_string()),
+                    detail: Some(
+                        snapshot
+                            .catalog()
+                            .data_type_for_column(column.id)
+                            .as_str()
+                            .to_string(),
+                    ),
                     documentation: column.description.clone(),
                     insert_text: (context.site == CompletionSite::AggregateGroupKey
                         && context.spread_dots == 0)
