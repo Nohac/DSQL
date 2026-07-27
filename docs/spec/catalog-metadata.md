@@ -42,14 +42,23 @@ description: Tenant-scoped application memberships.
 columns:
   - name: tenant_id
     description: Tenant owning this membership.
+    provider_type: { schema: pg_catalog, name: int4 }
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
   - name: user_id
+    provider_type: { schema: pg_catalog, name: int4 }
+    formatted_type: integer
+    type_modifier: -1
     database_type: int4
     data_type: int
     not_null: true
   - name: role
+    provider_type: { schema: pg_catalog, name: text }
+    formatted_type: text
+    type_modifier: -1
     database_type: text
     data_type: text
     not_null: true
@@ -93,7 +102,11 @@ types:
   - internal_type: int4
     readable_type: integer
     schema: pg_catalog
-    operations: []
+    provider:
+      kind: b
+      category: N
+      orderable: true
+    operations: ["<", "<=", "<>", "=", ">", ">="]
 ```
 
 ## Object Metadata
@@ -126,7 +139,13 @@ foreign keys can all span multiple columns.
 - `name`: database column name.
 - `description`: optional provider-neutral documentation for the column. For
   PostgreSQL, introspection reads `COMMENT ON COLUMN`.
-- `database_type`: database-native type name.
+- `provider_type`: schema-qualified provider identity resolved from the
+  introspection snapshot's type OID.
+- `formatted_type`: exact provider display spelling, including column
+  modifiers such as `character varying(20)` or `numeric(10,2)`.
+- `type_modifier`: raw provider modifier used to derive `formatted_type`.
+- `database_type`: internal provider type name used for logical fallback
+  mapping.
 - `data_type`: dsql logical type name after type mapping.
 - `not_null`: whether the column rejects null values.
 
@@ -134,6 +153,23 @@ Descriptions are preserved in generated schema YAML and exposed by editor hover
 and completion. They are documentation only: they do not participate in catalog
 identity, resolution, type checking, or generated SQL. Enum type and variant
 descriptions follow the separate [Enumerated Types](enums.md) contract.
+
+## Type Metadata
+
+Each type row is keyed by its schema-qualified `schema` and `internal_type`.
+`readable_type` is the provider-formatted spelling without a column modifier.
+PostgreSQL introspection records raw `kind` (`pg_type.typtype`) and `category`
+(`pg_type.typcategory`) codes, whether the type has an applicable default btree
+operator class, and the sorted native operator names reachable through domain
+bases, implicit casts, and polymorphic operator families.
+Only operators whose left and right operands are the same candidate type are
+captured directly. Asymmetric operators contribute only when an implicit cast
+first produces a common candidate type.
+
+The compiler derives query-facing comparison and ordering capabilities from
+these provider facts. Metadata without the optional `provider` record remains
+supported for legacy fixtures and uses the compiler-owned builtin capability
+table instead.
 
 ## Constraints
 

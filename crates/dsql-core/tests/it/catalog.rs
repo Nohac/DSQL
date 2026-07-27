@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use dsql_core::catalog::{
     Catalog, ColumnMetadata, DataType, DatabaseMetadata, IndexKeyCapability, ObjectType,
-    SchemaMetadata, TableMetadata, TableRef, TableResolution, TypeKey, TypeMetadata,
-    TypeMetadataFile, table_metadata_from_yaml, table_metadata_to_yaml,
+    ProviderTypeFacts, SchemaMetadata, TableMetadata, TableRef, TableResolution, TypeKey,
+    TypeMetadata, TypeMetadataFile, table_metadata_from_yaml, table_metadata_to_yaml,
     type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
 use dsql_core::entities::aggregate::AggregateFunction;
@@ -16,6 +16,8 @@ fn column(name: &str, provider_type: TypeKey, data_type: DataType) -> ColumnMeta
         description: None,
         database_type: provider_type.name.clone(),
         provider_type,
+        formatted_type: None,
+        type_modifier: None,
         data_type,
         not_null: true,
     }
@@ -45,7 +47,30 @@ fn provider_type(schema: &str, name: &str) -> TypeMetadata {
         internal_type: name.to_string(),
         readable_type: name.to_string(),
         schema: schema.to_string(),
+        provider: None,
         operations: BTreeSet::new(),
+    }
+}
+
+fn provider_type_with_facts(
+    schema: &str,
+    name: &str,
+    operations: &[&str],
+    orderable: bool,
+) -> TypeMetadata {
+    TypeMetadata {
+        internal_type: name.to_string(),
+        readable_type: format!("{schema}.{name}"),
+        schema: schema.to_string(),
+        provider: Some(ProviderTypeFacts {
+            kind: "b".to_string(),
+            category: "U".to_string(),
+            orderable,
+        }),
+        operations: operations
+            .iter()
+            .map(|operation| (*operation).to_string())
+            .collect(),
     }
 }
 
@@ -173,8 +198,10 @@ columns:
   - name: caption
     provider_type:
       schema: pg_catalog
-      name: text
-    database_type: text
+      name: varchar
+    formatted_type: character varying(20)
+    type_modifier: 24
+    database_type: varchar
     data_type: text
     not_null: true
 constraints: []
@@ -298,6 +325,7 @@ fn duplicate_provider_type_identities_are_rejected() {
         internal_type: "person".to_string(),
         readable_type: "person".to_string(),
         schema: "app".to_string(),
+        provider: None,
         operations: BTreeSet::new(),
     };
     let error = DatabaseMetadata {
@@ -398,7 +426,7 @@ fn catalog_type_declaration_order_and_unused_rows_are_fingerprint_neutral() {
     assert_eq!(baseline, reordered);
     assert_eq!(baseline, with_unused);
 
-    let mut changed_capabilities = baseline_catalog;
+    let mut changed_capabilities = baseline_catalog.clone();
     changed_capabilities.types[0].capabilities.orderable = false;
     assert_ne!(baseline, changed_capabilities.semantic_fingerprint());
 
@@ -408,11 +436,105 @@ fn catalog_type_declaration_order_and_unused_rows_are_fingerprint_neutral() {
         .expect("unused provider type exists");
     unused_type.capabilities.orderable = false;
     assert_eq!(baseline, with_unused_catalog.semantic_fingerprint());
+
+    let mut changed_provider = baseline_catalog.clone();
+    changed_provider.types[0].provider = Some(ProviderTypeFacts {
+        kind: "b".to_string(),
+        category: "S".to_string(),
+        orderable: true,
+    });
+    assert_ne!(baseline, changed_provider.semantic_fingerprint());
+
+    let mut changed_readable_type = baseline_catalog.clone();
+    changed_readable_type.types[0].readable_type = "display text".to_string();
+    assert_ne!(baseline, changed_readable_type.semantic_fingerprint());
+
+    let mut changed_formatted_type = baseline_catalog.clone();
+    changed_formatted_type.columns[0].formatted_type = "character varying(20)".to_string();
+    assert_ne!(baseline, changed_formatted_type.semantic_fingerprint());
+
+    let mut changed_type_modifier = baseline_catalog;
+    changed_type_modifier.columns[0].type_modifier = Some(24);
+    assert_ne!(baseline, changed_type_modifier.semantic_fingerprint());
+
+    with_unused_catalog
+        .types
+        .last_mut()
+        .expect("unused provider type exists")
+        .provider = Some(ProviderTypeFacts {
+        kind: "b".to_string(),
+        category: "B".to_string(),
+        orderable: true,
+    });
+    assert_eq!(baseline, with_unused_catalog.semantic_fingerprint());
 }
 
 #[test]
 fn builtin_type_capabilities_are_declared_in_one_matrix() {
     insta::assert_snapshot!(render_builtin_capabilities());
+}
+
+#[test]
+fn provider_comparison_capabilities_override_compiler_fallbacks() {
+    let legacy_json = metadata(
+        vec![column(
+            "payload",
+            TypeKey::new("pg_catalog", "json"),
+            DataType::Json,
+        )],
+        vec![provider_type("pg_catalog", "json")],
+    )
+    .to_catalog()
+    .expect("legacy provider metadata builds");
+    let provider_json = metadata(
+        vec![column(
+            "payload",
+            TypeKey::new("pg_catalog", "json"),
+            DataType::Json,
+        )],
+        vec![provider_type_with_facts("pg_catalog", "json", &[], false)],
+    )
+    .to_catalog()
+    .expect("fresh provider metadata builds");
+    let provider_citext = metadata(
+        vec![column(
+            "label",
+            TypeKey::new("public", "citext"),
+            DataType::Unknown,
+        )],
+        vec![provider_type_with_facts(
+            "public",
+            "citext",
+            &["=", "<>", "~~"],
+            true,
+        )],
+    )
+    .to_catalog()
+    .expect("extension provider metadata builds");
+
+    let render = |catalog: &Catalog| {
+        let data_type = &catalog.types[0];
+        format!(
+            "{} ({:?}/{:?}) operators=[{}] orderable={}",
+            data_type.readable_type,
+            data_type.provider,
+            data_type.data_type,
+            data_type
+                .capabilities
+                .operators
+                .iter()
+                .map(|operator| operator.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            data_type.capabilities.orderable,
+        )
+    };
+    insta::assert_snapshot!(format!(
+        "legacy json: {}\nprovider json: {}\nprovider citext: {}",
+        render(&legacy_json),
+        render(&provider_json),
+        render(&provider_citext),
+    ));
 }
 
 #[test]
@@ -423,12 +545,18 @@ fn qualified_provider_type_metadata_round_trips() {
                 internal_type: "person".to_string(),
                 readable_type: "alpha.person".to_string(),
                 schema: "alpha".to_string(),
+                provider: None,
                 operations: BTreeSet::new(),
             },
             TypeMetadata {
                 internal_type: "person".to_string(),
                 readable_type: "beta.person".to_string(),
                 schema: "beta".to_string(),
+                provider: Some(ProviderTypeFacts {
+                    kind: "e".to_string(),
+                    category: "E".to_string(),
+                    orderable: true,
+                }),
                 operations: BTreeSet::from(["=".to_string()]),
             },
         ],

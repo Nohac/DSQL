@@ -1,7 +1,10 @@
 //! Live introspection against a real database, gated on `DATABASE_URL`;
 //! without it the test is skipped so the suite stays hermetic.
 
-use dsql_core::catalog::{IndexKeyCapability, IndexNullsPosition, IndexOrder, IndexOrderDirection};
+use dsql_core::catalog::{
+    IndexKeyCapability, IndexNullsPosition, IndexOrder, IndexOrderDirection, TypeKey,
+};
+use dsql_core::entities::expression::ComparisonOp;
 
 #[test]
 fn introspects_live_database() {
@@ -23,6 +26,40 @@ fn introspects_live_database() {
         !metadata.types.is_empty(),
         "type operations come back for built-in types"
     );
+
+    let catalog = metadata.to_catalog().expect("introspected catalog builds");
+    let provider_type = |key: TypeKey| {
+        catalog
+            .types
+            .iter()
+            .find(|data_type| data_type.key == key)
+            .expect("required PostgreSQL type is introspected")
+    };
+    let json = provider_type(TypeKey::new("pg_catalog", "json"));
+    assert!(
+        json.provider.is_some(),
+        "fresh introspection marks provider-owned capabilities"
+    );
+    assert!(!json.capabilities.supports(ComparisonOp::Eq));
+    assert!(!json.capabilities.orderable);
+
+    for key in [
+        TypeKey::new("pg_catalog", "int4range"),
+        TypeKey::new("pg_catalog", "_int4"),
+    ] {
+        let data_type = provider_type(key);
+        assert!(
+            data_type.capabilities.supports(ComparisonOp::Eq),
+            "{}.{} comparison operators come from its polymorphic family",
+            data_type.key.schema,
+            data_type.key.name
+        );
+        assert!(
+            data_type.capabilities.orderable,
+            "{}.{} ordering comes from its polymorphic btree family",
+            data_type.key.schema, data_type.key.name
+        );
+    }
 }
 
 #[test]

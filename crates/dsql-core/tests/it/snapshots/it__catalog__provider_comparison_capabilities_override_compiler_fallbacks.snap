@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/catalog.rs
+expression: "format!(\"legacy json: {}\\nprovider json: {}\\nprovider citext: {}\",\nrender(&legacy_json), render(&provider_json), render(&provider_citext),)"
+---
+legacy json: json (None/Json) operators=[==, !=] orderable=true
+provider json: pg_catalog.json (Some(ProviderTypeFacts { kind: "b", category: "U", orderable: false })/Json) operators=[] orderable=false
+provider citext: public.citext (Some(ProviderTypeFacts { kind: "b", category: "U", orderable: true })/Unknown) operators=[==, !=, like] orderable=true

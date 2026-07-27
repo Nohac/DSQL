@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+expression: "hover(&bowl, source.find(\"label\").expect(\"test text\")).await"
+---
+column `label`: character varying(20) (not null)

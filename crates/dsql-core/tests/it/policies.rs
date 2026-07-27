@@ -117,6 +117,8 @@ async fn structural_policy_types_accept_builtin_aliases_only() {
         name: name.to_string(),
         description: None,
         provider_type: TypeKey::new("pg_catalog", database_type),
+        formatted_type: None,
+        type_modifier: None,
         database_type: database_type.to_string(),
         data_type: DataType::from_database_type(database_type),
         not_null: true,

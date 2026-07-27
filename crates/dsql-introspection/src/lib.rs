@@ -4,16 +4,27 @@
 use dsql_core::catalog::{
     ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata,
     ForeignKeyReferenceMetadata, IndexKeyCapability, IndexKeyMetadata, IndexMetadata,
-    IndexNullsPosition, IndexOrder, IndexOrderDirection, ObjectType, SchemaMetadata,
-    TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeKey, TypeMetadata,
+    IndexNullsPosition, IndexOrder, IndexOrderDirection, ObjectType, ProviderTypeFacts,
+    SchemaMetadata, TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeKey,
+    TypeMetadata,
 };
-use sqlx::{AssertSqlSafe, FromRow, Pool, Postgres, postgres::PgPoolOptions};
+use sqlx::{AssertSqlSafe, Executor, FromRow, Pool, Postgres, postgres::PgPoolOptions};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IntrospectionError {
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
+    #[error(
+        "column `{schema}.{table}.{column}` references PostgreSQL type OID {type_oid}, \
+         but that type was absent from the same catalog snapshot"
+    )]
+    IncompleteTypeSnapshot {
+        schema: String,
+        table: String,
+        column: String,
+        type_oid: i64,
+    },
 }
 
 #[derive(Debug, FromRow)]
@@ -23,8 +34,9 @@ struct FlatColumn {
     table_description: Option<String>,
     column_name: String,
     column_description: Option<String>,
-    type_schema: String,
-    data_type: String,
+    type_oid: i64,
+    type_modifier: i32,
+    formatted_type: String,
     not_null: bool,
     object_type: String,
 }
@@ -69,10 +81,14 @@ struct PostgresIndexKey {
 
 #[derive(Debug, FromRow)]
 struct PostgresType {
+    type_oid: i64,
     internal_type: String,
     readable_type: String,
     type_schema: String,
+    type_kind: String,
+    type_category: String,
     operations: Vec<String>,
+    orderable: bool,
 }
 
 const PG_INTROSPECTED_COLUMN_PREDICATE: &str = r#"
@@ -91,8 +107,9 @@ SELECT
     obj_description(tbl.oid, 'pg_class') AS table_description,
     col.attname AS column_name,
     col_description(tbl.oid, col.attnum) AS column_description,
-    typ_ns.nspname AS type_schema,
-    typ.typname AS data_type,
+    col.atttypid::bigint AS type_oid,
+    col.atttypmod AS type_modifier,
+    pg_catalog.format_type(col.atttypid, col.atttypmod) AS formatted_type,
     col.attnotnull AS not_null,
     tbl.relkind::text AS object_type
 FROM
@@ -100,7 +117,6 @@ FROM
     JOIN pg_class tbl ON col.attrelid = tbl.oid
     JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
     JOIN pg_type typ ON col.atttypid = typ.oid
-    JOIN pg_namespace typ_ns ON typ_ns.oid = typ.typnamespace
 WHERE
     {PG_INTROSPECTED_COLUMN_PREDICATE}
 ORDER BY
@@ -237,19 +253,100 @@ ORDER BY
 fn pg_type_introspection_query() -> String {
     format!(
         r#"
+WITH RECURSIVE domain_chain(source_oid, candidate_oid) AS (
+    SELECT typ.oid, typ.oid
+    FROM pg_type typ
+
+    UNION
+
+    SELECT chain.source_oid, base.oid
+    FROM domain_chain chain
+    JOIN pg_type candidate ON candidate.oid = chain.candidate_oid
+    JOIN pg_type base ON base.oid = candidate.typbasetype
+    WHERE candidate.typtype = 'd'
+),
+effective_type AS (
+    -- A PostgreSQL domain chain has exactly one non-domain terminal.
+    SELECT DISTINCT ON (chain.source_oid)
+        chain.source_oid,
+        candidate.oid,
+        candidate.typtype,
+        candidate.typcategory
+    FROM domain_chain chain
+    JOIN pg_type candidate ON candidate.oid = chain.candidate_oid
+    WHERE candidate.typtype <> 'd'
+    ORDER BY chain.source_oid
+),
+operand_candidates(source_oid, candidate_oid) AS (
+    SELECT source_oid, candidate_oid
+    FROM domain_chain
+
+    UNION
+
+    SELECT chain.source_oid, cast_row.casttarget
+    FROM domain_chain chain
+    JOIN pg_cast cast_row ON cast_row.castsource = chain.candidate_oid
+    WHERE cast_row.castcontext = 'i'
+
+    UNION
+
+    SELECT effective.source_oid, polymorphic.oid
+    FROM effective_type effective
+    JOIN pg_type polymorphic ON polymorphic.typname = CASE
+        WHEN effective.typtype = 'e' THEN 'anyenum'
+        WHEN effective.typtype = 'r' THEN 'anyrange'
+        WHEN effective.typtype = 'm' THEN 'anymultirange'
+        WHEN effective.typcategory = 'A' THEN 'anyarray'
+    END
+    JOIN pg_namespace polymorphic_ns ON polymorphic_ns.oid = polymorphic.typnamespace
+    WHERE polymorphic_ns.nspname = 'pg_catalog'
+),
+native_operations(source_oid, operation) AS (
+    SELECT candidates.source_oid, operator.oprname::text
+    FROM operand_candidates candidates
+    JOIN pg_operator operator
+      ON operator.oprleft = candidates.candidate_oid
+      AND operator.oprright = candidates.candidate_oid
+
+    UNION
+
+    SELECT candidates.source_oid, operator.oprname::text
+    FROM operand_candidates candidates
+    JOIN pg_opclass operator_class
+      ON operator_class.opcintype = candidates.candidate_oid
+      AND operator_class.opcdefault
+    JOIN pg_amop family_operator
+      ON family_operator.amopfamily = operator_class.opcfamily
+      AND family_operator.amoplefttype = candidates.candidate_oid
+      AND family_operator.amoprighttype = candidates.candidate_oid
+    JOIN pg_operator operator ON operator.oid = family_operator.amopopr
+)
 SELECT
+    typ.oid::bigint AS type_oid,
     typ.typname AS internal_type,
-    format_type(typ.oid, NULL) AS readable_type,
+    pg_catalog.format_type(typ.oid, NULL) AS readable_type,
     type_ns.nspname AS type_schema,
+    typ.typtype::text AS type_kind,
+    typ.typcategory::text AS type_category,
     COALESCE(
-        array_agg(DISTINCT opr.oprname::text)
-            FILTER (WHERE opr.oprname IS NOT NULL),
+        array_agg(DISTINCT native.operation ORDER BY native.operation)
+            FILTER (WHERE native.operation IS NOT NULL),
         ARRAY[]::text[]
-    ) AS operations
+    ) AS operations,
+    EXISTS (
+        SELECT 1
+        FROM operand_candidates candidates
+        JOIN pg_opclass operator_class
+          ON operator_class.opcintype = candidates.candidate_oid
+          AND operator_class.opcdefault
+        JOIN pg_am access_method ON access_method.oid = operator_class.opcmethod
+        WHERE candidates.source_oid = typ.oid
+          AND access_method.amname = 'btree'
+    ) AS orderable
 FROM
     pg_type typ
     JOIN pg_namespace type_ns ON type_ns.oid = typ.typnamespace
-    LEFT JOIN pg_operator opr ON opr.oprleft = typ.oid
+    LEFT JOIN native_operations native ON native.source_oid = typ.oid
     LEFT JOIN pg_class type_rel ON type_rel.oid = typ.typrelid
     LEFT JOIN pg_type element_type ON element_type.oid = typ.typelem
     LEFT JOIN pg_class element_rel ON element_rel.oid = element_type.typrelid
@@ -274,7 +371,7 @@ WHERE
         )
     )
 GROUP BY
-    typ.oid, typ.typname, type_ns.nspname
+    typ.oid, typ.typname, typ.typtype, typ.typcategory, type_ns.nspname
 ORDER BY
     type_ns.nspname, typ.typname;
 "#
@@ -294,31 +391,40 @@ pub async fn introspect_postgres(
 pub async fn introspect_postgres_pool(
     pool: &Pool<Postgres>,
 ) -> Result<DatabaseMetadata, IntrospectionError> {
+    let mut transaction = pool.begin().await?;
+    transaction
+        .execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .await?;
+    transaction
+        .execute("SET LOCAL search_path = pg_catalog")
+        .await?;
     let column_query = pg_introspection_query();
     let schema_rows = sqlx::query_as::<_, FlatColumn>(AssertSqlSafe(column_query))
-        .fetch_all(pool)
+        .fetch_all(&mut *transaction)
         .await?;
     let constraint_rows = sqlx::query_as::<_, PostgresConstraint>(PG_CONSTRAINT_QUERY)
-        .fetch_all(pool)
+        .fetch_all(&mut *transaction)
         .await?;
     let foreign_key_rows = sqlx::query_as::<_, PostgresForeignKey>(PG_FOREIGN_KEY_QUERY)
-        .fetch_all(pool)
+        .fetch_all(&mut *transaction)
         .await?;
     let index_rows = sqlx::query_as::<_, PostgresIndexKey>(PG_INDEX_QUERY)
-        .fetch_all(pool)
+        .fetch_all(&mut *transaction)
         .await?;
     let type_query = pg_type_introspection_query();
     let type_rows = sqlx::query_as::<_, PostgresType>(AssertSqlSafe(type_query))
-        .fetch_all(pool)
+        .fetch_all(&mut *transaction)
         .await?;
 
-    Ok(metadata_from_rows(
+    let metadata = metadata_from_rows(
         schema_rows,
         constraint_rows,
         foreign_key_rows,
         index_rows,
         type_rows,
-    ))
+    )?;
+    transaction.commit().await?;
+    Ok(metadata)
 }
 
 fn metadata_from_rows(
@@ -327,19 +433,26 @@ fn metadata_from_rows(
     foreign_key_rows: Vec<PostgresForeignKey>,
     index_rows: Vec<PostgresIndexKey>,
     type_rows: Vec<PostgresType>,
-) -> DatabaseMetadata {
+) -> Result<DatabaseMetadata, IntrospectionError> {
     let mut type_map = BTreeMap::<TypeKey, TypeMetadata>::new();
+    let mut type_keys_by_oid = HashMap::<i64, TypeKey>::new();
     for row in type_rows {
         let key = TypeKey {
             schema: row.type_schema,
             name: row.internal_type,
         };
+        type_keys_by_oid.insert(row.type_oid, key.clone());
         type_map
             .entry(key.clone())
             .or_insert_with(|| TypeMetadata {
                 internal_type: key.name,
                 readable_type: row.readable_type,
                 schema: key.schema,
+                provider: Some(ProviderTypeFacts {
+                    kind: row.type_kind,
+                    category: row.type_category,
+                    orderable: row.orderable,
+                }),
                 operations: BTreeSet::new(),
             })
             .operations
@@ -348,6 +461,15 @@ fn metadata_from_rows(
 
     let mut schema_map = HashMap::<String, HashMap<String, TableMetadata>>::new();
     for row in schema_rows {
+        let provider_type = type_keys_by_oid
+            .get(&row.type_oid)
+            .cloned()
+            .ok_or_else(|| IntrospectionError::IncompleteTypeSnapshot {
+                schema: row.schema_name.clone(),
+                table: row.table_name.clone(),
+                column: row.column_name.clone(),
+                type_oid: row.type_oid,
+            })?;
         let schema = schema_map.entry(row.schema_name.clone()).or_default();
         let table = schema
             .entry(row.table_name.clone())
@@ -364,12 +486,11 @@ fn metadata_from_rows(
         table.columns.push(ColumnMetadata {
             name: row.column_name,
             description: row.column_description,
-            provider_type: TypeKey {
-                schema: row.type_schema,
-                name: row.data_type.clone(),
-            },
-            database_type: row.data_type.clone(),
-            data_type: DataType::from_database_type(&row.data_type),
+            database_type: provider_type.name.clone(),
+            data_type: DataType::from_database_type(&provider_type.name),
+            provider_type,
+            formatted_type: Some(row.formatted_type),
+            type_modifier: Some(row.type_modifier),
             not_null: row.not_null,
         });
     }
@@ -494,7 +615,7 @@ fn metadata_from_rows(
         types: type_map.into_values().collect(),
     };
     metadata.canonicalize();
-    metadata
+    Ok(metadata)
 }
 
 fn table_mut<'a>(
@@ -524,8 +645,9 @@ mod tests {
                     table_description: Some("Localized title records.".into()),
                     column_name: "id".into(),
                     column_description: Some("Stable title identifier.".into()),
-                    type_schema: "pg_catalog".into(),
-                    data_type: "int4".into(),
+                    type_oid: 23,
+                    type_modifier: -1,
+                    formatted_type: "integer".into(),
                     not_null: true,
                     object_type: "r".into(),
                 },
@@ -535,8 +657,9 @@ mod tests {
                     table_description: Some("Localized title records.".into()),
                     column_name: "kind_id".into(),
                     column_description: None,
-                    type_schema: "pg_catalog".into(),
-                    data_type: "int4".into(),
+                    type_oid: 23,
+                    type_modifier: -1,
+                    formatted_type: "integer".into(),
                     not_null: false,
                     object_type: "r".into(),
                 },
@@ -546,8 +669,9 @@ mod tests {
                     table_description: None,
                     column_name: "id".into(),
                     column_description: None,
-                    type_schema: "pg_catalog".into(),
-                    data_type: "int4".into(),
+                    type_oid: 23,
+                    type_modifier: -1,
+                    formatted_type: "integer".into(),
                     not_null: true,
                     object_type: "r".into(),
                 },
@@ -604,25 +728,75 @@ mod tests {
             ],
             vec![
                 PostgresType {
+                    type_oid: 23,
                     internal_type: "int4".into(),
                     readable_type: "integer".into(),
                     type_schema: "pg_catalog".into(),
+                    type_kind: "b".into(),
+                    type_category: "N".into(),
                     operations: vec!["=".into(), "<".into()],
+                    orderable: true,
                 },
                 PostgresType {
+                    type_oid: 90_001,
                     internal_type: "person".into(),
                     readable_type: "alpha.person".into(),
                     type_schema: "alpha".into(),
-                    operations: Vec::new(),
+                    type_kind: "e".into(),
+                    type_category: "E".into(),
+                    operations: vec![
+                        "<".into(),
+                        "<=".into(),
+                        "<>".into(),
+                        "=".into(),
+                        ">".into(),
+                        ">=".into(),
+                    ],
+                    orderable: true,
                 },
                 PostgresType {
+                    type_oid: 90_002,
                     internal_type: "person".into(),
                     readable_type: "beta.person".into(),
                     type_schema: "beta".into(),
+                    type_kind: "e".into(),
+                    type_category: "E".into(),
                     operations: vec!["=".into()],
+                    orderable: true,
+                },
+                PostgresType {
+                    type_oid: 1_007,
+                    internal_type: "_int4".into(),
+                    readable_type: "integer[]".into(),
+                    type_schema: "pg_catalog".into(),
+                    type_kind: "b".into(),
+                    type_category: "A".into(),
+                    operations: vec!["<>".into(), "=".into()],
+                    orderable: true,
+                },
+                PostgresType {
+                    type_oid: 3_904,
+                    internal_type: "int4range".into(),
+                    readable_type: "int4range".into(),
+                    type_schema: "pg_catalog".into(),
+                    type_kind: "r".into(),
+                    type_category: "R".into(),
+                    operations: vec!["<".into(), "<>".into(), "=".into(), ">".into()],
+                    orderable: true,
+                },
+                PostgresType {
+                    type_oid: 4_451,
+                    internal_type: "int4multirange".into(),
+                    readable_type: "int4multirange".into(),
+                    type_schema: "pg_catalog".into(),
+                    type_kind: "m".into(),
+                    type_category: "R".into(),
+                    operations: vec!["<".into(), "<>".into(), "=".into(), ">".into()],
+                    orderable: true,
                 },
             ],
-        );
+        )
+        .expect("one catalog snapshot is complete");
 
         assert_eq!(metadata.schemas.len(), 1);
         let schema = &metadata.schemas[0];
@@ -648,6 +822,8 @@ mod tests {
             title.columns[0].description.as_deref(),
             Some("Stable title identifier.")
         );
+        assert_eq!(title.columns[0].formatted_type.as_deref(), Some("integer"));
+        assert_eq!(title.columns[0].type_modifier, Some(-1));
         assert_eq!(title.constraints.len(), 1);
         assert_eq!(title.foreign_keys.len(), 1);
         assert_eq!(title.foreign_keys[0].references.table, "kind_type");
@@ -680,20 +856,74 @@ mod tests {
             [
                 TypeKey::new("alpha", "person"),
                 TypeKey::new("beta", "person"),
+                TypeKey::new("pg_catalog", "_int4"),
                 TypeKey::new("pg_catalog", "int4"),
+                TypeKey::new("pg_catalog", "int4multirange"),
+                TypeKey::new("pg_catalog", "int4range"),
             ],
             "same-named types remain distinct and sort by qualified identity"
         );
-        assert!(
-            metadata.types[0].operations.is_empty(),
-            "a type without left-operand operators remains in the metadata"
+        assert_eq!(
+            metadata.types[0].operations,
+            BTreeSet::from([
+                "<".to_string(),
+                "<=".to_string(),
+                "<>".to_string(),
+                "=".to_string(),
+                ">".to_string(),
+                ">=".to_string(),
+            ]),
+            "enum comparison facts survive polymorphic-family derivation"
         );
-        let operations: Vec<&str> = metadata.types[2]
+        assert_eq!(
+            metadata.types[0].provider,
+            Some(ProviderTypeFacts {
+                kind: "e".to_string(),
+                category: "E".to_string(),
+                orderable: true,
+            })
+        );
+        assert_eq!(
+            metadata.types[3].provider,
+            Some(ProviderTypeFacts {
+                kind: "b".to_string(),
+                category: "N".to_string(),
+                orderable: true,
+            })
+        );
+        let operations: Vec<&str> = metadata.types[3]
             .operations
             .iter()
             .map(String::as_str)
             .collect();
         assert_eq!(operations, ["<", "="]);
+        assert_eq!(
+            metadata.types[2].provider,
+            Some(ProviderTypeFacts {
+                kind: "b".to_string(),
+                category: "A".to_string(),
+                orderable: true,
+            }),
+            "array capabilities survive the polymorphic anyarray family"
+        );
+        assert_eq!(
+            metadata.types[4].provider,
+            Some(ProviderTypeFacts {
+                kind: "m".to_string(),
+                category: "R".to_string(),
+                orderable: true,
+            }),
+            "multirange capabilities survive the polymorphic family"
+        );
+        assert_eq!(
+            metadata.types[5].provider,
+            Some(ProviderTypeFacts {
+                kind: "r".to_string(),
+                category: "R".to_string(),
+                orderable: true,
+            }),
+            "range capabilities survive the polymorphic family"
+        );
         let catalog = metadata.to_catalog().expect("metadata builds a catalog");
         let kind_type = catalog
             .table("public", "kind_type")
@@ -724,7 +954,37 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-        );
+        )
+        .expect("an empty catalog snapshot is complete");
         assert!(metadata.schemas.is_empty());
+    }
+
+    #[test]
+    fn unresolved_column_type_oids_fail_the_snapshot() {
+        let error = metadata_from_rows(
+            vec![FlatColumn {
+                schema_name: "public".into(),
+                table_name: "records".into(),
+                table_description: None,
+                column_name: "value".into(),
+                column_description: None,
+                type_oid: 90_001,
+                type_modifier: -1,
+                formatted_type: "public.value".into(),
+                not_null: true,
+                object_type: "r".into(),
+            }],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect_err("a column type must exist in the same snapshot");
+
+        assert_eq!(
+            error.to_string(),
+            "column `public.records.value` references PostgreSQL type OID 90001, \
+             but that type was absent from the same catalog snapshot"
+        );
     }
 }

@@ -1,6 +1,6 @@
 # Introspect native PostgreSQL type capabilities
 
-**ID:** 4b1e4216 | **Status:** Open | **Created:** 2026-07-26T11:48:49+02:00
+**ID:** 4b1e4216 | **Status:** Done | **Created:** 2026-07-26T11:48:49+02:00
 
 Type capabilities are asserted by a hardcoded table even though PostgreSQL can
 state them. `type_map.yaml` already stores an `operations` set per type, and
@@ -40,3 +40,20 @@ Acceptance criteria:
   a compiler change.
 - Introspection tests cover a type whose operator set differs from the hardcoded
   assumption.
+
+## Resolution
+
+PostgreSQL introspection now reads columns and type capabilities in one
+repeatable-read snapshot. Transaction-local OIDs join each column to its
+schema-qualified [`TypeKey`]; committed metadata retains the exact formatted
+type, modifier, raw type kind/category, native operations, and ordering support
+without persisting OIDs.
+
+Fresh provider facts replace the compiler's comparison and ordering defaults.
+The builtin matrix remains the compatibility fallback for metadata without the
+optional provider record. DSQL still owns provider-independent behavior such as
+literal categories, defaults, and aggregate result typing.
+
+Existing committed catalog fixtures deliberately retain their older
+provider-less type maps so they continue to test that fallback. Regenerating
+those snapshots from a live catalog is tracked separately.

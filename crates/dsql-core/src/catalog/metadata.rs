@@ -1,7 +1,8 @@
 use super::{
     Catalog, CatalogType, Column, ColumnId, DataType, ForeignKey, ForeignKeyDirection,
     ForeignKeyId, Index, IndexKey, IndexKeyCapability, IndexOrder, Relation, RelationCardinality,
-    RelationId, RelationSupports, Schema, SchemaId, Table, TableId, TypeId, TypeKey,
+    RelationId, RelationSupports, Schema, SchemaId, Table, TableId, TypeCapabilities, TypeId,
+    TypeKey,
 };
 use facet::Facet;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -42,6 +43,13 @@ pub struct ColumnMetadata {
     pub description: Option<String>,
     /// Schema-qualified provider identity of this column's type.
     pub provider_type: TypeKey,
+    /// Exact provider display spelling, including modifiers and qualification.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub formatted_type: Option<String>,
+    /// Raw PostgreSQL `atttypmod`, when supplied by introspection.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub type_modifier: Option<i32>,
+    /// Internal PostgreSQL `typname`, used only for logical fallback mapping.
     pub database_type: String,
     pub data_type: DataType,
     pub not_null: bool,
@@ -107,7 +115,21 @@ pub struct TypeMetadata {
     pub internal_type: String,
     pub readable_type: String,
     pub schema: String,
+    /// Raw provider facts from the same PostgreSQL catalog snapshot.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub provider: Option<ProviderTypeFacts>,
     pub operations: BTreeSet<String>,
+}
+
+/// Native PostgreSQL classification and ordering facts for one type.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct ProviderTypeFacts {
+    /// Raw one-character PostgreSQL `pg_type.typtype` code.
+    pub kind: String,
+    /// Raw one-character PostgreSQL `pg_type.typcategory` code.
+    pub category: String,
+    /// Whether an applicable default btree operator class exists.
+    pub orderable: bool,
 }
 
 impl TypeMetadata {
@@ -372,6 +394,11 @@ impl Catalog {
                         &column_metadata.name,
                         column_metadata.description.clone(),
                         type_ids[&column_metadata.provider_type],
+                        column_metadata
+                            .formatted_type
+                            .clone()
+                            .unwrap_or_else(|| column_metadata.data_type.as_str().to_string()),
+                        column_metadata.type_modifier,
                         column_metadata.not_null,
                         false,
                     ));
@@ -660,7 +687,17 @@ fn build_catalog_types(
         let type_id = TypeId(types.len());
         let data_type = DataType::from_database_type(&metadata_type.internal_type);
         type_ids.insert(key.clone(), type_id);
-        types.push(CatalogType::builtin(type_id, key, data_type));
+        let mut catalog_type = CatalogType::builtin(type_id, key, data_type);
+        catalog_type.readable_type = metadata_type.readable_type.clone();
+        catalog_type.provider = metadata_type.provider.clone();
+        if let Some(provider) = &metadata_type.provider {
+            catalog_type.capabilities = TypeCapabilities::provider(
+                data_type,
+                &metadata_type.operations,
+                provider.orderable,
+            );
+        }
+        types.push(catalog_type);
     }
 
     for schema in &metadata.schemas {

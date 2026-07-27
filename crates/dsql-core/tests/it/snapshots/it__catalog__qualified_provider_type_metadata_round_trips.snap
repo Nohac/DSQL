@@ -11,5 +11,9 @@ types:
   - internal_type: person
     readable_type: beta.person
     schema: beta
+    provider:
+      kind: e
+      category: E
+      orderable: true
     operations:
       - =

@@ -1,6 +1,6 @@
 use super::{
-    ColumnId, ColumnKey, ForeignKeyId, ObjectType, RelationId, SchemaId, SchemaKey, TableId,
-    TableKey, TypeCapabilities, TypeId, TypeKey,
+    ColumnId, ColumnKey, ForeignKeyId, ObjectType, ProviderTypeFacts, RelationId, SchemaId,
+    SchemaKey, TableId, TableKey, TypeCapabilities, TypeId, TypeKey,
 };
 use facet::Facet;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -63,6 +63,10 @@ pub struct CatalogType {
     pub key: TypeKey,
     /// Public logical type consumed by language semantics.
     pub data_type: DataType,
+    /// Provider-formatted spelling for this type without column modifiers.
+    pub readable_type: String,
+    /// Native classification facts, absent for compiler-fallback fixtures.
+    pub provider: Option<ProviderTypeFacts>,
     /// Query-facing behavior supplied by the compiler or provider.
     pub capabilities: TypeCapabilities,
 }
@@ -84,6 +88,11 @@ pub struct Column {
     pub exposure_support: Vec<CatalogSupport>,
     /// Type resolved through [`Catalog::types`].
     pub type_id: TypeId,
+    /// Provider display including modifiers and qualification; falls back to
+    /// the logical type name when metadata carries no provider display.
+    pub formatted_type: String,
+    /// Raw PostgreSQL type modifier, when supplied by introspection.
+    pub type_modifier: Option<i32>,
     pub not_null: bool,
     pub is_unique: bool,
 }
@@ -412,6 +421,8 @@ impl Catalog {
             column.description.hash(&mut hasher);
             let data_type = &self.types[column.type_id.0];
             data_type.key.hash(&mut hasher);
+            column.formatted_type.hash(&mut hasher);
+            column.type_modifier.hash(&mut hasher);
             column.not_null.hash(&mut hasher);
             column.is_unique.hash(&mut hasher);
             column.visible.hash(&mut hasher);
@@ -423,6 +434,8 @@ impl Catalog {
             let data_type = &self.types[type_id.0];
             data_type.key.hash(&mut hasher);
             data_type.data_type.hash(&mut hasher);
+            data_type.readable_type.hash(&mut hasher);
+            data_type.provider.hash(&mut hasher);
             data_type.capabilities.hash(&mut hasher);
         }
         let mut relations = self.relations.iter().collect::<Vec<_>>();
@@ -632,6 +645,8 @@ impl Column {
         name: &str,
         description: Option<String>,
         type_id: TypeId,
+        formatted_type: String,
+        type_modifier: Option<i32>,
         not_null: bool,
         is_unique: bool,
     ) -> Self {
@@ -650,6 +665,8 @@ impl Column {
             description_support: None,
             exposure_support: Vec::new(),
             type_id,
+            formatted_type,
+            type_modifier,
             not_null,
             is_unique,
         }
@@ -659,10 +676,13 @@ impl Column {
 impl CatalogType {
     /// Constructs a provider type using the compiler-owned fallback table.
     pub fn builtin(id: TypeId, key: TypeKey, data_type: DataType) -> Self {
+        let readable_type = key.name.clone();
         Self {
             id,
             key,
             data_type,
+            readable_type,
+            provider: None,
             capabilities: TypeCapabilities::builtin(data_type),
         }
     }

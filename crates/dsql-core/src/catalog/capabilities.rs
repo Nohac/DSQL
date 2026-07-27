@@ -6,6 +6,7 @@
 //! accept both without widening [`DataType::from_database_type`].
 
 use facet::Facet;
+use std::collections::BTreeSet;
 
 use super::{DataType, LiteralKind};
 use crate::entities::aggregate::AggregateFunction;
@@ -110,6 +111,30 @@ impl TypeCapabilities {
 
     pub fn supports(&self, operator: ComparisonOp) -> bool {
         self.operators.contains(&operator)
+    }
+
+    /// Builds effective comparison and ordering behavior from provider facts.
+    pub(crate) fn provider(
+        data_type: DataType,
+        operations: &BTreeSet<String>,
+        orderable: bool,
+    ) -> Self {
+        const PROVIDER_OPERATORS: [(&str, ComparisonOp); 7] = [
+            ("=", ComparisonOp::Eq),
+            ("<>", ComparisonOp::Ne),
+            (">", ComparisonOp::Gt),
+            (">=", ComparisonOp::Ge),
+            ("<", ComparisonOp::Lt),
+            ("<=", ComparisonOp::Le),
+            ("~~", ComparisonOp::Like),
+        ];
+        let mut capabilities = Self::builtin(data_type);
+        capabilities.operators = PROVIDER_OPERATORS
+            .into_iter()
+            .filter_map(|(written, operator)| operations.contains(written).then_some(operator))
+            .collect();
+        capabilities.orderable = orderable;
+        capabilities
     }
 }
 

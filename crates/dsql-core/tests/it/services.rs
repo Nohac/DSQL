@@ -2,8 +2,13 @@
 //! entities, ranked by candidate priority; go-to-definition follows spread
 //! resolutions to the fragment's name span.
 
+use std::collections::BTreeSet;
+
 use bowl::{Bowl, Singleton};
-use dsql_core::catalog::insert_catalog;
+use dsql_core::catalog::{
+    ColumnMetadata, DataType, DatabaseMetadata, ObjectType, SchemaMetadata, TableMetadata, TypeKey,
+    TypeMetadata, insert_catalog,
+};
 use dsql_core::facts::{VariablesDemand, arm_editor_demands};
 use dsql_core::language_bowl;
 use dsql_core::service::{DefinitionRequest, DefinitionTarget, HoverInfo, HoverRequest, Position};
@@ -92,6 +97,49 @@ async fn catalog_descriptions_reach_table_column_and_relation_hover() {
         hover(&bowl, relation).await,
         hover(&bowl, related_column).await,
     ));
+}
+
+#[tokio::test]
+async fn column_hover_uses_the_provider_formatted_type() {
+    let bowl = language_bowl().await;
+    let catalog = DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![TableMetadata {
+                schema: "public".to_string(),
+                name: "records".to_string(),
+                object_type: ObjectType::Table,
+                description: None,
+                columns: vec![ColumnMetadata {
+                    name: "label".to_string(),
+                    description: None,
+                    provider_type: TypeKey::new("pg_catalog", "varchar"),
+                    formatted_type: Some("character varying(20)".to_string()),
+                    type_modifier: Some(24),
+                    database_type: "varchar".to_string(),
+                    data_type: DataType::Text,
+                    not_null: true,
+                }],
+                constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        }],
+        types: vec![TypeMetadata {
+            internal_type: "varchar".to_string(),
+            readable_type: "character varying".to_string(),
+            schema: "pg_catalog".to_string(),
+            provider: None,
+            operations: BTreeSet::new(),
+        }],
+    }
+    .to_catalog()
+    .expect("formatted provider type catalog builds");
+    insert_catalog(&bowl, catalog).await;
+    let source = "query Q { records { label } }";
+    insert_source(&bowl, FIXTURE, source).await;
+
+    insta::assert_snapshot!(hover(&bowl, source.find("label").expect("test text")).await);
 }
 
 #[tokio::test]
