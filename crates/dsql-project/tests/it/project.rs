@@ -9,7 +9,8 @@ use bowl::{Entity, Query};
 use dsql_core::catalog::{
     ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata, ForeignKeyDirection,
     ForeignKeyReferenceMetadata, IndexKeyMetadata, IndexMetadata, ObjectType, RelationCardinality,
-    SchemaMetadata, TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeMetadata,
+    SchemaMetadata, TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeKey,
+    TypeMetadata,
 };
 use dsql_core::facts::{Diagnostic, Severity, arm_generate_demands};
 use dsql_core::source::SourceKind;
@@ -53,6 +54,7 @@ async fn store_overlay_catalog(root: &Path) {
                         ColumnMetadata {
                             name: "id".to_string(),
                             description: None,
+                            provider_type: TypeKey::new("pg_catalog", "uuid"),
                             database_type: "uuid".to_string(),
                             data_type: DataType::Uuid,
                             not_null: true,
@@ -60,6 +62,7 @@ async fn store_overlay_catalog(root: &Path) {
                         ColumnMetadata {
                             name: "secret".to_string(),
                             description: None,
+                            provider_type: TypeKey::new("pg_catalog", "text"),
                             database_type: "text".to_string(),
                             data_type: DataType::Text,
                             not_null: false,
@@ -67,6 +70,7 @@ async fn store_overlay_catalog(root: &Path) {
                         ColumnMetadata {
                             name: "manager_id".to_string(),
                             description: None,
+                            provider_type: TypeKey::new("pg_catalog", "uuid"),
                             database_type: "uuid".to_string(),
                             data_type: DataType::Uuid,
                             not_null: true,
@@ -97,6 +101,7 @@ async fn store_overlay_catalog(root: &Path) {
                         ColumnMetadata {
                             name: "account_id".to_string(),
                             description: None,
+                            provider_type: TypeKey::new("pg_catalog", "uuid"),
                             database_type: "uuid".to_string(),
                             data_type: DataType::Uuid,
                             not_null: true,
@@ -104,6 +109,7 @@ async fn store_overlay_catalog(root: &Path) {
                         ColumnMetadata {
                             name: "label".to_string(),
                             description: None,
+                            provider_type: TypeKey::new("pg_catalog", "text"),
                             database_type: "text".to_string(),
                             data_type: DataType::Text,
                             not_null: true,
@@ -128,6 +134,71 @@ async fn store_overlay_catalog(root: &Path) {
     dsql_project::store_metadata_dir(&metadata, &root.join("dsql/schema"))
         .await
         .expect("overlay fixture catalog stores");
+}
+
+#[tokio::test]
+async fn catalog_overlays_compare_schema_qualified_provider_types() {
+    let scratch = scratch_project("database_url = \"x\"\n");
+    let column = |provider_schema: &str| ColumnMetadata {
+        name: "id".to_string(),
+        description: None,
+        provider_type: TypeKey::new(provider_schema, "person"),
+        database_type: "person".to_string(),
+        data_type: DataType::Unknown,
+        not_null: true,
+    };
+    let table = |name: &str, provider_schema: &str| TableMetadata {
+        schema: "public".to_string(),
+        name: name.to_string(),
+        object_type: ObjectType::Table,
+        description: None,
+        columns: vec![column(provider_schema)],
+        constraints: Vec::new(),
+        foreign_keys: Vec::new(),
+        indexes: Vec::new(),
+    };
+    let provider_type = |schema: &str| TypeMetadata {
+        internal_type: "person".to_string(),
+        readable_type: format!("{schema}.person"),
+        schema: schema.to_string(),
+        operations: BTreeSet::new(),
+    };
+    let metadata = DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![table("people_a", "alpha"), table("people_b", "beta")],
+        }],
+        types: vec![provider_type("alpha"), provider_type("beta")],
+    };
+    dsql_project::store_metadata_dir(&metadata, &scratch.path().join("dsql/schema"))
+        .await
+        .expect("qualified type fixture stores");
+    write_file(
+        scratch.path(),
+        "dsql/overlays/people.yaml",
+        indoc::indoc! {r#"
+            version: 1
+            objects:
+              - target: { schema: public, name: people_a }
+                relationships:
+                  - name: counterpart
+                    target: { schema: public, name: people_b }
+                    columns:
+                      - { local: id, target: id }
+        "#},
+    );
+
+    let project = Project::load_from(scratch.path())
+        .await
+        .expect("configuration loads");
+    let error = project
+        .load_catalog()
+        .await
+        .expect_err("different qualified provider types are incompatible")
+        .to_string()
+        .replace(&scratch.path().display().to_string(), "<project>");
+
+    insta::assert_snapshot!(error);
 }
 
 #[tokio::test]

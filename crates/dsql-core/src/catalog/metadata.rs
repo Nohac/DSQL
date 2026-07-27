@@ -1,7 +1,7 @@
 use super::{
     Catalog, Column, ColumnId, DataType, ForeignKey, ForeignKeyDirection, ForeignKeyId, Index,
     IndexKey, IndexKeyCapability, IndexOrder, Relation, RelationCardinality, RelationId,
-    RelationSupports, Schema, SchemaId, Table, TableId,
+    RelationSupports, Schema, SchemaId, Table, TableId, TypeKey,
 };
 use facet::Facet;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -40,6 +40,8 @@ pub struct ColumnMetadata {
     pub name: String,
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub description: Option<String>,
+    /// Schema-qualified provider identity of this column's type.
+    pub provider_type: TypeKey,
     pub database_type: String,
     pub data_type: DataType,
     pub not_null: bool,
@@ -108,6 +110,16 @@ pub struct TypeMetadata {
     pub operations: BTreeSet<String>,
 }
 
+impl TypeMetadata {
+    /// Returns the schema-qualified provider identity described by this row.
+    pub fn key(&self) -> TypeKey {
+        TypeKey {
+            schema: self.schema.clone(),
+            name: self.internal_type.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
 #[facet(rename_all = "snake_case")]
 #[repr(u8)]
@@ -140,6 +152,8 @@ pub enum CatalogBuildError {
         table: String,
         column: String,
     },
+    #[error("duplicate provider type `{schema}.{name}`")]
+    DuplicateType { schema: String, name: String },
     #[error("column `{schema}.{table}.{column}` was not found")]
     MissingColumn {
         schema: String,
@@ -220,8 +234,7 @@ impl DatabaseMetadata {
                 .tables
                 .sort_by(|left, right| left.name.cmp(&right.name));
         }
-        self.types
-            .sort_by(|left, right| left.internal_type.cmp(&right.internal_type));
+        self.types.sort_by_key(TypeMetadata::key);
     }
 }
 
@@ -238,6 +251,17 @@ impl Catalog {
         let mut table_primary_keys = Vec::<Vec<ColumnId>>::new();
         let mut table_unique_constraints = Vec::<Vec<Vec<ColumnId>>>::new();
         let mut table_indexes = Vec::<Vec<Index>>::new();
+        let mut type_keys = HashSet::new();
+
+        for data_type in &metadata.types {
+            let key = data_type.key();
+            if !type_keys.insert(key.clone()) {
+                return Err(CatalogBuildError::DuplicateType {
+                    schema: key.schema,
+                    name: key.name,
+                });
+            }
+        }
 
         for schema_metadata in &metadata.schemas {
             if schema_ids.contains_key(&schema_metadata.name) {
@@ -311,6 +335,7 @@ impl Catalog {
                         &table_metadata.name,
                         &column_metadata.name,
                         column_metadata.description.clone(),
+                        column_metadata.provider_type.clone(),
                         &column_metadata.database_type,
                         column_metadata.data_type,
                         column_metadata.not_null,

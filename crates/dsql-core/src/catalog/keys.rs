@@ -1,5 +1,24 @@
 use facet::Facet;
 
+/// Schema-qualified identity of one provider type.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Facet)]
+pub struct TypeKey {
+    /// Provider schema containing the type.
+    pub schema: String,
+    /// Provider-internal type name.
+    pub name: String,
+}
+
+impl TypeKey {
+    /// Creates a schema-qualified provider type identity.
+    pub fn new(schema: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            schema: schema.into(),
+            name: name.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Facet)]
 pub struct SchemaKey {
     pub name: String,

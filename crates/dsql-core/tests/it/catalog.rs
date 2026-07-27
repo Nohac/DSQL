@@ -1,8 +1,11 @@
 //! Catalog lookup behavior independent of the language pipeline.
 
+use std::collections::BTreeSet;
+
 use dsql_core::catalog::{
     Catalog, DatabaseMetadata, IndexKeyCapability, SchemaMetadata, TableRef, TableResolution,
-    table_metadata_from_yaml, table_metadata_to_yaml,
+    TypeMetadata, TypeMetadataFile, table_metadata_from_yaml, table_metadata_to_yaml,
+    type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
 
 fn render_resolution(catalog: &Catalog, reference: &str) -> String {
@@ -48,22 +51,37 @@ name: documents
 object_type: table
 columns:
   - name: tenant_id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: true
   - name: title
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: body
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: summary
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: caption
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
@@ -174,6 +192,51 @@ indexes:
     assert!(
         !catalog.column_set_is_unique(table.id, &[columns[3].id]),
         "included columns do not prove uniqueness"
+    );
+
+    insta::assert_snapshot!(yaml);
+}
+
+#[test]
+fn duplicate_provider_type_identities_are_rejected() {
+    let data_type = || TypeMetadata {
+        internal_type: "person".to_string(),
+        readable_type: "person".to_string(),
+        schema: "app".to_string(),
+        operations: BTreeSet::new(),
+    };
+    let error = DatabaseMetadata {
+        schemas: Vec::new(),
+        types: vec![data_type(), data_type()],
+    }
+    .to_catalog()
+    .expect_err("duplicate qualified provider type fails");
+
+    insta::assert_snapshot!(error);
+}
+
+#[test]
+fn qualified_provider_type_metadata_round_trips() {
+    let types = TypeMetadataFile {
+        types: vec![
+            TypeMetadata {
+                internal_type: "person".to_string(),
+                readable_type: "alpha.person".to_string(),
+                schema: "alpha".to_string(),
+                operations: BTreeSet::new(),
+            },
+            TypeMetadata {
+                internal_type: "person".to_string(),
+                readable_type: "beta.person".to_string(),
+                schema: "beta".to_string(),
+                operations: BTreeSet::from(["=".to_string()]),
+            },
+        ],
+    };
+    let yaml = type_metadata_file_to_yaml(&types).expect("type metadata serializes");
+    assert_eq!(
+        type_metadata_file_from_yaml(&yaml).expect("type metadata round-trips"),
+        types
     );
 
     insta::assert_snapshot!(yaml);

@@ -4,18 +4,30 @@ name: movie_link
 object_type: table
 columns:
   - name: id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true
   - name: movie_id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true
   - name: linked_movie_id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true
   - name: link_type_id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true

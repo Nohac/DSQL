@@ -1,6 +1,6 @@
 use super::{
     ColumnId, ColumnKey, ForeignKeyId, ObjectType, RelationId, SchemaId, SchemaKey, TableId,
-    TableKey,
+    TableKey, TypeKey,
 };
 use crate::entities::expression::ComparisonOp;
 use facet::Facet;
@@ -68,6 +68,8 @@ pub struct Column {
     pub description_support: Option<CatalogSupport>,
     /// Sources that changed query-facing exposure.
     pub exposure_support: Vec<CatalogSupport>,
+    /// Schema-qualified provider identity of this column's type.
+    pub provider_type: TypeKey,
     pub database_type: String,
     pub data_type: DataType,
     pub not_null: bool,
@@ -389,6 +391,7 @@ impl Catalog {
         for column in columns {
             column.key.hash(&mut hasher);
             column.description.hash(&mut hasher);
+            column.provider_type.hash(&mut hasher);
             column.database_type.hash(&mut hasher);
             column.data_type.hash(&mut hasher);
             column.not_null.hash(&mut hasher);
@@ -604,6 +607,7 @@ impl Column {
         table_name: &str,
         name: &str,
         description: Option<String>,
+        provider_type: TypeKey,
         database_type: &str,
         data_type: DataType,
         not_null: bool,
@@ -623,6 +627,7 @@ impl Column {
             declaration: None,
             description_support: None,
             exposure_support: Vec::new(),
+            provider_type,
             database_type: database_type.to_string(),
             data_type,
             not_null,

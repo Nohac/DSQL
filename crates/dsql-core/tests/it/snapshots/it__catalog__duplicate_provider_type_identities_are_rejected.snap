@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/catalog.rs
+expression: error
+---
+duplicate provider type `app.person`

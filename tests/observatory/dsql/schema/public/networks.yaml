@@ -5,19 +5,31 @@ object_type: table
 description: Named observation networks within a tenant.
 columns:
   - name: tenant_id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: true
   - name: code
     description: Stable network code within its tenant.
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: name
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: active
+    provider_type:
+      schema: pg_catalog
+      name: bool
     database_type: bool
     data_type: boolean
     not_null: true

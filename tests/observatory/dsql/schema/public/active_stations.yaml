@@ -5,19 +5,31 @@ object_type: view
 description: Stations currently exposed to readers.
 columns:
   - name: tenant_id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: false
   - name: network_code
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: false
   - name: code
     description: Station code within the composite network key.
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: false
   - name: name
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: false

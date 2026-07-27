@@ -3,7 +3,7 @@ source: crates/dsql-project/tests/it/project.rs
 expression: "rendered.join(\"\\n\")"
 ---
 missing column: <project>/dsql/overlays/a.yaml objects[0].columns[0]: column public.accounts.renamed was not found
-incompatible mapping: <project>/dsql/overlays/a.yaml objects[0].relationships[0].columns[0]: relationship columns have incompatible types uuid and text
+incompatible mapping: <project>/dsql/overlays/a.yaml objects[0].relationships[0].columns[0]: relationship columns have incompatible types pg_catalog.uuid and pg_catalog.text
 invalid relationship name: <project>/dsql/overlays/a.yaml objects[0].relationships[0]: relationship name must be a valid DSQL name and columns must be non-empty
 column relationship collision: <project>/dsql/overlays/a.yaml objects[0].relationships[0]: relationship name `secret` collides in the effective field namespace
 provider relationship collision: <project>/dsql/overlays/a.yaml objects[0].relationships[0]: relationship name `accounts` collides in the effective field namespace

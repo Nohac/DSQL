@@ -731,6 +731,10 @@ types:
       - ">"
       - ">="
       - "||"
+  - internal_type: varchar
+    readable_type: character varying
+    schema: pg_catalog
+    operations: []
   - internal_type: xid
     readable_type: xid
     schema: pg_catalog

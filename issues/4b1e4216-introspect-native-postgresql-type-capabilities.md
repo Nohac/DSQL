@@ -23,6 +23,11 @@ stays offline and derives everything from committed YAML.
 
 Sequenced after b50babe0.
 
+Schema-qualified [`TypeKey`] plumbing for type and column identity landed with
+issue 17c6cc60. This issue still owns provider OIDs/modifiers, formatted display
+names, type kind/category, and capability derivation. Formatted type names must
+also be made independent of the introspection connection's `search_path`.
+
 Acceptance criteria:
 
 - `type_map.yaml` records type kind, category, and a derived capability set per

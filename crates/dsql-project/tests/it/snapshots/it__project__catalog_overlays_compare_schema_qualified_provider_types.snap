@@ -1,0 +1,5 @@
+---
+source: crates/dsql-project/tests/it/project.rs
+expression: error
+---
+<project>/dsql/overlays/people.yaml objects[0].relationships[0].columns[0]: relationship columns have incompatible types alpha.person and beta.person

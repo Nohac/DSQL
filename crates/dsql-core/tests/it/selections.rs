@@ -310,14 +310,23 @@ name: memberships
 object_type: table
 columns:
   - name: tenant_id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true
   - name: user_id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: false
   - name: locale
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
@@ -368,10 +377,16 @@ name: memberships
 object_type: table
 columns:
   - name: tenant_id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true
   - name: user_id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true
@@ -425,6 +440,9 @@ description: Observation stations.
 columns:
   - name: code
     description: Stable public station code.
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true

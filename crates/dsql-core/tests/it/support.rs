@@ -7,7 +7,7 @@ use bowl::{Bowl, Entity, Mut, Query};
 use codespan_reporting::diagnostic::Severity;
 use dsql_core::catalog::{
     Catalog, ColumnMetadata, DataType, DatabaseMetadata, ObjectType, SchemaMetadata, TableMetadata,
-    table_metadata_from_yaml,
+    TypeKey, table_metadata_from_yaml,
 };
 use dsql_core::grammar::parser::Diagnostic;
 use dsql_core::source::SourceText;
@@ -215,6 +215,7 @@ pub fn numeric_catalog() -> Catalog {
                     ColumnMetadata {
                         name: "amount".to_string(),
                         description: None,
+                        provider_type: TypeKey::new("pg_catalog", "numeric"),
                         database_type: "numeric".to_string(),
                         data_type: DataType::from_database_type("numeric"),
                         not_null: true,
@@ -222,6 +223,7 @@ pub fn numeric_catalog() -> Catalog {
                     ColumnMetadata {
                         name: "ratio".to_string(),
                         description: None,
+                        provider_type: TypeKey::new("pg_catalog", "float8"),
                         database_type: "float8".to_string(),
                         data_type: DataType::from_database_type("float8"),
                         not_null: false,
@@ -229,6 +231,7 @@ pub fn numeric_catalog() -> Catalog {
                     ColumnMetadata {
                         name: "enabled".to_string(),
                         description: None,
+                        provider_type: TypeKey::new("pg_catalog", "bool"),
                         database_type: "bool".to_string(),
                         data_type: DataType::from_database_type("bool"),
                         not_null: true,
@@ -236,6 +239,7 @@ pub fn numeric_catalog() -> Catalog {
                     ColumnMetadata {
                         name: "exists".to_string(),
                         description: None,
+                        provider_type: TypeKey::new("pg_catalog", "int8"),
                         database_type: "int8".to_string(),
                         data_type: DataType::from_database_type("int8"),
                         not_null: true,
@@ -243,6 +247,7 @@ pub fn numeric_catalog() -> Catalog {
                     ColumnMetadata {
                         name: "in".to_string(),
                         description: None,
+                        provider_type: TypeKey::new("pg_catalog", "int8"),
                         database_type: "int8".to_string(),
                         data_type: DataType::from_database_type("int8"),
                         not_null: true,
@@ -250,6 +255,7 @@ pub fn numeric_catalog() -> Catalog {
                     ColumnMetadata {
                         name: "is".to_string(),
                         description: None,
+                        provider_type: TypeKey::new("pg_catalog", "int8"),
                         database_type: "int8".to_string(),
                         data_type: DataType::from_database_type("int8"),
                         not_null: true,
@@ -257,6 +263,7 @@ pub fn numeric_catalog() -> Catalog {
                     ColumnMetadata {
                         name: "not".to_string(),
                         description: None,
+                        provider_type: TypeKey::new("pg_catalog", "int8"),
                         database_type: "int8".to_string(),
                         data_type: DataType::from_database_type("int8"),
                         not_null: true,
@@ -287,6 +294,7 @@ pub fn policy_completion_catalog() -> Catalog {
             .map(|(name, data_type)| ColumnMetadata {
                 name: (*name).to_string(),
                 description: None,
+                provider_type: TypeKey::new("pg_catalog", data_type.as_str()),
                 database_type: data_type.as_str().to_string(),
                 data_type: *data_type,
                 not_null: true,

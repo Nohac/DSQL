@@ -296,8 +296,8 @@ async fn catalog_definitions_target_schema_yaml() {
     assert_eq!(
         relation["range"],
         json!({
-            "start": {"line": 60, "character": 0},
-            "end": {"line": 60, "character": 0},
+            "start": {"line": 96, "character": 0},
+            "end": {"line": 96, "character": 0},
         })
     );
 }

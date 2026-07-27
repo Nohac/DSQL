@@ -4,10 +4,16 @@ name: tenants
 object_type: table
 columns:
   - name: id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: true
   - name: name
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true

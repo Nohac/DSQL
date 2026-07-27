@@ -1,6 +1,6 @@
 # Identify provider types by schema-qualified identity
 
-**ID:** 17c6cc60 | **Status:** Open | **Created:** 2026-07-26T11:48:49+02:00
+**ID:** 17c6cc60 | **Status:** Done | **Created:** 2026-07-26T11:48:49+02:00
 
 `type_map.yaml` does not identify a PostgreSQL type. `TypeMetadata.schema` is
 populated from `operator_schema`, which `PG_TYPE_INTROSPECTION_QUERY` defines as

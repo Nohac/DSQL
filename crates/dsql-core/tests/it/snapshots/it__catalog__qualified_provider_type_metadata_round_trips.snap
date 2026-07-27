@@ -1,0 +1,15 @@
+---
+source: crates/dsql-core/tests/it/catalog.rs
+expression: yaml
+---
+---
+types:
+  - internal_type: person
+    readable_type: alpha.person
+    schema: alpha
+    operations: []
+  - internal_type: person
+    readable_type: beta.person
+    schema: beta
+    operations:
+      - =

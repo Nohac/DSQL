@@ -36,6 +36,9 @@ name: parents
 object_type: table
 columns:
   - name: id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true
@@ -61,10 +64,16 @@ name: records
 object_type: table
 columns:
   - name: parent_id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true
   - name: included_value
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true

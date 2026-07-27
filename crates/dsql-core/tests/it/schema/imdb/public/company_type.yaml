@@ -4,10 +4,16 @@ name: company_type
 object_type: table
 columns:
   - name: id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true
   - name: kind
+    provider_type:
+      schema: pg_catalog
+      name: varchar
     database_type: varchar
     data_type: text
     not_null: true

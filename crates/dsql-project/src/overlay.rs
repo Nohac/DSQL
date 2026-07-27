@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use dsql_core::catalog::{
     Catalog, CatalogSupport, CatalogSupportKind, ColumnId, DatabaseMetadata, ForeignKeyDirection,
     ForeignKeyId, ObjectType, Relation, RelationCardinality, RelationId, RelationSupports, TableId,
-    TableMetadata, TypeMetadata, UniquenessSupport,
+    TableMetadata, TypeKey, TypeMetadata, UniquenessSupport,
 };
 use facet::Facet;
 use tokio::fs::{read_dir, read_to_string};
@@ -575,7 +575,7 @@ fn apply_relation_hides(
 
 fn apply_relationships(
     catalog: &mut Catalog,
-    type_map: &BTreeMap<String, Vec<&TypeMetadata>>,
+    type_map: &BTreeMap<TypeKey, &TypeMetadata>,
     overlay: &LoadedOverlay,
     item: &str,
     table: TableId,
@@ -809,7 +809,7 @@ fn validate_effective_graph(overlays: &[LoadedOverlay], catalog: &Catalog) -> Re
 
 fn validate_column_types(
     catalog: &Catalog,
-    type_map: &BTreeMap<String, Vec<&TypeMetadata>>,
+    type_map: &BTreeMap<TypeKey, &TypeMetadata>,
     overlay: &LoadedOverlay,
     item: &str,
     local: ColumnId,
@@ -817,31 +817,38 @@ fn validate_column_types(
 ) -> Result<()> {
     let local_column = &catalog.columns[local.0];
     let target_column = &catalog.columns[target.0];
-    let local_types = type_map
-        .get(&local_column.database_type)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    let target_types = type_map
-        .get(&target_column.database_type)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    let ([local_type], [target_type]) = (local_types, target_types) else {
+    if !type_map.contains_key(&local_column.provider_type) {
         return overlay_error(
             &overlay.path,
             item,
-            "column provider type identity is absent or ambiguous; rerun `dsql introspect`",
+            format!(
+                "provider type `{}.{}` is absent; rerun `dsql introspect`",
+                local_column.provider_type.schema, local_column.provider_type.name
+            ),
         );
-    };
+    }
+    if !type_map.contains_key(&target_column.provider_type) {
+        return overlay_error(
+            &overlay.path,
+            item,
+            format!(
+                "provider type `{}.{}` is absent; rerun `dsql introspect`",
+                target_column.provider_type.schema, target_column.provider_type.name
+            ),
+        );
+    }
     if local_column.data_type != target_column.data_type
-        || local_type.schema != target_type.schema
-        || local_type.internal_type != target_type.internal_type
+        || local_column.provider_type != target_column.provider_type
     {
         return overlay_error(
             &overlay.path,
             item,
             format!(
-                "relationship columns have incompatible types {} and {}",
-                local_column.database_type, target_column.database_type
+                "relationship columns have incompatible types {}.{} and {}.{}",
+                local_column.provider_type.schema,
+                local_column.provider_type.name,
+                target_column.provider_type.schema,
+                target_column.provider_type.name
             ),
         );
     }
@@ -995,12 +1002,10 @@ fn provider_table_map(metadata: &DatabaseMetadata) -> BTreeMap<OverlayObjectRef,
         .collect()
 }
 
-fn provider_type_map(types: &[TypeMetadata]) -> BTreeMap<String, Vec<&TypeMetadata>> {
-    let mut map = BTreeMap::<String, Vec<&TypeMetadata>>::new();
+fn provider_type_map(types: &[TypeMetadata]) -> BTreeMap<TypeKey, &TypeMetadata> {
+    let mut map = BTreeMap::new();
     for data_type in types {
-        map.entry(data_type.internal_type.clone())
-            .or_default()
-            .push(data_type);
+        map.insert(data_type.key(), data_type);
     }
     map
 }

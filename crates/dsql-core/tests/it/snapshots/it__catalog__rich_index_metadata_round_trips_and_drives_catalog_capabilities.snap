@@ -8,22 +8,37 @@ name: documents
 object_type: table
 columns:
   - name: tenant_id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: true
   - name: title
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: body
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: summary
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: caption
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true

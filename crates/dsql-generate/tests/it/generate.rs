@@ -29,10 +29,16 @@ name: metrics
 object_type: table
 columns:
   - name: amount
+    provider_type:
+      schema: pg_catalog
+      name: numeric
     database_type: numeric
     data_type: numeric
     not_null: true
   - name: ratio
+    provider_type:
+      schema: pg_catalog
+      name: float8
     database_type: float8
     data_type: float
     not_null: false
@@ -46,10 +52,16 @@ name: users
 object_type: table
 columns:
   - name: id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: true
   - name: name
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
@@ -78,18 +90,30 @@ name: posts
 object_type: table
 columns:
   - name: id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: true
   - name: user_id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: true
   - name: title
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: false
   - name: created_at
+    provider_type:
+      schema: pg_catalog
+      name: timestamptz
     database_type: timestamptz
     data_type: timestamptz
     not_null: true
@@ -117,14 +141,23 @@ name: memberships
 object_type: table
 columns:
   - name: tenant_id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: true
   - name: user_id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: true
   - name: locale
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true

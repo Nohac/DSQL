@@ -5,9 +5,9 @@ use dsql_core::catalog::{
     ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata,
     ForeignKeyReferenceMetadata, IndexKeyCapability, IndexKeyMetadata, IndexMetadata,
     IndexNullsPosition, IndexOrder, IndexOrderDirection, ObjectType, SchemaMetadata,
-    TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeMetadata,
+    TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeKey, TypeMetadata,
 };
-use sqlx::{FromRow, Pool, Postgres, postgres::PgPoolOptions};
+use sqlx::{AssertSqlSafe, FromRow, Pool, Postgres, postgres::PgPoolOptions};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +23,7 @@ struct FlatColumn {
     table_description: Option<String>,
     column_name: String,
     column_description: Option<String>,
+    type_schema: String,
     data_type: String,
     not_null: bool,
     object_type: String,
@@ -70,17 +71,27 @@ struct PostgresIndexKey {
 struct PostgresType {
     internal_type: String,
     readable_type: String,
-    operation: String,
-    operator_schema: String,
+    type_schema: String,
+    operations: Vec<String>,
 }
 
-const PG_INTROSPECTION_QUERY: &str = r#"
+const PG_INTROSPECTED_COLUMN_PREDICATE: &str = r#"
+    tbl.relkind IN ('r', 'v', 'm')
+    AND ns.nspname NOT LIKE 'pg_%'
+    AND ns.nspname <> 'information_schema'
+    AND col.attnum > 0
+"#;
+
+fn pg_introspection_query() -> String {
+    format!(
+        r#"
 SELECT
     ns.nspname AS schema_name,
     tbl.relname AS table_name,
     obj_description(tbl.oid, 'pg_class') AS table_description,
     col.attname AS column_name,
     col_description(tbl.oid, col.attnum) AS column_description,
+    typ_ns.nspname AS type_schema,
     typ.typname AS data_type,
     col.attnotnull AS not_null,
     tbl.relkind::text AS object_type
@@ -89,14 +100,14 @@ FROM
     JOIN pg_class tbl ON col.attrelid = tbl.oid
     JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
     JOIN pg_type typ ON col.atttypid = typ.oid
+    JOIN pg_namespace typ_ns ON typ_ns.oid = typ.typnamespace
 WHERE
-    tbl.relkind IN ('r', 'v', 'm')
-    AND ns.nspname NOT LIKE 'pg_%'
-    AND ns.nspname <> 'information_schema'
-    AND col.attnum > 0
+    {PG_INTROSPECTED_COLUMN_PREDICATE}
 ORDER BY
     ns.nspname, tbl.relname, col.attnum;
-"#;
+"#
+    )
+}
 
 const PG_CONSTRAINT_QUERY: &str = r#"
 SELECT
@@ -223,23 +234,52 @@ ORDER BY
     ns.nspname, tbl.relname, idx_tbl.relname, idx_key.ordinality;
 "#;
 
-const PG_TYPE_INTROSPECTION_QUERY: &str = r#"
+fn pg_type_introspection_query() -> String {
+    format!(
+        r#"
 SELECT
-    pg_type.typname AS internal_type,
-    format_type(pg_type.oid, NULL) AS readable_type,
-    pg_operator.oprname AS operation,
-    pg_namespace.nspname AS operator_schema
+    typ.typname AS internal_type,
+    format_type(typ.oid, NULL) AS readable_type,
+    type_ns.nspname AS type_schema,
+    COALESCE(
+        array_agg(DISTINCT opr.oprname::text)
+            FILTER (WHERE opr.oprname IS NOT NULL),
+        ARRAY[]::text[]
+    ) AS operations
 FROM
-    pg_type
-JOIN
-    pg_operator ON pg_operator.oprleft = pg_type.oid
-JOIN
-    pg_proc ON pg_operator.oprcode = pg_proc.oid
-JOIN
-    pg_namespace ON pg_proc.pronamespace = pg_namespace.oid
+    pg_type typ
+    JOIN pg_namespace type_ns ON type_ns.oid = typ.typnamespace
+    LEFT JOIN pg_operator opr ON opr.oprleft = typ.oid
+    LEFT JOIN pg_class type_rel ON type_rel.oid = typ.typrelid
+    LEFT JOIN pg_type element_type ON element_type.oid = typ.typelem
+    LEFT JOIN pg_class element_rel ON element_rel.oid = element_type.typrelid
+WHERE
+    type_ns.nspname <> 'pg_toast'
+    AND (
+        (
+            (typ.typtype <> 'c' OR type_rel.relkind = 'c')
+            AND (
+                typ.typelem = 0
+                OR element_type.typtype <> 'c'
+                OR element_rel.relkind = 'c'
+            )
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM pg_attribute col
+            JOIN pg_class tbl ON col.attrelid = tbl.oid
+            JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+            WHERE col.atttypid = typ.oid
+                AND {PG_INTROSPECTED_COLUMN_PREDICATE}
+        )
+    )
+GROUP BY
+    typ.oid, typ.typname, type_ns.nspname
 ORDER BY
-    pg_type.typname, pg_operator.oprname;
-"#;
+    type_ns.nspname, typ.typname;
+"#
+    )
+}
 
 pub async fn introspect_postgres(
     database_url: &str,
@@ -254,7 +294,8 @@ pub async fn introspect_postgres(
 pub async fn introspect_postgres_pool(
     pool: &Pool<Postgres>,
 ) -> Result<DatabaseMetadata, IntrospectionError> {
-    let schema_rows = sqlx::query_as::<_, FlatColumn>(PG_INTROSPECTION_QUERY)
+    let column_query = pg_introspection_query();
+    let schema_rows = sqlx::query_as::<_, FlatColumn>(AssertSqlSafe(column_query))
         .fetch_all(pool)
         .await?;
     let constraint_rows = sqlx::query_as::<_, PostgresConstraint>(PG_CONSTRAINT_QUERY)
@@ -266,7 +307,8 @@ pub async fn introspect_postgres_pool(
     let index_rows = sqlx::query_as::<_, PostgresIndexKey>(PG_INDEX_QUERY)
         .fetch_all(pool)
         .await?;
-    let type_rows = sqlx::query_as::<_, PostgresType>(PG_TYPE_INTROSPECTION_QUERY)
+    let type_query = pg_type_introspection_query();
+    let type_rows = sqlx::query_as::<_, PostgresType>(AssertSqlSafe(type_query))
         .fetch_all(pool)
         .await?;
 
@@ -286,18 +328,22 @@ fn metadata_from_rows(
     index_rows: Vec<PostgresIndexKey>,
     type_rows: Vec<PostgresType>,
 ) -> DatabaseMetadata {
-    let mut type_map = HashMap::<String, TypeMetadata>::new();
+    let mut type_map = BTreeMap::<TypeKey, TypeMetadata>::new();
     for row in type_rows {
+        let key = TypeKey {
+            schema: row.type_schema,
+            name: row.internal_type,
+        };
         type_map
-            .entry(row.internal_type.clone())
+            .entry(key.clone())
             .or_insert_with(|| TypeMetadata {
-                internal_type: row.internal_type,
+                internal_type: key.name,
                 readable_type: row.readable_type,
-                schema: row.operator_schema,
+                schema: key.schema,
                 operations: BTreeSet::new(),
             })
             .operations
-            .insert(row.operation);
+            .extend(row.operations);
     }
 
     let mut schema_map = HashMap::<String, HashMap<String, TableMetadata>>::new();
@@ -318,6 +364,10 @@ fn metadata_from_rows(
         table.columns.push(ColumnMetadata {
             name: row.column_name,
             description: row.column_description,
+            provider_type: TypeKey {
+                schema: row.type_schema,
+                name: row.data_type.clone(),
+            },
             database_type: row.data_type.clone(),
             data_type: DataType::from_database_type(&row.data_type),
             not_null: row.not_null,
@@ -474,6 +524,7 @@ mod tests {
                     table_description: Some("Localized title records.".into()),
                     column_name: "id".into(),
                     column_description: Some("Stable title identifier.".into()),
+                    type_schema: "pg_catalog".into(),
                     data_type: "int4".into(),
                     not_null: true,
                     object_type: "r".into(),
@@ -484,6 +535,7 @@ mod tests {
                     table_description: Some("Localized title records.".into()),
                     column_name: "kind_id".into(),
                     column_description: None,
+                    type_schema: "pg_catalog".into(),
                     data_type: "int4".into(),
                     not_null: false,
                     object_type: "r".into(),
@@ -494,6 +546,7 @@ mod tests {
                     table_description: None,
                     column_name: "id".into(),
                     column_description: None,
+                    type_schema: "pg_catalog".into(),
                     data_type: "int4".into(),
                     not_null: true,
                     object_type: "r".into(),
@@ -553,14 +606,20 @@ mod tests {
                 PostgresType {
                     internal_type: "int4".into(),
                     readable_type: "integer".into(),
-                    operation: "=".into(),
-                    operator_schema: "pg_catalog".into(),
+                    type_schema: "pg_catalog".into(),
+                    operations: vec!["=".into(), "<".into()],
                 },
                 PostgresType {
-                    internal_type: "int4".into(),
-                    readable_type: "integer".into(),
-                    operation: "<".into(),
-                    operator_schema: "pg_catalog".into(),
+                    internal_type: "person".into(),
+                    readable_type: "alpha.person".into(),
+                    type_schema: "alpha".into(),
+                    operations: Vec::new(),
+                },
+                PostgresType {
+                    internal_type: "person".into(),
+                    readable_type: "beta.person".into(),
+                    type_schema: "beta".into(),
+                    operations: vec!["=".into()],
                 },
             ],
         );
@@ -612,14 +671,29 @@ mod tests {
             })
         );
 
-        assert_eq!(metadata.types.len(), 1, "type operations merge per type");
-        let operations: Vec<&str> = metadata.types[0]
+        assert_eq!(
+            metadata
+                .types
+                .iter()
+                .map(TypeMetadata::key)
+                .collect::<Vec<_>>(),
+            [
+                TypeKey::new("alpha", "person"),
+                TypeKey::new("beta", "person"),
+                TypeKey::new("pg_catalog", "int4"),
+            ],
+            "same-named types remain distinct and sort by qualified identity"
+        );
+        assert!(
+            metadata.types[0].operations.is_empty(),
+            "a type without left-operand operators remains in the metadata"
+        );
+        let operations: Vec<&str> = metadata.types[2]
             .operations
             .iter()
             .map(String::as_str)
             .collect();
         assert_eq!(operations, ["<", "="]);
-
         let catalog = metadata.to_catalog().expect("metadata builds a catalog");
         let kind_type = catalog
             .table("public", "kind_type")

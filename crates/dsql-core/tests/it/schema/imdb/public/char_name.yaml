@@ -4,30 +4,51 @@ name: char_name
 object_type: table
 columns:
   - name: id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: true
   - name: name
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: imdb_index
+    provider_type:
+      schema: pg_catalog
+      name: varchar
     database_type: varchar
     data_type: text
     not_null: false
   - name: imdb_id
+    provider_type:
+      schema: pg_catalog
+      name: int4
     database_type: int4
     data_type: int
     not_null: false
   - name: name_pcode_nf
+    provider_type:
+      schema: pg_catalog
+      name: varchar
     database_type: varchar
     data_type: text
     not_null: false
   - name: surname_pcode
+    provider_type:
+      schema: pg_catalog
+      name: varchar
     database_type: varchar
     data_type: text
     not_null: false
   - name: md5sum
+    provider_type:
+      schema: pg_catalog
+      name: varchar
     database_type: varchar
     data_type: text
     not_null: false

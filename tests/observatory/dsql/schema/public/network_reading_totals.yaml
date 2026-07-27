@@ -5,14 +5,23 @@ object_type: materialized_view
 description: Precomputed reading counts per network.
 columns:
   - name: tenant_id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: false
   - name: network_code
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: false
   - name: reading_count
+    provider_type:
+      schema: pg_catalog
+      name: int8
     database_type: int8
     data_type: int
     not_null: false

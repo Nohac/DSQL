@@ -5,35 +5,59 @@ object_type: table
 description: Physical stations that collect observations.
 columns:
   - name: tenant_id
+    provider_type:
+      schema: pg_catalog
+      name: uuid
     database_type: uuid
     data_type: uuid
     not_null: true
   - name: network_code
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: code
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: name
+    provider_type:
+      schema: pg_catalog
+      name: text
     database_type: text
     data_type: text
     not_null: true
   - name: latitude
+    provider_type:
+      schema: pg_catalog
+      name: numeric
     database_type: numeric
     data_type: numeric
     not_null: true
   - name: longitude
+    provider_type:
+      schema: pg_catalog
+      name: numeric
     database_type: numeric
     data_type: numeric
     not_null: true
   - name: commissioned_at
+    provider_type:
+      schema: pg_catalog
+      name: timestamptz
     database_type: timestamptz
     data_type: timestamptz
     not_null: true
   - name: metadata
     description: Provider-specific station attributes.
+    provider_type:
+      schema: pg_catalog
+      name: jsonb
     database_type: jsonb
     data_type: json
     not_null: true

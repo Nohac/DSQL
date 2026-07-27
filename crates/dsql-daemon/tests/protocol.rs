@@ -7,6 +7,53 @@ use std::path::{Path, PathBuf};
 use facet_value::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
+const MOVIE_RATINGS_SCHEMA: &str = r#"---
+schema: public
+name: movie_ratings
+object_type: table
+columns:
+  - name: id
+    provider_type: { schema: pg_catalog, name: int4 }
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: movie_id
+    provider_type: { schema: pg_catalog, name: int4 }
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: info_type_id
+    provider_type: { schema: pg_catalog, name: int4 }
+    database_type: int4
+    data_type: int
+    not_null: true
+  - name: info
+    provider_type: { schema: pg_catalog, name: text }
+    database_type: text
+    data_type: text
+    not_null: true
+constraints:
+  - name: movie_ratings_pkey
+    kind: primary_key
+    columns:
+      - id
+foreign_keys:
+  - name: movie_ratings_movie_id_fkey
+    columns:
+      - movie_id
+    references:
+      schema: public
+      table: title
+      columns:
+        - id
+indexes:
+  - name: movie_ratings_pkey
+    access_method: btree
+    keys:
+      - column: id
+    unique: true
+"#;
+
 struct Session {
     input: DuplexStream,
     output: BufReader<DuplexStream>,
@@ -876,7 +923,7 @@ async fn plain_document_edits_roundtrip() {
     // fixture schema has no to-many into `title`, so add one.
     std::fs::write(
         session.root.join("dsql/schema/public/movie_ratings.yaml"),
-        "---\nschema: public\nname: movie_ratings\nobject_type: table\ncolumns:\n  - name: id\n    database_type: int4\n    data_type: int\n    not_null: true\n  - name: movie_id\n    database_type: int4\n    data_type: int\n    not_null: true\n  - name: info_type_id\n    database_type: int4\n    data_type: int\n    not_null: true\n  - name: info\n    database_type: text\n    data_type: text\n    not_null: true\nconstraints:\n  - name: movie_ratings_pkey\n    kind: primary_key\n    columns:\n      - id\nforeign_keys:\n  - name: movie_ratings_movie_id_fkey\n    columns:\n      - movie_id\n    references:\n      schema: public\n      table: title\n      columns:\n        - id\nindexes:\n  - name: movie_ratings_pkey\n    access_method: btree\n    keys:\n      - column: id\n    unique: true\n",
+        MOVIE_RATINGS_SCHEMA,
     )
     .expect("schema write");
     let doc = session.root.join("queries/shared/fragments.dsql");
@@ -938,7 +985,7 @@ async fn host_document_edits_roundtrip() {
     let mut session = Session::start("host-aba-roundtrip").await;
     std::fs::write(
         session.root.join("dsql/schema/public/movie_ratings.yaml"),
-        "---\nschema: public\nname: movie_ratings\nobject_type: table\ncolumns:\n  - name: id\n    database_type: int4\n    data_type: int\n    not_null: true\n  - name: movie_id\n    database_type: int4\n    data_type: int\n    not_null: true\n  - name: info_type_id\n    database_type: int4\n    data_type: int\n    not_null: true\n  - name: info\n    database_type: text\n    data_type: text\n    not_null: true\nconstraints:\n  - name: movie_ratings_pkey\n    kind: primary_key\n    columns:\n      - id\nforeign_keys:\n  - name: movie_ratings_movie_id_fkey\n    columns:\n      - movie_id\n    references:\n      schema: public\n      table: title\n      columns:\n        - id\nindexes:\n  - name: movie_ratings_pkey\n    access_method: btree\n    keys:\n      - column: id\n    unique: true\n",
+        MOVIE_RATINGS_SCHEMA,
     )
     .expect("schema write");
     std::fs::write(
