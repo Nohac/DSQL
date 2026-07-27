@@ -1,0 +1,6 @@
+---
+source: crates/dsql-generate/tests/it/generate.rs
+expression: error
+---
+the project has 1 error diagnostics; fix them before generating:
+queries/frontend/events-array-dynamic.dsql:55..75: bounded dynamic input exposes unsupported fields: event_dates (date[])

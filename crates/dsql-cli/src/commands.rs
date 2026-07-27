@@ -557,7 +557,7 @@ pub async fn publish_introspection(
 ) -> Result<Option<String>, CliError> {
     metadata.to_catalog().map_err(ProjectError::CatalogBuild)?;
     if dry_run {
-        dsql_project::load_effective_catalog(metadata, &project.schema, &project.overlays).await?;
+        project.effective_catalog_from_metadata(metadata).await?;
         return metadata_to_yaml(metadata)
             .map(Some)
             .map_err(CliError::Metadata);

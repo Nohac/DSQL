@@ -61,6 +61,14 @@ columns:
     database_type: date
     data_type: unknown
     not_null: true
+  - name: event_dates
+    provider_type:
+      schema: pg_catalog
+      name: _date
+    formatted_type: "date[]"
+    database_type: _date
+    data_type: unknown
+    not_null: true
   - name: address
     provider_type:
       schema: pg_catalog
@@ -199,6 +207,20 @@ fn provider_scalar_catalog() -> Catalog {
         }],
         types: vec![
             provider_type("date", "D"),
+            TypeMetadata {
+                internal_type: "_date".to_string(),
+                readable_type: "date[]".to_string(),
+                schema: "pg_catalog".to_string(),
+                structure: TypeStructureMetadata::array(TypeKey::new("pg_catalog", "date")),
+                provider: Some(ProviderTypeFacts {
+                    kind: "b".to_string(),
+                    category: "A".to_string(),
+                    effective_kind: None,
+                    effective_category: None,
+                    orderable: true,
+                }),
+                operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
+            },
             provider_type("inet", "I"),
             provider_type("int8", "N"),
         ],
@@ -913,6 +935,49 @@ async fn provider_scalar_wire_identity_flows_through_generated_metadata() {
         .expect("provider scalar operation artifact");
 
     insta::assert_snapshot!(artifact.serialized);
+}
+
+#[tokio::test]
+async fn provider_scalar_dynamic_inputs_use_the_effective_logical_name() {
+    let bowl = memory_bowl(
+        provider_scalar_catalog(),
+        vec![document(
+            "queries/frontend/events-dynamic.dsql",
+            "query DynamicEvents($$search = {}) { events(where $$search on selected) { event_date } }",
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let artifact = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("assembly succeeds")
+        .snapshot
+        .artifacts
+        .into_iter()
+        .find(|artifact| artifact.name == "DynamicEvents")
+        .expect("dynamic provider operation artifact");
+
+    insta::assert_snapshot!(artifact.serialized);
+}
+
+#[tokio::test]
+async fn provider_array_dynamic_inputs_remain_unsupported() {
+    let bowl = memory_bowl(
+        provider_scalar_catalog(),
+        vec![document(
+            "queries/frontend/events-array-dynamic.dsql",
+            "query DynamicEventArrays($$search = {}) { events(where $$search on selected) { event_dates } }",
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let error = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect_err("database-array dynamic operands stay unsupported");
+
+    insta::assert_snapshot!(error);
 }
 
 #[tokio::test]

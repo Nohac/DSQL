@@ -160,11 +160,15 @@ fn dynamic_input_metadata(
                                 contract.path
                             ),
                         })?;
+                let catalog_type = catalog.type_for_column(column.id);
                 fields.push(DynamicInputField {
                     key: field.key.clone(),
                     catalog_path: format!("{}.{}.{}", table.schema, table.name, column.name),
-                    data_type: field.data_type.as_str().to_string(),
-                    wire: catalog.type_for_column(column.id).map_or_else(
+                    data_type: catalog_type.map_or_else(
+                        || field.data_type.as_str().to_string(),
+                        |data_type| data_type.capabilities.name.clone(),
+                    ),
+                    wire: catalog_type.map_or_else(
                         || wire_metadata_for_data_type(field.data_type),
                         wire_metadata_for_catalog_type,
                     ),

@@ -464,6 +464,11 @@ pub fn structured_type_catalog() -> Catalog {
                         TypeKey::new("public", "_label_domain"),
                         DataType::Unknown,
                     ),
+                    column(
+                        "nested_domain_labels",
+                        TypeKey::new("public", "_labels_domain"),
+                        DataType::Unknown,
+                    ),
                 ],
                 constraints: Vec::new(),
                 foreign_keys: Vec::new(),
@@ -547,6 +552,13 @@ pub fn structured_type_catalog() -> Catalog {
                 "b",
                 "A",
                 TypeStructureMetadata::array(TypeKey::new("public", "label_domain")),
+            ),
+            provider(
+                "public",
+                "_labels_domain",
+                "b",
+                "A",
+                TypeStructureMetadata::array(TypeKey::new("public", "labels_domain")),
             ),
         ],
     }

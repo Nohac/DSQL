@@ -108,7 +108,7 @@ struct LoadedOverlay {
 }
 
 /// Builds the one effective catalog consumed by every compiler subsystem.
-pub async fn load_effective_catalog(
+pub(crate) async fn load_effective_catalog(
     metadata: &DatabaseMetadata,
     schema_dir: &Path,
     overlays_dir: &Path,

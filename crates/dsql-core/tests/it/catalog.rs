@@ -10,6 +10,7 @@ use dsql_core::catalog::{
     type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
 use dsql_core::entities::aggregate::AggregateFunction;
+use dsql_core::entities::expression::ComparisonOp;
 
 use super::structured_type_catalog;
 
@@ -642,7 +643,7 @@ fn recursive_type_structures_resolve_to_terminal_public_shapes() {
     assert!(matches!(
         nested_domain_shape,
         CatalogValueShape::Scalar { leaf }
-            if leaf.key == TypeKey::new("pg_catalog", "text")
+            if leaf.key == TypeKey::new("public", "nested_label_domain")
     ));
 
     let (domain_array_type, domain_array_shape) = shape("domain_labels");
@@ -657,6 +658,14 @@ fn recursive_type_structures_resolve_to_terminal_public_shapes() {
     assert_eq!(array_domain_type, DataType::Unknown);
     assert!(matches!(
         array_domain_shape,
+        CatalogValueShape::DatabaseArray { element }
+            if element.key == TypeKey::new("public", "label_domain")
+    ));
+
+    let (nested_array_type, nested_array_shape) = shape("nested_domain_labels");
+    assert_eq!(nested_array_type, DataType::Unknown);
+    assert!(matches!(
+        nested_array_shape,
         CatalogValueShape::DatabaseArray { element }
             if element.key == TypeKey::new("pg_catalog", "text")
     ));
@@ -724,7 +733,7 @@ fn provider_comparison_capabilities_override_compiler_capabilities() {
                     effective_category: Some("S".to_string()),
                     orderable: true,
                 }),
-                operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
+                operations: ["=", "<>", ">"].into_iter().map(str::to_string).collect(),
             },
         ],
     )
@@ -791,6 +800,10 @@ fn provider_comparison_capabilities_override_compiler_capabilities() {
         .expect("domain column type");
     assert_eq!(domain.data_type, DataType::Text);
     assert_eq!(domain.capabilities.wire, WireEncoding::Text);
+    assert!(
+        !domain.capabilities.supports(ComparisonOp::Gt),
+        "a domain cannot widen its base type's comparison surface"
+    );
     assert!(matches!(domain.shape, CatalogTypeShape::Domain { .. }));
 
     let array = provider_array

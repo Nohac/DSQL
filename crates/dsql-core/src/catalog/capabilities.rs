@@ -186,7 +186,13 @@ impl TypeCapabilities {
         let mut capabilities = base.clone();
         capabilities.description = readable_type.to_string();
         if let Some(provider) = provider {
+            let base_operators = capabilities.operators.clone();
+            let base_orderable = capabilities.orderable;
             capabilities.apply_provider_comparisons(provider, operations);
+            capabilities
+                .operators
+                .retain(|operator| base_operators.contains(operator));
+            capabilities.orderable &= base_orderable;
         }
         capabilities
     }

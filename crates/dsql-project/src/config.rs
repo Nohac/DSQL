@@ -11,7 +11,7 @@ use tokio::fs::read_to_string;
 
 use facet::Facet;
 
-use dsql_core::catalog::{Catalog, CatalogBuildError};
+use dsql_core::catalog::{Catalog, CatalogBuildError, DatabaseMetadata};
 use dsql_core::source::{ResolutionScope, ScopeImports};
 
 #[derive(Debug, thiserror::Error)]
@@ -317,7 +317,18 @@ impl Project {
     /// Loads the schema catalog from the project's schema directory.
     pub async fn load_catalog(&self) -> Result<Catalog> {
         let metadata = super::metadata::load_metadata_dir(&self.schema).await?;
-        super::overlay::load_effective_catalog(&metadata, &self.schema, &self.overlays)
+        self.effective_catalog_from_metadata(&metadata).await
+    }
+
+    /// Builds the effective catalog for one provider metadata snapshot.
+    ///
+    /// Introspection validation and ordinary project loading share this path
+    /// so authored catalog semantics cannot be bypassed before publication.
+    pub async fn effective_catalog_from_metadata(
+        &self,
+        metadata: &DatabaseMetadata,
+    ) -> Result<Catalog> {
+        super::overlay::load_effective_catalog(metadata, &self.schema, &self.overlays)
             .await
             .map(|catalog| catalog.with_default_schema(self.config.default_schema.clone()))
     }

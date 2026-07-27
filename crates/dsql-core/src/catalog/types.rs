@@ -383,21 +383,25 @@ impl Catalog {
 
     /// Resolves domains and array elements into one public value shape.
     pub fn value_shape_for_type(&self, type_id: TypeId) -> Option<CatalogValueShape<'_>> {
-        let mut current = self.types.get(type_id.0)?;
+        let declared = self.types.get(type_id.0)?;
+        let mut current = declared;
         loop {
             match current.shape {
                 CatalogTypeShape::Scalar => {
-                    return Some(CatalogValueShape::Scalar { leaf: current });
+                    return Some(CatalogValueShape::Scalar { leaf: declared });
                 }
                 CatalogTypeShape::Domain { base } => {
                     current = self.types.get(base.0)?;
                 }
                 CatalogTypeShape::Array { element } => {
                     let mut element = self.types.get(element.0)?;
+                    let mut public_element = element;
                     loop {
                         match element.shape {
                             CatalogTypeShape::Scalar => {
-                                return Some(CatalogValueShape::DatabaseArray { element });
+                                return Some(CatalogValueShape::DatabaseArray {
+                                    element: public_element,
+                                });
                             }
                             CatalogTypeShape::Domain { base } => {
                                 element = self.types.get(base.0)?;
@@ -408,6 +412,7 @@ impl Catalog {
                                 // scalar. DsqlDatabaseArray<T> represents the
                                 // resulting arbitrary JSON nesting depth.
                                 element = self.types.get(nested.0)?;
+                                public_element = element;
                             }
                         }
                     }

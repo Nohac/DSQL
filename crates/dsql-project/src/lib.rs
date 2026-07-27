@@ -18,4 +18,3 @@ pub use metadata::{load_metadata_dir, store_metadata_dir};
 pub use open::{
     open_analysis_bowl, open_project_bowl, populate_project_bowl, populate_project_bowl_excluding,
 };
-pub use overlay::load_effective_catalog;
