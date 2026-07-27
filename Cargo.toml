@@ -13,7 +13,7 @@ dsql-daemon = { path = "crates/dsql-daemon" }
 dsql-execute = { path = "crates/dsql-execute" }
 dsql-generate = { path = "crates/dsql-generate" }
 dsql-introspection = { path = "crates/dsql-introspection" }
-dsql-metadata = { path = "crates/dsql-metadata" }
+dsql-metadata = { path = "crates/dsql-metadata", default-features = false }
 dsql-project = { path = "crates/dsql-project" }
 
 bowl = { git = "https://github.com/Nohac/porridge", rev = "e81194e" }

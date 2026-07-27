@@ -3,9 +3,13 @@ name = "dsql-metadata"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["render"]
+render = ["dep:facet-json", "dep:facet-json-schema", "dep:facet-typescript"]
+
 [dependencies]
 facet = { workspace = true }
-facet-json = { workspace = true }
-facet-json-schema = { workspace = true }
-facet-typescript = { workspace = true }
+facet-json = { workspace = true, optional = true }
+facet-json-schema = { workspace = true, optional = true }
+facet-typescript = { workspace = true, optional = true }
 strum = { workspace = true }

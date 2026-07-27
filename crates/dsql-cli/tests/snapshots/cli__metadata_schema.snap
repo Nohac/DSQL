@@ -16,7 +16,12 @@ expression: stdout(&schema)
             "type": "string"
           },
           "kind": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "query",
+              "fragment"
+            ],
+            "title": "DefinitionKind"
           },
           "name": {
             "type": "string"
@@ -53,7 +58,12 @@ expression: stdout(&schema)
             "type": "string"
           },
           "kind": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "query",
+              "fragment"
+            ],
+            "title": "DefinitionKind"
           },
           "name": {
             "type": "string"

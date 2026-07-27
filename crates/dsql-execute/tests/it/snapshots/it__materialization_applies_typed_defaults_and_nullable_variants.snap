@@ -8,7 +8,7 @@ MaterializedOperation {
         BoundParameter {
             path: "params.station",
             data_type: "uuid",
-            wire: "uuid",
+            wire: Uuid,
             provider_type: None,
             collection: false,
             value: "018f6f19-795f-7c3d-b1b3-8f177ab8a321",
@@ -16,7 +16,7 @@ MaterializedOperation {
         BoundParameter {
             path: "input.readings.ids",
             data_type: "int",
-            wire: "integer",
+            wire: Integer,
             provider_type: None,
             collection: true,
             value: [
@@ -26,7 +26,7 @@ MaterializedOperation {
         BoundParameter {
             path: "context.tenant_id",
             data_type: "uuid",
-            wire: "uuid",
+            wire: Uuid,
             provider_type: None,
             collection: false,
             value: "018f6f19-795f-7c3d-b1b3-8f177ab8a322",

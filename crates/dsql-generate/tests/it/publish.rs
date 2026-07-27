@@ -15,6 +15,7 @@ use dsql_generate::{
     FilterMatchLock, GenerateError, LockedFilter, LockedFilterMatch, LockedPolicyReference,
     ProjectContract,
 };
+use dsql_metadata::DefinitionKind;
 use facet::Facet;
 
 type Result<T> = std::result::Result<T, GenerateError>;
@@ -32,7 +33,7 @@ fn artifact(name: &str, body: &str) -> SnapshotArtifact {
     SnapshotArtifact {
         id: format!("default/operation/{name}"),
         family: ArtifactFamily::Operation,
-        kind: "query".to_string(),
+        kind: DefinitionKind::Query,
         scope: "default".to_string(),
         name: name.to_string(),
         serialized,

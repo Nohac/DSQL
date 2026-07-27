@@ -517,6 +517,7 @@ version = "0.1.0"
 dependencies = [
  "bowl",
  "codespan-reporting",
+ "dsql-metadata",
  "facet",
  "facet-json",
  "facet-yaml",

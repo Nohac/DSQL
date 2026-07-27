@@ -9,6 +9,8 @@
 use facet::Facet;
 use std::collections::BTreeSet;
 
+pub use dsql_metadata::WireEncoding;
+
 use super::{DataType, LiteralKind};
 use crate::entities::aggregate::AggregateFunction;
 use crate::entities::expression::ComparisonOp;
@@ -25,44 +27,6 @@ pub enum ScalarValidation {
     Integer,
     SafeInteger,
     FiniteFloat,
-}
-
-/// How one scalar crosses the public JSON and PostgreSQL parameter boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet)]
-#[facet(rename_all = "snake_case")]
-#[repr(u8)]
-pub enum WireEncoding {
-    Uuid,
-    Text,
-    Timestamptz,
-    Integer,
-    BigInteger,
-    Numeric,
-    Float,
-    Boolean,
-    Json,
-    /// Bind a JSON string as PostgreSQL `text`, then cast to the provider type.
-    TextCast,
-    /// Selecting the value is allowed, but it cannot be used as an input.
-    Unsupported,
-}
-
-impl WireEncoding {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Uuid => "uuid",
-            Self::Text => "text",
-            Self::Timestamptz => "timestamptz",
-            Self::Integer => "integer",
-            Self::BigInteger => "big_integer",
-            Self::Numeric => "numeric",
-            Self::Float => "float",
-            Self::Boolean => "boolean",
-            Self::Json => "json",
-            Self::TextCast => "text_cast",
-            Self::Unsupported => "unsupported",
-        }
-    }
 }
 
 /// Accepted source kinds and value validation for one scalar surface.

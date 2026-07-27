@@ -1,5 +1,7 @@
 //! Storage-independent artifact snapshot assembled from settled language facts.
 
+use dsql_metadata::DefinitionKind;
+
 /// Full lowercase-hex SHA-256 — the one protocol hash (artifact hashes,
 /// host content hashes); the engine's fast source fingerprint is separate.
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -61,8 +63,8 @@ pub struct SnapshotArtifact {
     pub id: String,
     /// `operation` | `fragment` — the artifact family.
     pub family: ArtifactFamily,
-    /// The metadata's own kind string (`query`, `fragment`).
-    pub kind: String,
+    /// The metadata's own definition kind.
+    pub kind: DefinitionKind,
     pub scope: String,
     pub name: String,
     /// Serialized metadata JSON, exactly as a native publisher writes it.

@@ -15,7 +15,7 @@ dsql-daemon = { workspace = true }
 dsql-execute = { workspace = true }
 dsql-generate = { workspace = true }
 dsql-introspection = { workspace = true }
-dsql-metadata = { workspace = true }
+dsql-metadata = { workspace = true, features = ["render"] }
 dsql-project = { workspace = true }
 dotenvy = { workspace = true }
 facet-json = { workspace = true }

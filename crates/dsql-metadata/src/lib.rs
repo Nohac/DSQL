@@ -1,11 +1,14 @@
 use facet::Facet;
 
+#[cfg(feature = "render")]
 const BUILD_MANIFEST_SCHEMA_ID: &str = "https://dsql.dev/schemas/build-manifest.schema.json";
 
 /// Manifest format version 5: result fields carry an explicit value shape.
 pub const BUILD_MANIFEST_VERSION: u32 = 5;
+#[cfg(feature = "render")]
 const JSON_SCHEMA_DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
+#[cfg(feature = "render")]
 #[derive(Debug, Facet)]
 #[facet(skip_all_unless_truthy)]
 struct BuildManifestJsonSchema {
@@ -15,39 +18,68 @@ struct BuildManifestJsonSchema {
     schema: facet_json_schema::JsonSchema,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet, strum::AsRefStr)]
+#[facet(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
+#[repr(u8)]
 pub enum DefinitionKind {
     Query,
     Fragment,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet, strum::AsRefStr)]
+#[facet(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
-pub enum ArtifactKind {
-    Operation,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
-#[strum(serialize_all = "snake_case")]
+#[repr(u8)]
 pub enum SqlDialect {
     Postgres,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet, strum::AsRefStr)]
+#[facet(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
+#[repr(u8)]
 pub enum ResultFieldKind {
     Scalar,
     Object,
     Array,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet, strum::AsRefStr)]
+#[facet(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
+#[repr(u8)]
 pub enum ResultValueShape {
     Scalar,
     DatabaseArray,
     Object,
+}
+
+/// How one scalar crosses the public JSON and PostgreSQL parameter boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Facet, strum::AsRefStr, strum::IntoStaticStr)]
+#[facet(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+#[repr(u8)]
+pub enum WireEncoding {
+    Uuid,
+    Text,
+    Timestamptz,
+    Integer,
+    BigInteger,
+    Numeric,
+    Float,
+    Boolean,
+    Json,
+    /// Bind a JSON string as PostgreSQL `text`, then cast to the provider type.
+    TextCast,
+    /// Selecting the value is allowed, but it cannot be used as an input.
+    Unsupported,
+}
+
+impl WireEncoding {
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -64,7 +96,7 @@ pub struct BuildManifest {
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct OperationManifestEntry {
     pub name: String,
-    pub kind: String,
+    pub kind: DefinitionKind,
     pub path: String,
     pub hash: String,
     pub source: String,
@@ -73,7 +105,7 @@ pub struct OperationManifestEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Facet)]
 pub struct FragmentManifestEntry {
     pub name: String,
-    pub kind: String,
+    pub kind: DefinitionKind,
     pub path: String,
     pub hash: String,
     pub source: String,
@@ -82,7 +114,7 @@ pub struct FragmentManifestEntry {
 #[derive(Clone, Debug, Facet)]
 pub struct OperationMetadata {
     pub name: String,
-    pub kind: String,
+    pub kind: DefinitionKind,
     pub sql: SqlMetadata,
     pub result: ResultShape,
     pub params: Vec<InputField>,
@@ -98,7 +130,7 @@ pub struct OperationMetadata {
 #[derive(Clone, Debug, Facet)]
 pub struct FragmentMetadata {
     pub name: String,
-    pub kind: String,
+    pub kind: DefinitionKind,
     pub table: String,
     pub result: ResultShape,
     pub params: Vec<InputField>,
@@ -119,7 +151,7 @@ pub struct FragmentSpreadMetadata {
 
 #[derive(Clone, Debug, Facet)]
 pub struct SqlMetadata {
-    pub dialect: String,
+    pub dialect: SqlDialect,
     /// Human-readable SQL formatted for diagnostics and development output.
     pub text: String,
     /// Semantically identical single-line SQL for compact generated output.
@@ -157,7 +189,7 @@ pub struct ResultField {
     pub path: String,
     pub name: String,
     pub parent_path: String,
-    pub kind: String,
+    pub kind: ResultFieldKind,
     pub value_type: ResultValueTypeMetadata,
     pub nullable: bool,
     /// `unconditional`, `context_only`, or `row_dependent`.
@@ -168,7 +200,7 @@ pub struct ResultField {
 #[derive(Clone, Debug, Facet)]
 pub struct ResultValueTypeMetadata {
     /// `scalar`, `database_array`, or `object`.
-    pub shape: String,
+    pub shape: ResultValueShape,
     /// Effective logical leaf name, or `object` for relation objects.
     pub name: String,
     /// Provider spelling retained for generated documentation.
@@ -195,7 +227,7 @@ pub struct InputField {
 /// Public JSON encoding plus an optional PostgreSQL text-cast target.
 #[derive(Clone, Debug, Facet)]
 pub struct WireMetadata {
-    pub encoding: String,
+    pub encoding: WireEncoding,
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub provider_type: Option<ProviderTypeMetadata>,
 }
@@ -343,6 +375,7 @@ pub struct SourceRange {
     pub end: u32,
 }
 
+#[cfg(feature = "render")]
 pub fn build_manifest_json_schema() -> Result<String, String> {
     let mut generated_schema = facet_json_schema::schema_for::<BuildManifest>();
     generated_schema.schema = Some(JSON_SCHEMA_DRAFT_2020_12.to_string());
@@ -353,15 +386,15 @@ pub fn build_manifest_json_schema() -> Result<String, String> {
     facet_json::to_string_pretty(&schema).map_err(|error| error.to_string())
 }
 
+#[cfg(feature = "render")]
 pub fn build_manifest_typescript() -> String {
+    let mut generator = facet_typescript::TypeScriptGenerator::new();
+    generator.add_type::<FragmentMetadata>();
+    generator.add_type::<OperationMetadata>();
+    generator.add_type::<BuildManifest>();
     let mut typescript = format!(
         "export const BUILD_MANIFEST_VERSION = {BUILD_MANIFEST_VERSION} as const;\n\n{}",
-        [
-            facet_typescript::to_typescript::<BuildManifest>(),
-            facet_typescript::to_typescript::<OperationMetadata>(),
-            facet_typescript::to_typescript::<FragmentMetadata>(),
-        ]
-        .join("\n")
+        generator.finish()
     );
     typescript.truncate(typescript.trim_end().len());
     typescript.push('\n');

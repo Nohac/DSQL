@@ -13,6 +13,7 @@ use dsql_core::language_bowl;
 use dsql_core::source::{ResolutionScope, ScopeDocuments, ScopeImports, SourceKind};
 use dsql_generate::publish::MatchLockMode;
 use dsql_generate::{GenerateOptions, ProjectContract, assemble_bowl, generate_project};
+use dsql_metadata::DefinitionKind;
 use dsql_project::Project;
 
 const SHARED_SOURCE: &str =
@@ -1363,7 +1364,7 @@ async fn singular_selection_shapes_flow_through_sql_and_metadata() {
         .snapshot
         .artifacts
         .iter()
-        .filter(|artifact| artifact.kind == "query")
+        .filter(|artifact| artifact.kind == DefinitionKind::Query)
         .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
         .collect::<Vec<_>>();
     artifacts.sort();

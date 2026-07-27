@@ -3,21 +3,28 @@ use dsql_execute::{
     materialize,
 };
 use dsql_metadata::{
-    DynamicInputField, DynamicInputMetadata, DynamicInputSite, DynamicInputSiteField,
-    DynamicPredicateOperatorMetadata, InputDefault, InputField, OperationMetadata, ResultShape,
-    SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata, WireMetadata,
+    DefinitionKind, DynamicInputField, DynamicInputMetadata, DynamicInputSite,
+    DynamicInputSiteField, DynamicPredicateOperatorMetadata, InputDefault, InputField,
+    OperationMetadata, ResultShape, SqlDialect, SqlMetadata, SqlParameterMetadata,
+    SqlVariantCaseMetadata, SqlVariantMetadata, WireEncoding, WireMetadata,
 };
 use facet_value::{Value, value};
 
 fn wire(data_type: &str) -> WireMetadata {
     WireMetadata {
         encoding: match data_type {
-            "int" => "integer",
-            "bigint" => "big_integer",
-            "dynamic_predicate" | "dynamic_order" => "unsupported",
-            other => other,
-        }
-        .to_string(),
+            "uuid" => WireEncoding::Uuid,
+            "text" => WireEncoding::Text,
+            "timestamptz" => WireEncoding::Timestamptz,
+            "int" => WireEncoding::Integer,
+            "bigint" => WireEncoding::BigInteger,
+            "numeric" => WireEncoding::Numeric,
+            "float" => WireEncoding::Float,
+            "boolean" => WireEncoding::Boolean,
+            "json" => WireEncoding::Json,
+            "dynamic_predicate" | "dynamic_order" => WireEncoding::Unsupported,
+            _ => WireEncoding::Unsupported,
+        },
         provider_type: None,
     }
 }
@@ -41,9 +48,9 @@ fn field(path: &str, data_type: &str, collection: bool, enum_values: &[&str]) ->
 fn operation() -> OperationMetadata {
     OperationMetadata {
         name: "StationReadings".to_string(),
-        kind: "query".to_string(),
+        kind: DefinitionKind::Query,
         sql: SqlMetadata {
-            dialect: "postgres".to_string(),
+            dialect: SqlDialect::Postgres,
             text: "select $1, $2, $3 order by recorded_at {{params.direction}}".to_string(),
             compact_text: "select $1, $2, $3 order by recorded_at {{params.direction}}".to_string(),
             parameters: ["params.station", "input.readings.ids", "context.tenant_id"]
@@ -89,9 +96,9 @@ fn operation() -> OperationMetadata {
 fn operation_with_fields(params: Vec<InputField>, parameters: &[&str]) -> OperationMetadata {
     OperationMetadata {
         name: "Inputs".to_string(),
-        kind: "query".to_string(),
+        kind: DefinitionKind::Query,
         sql: SqlMetadata {
-            dialect: "postgres".to_string(),
+            dialect: SqlDialect::Postgres,
             text: "select $1".to_string(),
             compact_text: "select $1".to_string(),
             parameters: parameters
@@ -175,9 +182,9 @@ fn dynamic_operation() -> OperationMetadata {
         .collect();
     OperationMetadata {
         name: "Dynamic".to_string(),
-        kind: "query".to_string(),
+        kind: DefinitionKind::Query,
         sql: SqlMetadata {
-            dialect: "postgres".to_string(),
+            dialect: SqlDialect::Postgres,
             text: "select $1 where {{dynamic:0}} and {{dynamic:1}} order by {{dynamic:2}}"
                 .to_string(),
             compact_text: "select $1 where {{dynamic:0}} and {{dynamic:1}} order by {{dynamic:2}}"
@@ -809,19 +816,12 @@ fn materialization_rejects_missing_and_unknown_variant_values() {
 }
 
 #[test]
-fn materialization_rejects_non_query_and_non_postgres_metadata() {
+fn materialization_rejects_non_query_metadata() {
     let mut unsupported = operation();
-    unsupported.kind = "mutation".to_string();
+    unsupported.kind = DefinitionKind::Fragment;
     assert!(matches!(
         materialize(&unsupported, &ExecutionBindings::default()),
-        Err(ExecuteError::UnsupportedOperationKind(kind)) if kind == "mutation"
-    ));
-
-    unsupported.kind = "query".to_string();
-    unsupported.sql.dialect = "sqlite".to_string();
-    assert!(matches!(
-        materialize(&unsupported, &ExecutionBindings::default()),
-        Err(ExecuteError::UnsupportedDialect(dialect)) if dialect == "sqlite"
+        Err(ExecuteError::UnsupportedOperationKind(kind)) if kind == "fragment"
     ));
 }
 
@@ -839,7 +839,7 @@ async fn postgres_json_bindings_roundtrip_through_sqlx() {
             BoundParameter {
                 path: "params.scalar".to_string(),
                 data_type: "json".to_string(),
-                wire: "json".to_string(),
+                wire: WireEncoding::Json,
                 provider_type: None,
                 collection: false,
                 value: value!({ "nested": [1, true] }),
@@ -847,7 +847,7 @@ async fn postgres_json_bindings_roundtrip_through_sqlx() {
             BoundParameter {
                 path: "params.items".to_string(),
                 data_type: "json".to_string(),
-                wire: "json".to_string(),
+                wire: WireEncoding::Json,
                 provider_type: None,
                 collection: true,
                 value: value!([{ "item": 1 }, null, ["nested"]]),
@@ -855,7 +855,7 @@ async fn postgres_json_bindings_roundtrip_through_sqlx() {
             BoundParameter {
                 path: "params.absent".to_string(),
                 data_type: "json".to_string(),
-                wire: "json".to_string(),
+                wire: WireEncoding::Json,
                 provider_type: None,
                 collection: false,
                 value: Value::NULL,
@@ -888,7 +888,7 @@ async fn postgres_text_cast_bindings_cover_provider_scalars_and_collections() {
     let text_cast = |path: &str, name: &str, collection: bool, value: Value| BoundParameter {
         path: path.to_string(),
         data_type: "text".to_string(),
-        wire: "text_cast".to_string(),
+        wire: WireEncoding::TextCast,
         provider_type: Some(("pg_catalog".to_string(), name.to_string())),
         collection,
         value,
@@ -959,7 +959,7 @@ async fn postgres_text_cast_failures_have_a_stable_input_error() {
         parameters: vec![BoundParameter {
             path: "params.event_date".to_string(),
             data_type: "text".to_string(),
-            wire: "text_cast".to_string(),
+            wire: WireEncoding::TextCast,
             provider_type: Some(("pg_catalog".to_string(), "date".to_string())),
             collection: false,
             value: value!("not-a-date"),

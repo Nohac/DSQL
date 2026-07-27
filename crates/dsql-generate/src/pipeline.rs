@@ -17,7 +17,7 @@ use dsql_core::source::{
     BelongsToHost, ContentSpan, FilePath, ResolutionScope, ScopeImports, SourceOffset,
 };
 use dsql_core::sql::{GeneratedSqlFact, SqlOptions};
-use dsql_metadata::SourceRange;
+use dsql_metadata::{DefinitionKind, SourceRange};
 
 use crate::assemble::{
     FragmentInputs, OperationInputs, PolicySourceInput, fragment_metadata, operation_metadata,
@@ -166,7 +166,7 @@ pub async fn assemble_bowl(
         artifacts.push(snapshot_artifact(
             ArtifactFamily::Operation,
             metadata.name.clone(),
-            metadata.kind.clone(),
+            metadata.kind,
             &metadata,
             &operation.scope,
             source_root,
@@ -194,7 +194,7 @@ pub async fn assemble_bowl(
         artifacts.push(snapshot_artifact(
             ArtifactFamily::Fragment,
             metadata.name.clone(),
-            metadata.kind.clone(),
+            metadata.kind,
             &metadata,
             &fragment.scope,
             source_root,
@@ -266,7 +266,7 @@ pub async fn assemble_bowl(
 fn snapshot_artifact<M: facet::Facet<'static>>(
     family: ArtifactFamily,
     name: String,
-    kind: String,
+    kind: DefinitionKind,
     metadata: &M,
     scope: &str,
     source_root: Option<&Path>,

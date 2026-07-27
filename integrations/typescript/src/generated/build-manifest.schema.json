@@ -12,7 +12,12 @@
             "type": "string"
           },
           "kind": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "query",
+              "fragment"
+            ],
+            "title": "DefinitionKind"
           },
           "name": {
             "type": "string"
@@ -49,7 +54,12 @@
             "type": "string"
           },
           "kind": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "query",
+              "fragment"
+            ],
+            "title": "DefinitionKind"
           },
           "name": {
             "type": "string"

@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use dsql_metadata::{
-    DynamicInputField, DynamicInputMetadata, DynamicInputSite, DynamicInputSiteField, InputDefault,
-    InputField, OperationMetadata, WireMetadata,
+    DefinitionKind, DynamicInputField, DynamicInputMetadata, DynamicInputSite,
+    DynamicInputSiteField, InputDefault, InputField, OperationMetadata, WireEncoding, WireMetadata,
 };
 use facet_value::{VArray, VObject, Value};
 use sqlx::postgres::{PgArguments, PgPool, PgPoolOptions};
@@ -55,7 +55,7 @@ pub struct MaterializedOperation {
 pub struct BoundParameter {
     pub path: String,
     pub data_type: String,
-    pub wire: String,
+    pub wire: WireEncoding,
     pub provider_type: Option<(String, String)>,
     pub collection: bool,
     pub value: Value,
@@ -81,8 +81,6 @@ pub enum ExecuteError {
     InvalidDynamicMetadata(String),
     #[error("operation kind `{0}` cannot be executed as a PostgreSQL query")]
     UnsupportedOperationKind(String),
-    #[error("operation SQL dialect `{0}` is not PostgreSQL")]
-    UnsupportedDialect(String),
     #[error("operation returned invalid JSON: {0}")]
     InvalidOutput(String),
     #[error("operation JSON input `{path}` could not be encoded: {message}")]
@@ -153,7 +151,7 @@ impl PostgresExecutor {
         parameters: &[BoundParameter],
     ) -> Option<ExecuteError> {
         for parameter in parameters {
-            if parameter.wire != "text_cast" || parameter.value.is_null() {
+            if parameter.wire != WireEncoding::TextCast || parameter.value.is_null() {
                 continue;
             }
             let Some((schema, name)) = &parameter.provider_type else {
@@ -190,14 +188,9 @@ pub fn materialize(
     operation: &OperationMetadata,
     bindings: &ExecutionBindings,
 ) -> Result<MaterializedOperation, ExecuteError> {
-    if operation.kind != "query" {
+    if operation.kind != DefinitionKind::Query {
         return Err(ExecuteError::UnsupportedOperationKind(
-            operation.kind.clone(),
-        ));
-    }
-    if operation.sql.dialect != "postgres" {
-        return Err(ExecuteError::UnsupportedDialect(
-            operation.sql.dialect.clone(),
+            operation.kind.as_ref().to_string(),
         ));
     }
     let declared_fields = operation
@@ -250,7 +243,7 @@ pub fn materialize(
             Ok(BoundParameter {
                 path: parameter.path.clone(),
                 data_type: field.data_type.clone(),
-                wire: field_wire(field).to_string(),
+                wire: field_wire(field),
                 provider_type: field_provider_type(field),
                 collection: field.collection == Some(true),
                 value: materialized_value(&values, &parameter.path)?.clone(),
@@ -599,12 +592,12 @@ fn dynamic_field<'a>(
         })
 }
 
-fn field_wire(field: &InputField) -> &str {
-    &field.wire.encoding
+fn field_wire(field: &InputField) -> WireEncoding {
+    field.wire.encoding
 }
 
-fn dynamic_field_wire(field: &DynamicInputField) -> &str {
-    &field.wire.encoding
+fn dynamic_field_wire(field: &DynamicInputField) -> WireEncoding {
+    field.wire.encoding
 }
 
 fn field_provider_type(field: &InputField) -> Option<(String, String)> {
@@ -628,7 +621,7 @@ fn dynamic_parameter(
         parameters.push(BoundParameter {
             path: path.to_string(),
             data_type: field.data_type.clone(),
-            wire: dynamic_field_wire(field).to_string(),
+            wire: dynamic_field_wire(field),
             provider_type: field_provider_type_from_wire(&field.wire),
             collection,
             value: value.clone(),
@@ -688,19 +681,22 @@ fn validate_dynamic_scalar(
         return Err(invalid(path, &format!("a non-null {data_type} value")));
     }
     let valid = match dynamic_field_wire(field) {
-        "uuid" => string_value(value).is_some_and(|value| Uuid::parse_str(value).is_ok()),
-        "text" => string_value(value).is_some(),
-        "text_cast" => string_value(value).is_some(),
-        "timestamptz" => {
+        WireEncoding::Uuid => {
+            string_value(value).is_some_and(|value| Uuid::parse_str(value).is_ok())
+        }
+        WireEncoding::Text | WireEncoding::TextCast => string_value(value).is_some(),
+        WireEncoding::Timestamptz => {
             string_value(value).is_some_and(|value| DateTime::parse_from_rfc3339(value).is_ok())
         }
-        "integer" => integer_value(value).is_some_and(is_safe_integer),
-        "big_integer" => big_integer_value(value).is_some(),
-        "numeric" => string_value(value).is_some_and(|value| BigDecimal::from_str(value).is_ok()),
-        "float" => float_value(value).is_some_and(f64::is_finite),
-        "boolean" => value.as_bool().is_some(),
-        "json" => true,
-        _ => {
+        WireEncoding::Integer => integer_value(value).is_some_and(is_safe_integer),
+        WireEncoding::BigInteger => big_integer_value(value).is_some(),
+        WireEncoding::Numeric => {
+            string_value(value).is_some_and(|value| BigDecimal::from_str(value).is_ok())
+        }
+        WireEncoding::Float => float_value(value).is_some_and(f64::is_finite),
+        WireEncoding::Boolean => value.as_bool().is_some(),
+        WireEncoding::Json => true,
+        WireEncoding::Unsupported => {
             return Err(ExecuteError::UnsupportedType {
                 path: path.to_string(),
                 data_type: data_type.to_string(),
@@ -766,7 +762,7 @@ fn input_value(
 }
 
 fn validate_safe_integer(field: &InputField, value: &Value) -> Result<(), ExecuteError> {
-    if value.is_null() || field_wire(field) != "integer" {
+    if value.is_null() || field_wire(field) != WireEncoding::Integer {
         return Ok(());
     }
     if field.collection == Some(true) {
@@ -790,7 +786,7 @@ fn validate_safe_integer(field: &InputField, value: &Value) -> Result<(), Execut
 
 fn validate_input_wire(field: &InputField, value: &Value) -> Result<(), ExecuteError> {
     if value.is_null()
-        || field_wire(field) == "integer"
+        || field_wire(field) == WireEncoding::Integer
         || matches!(
             field.data_type.as_str(),
             "dynamic_predicate" | "dynamic_order"
@@ -827,18 +823,21 @@ fn validate_input_wire(field: &InputField, value: &Value) -> Result<(), ExecuteE
 
 fn input_scalar_is_valid(field: &InputField, value: &Value) -> bool {
     match field_wire(field) {
-        "uuid" => string_value(value).is_some_and(|value| Uuid::parse_str(value).is_ok()),
-        "text" | "text_cast" => string_value(value).is_some(),
-        "timestamptz" => {
+        WireEncoding::Uuid => {
+            string_value(value).is_some_and(|value| Uuid::parse_str(value).is_ok())
+        }
+        WireEncoding::Text | WireEncoding::TextCast => string_value(value).is_some(),
+        WireEncoding::Timestamptz => {
             string_value(value).is_some_and(|value| DateTime::parse_from_rfc3339(value).is_ok())
         }
-        "big_integer" => big_integer_value(value).is_some(),
-        "numeric" => string_value(value).is_some_and(|value| BigDecimal::from_str(value).is_ok()),
-        "float" => float_value(value).is_some(),
-        "boolean" => value.as_bool().is_some(),
-        "json" => true,
-        "integer" | "unsupported" => false,
-        _ => false,
+        WireEncoding::BigInteger => big_integer_value(value).is_some(),
+        WireEncoding::Numeric => {
+            string_value(value).is_some_and(|value| BigDecimal::from_str(value).is_ok())
+        }
+        WireEncoding::Float => float_value(value).is_some(),
+        WireEncoding::Boolean => value.as_bool().is_some(),
+        WireEncoding::Json => true,
+        WireEncoding::Integer | WireEncoding::Unsupported => false,
     }
 }
 
@@ -970,24 +969,25 @@ fn bind_scalar<'q>(
     if value.is_null() {
         return bind_null_scalar(query, parameter);
     }
-    match parameter.wire.as_str() {
-        "uuid" => Ok(query
+    match parameter.wire {
+        WireEncoding::Uuid => Ok(query
             .bind(Uuid::parse_str(string_value(value).ok_or_else(error)?).map_err(|_| error())?)),
-        "text" => Ok(query.bind(string_value(value).ok_or_else(error)?)),
-        "text_cast" => Ok(query.bind(string_value(value).ok_or_else(error)?)),
-        "timestamptz" => Ok(query.bind(
+        WireEncoding::Text | WireEncoding::TextCast => {
+            Ok(query.bind(string_value(value).ok_or_else(error)?))
+        }
+        WireEncoding::Timestamptz => Ok(query.bind(
             DateTime::parse_from_rfc3339(string_value(value).ok_or_else(error)?)
                 .map_err(|_| error())?,
         )),
-        "integer" => Ok(query.bind(integer_value(value).ok_or_else(error)?)),
-        "big_integer" => Ok(query.bind(big_integer_value(value).ok_or_else(error)?)),
-        "numeric" => Ok(query.bind(
+        WireEncoding::Integer => Ok(query.bind(integer_value(value).ok_or_else(error)?)),
+        WireEncoding::BigInteger => Ok(query.bind(big_integer_value(value).ok_or_else(error)?)),
+        WireEncoding::Numeric => Ok(query.bind(
             BigDecimal::from_str(string_value(value).ok_or_else(error)?).map_err(|_| error())?,
         )),
-        "float" => Ok(query.bind(float_value(value).ok_or_else(error)?)),
-        "boolean" => Ok(query.bind(value.as_bool().ok_or_else(error)?)),
-        "json" => Ok(query.bind(Json(json_value(parameter)?))),
-        _ => Err(ExecuteError::UnsupportedType {
+        WireEncoding::Float => Ok(query.bind(float_value(value).ok_or_else(error)?)),
+        WireEncoding::Boolean => Ok(query.bind(value.as_bool().ok_or_else(error)?)),
+        WireEncoding::Json => Ok(query.bind(Json(json_value(parameter)?))),
+        WireEncoding::Unsupported => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
             data_type: parameter.data_type.clone(),
         }),
@@ -998,18 +998,17 @@ fn bind_null_scalar<'q>(
     query: Query<'q>,
     parameter: &BoundParameter,
 ) -> Result<Query<'q>, ExecuteError> {
-    match parameter.wire.as_str() {
-        "uuid" => Ok(query.bind(None::<Uuid>)),
-        "text" => Ok(query.bind(None::<String>)),
-        "text_cast" => Ok(query.bind(None::<String>)),
-        "timestamptz" => Ok(query.bind(None::<DateTime<FixedOffset>>)),
-        "integer" => Ok(query.bind(None::<i64>)),
-        "big_integer" => Ok(query.bind(None::<i64>)),
-        "numeric" => Ok(query.bind(None::<BigDecimal>)),
-        "float" => Ok(query.bind(None::<f64>)),
-        "boolean" => Ok(query.bind(None::<bool>)),
-        "json" => Ok(query.bind(None::<Json<Box<JsonRawValue>>>)),
-        _ => Err(ExecuteError::UnsupportedType {
+    match parameter.wire {
+        WireEncoding::Uuid => Ok(query.bind(None::<Uuid>)),
+        WireEncoding::Text | WireEncoding::TextCast => Ok(query.bind(None::<String>)),
+        WireEncoding::Timestamptz => Ok(query.bind(None::<DateTime<FixedOffset>>)),
+        WireEncoding::Integer => Ok(query.bind(None::<i64>)),
+        WireEncoding::BigInteger => Ok(query.bind(None::<i64>)),
+        WireEncoding::Numeric => Ok(query.bind(None::<BigDecimal>)),
+        WireEncoding::Float => Ok(query.bind(None::<f64>)),
+        WireEncoding::Boolean => Ok(query.bind(None::<bool>)),
+        WireEncoding::Json => Ok(query.bind(None::<Json<Box<JsonRawValue>>>)),
+        WireEncoding::Unsupported => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
             data_type: parameter.data_type.clone(),
         }),
@@ -1035,9 +1034,11 @@ fn bind_collection<'q>(
             &format!("an array of {}", parameter.data_type),
         )
     };
-    match parameter.wire.as_str() {
-        "uuid" => Ok(query.bind(parse_strings(values, Uuid::parse_str).ok_or_else(error)?)),
-        "text" => Ok(query.bind(
+    match parameter.wire {
+        WireEncoding::Uuid => {
+            Ok(query.bind(parse_strings(values, Uuid::parse_str).ok_or_else(error)?))
+        }
+        WireEncoding::Text | WireEncoding::TextCast => Ok(query.bind(
             values
                 .iter()
                 .map(|value| {
@@ -1050,23 +1051,10 @@ fn bind_collection<'q>(
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
-        "text_cast" => Ok(query.bind(
-            values
-                .iter()
-                .map(|value| {
-                    if value.is_null() {
-                        Some(None)
-                    } else {
-                        string_value(value).map(|value| Some(value.to_string()))
-                    }
-                })
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(error)?,
-        )),
-        "timestamptz" => {
+        WireEncoding::Timestamptz => {
             Ok(query.bind(parse_strings(values, DateTime::parse_from_rfc3339).ok_or_else(error)?))
         }
-        "integer" => Ok(query.bind(
+        WireEncoding::Integer => Ok(query.bind(
             values
                 .iter()
                 .map(|value| {
@@ -1077,11 +1065,13 @@ fn bind_collection<'q>(
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
-        "big_integer" => {
+        WireEncoding::BigInteger => {
             Ok(query.bind(parse_strings(values, str::parse::<i64>).ok_or_else(error)?))
         }
-        "numeric" => Ok(query.bind(parse_strings(values, BigDecimal::from_str).ok_or_else(error)?)),
-        "float" => Ok(query.bind(
+        WireEncoding::Numeric => {
+            Ok(query.bind(parse_strings(values, BigDecimal::from_str).ok_or_else(error)?))
+        }
+        WireEncoding::Float => Ok(query.bind(
             values
                 .iter()
                 .map(|value| {
@@ -1092,7 +1082,7 @@ fn bind_collection<'q>(
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
-        "boolean" => Ok(query.bind(
+        WireEncoding::Boolean => Ok(query.bind(
             values
                 .iter()
                 .map(|value| {
@@ -1104,7 +1094,7 @@ fn bind_collection<'q>(
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(error)?,
         )),
-        "json" => {
+        WireEncoding::Json => {
             let values = values
                 .iter()
                 .map(|value| {
@@ -1117,7 +1107,7 @@ fn bind_collection<'q>(
                 .collect::<Result<Vec<_>, ExecuteError>>()?;
             Ok(query.bind(values))
         }
-        _ => Err(ExecuteError::UnsupportedType {
+        WireEncoding::Unsupported => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
             data_type: parameter.data_type.clone(),
         }),
@@ -1128,18 +1118,17 @@ fn bind_null_collection<'q>(
     query: Query<'q>,
     parameter: &BoundParameter,
 ) -> Result<Query<'q>, ExecuteError> {
-    match parameter.wire.as_str() {
-        "uuid" => Ok(query.bind(None::<Vec<Option<Uuid>>>)),
-        "text" => Ok(query.bind(None::<Vec<Option<String>>>)),
-        "text_cast" => Ok(query.bind(None::<Vec<Option<String>>>)),
-        "timestamptz" => Ok(query.bind(None::<Vec<Option<DateTime<FixedOffset>>>>)),
-        "integer" => Ok(query.bind(None::<Vec<Option<i64>>>)),
-        "big_integer" => Ok(query.bind(None::<Vec<Option<i64>>>)),
-        "numeric" => Ok(query.bind(None::<Vec<Option<BigDecimal>>>)),
-        "float" => Ok(query.bind(None::<Vec<Option<f64>>>)),
-        "boolean" => Ok(query.bind(None::<Vec<Option<bool>>>)),
-        "json" => Ok(query.bind(None::<Vec<Option<Json<Box<JsonRawValue>>>>>)),
-        _ => Err(ExecuteError::UnsupportedType {
+    match parameter.wire {
+        WireEncoding::Uuid => Ok(query.bind(None::<Vec<Option<Uuid>>>)),
+        WireEncoding::Text | WireEncoding::TextCast => Ok(query.bind(None::<Vec<Option<String>>>)),
+        WireEncoding::Timestamptz => Ok(query.bind(None::<Vec<Option<DateTime<FixedOffset>>>>)),
+        WireEncoding::Integer => Ok(query.bind(None::<Vec<Option<i64>>>)),
+        WireEncoding::BigInteger => Ok(query.bind(None::<Vec<Option<i64>>>)),
+        WireEncoding::Numeric => Ok(query.bind(None::<Vec<Option<BigDecimal>>>)),
+        WireEncoding::Float => Ok(query.bind(None::<Vec<Option<f64>>>)),
+        WireEncoding::Boolean => Ok(query.bind(None::<Vec<Option<bool>>>)),
+        WireEncoding::Json => Ok(query.bind(None::<Vec<Option<Json<Box<JsonRawValue>>>>>)),
+        WireEncoding::Unsupported => Err(ExecuteError::UnsupportedType {
             path: parameter.path.clone(),
             data_type: parameter.data_type.clone(),
         }),

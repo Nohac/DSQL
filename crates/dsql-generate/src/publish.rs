@@ -392,14 +392,14 @@ fn manifest_for(snapshot: &GenerationSnapshot, generation_id: u64) -> BuildManif
         match artifact.family {
             ArtifactFamily::Operation => operations.push(OperationManifestEntry {
                 name: artifact.name.clone(),
-                kind: artifact.kind.clone(),
+                kind: artifact.kind,
                 path,
                 hash: artifact.hash.clone(),
                 source: artifact.source.clone(),
             }),
             ArtifactFamily::Fragment => fragments.push(FragmentManifestEntry {
                 name: artifact.name.clone(),
-                kind: artifact.kind.clone(),
+                kind: artifact.kind,
                 path,
                 hash: artifact.hash.clone(),
                 source: artifact.source.clone(),

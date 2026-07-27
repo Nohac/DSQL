@@ -75,9 +75,9 @@ pub(crate) fn operation_metadata(
 ) -> Result<OperationMetadata> {
     Ok(OperationMetadata {
         name: inputs.seed.query_name.clone(),
-        kind: DefinitionKind::Query.as_ref().to_string(),
+        kind: DefinitionKind::Query,
         sql: SqlMetadata {
-            dialect: SqlDialect::Postgres.as_ref().to_string(),
+            dialect: SqlDialect::Postgres,
             text: inputs.sql.sql.clone(),
             compact_text: inputs.sql.compact_sql.clone(),
             parameters: inputs
@@ -276,7 +276,7 @@ pub(crate) fn fragment_metadata(
         })?;
     Ok(FragmentMetadata {
         name: inputs.plan.name.clone(),
-        kind: DefinitionKind::Fragment.as_ref().to_string(),
+        kind: DefinitionKind::Fragment,
         table: table.name.clone(),
         result: fragment_result_shape(
             catalog,
@@ -612,7 +612,7 @@ fn collect_collection_fields(
         path: path.clone(),
         name: name.to_string(),
         parent_path: parent_path.to_string(),
-        kind: kind.as_ref().to_string(),
+        kind,
         value_type: object_result_value_type(),
         nullable: access.inherited_nullable,
         access: access_label(access.inherited_access).to_string(),
@@ -661,7 +661,7 @@ fn collect_collection_children(
                     path: join_path(parent_path, &key.output_name),
                     name: key.output_name.clone(),
                     parent_path: parent_path.to_string(),
-                    kind: ResultFieldKind::Scalar.as_ref().to_string(),
+                    kind: ResultFieldKind::Scalar,
                     value_type: result_value_type_for_column(catalog, key.column)
                         .unwrap_or_else(|| result_value_type_for_data_type(key.data_type)),
                     nullable: access.inherited_nullable
@@ -681,7 +681,7 @@ fn collect_collection_children(
                     path: join_path(parent_path, &field.output_name),
                     name: field.output_name.clone(),
                     parent_path: parent_path.to_string(),
-                    kind: ResultFieldKind::Scalar.as_ref().to_string(),
+                    kind: ResultFieldKind::Scalar,
                     value_type: aggregate_result_value_type(catalog, field),
                     nullable: access.inherited_nullable || field.nullable,
                     access: access_label(access.inherited_access.combine(field.operand.map_or(
@@ -722,7 +722,7 @@ fn collect_result_item_fields(
                 path: join_path(parent_path, &projection.output_name),
                 name: projection.output_name.clone(),
                 parent_path: parent_path.to_string(),
-                kind: ResultFieldKind::Scalar.as_ref().to_string(),
+                kind: ResultFieldKind::Scalar,
                 value_type: result_value_type_for_column(catalog, column.id).unwrap_or_else(|| {
                     result_value_type_for_data_type(catalog.data_type_for_column(column.id))
                 }),
@@ -923,8 +923,8 @@ fn logical_type_for_catalog_type(data_type: &CatalogType) -> &str {
 
 fn object_result_value_type() -> ResultValueTypeMetadata {
     ResultValueTypeMetadata {
-        shape: ResultValueShape::Object.as_ref().to_string(),
-        name: ResultValueShape::Object.as_ref().to_string(),
+        shape: ResultValueShape::Object,
+        name: "object".to_string(),
         display: None,
         wire: wire_metadata_for_data_type(DataType::Unknown),
     }
@@ -968,13 +968,13 @@ fn result_value_type_for_catalog_type(
 ) -> ResultValueTypeMetadata {
     match catalog.value_shape_for_type(declared.id) {
         Some(CatalogValueShape::Scalar { leaf }) => ResultValueTypeMetadata {
-            shape: ResultValueShape::Scalar.as_ref().to_string(),
+            shape: ResultValueShape::Scalar,
             name: logical_type_for_catalog_type(leaf).to_string(),
             display: Some(declared.readable_type.clone()),
             wire: wire_metadata_for_catalog_type(declared),
         },
         Some(CatalogValueShape::DatabaseArray { element }) => ResultValueTypeMetadata {
-            shape: ResultValueShape::DatabaseArray.as_ref().to_string(),
+            shape: ResultValueShape::DatabaseArray,
             name: logical_type_for_catalog_type(element).to_string(),
             display: Some(declared.readable_type.clone()),
             wire: wire_metadata_for_catalog_type(element),
@@ -985,7 +985,7 @@ fn result_value_type_for_catalog_type(
 
 fn result_value_type_for_data_type(data_type: DataType) -> ResultValueTypeMetadata {
     ResultValueTypeMetadata {
-        shape: ResultValueShape::Scalar.as_ref().to_string(),
+        shape: ResultValueShape::Scalar,
         name: data_type.as_str().to_string(),
         display: None,
         wire: wire_metadata_for_data_type(data_type),
@@ -994,7 +994,7 @@ fn result_value_type_for_data_type(data_type: DataType) -> ResultValueTypeMetada
 
 fn wire_metadata_for_catalog_type(data_type: &CatalogType) -> WireMetadata {
     WireMetadata {
-        encoding: data_type.capabilities.wire.as_str().to_string(),
+        encoding: data_type.capabilities.wire,
         provider_type: (data_type.capabilities.wire == WireEncoding::TextCast)
             .then(|| provider_type_metadata(&data_type.key)),
     }
@@ -1002,10 +1002,7 @@ fn wire_metadata_for_catalog_type(data_type: &CatalogType) -> WireMetadata {
 
 fn wire_metadata_for_data_type(data_type: DataType) -> WireMetadata {
     WireMetadata {
-        encoding: Catalog::builtin_capabilities(data_type)
-            .wire
-            .as_str()
-            .to_string(),
+        encoding: Catalog::builtin_capabilities(data_type).wire,
         provider_type: None,
     }
 }
@@ -1064,7 +1061,7 @@ fn context_fields(
                     .and_then(|key| catalog.type_by_key(key))
                     .map_or_else(
                         || WireMetadata {
-                            encoding: requirement.wire.as_str().to_string(),
+                            encoding: requirement.wire,
                             provider_type: requirement
                                 .provider_type
                                 .as_ref()
