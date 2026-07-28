@@ -260,6 +260,10 @@ class ScalarModuleContext {
     this.#mappings = mappings;
   }
 
+  hasMapping(logicalName: string): boolean {
+    return this.#mappings[logicalName] !== undefined;
+  }
+
   typeFor(
     logicalName: string,
     wire: WireEncoding,
@@ -489,43 +493,37 @@ function renderOperationModule(
     operation.fragment_spreads,
     artifacts.fragments,
     scalarContext,
-    true,
   );
   const resultLiteral = resultTypeLiteral(resultCtx);
-  const wireResultCtx = resultTypeContext(
+  const wireResult = resultWireTypeLiteral(
     operation.result.fields,
-    [],
-    artifacts.fragments,
+    resultType,
     scalarContext,
-    false,
   );
-  const wireResultLiteral = resultTypeLiteral(wireResultCtx);
   const dynamicTypes = dynamicInputTypeDefinitions(operation, scalarContext);
   const paramsLiteral = paramsTypeLiteral(
     operation.params,
     scalarContext,
-    true,
     operation.dynamic_inputs,
     operation.name,
   );
-  const wireParamsLiteral = paramsTypeLiteral(
+  const wireParams = paramsWireTypeLiteral(
     operation.params,
+    paramsType,
     scalarContext,
-    false,
-    operation.dynamic_inputs,
-    operation.name,
+    dynamicTypes.wireTypes,
   );
   const inputLiteral = inputTypeLiteral(
     operation.input,
     scalarContext,
-    true,
     operation.fragment_spreads,
     artifacts.fragments,
   );
-  const wireInputLiteral = inputTypeLiteral(
+  const wireInput = inputWireTypeLiteral(
     operation.input,
+    INPUT_PREFIX,
+    inputType,
     scalarContext,
-    false,
   );
   const contextLiteral = contextTypeLiteral(operation.context, scalarContext);
   const publicInputs = renderInputFields(
@@ -555,16 +553,23 @@ function renderOperationModule(
           : {}),
       })
     : undefined;
+  const usesWireReplacement =
+    wireResult.usesReplacement ||
+    wireParams.usesReplacement ||
+    wireInput.usesReplacement ||
+    dynamicTypes.usesReplacement;
   const runtimeImports = [
-    ...(options.includeExecutionPayload ? ["DsqlExecutionPayload"] : []),
-    ...(resultUsesDatabaseArray(resultCtx) ||
-    resultUsesDatabaseArray(wireResultCtx)
-      ? ["DsqlDatabaseArray"]
-      : []),
-    "DsqlOperation",
-    ...scalarContext.runtimeTypes(),
-    "DsqlWireContract",
-  ];
+    ...new Set([
+      ...(options.includeExecutionPayload ? ["DsqlExecutionPayload"] : []),
+      ...(resultUsesDatabaseArray(resultCtx) || wireResult.usesDatabaseArray
+        ? ["DsqlDatabaseArray"]
+        : []),
+      ...(usesWireReplacement ? ["DsqlReplaceFields"] : []),
+      "DsqlOperation",
+      ...scalarContext.runtimeTypes(),
+      "DsqlWireContract",
+    ]),
+  ].sort();
   const runtimeValues = resultMaterializer?.runtimeValues ?? [];
   const statements = [
     `import type { ${runtimeImports.join(", ")} } from "@dsql/typescript/runtime";`,
@@ -578,16 +583,16 @@ function renderOperationModule(
     "",
     `export type ${resultType} = ${resultLiteral};`,
     "",
-    `export type ${wireResultType} = ${wireResultLiteral};`,
+    `export type ${wireResultType} = ${wireResult.type};`,
     "",
-    ...dynamicTypes,
+    ...dynamicTypes.statements,
     `export type ${paramsType} = ${paramsLiteral};`,
     "",
-    `export type ${wireParamsType} = ${wireParamsLiteral};`,
+    `export type ${wireParamsType} = ${wireParams.type};`,
     "",
     `export type ${inputType} = ${inputLiteral};`,
     "",
-    `export type ${wireInputType} = ${wireInputLiteral};`,
+    `export type ${wireInputType} = ${wireInput.type};`,
     "",
     `export type ${contextType} = ${contextLiteral};`,
     "",
@@ -685,7 +690,10 @@ function renderOperationExecutionModule(
       ? { resultMaterializer: resultMaterializer.name }
       : {}),
   });
-  const runtimeImports = ["DsqlExecutionPayload", ...scalarContext.runtimeTypes()];
+  const runtimeImports = [
+    "DsqlExecutionPayload",
+    ...scalarContext.runtimeTypes(),
+  ].sort();
   const runtimeValues = resultMaterializer?.runtimeValues ?? [];
   return [
     `import type { ${runtimeImports.join(", ")} } from "@dsql/typescript/runtime";`,
@@ -779,25 +787,20 @@ function renderFragmentModule(
     fragment.fragment_spreads,
     artifacts.fragments,
     scalarContext,
-    true,
   );
   const resultLiteral = resultTypeLiteral(resultCtx);
   const runtimeTypes = ["DsqlFragmentDefinition"];
   if (resultUsesDatabaseArray(resultCtx)) {
     runtimeTypes.unshift("DsqlDatabaseArray");
   }
+  runtimeTypes.sort();
   const paramsLiteral = paramsTypeLiteral(
     fragment.params,
     scalarContext,
-    true,
     [],
     fragment.name,
   );
-  const inputLiteral = inputTypeLiteral(
-    fragment.input,
-    scalarContext,
-    true,
-  );
+  const inputLiteral = inputTypeLiteral(fragment.input, scalarContext);
   return [
     `import type { ${runtimeTypes.join(", ")} } from "@dsql/typescript/runtime";`,
     ...scalarContext.imports(),
@@ -1040,7 +1043,6 @@ type ResultTypeCtx = {
   readonly provided: ReadonlySet<string>;
   readonly used: Set<string>;
   readonly scalars: ScalarModuleContext;
-  readonly mapped: boolean;
 };
 
 function resultTypeContext(
@@ -1048,7 +1050,6 @@ function resultTypeContext(
   spreads: readonly FragmentSpreadMetadata[],
   fragments: readonly FragmentMetadata[],
   scalars: ScalarModuleContext,
-  mapped: boolean,
 ): ResultTypeCtx {
   const fragmentsByName = new Map(fragments.map((fragment) => [fragment.name, fragment]));
   const provided = new Set<string>();
@@ -1065,7 +1066,6 @@ function resultTypeContext(
     provided,
     used: new Set(),
     scalars,
-    mapped,
   };
 }
 
@@ -1149,10 +1149,121 @@ function resultTypeLiteral(ctx: ResultTypeCtx): string {
   return objectTypeAt(ctx, "");
 }
 
+type WireTypeExpression = {
+  readonly type: string;
+  readonly differs: boolean;
+  readonly usesDatabaseArray: boolean;
+  readonly usesReplacement: boolean;
+};
+
+function resultWireTypeLiteral(
+  fields: readonly ResultField[],
+  resultType: string,
+  scalars: ScalarModuleContext,
+): WireTypeExpression {
+  const replacements = new Map<string, string>();
+  let usesDatabaseArray = false;
+
+  for (const field of fields) {
+    if (field.kind !== RESULT_KIND_SCALAR) {
+      continue;
+    }
+    if (!scalars.hasMapping(field.value_type.name)) {
+      continue;
+    }
+    const wireScalar = scalars.typeFor(
+      field.value_type.name,
+      field.value_type.wire.encoding,
+      "result",
+      false,
+    );
+    const wireValue =
+      field.value_type.shape === RESULT_VALUE_SHAPE_DATABASE_ARRAY
+        ? `DsqlDatabaseArray<${wireScalar}>`
+        : wireScalar;
+    replacements.set(field.path, withNullability(wireValue, field.nullable));
+    usesDatabaseArray ||=
+      field.value_type.shape === RESULT_VALUE_SHAPE_DATABASE_ARRAY;
+  }
+
+  if (replacements.size === 0) {
+    return {
+      type: resultType,
+      differs: false,
+      usesDatabaseArray: false,
+      usesReplacement: false,
+    };
+  }
+
+  return {
+    type: resultWireObjectTypeAt(fields, replacements, "", resultType),
+    differs: true,
+    usesDatabaseArray,
+    usesReplacement: true,
+  };
+}
+
+function resultWireObjectTypeAt(
+  fields: readonly ResultField[],
+  replacements: ReadonlyMap<string, string>,
+  path: string,
+  baseType: string,
+): string {
+  const properties: Array<[string, string]> = [];
+  for (const field of fields) {
+    if (field.parent_path !== path) {
+      continue;
+    }
+    const scalarReplacement = replacements.get(field.path);
+    if (scalarReplacement !== undefined) {
+      properties.push([field.name, scalarReplacement]);
+      continue;
+    }
+    if (
+      field.kind === RESULT_KIND_SCALAR ||
+      ![...replacements.keys()].some((candidate) =>
+        candidate.startsWith(`${field.path}.`),
+      )
+    ) {
+      continue;
+    }
+
+    const propertyType = `${baseType}[${JSON.stringify(field.name)}]`;
+    if (field.kind === RESULT_KIND_ARRAY) {
+      const elementType = field.nullable
+        ? `NonNullable<${propertyType}>[number]`
+        : `${propertyType}[number]`;
+      const elementWireType = resultWireObjectTypeAt(
+        fields,
+        replacements,
+        field.path,
+        elementType,
+      );
+      properties.push([
+        field.name,
+        withNullability(`Array<${elementWireType}>`, field.nullable),
+      ]);
+      continue;
+    }
+
+    const nestedWireType = resultWireObjectTypeAt(
+      fields,
+      replacements,
+      field.path,
+      field.nullable ? `NonNullable<${propertyType}>` : propertyType,
+    );
+    properties.push([
+      field.name,
+      withNullability(nestedWireType, field.nullable),
+    ]);
+  }
+
+  return `DsqlReplaceFields<${baseType}, ${objectType(properties)}>`;
+}
+
 function paramsTypeLiteral(
   fields: readonly InputField[],
   scalars: ScalarModuleContext,
-  mapped: boolean,
   dynamicInputs: readonly DynamicInputMetadata[] = [],
   operationName = "",
 ): string {
@@ -1160,22 +1271,35 @@ function paramsTypeLiteral(
     fields,
     PARAMS_PREFIX,
     scalars,
-    mapped,
     [],
     [],
     new Map(
       dynamicInputs.map((input) => [
         input.path,
-        dynamicInputTypeName(operationName, input.path, mapped),
+        dynamicInputTypeName(operationName, input.path, true),
       ]),
     ),
+  );
+}
+
+function paramsWireTypeLiteral(
+  fields: readonly InputField[],
+  paramsType: string,
+  scalars: ScalarModuleContext,
+  dynamicWireTypes: ReadonlyMap<string, string>,
+): WireTypeExpression {
+  return inputWireTypeLiteral(
+    fields,
+    PARAMS_PREFIX,
+    paramsType,
+    scalars,
+    dynamicWireTypes,
   );
 }
 
 function inputTypeLiteral(
   fields: readonly InputField[],
   scalars: ScalarModuleContext,
-  mapped: boolean,
   fragmentSpreads: readonly FragmentSpreadMetadata[] = [],
   fragments: readonly FragmentMetadata[] = [],
 ): string {
@@ -1183,11 +1307,55 @@ function inputTypeLiteral(
     fields,
     INPUT_PREFIX,
     scalars,
-    mapped,
     fragmentSpreads,
     fragments,
     new Map(),
   );
+}
+
+function inputWireTypeLiteral(
+  fields: readonly InputField[],
+  prefix: InputRoot,
+  hostType: string,
+  scalars: ScalarModuleContext,
+  dynamicWireTypes: ReadonlyMap<string, string> = new Map(),
+): WireTypeExpression {
+  const root = new WireOverlayNode();
+  for (const field of fields) {
+    const path = publicInputPath(field.path, prefix);
+    if (path.length === 0) {
+      continue;
+    }
+
+    const dynamicWireType = dynamicWireTypes.get(field.path);
+    if (dynamicWireType !== undefined) {
+      root.insert(path, dynamicWireType);
+      continue;
+    }
+    if (SPECIAL_INPUT_TYPES.has(field.data_type)) {
+      continue;
+    }
+
+    if (field.enum_values.length > 0 || !scalars.hasMapping(field.data_type)) {
+      continue;
+    }
+    root.insert(path, inputFieldType(field, scalars, false));
+  }
+
+  if (root.isEmpty()) {
+    return {
+      type: hostType,
+      differs: false,
+      usesDatabaseArray: false,
+      usesReplacement: false,
+    };
+  }
+  return {
+    type: root.toType(hostType),
+    differs: true,
+    usesDatabaseArray: false,
+    usesReplacement: true,
+  };
 }
 
 function contextTypeLiteral(
@@ -1198,7 +1366,6 @@ function contextTypeLiteral(
     fields,
     CONTEXT_PREFIX,
     scalars,
-    true,
     [],
     [],
     new Map(),
@@ -1209,7 +1376,6 @@ function inputFieldsTypeLiteral(
   fields: readonly InputField[],
   prefix: InputRoot,
   scalars: ScalarModuleContext,
-  mapped: boolean,
   fragmentSpreads: readonly FragmentSpreadMetadata[] = [],
   fragments: readonly FragmentMetadata[] = [],
   dynamicTypes: ReadonlyMap<string, string> = new Map(),
@@ -1237,40 +1403,54 @@ function inputFieldsTypeLiteral(
     }
     root.insert(
       path,
-      dynamicTypes.get(field.path) ?? inputFieldType(field, scalars, mapped),
+      dynamicTypes.get(field.path) ?? inputFieldType(field, scalars, true),
       field.required,
     );
   }
   return root.toTypeLiteral();
 }
 
+type DynamicInputDefinitions = {
+  readonly statements: readonly string[];
+  readonly wireTypes: ReadonlyMap<string, string>;
+  readonly usesReplacement: boolean;
+};
+
 function dynamicInputTypeDefinitions(
   operation: OperationMetadata,
   scalars: ScalarModuleContext,
-): string[] {
+): DynamicInputDefinitions {
   if (operation.dynamic_inputs.length === 0) {
-    return [];
+    return {
+      statements: [],
+      wireTypes: new Map(),
+      usesReplacement: false,
+    };
   }
-  return operation.dynamic_inputs.flatMap((input) => {
+  const statements: string[] = [];
+  const wireTypes = new Map<string, string>();
+  let usesReplacement = false;
+  for (const input of operation.dynamic_inputs) {
     const hostName = dynamicInputTypeName(operation.name, input.path, true);
     const wireName = dynamicInputTypeName(operation.name, input.path, false);
-    return [
-      `export type ${hostName} = ${dynamicInputTypeLiteral(
-        operation.name,
-        input,
-        scalars,
-        true,
-      )};`,
+    const hostLiteral = dynamicInputTypeLiteral(
+      operation.name,
+      input,
+      scalars,
+    );
+    const wire = dynamicInputWireTypeLiteral(operation.name, input, scalars);
+    if (wire.differs) {
+      wireTypes.set(input.path, wireName);
+    }
+    usesReplacement ||= wire.usesReplacement;
+    statements.push(
+      `export type ${hostName} = ${hostLiteral};`,
       "",
-      `export type ${wireName} = ${dynamicInputTypeLiteral(
-        operation.name,
-        input,
-        scalars,
-        false,
-      )};`,
+      `export type ${wireName} = ${wire.type};`,
       "",
-    ];
-  });
+    );
+  }
+  return { statements, wireTypes, usesReplacement };
 }
 
 function dynamicInputTypeName(
@@ -1288,15 +1468,16 @@ function dynamicInputTypeLiteral(
   operationName: string,
   input: DynamicInputMetadata,
   scalars: ScalarModuleContext,
-  mapped: boolean,
 ): string {
-  const typeName = dynamicInputTypeName(operationName, input.path, mapped);
+  const typeName = dynamicInputTypeName(operationName, input.path, true);
   if (input.kind === "order") {
     const entries = input.fields.map((field) =>
       objectType([
         [
           field.key,
-          field.directions.map((direction) => JSON.stringify(direction)).join(" | "),
+          field.directions
+            .map((direction) => JSON.stringify(direction))
+            .join(" | "),
         ],
       ]),
     );
@@ -1317,7 +1498,7 @@ function dynamicInputTypeLiteral(
       field.data_type,
       field.wire.encoding,
       "input",
-      mapped,
+      true,
     );
     properties.push({
       name: field.key,
@@ -1338,6 +1519,92 @@ function dynamicInputTypeLiteral(
     });
   }
   return objectTypeWithOptional(properties);
+}
+
+function dynamicInputWireTypeLiteral(
+  operationName: string,
+  input: DynamicInputMetadata,
+  scalars: ScalarModuleContext,
+): WireTypeExpression {
+  const hostName = dynamicInputTypeName(operationName, input.path, true);
+  const wireName = dynamicInputTypeName(operationName, input.path, false);
+  if (input.kind === "order") {
+    return {
+      type: hostName,
+      differs: false,
+      usesDatabaseArray: false,
+      usesReplacement: false,
+    };
+  }
+
+  const operatorKinds = dynamicOperatorKinds(input);
+  const properties: Array<{
+    readonly name: string;
+    readonly type: string;
+    readonly optional: boolean;
+  }> = [];
+  for (const field of input.fields) {
+    if (!scalars.hasMapping(field.data_type)) {
+      continue;
+    }
+    const wireScalar = scalars.typeFor(
+      field.data_type,
+      field.wire.encoding,
+      "input",
+      false,
+    );
+    const operators = field.operators
+      .filter(
+        (operator) =>
+          requiredDynamicOperatorKind(
+            operatorKinds,
+            input.path,
+            field.key,
+            operator,
+          ) !== "boolean",
+      )
+      .map((operator) => ({
+        name: operator,
+        type: dynamicOperatorType(
+          operatorKinds,
+          input.path,
+          field.key,
+          operator,
+          wireScalar,
+        ),
+        optional: false,
+      }));
+    if (operators.length === 0) {
+      continue;
+    }
+    properties.push({
+      name: field.key,
+      type: `DsqlReplaceFields<NonNullable<${hostName}[${JSON.stringify(
+        field.key,
+      )}]>, ${objectTypeWithOptional(operators)}>`,
+      optional: false,
+    });
+  }
+
+  if (properties.length === 0) {
+    return {
+      type: hostName,
+      differs: false,
+      usesDatabaseArray: false,
+      usesReplacement: false,
+    };
+  }
+  return {
+    type: `DsqlReplaceFields<${hostName}, ${objectTypeWithOptional([
+      { name: "and", type: `Array<${wireName}>`, optional: false },
+      { name: "or", type: `Array<${wireName}>`, optional: false },
+      { name: "not", type: wireName, optional: false },
+      ...properties,
+    ])}>`,
+    differs: true,
+    usesDatabaseArray: false,
+    usesReplacement: true,
+  };
 }
 
 type DynamicOperatorValueKind = "scalar" | "collection" | "boolean";
@@ -1567,7 +1834,7 @@ function propertyType(ctx: ResultTypeCtx, field: ResultField): [string, string] 
       field.value_type.name,
       field.value_type.wire.encoding,
       "result",
-      ctx.mapped,
+      true,
     );
     const value =
       field.value_type.shape === RESULT_VALUE_SHAPE_DATABASE_ARRAY
@@ -1682,6 +1949,48 @@ class TypeNode {
 
   private isRequired(): boolean {
     return this.valueRequired || [...this.children.values()].some((child) => child.isRequired());
+  }
+}
+
+class WireOverlayNode {
+  private readonly children = new Map<string, WireOverlayNode>();
+  private value: string | undefined;
+
+  insert(path: readonly string[], type: string): void {
+    if (path.length === 0) {
+      this.value = type;
+      return;
+    }
+    const [head, ...tail] = path;
+    if (head === undefined) {
+      this.value = type;
+      return;
+    }
+    let child = this.children.get(head);
+    if (!child) {
+      child = new WireOverlayNode();
+      this.children.set(head, child);
+    }
+    child.insert(tail, type);
+  }
+
+  isEmpty(): boolean {
+    return this.value === undefined && this.children.size === 0;
+  }
+
+  toType(baseType: string): string {
+    if (this.value !== undefined) {
+      return this.value;
+    }
+    return `DsqlReplaceFields<${baseType}, ${objectTypeWithOptional(
+      [...this.children.entries()].map(([name, child]) => ({
+        name,
+        type: child.toType(
+          `NonNullable<${baseType}[${JSON.stringify(name)}]>`,
+        ),
+        optional: false,
+      })),
+    )}>`;
   }
 }
 

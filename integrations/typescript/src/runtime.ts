@@ -24,6 +24,13 @@ export type DsqlWireContract<
   readonly input: Input;
 };
 
+/** Replaces selected fields while retaining every unaffected field from `Base`. */
+export type DsqlReplaceFields<Base, Replacements> = {
+  [Key in keyof Base]: Key extends keyof Replacements
+    ? Replacements[Key]
+    : Base[Key];
+};
+
 export type DsqlScalarSerializer<Host = unknown, Wire = unknown> = (
   value: Host,
 ) => Wire;

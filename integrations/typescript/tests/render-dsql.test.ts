@@ -72,6 +72,16 @@ test("renders inline per-definition dsql modules", async () => {
   );
   expect(operation).toContain("export type MovieInfoLookupResult");
   expect(operation).toContain(
+    "export type MovieInfoLookupWireResult = MovieInfoLookupResult;",
+  );
+  expect(operation).toContain(
+    "export type MovieInfoLookupWireParams = MovieInfoLookupParams;",
+  );
+  expect(operation).toContain(
+    "export type MovieInfoLookupWireInput = MovieInfoLookupInput;",
+  );
+  expect(operation).not.toContain("DsqlReplaceFields");
+  expect(operation).toContain(
     "export type MovieInfoLookupContext = {\n  user_id: string;\n};",
   );
   expect(operation).toContain("export const MovieInfoLookupOperation");
@@ -281,6 +291,15 @@ test("renders bounded dynamic input types and server execution metadata", async 
   expect(source).toContain("in?: Array<string>;");
   expect(source).toContain(
     'export type SearchUsersParamsOrderDynamicInput = Array<{\n  name: "asc" | "desc_nulls_last";\n}>;',
+  );
+  expect(source).toContain(
+    "export type SearchUsersParamsSearchWireDynamicInput = SearchUsersParamsSearchDynamicInput;",
+  );
+  expect(source).toContain(
+    "export type SearchUsersParamsOrderWireDynamicInput = SearchUsersParamsOrderDynamicInput;",
+  );
+  expect(source).toContain(
+    "export type SearchUsersWireParams = SearchUsersParams;",
   );
   expect(source).toContain(
     "search?: SearchUsersParamsSearchDynamicInput;",
@@ -654,7 +673,16 @@ test("maps project scalars across host types and runtime boundaries", async () =
   );
   expect(source).toContain("plain: string;");
   expect(source).toContain(
-    "export type MappedScalarsWireResult = {\n  released: string;\n  opaque: string;\n  plain: string;\n};",
+    "export type MappedScalarsWireResult = DsqlReplaceFields<MappedScalarsResult, {\n  released: string;\n  opaque: string;\n}>;",
+  );
+  expect(source).toContain(
+    "export type MappedScalarsParamsFilterWireDynamicInput = DsqlReplaceFields<MappedScalarsParamsFilterDynamicInput, {",
+  );
+  expect(source).toContain(
+    "released: DsqlReplaceFields<NonNullable<MappedScalarsParamsFilterDynamicInput[\"released\"]>, {\n  eq: string;",
+  );
+  expect(source).toContain(
+    "export type MappedScalarsWireParams = DsqlReplaceFields<MappedScalarsParams, {\n  since: string;\n  label: string;\n  filter: MappedScalarsParamsFilterWireDynamicInput;\n}>;",
   );
   expect(source).toContain(
     "export type MappedScalarsParamsFilterDynamicInput",
@@ -1024,6 +1052,195 @@ test("maps project scalars inside fragment result and variable types", async () 
   expect(source).not.toContain("serializeCalendarDate");
 });
 
+test("projects sparse wire results over canonical host result branches", async () => {
+  const root = createRoot();
+  const operation = {
+    ...operationMetadata("SparseWire"),
+    result: {
+      fields: [
+        {
+          path: "plain",
+          name: "plain",
+          parent_path: "",
+          kind: "scalar",
+          value_type: resultValueType("text"),
+          nullable: false,
+        },
+        {
+          path: "featured",
+          name: "featured",
+          parent_path: "",
+          kind: "object",
+          value_type: resultValueType("object"),
+          nullable: true,
+        },
+        {
+          path: "featured.release",
+          name: "released-at",
+          parent_path: "featured",
+          kind: "scalar",
+          value_type: resultValueType("calendar_date"),
+          nullable: false,
+        },
+        {
+          path: "movies",
+          name: "movies",
+          parent_path: "",
+          kind: "array",
+          value_type: resultValueType("object"),
+          nullable: true,
+        },
+        {
+          path: "movies.release",
+          name: "released",
+          parent_path: "movies",
+          kind: "scalar",
+          value_type: resultValueType("calendar_date"),
+          nullable: false,
+        },
+      ],
+    },
+  };
+  const scalarPath = join(root, "src/generated/dsql/queries/scalars.ts");
+
+  await renderDsql(artifactsWithOperation(root, operation), {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+    scalars: {
+      calendar_date: {
+        type: { from: "./scalars", name: "CalendarDate" },
+      },
+    },
+  });
+  writeFileSync(
+    scalarPath,
+    "export type CalendarDate = { readonly iso: string };\n",
+  );
+  const operationPath = join(
+    root,
+    "src/generated/dsql/queries/SparseWire.ts",
+  );
+  const source = readFileSync(operationPath, "utf8");
+
+  expect(source).toContain(
+    "export type SparseWireWireResult = DsqlReplaceFields<SparseWireResult, {",
+  );
+  expect(source).toContain(
+    'featured: DsqlReplaceFields<NonNullable<SparseWireResult["featured"]>, {\n  "released-at": string;\n}> | null;',
+  );
+  expect(source).toContain(
+    'movies: Array<DsqlReplaceFields<NonNullable<SparseWireResult["movies"]>[number], {\n  released: string;\n}>> | null;',
+  );
+  expect(source).not.toContain("plain: string;\n}>;");
+  expect(source).not.toContain("materializeResult");
+  assertGeneratedFilesTypeCheck(root, [operationPath, scalarPath]);
+});
+
+test("sparse wire inputs retain optional fragment envelopes", async () => {
+  const root = createRoot();
+  const fragment = fragmentMetadata("Window");
+  fragment.params = [
+    {
+      path: "params.since",
+      data_type: "calendar_date",
+      wire: { encoding: "text_cast" },
+      validation: {},
+      enum_values: [],
+      required: true,
+      nullable: false,
+    },
+  ];
+  const operation = {
+    ...operationMetadata("FragmentInputs"),
+    params: [],
+    input: [
+      {
+        path: "input.movie_info.body.Window.params.since",
+        data_type: "calendar_date",
+        wire: { encoding: "text_cast" },
+        validation: {},
+        enum_values: [],
+        required: false,
+        nullable: false,
+      },
+    ],
+    fragment_spreads: [{ path: "movie_info", fragment: fragment.name }],
+  };
+  const base = artifactsWithOperation(root, operation);
+  const artifacts = {
+    ...base,
+    fragments: [fragment],
+    fragmentsByName: new Map([[fragment.name, fragment]]),
+  } as BuildArtifacts;
+  const queries = join(root, "src/generated/dsql/queries");
+  const scalarPath = join(queries, "scalars.ts");
+  const contractPath = join(queries, "FragmentInputs.contract.ts");
+
+  await renderDsql(artifacts, {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+    scalars: {
+      calendar_date: {
+        type: { from: "./scalars", name: "CalendarDate" },
+      },
+    },
+  });
+  writeFileSync(
+    scalarPath,
+    "export type CalendarDate = { readonly iso: string };\n",
+  );
+  const operationPath = join(queries, "FragmentInputs.ts");
+  const fragmentPath = join(queries, "Window.fragment.ts");
+  const source = readFileSync(operationPath, "utf8");
+  expect(source).toContain("Window?: WindowFragmentVariables;");
+  expect(source).toContain(
+    'Window: DsqlReplaceFields<NonNullable<NonNullable<NonNullable<FragmentInputsInput["movie_info"]>["body"]>["Window"]>, {',
+  );
+  expect(source).toContain("since: string;");
+  writeFileSync(
+    contractPath,
+    `
+import type {
+  FragmentInputsInput,
+  FragmentInputsWireInput,
+} from "./FragmentInputs";
+
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2) ? true : false;
+type Assert<Value extends true> = Value;
+type AcceptsEmpty<Value> = {} extends Value ? true : false;
+type HostMovieInfo = NonNullable<FragmentInputsInput["movie_info"]>;
+type WireMovieInfo = NonNullable<FragmentInputsWireInput["movie_info"]>;
+type HostBody = NonNullable<HostMovieInfo["body"]>;
+type WireBody = NonNullable<WireMovieInfo["body"]>;
+type HostWindow = NonNullable<HostBody["Window"]>;
+type WireWindow = NonNullable<WireBody["Window"]>;
+
+export type InputOptionalityMatches = Assert<
+  Equal<AcceptsEmpty<FragmentInputsInput>, AcceptsEmpty<FragmentInputsWireInput>>
+>;
+export type WindowRequirednessMatches = Assert<
+  Equal<AcceptsEmpty<HostWindow>, AcceptsEmpty<WireWindow>>
+>;
+export type WireWindowStillRequiresParams = Assert<
+  Equal<AcceptsEmpty<WireWindow>, false>
+>;
+export type WireLeafChanges = Assert<
+  Equal<WireWindow["params"]["since"], string>
+>;
+export const emptyHostInput: FragmentInputsInput = {};
+export const emptyWireInput: FragmentInputsWireInput = {};
+`,
+  );
+  assertGeneratedFilesTypeCheck(root, [
+    operationPath,
+    fragmentPath,
+    scalarPath,
+    contractPath,
+  ]);
+});
+
 test("rejects invalid project scalar mappings", async () => {
   const root = createRoot();
   const operation = operationMetadata("ScalarValidation");
@@ -1202,7 +1419,7 @@ test("renders database arrays separately from relation and input collections", a
     "utf8",
   );
   expect(source).toContain(
-    'import type { DsqlExecutionPayload, DsqlDatabaseArray, DsqlOperation, DsqlWireContract } from "@dsql/typescript/runtime";',
+    'import type { DsqlDatabaseArray, DsqlExecutionPayload, DsqlOperation, DsqlWireContract } from "@dsql/typescript/runtime";',
   );
   expect(source).toContain("labels: DsqlDatabaseArray<string>;");
   expect(source).toContain("big_values: DsqlDatabaseArray<string> | null;");
@@ -1281,6 +1498,10 @@ export function serializeCalendarDate(value: CalendarDate): string {
     spreadRoot,
     "src/generated/dsql/queries/ArrayFields.fragment.ts",
   );
+  const spreadContractPath = join(
+    spreadRoot,
+    "src/generated/dsql/queries/SpreadArrays.contract.ts",
+  );
   const spreadSource = readFileSync(spreadOperationPath, "utf8");
   const spreadExecution = readFileSync(spreadExecutionPath, "utf8");
   const spreadFragment = readFileSync(spreadFragmentPath, "utf8");
@@ -1288,16 +1509,18 @@ export function serializeCalendarDate(value: CalendarDate): string {
     'import type { ArrayFieldsFragmentResult } from "./ArrayFields.fragment";',
   );
   expect(spreadSource).toContain(
-    'import type { DsqlDatabaseArray, DsqlOperation, DsqlWireContract } from "@dsql/typescript/runtime";',
+    'import type { DsqlDatabaseArray, DsqlOperation, DsqlReplaceFields, DsqlWireContract } from "@dsql/typescript/runtime";',
   );
   expect(spreadSource).toContain(
     "export type SpreadArraysResult = ArrayFieldsFragmentResult;",
   );
   expect(spreadSource).toContain(
-    "export type SpreadArraysWireResult = {\n  labels: DsqlDatabaseArray<string>;\n};",
+    "export type SpreadArraysWireResult = DsqlReplaceFields<SpreadArraysResult, {\n  labels: DsqlDatabaseArray<string>;\n}>;",
   );
   expect(spreadFragment).not.toContain("parseCalendarDate");
   expect(spreadFragment).not.toContain("materializeResult");
+  expect(spreadSource).not.toContain("CalendarDate");
+  expect(spreadFragment).toContain("CalendarDate");
   expect(spreadExecution).toContain(
     'import { assignDsqlResultField, materializeDsqlDatabaseArrayResult } from "@dsql/typescript/runtime";',
   );
@@ -1305,11 +1528,28 @@ export function serializeCalendarDate(value: CalendarDate): string {
   expect(spreadExecution).toContain(
     'assignDsqlResultField(result, "labels", materializeDsqlDatabaseArrayResult(',
   );
+  writeFileSync(
+    spreadContractPath,
+    `
+import type { DsqlDatabaseArray } from "@dsql/typescript/runtime";
+import type { SpreadArraysWireResult } from "./SpreadArrays";
+
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2) ? true : false;
+type Assert<Value extends true> = Value;
+
+export type FragmentProvidedWireLeafChanges = Assert<
+  Equal<SpreadArraysWireResult["labels"], DsqlDatabaseArray<string>>
+>;
+`,
+  );
   assertGeneratedFilesTypeCheck(spreadRoot, [
     spreadOperationPath,
     spreadExecutionPath,
     spreadFragmentPath,
     spreadScalarPath,
+    spreadContractPath,
   ]);
 });
 
@@ -2067,6 +2307,7 @@ async function evaluateGeneratedModule(
 
 function assertMappedOperationTypeChecks(root: string): void {
   const queries = join(root, "src/generated/dsql/queries");
+  const contractPath = join(queries, "MappedScalars.contract.ts");
   writeFileSync(
     join(queries, "scalars.ts"),
     `
@@ -2080,9 +2321,32 @@ export function serializeCalendarDate(value: CalendarDate): string {
 }
 `,
   );
+  writeFileSync(
+    contractPath,
+    `
+import type {
+  MappedScalarsParams,
+  MappedScalarsWireParams,
+} from "./MappedScalars";
+
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2) ? true : false;
+type Assert<Value extends true> = Value;
+type AcceptsEmpty<Value> = {} extends Value ? true : false;
+
+export type ParamsRequirednessMatches = Assert<
+  Equal<AcceptsEmpty<MappedScalarsParams>, AcceptsEmpty<MappedScalarsWireParams>>
+>;
+export type WireParamsRemainRequired = Assert<
+  Equal<AcceptsEmpty<MappedScalarsWireParams>, false>
+>;
+`,
+  );
   assertGeneratedFilesTypeCheck(root, [
     join(queries, "MappedScalars.ts"),
     join(queries, "scalars.ts"),
+    contractPath,
   ]);
 }
 

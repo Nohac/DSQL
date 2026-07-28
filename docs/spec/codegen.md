@@ -191,7 +191,10 @@ The TypeScript renderer validates mappings once against the complete artifact
 set, rejects unknown, structural, unsupported, or wire-inconsistent logical
 types, and filters the validated map for each generated target. Generated
 operation modules expose distinct host and wire result, params, and input
-types. Public variables are serialized once before cache identity and RPC.
+contracts. The host contract is the canonical complete shape. An identical
+wire contract aliases it; otherwise the wire contract is a sparse projection
+that replaces only representation-changing scalar fields and their ancestor
+branches. Public variables are serialized once before cache identity and RPC.
 Trusted server context is serialized once during SQL materialization. A
 database executor returns the wire result and transfers exclusive ownership of
 that fresh object tree to the host binding. When an operation selects a scalar
@@ -216,10 +219,10 @@ sharing remains effective for primitive and plain-object codec results.
 Identity-bearing codec results are new references on each fetch unless the
 application supplies an appropriate `structuralSharing` policy.
 
-Fragment result types remain host-facing composition aids. Operation wire
-result types are fully expanded and do not rely on fragment intersections, so
-the operation materializer owns every codec path and fragment modules stay
-type-only.
+Fragment result types remain host-facing composition aids, and sparse
+operation wire types project replacements over that composition rather than
+repeating it. Operation metadata remains fully expanded, so the operation
+materializer still owns every codec path and fragment modules stay type-only.
 
 Requiredness and nullability produce distinct host types. For example, a query
 header containing:

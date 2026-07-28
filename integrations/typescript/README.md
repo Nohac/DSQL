@@ -116,9 +116,12 @@ inconsistent or unsupported wire encodings, structural compiler types, and
 partial codec pairs are generation errors.
 
 Generated operations expose separate host and wire result, params, and input
-types. Public query helpers accept host values, serialize them exactly once
-before cache-key construction and RPC. Trusted context is supplied as host
-values on the server and serialized exactly once before execution.
+contracts without repeating unchanged structures. The host type is canonical:
+an identical wire contract aliases it directly, while a differing wire
+contract replaces only mapped scalar fields and the ancestor branches needed
+to reach them. Public query helpers accept host values, serialize them exactly
+once before cache-key construction and RPC. Trusted context is supplied as
+host values on the server and serialized exactly once before execution.
 
 Result parsing happens once, immediately after the database executor returns
 its fresh wire object and before the TanStack Start server function serializes
