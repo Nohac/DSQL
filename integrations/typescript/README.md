@@ -117,17 +117,35 @@ partial codec pairs are generation errors.
 
 Generated operations expose separate host and wire result, params, and input
 types. Public query helpers accept host values, serialize them exactly once
-before cache-key construction and RPC, and parse raw wire results at the
-observer or direct-execution boundary. Trusted context is supplied as host
-values on the server and serialized exactly once before execution. Codec
-functions must therefore be pure and available in every environment where
-their generated module is imported.
+before cache-key construction and RPC. Trusted context is supplied as host
+values on the server and serialized exactly once before execution.
 
-TanStack Query deliberately stores raw wire results in its cache and
-dehydration payload. Generated `useQuery` and `queryOptions` observers parse
-them through a stable selector. Direct cache APIs such as `getQueryData`,
-`ensureQueryData`, and `prefetchQuery` return wire data; pass that value to
-`parseDsqlResult(operation, value)` before consuming host scalar types.
+Result parsing happens once, immediately after the database executor returns
+its fresh wire object and before the TanStack Start server function serializes
+it. The generated execution payload contains a sparse, operation-specific
+materializer only when a selected scalar has a configured parser. It follows
+only parser-bearing branches and mutates those leaves in place. Codec-free
+operations perform no result traversal beyond a constant-time plain-object
+check. The executor must return a plain or null-prototype object containing
+every compiler-projected key. Sparse materialization trusts scalar key presence
+and wire types; null and container checks cover only parser-bearing branches.
+The executor transfers exclusive ownership of its result to this boundary and
+must not retain aliases that could observe a partially materialized value when
+a later parser fails.
+
+TanStack Query stores the final host result in its cache and dehydration
+payload. `useQuery`, `queryOptions`, `executeQuery`, and direct cache APIs such
+as `getQueryData`, `ensureQueryData`, and `prefetchQuery` therefore expose the
+same host result type. Primitive and plain-object codec outputs retain
+TanStack's default structural sharing. Identity-bearing codec outputs are new
+references on refetch unless the application supplies a suitable
+`structuralSharing` policy.
+
+Codec host values must also cross the framework's server-function transport.
+TanStack Start supports Seroval-recognized values such as `Date`, `BigInt`,
+`Map`, and `Set`; arbitrary class instances require application serialization
+support or a wire-compatible host representation. Parser functions are emitted
+only in server execution modules when execution output is split.
 
 The generated `project` makes missing, misspelled, and non-terminal targets
 TypeScript errors. Runtime generation also compares its compiler-owned contract
@@ -459,7 +477,10 @@ export default createServerEntry({
 });
 ```
 
-The executor interface is intentionally provider agnostic.
+The executor interface is intentionally provider agnostic. It returns the wire
+result produced by the database adapter and transfers exclusive ownership of
+that fresh object tree to DSQL. Generated server code applies any sparse result
+materializer before returning the final host value to TanStack Start.
 
 ### Validation Hooks
 

@@ -84,7 +84,6 @@ export const UsersPageOperation: DsqlOperation<
   requiresContext: false,
   inputs: [],
   dynamicInputContracts: [],
-  resultFields: [],
 };
 ```
 
@@ -193,11 +192,34 @@ set, rejects unknown, structural, unsupported, or wire-inconsistent logical
 types, and filters the validated map for each generated target. Generated
 operation modules expose distinct host and wire result, params, and input
 types. Public variables are serialized once before cache identity and RPC.
-Trusted server context is serialized once during SQL materialization. Raw wire
-results remain the transport and cache representation and are parsed only at
-the direct-consumer or observer boundary. Fragment result types remain
-host-facing composition aids; operation wire result types are fully expanded
-and do not rely on fragment intersections.
+Trusted server context is serialized once during SQL materialization. A
+database executor returns the wire result and transfers exclusive ownership of
+that fresh object tree to the host binding. When an operation selects a scalar
+with a configured parser, its server-only execution payload contains a
+generated sparse materializer. The materializer follows only branches leading
+to configured parsers, mutates those leaves in place, and returns the same root
+object before framework serialization. An operation without result parsers
+emits no materializer and performs no result traversal; the binding retains
+only a constant-time plain-object contract check. The executor must return a
+plain or null-prototype object containing every compiler-projected key. Sparse
+materialization trusts scalar key presence and wire types; it checks nulls and
+container shapes only along branches visited for configured parsers and is not
+a general result validator.
+
+The executor must not retain aliases to its returned result. A later parser
+failure may leave that private object partially materialized, but the rejected
+server function must not publish it. Final host values must be serializable by
+the host binding. TanStack Start supports the values recognized by its Seroval
+transport; arbitrary class instances require application serialization support
+or a wire-compatible representation. TanStack Query's default structural
+sharing remains effective for primitive and plain-object codec results.
+Identity-bearing codec results are new references on each fetch unless the
+application supplies an appropriate `structuralSharing` policy.
+
+Fragment result types remain host-facing composition aids. Operation wire
+result types are fully expanded and do not rely on fragment intersections, so
+the operation materializer owns every codec path and fragment modules stay
+type-only.
 
 Requiredness and nullability produce distinct host types. For example, a query
 header containing:

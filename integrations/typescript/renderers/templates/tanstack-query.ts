@@ -8,16 +8,13 @@ import type {
   DsqlOperation,
   DsqlOperationContext,
   DsqlOperationResult,
-  DsqlOperationWireResult,
   DsqlVariables,
   DsqlWireVariables,
 } from "@dsql/typescript/runtime";
 import {
   dsqlQueryKey,
   dsqlQueryKeyForWire,
-  dsqlResultSelector,
   materializeDsqlOperationVariables,
-  parseDsqlResult,
 } from "@dsql/typescript/runtime";
 import type { DsqlServerVariables } from "./tanstack-start";
 
@@ -47,18 +44,16 @@ export type DsqlQueryKey<Variables> = readonly [
  * context. It participates only in the client cache key and is never sent to
  * the server function.
  *
- * TanStack stores the raw wire result in its cache and dehydration payload.
- * `select` parses configured host scalars before applying the caller selector.
- * Consequently direct cache APIs such as `getQueryData`, `ensureQueryData`,
- * and `prefetchQuery` observe the raw wire result; call `parseDsqlResult` when
- * consuming their returned data directly.
+ * The generated server function materializes configured host scalars before
+ * returning. TanStack therefore stores the final host result in its cache and
+ * dehydration payload, and direct cache APIs expose the same result type.
  */
 export type DsqlQueryOptions<
   Operation extends AnyDsqlOperation,
   Selected = DsqlOperationResult<Operation>,
 > = Omit<
   UseQueryOptions<
-    DsqlOperationWireResult<Operation>,
+    DsqlOperationResult<Operation>,
     Error,
     Selected,
     DsqlQueryKey<DsqlWireVariables<Operation>>
@@ -77,7 +72,7 @@ export type DsqlExecuteOptions<Operation extends AnyDsqlOperation> =
 
 type DsqlServerFunction<Operation extends AnyDsqlOperation> = (options: {
   readonly data: DsqlServerVariables<Operation>;
-}) => Promise<DsqlOperationWireResult<Operation>>;
+}) => Promise<DsqlOperationResult<Operation>>;
 
 export function queryKey<Operation extends AnyDsqlOperation>(
   operation: Operation,
@@ -119,7 +114,7 @@ export function queryOptions<
       contextScope,
     ),
     queryFn: () => serverFn({ data: wireVariables }),
-    select: dsqlResultSelector(operation, select),
+    ...(select ? { select } : {}),
   });
 }
 
@@ -141,8 +136,7 @@ export async function executeQuery<Operation extends AnyDsqlOperation>(
     variables,
   );
   const serverFn = serverFunctionFor(operation);
-  const wireResult = await serverFn({ data: wireVariables });
-  return parseDsqlResult(operation, wireResult);
+  return serverFn({ data: wireVariables });
 }
 
 export function useQuery<

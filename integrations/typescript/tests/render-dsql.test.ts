@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { expect, test } from "bun:test";
 import ts from "typescript";
 import {
@@ -100,8 +101,10 @@ test("renders inline per-definition dsql modules", async () => {
     "utf8",
   );
   expect(index).toBe(
-    'export { dsql, dsqlQueryKey, dsqlQueryKeyForWire, dsqlResultSelector, materializeDsqlOperationVariables, parseDsqlResult } from "@dsql/typescript/runtime";\nexport type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationContext, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlOperationWireInput, DsqlOperationWireParams, DsqlOperationWireResult, DsqlScalarParser, DsqlScalarSerializer, DsqlVariables, DsqlWireContract, DsqlWireVariables } from "@dsql/typescript/runtime";\nexport * from "./MovieFields.fragment";\nexport * from "./MovieInfoLookup";\n',
+    'export { dsql, dsqlQueryKey, dsqlQueryKeyForWire, materializeDsqlOperationVariables } from "@dsql/typescript/runtime";\nexport type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationContext, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlOperationWireInput, DsqlOperationWireParams, DsqlOperationWireResult, DsqlScalarParser, DsqlScalarSerializer, DsqlVariables, DsqlWireContract, DsqlWireVariables } from "@dsql/typescript/runtime";\nexport * from "./MovieFields.fragment";\nexport * from "./MovieInfoLookup";\n',
   );
+  expect(operation).not.toContain("resultFields");
+  expect(operation).not.toContain("materializeResult");
 });
 
 test("renders readable SQL with compiler-owned escaping and compact SQL on request", async () => {
@@ -687,12 +690,260 @@ test("maps project scalars across host types and runtime boundaries", async () =
     "serialize:__dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_serialize satisfies DsqlScalarSerializer",
   );
   expect(source).toContain(
-    "parse:__dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_parse satisfies DsqlScalarParser",
+    "materializeResult: materializeMappedScalarsResult",
   );
+  expect(source).toContain(
+    "materializeDsqlScalarResult(_dsqlResult0, __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_parse satisfies DsqlScalarParser",
+  );
+  expect(source).not.toContain("resultFields");
   expect(source).toContain(
     "export type MappedScalarsContext = {\n  cutoff: __dsql_scalar_63_61_6c_65_6e_64_61_72_5f_64_61_74_65_type;\n};",
   );
   assertMappedOperationTypeChecks(root);
+});
+
+test("generates sparse server-side result materialization in place", async () => {
+  const root = createRoot();
+  const operation = {
+    ...operationMetadata("SparseMaterialization"),
+    result: {
+      fields: [
+        {
+          path: "released",
+          name: "released",
+          parent_path: "",
+          kind: "scalar",
+          value_type: resultValueType("calendar_date"),
+          nullable: false,
+        },
+        {
+          path: "featured",
+          name: "featured",
+          parent_path: "",
+          kind: "object",
+          value_type: resultValueType("object"),
+          nullable: true,
+        },
+        {
+          path: "featured.premiered",
+          name: "premiered",
+          parent_path: "featured",
+          kind: "scalar",
+          value_type: resultValueType("calendar_date"),
+          nullable: false,
+        },
+        {
+          path: "movies",
+          name: "movies",
+          parent_path: "",
+          kind: "array",
+          value_type: resultValueType("object"),
+          nullable: false,
+        },
+        {
+          path: "movies.title",
+          name: "title",
+          parent_path: "movies",
+          kind: "scalar",
+          value_type: resultValueType("text"),
+          nullable: false,
+        },
+        {
+          path: "movies.premiered",
+          name: "premiered",
+          parent_path: "movies",
+          kind: "scalar",
+          value_type: resultValueType("calendar_date"),
+          nullable: true,
+        },
+        {
+          path: "movies.details",
+          name: "details",
+          parent_path: "movies",
+          kind: "object",
+          value_type: resultValueType("object"),
+          nullable: true,
+        },
+        {
+          path: "movies.details.debut",
+          name: "debut",
+          parent_path: "movies.details",
+          kind: "scalar",
+          value_type: resultValueType("calendar_date"),
+          nullable: false,
+        },
+        {
+          path: "movies.dates",
+          name: "dates",
+          parent_path: "movies",
+          kind: "scalar",
+          value_type: resultValueType("calendar_date", "database_array"),
+          nullable: false,
+        },
+        {
+          path: "untouched",
+          name: "untouched",
+          parent_path: "",
+          kind: "scalar",
+          value_type: resultValueType("text"),
+          nullable: false,
+        },
+      ],
+    },
+  };
+  const scalarPath = join(root, "src/generated/scalars.ts");
+  mkdirSync(join(root, "src/generated"), { recursive: true });
+  writeFileSync(
+    scalarPath,
+    `
+export type CalendarDate = { readonly iso: string };
+export let parseCalls = 0;
+export function parseCalendarDate(value: string): CalendarDate {
+  parseCalls += 1;
+  if (value === "invalid") {
+    throw new Error("invalid calendar date");
+  }
+  return { iso: value };
+}
+export function serializeCalendarDate(value: CalendarDate): string {
+  return value.iso;
+}
+`,
+  );
+
+  await renderDsql(artifactsWithOperation(root, operation), {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+    executionDir: "src/generated/dsql/queries.server",
+    scalars: {
+      calendar_date: {
+        type: { from: "../../scalars", name: "CalendarDate" },
+        parse: { from: "../../scalars", name: "parseCalendarDate" },
+        serialize: { from: "../../scalars", name: "serializeCalendarDate" },
+      },
+    },
+  });
+
+  const operationPath = join(
+    root,
+    "src/generated/dsql/queries/SparseMaterialization.ts",
+  );
+  const executionPath = join(
+    root,
+    "src/generated/dsql/queries.server/SparseMaterialization.ts",
+  );
+  const operationSource = readFileSync(operationPath, "utf8");
+  const executionSource = readFileSync(executionPath, "utf8");
+  expect(operationSource).not.toContain("parseCalendarDate");
+  expect(operationSource).not.toContain("materializeResult");
+  expect(operationSource).not.toContain("resultFields");
+  expect(executionSource).toContain(
+    "materializeResult: materializeSparseMaterializationResult",
+  );
+  expect(executionSource).not.toContain('result["untouched"]');
+  expect(executionSource).not.toContain('["title"]');
+  assertGeneratedFilesTypeCheck(root, [
+    operationPath,
+    executionPath,
+    scalarPath,
+  ]);
+
+  const packageRoot = new URL("..", import.meta.url);
+  mkdirSync(join(root, "node_modules/@dsql"), { recursive: true });
+  symlinkSync(
+    packageRoot,
+    join(root, "node_modules/@dsql/typescript"),
+    "dir",
+  );
+  const generated = (await import(
+    `${pathToFileURL(executionPath).href}?test=${Date.now()}`
+  )) as {
+    readonly SparseMaterializationExecutionPayload: {
+      readonly materializeResult?: (result: any) => any;
+    };
+  };
+  const scalars = (await import(pathToFileURL(scalarPath).href)) as {
+    readonly parseCalls: number;
+  };
+  const materialize =
+    generated.SparseMaterializationExecutionPayload.materializeResult;
+  expect(materialize).toBeFunction();
+  if (!materialize) {
+    throw new Error("generated result materializer is absent");
+  }
+
+  let untouchedReads = 0;
+  const featured = { premiered: "2026-02-02" };
+  const details = { debut: "2026-04-04" };
+  const nestedDates = ["2026-06-06", null];
+  const dates = ["2026-05-05", nestedDates];
+  const movie = {
+    title: "A Movie",
+    premiered: null,
+    details,
+    dates,
+  };
+  const movies = [movie];
+  const wire: Record<string, unknown> = {
+    released: "2026-01-01",
+    featured,
+    movies,
+  };
+  Object.defineProperty(wire, "untouched", {
+    enumerable: true,
+    get() {
+      untouchedReads += 1;
+      return "not visited";
+    },
+  });
+
+  const result = materialize(wire);
+  expect(result).toBe(wire);
+  expect(result.featured).toBe(featured);
+  expect(result.movies).toBe(movies);
+  expect(result.movies[0]).toBe(movie);
+  expect(result.movies[0].details).toBe(details);
+  expect(result.movies[0].dates).toBe(dates);
+  expect(result.movies[0].dates[1]).toBe(nestedDates);
+  expect(result).toEqual({
+    released: { iso: "2026-01-01" },
+    featured: { premiered: { iso: "2026-02-02" } },
+    movies: [
+      {
+        title: "A Movie",
+        premiered: null,
+        details: { debut: { iso: "2026-04-04" } },
+        dates: [
+          { iso: "2026-05-05" },
+          [{ iso: "2026-06-06" }, null],
+        ],
+      },
+    ],
+    untouched: "not visited",
+  });
+  expect(untouchedReads).toBe(1);
+  expect(scalars.parseCalls).toBe(5);
+
+  const failing = {
+    released: "2026-01-01",
+    featured: { premiered: "invalid" },
+    movies: [],
+    untouched: "not visited",
+  };
+  try {
+    materialize(failing);
+    throw new Error("expected generated materialization to fail");
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "dsql result parser failed at featured.premiered (calendar_date)",
+    );
+    expect((error as Error).cause).toBeInstanceOf(Error);
+    expect(((error as Error).cause as Error).message).toBe(
+      "invalid calendar date",
+    );
+  }
+  expect(failing.released).toEqual({ iso: "2026-01-01" });
 });
 
 test("maps project scalars inside fragment result and variable types", async () => {
@@ -963,7 +1214,7 @@ test("renders database arrays separately from relation and input collections", a
     name: "labels",
     parent_path: "",
     kind: "scalar",
-    value_type: resultValueType("text", "database_array"),
+    value_type: resultValueType("calendar_date", "database_array"),
     nullable: false,
   };
   const fragment = {
@@ -992,19 +1243,52 @@ test("renders database arrays separately from relation and input collections", a
       [`fragment/${fragment.name}`, `default/fragment/${fragment.name}`],
     ]),
   } as BuildArtifacts;
+  const spreadScalarPath = join(spreadRoot, "src/generated/scalars.ts");
+  mkdirSync(join(spreadRoot, "src/generated"), { recursive: true });
+  writeFileSync(
+    spreadScalarPath,
+    `
+export type CalendarDate = { readonly iso: string };
+export function parseCalendarDate(value: string): CalendarDate {
+  return { iso: value };
+}
+export function serializeCalendarDate(value: CalendarDate): string {
+  return value.iso;
+}
+`,
+  );
   await renderDsql(spreadArtifacts, {
     root: spreadRoot,
     queriesDir: "src/generated/dsql/queries",
+    executionDir: "src/generated/dsql/queries.server",
+    scalars: {
+      calendar_date: {
+        type: { from: "../../scalars", name: "CalendarDate" },
+        parse: { from: "../../scalars", name: "parseCalendarDate" },
+        serialize: { from: "../../scalars", name: "serializeCalendarDate" },
+      },
+    },
   });
-  const spreadSource = readFileSync(
-    join(spreadRoot, "src/generated/dsql/queries/SpreadArrays.ts"),
-    "utf8",
+  const spreadOperationPath = join(
+    spreadRoot,
+    "src/generated/dsql/queries/SpreadArrays.ts",
   );
+  const spreadExecutionPath = join(
+    spreadRoot,
+    "src/generated/dsql/queries.server/SpreadArrays.ts",
+  );
+  const spreadFragmentPath = join(
+    spreadRoot,
+    "src/generated/dsql/queries/ArrayFields.fragment.ts",
+  );
+  const spreadSource = readFileSync(spreadOperationPath, "utf8");
+  const spreadExecution = readFileSync(spreadExecutionPath, "utf8");
+  const spreadFragment = readFileSync(spreadFragmentPath, "utf8");
   expect(spreadSource).toContain(
     'import type { ArrayFieldsFragmentResult } from "./ArrayFields.fragment";',
   );
   expect(spreadSource).toContain(
-    'import type { DsqlExecutionPayload, DsqlDatabaseArray, DsqlOperation, DsqlWireContract } from "@dsql/typescript/runtime";',
+    'import type { DsqlDatabaseArray, DsqlOperation, DsqlWireContract } from "@dsql/typescript/runtime";',
   );
   expect(spreadSource).toContain(
     "export type SpreadArraysResult = ArrayFieldsFragmentResult;",
@@ -1012,6 +1296,21 @@ test("renders database arrays separately from relation and input collections", a
   expect(spreadSource).toContain(
     "export type SpreadArraysWireResult = {\n  labels: DsqlDatabaseArray<string>;\n};",
   );
+  expect(spreadFragment).not.toContain("parseCalendarDate");
+  expect(spreadFragment).not.toContain("materializeResult");
+  expect(spreadExecution).toContain(
+    'import { assignDsqlResultField, materializeDsqlDatabaseArrayResult } from "@dsql/typescript/runtime";',
+  );
+  expect(spreadExecution).not.toContain("materializeDsqlScalarResult");
+  expect(spreadExecution).toContain(
+    'assignDsqlResultField(result, "labels", materializeDsqlDatabaseArrayResult(',
+  );
+  assertGeneratedFilesTypeCheck(spreadRoot, [
+    spreadOperationPath,
+    spreadExecutionPath,
+    spreadFragmentPath,
+    spreadScalarPath,
+  ]);
 });
 
 test("renders defaulted and nullable inputs as optional TypeScript properties", async () => {
@@ -1781,11 +2080,21 @@ export function serializeCalendarDate(value: CalendarDate): string {
 }
 `,
   );
+  assertGeneratedFilesTypeCheck(root, [
+    join(queries, "MappedScalars.ts"),
+    join(queries, "scalars.ts"),
+  ]);
+}
+
+function assertGeneratedFilesTypeCheck(
+  root: string,
+  files: readonly string[],
+): void {
   writeFileSync(
     join(root, "runtime.ts"),
     readFileSync(new URL("../src/runtime.ts", import.meta.url), "utf8"),
   );
-  mkdirSync(join(root, "generated"));
+  mkdirSync(join(root, "generated"), { recursive: true });
   writeFileSync(
     join(root, "generated/metadata.ts"),
     readFileSync(
@@ -1794,16 +2103,15 @@ export function serializeCalendarDate(value: CalendarDate): string {
     ),
   );
   const program = ts.createProgram(
-    [
-      join(queries, "MappedScalars.ts"),
-      join(queries, "scalars.ts"),
-    ],
+    [...files],
     {
       baseUrl: root,
       exactOptionalPropertyTypes: true,
       module: ts.ModuleKind.ESNext,
       moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noUncheckedIndexedAccess: true,
       noEmit: true,
+      noUnusedLocals: true,
       paths: {
         "@dsql/typescript/runtime": ["runtime.ts"],
       },
@@ -1915,7 +2223,18 @@ function fragmentMetadata(name: string): BuildArtifacts["fragments"][number] {
 }
 
 function resultValueType(
-  name: "object" | "boolean" | "int" | "bigint" | "float" | "numeric" | "json" | "text" | "timestamptz" | "uuid",
+  name:
+    | "object"
+    | "boolean"
+    | "int"
+    | "bigint"
+    | "float"
+    | "numeric"
+    | "json"
+    | "text"
+    | "timestamptz"
+    | "uuid"
+    | "calendar_date",
   shape: "scalar" | "database_array" | "object" =
     name === "object" ? "object" : "scalar",
 ) {
@@ -1930,6 +2249,7 @@ function resultValueType(
     text: "text",
     timestamptz: "timestamptz",
     uuid: "uuid",
+    calendar_date: "text_cast",
   } as const;
   return {
     shape,

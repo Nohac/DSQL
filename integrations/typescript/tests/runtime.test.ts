@@ -10,14 +10,16 @@ import inputCases from "../../../tests/conformance/input-values.json" with {
 };
 import {
   applyDsqlVariants,
+  assignDsqlResultField,
   collectDsqlParameterValues,
   dsqlQueryKey,
-  dsqlResultSelector,
   getDsqlPath,
+  materializeDsqlDatabaseArrayResult,
   materializeDsqlBindings,
+  materializeDsqlExecutionResult,
   materializeDsqlOperationVariables,
   materializeDsqlQuery,
-  parseDsqlResult,
+  materializeDsqlScalarResult,
   type DsqlDatabaseArray,
   type DsqlExecutionPayload,
   type DsqlOperation,
@@ -26,7 +28,6 @@ import {
 
 const emptyOperationContracts = {
   dynamicInputContracts: [],
-  resultFields: [],
 } as const;
 
 type DynamicValueKind = "scalar" | "collection" | "boolean";
@@ -389,7 +390,6 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
         ),
       })),
     })),
-    resultFields: [],
   } satisfies DsqlOperation;
   const dynamicPayload = {
     operation,
@@ -631,7 +631,6 @@ test("matches the shared bounded dynamic input conformance cases", () => {
         })),
       }),
     ),
-    resultFields: [],
   };
   const payload: DsqlExecutionPayload<typeof operation> = {
     operation,
@@ -792,7 +791,6 @@ test("cache keys materialize defaults and canonical dynamic identities", () => {
       },
     ],
     dynamicInputContracts: [],
-    resultFields: [],
   } as const satisfies DsqlOperation;
 
   const omittedDefault = dsqlQueryKey(operation, {
@@ -887,7 +885,6 @@ test("serializes host inputs once before cache and server boundaries", () => {
         ],
       },
     ],
-    resultFields: [],
   } satisfies MappedOperation;
   const hostVariables = {
     params: {
@@ -949,7 +946,7 @@ test("serializes host inputs once before cache and server boundaries", () => {
   ]);
 });
 
-test("parses mapped results recursively and memoizes observer selectors", () => {
+test("materializes executor-owned results in place at configured leaves", () => {
   type DateValue = { readonly iso: string };
   type HostResult = {
     readonly released: DateValue;
@@ -980,47 +977,6 @@ test("parses mapped results recursively and memoizes observer selectors", () => 
     requiresContext: false,
     inputs: [],
     dynamicInputContracts: [],
-    resultFields: [
-      {
-        path: "released",
-        parent_path: "",
-        name: "released",
-        kind: "scalar",
-        shape: "scalar",
-        nullable: false,
-        data_type: "date",
-        parse,
-      },
-      {
-        path: "movies",
-        parent_path: "",
-        name: "movies",
-        kind: "array",
-        shape: "object",
-        nullable: false,
-        data_type: "object",
-      },
-      {
-        path: "movies.premiered",
-        parent_path: "movies",
-        name: "premiered",
-        kind: "scalar",
-        shape: "scalar",
-        nullable: true,
-        data_type: "date",
-        parse,
-      },
-      {
-        path: "movies.dates",
-        parent_path: "movies",
-        name: "dates",
-        kind: "scalar",
-        shape: "database_array",
-        nullable: false,
-        data_type: "date",
-        parse,
-      },
-    ],
   } satisfies DsqlOperation<
     HostResult,
     Record<string, never>,
@@ -1032,6 +988,51 @@ test("parses mapped results recursively and memoizes observer selectors", () => 
       Record<string, never>
     >
   >;
+  const executionPayload = {
+    operation,
+    sql: "select result",
+    parameters: [],
+    variants: {},
+    dynamicInputs: [],
+    contextInputs: [],
+    materializeResult(result) {
+      assignDsqlResultField(
+        result,
+        "released",
+        materializeDsqlScalarResult(
+          result.released,
+          parse,
+          "released",
+          "date",
+        ),
+      );
+      for (const movie of result.movies) {
+        if (movie.premiered !== null) {
+          assignDsqlResultField(
+            movie,
+            "premiered",
+            materializeDsqlScalarResult(
+              movie.premiered,
+              parse,
+              "movies.premiered",
+              "date",
+            ),
+          );
+        }
+        assignDsqlResultField(
+          movie,
+          "dates",
+          materializeDsqlDatabaseArrayResult(
+            movie.dates,
+            parse,
+            "movies.dates",
+            "date",
+          ),
+        );
+      }
+      return result as unknown as HostResult;
+    },
+  } satisfies DsqlExecutionPayload<typeof operation>;
   const wire: WireResult = {
     released: "2026-01-01",
     movies: [
@@ -1041,11 +1042,24 @@ test("parses mapped results recursively and memoizes observer selectors", () => 
       },
     ],
   };
+  const movies = wire.movies;
+  const movie = movies[0];
+  if (!movie) {
+    throw new Error("test fixture is missing its movie");
+  }
+  const dates = movie.dates;
+  const nestedDates = dates[1];
+  if (!Array.isArray(nestedDates)) {
+    throw new Error("test fixture is missing its nested date array");
+  }
 
-  const first = parseDsqlResult(operation, wire);
-  const second = parseDsqlResult(operation, wire);
-  expect(first).toBe(second);
-  expect(first).toEqual({
+  const materialized = materializeDsqlExecutionResult(executionPayload, wire);
+  expect(materialized).toBe(wire as unknown as HostResult);
+  expect(materialized.movies).toBe(movies);
+  expect(materialized.movies[0]).toBe(movie);
+  expect(materialized.movies[0]?.dates).toBe(dates);
+  expect(materialized.movies[0]?.dates[1]).toBe(nestedDates);
+  expect(materialized).toEqual({
     released: { iso: "2026-01-01" },
     movies: [
       {
@@ -1057,31 +1071,94 @@ test("parses mapped results recursively and memoizes observer selectors", () => 
       },
     ],
   });
-  expect(wire.released).toBe("2026-01-01");
   expect(parseCalls).toBe(3);
+});
 
-  const select = (result: HostResult) => result.released.iso;
-  const firstSelector = dsqlResultSelector(operation, select);
-  const secondSelector = dsqlResultSelector(operation, select);
-  const otherSelector = dsqlResultSelector(
+test("trusts codec-free results after one root check", () => {
+  const operation = {
+    id: "plain-result",
+    name: "PlainResult",
+    kind: "query",
+    requiresContext: false,
+    inputs: [],
+    dynamicInputContracts: [],
+  } satisfies DsqlOperation<{ readonly value: string }>;
+  const executionPayload = {
     operation,
-    (result) => result.released.iso,
-  );
-  const firstParser = dsqlResultSelector(operation);
-  const secondParser = dsqlResultSelector(operation);
-  expect(firstSelector).toBe(secondSelector);
-  expect(otherSelector).not.toBe(firstSelector);
-  expect(firstParser).toBe(secondParser);
-  expect(firstSelector(wire)).toBe("2026-01-01");
-  expect(firstParser(wire)).toBe(first);
-  expect(parseCalls).toBe(3);
+    sql: "select result",
+    parameters: [],
+    variants: {},
+    dynamicInputs: [],
+    contextInputs: [],
+  } satisfies DsqlExecutionPayload<typeof operation>;
+  const result = { value: "unchanged" };
 
+  expect(materializeDsqlExecutionResult(executionPayload, result)).toBe(result);
   expect(() =>
-    parseDsqlResult(operation, {
-      ...wire,
-      released: null,
-    } as unknown as WireResult),
-  ).toThrow("non-null dsql result is null at released");
+    materializeDsqlExecutionResult(
+      executionPayload,
+      undefined as unknown as { readonly value: string },
+    ),
+  ).toThrow("dsql result for PlainResult must be an object");
+});
+
+test("rejects parser failures without returning a partial result", () => {
+  const cause = new Error("invalid date");
+  const operation = {
+    id: "failing-result",
+    name: "FailingResult",
+    kind: "query",
+    requiresContext: false,
+    inputs: [],
+    dynamicInputContracts: [],
+  } satisfies DsqlOperation<
+    { readonly first: { readonly iso: string }; readonly second: never },
+    Record<string, never>,
+    Record<string, never>,
+    Record<string, never>,
+    DsqlWireContract<
+      { readonly first: string; readonly second: string },
+      Record<string, never>,
+      Record<string, never>
+    >
+  >;
+  const executionPayload = {
+    operation,
+    sql: "select result",
+    parameters: [],
+    variants: {},
+    dynamicInputs: [],
+    contextInputs: [],
+    materializeResult(result) {
+      assignDsqlResultField(result, "first", { iso: result.first });
+      assignDsqlResultField(
+        result,
+        "second",
+        materializeDsqlScalarResult(
+          result.second,
+          () => {
+            throw cause;
+          },
+          "second",
+          "date",
+        ),
+      );
+      return result as never;
+    },
+  } satisfies DsqlExecutionPayload<typeof operation>;
+  const result = { first: "2026-01-01", second: "invalid" };
+
+  try {
+    materializeDsqlExecutionResult(executionPayload, result);
+    throw new Error("expected result materialization to fail");
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "dsql result parser failed at second (date)",
+    );
+    expect((error as Error).cause).toBe(cause);
+  }
+  expect(result.first).toEqual({ iso: "2026-01-01" });
 });
 
 test("requires trusted context separately from public variables", () => {

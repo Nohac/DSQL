@@ -96,6 +96,10 @@ test("tanstack start uses imported validator expressions when provided", async (
   );
   expect(source).toContain("DsqlWireVariables<Operation>");
   expect(source).toContain("Promise<DsqlOperationWireResult<Operation>>");
+  expect(source).toContain("Promise<DsqlOperationResult<Operation>>");
+  expect(source).toContain(
+    "return materializeDsqlExecutionResult(payload, result);",
+  );
   expect(source).toContain("context: materialized.context");
   const querySource = readFileSync(
     join(root, "src/generated/dsql/tanstack-query.ts"),
@@ -108,6 +112,14 @@ test("tanstack start uses imported validator expressions when provided", async (
   expect(querySource).toContain(
     "queryKey: dsqlQueryKeyForWire(",
   );
+  expect(querySource).toContain("UseQueryOptions<");
+  expect(querySource).toContain(
+    "DsqlOperationResult<Operation>,\n        Error",
+  );
+  expect(querySource).toContain("...(select ? { select } : {})");
+  expect(querySource).not.toContain("DsqlOperationWireResult");
+  expect(querySource).not.toContain("dsqlResultSelector");
+  expect(querySource).not.toContain("parseDsqlResult");
   expect(querySource).not.toContain("data: { contextScope");
   const operationSource = readFileSync(
     join(root, "src/generated/dsql/queries/MovieInfoLookup.ts"),
@@ -174,7 +186,11 @@ export const MovieInfoLookupServerFn = async () => undefined;
     join(root, "consumer.ts"),
     `
 import type { DsqlOperation } from "@dsql/typescript/runtime";
-import { executeQuery, useQuery } from "./src/generated/dsql/tanstack-query";
+import {
+  executeQuery,
+  queryOptions,
+  useQuery,
+} from "./src/generated/dsql/tanstack-query";
 
 declare const optionalOperation: DsqlOperation<
   unknown,
@@ -238,6 +254,11 @@ const selected = useQuery(mappedOperation, {
   select: (result) => result.released.iso,
 });
 const selectedData: string | undefined = selected.data;
+const mappedOptions = queryOptions(mappedOperation, {
+  params: { since: { iso: "2026-01-01" } },
+});
+const serverHostResult: Promise<{ readonly released: DateValue }> =
+  mappedOptions.queryFn();
 // @ts-expect-error public callers pass host values, never wire values
 useQuery(mappedOperation, { params: { since: "2026-01-01" } });
 const executed: Promise<{ readonly released: DateValue }> = executeQuery(

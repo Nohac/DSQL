@@ -46,6 +46,7 @@ Acceptance criteria:
 
 Implemented as strict project-renderer mappings with named type and paired
 codec imports, separate generated host/wire contracts, one-time public and
-trusted-context serialization, recursive result parsing, raw TanStack cache
-storage, and global multi-target validation. Superseded runtime object shapes
-are rejected rather than supported through compatibility fallbacks.
+trusted-context serialization, sparse operation-specific server result
+materialization, host-shaped TanStack cache storage, and global multi-target
+validation. Superseded runtime object shapes are rejected rather than supported
+through compatibility fallbacks.

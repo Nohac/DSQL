@@ -536,15 +536,23 @@ function renderOperationModule(
     operation.dynamic_inputs,
     scalarContext,
   );
-  const resultFields = renderResultContracts(
-    operation.result.fields,
-    scalarContext,
-  );
+  const resultMaterializer = options.includeExecutionPayload
+    ? renderResultMaterializer(
+        operation.result.fields,
+        scalarContext,
+        name,
+        resultType,
+        wireResultType,
+      )
+    : undefined;
   const executionPayload = options.includeExecutionPayload
     ? renderExecutionPayload(operation, `${name}Operation`, {
         exportedName: `${name}ExecutionPayload`,
         outputMode: options.outputMode,
         scalarContext,
+        ...(resultMaterializer
+          ? { resultMaterializer: resultMaterializer.name }
+          : {}),
       })
     : undefined;
   const runtimeImports = [
@@ -557,8 +565,14 @@ function renderOperationModule(
     ...scalarContext.runtimeTypes(),
     "DsqlWireContract",
   ];
+  const runtimeValues = resultMaterializer?.runtimeValues ?? [];
   const statements = [
     `import type { ${runtimeImports.join(", ")} } from "@dsql/typescript/runtime";`,
+    ...(runtimeValues.length > 0
+      ? [
+          `import { ${runtimeValues.join(", ")} } from "@dsql/typescript/runtime";`,
+        ]
+      : []),
     ...scalarContext.imports(),
     ...fragmentTypeImports(resultCtx, operation),
     "",
@@ -583,15 +597,18 @@ function renderOperationModule(
   kind: ${JSON.stringify(DEFINITION_KIND_QUERY)},
   requiresContext: ${operation.context.length > 0},
   inputs: ${publicInputs},
-  dynamicInputContracts: ${dynamicInputContracts},
-  resultFields: ${resultFields}
+  dynamicInputContracts: ${dynamicInputContracts}
 };`,
     "",
     renderSourceRegistryAugmentation(options.embeddedSource, `${name}Operation`),
   ];
 
   if (executionPayload) {
-    statements.push("", executionPayload);
+    statements.push(
+      "",
+      ...(resultMaterializer ? [resultMaterializer.definition, ""] : []),
+      executionPayload,
+    );
   }
 
   return `${statements.join("\n")}\n`;
@@ -651,16 +668,43 @@ function renderOperationExecutionModule(
 ): string {
   const scalarContext = new ScalarModuleContext(options.scalars);
   const name = toPascalCase(operation.name);
+  const resultType = `${name}Result`;
+  const wireResultType = `${name}WireResult`;
+  const resultMaterializer = renderResultMaterializer(
+    operation.result.fields,
+    scalarContext,
+    name,
+    resultType,
+    wireResultType,
+  );
   const payload = renderExecutionPayload(operation, `${name}Operation`, {
     exportedName: `${name}ExecutionPayload`,
     outputMode: options.outputMode,
     scalarContext,
+    ...(resultMaterializer
+      ? { resultMaterializer: resultMaterializer.name }
+      : {}),
   });
   const runtimeImports = ["DsqlExecutionPayload", ...scalarContext.runtimeTypes()];
+  const runtimeValues = resultMaterializer?.runtimeValues ?? [];
   return [
     `import type { ${runtimeImports.join(", ")} } from "@dsql/typescript/runtime";`,
+    ...(runtimeValues.length > 0
+      ? [
+          `import { ${runtimeValues.join(", ")} } from "@dsql/typescript/runtime";`,
+        ]
+      : []),
     ...scalarContext.imports(),
     `import { ${name}Operation } from ${JSON.stringify(options.operationImport)};`,
+    ...(resultMaterializer
+      ? [
+          `import type { ${resultType}, ${wireResultType} } from ${JSON.stringify(
+            options.operationImport,
+          )};`,
+          "",
+          resultMaterializer.definition,
+        ]
+      : []),
     "",
     payload,
     "",
@@ -674,19 +718,23 @@ function renderExecutionPayload(
     readonly exportedName: string;
     readonly outputMode: DsqlOutputMode;
     readonly scalarContext: ScalarModuleContext;
+    readonly resultMaterializer?: string;
   },
 ): string {
   const sql =
     options.outputMode === "compact"
       ? JSON.stringify(operation.sql.compact_text)
       : typescriptTemplateLiteral(operation.sql.text);
+  const materializer = options.resultMaterializer
+    ? `  materializeResult: ${options.resultMaterializer},\n`
+    : "";
   return `export const ${options.exportedName}: DsqlExecutionPayload<typeof ${operationValue}> = {
   operation: ${operationValue},
   parameters: ${JSON.stringify(operation.sql.parameters)},
   variants: ${JSON.stringify(sqlVariants(operation))},
   dynamicInputs: ${JSON.stringify(operation.dynamic_inputs)},
   contextInputs: ${renderInputFields(operation.context, options.scalarContext)},
-  sql: ${sql}
+${materializer}  sql: ${sql}
 };`;
 }
 
@@ -912,7 +960,7 @@ function renderBarrel(
 ): string {
   const runtimeExports = options.includeRuntime
     ? [
-        'export { dsql, dsqlQueryKey, dsqlQueryKeyForWire, dsqlResultSelector, materializeDsqlOperationVariables, parseDsqlResult } from "@dsql/typescript/runtime";',
+        'export { dsql, dsqlQueryKey, dsqlQueryKeyForWire, materializeDsqlOperationVariables } from "@dsql/typescript/runtime";',
         'export type { DsqlDefinition, DsqlExecutionPayload, DsqlFragment, DsqlFragmentDefinition, DsqlFragmentInput, DsqlFragmentParams, DsqlFragmentVariables, DsqlMaterializedQuery, DsqlOperation, DsqlOperationContext, DsqlOperationInput, DsqlOperationParams, DsqlOperationResult, DsqlOperationWireInput, DsqlOperationWireParams, DsqlOperationWireResult, DsqlScalarParser, DsqlScalarSerializer, DsqlVariables, DsqlWireContract, DsqlWireVariables } from "@dsql/typescript/runtime";',
       ]
     : [];
@@ -1743,31 +1791,239 @@ function renderDynamicInputContracts(
     .join(",")}]`;
 }
 
-function renderResultContracts(
+type RenderedResultMaterializer = {
+  readonly name: string;
+  readonly definition: string;
+  readonly runtimeValues: readonly string[];
+};
+
+type ResultMaterializerState = {
+  readonly children: ReadonlyMap<string, readonly ResultField[]>;
+  readonly parsers: ReadonlyMap<string, string>;
+  readonly visitedPaths: ReadonlySet<string>;
+  nextLocal: number;
+  usesDatabaseArray: boolean;
+  usesScalar: boolean;
+};
+
+/**
+ * Emits direct traversal only for result branches that contain a configured
+ * scalar parser. Operation result metadata is fully expanded, including
+ * fragment-provided fields, so fragments need no independent materializer.
+ */
+function renderResultMaterializer(
   fields: readonly ResultField[],
   scalars: ScalarModuleContext,
+  operationName: string,
+  resultType: string,
+  wireResultType: string,
+): RenderedResultMaterializer | undefined {
+  const parsers = new Map<string, string>();
+  const fieldsByPath = new Map(fields.map((field) => [field.path, field]));
+  for (const field of fields) {
+    if (field.kind !== RESULT_KIND_SCALAR) {
+      continue;
+    }
+    const parser = scalars.parserFor(
+      field.value_type.name,
+      field.value_type.wire.encoding,
+    );
+    if (parser) {
+      parsers.set(field.path, parser);
+    }
+  }
+  if (parsers.size === 0) {
+    return undefined;
+  }
+
+  const visitedPaths = new Set<string>();
+  for (const path of parsers.keys()) {
+    let current = fieldsByPath.get(path);
+    while (current) {
+      visitedPaths.add(current.path);
+      if (current.parent_path === "") {
+        break;
+      }
+      const parent = fieldsByPath.get(current.parent_path);
+      if (!parent) {
+        throw new Error(
+          `dsql result parser path ${path} has no parent field ${current.parent_path}`,
+        );
+      }
+      current = parent;
+    }
+  }
+
+  const children = new Map<string, ResultField[]>();
+  for (const field of fields) {
+    const group = children.get(field.parent_path) ?? [];
+    group.push(field);
+    children.set(field.parent_path, group);
+  }
+  const state: ResultMaterializerState = {
+    children,
+    parsers,
+    visitedPaths,
+    nextLocal: 0,
+    usesDatabaseArray: false,
+    usesScalar: false,
+  };
+  const body = renderResultMaterializerChildren(state, "", "result", "  ");
+  const name = `materialize${operationName}Result`;
+  return {
+    name,
+    definition: `function ${name}(
+  result: ${wireResultType},
+): ${resultType} {
+${body.join("\n")}
+  return result as unknown as ${resultType};
+}`,
+    runtimeValues: [
+      "assignDsqlResultField",
+      ...(state.usesDatabaseArray
+        ? ["materializeDsqlDatabaseArrayResult"]
+        : []),
+      ...(state.usesScalar ? ["materializeDsqlScalarResult"] : []),
+    ],
+  };
+}
+
+function renderResultMaterializerChildren(
+  state: ResultMaterializerState,
+  parentPath: string,
+  parentValue: string,
+  indent: string,
+): string[] {
+  return (state.children.get(parentPath) ?? []).flatMap((field) =>
+    state.visitedPaths.has(field.path)
+      ? renderResultMaterializerField(state, field, parentValue, indent)
+      : [],
+  );
+}
+
+function renderResultMaterializerField(
+  state: ResultMaterializerState,
+  field: ResultField,
+  parentValue: string,
+  indent: string,
+): string[] {
+  const value = `_dsqlResult${state.nextLocal}`;
+  state.nextLocal += 1;
+  const lines = [
+    `${indent}const ${value} = ${parentValue}[${JSON.stringify(field.name)}];`,
+  ];
+
+  if (field.kind === RESULT_KIND_SCALAR) {
+    const parser = state.parsers.get(field.path);
+    if (!parser) {
+      return lines;
+    }
+    const materialized =
+      field.value_type.shape === RESULT_VALUE_SHAPE_DATABASE_ARRAY
+        ? materializeDatabaseArrayExpression(state, field, value, parser)
+        : materializeScalarExpression(state, field, value, parser);
+    if (field.nullable) {
+      lines.push(
+        `${indent}if (${value} !== null) {`,
+        `${indent}  assignDsqlResultField(${parentValue}, ${JSON.stringify(
+          field.name,
+        )}, ${materialized});`,
+        `${indent}}`,
+      );
+    } else {
+      lines.push(
+        `${indent}if (${value} === null) {`,
+        `${indent}  throw new Error(${JSON.stringify(
+          `non-null dsql result is null at ${field.path}`,
+        )});`,
+        `${indent}}`,
+        `${indent}assignDsqlResultField(${parentValue}, ${JSON.stringify(
+          field.name,
+        )}, ${materialized});`,
+      );
+    }
+    return lines;
+  }
+
+  const nestedIndent = field.nullable ? `${indent}  ` : indent;
+  if (field.nullable) {
+    lines.push(`${indent}if (${value} !== null) {`);
+  } else {
+    lines.push(
+      `${indent}if (${value} === null) {`,
+      `${indent}  throw new Error(${JSON.stringify(
+        `non-null dsql result is null at ${field.path}`,
+      )});`,
+      `${indent}}`,
+    );
+  }
+
+  if (field.kind === RESULT_KIND_ARRAY) {
+    const item = `_dsqlResult${state.nextLocal}`;
+    state.nextLocal += 1;
+    lines.push(
+      `${nestedIndent}if (!Array.isArray(${value})) {`,
+      `${nestedIndent}  throw new Error(${JSON.stringify(
+        `dsql result ${field.path} must be an array`,
+      )});`,
+      `${nestedIndent}}`,
+      `${nestedIndent}for (const ${item} of ${value}) {`,
+      `${nestedIndent}  if (typeof ${item} !== "object" || ${item} === null || Array.isArray(${item})) {`,
+      `${nestedIndent}    throw new Error(${JSON.stringify(
+        `dsql result ${field.path} must contain objects`,
+      )});`,
+      `${nestedIndent}  }`,
+      ...renderResultMaterializerChildren(
+        state,
+        field.path,
+        item,
+        `${nestedIndent}  `,
+      ),
+      `${nestedIndent}}`,
+    );
+  } else {
+    lines.push(
+      `${nestedIndent}if (typeof ${value} !== "object" || Array.isArray(${value})) {`,
+      `${nestedIndent}  throw new Error(${JSON.stringify(
+        `dsql result ${field.path} must be an object`,
+      )});`,
+      `${nestedIndent}}`,
+      ...renderResultMaterializerChildren(
+        state,
+        field.path,
+        value,
+        nestedIndent,
+      ),
+    );
+  }
+  if (field.nullable) {
+    lines.push(`${indent}}`);
+  }
+  return lines;
+}
+
+function materializeDatabaseArrayExpression(
+  state: ResultMaterializerState,
+  field: ResultField,
+  value: string,
+  parser: string,
 ): string {
-  return `[${fields
-    .map((field) => {
-      const value = {
-        path: field.path,
-        parent_path: field.parent_path,
-        name: field.name,
-        kind: field.kind,
-        shape: field.value_type.shape,
-        nullable: field.nullable,
-        data_type: field.value_type.name,
-      };
-      const parser =
-        field.kind === RESULT_KIND_SCALAR
-          ? scalars.parserFor(
-              field.value_type.name,
-              field.value_type.wire.encoding,
-            )
-          : undefined;
-      return renderRuntimeValue(value, "parse", parser);
-    })
-    .join(",")}]`;
+  state.usesDatabaseArray = true;
+  return `materializeDsqlDatabaseArrayResult(${value}, ${parser}, ${JSON.stringify(
+    field.path,
+  )}, ${JSON.stringify(field.value_type.name)})`;
+}
+
+function materializeScalarExpression(
+  state: ResultMaterializerState,
+  field: ResultField,
+  value: string,
+  parser: string,
+): string {
+  state.usesScalar = true;
+  return `materializeDsqlScalarResult(${value}, ${parser}, ${JSON.stringify(
+    field.path,
+  )}, ${JSON.stringify(field.value_type.name)})`;
 }
 
 function renderRuntimeValue(

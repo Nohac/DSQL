@@ -52,8 +52,6 @@ export type DsqlOperation<
   readonly inputs: readonly DsqlInputField[];
   /** Narrow client contract for serializing bounded dynamic operands. */
   readonly dynamicInputContracts: readonly DsqlDynamicInputContract[];
-  /** Narrow client contract for parsing raw result JSON. */
-  readonly resultFields: readonly DsqlResultContractField[];
   readonly result?: Result;
   readonly params?: Params;
   readonly input?: Input;
@@ -289,17 +287,6 @@ export type DsqlDynamicInputContract = {
   readonly fields: readonly DsqlDynamicInputFieldContract[];
 };
 
-export type DsqlResultContractField = {
-  readonly path: string;
-  readonly parent_path: string;
-  readonly name: string;
-  readonly kind: "scalar" | "object" | "array";
-  readonly shape: "scalar" | "database_array" | "object";
-  readonly nullable: boolean;
-  readonly data_type: string;
-  readonly parse?: DsqlScalarParser<any, any>;
-};
-
 export type DsqlExecutionPayload<
   Operation extends DsqlOperation<any, any, any, any, any> = DsqlOperation,
 > = {
@@ -309,6 +296,13 @@ export type DsqlExecutionPayload<
   readonly variants: DsqlSqlVariants;
   readonly dynamicInputs: readonly DynamicInputMetadata[];
   readonly contextInputs: readonly DsqlInputField[];
+  /**
+   * Server-only conversion generated only when a selected scalar has a
+   * project-owned host parser.
+   */
+  readonly materializeResult?: (
+    result: DsqlOperationWireResult<Operation>,
+  ) => DsqlOperationResult<Operation>;
 };
 
 export type DsqlMaterializedQuery = {
@@ -397,171 +391,81 @@ export function materializeDsqlOperationVariables<
   ) as DsqlWireVariables<Operation>;
 }
 
-const DSQL_PARSED_RESULTS = new WeakMap<
-  object,
-  WeakMap<object, unknown>
->();
-const DSQL_RESULT_SELECTORS = new WeakMap<
-  object,
-  {
-    withoutProjection?: (value: any) => any;
-    readonly projections: WeakMap<(value: any) => any, (value: any) => any>;
-  }
->();
-
-/** Parses one raw compiler-shaped JSON result into its configured host types. */
-export function parseDsqlResult<
-  Operation extends DsqlOperation<any, any, any, any, any>,
->(
-  operation: Operation,
-  raw: DsqlOperationWireResult<Operation>,
-): DsqlOperationResult<Operation> {
-  if (!isDsqlEnvelope(raw)) {
-    throw new Error(`dsql result for ${operation.name} must be an object`);
-  }
-  let operationCache = DSQL_PARSED_RESULTS.get(operation);
-  if (!operationCache) {
-    operationCache = new WeakMap();
-    DSQL_PARSED_RESULTS.set(operation, operationCache);
-  }
-  const cached = operationCache.get(raw);
-  if (cached !== undefined) {
-    return cached as DsqlOperationResult<Operation>;
-  }
-
-  const children = new Map<string, DsqlResultContractField[]>();
-  for (const field of operation.resultFields) {
-    const group = children.get(field.parent_path) ?? [];
-    group.push(field);
-    children.set(field.parent_path, group);
-  }
-  const parsed = parseDsqlResultObject(raw, "", children);
-  operationCache.set(raw, parsed);
-  return parsed as DsqlOperationResult<Operation>;
-}
-
 /**
- * Stable TanStack observer selector. Raw JSON remains in the query cache;
- * parsing and an optional user projection happen only at the consumer edge.
+ * Applies an operation's generated result conversion at the executor boundary.
+ * Codec-free operations retain only this constant-time root contract check.
  */
-export function dsqlResultSelector<
+export function materializeDsqlExecutionResult<
   Operation extends DsqlOperation<any, any, any, any, any>,
-  Selected = DsqlOperationResult<Operation>,
 >(
-  operation: Operation,
-  select?: (result: DsqlOperationResult<Operation>) => Selected,
-): (wire: DsqlOperationWireResult<Operation>) => Selected {
-  let selectors = DSQL_RESULT_SELECTORS.get(operation);
-  if (!selectors) {
-    selectors = { projections: new WeakMap() };
-    DSQL_RESULT_SELECTORS.set(operation, selectors);
+  payload: DsqlExecutionPayload<Operation>,
+  result: DsqlOperationWireResult<Operation>,
+): DsqlOperationResult<Operation> {
+  if (!isDsqlEnvelope(result)) {
+    throw new Error(
+      `dsql result for ${payload.operation.name} must be an object`,
+    );
   }
-  const cached = select
-    ? selectors.projections.get(select)
-    : selectors.withoutProjection;
-  if (cached) {
-    return cached as (wire: DsqlOperationWireResult<Operation>) => Selected;
-  }
-  const selector = (wire: DsqlOperationWireResult<Operation>) => {
-    const parsed = parseDsqlResult(operation, wire);
-    return select ? select(parsed) : (parsed as Selected);
+  return payload.materializeResult
+    ? payload.materializeResult(result)
+    : (result as DsqlOperationResult<Operation>);
+}
+
+/** Assigns one compiler-generated result key while retaining key checking. */
+export function assignDsqlResultField<
+  ObjectType extends object,
+  Key extends keyof ObjectType,
+>(object: ObjectType, key: Key, value: unknown): void {
+  const mutable = object as {
+    -readonly [Property in Key]: unknown;
   };
-  if (select) {
-    selectors.projections.set(select, selector);
-  } else {
-    selectors.withoutProjection = selector;
-  }
-  return selector;
+  mutable[key] = value;
 }
 
-function parseDsqlResultObject(
-  value: Record<string, unknown>,
+/** Applies one configured scalar parser with a pathful execution error. */
+export function materializeDsqlScalarResult<Wire, Host>(
+  value: Wire,
+  parse: DsqlScalarParser<Wire, Host>,
   path: string,
-  children: ReadonlyMap<string, readonly DsqlResultContractField[]>,
-): Record<string, unknown> {
-  let parsed = value;
-  for (const field of children.get(path) ?? []) {
-    if (!Object.hasOwn(value, field.name)) {
-      throw new Error(`dsql result is missing ${field.path}`);
-    }
-    const current = value[field.name];
-    const next = parseDsqlResultField(field, current, children);
-    if (next !== current) {
-      if (parsed === value) {
-        parsed = { ...value };
-      }
-      parsed[field.name] = next;
-    }
-  }
-  return parsed;
-}
-
-function parseDsqlResultField(
-  field: DsqlResultContractField,
-  value: unknown,
-  children: ReadonlyMap<string, readonly DsqlResultContractField[]>,
-): unknown {
-  if (value === null) {
-    if (!field.nullable) {
-      throw new Error(`non-null dsql result is null at ${field.path}`);
-    }
-    return null;
-  }
-  if (field.kind === "array") {
-    if (!Array.isArray(value)) {
-      throw new Error(`dsql result ${field.path} must be an array`);
-    }
-    return value.map((item) => {
-      if (!isDsqlEnvelope(item)) {
-        throw new Error(`dsql result ${field.path} must contain objects`);
-      }
-      return parseDsqlResultObject(item, field.path, children);
-    });
-  }
-  if (field.kind === "object") {
-    if (!isDsqlEnvelope(value)) {
-      throw new Error(`dsql result ${field.path} must be an object`);
-    }
-    return parseDsqlResultObject(value, field.path, children);
-  }
-  if (field.shape === "database_array") {
-    return parseDsqlDatabaseArray(field, value);
-  }
-  return parseDsqlScalarResult(field, value);
-}
-
-function parseDsqlDatabaseArray(
-  field: DsqlResultContractField,
-  value: unknown,
-): unknown {
-  if (!Array.isArray(value)) {
-    throw new Error(`dsql result ${field.path} must be a database array`);
-  }
-  return value.map((item) =>
-    item === null
-      ? null
-      : Array.isArray(item)
-        ? parseDsqlDatabaseArray(field, item)
-        : parseDsqlScalarResult(field, item),
-  );
-}
-
-function parseDsqlScalarResult(
-  field: DsqlResultContractField,
-  value: unknown,
-): unknown {
-  const parse = field.parse;
-  if (!parse) {
-    return value;
-  }
+  dataType: string,
+): Host {
   try {
     return parse(value);
   } catch (error) {
     throw new Error(
-      `dsql result parser failed at ${field.path} (${field.data_type})`,
+      `dsql result parser failed at ${path} (${dataType})`,
       { cause: error },
     );
   }
+}
+
+/** Mutates one database-array scalar leaf without allocating replacement arrays. */
+export function materializeDsqlDatabaseArrayResult<Wire, Host>(
+  value: DsqlDatabaseArray<Wire>,
+  parse: DsqlScalarParser<Wire, Host>,
+  path: string,
+  dataType: string,
+): DsqlDatabaseArray<Host> {
+  if (!Array.isArray(value)) {
+    throw new Error(`dsql result ${path} must be a database array`);
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
+    if (item === null) {
+      continue;
+    }
+    if (Array.isArray(item)) {
+      materializeDsqlDatabaseArrayResult(item, parse, path, dataType);
+      continue;
+    }
+    value[index] = materializeDsqlScalarResult(
+      item as Wire,
+      parse,
+      path,
+      dataType,
+    ) as unknown as Wire;
+  }
+  return value as DsqlDatabaseArray<Host>;
 }
 
 export function applyDsqlVariants(

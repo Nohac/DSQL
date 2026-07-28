@@ -8,10 +8,14 @@ import type {
   DsqlExecutionPayload,
   DsqlOperation,
   DsqlOperationContext,
+  DsqlOperationResult,
   DsqlOperationWireResult,
   DsqlWireVariables,
 } from "@dsql/typescript/runtime";
-import { materializeDsqlQuery } from "@dsql/typescript/runtime";
+import {
+  materializeDsqlExecutionResult,
+  materializeDsqlQuery,
+} from "@dsql/typescript/runtime";
 
 export type DsqlServerVariables<
   Operation extends DsqlOperation<any, any, any, any, any>,
@@ -53,7 +57,7 @@ async function executeDsqlOperation<
 >(
   operation: Operation,
   variables: DsqlWireVariables<Operation>,
-): Promise<DsqlOperationWireResult<Operation>> {
+): Promise<DsqlOperationResult<Operation>> {
   const context = getGlobalStartContext() as Partial<DsqlServerContext> | undefined;
   const executeQuery = context?.dsql?.executeQuery;
   if (!executeQuery) {
@@ -71,13 +75,14 @@ async function executeDsqlOperation<
     variables,
     trustedContext,
   );
-  return executeQuery({
+  const result = await executeQuery({
     operation,
     variables,
     context: materialized.context,
     sql: materialized.sql,
     values: [...materialized.values],
   });
+  return materializeDsqlExecutionResult(payload, result);
 }
 
 const executionPayloadFor = createServerOnlyFn(
