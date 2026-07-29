@@ -23,7 +23,7 @@ use crate::catalog::{
     WireEncoding,
 };
 use crate::entities::clause::{ClauseFact, OrderDirection, OrderTerm};
-use crate::entities::definition::{DefDecl, DefKind};
+use crate::entities::definition::{DefDecl, DefKind, describe_dynamic_variable};
 use crate::entities::expression::{
     BinaryOp, ComparisonOp, Expr, Sigil, VariableRef, build_variable_ref,
 };
@@ -35,12 +35,13 @@ use crate::entities::variable_path::{
 };
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
-    BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
-    NodeKey, Severity, Span, VariablesDemand, emit_diagnostic,
+    BelongsToFile, ChildOf, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource,
+    DiagnosticsDemand, NodeKey, Severity, Span, VariablesDemand, emit_diagnostic,
 };
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{Node, NodeRef, Rule};
+use crate::plan::QueryPlanFact;
 use crate::service::completion::{
     CompletionContext, CompletionItem, CompletionKind, CompletionRequest, CompletionSite,
     emit_completion_candidate,
@@ -2008,13 +2009,17 @@ impl FormatStage for Variable {
 /// invocation per (request, binding-in-file) pair via the `BelongsToFile`
 /// join, answering when the binding's span holds the cursor. Without
 /// `VariablesDemand` there are no bindings, no pairs, and no candidates.
+type PlanForVariable<'a> =
+    Option<Query<(Entity, &'a QueryPlanFact, &'a DefKey), Where<bowl::Eq<DefKey>>>>;
+
 async fn hover_variables(
     query: Query<(Entity, &BelongsToFile, &Cursor), With<HoverEnriched>>,
-    bindings: Query<(Entity, &Span, &VariableBinding), Where<bowl::Eq<BelongsToFile>>>,
+    bindings: Query<(Entity, &Span, &VariableBinding, &DefKey), Where<bowl::Eq<BelongsToFile>>>,
+    plan: PlanForVariable<'_>,
     mut commands: Commands<(dsql_schema::HoverCandidate,)>,
 ) {
     let (request, _file, cursor) = query.item();
-    let (_, span, binding) = bindings.item();
+    let (_, span, binding, _) = bindings.item();
 
     if !span.contains(cursor.0) {
         return;
@@ -2025,16 +2030,22 @@ async fn hover_variables(
         VariableSource::TopLevel => "query-time",
         VariableSource::Context => "trusted context",
     };
-    let text = format!(
-        "{} — `{}`: {} ({binding_time})",
-        binding
-            .name
-            .as_deref()
-            .map(|name| format!("`{name}`"))
-            .unwrap_or_else(|| "anonymous variable".to_string()),
-        binding.path,
-        variable_type_label(binding),
-    );
+    let dynamic_inputs = plan
+        .map(|plan| plan.item().1.0.dynamic_inputs.as_slice())
+        .unwrap_or_default();
+    let text =
+        describe_dynamic_variable(binding, dynamic_inputs, binding_time).unwrap_or_else(|| {
+            format!(
+                "{} — `{}`: {} ({binding_time})",
+                binding
+                    .name
+                    .as_deref()
+                    .map(|name| format!("`{name}`"))
+                    .unwrap_or_else(|| "anonymous variable".to_string()),
+                binding.path,
+                variable_type_label(binding),
+            )
+        });
 
     emit_hover_candidate(&mut commands, request, priority::VARIABLE, text);
 }

@@ -614,6 +614,24 @@ fn dynamic_contract<'a>(
         .find(|contract| contract.path == binding.path && contract.kind == kind)
 }
 
+pub(crate) fn describe_dynamic_variable(
+    binding: &VariableBinding,
+    dynamic_inputs: &[DynamicInputContract],
+    binding_time: &str,
+) -> Option<String> {
+    dynamic_contract(binding, dynamic_inputs)?;
+    let label = binding
+        .name
+        .as_deref()
+        .map(|name| format!("`{name}`"))
+        .unwrap_or_else(|| "anonymous variable".to_string());
+    let shape = variable_shape(std::slice::from_ref(binding), dynamic_inputs);
+    Some(format!(
+        "{label} — `{}` ({binding_time})\n\n```yaml\n{shape}```",
+        binding.path
+    ))
+}
+
 fn insert_variable_shape(node: &mut VariableShapeNode, path: &[&str], value: VariableShapeValue) {
     let Some((head, tail)) = path.split_first() else {
         node.value = Some(value);

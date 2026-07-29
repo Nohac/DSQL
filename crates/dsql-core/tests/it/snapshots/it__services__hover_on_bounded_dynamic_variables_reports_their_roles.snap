@@ -2,7 +2,77 @@
 source: crates/dsql-core/tests/it/services.rs
 expression: "rendered.join(\"\\n\")"
 ---
-search: `search` — `params.search`: bounded predicate (query-time)
-indexed_search: `indexed_search` — `params.indexed_search`: bounded predicate (query-time)
-selected_indexed_search: `selected_indexed_search` — `params.selected_indexed_search`: bounded predicate (query-time)
-order: `order` — `params.order`: bounded order (query-time)
+search: `search` — `params.search` (query-time)
+
+```yaml
+params:
+  search:
+    and: [<predicate>]
+    or: [<predicate>]
+    not: <predicate>
+    id:
+      eq: uuid
+      neq: uuid
+      in: uuid[]
+      not_in: uuid[]
+      is_null: boolean
+    name:
+      eq: text
+      neq: text
+      like: text
+      in: text[]
+      not_in: text[]
+      is_null: boolean
+```
+indexed_search: `indexed_search` — `params.indexed_search` (query-time)
+
+```yaml
+params:
+  indexed_search:
+    and: [<predicate>]
+    or: [<predicate>]
+    not: <predicate>
+    id:
+      eq: uuid
+      neq: uuid
+      in: uuid[]
+      not_in: uuid[]
+      is_null: boolean
+    name:
+      eq: text
+      neq: text
+      like: text
+      in: text[]
+      not_in: text[]
+      is_null: boolean
+```
+selected_indexed_search: `selected_indexed_search` — `params.selected_indexed_search` (query-time)
+
+```yaml
+params:
+  selected_indexed_search:
+    and: [<predicate>]
+    or: [<predicate>]
+    not: <predicate>
+    id:
+      eq: uuid
+      neq: uuid
+      in: uuid[]
+      not_in: uuid[]
+      is_null: boolean
+    name:
+      eq: text
+      neq: text
+      like: text
+      in: text[]
+      not_in: text[]
+      is_null: boolean
+```
+order: `order` — `params.order` (query-time)
+
+```yaml
+params:
+  order: # ordered array of one-field entries
+    id: enum("asc", "desc", "asc_nulls_first", "asc_nulls_last", "desc_nulls_first", "desc_nulls_last")
+    name: enum("asc", "desc", "asc_nulls_first", "asc_nulls_last", "desc_nulls_first", "desc_nulls_last")
+```
