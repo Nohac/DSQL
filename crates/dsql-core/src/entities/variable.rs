@@ -1933,6 +1933,57 @@ pub(crate) fn lower_snake_case(name: &str) -> String {
     result
 }
 
+pub(crate) fn variable_type_label(binding: &VariableBinding) -> String {
+    let mut label = if binding.role == VariableRole::DynamicPredicate {
+        "bounded predicate".to_string()
+    } else if binding.role == VariableRole::DynamicOrder {
+        "bounded order".to_string()
+    } else if matches!(
+        binding.role,
+        VariableRole::ComparisonOperator | VariableRole::SortDirection
+    ) {
+        format!(
+            "enum({})",
+            binding
+                .enum_values
+                .iter()
+                .map(|value| format!("\"{value}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else if binding.collection {
+        format!("{}[]", binding.data_type.as_str())
+    } else {
+        binding.data_type.as_str().to_string()
+    };
+    if binding.nullable {
+        label.push_str(" | null");
+    }
+    if let Some(default) = &binding.default {
+        label.push_str(" = ");
+        label.push_str(&input_default_label(default));
+    }
+    label
+}
+
+pub(crate) fn input_default_label(default: &InputDefault) -> String {
+    match default {
+        InputDefault::String(value) => format!("{value:?}"),
+        InputDefault::Number(value) => value.clone(),
+        InputDefault::Boolean(value) => value.to_string(),
+        InputDefault::Null => "null".to_string(),
+        InputDefault::Collection(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(input_default_label)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        InputDefault::EmptyObject => "{}".to_string(),
+    }
+}
+
 struct BindingContext<'a> {
     role: VariableRole,
     data_type: DataType,
@@ -1982,11 +2033,7 @@ async fn hover_variables(
             .map(|name| format!("`{name}`"))
             .unwrap_or_else(|| "anonymous variable".to_string()),
         binding.path,
-        if binding.collection {
-            format!("{}[]", binding.data_type.as_str())
-        } else {
-            binding.data_type.as_str().to_string()
-        },
+        variable_type_label(binding),
     );
 
     emit_hover_candidate(&mut commands, request, priority::VARIABLE, text);
@@ -2021,9 +2068,8 @@ async fn complete_definition_inputs(
                 label: name.to_string(),
                 kind: CompletionKind::Variable,
                 detail: Some(format!(
-                    "{}{} at {}",
-                    binding.data_type.as_str(),
-                    if binding.collection { "[]" } else { "" },
+                    "{} at {}",
+                    variable_type_label(binding),
                     binding.path
                 )),
                 documentation: None,

@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/services.rs
+expression: "rendered.join(\"\\n\")"
+---
+search: `search` — `params.search`: bounded predicate (query-time)
+indexed_search: `indexed_search` — `params.indexed_search`: bounded predicate (query-time)
+selected_indexed_search: `selected_indexed_search` — `params.selected_indexed_search`: bounded predicate (query-time)
+order: `order` — `params.order`: bounded order (query-time)

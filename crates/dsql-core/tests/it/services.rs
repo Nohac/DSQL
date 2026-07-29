@@ -171,6 +171,47 @@ async fn hover_on_variables_reports_bindings() {
 }
 
 #[tokio::test]
+async fn hover_on_bounded_dynamic_variables_reports_their_roles() {
+    let source = indoc::indoc! {r#"
+        query Q {
+          public::users(
+            where $$search on selected
+              and $$indexed_search on indexed
+              and $$selected_indexed_search on selected_indexed
+            order by $$order on selected
+          ) {
+            id
+            name
+          }
+        }
+    "#};
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
+    arm_editor_demands(&bowl).await;
+    insert_source(&bowl, FIXTURE, source).await;
+
+    let variables = [
+        "search",
+        "indexed_search",
+        "selected_indexed_search",
+        "order",
+    ]
+    .map(|name| {
+        let offset = source
+            .find(&format!("$${name}"))
+            .expect("test variable exists")
+            + "$$".len();
+        (name, offset)
+    });
+    let mut rendered = Vec::new();
+    for (name, offset) in variables {
+        rendered.push(format!("{name}: {}", hover(&bowl, offset).await));
+    }
+
+    insta::assert_snapshot!(rendered.join("\n"));
+}
+
+#[tokio::test]
 async fn query_definition_hover_reports_inferred_variables() {
     let source = indoc::indoc! {r#"
         query MovieDetailPageQuery($$movieId? = null $$direction = "desc" $count = 10) {

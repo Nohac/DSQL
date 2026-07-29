@@ -15,8 +15,8 @@ use bowl::{
 
 use crate::entities::document::ParsedFile;
 use crate::entities::variable::{
-    DefinitionVariables, InputDefault, InputRefinement, VariableBinding, VariableRole,
-    build_input_refinements,
+    DefinitionVariables, InputRefinement, VariableBinding, VariableRole, build_input_refinements,
+    input_default_label, variable_type_label,
 };
 use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
@@ -730,55 +730,4 @@ fn write_shape_line(output: &mut String, indent: usize, key: &str, value: &str) 
     output.push_str(": ");
     output.push_str(value);
     output.push('\n');
-}
-
-fn variable_type_label(binding: &VariableBinding) -> String {
-    let mut label = if binding.role == VariableRole::DynamicPredicate {
-        "bounded predicate".to_string()
-    } else if binding.role == VariableRole::DynamicOrder {
-        "bounded order".to_string()
-    } else if matches!(
-        binding.role,
-        VariableRole::ComparisonOperator | VariableRole::SortDirection
-    ) {
-        format!(
-            "enum({})",
-            binding
-                .enum_values
-                .iter()
-                .map(|value| format!("\"{value}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    } else if binding.collection {
-        format!("{}[]", binding.data_type.as_str())
-    } else {
-        binding.data_type.as_str().to_string()
-    };
-    if binding.nullable {
-        label.push_str(" | null");
-    }
-    if let Some(default) = &binding.default {
-        label.push_str(" = ");
-        label.push_str(&input_default_label(default));
-    }
-    label
-}
-
-fn input_default_label(default: &InputDefault) -> String {
-    match default {
-        InputDefault::String(value) => format!("{value:?}"),
-        InputDefault::Number(value) => value.clone(),
-        InputDefault::Boolean(value) => value.to_string(),
-        InputDefault::Null => "null".to_string(),
-        InputDefault::Collection(items) => format!(
-            "[{}]",
-            items
-                .iter()
-                .map(input_default_label)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        InputDefault::EmptyObject => "{}".to_string(),
-    }
 }
