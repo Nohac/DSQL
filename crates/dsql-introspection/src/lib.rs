@@ -2,11 +2,11 @@
 //! the same [`DatabaseMetadata`] model the schema YAML files carry.
 
 use dsql_core::catalog::{
-    ColumnMetadata, DataType, DatabaseMetadata, ForeignKeyConstraintMetadata,
-    ForeignKeyReferenceMetadata, IndexKeyCapability, IndexKeyMetadata, IndexMetadata,
-    IndexNullsPosition, IndexOrder, IndexOrderDirection, ObjectType, ProviderTypeFacts,
-    SchemaMetadata, TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeKey,
-    TypeMetadata, TypeStructureKind, TypeStructureMetadata,
+    ColumnMetadata, DataType, DatabaseMetadata, EnumTypeMetadata, EnumVariantMetadata,
+    ForeignKeyConstraintMetadata, ForeignKeyReferenceMetadata, IndexKeyCapability,
+    IndexKeyMetadata, IndexMetadata, IndexNullsPosition, IndexOrder, IndexOrderDirection,
+    ObjectType, ProviderTypeFacts, SchemaMetadata, TableConstraintKind, TableConstraintMetadata,
+    TableMetadata, TypeKey, TypeMetadata, TypeStructureKind, TypeStructureMetadata,
 };
 use sqlx::{AssertSqlSafe, Executor, FromRow, Pool, Postgres, postgres::PgPoolOptions};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -101,6 +101,8 @@ struct PostgresType {
     element_type_oid: Option<i64>,
     effective_kind: String,
     effective_category: String,
+    enum_description: Option<String>,
+    enum_labels: Vec<String>,
     operations: Vec<String>,
     orderable: bool,
 }
@@ -383,6 +385,15 @@ SELECT
     NULLIF(typ.typelem, 0)::bigint AS element_type_oid,
     effective.typtype::text AS effective_kind,
     effective.typcategory::text AS effective_category,
+    CASE
+        WHEN typ.typtype = 'e' THEN obj_description(typ.oid, 'pg_type')
+    END AS enum_description,
+    ARRAY(
+        SELECT enum_value.enumlabel::text
+        FROM pg_enum enum_value
+        WHERE enum_value.enumtypid = typ.oid
+        ORDER BY enum_value.enumsortorder
+    ) AS enum_labels,
     COALESCE(
         array_agg(DISTINCT native.operation ORDER BY native.operation)
             FILTER (WHERE native.operation IS NOT NULL),
@@ -488,7 +499,21 @@ fn metadata_from_rows(
                 type_oid: row.type_oid,
             },
         )?;
-        let structure = if row.type_kind == "d" {
+        let structure = if row.type_kind == "e" {
+            TypeStructureMetadata::enumeration(EnumTypeMetadata {
+                description: row.enum_description,
+                variants: row
+                    .enum_labels
+                    .into_iter()
+                    .map(|variant| EnumVariantMetadata {
+                        database_value: variant.clone(),
+                        variant,
+                        label: None,
+                        description: None,
+                    })
+                    .collect(),
+            })
+        } else if row.type_kind == "d" {
             TypeStructureMetadata::domain(related_type_key(
                 &type_keys_by_oid,
                 row.type_oid,
@@ -722,6 +747,7 @@ fn logical_data_type(
     }
     let resolved = match data_type.structure.kind {
         TypeStructureKind::Scalar => DataType::from_database_type(&data_type.internal_type),
+        TypeStructureKind::Enum => DataType::Unknown,
         TypeStructureKind::Domain => {
             let Some(base) = data_type.structure.related_type.as_ref() else {
                 return Ok(DataType::Unknown);
@@ -854,6 +880,8 @@ mod tests {
                     element_type_oid: None,
                     effective_kind: "b".into(),
                     effective_category: "N".into(),
+                    enum_description: None,
+                    enum_labels: Vec::new(),
                     operations: vec!["=".into(), "<".into()],
                     orderable: true,
                 },
@@ -868,6 +896,8 @@ mod tests {
                     element_type_oid: None,
                     effective_kind: "e".into(),
                     effective_category: "E".into(),
+                    enum_description: Some("Alpha people.".into()),
+                    enum_labels: vec!["author".into(), "editor".into()],
                     operations: vec![
                         "<".into(),
                         "<=".into(),
@@ -889,6 +919,8 @@ mod tests {
                     element_type_oid: None,
                     effective_kind: "e".into(),
                     effective_category: "E".into(),
+                    enum_description: Some("Beta people.".into()),
+                    enum_labels: vec!["reviewer".into(), "owner".into()],
                     operations: vec!["=".into()],
                     orderable: true,
                 },
@@ -903,6 +935,8 @@ mod tests {
                     element_type_oid: Some(23),
                     effective_kind: "b".into(),
                     effective_category: "A".into(),
+                    enum_description: None,
+                    enum_labels: Vec::new(),
                     operations: vec!["<>".into(), "=".into()],
                     orderable: true,
                 },
@@ -917,6 +951,8 @@ mod tests {
                     element_type_oid: None,
                     effective_kind: "r".into(),
                     effective_category: "R".into(),
+                    enum_description: None,
+                    enum_labels: Vec::new(),
                     operations: vec!["<".into(), "<>".into(), "=".into(), ">".into()],
                     orderable: true,
                 },
@@ -931,6 +967,8 @@ mod tests {
                     element_type_oid: None,
                     effective_kind: "m".into(),
                     effective_category: "R".into(),
+                    enum_description: None,
+                    enum_labels: Vec::new(),
                     operations: vec!["<".into(), "<>".into(), "=".into(), ">".into()],
                     orderable: true,
                 },
@@ -1024,6 +1062,42 @@ mod tests {
                 effective_category: Some("E".to_string()),
                 orderable: true,
             })
+        );
+        assert_eq!(
+            metadata.types[0].structure,
+            TypeStructureMetadata::enumeration(EnumTypeMetadata {
+                description: Some("Alpha people.".to_string()),
+                variants: vec![
+                    EnumVariantMetadata {
+                        variant: "author".to_string(),
+                        database_value: "author".to_string(),
+                        label: None,
+                        description: None,
+                    },
+                    EnumVariantMetadata {
+                        variant: "editor".to_string(),
+                        database_value: "editor".to_string(),
+                        label: None,
+                        description: None,
+                    },
+                ],
+            }),
+            "native enum comments and provider ordering survive introspection"
+        );
+        assert_eq!(
+            metadata.types[1]
+                .structure
+                .enumeration
+                .as_ref()
+                .map(|enumeration| {
+                    enumeration
+                        .variants
+                        .iter()
+                        .map(|variant| variant.variant.as_str())
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec!["reviewer", "owner"]),
+            "same-named native enums retain independent ordered variants"
         );
         assert_eq!(
             metadata.types[3].provider,
@@ -1153,6 +1227,8 @@ mod tests {
                     element_type_oid: None,
                     effective_kind: "b".into(),
                     effective_category: "S".into(),
+                    enum_description: None,
+                    enum_labels: Vec::new(),
                     operations: vec!["=".into()],
                     orderable: true,
                 },
@@ -1167,6 +1243,8 @@ mod tests {
                     element_type_oid: None,
                     effective_kind: "b".into(),
                     effective_category: "S".into(),
+                    enum_description: None,
+                    enum_labels: Vec::new(),
                     operations: vec!["=".into()],
                     orderable: true,
                 },
@@ -1181,6 +1259,8 @@ mod tests {
                     element_type_oid: Some(25),
                     effective_kind: "b".into(),
                     effective_category: "A".into(),
+                    enum_description: None,
+                    enum_labels: Vec::new(),
                     operations: vec!["=".into()],
                     orderable: true,
                 },
@@ -1231,6 +1311,8 @@ mod tests {
                 element_type_oid: None,
                 effective_kind: "b".into(),
                 effective_category: "S".into(),
+                enum_description: None,
+                enum_labels: Vec::new(),
                 operations: Vec::new(),
                 orderable: true,
             }],

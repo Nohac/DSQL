@@ -1,0 +1,15 @@
+---
+source: crates/dsql-core/tests/it/catalog.rs
+expression: rendered
+---
+stale scalar: provider type `public.stale` is a native enum stored without native enum structure; rerun `dsql introspect`
+scalar payload: provider type `public.scalar_payload` has invalid structure: a scalar type cannot carry enum metadata
+domain payload: provider type `public.domain_payload` has invalid structure: a domain type cannot carry enum metadata
+array payload: provider type `public.array_payload` has invalid structure: an array type cannot carry enum metadata
+empty: provider type `public.empty` has invalid structure: native enum types require at least one variant
+missing: provider type `public.missing` has invalid structure: a native enum requires enum metadata
+related: provider type `public.related` has invalid structure: an enum type cannot reference a related type
+configured: provider type `public.configured` has invalid structure: only provider-declared native enums are supported
+duplicate: provider type `public.duplicate` has invalid structure: duplicate enum variant "one"
+duplicate database: provider type `public.duplicate_database` has invalid structure: duplicate enum database value "one"
+mismatched: provider type `public.mismatched` has invalid structure: native enum variants must equal their database values

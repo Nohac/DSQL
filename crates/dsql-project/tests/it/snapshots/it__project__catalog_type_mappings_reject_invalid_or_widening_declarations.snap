@@ -9,6 +9,8 @@ builtin nominal collision: <project>/dsql/dsql.toml catalog.types[0].name: nomin
 duplicate nominal name: <project>/dsql/dsql.toml catalog.types[1].name: nominal name `Date` is also declared by catalog.types[0]
 duplicate provider mapping: <project>/dsql/dsql.toml catalog.types[1].pg: provider type `pg_catalog.date` is already declared by catalog.types[0]
 array target: <project>/dsql/dsql.toml catalog.types[0].pg: array types inherit their element mapping and cannot be declared directly
+native enum target: <project>/dsql/dsql.toml catalog.types[0].pg: provider type `public.status` resolves to native enum `public.status`; native enums cannot be declared through catalog.types
+native enum domain target: <project>/dsql/dsql.toml catalog.types[0].pg: provider type `public.status_alias` resolves to native enum `public.status`; native enums cannot be declared through catalog.types
 incompatible wire: <project>/dsql/dsql.toml catalog.types[0].wire: wire `uuid` is incompatible with provider encoding `text_cast`
 unknown wire value: failed to parse <project>/dsql/dsql.toml: unexpected token: got legacy, expected known enum variant at catalog.types[0].wire
 incompatible literal: <project>/dsql/dsql.toml catalog.types[0].literal: literal `boolean` is incompatible with wire `text`

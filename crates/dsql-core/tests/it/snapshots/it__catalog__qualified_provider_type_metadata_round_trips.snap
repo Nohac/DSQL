@@ -14,10 +14,24 @@ types:
     readable_type: beta.person
     schema: beta
     structure:
-      kind: scalar
+      kind: enum
+      enumeration:
+        description: People participating in review.
+        variants:
+          - variant: reviewer
+            database_value: reviewer
+          - variant: owner
+            database_value: owner
     provider:
       kind: e
       category: E
+      effective_kind: e
+      effective_category: E
       orderable: true
     operations:
+      - <
+      - <=
+      - <>
       - =
+      - ">"
+      - ">="

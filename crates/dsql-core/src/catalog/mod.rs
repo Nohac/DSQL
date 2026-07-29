@@ -17,16 +17,18 @@ pub use keys::{
 };
 pub use metadata::{
     CatalogBuildError, CatalogMissingType, CatalogTypeMismatch, ColumnMetadata, DatabaseMetadata,
-    ForeignKeyConstraintMetadata, ForeignKeyReferenceMetadata, IndexKeyMetadata, IndexMetadata,
-    ObjectType, ProviderTypeFacts, SchemaMetadata, TableConstraintKind, TableConstraintMetadata,
-    TableMetadata, TypeMetadata, TypeMetadataFile, TypeStructureKind, TypeStructureMetadata,
-    metadata_from_yaml, metadata_to_yaml, table_metadata_from_yaml, table_metadata_to_yaml,
+    EnumTypeMetadata, EnumVariantMetadata, ForeignKeyConstraintMetadata,
+    ForeignKeyReferenceMetadata, IndexKeyMetadata, IndexMetadata, ObjectType, ProviderTypeFacts,
+    SchemaMetadata, TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeMetadata,
+    TypeMetadataFile, TypeStructureKind, TypeStructureMetadata, metadata_from_yaml,
+    metadata_to_yaml, table_metadata_from_yaml, table_metadata_to_yaml,
     type_metadata_file_from_yaml, type_metadata_file_to_yaml,
 };
 pub use types::{
-    Catalog, CatalogSourceRange, CatalogSupport, CatalogSupportKind, CatalogType, CatalogTypeShape,
-    CatalogValueShape, Column, DataType, FieldCheckResult, FieldRef, ForeignKey,
-    ForeignKeyDirection, Index, IndexKey, IndexKeyCapability, IndexNullsPosition, IndexOrder,
-    IndexOrderDirection, LiteralKind, Relation, RelationCardinality, RelationField,
-    RelationSupports, Schema, Table, TableRef, TableResolution, UniquenessSupport,
+    Catalog, CatalogEnum, CatalogEnumVariant, CatalogSourceRange, CatalogSupport,
+    CatalogSupportKind, CatalogType, CatalogTypeShape, CatalogValueShape, Column, DataType,
+    FieldCheckResult, FieldRef, ForeignKey, ForeignKeyDirection, Index, IndexKey,
+    IndexKeyCapability, IndexNullsPosition, IndexOrder, IndexOrderDirection, LiteralKind, Relation,
+    RelationCardinality, RelationField, RelationSupports, Schema, Table, TableRef, TableResolution,
+    UniquenessSupport,
 };

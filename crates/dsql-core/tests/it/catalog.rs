@@ -4,10 +4,11 @@ use std::collections::BTreeSet;
 
 use dsql_core::catalog::{
     Catalog, CatalogTypeShape, CatalogValueShape, ColumnMetadata, DataType, DatabaseMetadata,
-    IndexKeyCapability, ObjectType, ProviderTypeFacts, SchemaMetadata, TableMetadata, TableRef,
-    TableResolution, TypeKey, TypeMetadata, TypeMetadataFile, TypeStructureKind,
-    TypeStructureMetadata, WireEncoding, table_metadata_from_yaml, table_metadata_to_yaml,
-    type_metadata_file_from_yaml, type_metadata_file_to_yaml,
+    EnumTypeMetadata, EnumVariantMetadata, IndexKeyCapability, ObjectType, ProviderTypeFacts,
+    SchemaMetadata, TableMetadata, TableRef, TableResolution, TypeKey, TypeMetadata,
+    TypeMetadataFile, TypeStructureKind, TypeStructureMetadata, WireEncoding,
+    table_metadata_from_yaml, table_metadata_to_yaml, type_metadata_file_from_yaml,
+    type_metadata_file_to_yaml,
 };
 use dsql_core::entities::aggregate::AggregateFunction;
 use dsql_core::entities::expression::ComparisonOp;
@@ -78,6 +79,42 @@ fn provider_type_with_facts(
         operations: operations
             .iter()
             .map(|operation| (*operation).to_string())
+            .collect(),
+    }
+}
+
+fn native_enum_type(
+    schema: &str,
+    name: &str,
+    description: Option<&str>,
+    variants: &[&str],
+) -> TypeMetadata {
+    TypeMetadata {
+        internal_type: name.to_string(),
+        readable_type: format!("{schema}.{name}"),
+        schema: schema.to_string(),
+        structure: TypeStructureMetadata::enumeration(EnumTypeMetadata {
+            description: description.map(str::to_string),
+            variants: variants
+                .iter()
+                .map(|variant| EnumVariantMetadata {
+                    variant: (*variant).to_string(),
+                    database_value: (*variant).to_string(),
+                    label: None,
+                    description: None,
+                })
+                .collect(),
+        }),
+        provider: Some(ProviderTypeFacts {
+            kind: "e".to_string(),
+            category: "E".to_string(),
+            effective_kind: Some("e".to_string()),
+            effective_category: Some("E".to_string()),
+            orderable: true,
+        }),
+        operations: ["=", "<>", "<", "<=", ">", ">="]
+            .into_iter()
+            .map(str::to_string)
             .collect(),
     }
 }
@@ -505,6 +542,260 @@ fn catalog_type_arena_rejects_invalid_structure_graphs() {
 }
 
 #[test]
+fn native_enum_catalog_facts_are_nominal_and_structural() {
+    let status_key = TypeKey::new("public", "status");
+    let status_domain_key = TypeKey::new("public", "status_domain");
+    let status_array_key = TypeKey::new("public", "_status");
+    let mut catalog_metadata = metadata(
+        vec![
+            column("status", status_key.clone(), DataType::Unknown),
+            column(
+                "domain_status",
+                status_domain_key.clone(),
+                DataType::Unknown,
+            ),
+            column("statuses", status_array_key.clone(), DataType::Unknown),
+        ],
+        vec![
+            native_enum_type(
+                "public",
+                "status",
+                Some("Lifecycle status."),
+                &["pending", "active", "archived"],
+            ),
+            native_enum_type("audit", "status", None, &["pending", "active", "archived"]),
+            TypeMetadata {
+                internal_type: "status_domain".to_string(),
+                readable_type: "public.status_domain".to_string(),
+                schema: "public".to_string(),
+                structure: TypeStructureMetadata::domain(status_key.clone()),
+                provider: Some(ProviderTypeFacts {
+                    kind: "d".to_string(),
+                    category: "E".to_string(),
+                    effective_kind: Some("e".to_string()),
+                    effective_category: Some("E".to_string()),
+                    orderable: true,
+                }),
+                operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
+            },
+            TypeMetadata {
+                internal_type: "_status".to_string(),
+                readable_type: "public.status[]".to_string(),
+                schema: "public".to_string(),
+                structure: TypeStructureMetadata::array(status_key.clone()),
+                provider: Some(ProviderTypeFacts {
+                    kind: "b".to_string(),
+                    category: "A".to_string(),
+                    effective_kind: Some("b".to_string()),
+                    effective_category: Some("A".to_string()),
+                    orderable: true,
+                }),
+                operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
+            },
+        ],
+    );
+    let catalog = catalog_metadata
+        .to_catalog()
+        .expect("native enum structures build");
+
+    let status = catalog
+        .type_by_key(&status_key)
+        .expect("native enum type exists");
+    let enumeration = status
+        .enumeration
+        .as_ref()
+        .expect("native enum payload exists");
+    assert!(matches!(status.shape, CatalogTypeShape::Enum));
+    assert_eq!(status.capabilities.wire, WireEncoding::TextCast);
+    assert!(status.capabilities.supports(ComparisonOp::Eq));
+    assert!(status.capabilities.orderable);
+    assert_eq!(
+        enumeration.description.as_deref(),
+        Some("Lifecycle status.")
+    );
+    assert_eq!(
+        enumeration
+            .variants
+            .iter()
+            .map(|variant| variant.variant.as_str())
+            .collect::<Vec<_>>(),
+        ["pending", "active", "archived"],
+        "provider enum order is semantic rather than lexical"
+    );
+
+    let status_domain = catalog
+        .type_by_key(&status_domain_key)
+        .expect("domain type exists");
+    let (domain_enum_type, _) = catalog
+        .enum_type_for_type(status_domain.id)
+        .expect("domains resolve to their enum base");
+    assert_eq!(domain_enum_type.key, status_key);
+
+    let status_array = catalog
+        .type_by_key(&status_array_key)
+        .expect("array type exists");
+    assert!(
+        catalog.enum_type_for_type(status_array.id).is_none(),
+        "arrays remain collection shapes rather than resolving as enums"
+    );
+    assert!(
+        matches!(status_array.shape, CatalogTypeShape::Array { .. }),
+        "status array keeps its array shape"
+    );
+    if let CatalogTypeShape::Array { element } = status_array.shape {
+        let (array_enum_type, _) = catalog
+            .enum_type_for_type(element)
+            .expect("an array element resolves to its enum type");
+        assert_eq!(array_enum_type.key, status_key);
+    }
+
+    let value_shape = |column_name: &str| {
+        let column = catalog
+            .columns
+            .iter()
+            .find(|column| column.name == column_name)
+            .expect("enum test column exists");
+        catalog
+            .value_shape_for_column(column.id)
+            .expect("enum test column has a public value shape")
+    };
+    assert!(matches!(
+        value_shape("status"),
+        CatalogValueShape::Scalar { leaf } if leaf.key == status_key
+    ));
+    assert!(matches!(
+        value_shape("domain_status"),
+        CatalogValueShape::Scalar { leaf } if leaf.key == status_domain_key
+    ));
+    assert!(matches!(
+        value_shape("statuses"),
+        CatalogValueShape::DatabaseArray { element } if element.key == status_key
+    ));
+
+    let audit_status = catalog
+        .type_by_key(&TypeKey::new("audit", "status"))
+        .expect("same-named enum in another schema exists");
+    assert_ne!(status.id, audit_status.id);
+    assert_eq!(
+        status
+            .enumeration
+            .as_ref()
+            .map(|enumeration| &enumeration.variants),
+        audit_status
+            .enumeration
+            .as_ref()
+            .map(|enumeration| &enumeration.variants),
+        "identical variant sets do not collapse nominal enum identities"
+    );
+
+    let fingerprint = catalog.semantic_fingerprint();
+    let public_status = catalog_metadata
+        .types
+        .iter_mut()
+        .find(|data_type| data_type.key() == status_key)
+        .expect("public enum metadata");
+    public_status
+        .structure
+        .enumeration
+        .as_mut()
+        .expect("enum metadata")
+        .variants
+        .swap(0, 1);
+    assert_ne!(
+        fingerprint,
+        catalog_metadata
+            .to_catalog()
+            .expect("reordered enum builds")
+            .semantic_fingerprint(),
+        "enum ordering participates in the catalog fingerprint"
+    );
+}
+
+#[test]
+fn native_enum_catalog_facts_reject_invalid_snapshots() {
+    let mut stale = native_enum_type("public", "stale", None, &["one"]);
+    stale.structure = TypeStructureMetadata::scalar();
+
+    let enumeration = native_enum_type("public", "payload", None, &["one"])
+        .structure
+        .enumeration
+        .expect("native enum helper produces metadata");
+    let mut scalar_payload = provider_type_with_facts("public", "scalar_payload", &[], false);
+    scalar_payload.structure.enumeration = Some(enumeration.clone());
+    let mut domain_payload = provider_type_with_facts("public", "domain_payload", &[], false);
+    domain_payload.structure.kind = TypeStructureKind::Domain;
+    domain_payload.structure.enumeration = Some(enumeration.clone());
+    let mut array_payload = provider_type_with_facts("public", "array_payload", &[], false);
+    array_payload.structure.kind = TypeStructureKind::Array;
+    array_payload.structure.enumeration = Some(enumeration);
+
+    let empty = native_enum_type("public", "empty", None, &[]);
+
+    let mut missing = native_enum_type("public", "missing", None, &["one"]);
+    missing.structure.enumeration = None;
+
+    let mut related = native_enum_type("public", "related", None, &["one"]);
+    related.structure.related_type = Some(TypeKey::new("pg_catalog", "text"));
+
+    let mut configured = native_enum_type("public", "configured", None, &["one"]);
+    configured.provider = None;
+
+    let mut duplicate = native_enum_type("public", "duplicate", None, &["one", "one"]);
+    duplicate
+        .structure
+        .enumeration
+        .as_mut()
+        .expect("enum metadata")
+        .variants[1]
+        .database_value = "other".to_string();
+
+    let mut duplicate_database =
+        native_enum_type("public", "duplicate_database", None, &["one", "two"]);
+    duplicate_database
+        .structure
+        .enumeration
+        .as_mut()
+        .expect("enum metadata")
+        .variants[1]
+        .database_value = "one".to_string();
+
+    let mut mismatched = native_enum_type("public", "mismatched", None, &["one"]);
+    mismatched
+        .structure
+        .enumeration
+        .as_mut()
+        .expect("enum metadata")
+        .variants[0]
+        .database_value = "1".to_string();
+
+    let cases = [
+        ("stale scalar", stale),
+        ("scalar payload", scalar_payload),
+        ("domain payload", domain_payload),
+        ("array payload", array_payload),
+        ("empty", empty),
+        ("missing", missing),
+        ("related", related),
+        ("configured", configured),
+        ("duplicate", duplicate),
+        ("duplicate database", duplicate_database),
+        ("mismatched", mismatched),
+    ];
+    let rendered = cases
+        .into_iter()
+        .map(|(name, data_type)| {
+            let error = metadata(Vec::new(), vec![data_type])
+                .to_catalog()
+                .expect_err("invalid native enum metadata must fail");
+            format!("{name}: {error}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
 fn catalog_type_declaration_order_and_unused_rows_are_fingerprint_neutral() {
     let columns = vec![
         column("label", TypeKey::new("alpha", "text"), DataType::Text),
@@ -829,20 +1120,12 @@ fn qualified_provider_type_metadata_round_trips() {
                 provider: None,
                 operations: BTreeSet::new(),
             },
-            TypeMetadata {
-                internal_type: "person".to_string(),
-                readable_type: "beta.person".to_string(),
-                schema: "beta".to_string(),
-                structure: TypeStructureMetadata::scalar(),
-                provider: Some(ProviderTypeFacts {
-                    kind: "e".to_string(),
-                    category: "E".to_string(),
-                    effective_kind: None,
-                    effective_category: None,
-                    orderable: true,
-                }),
-                operations: BTreeSet::from(["=".to_string()]),
-            },
+            native_enum_type(
+                "beta",
+                "person",
+                Some("People participating in review."),
+                &["reviewer", "owner"],
+            ),
         ],
     };
     let yaml = type_metadata_file_to_yaml(&types).expect("type metadata serializes");

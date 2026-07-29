@@ -70,6 +70,17 @@ pub(crate) fn apply_catalog_types(
                 "array types inherit their element mapping and cannot be declared directly",
             );
         }
+        if let Some((enum_type, _)) = catalog.enum_type_for_type(data_type.id) {
+            return mapping_error(
+                config_path,
+                index,
+                "pg",
+                format!(
+                    "provider type `{}` resolves to native enum `{}.{}`; native enums cannot be declared through catalog.types",
+                    declaration.pg, enum_type.key.schema, enum_type.key.name
+                ),
+            );
+        }
         if let Some(first) = mappings.insert(
             data_type.id,
             Mapping {

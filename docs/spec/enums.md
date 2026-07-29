@@ -1,14 +1,18 @@
 # Enumerated Types
 
-Status: consideration.
+Status: implementation in progress.
 
 Enumerated types are nominal logical types backed by a finite, catalog-known set
 of variants. dsql should support both native database enums and configured
 table- or view-backed enums without imposing provider-specific table-shape
 rules on the query language.
 
-This feature is designed but not implemented. It is not a prerequisite for the
-current scalar query surface.
+The generated and effective catalogs now preserve native PostgreSQL enum
+identity, comments, and ordered variants. Query checking, generated operation
+metadata, runtime validation, TypeScript types, and editor services do not yet
+consume those variants, so native enums are not a supported public language
+feature until those phases land together. Existing text-cast behavior remains
+unchanged during this catalog-only foundation step.
 
 ## Terminology
 

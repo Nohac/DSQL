@@ -1,8 +1,8 @@
 use super::{
-    Catalog, CatalogType, CatalogTypeShape, Column, ColumnId, DataType, ForeignKey,
-    ForeignKeyDirection, ForeignKeyId, Index, IndexKey, IndexKeyCapability, IndexOrder, Relation,
-    RelationCardinality, RelationId, RelationSupports, Schema, SchemaId, Table, TableId,
-    TypeCapabilities, TypeId, TypeKey,
+    Catalog, CatalogEnum, CatalogEnumVariant, CatalogType, CatalogTypeShape, Column, ColumnId,
+    DataType, ForeignKey, ForeignKeyDirection, ForeignKeyId, Index, IndexKey, IndexKeyCapability,
+    IndexOrder, Relation, RelationCardinality, RelationId, RelationSupports, Schema, SchemaId,
+    Table, TableId, TypeCapabilities, TypeId, TypeKey,
 };
 use facet::Facet;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -130,6 +130,34 @@ pub struct TypeStructureMetadata {
     /// Base type for a domain or element type for an array.
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub related_type: Option<TypeKey>,
+    /// Native enum data, present only when [`TypeStructureKind::Enum`].
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub enumeration: Option<EnumTypeMetadata>,
+}
+
+/// Generated catalog facts for one native PostgreSQL enum.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct EnumTypeMetadata {
+    /// PostgreSQL type comment, when one exists.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub description: Option<String>,
+    /// Variants in PostgreSQL semantic order.
+    pub variants: Vec<EnumVariantMetadata>,
+}
+
+/// One native PostgreSQL enum label and its database representation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct EnumVariantMetadata {
+    /// Stable value exposed by DSQL and generated APIs.
+    pub variant: String,
+    /// Value accepted and returned by PostgreSQL.
+    pub database_value: String,
+    /// Optional human-facing label reserved for normalized enum sources.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub label: Option<String>,
+    /// Optional per-variant documentation.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub description: Option<String>,
 }
 
 impl TypeStructureMetadata {
@@ -138,6 +166,7 @@ impl TypeStructureMetadata {
         Self {
             kind: TypeStructureKind::Scalar,
             related_type: None,
+            enumeration: None,
         }
     }
 
@@ -146,6 +175,7 @@ impl TypeStructureMetadata {
         Self {
             kind: TypeStructureKind::Domain,
             related_type: Some(base),
+            enumeration: None,
         }
     }
 
@@ -154,6 +184,16 @@ impl TypeStructureMetadata {
         Self {
             kind: TypeStructureKind::Array,
             related_type: Some(element),
+            enumeration: None,
+        }
+    }
+
+    /// Constructs a native enum with its ordered provider labels.
+    pub fn enumeration(enumeration: EnumTypeMetadata) -> Self {
+        Self {
+            kind: TypeStructureKind::Enum,
+            related_type: None,
+            enumeration: Some(enumeration),
         }
     }
 }
@@ -167,6 +207,7 @@ pub enum TypeStructureKind {
     Scalar,
     Domain,
     Array,
+    Enum,
 }
 
 /// Native PostgreSQL classification and ordering facts for one type.
@@ -256,6 +297,10 @@ pub enum CatalogBuildError {
     },
     #[error("provider type structure contains a cycle through `{schema}.{name}`")]
     CyclicTypeStructure { schema: String, name: String },
+    #[error(
+        "provider type `{schema}.{name}` is a native enum stored without native enum structure; rerun `dsql introspect`"
+    )]
+    StaleNativeEnum { schema: String, name: String },
     #[error(transparent)]
     MissingType(Box<CatalogMissingType>),
     #[error(transparent)]
@@ -860,6 +905,16 @@ fn resolve_catalog_type(
     }
     states[index] = TypeResolutionState::Resolving;
     let type_id = TypeId(index);
+    let native_enum_provider = definition
+        .provider
+        .as_ref()
+        .filter(|provider| provider.kind == "e");
+    if native_enum_provider.is_some() && definition.structure.kind != TypeStructureKind::Enum {
+        return Err(CatalogBuildError::StaleNativeEnum {
+            schema: key.schema,
+            name: key.name,
+        });
+    }
 
     let catalog_type = match definition.structure.kind {
         TypeStructureKind::Scalar => {
@@ -867,6 +922,12 @@ fn resolve_catalog_type(
                 return Err(invalid_type_structure(
                     &key,
                     "a scalar type cannot reference a related type",
+                ));
+            }
+            if definition.structure.enumeration.is_some() {
+                return Err(invalid_type_structure(
+                    &key,
+                    "a scalar type cannot carry enum metadata",
                 ));
             }
             let data_type = DataType::from_database_type(&definition.internal_type);
@@ -886,12 +947,19 @@ fn resolve_catalog_type(
                 key: key.clone(),
                 data_type,
                 shape: CatalogTypeShape::Scalar,
+                enumeration: None,
                 readable_type: definition.readable_type.clone(),
                 provider: definition.provider.clone(),
                 capabilities,
             }
         }
         TypeStructureKind::Domain => {
+            if definition.structure.enumeration.is_some() {
+                return Err(invalid_type_structure(
+                    &key,
+                    "a domain type cannot carry enum metadata",
+                ));
+            }
             let base = related_type_id(definition, &key, type_ids, "base")?;
             resolve_catalog_type(base.0, metadata, type_ids, states, resolved)?;
             let Some(base_type) = resolved[base.0].as_ref() else {
@@ -902,6 +970,7 @@ fn resolve_catalog_type(
                 key: key.clone(),
                 data_type: base_type.data_type,
                 shape: CatalogTypeShape::Domain { base },
+                enumeration: None,
                 readable_type: definition.readable_type.clone(),
                 provider: definition.provider.clone(),
                 capabilities: TypeCapabilities::domain(
@@ -913,6 +982,12 @@ fn resolve_catalog_type(
             }
         }
         TypeStructureKind::Array => {
+            if definition.structure.enumeration.is_some() {
+                return Err(invalid_type_structure(
+                    &key,
+                    "an array type cannot carry enum metadata",
+                ));
+            }
             let element = related_type_id(definition, &key, type_ids, "element")?;
             resolve_catalog_type(element.0, metadata, type_ids, states, resolved)?;
             CatalogType {
@@ -920,11 +995,88 @@ fn resolve_catalog_type(
                 key: key.clone(),
                 data_type: DataType::Unknown,
                 shape: CatalogTypeShape::Array { element },
+                enumeration: None,
                 readable_type: definition.readable_type.clone(),
                 provider: definition.provider.clone(),
                 capabilities: TypeCapabilities::array(
                     &definition.readable_type,
                     definition.provider.as_ref(),
+                    &definition.operations,
+                ),
+            }
+        }
+        TypeStructureKind::Enum => {
+            if definition.structure.related_type.is_some() {
+                return Err(invalid_type_structure(
+                    &key,
+                    "an enum type cannot reference a related type",
+                ));
+            }
+            let Some(provider) = native_enum_provider else {
+                return Err(invalid_type_structure(
+                    &key,
+                    "only provider-declared native enums are supported",
+                ));
+            };
+            let Some(enumeration) = definition.structure.enumeration.as_ref() else {
+                return Err(invalid_type_structure(
+                    &key,
+                    "a native enum requires enum metadata",
+                ));
+            };
+            if enumeration.variants.is_empty() {
+                return Err(invalid_type_structure(
+                    &key,
+                    "native enum types require at least one variant",
+                ));
+            }
+            let mut variants = HashSet::new();
+            let mut database_values = HashSet::new();
+            for variant in &enumeration.variants {
+                if !variants.insert(variant.variant.as_str()) {
+                    return Err(invalid_type_structure(
+                        &key,
+                        &format!("duplicate enum variant {:?}", variant.variant),
+                    ));
+                }
+                if !database_values.insert(variant.database_value.as_str()) {
+                    return Err(invalid_type_structure(
+                        &key,
+                        &format!("duplicate enum database value {:?}", variant.database_value),
+                    ));
+                }
+                if variant.variant != variant.database_value {
+                    return Err(invalid_type_structure(
+                        &key,
+                        "native enum variants must equal their database values",
+                    ));
+                }
+            }
+            let data_type = DataType::Unknown;
+            CatalogType {
+                id: type_id,
+                key: key.clone(),
+                data_type,
+                shape: CatalogTypeShape::Enum,
+                enumeration: Some(CatalogEnum {
+                    description: enumeration.description.clone(),
+                    variants: enumeration
+                        .variants
+                        .iter()
+                        .map(|variant| CatalogEnumVariant {
+                            variant: variant.variant.clone(),
+                            database_value: variant.database_value.clone(),
+                            label: variant.label.clone(),
+                            description: variant.description.clone(),
+                        })
+                        .collect(),
+                }),
+                readable_type: definition.readable_type.clone(),
+                provider: definition.provider.clone(),
+                capabilities: TypeCapabilities::provider(
+                    data_type,
+                    &definition.readable_type,
+                    provider,
                     &definition.operations,
                 ),
             }

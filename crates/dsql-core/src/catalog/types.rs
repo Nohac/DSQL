@@ -70,6 +70,8 @@ pub struct CatalogType {
     /// Resolved provider structure. Non-scalars keep [`DataType::Unknown`] at
     /// the outer type and expose their logical leaf through this graph.
     pub shape: CatalogTypeShape,
+    /// Native enum contract when [`CatalogTypeShape::Enum`].
+    pub enumeration: Option<CatalogEnum>,
     /// Provider-formatted spelling for this type without column modifiers.
     pub readable_type: String,
     /// Native classification facts, absent for synthetic compiler fixtures.
@@ -85,6 +87,29 @@ pub enum CatalogTypeShape {
     Scalar,
     Domain { base: TypeId },
     Array { element: TypeId },
+    Enum,
+}
+
+/// Effective native enum data attached to one nominal [`CatalogType`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct CatalogEnum {
+    /// PostgreSQL type comment, when one exists.
+    pub description: Option<String>,
+    /// Variants in PostgreSQL semantic order.
+    pub variants: Vec<CatalogEnumVariant>,
+}
+
+/// One effective native enum label.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Facet)]
+pub struct CatalogEnumVariant {
+    /// Stable value exposed by DSQL and generated APIs.
+    pub variant: String,
+    /// Value accepted and returned by PostgreSQL.
+    pub database_value: String,
+    /// Optional human-facing label.
+    pub label: Option<String>,
+    /// Optional per-variant documentation.
+    pub description: Option<String>,
 }
 
 /// Effective public value shape after domain wrappers are resolved.
@@ -387,7 +412,7 @@ impl Catalog {
         let mut current = declared;
         loop {
             match current.shape {
-                CatalogTypeShape::Scalar => {
+                CatalogTypeShape::Scalar | CatalogTypeShape::Enum => {
                     return Some(CatalogValueShape::Scalar { leaf: declared });
                 }
                 CatalogTypeShape::Domain { base } => {
@@ -398,7 +423,7 @@ impl Catalog {
                     let mut public_element = element;
                     loop {
                         match element.shape {
-                            CatalogTypeShape::Scalar => {
+                            CatalogTypeShape::Scalar | CatalogTypeShape::Enum => {
                                 return Some(CatalogValueShape::DatabaseArray {
                                     element: public_element,
                                 });
@@ -426,6 +451,25 @@ impl Catalog {
         self.columns
             .get(column.0)
             .and_then(|column| self.value_shape_for_type(column.type_id))
+    }
+
+    /// Resolves domains to their native enum definition.
+    ///
+    /// Arrays remain collection shapes; callers resolve their element first.
+    pub fn enum_type_for_type(&self, type_id: TypeId) -> Option<(&CatalogType, &CatalogEnum)> {
+        let mut data_type = self.types.get(type_id.0)?;
+        loop {
+            match data_type.shape {
+                CatalogTypeShape::Domain { base } => data_type = self.types.get(base.0)?,
+                CatalogTypeShape::Enum => {
+                    return data_type
+                        .enumeration
+                        .as_ref()
+                        .map(|enumeration| (data_type, enumeration));
+                }
+                CatalogTypeShape::Scalar | CatalogTypeShape::Array { .. } => return None,
+            }
+        }
     }
 
     /// Computes one deterministic fingerprint over effective catalog
@@ -508,7 +552,7 @@ impl Catalog {
                 continue;
             }
             match self.types[type_id.0].shape {
-                CatalogTypeShape::Scalar => {}
+                CatalogTypeShape::Scalar | CatalogTypeShape::Enum => {}
                 CatalogTypeShape::Domain { base } => pending_types.push(base),
                 CatalogTypeShape::Array { element } => pending_types.push(element),
             }
@@ -544,7 +588,9 @@ impl Catalog {
                     2_u8.hash(&mut hasher);
                     self.types[element.0].key.hash(&mut hasher);
                 }
+                CatalogTypeShape::Enum => 3_u8.hash(&mut hasher),
             }
+            data_type.enumeration.hash(&mut hasher);
             data_type.readable_type.hash(&mut hasher);
             data_type.provider.hash(&mut hasher);
             data_type.capabilities.hash(&mut hasher);
@@ -806,6 +852,7 @@ impl CatalogType {
             key,
             data_type,
             shape: CatalogTypeShape::Scalar,
+            enumeration: None,
             readable_type,
             provider: None,
             capabilities: TypeCapabilities::builtin(data_type),

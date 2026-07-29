@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use bowl::{Entity, Query};
 use dsql_core::catalog::{
     CatalogTypeShape, CatalogValueShape, ColumnMetadata, DataType, DatabaseMetadata,
-    ForeignKeyConstraintMetadata, ForeignKeyDirection, ForeignKeyReferenceMetadata,
-    IndexKeyMetadata, IndexMetadata, ObjectType, ProviderTypeFacts, RelationCardinality,
-    SchemaMetadata, TableConstraintKind, TableConstraintMetadata, TableMetadata, TypeKey,
-    TypeMetadata, TypeStructureMetadata, WireEncoding,
+    EnumTypeMetadata, EnumVariantMetadata, ForeignKeyConstraintMetadata, ForeignKeyDirection,
+    ForeignKeyReferenceMetadata, IndexKeyMetadata, IndexMetadata, ObjectType, ProviderTypeFacts,
+    RelationCardinality, SchemaMetadata, TableConstraintKind, TableConstraintMetadata,
+    TableMetadata, TypeKey, TypeMetadata, TypeStructureMetadata, WireEncoding,
 };
 use dsql_core::entities::expression::ComparisonOp;
 use dsql_core::facts::{Diagnostic, Severity, arm_generate_demands};
@@ -213,6 +213,36 @@ fn mapped_type_metadata() -> DatabaseMetadata {
                     category: "D".to_string(),
                     effective_kind: Some("b".to_string()),
                     effective_category: Some("D".to_string()),
+                    orderable: true,
+                }),
+                operations: operations.clone(),
+            },
+            TypeMetadata {
+                internal_type: "status".to_string(),
+                readable_type: "status".to_string(),
+                schema: "public".to_string(),
+                structure: TypeStructureMetadata::enumeration(EnumTypeMetadata {
+                    description: None,
+                    variants: vec![EnumVariantMetadata {
+                        variant: "active".to_string(),
+                        database_value: "active".to_string(),
+                        label: None,
+                        description: None,
+                    }],
+                }),
+                provider: Some(provider("e", "E")),
+                operations: operations.clone(),
+            },
+            TypeMetadata {
+                internal_type: "status_alias".to_string(),
+                readable_type: "status_alias".to_string(),
+                schema: "public".to_string(),
+                structure: TypeStructureMetadata::domain(TypeKey::new("public", "status")),
+                provider: Some(ProviderTypeFacts {
+                    kind: "d".to_string(),
+                    category: "E".to_string(),
+                    effective_kind: Some("e".to_string()),
+                    effective_category: Some("E".to_string()),
                     orderable: true,
                 }),
                 operations: operations.clone(),
@@ -471,6 +501,24 @@ literal = "string"
             r#"[[catalog.types]]
 pg = "public._event_date"
 name = "EventDates"
+wire = "text"
+literal = "string"
+"#,
+        ),
+        (
+            "native enum target",
+            r#"[[catalog.types]]
+pg = "public.status"
+name = "Status"
+wire = "text"
+literal = "string"
+"#,
+        ),
+        (
+            "native enum domain target",
+            r#"[[catalog.types]]
+pg = "public.status_alias"
+name = "Status"
 wire = "text"
 literal = "string"
 "#,
