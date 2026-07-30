@@ -266,7 +266,14 @@ export type DsqlInputField = {
   readonly wire: WireMetadata;
   readonly validation: InputValidationMetadata;
   readonly collection?: boolean;
-  readonly enum_values?: readonly string[];
+  readonly closed_values: {
+    readonly description?: string;
+    readonly values: readonly {
+      readonly value: string;
+      readonly label?: string;
+      readonly description?: string;
+    }[];
+  };
   readonly required: boolean;
   readonly nullable: boolean;
   readonly default?: DsqlInputDefault;
@@ -279,6 +286,7 @@ export type DsqlDynamicInputFieldContract = {
   readonly data_type: string;
   readonly wire: WireMetadata;
   readonly validation: InputValidationMetadata;
+  readonly closed_values: DsqlInputField["closed_values"];
   readonly operators: readonly DsqlDynamicInputOperatorContract[];
   readonly serialize?: DsqlScalarSerializer<any, unknown>;
 };
@@ -1191,9 +1199,10 @@ function dsqlDefaultValue(
         return invalidDsqlDefault(field, "a valid string default");
       }
       if (
-        field.enum_values !== undefined &&
-        field.enum_values.length > 0 &&
-        !field.enum_values.includes(defaultValue.value)
+        field.closed_values.values.length > 0 &&
+        !field.closed_values.values.some(
+          (candidate) => candidate.value === defaultValue.value,
+        )
       ) {
         return invalidDsqlDefault(field, "a declared string default");
       }

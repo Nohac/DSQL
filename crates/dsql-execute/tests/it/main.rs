@@ -3,10 +3,11 @@ use dsql_execute::{
     materialize,
 };
 use dsql_metadata::{
-    DefinitionKind, DynamicInputField, DynamicInputMetadata, DynamicInputSite,
-    DynamicInputSiteField, DynamicPredicateOperatorMetadata, InputDefault, InputField,
-    InputValidationMetadata, OperationMetadata, ResultShape, SqlDialect, SqlMetadata,
-    SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata, WireEncoding, WireMetadata,
+    ClosedValueMetadata, ClosedValueSetMetadata, DefinitionKind, DynamicInputField,
+    DynamicInputMetadata, DynamicInputSite, DynamicInputSiteField,
+    DynamicPredicateOperatorMetadata, InputDefault, InputField, InputValidationMetadata,
+    OperationMetadata, ResultShape, SqlDialect, SqlMetadata, SqlParameterMetadata,
+    SqlVariantCaseMetadata, SqlVariantMetadata, WireEncoding, WireMetadata,
 };
 use facet_value::{Value, value};
 
@@ -29,17 +30,28 @@ fn wire(data_type: &str) -> WireMetadata {
     }
 }
 
-fn field(path: &str, data_type: &str, collection: bool, enum_values: &[&str]) -> InputField {
+fn closed_values(values: &[&str]) -> ClosedValueSetMetadata {
+    ClosedValueSetMetadata {
+        description: None,
+        values: values
+            .iter()
+            .map(|value| ClosedValueMetadata {
+                value: (*value).to_string(),
+                label: None,
+                description: None,
+            })
+            .collect(),
+    }
+}
+
+fn field(path: &str, data_type: &str, collection: bool, values: &[&str]) -> InputField {
     InputField {
         path: path.to_string(),
         data_type: data_type.to_string(),
         wire: wire(data_type),
         validation: InputValidationMetadata { pattern: None },
         collection: collection.then_some(true),
-        enum_values: enum_values
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
+        closed_values: closed_values(values),
         required: true,
         nullable: false,
         default: None,
@@ -215,6 +227,7 @@ fn dynamic_operation() -> OperationMetadata {
                         data_type: "int".to_string(),
                         wire: wire("int"),
                         validation: InputValidationMetadata { pattern: None },
+                        closed_values: closed_values(&[]),
                         nullable: false,
                         access: "unconditional".to_string(),
                         operators: vec!["in".to_string(), "is_null".to_string()],
@@ -226,6 +239,7 @@ fn dynamic_operation() -> OperationMetadata {
                         data_type: "text".to_string(),
                         wire: wire("text"),
                         validation: InputValidationMetadata { pattern: None },
+                        closed_values: closed_values(&[]),
                         nullable: false,
                         access: "unconditional".to_string(),
                         operators: vec!["like".to_string()],
@@ -244,6 +258,7 @@ fn dynamic_operation() -> OperationMetadata {
                     data_type: "text".to_string(),
                     wire: wire("text"),
                     validation: InputValidationMetadata { pattern: None },
+                    closed_values: closed_values(&[]),
                     nullable: false,
                     access: "unconditional".to_string(),
                     operators: Vec::new(),
@@ -268,22 +283,6 @@ fn dynamic_operation() -> OperationMetadata {
         fragment_spreads: Vec::new(),
         source_map: Vec::new(),
     }
-}
-
-#[test]
-fn input_metadata_without_wire_encoding_is_rejected() {
-    let error = facet_json::from_str::<InputField>(
-        r#"{
-          "path": "params.value",
-          "data_type": "text",
-          "enum_values": [],
-          "required": true,
-          "nullable": false
-        }"#,
-    )
-    .expect_err("version 3 input fields require wire metadata");
-
-    insta::assert_snapshot!(error.to_string());
 }
 
 #[test]

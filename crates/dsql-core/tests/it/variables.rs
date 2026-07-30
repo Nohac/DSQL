@@ -10,7 +10,10 @@ use dsql_core::facts::{DefKey, Span, VariablesDemand, arm_editor_demands};
 use dsql_core::language_bowl;
 use dsql_core::source::insert_source;
 
-use crate::{imdb_catalog, provider_scalar_catalog, render_diagnostic_facts};
+use crate::{
+    imdb_catalog, native_enum_catalog, numeric_catalog, provider_scalar_catalog,
+    render_diagnostic_facts,
+};
 
 async fn variables_bowl() -> Bowl {
     let bowl = language_bowl().await;
@@ -18,6 +21,90 @@ async fn variables_bowl() -> Bowl {
     bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
         .await;
     bowl
+}
+
+#[tokio::test]
+async fn native_enum_bindings_infer_closed_values_and_validate_defaults() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, native_enum_catalog()).await;
+    arm_editor_demands(&bowl).await;
+    insert_source(
+        &bowl,
+        "native-enum-bindings.dsql",
+        indoc::indoc! {r#"
+            query ValidEnumInputs(
+              $$status = "active"
+              $$statuses = ["pending", "archived"]
+            ) {
+              enum_records(
+                where .status == $$status
+                  and .status in $$statuses
+              ) {
+                status
+              }
+            }
+            query InvalidEnumDefaults(
+              $$status = "missing"
+              $$statuses = ["active", "missing"]
+            ) {
+              enum_records(
+                where .status == $$status
+                  and .status in $$statuses
+              ) {
+                status
+              }
+            }
+            query NominalEnumConflict {
+              enum_records(
+                where .status == $$shared
+                  and .audit_status == $$shared
+              ) {
+                status
+              }
+            }
+            query DomainEnumConflict {
+              enum_records(
+                where .status == $$shared
+                  and .domain_status == $$shared
+              ) {
+                status
+              }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(format!(
+        "bindings:\n{}\n\ndiagnostics:\n{}",
+        render_bindings(&bowl).await,
+        render_diagnostic_facts(&bowl).await
+    ));
+}
+
+#[tokio::test]
+async fn comparison_operator_defaults_remain_closed_strings() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, numeric_catalog()).await;
+    arm_editor_demands(&bowl).await;
+    insert_source(
+        &bowl,
+        "operator-defaults.dsql",
+        indoc::indoc! {r#"
+            query ValidOperatorDefault($$operator = "==") {
+              metrics(where .amount $$operator[==, !=] 10) {
+                amount
+              }
+            }
+            query InvalidOperatorDefault($$operator = 5) {
+              metrics(where .amount $$operator[==, !=] 10) {
+                amount
+              }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
 /// Renders bindings one per line for snapshots.
@@ -53,7 +140,7 @@ pub(crate) async fn render_bindings(bowl: &Bowl) -> String {
                 binding.data_type,
                 binding.name,
                 operators,
-                binding.enum_values.join("|")
+                binding.closed_values.join("|")
             )
         })
         .collect::<Vec<_>>()

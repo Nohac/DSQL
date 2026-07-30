@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[143..157]: default for `operator` does not match inferred type numeric

@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[192..201]: expected a variant of `public.status`; allowed values are "pending", "active", "archived"

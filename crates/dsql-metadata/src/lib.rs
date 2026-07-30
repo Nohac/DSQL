@@ -3,8 +3,8 @@ use facet::Facet;
 #[cfg(feature = "render")]
 const BUILD_MANIFEST_SCHEMA_ID: &str = "https://dsql.dev/schemas/build-manifest.schema.json";
 
-/// Manifest format version 6: every public scalar input carries validation metadata.
-pub const BUILD_MANIFEST_VERSION: u32 = 6;
+/// Manifest format version 7: public value contracts carry structured closed values.
+pub const BUILD_MANIFEST_VERSION: u32 = 7;
 #[cfg(feature = "render")]
 const JSON_SCHEMA_DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
@@ -208,6 +208,8 @@ pub struct ResultValueTypeMetadata {
     pub display: Option<String>,
     /// JSON representation of the scalar or database-array element.
     pub wire: WireMetadata,
+    /// Finite public values, empty for an open scalar or object.
+    pub closed_values: ClosedValueSetMetadata,
 }
 
 #[derive(Clone, Debug, Facet)]
@@ -218,7 +220,8 @@ pub struct InputField {
     pub validation: InputValidationMetadata,
     #[facet(default, skip_serializing_if = Option::is_none)]
     pub collection: Option<bool>,
-    pub enum_values: Vec<String>,
+    /// Finite public values, empty for an open scalar.
+    pub closed_values: ClosedValueSetMetadata,
     pub required: bool,
     pub nullable: bool,
     #[facet(default, skip_serializing_if = Option::is_none)]
@@ -233,11 +236,31 @@ pub struct WireMetadata {
     pub provider_type: Option<ProviderTypeMetadata>,
 }
 
-/// Schema-qualified PostgreSQL type identity used only for generated casts.
+/// Schema-qualified nominal provider identity and generated cast target.
 #[derive(Clone, Debug, Facet)]
 pub struct ProviderTypeMetadata {
     pub schema: String,
     pub name: String,
+}
+
+/// One finite public value set shared by catalog enums and compiler-owned choices.
+#[derive(Clone, Debug, Facet)]
+pub struct ClosedValueSetMetadata {
+    /// Type-level documentation, when the set comes from the catalog.
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub description: Option<String>,
+    /// Values in their semantic order. An empty list denotes an open value.
+    pub values: Vec<ClosedValueMetadata>,
+}
+
+/// One public value and optional presentation metadata.
+#[derive(Clone, Debug, Facet)]
+pub struct ClosedValueMetadata {
+    pub value: String,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub label: Option<String>,
+    #[facet(default, skip_serializing_if = Option::is_none)]
+    pub description: Option<String>,
 }
 
 /// Compiler-owned validation applied after a value matches its wire encoding.
@@ -278,6 +301,8 @@ pub struct DynamicInputField {
     pub data_type: String,
     pub wire: WireMetadata,
     pub validation: InputValidationMetadata,
+    /// Finite values accepted by this catalog field.
+    pub closed_values: ClosedValueSetMetadata,
     pub nullable: bool,
     pub access: String,
     pub operators: Vec<String>,

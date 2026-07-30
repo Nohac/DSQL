@@ -127,7 +127,7 @@ test("tanstack start uses imported validator expressions when provided", async (
   );
   expect(operationSource).toContain("requiresContext: true");
   expect(operationSource).toContain(
-    'inputs: [{"path":"params.id","data_type":"int","wire":{"encoding":"integer"},"validation":{},"enum_values":[],"required":false,"nullable":false,"default":{"kind":"number","value":"7"}}]',
+    'inputs: [{"path":"params.id","data_type":"int","wire":{"encoding":"integer"},"validation":{},"closed_values":{"values":[]},"required":false,"nullable":false,"default":{"kind":"number","value":"7"}}]',
   );
   expect(operationSource).not.toContain("context.tenant_id");
   expect(operationSource).not.toContain("select * from movie_info");
@@ -309,7 +309,7 @@ function createArtifacts(root: string): BuildArtifacts {
     sourceFileScopes: [],
     artifactGroups: [],
     manifest: {
-      version: 6,
+      version: 7,
       generationId: 1,
       operations: [
         {
@@ -354,6 +354,7 @@ function operationMetadata(): BuildArtifacts["operations"][number] {
             shape: "object",
             name: "object",
             wire: { encoding: "unsupported" },
+            closed_values: { values: [] },
           },
           nullable: false,
           access: "unconditional",
@@ -366,7 +367,7 @@ function operationMetadata(): BuildArtifacts["operations"][number] {
         data_type: "int",
         wire: { encoding: "integer" },
         validation: {},
-        enum_values: [],
+        closed_values: { values: [] },
         required: false,
         nullable: false,
         default: { kind: "number", value: "7" },
@@ -379,7 +380,7 @@ function operationMetadata(): BuildArtifacts["operations"][number] {
         data_type: "uuid",
         wire: { encoding: "uuid" },
         validation: {},
-        enum_values: [],
+        closed_values: { values: [] },
         required: true,
         nullable: false,
       },

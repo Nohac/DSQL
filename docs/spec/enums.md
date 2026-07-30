@@ -7,12 +7,17 @@ of variants. dsql should support both native database enums and configured
 table- or view-backed enums without imposing provider-specific table-shape
 rules on the query language.
 
-The generated and effective catalogs now preserve native PostgreSQL enum
-identity, comments, and ordered variants. Query checking, generated operation
-metadata, runtime validation, TypeScript types, and editor services do not yet
-consume those variants, so native enums are not a supported public language
-feature until those phases land together. Existing text-cast behavior remains
-unchanged during this catalog-only foundation step.
+The generated and effective catalogs preserve native PostgreSQL enum identity,
+comments, and ordered variants. Query and policy literals, inferred defaults,
+and generated metadata now consume those facts. TypeScript renderers expose
+native enum inputs and results as literal unions while retaining the
+schema-qualified provider type as the cast target.
+
+Native enums remain an implementation-in-progress feature. Runtime validation
+of caller-supplied values and editor completion and hover are separate required
+steps. Until those land, generated static types and compiler-authored defaults
+are closed while an untyped runtime caller can still supply an arbitrary string
+that PostgreSQL ultimately rejects.
 
 ## Terminology
 
@@ -311,9 +316,11 @@ relationship metadata. A safe implementation can proceed incrementally:
 6. consider explicit FK-less attachments and native per-variant documentation
    overlays only after concrete use cases require them.
 
-Each phase must update checking, variables, plans, SQL binding, execution,
-metadata, editor services, and generation together. Partial enum awareness that
-degrades to an ordinary scalar in one stage is invalid.
+Implementation commits may stage internal propagation, but native enum support
+cannot be declared or released until checking, variables, planning, binding,
+execution, metadata, editor services, and generation all preserve the nominal
+contract. Every staged gap must be explicit, and no layer may silently degrade
+a known native enum into an open scalar.
 
 ## Open Questions
 

@@ -736,6 +736,7 @@ fn check_membership_types(
     let Some((_, capabilities)) = resolved_expr_semantics(ctx, resolved, lhs) else {
         return;
     };
+    let enum_contract = resolved_expr_enum_contract(ctx, resolved, lhs);
     if capabilities.wire == WireEncoding::Unsupported {
         return;
     }
@@ -752,7 +753,15 @@ fn check_membership_types(
     };
     for item in items {
         if let Expr::Literal { value, span } = item {
-            check_literal_for_capabilities(ctx, entity, &capabilities, lhs, value, *span);
+            check_literal_for_capabilities(
+                ctx,
+                entity,
+                &capabilities,
+                enum_contract.as_ref(),
+                lhs,
+                value,
+                *span,
+            );
         } else {
             ctx.error(
                 entity,
@@ -768,6 +777,7 @@ fn check_literal_for_capabilities(
     ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
     entity: bowl::Entity,
     capabilities: &crate::catalog::TypeCapabilities,
+    enum_contract: Option<&(crate::catalog::TypeKey, Vec<String>)>,
     path: &Expr,
     value: &crate::entities::expression::LiteralValue,
     span: Span,
@@ -794,6 +804,8 @@ fn check_literal_for_capabilities(
                 actual.as_str()
             ),
         );
+    } else {
+        check_enum_literal(ctx, entity, enum_contract, path, raw_value, span);
     }
 }
 
@@ -957,6 +969,27 @@ fn check_binary_predicate_types(
     use crate::entities::expression::{ComparisonOp, LiteralValue};
     use crate::facts::DiagnosticCode;
 
+    if let (Expr::Path { .. }, Expr::Path { .. }) = (lhs, rhs) {
+        let left = resolved_path_catalog_type(ctx, resolved, lhs);
+        let right = resolved_path_catalog_type(ctx, resolved, rhs);
+        if let (Some(left), Some(right)) = (left, right)
+            && (ctx.catalog.enum_type_for_type(left.id).is_some()
+                || ctx.catalog.enum_type_for_type(right.id).is_some())
+            && left.key != right.key
+        {
+            ctx.error(
+                entity,
+                rhs.span(),
+                DiagnosticCode::PredicateTypeMismatch,
+                format!(
+                    "cannot compare nominal types `{}` and `{}`",
+                    left.readable_type, right.readable_type
+                ),
+            );
+        }
+        return;
+    }
+
     let (path, literal, literal_span) = match (lhs, rhs) {
         (path @ (Expr::Path { .. } | Expr::Aggregate { .. }), Expr::Literal { value, span }) => {
             (path, value, *span)
@@ -969,6 +1002,7 @@ fn check_binary_predicate_types(
     let Some((_, capabilities)) = resolved_expr_semantics(ctx, resolved, path) else {
         return;
     };
+    let enum_contract = resolved_expr_enum_contract(ctx, resolved, path);
     if capabilities.wire == WireEncoding::Unsupported {
         return;
     }
@@ -1020,7 +1054,76 @@ fn check_binary_predicate_types(
                 actual.as_str()
             ),
         );
+    } else {
+        check_enum_literal(
+            ctx,
+            entity,
+            enum_contract.as_ref(),
+            path,
+            raw_value,
+            literal_span,
+        );
     }
+}
+
+fn check_enum_literal(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    entity: bowl::Entity,
+    enum_contract: Option<&(crate::catalog::TypeKey, Vec<String>)>,
+    path: &Expr,
+    raw_value: &str,
+    span: Span,
+) {
+    let Some((key, values)) = enum_contract else {
+        return;
+    };
+    if values.iter().any(|variant| variant == raw_value) {
+        return;
+    }
+    ctx.error(
+        entity,
+        span,
+        crate::facts::DiagnosticCode::PredicateTypeMismatch,
+        format!(
+            "field `{path}` expects a variant of `{}.{}`; found {raw_value:?}, expected one of {}",
+            key.schema,
+            key.name,
+            values
+                .iter()
+                .map(|value| format!("{value:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    );
+}
+
+fn resolved_path_catalog_type<'a>(
+    ctx: &crate::entities::field_selection::CheckCtx<'a, '_>,
+    resolved: Option<&crate::resolution::ResolvedClause>,
+    expr: &Expr,
+) -> Option<&'a crate::catalog::CatalogType> {
+    let Expr::Path { .. } = expr else {
+        return None;
+    };
+    let column = resolved?.path_at(expr.span())?.terminal.column()?;
+    ctx.catalog.type_for_column(column)
+}
+
+fn resolved_expr_enum_contract(
+    ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
+    resolved: Option<&crate::resolution::ResolvedClause>,
+    expr: &Expr,
+) -> Option<(crate::catalog::TypeKey, Vec<String>)> {
+    let declared = resolved_path_catalog_type(ctx, resolved, expr)?;
+    let (_, enumeration) = ctx.catalog.enum_type_for_type(declared.id)?;
+    Some((
+        declared.key.clone(),
+        enumeration
+            .variants
+            .iter()
+            .map(|variant| variant.variant.clone())
+            .collect(),
+    ))
 }
 
 /// The terminal column type of a path, read from the clause's

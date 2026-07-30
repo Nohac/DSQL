@@ -295,7 +295,7 @@ pub struct VariableBinding {
     pub collection: bool,
     pub role: VariableRole,
     pub operators: Vec<ComparisonOp>,
-    pub enum_values: Vec<String>,
+    pub closed_values: Vec<String>,
     /// Whether callers must supply this input rather than relying on a default.
     pub required: bool,
     /// Whether callers may explicitly supply `null`.
@@ -1224,12 +1224,40 @@ fn validate_refinement(
         None
     } else {
         Some(format!(
-            "default for `{}` does not match inferred type {}{}",
+            "default for `{}` does not match inferred type {}",
             refinement.name,
-            capabilities.name,
-            if binding.collection { "[]" } else { "" }
+            default_type_label(binding, catalog, &capabilities)
         ))
     }
+}
+
+fn default_type_label(
+    binding: &VariableBinding,
+    catalog: &Catalog,
+    capabilities: &TypeCapabilities,
+) -> String {
+    let collection = if binding.collection { "[]" } else { "" };
+    let Some(provider_type) = binding.provider_type.as_ref() else {
+        return format!("{}{collection}", capabilities.name);
+    };
+    let Some(data_type) = catalog.type_by_key(provider_type) else {
+        return format!("{}{collection}", capabilities.name);
+    };
+    if catalog.enum_type_for_type(data_type.id).is_none() {
+        return format!("{}{collection}", capabilities.name);
+    }
+    format!(
+        "{}.{}{} (one of {})",
+        provider_type.schema,
+        provider_type.name,
+        collection,
+        binding
+            .closed_values
+            .iter()
+            .map(|value| format!("{value:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn input_default_matches(
@@ -1237,27 +1265,33 @@ fn input_default_matches(
     binding: &VariableBinding,
     capabilities: &TypeCapabilities,
 ) -> bool {
-    if !binding.enum_values.is_empty() {
-        return matches!(
-            default,
-            InputDefault::String(value) if binding.enum_values.contains(value)
-        );
-    }
     match default {
         InputDefault::Collection(items) if binding.collection => items.iter().all(|item| {
             !matches!(
                 item,
                 InputDefault::Null | InputDefault::Collection(_) | InputDefault::EmptyObject
-            ) && input_default_scalar_matches(item, capabilities)
+            ) && input_default_scalar_matches(item, capabilities, &binding.closed_values)
         }),
         InputDefault::EmptyObject => false,
         InputDefault::Collection(_) => false,
-        scalar if !binding.collection => input_default_scalar_matches(scalar, capabilities),
+        scalar if !binding.collection => {
+            input_default_scalar_matches(scalar, capabilities, &binding.closed_values)
+        }
         _ => false,
     }
 }
 
-fn input_default_scalar_matches(default: &InputDefault, capabilities: &TypeCapabilities) -> bool {
+fn input_default_scalar_matches(
+    default: &InputDefault,
+    capabilities: &TypeCapabilities,
+    closed_values: &[String],
+) -> bool {
+    if !closed_values.is_empty() {
+        return matches!(
+            default,
+            InputDefault::String(value) if closed_values.contains(value)
+        );
+    }
     match default {
         InputDefault::String(value) => capabilities.defaults.accepts(LiteralKind::String, value),
         InputDefault::Number(value) => capabilities.defaults.accepts(LiteralKind::Number, value),
@@ -1346,7 +1380,7 @@ fn bindings_compatible(left: &VariableBinding, right: &VariableBinding) -> bool 
         && left.collection == right.collection
         && left.role == right.role
         && left.operators == right.operators
-        && left.enum_values == right.enum_values
+        && left.closed_values == right.closed_values
         && left.required == right.required
         && left.nullable == right.nullable
         && left.default == right.default
@@ -1389,6 +1423,14 @@ async fn diagnose_duplicate_anonymous_bindings(
             ),
         },
     );
+}
+
+struct ResolvedPredicateValue {
+    data_type: DataType,
+    wire: WireEncoding,
+    provider_type: Option<TypeKey>,
+    path: Vec<String>,
+    closed_values: Vec<String>,
 }
 
 struct Inference<'a> {
@@ -1457,7 +1499,7 @@ impl Inference<'_> {
                                     inferred_path: &["order".to_string()],
                                     anonymous_key: None,
                                     operators: Vec::new(),
-                                    enum_values: Vec::new(),
+                                    closed_values: Vec::new(),
                                 },
                                 &variable,
                             ),
@@ -1494,7 +1536,7 @@ impl Inference<'_> {
                                         inferred_path: &inferred_path,
                                         anonymous_key: None,
                                         operators: Vec::new(),
-                                        enum_values: vec!["asc".to_string(), "desc".to_string()],
+                                        closed_values: vec!["asc".to_string(), "desc".to_string()],
                                     },
                                     variable,
                                 );
@@ -1552,7 +1594,7 @@ impl Inference<'_> {
                         inferred_path: &[lower_snake_case(filter_name)],
                         anonymous_key: None,
                         operators: Vec::new(),
-                        enum_values: Vec::new(),
+                        closed_values: Vec::new(),
                     },
                     variable,
                 );
@@ -1659,8 +1701,7 @@ impl Inference<'_> {
                         Expr::Variable { variable, .. },
                         value @ (Expr::Path { .. } | Expr::Aggregate { .. }),
                     ) => {
-                        if let Some((data_type, wire, provider_type, field_path)) =
-                            self.resolve_predicate_value(value, resolved)
+                        if let Some(resolved_value) = self.resolve_predicate_value(value, resolved)
                         {
                             let anonymous_key = variable
                                 .name
@@ -1671,15 +1712,15 @@ impl Inference<'_> {
                                 selection_path,
                                 BindingContext {
                                     role: VariableRole::WhereValue,
-                                    data_type,
-                                    wire,
-                                    provider_type,
+                                    data_type: resolved_value.data_type,
+                                    wire: resolved_value.wire,
+                                    provider_type: resolved_value.provider_type,
                                     collection: matches!(op, BinaryOp::In | BinaryOp::NotIn),
                                     scope,
-                                    inferred_path: &field_path,
+                                    inferred_path: &resolved_value.path,
                                     anonymous_key,
                                     operators: Vec::new(),
-                                    enum_values: Vec::new(),
+                                    closed_values: resolved_value.closed_values,
                                 },
                                 variable,
                             );
@@ -1695,22 +1736,21 @@ impl Inference<'_> {
                         _ => None,
                     };
                     if let Some(path) = path
-                        && let Some((data_type, wire, provider_type, field_path)) =
-                            self.resolve_predicate_value(path, resolved)
+                        && let Some(resolved_value) = self.resolve_predicate_value(path, resolved)
                     {
                         let operators = operator.operators.clone().unwrap_or_default();
                         self.push_binding(
                             selection_path,
                             BindingContext {
                                 role: VariableRole::ComparisonOperator,
-                                data_type,
-                                wire,
-                                provider_type,
+                                data_type: resolved_value.data_type,
+                                wire: resolved_value.wire,
+                                provider_type: resolved_value.provider_type,
                                 collection: false,
                                 scope,
-                                inferred_path: &field_path,
+                                inferred_path: &resolved_value.path,
                                 anonymous_key: None,
-                                enum_values: operators
+                                closed_values: operators
                                     .iter()
                                     .map(|operator| operator.as_str().to_string())
                                     .collect(),
@@ -1761,7 +1801,7 @@ impl Inference<'_> {
                         inferred_path: &["value".to_string()],
                         anonymous_key: None,
                         operators: Vec::new(),
-                        enum_values: Vec::new(),
+                        closed_values: Vec::new(),
                     },
                     variable,
                 );
@@ -1779,7 +1819,7 @@ impl Inference<'_> {
                         inferred_path: &["search".to_string()],
                         anonymous_key: None,
                         operators: Vec::new(),
-                        enum_values: Vec::new(),
+                        closed_values: Vec::new(),
                     },
                     variable,
                 );
@@ -1800,41 +1840,49 @@ impl Inference<'_> {
         &self,
         path: &Expr,
         resolved_clause: &ResolvedClause,
-    ) -> Option<(DataType, WireEncoding, TypeKey, Vec<String>)> {
+    ) -> Option<ResolvedPredicateValue> {
         let resolved = resolved_clause.path_at(path.span())?;
         let column = resolved.terminal.column()?;
         let data_type = self.catalog.type_for_column(column)?;
         let field_path = resolved.display_path()?.map(str::to_owned).collect();
-        Some((
-            data_type.logical_data_type(),
-            data_type.capabilities.wire,
-            data_type.key.clone(),
-            field_path,
-        ))
+        let closed_values = self.catalog.enum_type_for_type(data_type.id).map_or_else(
+            Vec::new,
+            |(_, enumeration)| {
+                enumeration
+                    .variants
+                    .iter()
+                    .map(|variant| variant.variant.clone())
+                    .collect()
+            },
+        );
+        Some(ResolvedPredicateValue {
+            data_type: data_type.logical_data_type(),
+            wire: data_type.capabilities.wire,
+            provider_type: Some(data_type.key.clone()),
+            path: field_path,
+            closed_values,
+        })
     }
 
     fn resolve_predicate_value(
         &self,
         expr: &Expr,
         resolved_clause: &ResolvedClause,
-    ) -> Option<(DataType, WireEncoding, Option<TypeKey>, Vec<String>)> {
+    ) -> Option<ResolvedPredicateValue> {
         match expr {
-            Expr::Path { .. } => self.resolve_predicate_path(expr, resolved_clause).map(
-                |(data_type, wire, provider_type, path)| {
-                    (data_type, wire, Some(provider_type), path)
-                },
-            ),
+            Expr::Path { .. } => self.resolve_predicate_path(expr, resolved_clause),
             Expr::Aggregate { .. } => {
                 let aggregate = resolved_clause.aggregate_at(expr.span())?;
                 if !aggregate.is_valid() {
                     return None;
                 }
-                Some((
-                    aggregate.data_type?,
-                    Catalog::builtin_capabilities(aggregate.data_type?).wire,
-                    None,
-                    aggregate.display_path(self.catalog)?,
-                ))
+                Some(ResolvedPredicateValue {
+                    data_type: aggregate.data_type?,
+                    wire: Catalog::builtin_capabilities(aggregate.data_type?).wire,
+                    provider_type: None,
+                    path: aggregate.display_path(self.catalog)?,
+                    closed_values: Vec::new(),
+                })
             }
             Expr::Binary { .. }
             | Expr::Unary { .. }
@@ -1872,7 +1920,7 @@ impl Inference<'_> {
                 inferred_path: &[inferred_key.as_ref().to_string()],
                 anonymous_key: None,
                 operators: Vec::new(),
-                enum_values: Vec::new(),
+                closed_values: Vec::new(),
             },
             variable,
         );
@@ -1908,7 +1956,7 @@ impl Inference<'_> {
                 collection: context.collection,
                 role: context.role,
                 operators: context.operators,
-                enum_values: context.enum_values,
+                closed_values: context.closed_values,
                 required: true,
                 nullable: false,
                 default: None,
@@ -1946,7 +1994,7 @@ pub(crate) fn variable_type_label(binding: &VariableBinding) -> String {
         format!(
             "enum({})",
             binding
-                .enum_values
+                .closed_values
                 .iter()
                 .map(|value| format!("\"{value}\""))
                 .collect::<Vec<_>>()
@@ -1995,7 +2043,7 @@ struct BindingContext<'a> {
     inferred_path: &'a [String],
     anonymous_key: Option<&'a str>,
     operators: Vec<ComparisonOp>,
-    enum_values: Vec<String>,
+    closed_values: Vec<String>,
 }
 
 impl FormatStage for Variable {

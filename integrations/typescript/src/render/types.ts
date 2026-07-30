@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import ts from "typescript";
 import type {
+  ClosedValueSetMetadata,
   DynamicInputMetadata,
   FragmentMetadata,
   FragmentSpreadMetadata,
@@ -76,6 +77,20 @@ export type DsqlRenderDefinitionResult = {
 /** The key `embeddedSources` and `BuildArtifacts.artifactIds` use. */
 export function artifactKey(kind: "operation" | "fragment", name: string): string {
   return `${kind}/${name}`;
+}
+
+type ClosedValueCarrier = {
+  readonly closed_values: ClosedValueSetMetadata;
+};
+
+function hasClosedValues(value: ClosedValueCarrier): boolean {
+  return value.closed_values.values.length > 0;
+}
+
+function closedValueType(value: ClosedValueCarrier): string {
+  return value.closed_values.values
+    .map((entry) => JSON.stringify(entry.value))
+    .join(" | ");
 }
 
 type ScalarOccurrence = {
@@ -155,7 +170,10 @@ function scalarOccurrences(artifacts: BuildArtifacts): ScalarOccurrence[] {
   const occurrences: ScalarOccurrence[] = [];
   const inputs = (fields: readonly InputField[]) => {
     for (const field of fields) {
-      if (!SPECIAL_INPUT_TYPES.has(field.data_type)) {
+      if (
+        !SPECIAL_INPUT_TYPES.has(field.data_type) &&
+        !hasClosedValues(field)
+      ) {
         occurrences.push({
           name: field.data_type,
           wire: field.wire.encoding,
@@ -165,7 +183,10 @@ function scalarOccurrences(artifacts: BuildArtifacts): ScalarOccurrence[] {
   };
   const results = (fields: readonly ResultField[]) => {
     for (const field of fields) {
-      if (field.kind === RESULT_KIND_SCALAR) {
+      if (
+        field.kind === RESULT_KIND_SCALAR &&
+        !hasClosedValues(field.value_type)
+      ) {
         occurrences.push({
           name: field.value_type.name,
           wire: field.value_type.wire.encoding,
@@ -180,6 +201,9 @@ function scalarOccurrences(artifacts: BuildArtifacts): ScalarOccurrence[] {
         continue;
       }
       for (const field of dynamic.fields) {
+        if (hasClosedValues(field)) {
+          continue;
+        }
         occurrences.push({
           name: field.data_type,
           wire: field.wire.encoding,
@@ -195,6 +219,9 @@ function scalarOccurrences(artifacts: BuildArtifacts): ScalarOccurrence[] {
         continue;
       }
       for (const field of dynamic.fields) {
+        if (hasClosedValues(field)) {
+          continue;
+        }
         occurrences.push({
           name: field.data_type,
           wire: field.wire.encoding,
@@ -1168,7 +1195,10 @@ function resultWireTypeLiteral(
     if (field.kind !== RESULT_KIND_SCALAR) {
       continue;
     }
-    if (!scalars.hasMapping(field.value_type.name)) {
+    if (
+      hasClosedValues(field.value_type) ||
+      !scalars.hasMapping(field.value_type.name)
+    ) {
       continue;
     }
     const wireScalar = scalars.typeFor(
@@ -1336,7 +1366,7 @@ function inputWireTypeLiteral(
       continue;
     }
 
-    if (field.enum_values.length > 0 || !scalars.hasMapping(field.data_type)) {
+    if (hasClosedValues(field) || !scalars.hasMapping(field.data_type)) {
       continue;
     }
     root.insert(path, inputFieldType(field, scalars, false));
@@ -1494,12 +1524,14 @@ function dynamicInputTypeLiteral(
   ];
   const operatorKinds = dynamicOperatorKinds(input);
   for (const field of input.fields) {
-    const scalar = scalars.typeFor(
-      field.data_type,
-      field.wire.encoding,
-      "input",
-      true,
-    );
+    const scalar = hasClosedValues(field)
+      ? closedValueType(field)
+      : scalars.typeFor(
+          field.data_type,
+          field.wire.encoding,
+          "input",
+          true,
+        );
     properties.push({
       name: field.key,
       type: objectTypeWithOptional(
@@ -1544,7 +1576,7 @@ function dynamicInputWireTypeLiteral(
     readonly optional: boolean;
   }> = [];
   for (const field of input.fields) {
-    if (!scalars.hasMapping(field.data_type)) {
+    if (hasClosedValues(field) || !scalars.hasMapping(field.data_type)) {
       continue;
     }
     const wireScalar = scalars.typeFor(
@@ -1808,8 +1840,8 @@ function inputFieldType(
   mapped: boolean,
 ): string {
   const elementType =
-    field.enum_values.length > 0
-      ? field.enum_values.map((value) => JSON.stringify(value)).join(" | ")
+    hasClosedValues(field)
+      ? closedValueType(field)
       : scalars.typeFor(
           field.data_type,
           field.wire.encoding,
@@ -1830,12 +1862,14 @@ function publicInputPath(path: string, prefix: InputRoot): string[] {
 
 function propertyType(ctx: ResultTypeCtx, field: ResultField): [string, string] {
   if (field.kind === RESULT_KIND_SCALAR) {
-    const scalar = ctx.scalars.typeFor(
-      field.value_type.name,
-      field.value_type.wire.encoding,
-      "result",
-      true,
-    );
+    const scalar = hasClosedValues(field.value_type)
+      ? closedValueType(field.value_type)
+      : ctx.scalars.typeFor(
+          field.value_type.name,
+          field.value_type.wire.encoding,
+          "result",
+          true,
+        );
     const value =
       field.value_type.shape === RESULT_VALUE_SHAPE_DATABASE_ARRAY
         ? `DsqlDatabaseArray<${scalar}>`
@@ -2037,7 +2071,7 @@ function renderInputFields(
   return `[${fields
     .map((field) => {
       const serializer =
-        field.enum_values.length === 0
+        !hasClosedValues(field)
           ? scalars.serializerFor(
               field.data_type,
               field.wire.encoding,
@@ -2063,6 +2097,7 @@ function renderDynamicInputContracts(
           data_type: field.data_type,
           wire: field.wire,
           validation: field.validation,
+          closed_values: field.closed_values,
           operators: field.operators.map((operator) => ({
             name: operator,
             value_kind: requiredDynamicOperatorKind(
@@ -2076,7 +2111,7 @@ function renderDynamicInputContracts(
         return {
           value,
           serializer:
-            input.kind === "predicate"
+            input.kind === "predicate" && !hasClosedValues(field)
               ? scalars.serializerFor(
                   field.data_type,
                   field.wire.encoding,
@@ -2131,6 +2166,9 @@ function renderResultMaterializer(
   const fieldsByPath = new Map(fields.map((field) => [field.path, field]));
   for (const field of fields) {
     if (field.kind !== RESULT_KIND_SCALAR) {
+      continue;
+    }
+    if (hasClosedValues(field.value_type)) {
       continue;
     }
     const parser = scalars.parserFor(

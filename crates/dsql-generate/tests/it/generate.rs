@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 
 use bowl::Bowl;
 use dsql_core::catalog::{
-    Catalog, ColumnMetadata, DataType, DatabaseMetadata, ObjectType, ProviderTypeFacts,
-    SchemaMetadata, TableMetadata, TypeKey, TypeMetadata, TypeStructureMetadata,
-    table_metadata_from_yaml,
+    Catalog, ColumnMetadata, DataType, DatabaseMetadata, EnumTypeMetadata, EnumVariantMetadata,
+    ObjectType, ProviderTypeFacts, SchemaMetadata, TableMetadata, TypeKey, TypeMetadata,
+    TypeStructureMetadata, table_metadata_from_yaml,
 };
 use dsql_core::embedding::ExtractionRegistry;
 use dsql_core::input::{LanguageDocument, LanguageInputs, populate_language_bowl};
@@ -394,6 +394,94 @@ fn structured_type_catalog() -> Catalog {
     }
     .to_catalog()
     .expect("structured type catalog builds")
+}
+
+fn native_enum_catalog() -> Catalog {
+    let enumeration = |schema: &str, name: &str, description: &str| TypeMetadata {
+        internal_type: name.to_string(),
+        readable_type: format!("{schema}.{name}"),
+        schema: schema.to_string(),
+        structure: TypeStructureMetadata::enumeration(EnumTypeMetadata {
+            description: Some(description.to_string()),
+            variants: ["pending", "active", "archived"]
+                .into_iter()
+                .map(|variant| EnumVariantMetadata {
+                    variant: variant.to_string(),
+                    database_value: variant.to_string(),
+                    label: None,
+                    description: None,
+                })
+                .collect(),
+        }),
+        provider: Some(ProviderTypeFacts {
+            kind: "e".to_string(),
+            category: "E".to_string(),
+            effective_kind: Some("e".to_string()),
+            effective_category: Some("E".to_string()),
+            orderable: true,
+        }),
+        operations: ["=", "<>", "<", "<=", ">", ">="]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    };
+    let provider_type =
+        |name: &str, kind: &str, category: &str, structure: TypeStructureMetadata| TypeMetadata {
+            internal_type: name.to_string(),
+            readable_type: format!("public.{name}"),
+            schema: "public".to_string(),
+            structure,
+            provider: Some(ProviderTypeFacts {
+                kind: kind.to_string(),
+                category: category.to_string(),
+                effective_kind: None,
+                effective_category: None,
+                orderable: true,
+            }),
+            operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
+        };
+    let column = |name: &str, provider_type: TypeKey| ColumnMetadata {
+        name: name.to_string(),
+        description: None,
+        database_type: provider_type.name.clone(),
+        provider_type,
+        formatted_type: None,
+        type_modifier: None,
+        data_type: DataType::Unknown,
+        not_null: true,
+    };
+    let status = TypeKey::new("public", "status");
+    DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![TableMetadata {
+                schema: "public".to_string(),
+                name: "enum_records".to_string(),
+                object_type: ObjectType::Table,
+                description: None,
+                columns: vec![
+                    column("status", status.clone()),
+                    column("domain_status", TypeKey::new("public", "status_domain")),
+                    column("statuses", TypeKey::new("public", "_status")),
+                ],
+                constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        }],
+        types: vec![
+            enumeration("public", "status", "Lifecycle status."),
+            provider_type(
+                "status_domain",
+                "d",
+                "E",
+                TypeStructureMetadata::domain(status.clone()),
+            ),
+            provider_type("_status", "b", "A", TypeStructureMetadata::array(status)),
+        ],
+    }
+    .to_catalog()
+    .expect("native enum generation catalog builds")
 }
 const MEMBERSHIPS_SCHEMA: &str = r#"---
 schema: public
@@ -1114,6 +1202,56 @@ async fn structured_result_values_flow_through_generated_metadata() {
         .expect("structured operation artifact");
 
     insta::assert_snapshot!(artifact.serialized);
+}
+
+#[tokio::test]
+async fn native_enum_contracts_flow_through_generated_metadata() {
+    let bowl = memory_bowl(
+        native_enum_catalog(),
+        vec![document(
+            "queries/frontend/native-enums.dsql",
+            indoc::indoc! {r#"
+                filter EnumContext on enum_records {
+                  where .status == $:status
+                }
+                query NativeEnums(
+                  $$status = "active"
+                  $$statuses = ["pending", "archived"]
+                ) {
+                  enum_records(
+                    filter EnumContext
+                    where .status == $$status
+                      and .status in $$statuses
+                    limit 1
+                  ) {
+                    status
+                    domain_status
+                    statuses
+                  }
+                }
+                query DynamicEnums($$search = {}) {
+                  enum_records(where $$search on selected) {
+                    status
+                  }
+                }
+            "#},
+            "frontend",
+        )],
+        BTreeMap::new(),
+    )
+    .await;
+    let mut artifacts = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("native enum assembly succeeds")
+        .snapshot
+        .artifacts
+        .into_iter()
+        .filter(|artifact| matches!(artifact.name.as_str(), "DynamicEnums" | "NativeEnums"))
+        .map(|artifact| format!("{}\n{}", artifact.name, artifact.serialized))
+        .collect::<Vec<_>>();
+    artifacts.sort();
+
+    insta::assert_snapshot!(artifacts.join("\n---\n"));
 }
 
 #[tokio::test]

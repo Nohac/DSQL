@@ -9,8 +9,8 @@ use dsql_core::language_bowl;
 use dsql_core::source::{insert_embedding_source, insert_source};
 
 use crate::{
-    fixture, imdb_catalog, numeric_catalog, provider_scalar_catalog, render_diagnostic_facts,
-    replace_source_text, set_source_text, structured_type_catalog,
+    fixture, imdb_catalog, native_enum_catalog, numeric_catalog, provider_scalar_catalog,
+    render_diagnostic_facts, replace_source_text, set_source_text, structured_type_catalog,
 };
 
 async fn checked_bowl(catalog: Catalog) -> Bowl {
@@ -18,6 +18,40 @@ async fn checked_bowl(catalog: Catalog) -> Bowl {
     insert_catalog(&bowl, catalog).await;
     arm_editor_demands(&bowl).await;
     bowl
+}
+
+#[tokio::test]
+async fn native_enum_predicates_reject_unknown_and_nominally_distinct_values() {
+    let bowl = checked_bowl(native_enum_catalog()).await;
+    insert_source(
+        &bowl,
+        "native-enums.dsql",
+        indoc::indoc! {r#"
+            query ValidEnumPredicates {
+              enum_records(
+                where .status == "active"
+                  and .status in ["pending", "archived"]
+              ) {
+                status
+                statuses
+              }
+            }
+            query InvalidEnumPredicates {
+              enum_records(
+                where .status == "missing"
+                  and .status in ["pending", "missing"]
+                  and .status == 1
+                  and .status == .audit_status
+                  and .status == .domain_status
+              ) {
+                status
+              }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
 #[tokio::test]

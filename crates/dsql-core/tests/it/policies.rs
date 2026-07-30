@@ -16,7 +16,10 @@ use dsql_core::source::{
     insert_source_scoped,
 };
 
-use crate::{imdb_catalog, provider_scalar_catalog, render_diagnostic_facts, replace_source_text};
+use crate::{
+    imdb_catalog, native_enum_catalog, provider_scalar_catalog, render_diagnostic_facts,
+    replace_source_text,
+};
 
 async fn render_index(bowl: &bowl::Bowl, catalog: &dsql_core::catalog::Catalog) -> String {
     let rows = bowl.scoop::<Query<(bowl::Entity, &PolicyIndex)>>().await;
@@ -73,6 +76,30 @@ async fn filters_and_conditions_resolve_concrete_and_structural_targets() {
     .await;
 
     insta::assert_snapshot!(render_index(&bowl, &catalog).await);
+}
+
+#[tokio::test]
+async fn native_enum_policy_literals_follow_the_catalog_contract() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, native_enum_catalog()).await;
+    arm_editor_demands(&bowl).await;
+    insert_source(
+        &bowl,
+        "enum-policies.dsql",
+        indoc::indoc! {r#"
+            filter ValidEnumPolicy on public::enum_records {
+              where .status == "active"
+                and .status in ["pending", "archived"]
+            }
+            filter InvalidEnumPolicy on public::enum_records {
+              where .status == "missing"
+                and .status in ["active", "unknown"]
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
 }
 
 #[tokio::test]

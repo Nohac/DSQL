@@ -21,13 +21,14 @@ use dsql_core::plan::{
 use dsql_core::resolution::SelectionCardinality;
 use dsql_core::sql::{GeneratedDynamicInputSite, GeneratedDynamicValueKind, GeneratedSql};
 use dsql_metadata::{
-    DefinitionKind, DynamicInputField, DynamicInputMetadata, DynamicInputSite,
-    DynamicInputSiteField, DynamicPredicateOperatorMetadata, FragmentMetadata,
-    FragmentSpreadMetadata, InputDefault, InputField, InputValidationMetadata, OperationMetadata,
-    PolicyApplicationMetadata, PolicyFieldAccessMetadata, PolicyMetadata, ProviderTypeMetadata,
-    ResultField, ResultFieldKind, ResultShape, ResultValueShape, ResultValueTypeMetadata,
-    SourceMapEntry, SourceRange, SqlDialect, SqlMetadata, SqlParameterMetadata,
-    SqlVariantCaseMetadata, SqlVariantMetadata, WireMetadata,
+    ClosedValueMetadata, ClosedValueSetMetadata, DefinitionKind, DynamicInputField,
+    DynamicInputMetadata, DynamicInputSite, DynamicInputSiteField,
+    DynamicPredicateOperatorMetadata, FragmentMetadata, FragmentSpreadMetadata, InputDefault,
+    InputField, InputValidationMetadata, OperationMetadata, PolicyApplicationMetadata,
+    PolicyFieldAccessMetadata, PolicyMetadata, ProviderTypeMetadata, ResultField, ResultFieldKind,
+    ResultShape, ResultValueShape, ResultValueTypeMetadata, SourceMapEntry, SourceRange,
+    SqlDialect, SqlMetadata, SqlParameterMetadata, SqlVariantCaseMetadata, SqlVariantMetadata,
+    WireMetadata,
 };
 
 use crate::pipeline::{GenerateError, Result};
@@ -176,6 +177,9 @@ fn dynamic_input_metadata(
                         || validation_metadata_for_data_type(field.data_type),
                         validation_metadata_for_catalog_type,
                     ),
+                    closed_values: catalog_type.map_or_else(open_closed_values, |data_type| {
+                        catalog_closed_values(catalog, data_type)
+                    }),
                     nullable: field.nullable,
                     access: access_label(field.access).to_string(),
                     operators: field
@@ -890,7 +894,7 @@ fn input_fields(
             wire: binding_wire(catalog, binding),
             validation: binding_validation(catalog, binding),
             collection: binding.collection.then_some(true),
-            enum_values: binding.enum_values.clone(),
+            closed_values: binding_closed_values(catalog, binding),
             required: binding.required,
             nullable: binding.nullable,
             default: binding.default.as_ref().map(input_default),
@@ -929,6 +933,59 @@ fn binding_validation(catalog: &Catalog, binding: &VariableBinding) -> InputVali
     validation_metadata_for_data_type(binding.data_type)
 }
 
+fn open_closed_values() -> ClosedValueSetMetadata {
+    ClosedValueSetMetadata {
+        description: None,
+        values: Vec::new(),
+    }
+}
+
+fn synthetic_closed_values(values: &[String]) -> ClosedValueSetMetadata {
+    ClosedValueSetMetadata {
+        description: None,
+        values: values
+            .iter()
+            .map(|value| ClosedValueMetadata {
+                value: value.clone(),
+                label: None,
+                description: None,
+            })
+            .collect(),
+    }
+}
+
+fn catalog_closed_values(catalog: &Catalog, data_type: &CatalogType) -> ClosedValueSetMetadata {
+    catalog
+        .enum_type_for_type(data_type.id)
+        .map_or_else(open_closed_values, |(_, enumeration)| {
+            ClosedValueSetMetadata {
+                description: enumeration.description.clone(),
+                values: enumeration
+                    .variants
+                    .iter()
+                    .map(|variant| ClosedValueMetadata {
+                        value: variant.variant.clone(),
+                        label: variant.label.clone(),
+                        description: variant.description.clone(),
+                    })
+                    .collect(),
+            }
+        })
+}
+
+fn binding_closed_values(catalog: &Catalog, binding: &VariableBinding) -> ClosedValueSetMetadata {
+    if matches!(
+        binding.role,
+        VariableRole::ComparisonOperator | VariableRole::SortDirection
+    ) {
+        return synthetic_closed_values(&binding.closed_values);
+    }
+    binding_catalog_type(catalog, binding).map_or_else(
+        || synthetic_closed_values(&binding.closed_values),
+        |data_type| catalog_closed_values(catalog, data_type),
+    )
+}
+
 fn logical_type_for_catalog_type(data_type: &CatalogType) -> &str {
     &data_type.capabilities.name
 }
@@ -939,6 +996,7 @@ fn object_result_value_type() -> ResultValueTypeMetadata {
         name: "object".to_string(),
         display: None,
         wire: wire_metadata_for_data_type(DataType::Unknown),
+        closed_values: open_closed_values(),
     }
 }
 
@@ -984,12 +1042,14 @@ fn result_value_type_for_catalog_type(
             name: logical_type_for_catalog_type(leaf).to_string(),
             display: Some(declared.readable_type.clone()),
             wire: wire_metadata_for_catalog_type(declared),
+            closed_values: catalog_closed_values(catalog, leaf),
         },
         Some(CatalogValueShape::DatabaseArray { element }) => ResultValueTypeMetadata {
             shape: ResultValueShape::DatabaseArray,
             name: logical_type_for_catalog_type(element).to_string(),
             display: Some(declared.readable_type.clone()),
             wire: wire_metadata_for_catalog_type(element),
+            closed_values: catalog_closed_values(catalog, element),
         },
         None => result_value_type_for_data_type(DataType::Unknown),
     }
@@ -1001,6 +1061,7 @@ fn result_value_type_for_data_type(data_type: DataType) -> ResultValueTypeMetada
         name: data_type.as_str().to_string(),
         display: None,
         wire: wire_metadata_for_data_type(data_type),
+        closed_values: open_closed_values(),
     }
 }
 
@@ -1059,7 +1120,7 @@ fn context_fields(
                 wire: binding_wire(catalog, binding),
                 validation: binding_validation(catalog, binding),
                 collection: binding.collection.then_some(true),
-                enum_values: binding.enum_values.clone(),
+                closed_values: binding_closed_values(catalog, binding),
                 required: true,
                 nullable: false,
                 default: None,
@@ -1103,7 +1164,13 @@ fn context_fields(
                         validation_metadata_for_catalog_type,
                     ),
                 collection: requirement.collection.then_some(true),
-                enum_values: Vec::new(),
+                closed_values: requirement
+                    .provider_type
+                    .as_ref()
+                    .and_then(|key| catalog.type_by_key(key))
+                    .map_or_else(open_closed_values, |data_type| {
+                        catalog_closed_values(catalog, data_type)
+                    }),
                 required: true,
                 nullable: false,
                 default: None,

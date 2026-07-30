@@ -1,4 +1,4 @@
-export const BUILD_MANIFEST_VERSION = 6 as const;
+export const BUILD_MANIFEST_VERSION = 7 as const;
 
 export interface BuildManifest {
   version: number;
@@ -159,10 +159,27 @@ export interface DynamicInputField {
   data_type: string;
   wire: WireMetadata;
   validation: InputValidationMetadata;
+  /** Finite values accepted by this catalog field. */
+  closed_values: ClosedValueSetMetadata;
   nullable: boolean;
   access: string;
   operators: string[];
   directions: string[];
+}
+
+/** One finite public value set shared by catalog enums and compiler-owned choices. */
+export interface ClosedValueSetMetadata {
+  /** Type-level documentation, when the set comes from the catalog. */
+  description?: string;
+  /** Values in their semantic order. An empty list denotes an open value. */
+  values: ClosedValueMetadata[];
+}
+
+/** One public value and optional presentation metadata. */
+export interface ClosedValueMetadata {
+  value: string;
+  label?: string;
+  description?: string;
 }
 
 /** Compiler-owned validation applied after a value matches its wire encoding. */
@@ -176,7 +193,7 @@ export interface WireMetadata {
   provider_type?: ProviderTypeMetadata;
 }
 
-/** Schema-qualified PostgreSQL type identity used only for generated casts. */
+/** Schema-qualified nominal provider identity and generated cast target. */
 export interface ProviderTypeMetadata {
   schema: string;
   name: string;
@@ -191,7 +208,8 @@ export interface InputField {
   wire: WireMetadata;
   validation: InputValidationMetadata;
   collection?: boolean;
-  enum_values: string[];
+  /** Finite public values, empty for an open scalar. */
+  closed_values: ClosedValueSetMetadata;
   required: boolean;
   nullable: boolean;
   default?: InputDefault;
@@ -231,6 +249,8 @@ export interface ResultValueTypeMetadata {
   display?: string;
   /** JSON representation of the scalar or database-array element. */
   wire: WireMetadata;
+  /** Finite public values, empty for an open scalar or object. */
+  closed_values: ClosedValueSetMetadata;
 }
 
 export type ResultValueShape = "scalar" | "database_array" | "object";

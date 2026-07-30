@@ -175,7 +175,7 @@ test("renders bounded dynamic input types and server execution metadata", async 
       data_type: "dynamic_predicate",
       wire: { encoding: "unsupported" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: false,
       nullable: false,
       default: { kind: "empty_object" },
@@ -185,7 +185,7 @@ test("renders bounded dynamic input types and server execution metadata", async 
       data_type: "dynamic_order",
       wire: { encoding: "unsupported" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: false,
       nullable: false,
       default: { kind: "collection", items: [] },
@@ -203,6 +203,7 @@ test("renders bounded dynamic input types and server execution metadata", async 
           data_type: "text",
           wire: { encoding: "text" },
           validation: {},
+          closed_values: { values: [] },
           nullable: false,
           access: "unconditional",
           operators: ["eq", "like", "in", "is_null"],
@@ -246,6 +247,7 @@ test("renders bounded dynamic input types and server execution metadata", async 
           data_type: "text",
           wire: { encoding: "text" },
           validation: {},
+          closed_values: { values: [] },
           nullable: false,
           access: "unconditional",
           operators: [],
@@ -308,6 +310,157 @@ test("renders bounded dynamic input types and server execution metadata", async 
   expect(source).not.toContain("dynamic_inputs:");
 });
 
+test("closed values render as literal unions without scalar codecs", async () => {
+  const root = createRoot();
+  const operation = operationMetadata("EnumContracts");
+  const closed_values = {
+    description: "Lifecycle status.",
+    values: [{ value: "pending" }, { value: "active" }],
+  };
+  const enumWire = {
+    encoding: "text_cast" as const,
+    provider_type: { schema: "public", name: "status" },
+  };
+  operation.result.fields = [
+    {
+      path: "status",
+      name: "status",
+      parent_path: "",
+      kind: "scalar",
+      value_type: {
+        shape: "scalar",
+        name: "text",
+        wire: enumWire,
+        closed_values,
+      },
+      nullable: false,
+    },
+    {
+      path: "statuses",
+      name: "statuses",
+      parent_path: "",
+      kind: "scalar",
+      value_type: {
+        shape: "database_array",
+        name: "text",
+        wire: enumWire,
+        closed_values,
+      },
+      nullable: false,
+    },
+    {
+      path: "label",
+      name: "label",
+      parent_path: "",
+      kind: "scalar",
+      value_type: resultValueType("text"),
+      nullable: false,
+    },
+  ];
+  operation.params = [
+    {
+      path: "params.status",
+      data_type: "text",
+      wire: enumWire,
+      validation: {},
+      closed_values,
+      required: true,
+      nullable: false,
+    },
+    {
+      path: "params.statuses",
+      data_type: "text",
+      wire: enumWire,
+      validation: {},
+      collection: true,
+      closed_values,
+      required: true,
+      nullable: false,
+    },
+    {
+      path: "params.label",
+      data_type: "text",
+      wire: { encoding: "text" },
+      validation: {},
+      closed_values: { values: [] },
+      required: true,
+      nullable: false,
+    },
+    {
+      path: "params.search",
+      data_type: "dynamic_predicate",
+      wire: { encoding: "unsupported" },
+      validation: {},
+      closed_values: { values: [] },
+      required: true,
+      nullable: false,
+    },
+  ];
+  operation.dynamic_inputs = [
+    {
+      path: "params.search",
+      kind: "predicate",
+      surface: "selected",
+      fields: [
+        {
+          key: "status",
+          catalog_path: "public.enum_records.status",
+          data_type: "text",
+          wire: enumWire,
+          validation: {},
+          closed_values,
+          nullable: false,
+          access: "unconditional",
+          operators: ["eq", "in"],
+          directions: [],
+        },
+      ],
+      sites: [
+        {
+          marker: "{{dynamic:0}}",
+          identity_sql: "TRUE",
+          fields: [
+            {
+              key: "status",
+              operators: [
+                { name: "eq", value_kind: "scalar", cases: [] },
+                { name: "in", value_kind: "collection", cases: [] },
+              ],
+              directions: [],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  await renderDsql(artifactsWithOperation(root, operation), {
+    root,
+    queriesDir: "src/generated/dsql/queries",
+    scalars: {
+      text: {
+        type: { from: "./scalars", name: "TextValue" },
+        parse: { from: "./scalars", name: "parseText" },
+        serialize: { from: "./scalars", name: "serializeText" },
+      },
+    },
+  });
+  const source = readFileSync(
+    join(root, "src/generated/dsql/queries/EnumContracts.ts"),
+    "utf8",
+  );
+
+  expect(source).toContain('status: "pending" | "active";');
+  expect(source).toContain(
+    'statuses: DsqlDatabaseArray<"pending" | "active">;',
+  );
+  expect(source).toContain('statuses: Array<"pending" | "active" | null>;');
+  expect(source).toContain('eq?: "pending" | "active";');
+  expect(source).toContain('in?: Array<"pending" | "active">;');
+  expect(source.match(/parseText/g)).toHaveLength(1);
+  expect(source.match(/serializeText/g)).toHaveLength(1);
+});
+
 test("rejects missing or inconsistent dynamic operator value kinds", async () => {
   const root = createRoot();
   const operation = operationMetadata("DynamicKinds");
@@ -317,7 +470,7 @@ test("rejects missing or inconsistent dynamic operator value kinds", async () =>
       data_type: "dynamic_predicate",
       wire: { encoding: "unsupported" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: true,
       nullable: false,
     },
@@ -334,6 +487,7 @@ test("rejects missing or inconsistent dynamic operator value kinds", async () =>
           data_type: "text",
           wire: { encoding: "text" },
           validation: {},
+          closed_values: { values: [] },
           nullable: false,
           access: "unconditional",
           operators: ["eq"],
@@ -430,7 +584,7 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
         data_type: "numeric",
         wire: { encoding: "numeric" },
         validation: {},
-        enum_values: [],
+        closed_values: { values: [] },
         required: true,
         nullable: false,
       },
@@ -439,7 +593,7 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
         data_type: "float",
         wire: { encoding: "float" },
         validation: {},
-        enum_values: [],
+        closed_values: { values: [] },
         required: true,
         nullable: false,
       },
@@ -449,7 +603,7 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
         wire: { encoding: "numeric" },
         validation: {},
         collection: true,
-        enum_values: [],
+        closed_values: { values: [] },
         required: true,
         nullable: false,
       },
@@ -458,7 +612,7 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
         data_type: "bigint",
         wire: { encoding: "big_integer" },
         validation: {},
-        enum_values: [],
+        closed_values: { values: [] },
         required: true,
         nullable: false,
       },
@@ -468,7 +622,7 @@ test("renders exact numeric, bigint, and finite/non-finite float wire types", as
         wire: { encoding: "big_integer" },
         validation: {},
         collection: true,
-        enum_values: [],
+        closed_values: { values: [] },
         required: true,
         nullable: false,
       },
@@ -514,6 +668,7 @@ test("maps project scalars across host types and runtime boundaries", async () =
         shape: "scalar",
         name: "calendar_date",
         wire: { encoding: "text_cast" },
+        closed_values: { values: [] },
       },
       nullable: false,
     },
@@ -526,6 +681,7 @@ test("maps project scalars across host types and runtime boundaries", async () =
         shape: "scalar",
         name: "opaque_token",
         wire: { encoding: "text" },
+        closed_values: { values: [] },
       },
       nullable: false,
     },
@@ -538,6 +694,7 @@ test("maps project scalars across host types and runtime boundaries", async () =
         shape: "scalar",
         name: "plain_token",
         wire: { encoding: "text" },
+        closed_values: { values: [] },
       },
       nullable: false,
     },
@@ -548,7 +705,7 @@ test("maps project scalars across host types and runtime boundaries", async () =
       data_type: "calendar_date",
       wire: { encoding: "text_cast" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: true,
       nullable: false,
     },
@@ -557,7 +714,7 @@ test("maps project scalars across host types and runtime boundaries", async () =
       data_type: "display_text",
       wire: { encoding: "text" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: true,
       nullable: false,
     },
@@ -566,7 +723,7 @@ test("maps project scalars across host types and runtime boundaries", async () =
       data_type: "display_text",
       wire: { encoding: "text" },
       validation: {},
-      enum_values: ["asc", "desc"],
+      closed_values: { values: [{ value: "asc" }, { value: "desc" }] },
       required: true,
       nullable: false,
     },
@@ -575,7 +732,7 @@ test("maps project scalars across host types and runtime boundaries", async () =
       data_type: "dynamic_predicate",
       wire: { encoding: "unsupported" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: true,
       nullable: false,
     },
@@ -586,7 +743,7 @@ test("maps project scalars across host types and runtime boundaries", async () =
       data_type: "calendar_date",
       wire: { encoding: "text_cast" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: true,
       nullable: false,
     },
@@ -603,6 +760,7 @@ test("maps project scalars across host types and runtime boundaries", async () =
           data_type: "calendar_date",
           wire: { encoding: "text_cast" },
           validation: {},
+          closed_values: { values: [] },
           nullable: false,
           access: "unconditional",
           operators: ["eq"],
@@ -695,7 +853,7 @@ test("maps project scalars across host types and runtime boundaries", async () =
     .split("\n")
     .find((line) => line.trimStart().startsWith("inputs:"));
   expect(inputsLine).toContain(
-    '{"path":"params.direction","data_type":"display_text","wire":{"encoding":"text"},"validation":{},"enum_values":["asc","desc"],"required":true,"nullable":false}',
+    '{"path":"params.direction","data_type":"display_text","wire":{"encoding":"text"},"validation":{},"closed_values":{"values":[{"value":"asc"},{"value":"desc"}]},"required":true,"nullable":false}',
   );
   expect(inputsLine).toContain(
     '"path":"params.label","data_type":"display_text"',
@@ -987,6 +1145,7 @@ test("maps project scalars inside fragment result and variable types", async () 
         shape: "scalar",
         name: "calendar_date",
         wire: { encoding: "text_cast" },
+        closed_values: { values: [] },
       },
       nullable: false,
     },
@@ -997,7 +1156,7 @@ test("maps project scalars inside fragment result and variable types", async () 
       data_type: "calendar_date",
       wire: { encoding: "text_cast" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: true,
       nullable: false,
     },
@@ -1008,7 +1167,7 @@ test("maps project scalars inside fragment result and variable types", async () 
       data_type: "calendar_date",
       wire: { encoding: "text_cast" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: true,
       nullable: false,
     },
@@ -1145,7 +1304,7 @@ test("sparse wire inputs retain optional fragment envelopes", async () => {
       data_type: "calendar_date",
       wire: { encoding: "text_cast" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: true,
       nullable: false,
     },
@@ -1159,7 +1318,7 @@ test("sparse wire inputs retain optional fragment envelopes", async () => {
         data_type: "calendar_date",
         wire: { encoding: "text_cast" },
         validation: {},
-        enum_values: [],
+        closed_values: { values: [] },
         required: false,
         nullable: false,
       },
@@ -1254,6 +1413,7 @@ test("rejects invalid project scalar mappings", async () => {
         shape: "scalar",
         name: "custom",
         wire: { encoding: "text" },
+        closed_values: { values: [] },
       },
       nullable: false,
     },
@@ -1263,7 +1423,7 @@ test("rejects invalid project scalar mappings", async () => {
     data_type: "custom",
     wire: { encoding: "integer" },
     validation: {},
-    enum_values: [],
+    closed_values: { values: [] },
     required: true,
     nullable: false,
   });
@@ -1328,7 +1488,7 @@ test("imports a context-only scalar serializer before inline payloads", async ()
       data_type: "calendar_date",
       wire: { encoding: "text_cast" },
       validation: {},
-      enum_values: [],
+      closed_values: { values: [] },
       required: true,
       nullable: false,
     },
@@ -1398,7 +1558,7 @@ test("renders database arrays separately from relation and input collections", a
         wire: { encoding: "text" },
         validation: {},
         collection: true,
-        enum_values: [],
+        closed_values: { values: [] },
         required: true,
         nullable: false,
       },
@@ -1570,7 +1730,7 @@ test("renders defaulted and nullable inputs as optional TypeScript properties", 
         data_type: "int",
         wire: { encoding: "integer" },
         validation: {},
-        enum_values: [],
+        closed_values: { values: [] },
         required: false,
         nullable: true,
         default: { kind: "null" },
@@ -1582,7 +1742,7 @@ test("renders defaulted and nullable inputs as optional TypeScript properties", 
         data_type: "int",
         wire: { encoding: "integer" },
         validation: {},
-        enum_values: [],
+        closed_values: { values: [] },
         required: false,
         nullable: false,
         default: { kind: "number", value: "10" },
@@ -2243,7 +2403,7 @@ function createArtifacts(
     sourceFileScopes: [],
     artifactGroups: [],
     manifest: {
-      version: 6,
+      version: 7,
       generationId: 1,
       operations: operations.map((operation) => ({
         name: operation.name,
@@ -2430,7 +2590,7 @@ function operationMetadata(name: string): BuildArtifacts["operations"][number] {
         data_type: "int",
         wire: { encoding: "integer" },
         validation: {},
-        enum_values: [],
+        closed_values: { values: [] },
         required: true,
         nullable: false,
       },
@@ -2442,7 +2602,7 @@ function operationMetadata(name: string): BuildArtifacts["operations"][number] {
         data_type: "uuid",
         wire: { encoding: "uuid" },
         validation: {},
-        enum_values: [],
+        closed_values: { values: [] },
         required: true,
         nullable: false,
       },
@@ -2519,5 +2679,6 @@ function resultValueType(
     shape,
     name,
     wire: { encoding: encodings[name] },
+    closed_values: { values: [] },
   };
 }

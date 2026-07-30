@@ -7,9 +7,9 @@ use std::fmt::Write;
 use bowl::{Bowl, Entity, Mut, Query};
 use codespan_reporting::diagnostic::Severity;
 use dsql_core::catalog::{
-    Catalog, ColumnMetadata, DataType, DatabaseMetadata, ObjectType, ProviderTypeFacts,
-    SchemaMetadata, TableMetadata, TypeKey, TypeMetadata, TypeStructureMetadata,
-    table_metadata_from_yaml,
+    Catalog, ColumnMetadata, DataType, DatabaseMetadata, EnumTypeMetadata, EnumVariantMetadata,
+    ObjectType, ProviderTypeFacts, SchemaMetadata, TableMetadata, TypeKey, TypeMetadata,
+    TypeStructureMetadata, table_metadata_from_yaml,
 };
 use dsql_core::grammar::parser::Diagnostic;
 use dsql_core::source::SourceText;
@@ -564,6 +564,111 @@ pub fn structured_type_catalog() -> Catalog {
     }
     .to_catalog()
     .expect("structured type fixture catalog must build")
+    .with_default_schema(Catalog::DEFAULT_SCHEMA)
+}
+
+/// Native enums, a domain over one enum, and an enum array.
+pub fn native_enum_catalog() -> Catalog {
+    let enum_type = |schema: &str, name: &str, description: Option<&str>| TypeMetadata {
+        internal_type: name.to_string(),
+        readable_type: format!("{schema}.{name}"),
+        schema: schema.to_string(),
+        structure: TypeStructureMetadata::enumeration(EnumTypeMetadata {
+            description: description.map(str::to_string),
+            variants: ["pending", "active", "archived"]
+                .into_iter()
+                .map(|variant| EnumVariantMetadata {
+                    variant: variant.to_string(),
+                    database_value: variant.to_string(),
+                    label: None,
+                    description: None,
+                })
+                .collect(),
+        }),
+        provider: Some(ProviderTypeFacts {
+            kind: "e".to_string(),
+            category: "E".to_string(),
+            effective_kind: Some("e".to_string()),
+            effective_category: Some("E".to_string()),
+            orderable: true,
+        }),
+        operations: ["=", "<>", "<", "<=", ">", ">="]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    };
+    let provider_type =
+        |schema: &str, name: &str, kind: &str, category: &str, structure: TypeStructureMetadata| {
+            TypeMetadata {
+                internal_type: name.to_string(),
+                readable_type: format!("{schema}.{name}"),
+                schema: schema.to_string(),
+                structure,
+                provider: Some(ProviderTypeFacts {
+                    kind: kind.to_string(),
+                    category: category.to_string(),
+                    effective_kind: None,
+                    effective_category: None,
+                    orderable: true,
+                }),
+                operations: ["=", "<>"].into_iter().map(str::to_string).collect(),
+            }
+        };
+    let column = |name: &str, provider_type: TypeKey| ColumnMetadata {
+        name: name.to_string(),
+        description: None,
+        database_type: provider_type.name.clone(),
+        provider_type,
+        formatted_type: None,
+        type_modifier: None,
+        data_type: DataType::Unknown,
+        not_null: true,
+    };
+    let status = TypeKey::new("public", "status");
+    DatabaseMetadata {
+        schemas: vec![SchemaMetadata {
+            name: "public".to_string(),
+            tables: vec![TableMetadata {
+                schema: "public".to_string(),
+                name: "enum_records".to_string(),
+                object_type: ObjectType::Table,
+                description: None,
+                columns: vec![
+                    column("status", status.clone()),
+                    column("domain_status", TypeKey::new("public", "status_domain")),
+                    column("audit_status", TypeKey::new("audit", "status")),
+                    column("statuses", TypeKey::new("public", "_status")),
+                ],
+                constraints: Vec::new(),
+                foreign_keys: Vec::new(),
+                indexes: Vec::new(),
+            }],
+        }],
+        types: vec![
+            enum_type(
+                "public",
+                "status",
+                Some("Lifecycle status in provider order."),
+            ),
+            enum_type("audit", "status", Some("Independent audit status.")),
+            provider_type(
+                "public",
+                "status_domain",
+                "d",
+                "E",
+                TypeStructureMetadata::domain(status.clone()),
+            ),
+            provider_type(
+                "public",
+                "_status",
+                "b",
+                "A",
+                TypeStructureMetadata::array(status),
+            ),
+        ],
+    }
+    .to_catalog()
+    .expect("native enum fixture catalog must build")
     .with_default_schema(Catalog::DEFAULT_SCHEMA)
 }
 

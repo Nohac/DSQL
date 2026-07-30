@@ -1367,6 +1367,7 @@ struct CompiledPath {
     data_type: DataType,
     wire: WireEncoding,
     provider_type: TypeKey,
+    closed_values: Vec<String>,
     relation_scope: FilterColumnScope,
     relations: Vec<(crate::catalog::RelationId, TableId)>,
 }
@@ -1376,6 +1377,7 @@ struct PolicyExpectedType {
     data_type: DataType,
     wire: WireEncoding,
     provider_type: Option<TypeKey>,
+    closed_values: Vec<String>,
 }
 
 impl PolicyExpectedType {
@@ -1384,6 +1386,7 @@ impl PolicyExpectedType {
             data_type,
             wire: Catalog::builtin_capabilities(data_type).wire,
             provider_type: None,
+            closed_values: Vec::new(),
         }
     }
 
@@ -1392,6 +1395,7 @@ impl PolicyExpectedType {
             data_type: path.data_type,
             wire: path.wire,
             provider_type: Some(path.provider_type.clone()),
+            closed_values: path.closed_values.clone(),
         }
     }
 
@@ -1509,12 +1513,40 @@ impl PolicyCompiler<'_> {
                     filter,
                 })
             }
-            Expr::Literal { value, .. } => Some(FilterExpr::Literal(match value {
-                LiteralValue::String(value) => FilterLiteral::String(value.clone()),
-                LiteralValue::Number(value) => FilterLiteral::Number(value.clone()),
-                LiteralValue::Bool(value) => FilterLiteral::Bool(*value),
-                LiteralValue::Null => FilterLiteral::Null,
-            })),
+            Expr::Literal { value, span } => {
+                if let Some(expected) = expected.as_ref()
+                    && !expected.closed_values.is_empty()
+                    && !match value {
+                        LiteralValue::Null => true,
+                        LiteralValue::String(value) => expected.closed_values.contains(value),
+                        LiteralValue::Number(_) | LiteralValue::Bool(_) => false,
+                    }
+                {
+                    let identity = expected.provider_type.as_ref().map_or_else(
+                        || "closed value".to_string(),
+                        |key| format!("{}.{}", key.schema, key.name),
+                    );
+                    self.problems.push((
+                        *span,
+                        format!(
+                            "expected a variant of `{identity}`; allowed values are {}",
+                            expected
+                                .closed_values
+                                .iter()
+                                .map(|value| format!("{value:?}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    ));
+                    return self.fail();
+                }
+                Some(FilterExpr::Literal(match value {
+                    LiteralValue::String(value) => FilterLiteral::String(value.clone()),
+                    LiteralValue::Number(value) => FilterLiteral::Number(value.clone()),
+                    LiteralValue::Bool(value) => FilterLiteral::Bool(*value),
+                    LiteralValue::Null => FilterLiteral::Null,
+                }))
+            }
             Expr::Binary { op, lhs, rhs, .. } => self.binary(op, lhs, rhs, row),
         }
     }
@@ -1657,6 +1689,16 @@ impl PolicyCompiler<'_> {
                         data_type: catalog_type.logical_data_type(),
                         wire: catalog_type.capabilities.wire,
                         provider_type: catalog_type.key.clone(),
+                        closed_values: self
+                            .catalog
+                            .enum_type_for_type(catalog_type.id)
+                            .map_or_else(Vec::new, |(_, enumeration)| {
+                                enumeration
+                                    .variants
+                                    .iter()
+                                    .map(|variant| variant.variant.clone())
+                                    .collect()
+                            }),
                         relation_scope: match anchor {
                             PathAnchor::Current => FilterColumnScope::Current,
                             PathAnchor::Root => FilterColumnScope::Root,

@@ -258,6 +258,7 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
           data_type: "int",
           wire: { encoding: "integer" },
           validation: {},
+          closed_values: { values: [] },
           nullable: false,
           access: "unconditional",
           operators: ["in"],
@@ -269,6 +270,7 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
           data_type: "text",
           wire: { encoding: "text" },
           validation: {},
+          closed_values: { values: [] },
           nullable: false,
           access: "unconditional",
           operators: ["like"],
@@ -318,6 +320,7 @@ test("materializes bounded dynamic inputs with shared operand positions", () => 
           data_type: "text",
           wire: { encoding: "text" },
           validation: {},
+          closed_values: { values: [] },
           nullable: false,
           access: "unconditional",
           operators: [],
@@ -585,6 +588,64 @@ test("matches the shared typed-default conformance cases", () => {
       expect(materialize, testCase.name).toThrow(testCase.error);
     }
   }
+});
+
+test("closed values constrain defaults but supplied values remain wire-compatible", () => {
+  const field = {
+    path: "params.status",
+    data_type: "text",
+    wire: {
+      encoding: "text_cast" as const,
+      provider_type: { schema: "public", name: "status" },
+    },
+    validation: {},
+    closed_values: {
+      values: [{ value: "pending" }, { value: "active" }],
+    },
+    required: true,
+    nullable: false,
+  };
+  expect(
+    materializeDsqlBindings(
+      [field],
+      { params: { status: "future_provider_value" } },
+      "wire",
+    ),
+  ).toEqual({ params: { status: "future_provider_value" } });
+
+  expect(() =>
+    materializeDsqlBindings(
+      [
+        {
+          ...field,
+          required: false,
+          default: { kind: "string", value: "future_provider_value" },
+        },
+      ],
+      {},
+      "wire",
+    ),
+  ).toThrow("a declared string default");
+  expect(() =>
+    materializeDsqlBindings(
+      [
+        {
+          ...field,
+          collection: true,
+          required: false,
+          default: {
+            kind: "collection",
+            items: [
+              { kind: "string", value: "pending" },
+              { kind: "string", value: "future_provider_value" },
+            ],
+          },
+        },
+      ],
+      {},
+      "wire",
+    ),
+  ).toThrow("a declared string default");
 });
 
 test("matches the shared supplied-value conformance cases", () => {

@@ -1,0 +1,19 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+expression: "format!(\"bindings:\\n{}\\n\\ndiagnostics:\\n{}\", render_bindings(&bowl).await,\nrender_diagnostic_facts(&bowl).await)"
+---
+bindings:
+params.status TopLevel WhereValue Text Some("status") operators=[] enum=[pending|active|archived]
+params.statuses TopLevel WhereValue Text Some("statuses") collection operators=[] enum=[pending|active|archived]
+params.status TopLevel WhereValue Text Some("status") operators=[] enum=[pending|active|archived]
+params.statuses TopLevel WhereValue Text Some("statuses") collection operators=[] enum=[pending|active|archived]
+params.shared TopLevel WhereValue Text Some("shared") operators=[] enum=[pending|active|archived]
+params.shared TopLevel WhereValue Text Some("shared") operators=[] enum=[pending|active|archived]
+params.shared TopLevel WhereValue Text Some("shared") operators=[] enum=[pending|active|archived]
+params.shared TopLevel WhereValue Text Some("shared") operators=[] enum=[pending|active|archived]
+
+diagnostics:
+Error[218..238]: default for `status` does not match inferred type public.status (one of "pending", "active", "archived")
+Error[241..275]: default for `statuses` does not match inferred type public.status[] (one of "pending", "active", "archived")
+Error[482..490]: query `NominalEnumConflict` infers incompatible contracts for `params.shared` (first used at 446..454)
+Error[615..623]: query `DomainEnumConflict` infers incompatible contracts for `params.shared` (first used at 578..586)

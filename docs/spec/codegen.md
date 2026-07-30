@@ -826,13 +826,15 @@ The metadata does not need to mirror the internal compiler IR. It should be a
 consumer-friendly contract for generated clients, endpoint adapters, validation,
 debug tooling, and editor features.
 
-Before the first public release, manifest version 6 is a compiler-package
+Before the first public release, manifest version 7 is a compiler-package
 contract rather than a backwards-compatible interchange promise: maintained
 compiler, daemon, and renderer components move together, and a required metadata
 addition causes a version bump and artifact regeneration. Consumers reject
 other versions explicitly; they never synthesize missing execution data.
-Version 6 requires validation metadata on every ordinary and bounded dynamic
-input field. There is no reader for older manifest contracts.
+Version 7 requires validation metadata and a structured `closed_values`
+contract on every ordinary and bounded dynamic input field, and requires the
+same closed-value contract on every result value type. There is no reader for
+older manifest contracts.
 
 Useful metadata areas:
 

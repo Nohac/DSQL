@@ -1,5 +1,0 @@
----
-source: crates/dsql-execute/tests/it/main.rs
-expression: error.to_string()
----
-missing field `wire` in type `InputField` at <root>

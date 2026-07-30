@@ -1,0 +1,9 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[222..231]: field `.status` expects a variant of `public.status`; found "missing", expected one of "pending", "active", "archived"
+Error[265..274]: field `.status` expects a variant of `public.status`; found "missing", expected one of "pending", "active", "archived"
+Error[297..298]: field `.status` expects string but predicate uses number
+Error[320..333]: cannot compare nominal types `public.status` and `audit.status`
+Error[355..369]: cannot compare nominal types `public.status` and `public.status_domain`

@@ -6,7 +6,7 @@
       "data_type": "int",
       "wire": { "encoding": "integer" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "number", "value": "42" }
@@ -20,7 +20,7 @@
       "data_type": "int",
       "wire": { "encoding": "integer" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "number", "value": "-9007199254740991" }
@@ -34,7 +34,7 @@
       "data_type": "int",
       "wire": { "encoding": "integer" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "number", "value": "9007199254740991" }
@@ -48,7 +48,7 @@
       "data_type": "int",
       "wire": { "encoding": "integer" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "number", "value": "-9007199254740992" }
@@ -62,7 +62,7 @@
       "data_type": "int",
       "wire": { "encoding": "integer" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "number", "value": "9007199254740992" }
@@ -76,7 +76,7 @@
       "data_type": "int",
       "wire": { "encoding": "integer" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "number", "value": "4.2" }
@@ -90,7 +90,7 @@
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "string", "value": "-9223372036854775808" }
@@ -104,7 +104,7 @@
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "string", "value": "9223372036854775807" }
@@ -118,7 +118,7 @@
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "string", "value": "9223372036854775808" }
@@ -132,7 +132,7 @@
       "data_type": "bigint",
       "wire": { "encoding": "big_integer" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "number", "value": "1" }
@@ -147,7 +147,7 @@
       "wire": { "encoding": "big_integer" },
       "collection": true,
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": {
@@ -167,7 +167,7 @@
       "data_type": "float",
       "wire": { "encoding": "float" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "number", "value": "1.25" }
@@ -181,7 +181,7 @@
       "data_type": "float",
       "wire": { "encoding": "float" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "number", "value": "Infinity" }
@@ -195,7 +195,7 @@
       "data_type": "numeric",
       "wire": { "encoding": "numeric" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": {
@@ -212,7 +212,7 @@
       "data_type": "numeric",
       "wire": { "encoding": "numeric" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "number", "value": "12x" }
@@ -227,7 +227,7 @@
       "wire": { "encoding": "integer" },
       "collection": true,
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": {
@@ -248,7 +248,7 @@
       "wire": { "encoding": "integer" },
       "collection": true,
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": {
@@ -269,7 +269,7 @@
       "wire": { "encoding": "integer" },
       "collection": true,
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "collection" }
@@ -283,7 +283,7 @@
       "data_type": "boolean",
       "wire": { "encoding": "boolean" },
       "validation": {},
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "boolean" }
@@ -300,7 +300,7 @@
         "provider_type": { "schema": "pg_catalog", "name": "date" }
       },
       "validation": { "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "string", "value": "2026-07-27" }
@@ -317,11 +317,50 @@
         "provider_type": { "schema": "pg_catalog", "name": "date" }
       },
       "validation": { "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
-      "enum_values": [],
+      "closed_values": { "values": [] },
       "required": false,
       "nullable": false,
       "default": { "kind": "string", "value": "tomorrow" }
     },
     "error": "valid Date default"
+  },
+  {
+    "name": "closed scalar rejects unknown default",
+    "field": {
+      "path": "params.value",
+      "data_type": "text",
+      "wire": { "encoding": "text" },
+      "validation": {},
+      "closed_values": {
+        "values": [{ "value": "pending" }, { "value": "active" }]
+      },
+      "required": false,
+      "nullable": false,
+      "default": { "kind": "string", "value": "archived" }
+    },
+    "error": "declared string default"
+  },
+  {
+    "name": "closed collection rejects unknown item default",
+    "field": {
+      "path": "params.value",
+      "data_type": "text",
+      "wire": { "encoding": "text" },
+      "collection": true,
+      "validation": {},
+      "closed_values": {
+        "values": [{ "value": "pending" }, { "value": "active" }]
+      },
+      "required": false,
+      "nullable": false,
+      "default": {
+        "kind": "collection",
+        "items": [
+          { "kind": "string", "value": "active" },
+          { "kind": "string", "value": "archived" }
+        ]
+      }
+    },
+    "error": "declared string default"
   }
 ]

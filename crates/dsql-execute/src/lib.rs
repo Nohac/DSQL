@@ -895,7 +895,13 @@ fn materialize_default(field: &InputField, default: &InputDefault) -> Result<Val
                 .value
                 .clone()
                 .ok_or_else(|| invalid(&field.path, "a valid string default"))?;
-            if !field.enum_values.is_empty() && !field.enum_values.contains(&value) {
+            if !field.closed_values.values.is_empty()
+                && !field
+                    .closed_values
+                    .values
+                    .iter()
+                    .any(|closed| closed.value == value)
+            {
                 return Err(invalid(&field.path, "a declared string default"));
             }
             if !pattern_is_valid(field.validation.pattern.as_deref(), &Value::from(&value)) {
