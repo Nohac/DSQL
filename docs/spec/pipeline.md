@@ -17,7 +17,7 @@ post_stats: posts | aggregate {
 
 General pipelines should remain a separate consideration and should not be
 introduced through `where` clauses or other clause positions. Purpose-built
-scalar aggregate predicates such as `(.posts | count) >= $$minimum` are a
+scalar aggregate predicates such as `(.posts | count) >= %minimum` are a
 separate closed expression feature; reserving them does not permit general
 pipeline stages in clauses.
 

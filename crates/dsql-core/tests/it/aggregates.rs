@@ -234,7 +234,7 @@ async fn scalar_predicate_aggregates_share_selection_function_semantics() {
             query AggregatePredicates {
               title(
                 where .movie_info_idx | exists
-                  and .movie_info_idx | count >= $$minimum
+                  and .movie_info_idx | count >= %minimum
                   and (.movie_info_idx | count .info) >= 1
                   and (.movie_info_idx | min .info) like "4.%"
                   and (.movie_info_idx | max .info) != null
@@ -271,7 +271,7 @@ async fn invalid_scalar_predicate_aggregates_report_typed_diagnostics() {
                   and .movie_info_idx | sum .info > 0
                   and .movie_info_idx | exists > 1
                   and .movie_info_idx | count
-                  and .movie_info_idx | count $$operator[==, >] 1
+                  and .movie_info_idx | count %operator[==, >] 1
                   and .movie_info_idx.info == (.aka_title->movie_id | count)
                   and (.aka_title->movie_id | count) == .movie_info_idx.info
                 limit .movie_info_idx | count

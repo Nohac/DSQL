@@ -9,8 +9,8 @@ views, form fields, cache policy, validation, or UI hints, but that would make a
 query body noisy if written inline.
 
 Decorators are not a second declaration system for variables. Variables are
-still discovered from query usage, for example through `$$movie_id`,
-`$$filters.title`, or directive expressions. A decorator can only target a path
+still discovered from query usage, for example through `%movie_id`,
+`%filters.title`, or directive expressions. A decorator can only target a path
 that exists in the checked query metadata.
 
 ## Design Goals
@@ -63,10 +63,10 @@ Variable decorators attach to inferred variable paths for a query.
 
 ```dsql
 query MovieDetail {
-  movies(where .id == $$movie_id) {
+  movies(where .id == %movie_id) {
     id
     title
-    cast @.include_if(if: $$input.include_cast) {
+    cast @.include_if(if: %input.include_cast) {
       actor {
         name
       }
@@ -86,7 +86,7 @@ decorate vars on MovieDetail {
 ```
 
 The decorator does not create `movie_id` or `include_cast`. If the query stops
-using `$$movie_id` or `$$input.include_cast`, the decorator becomes invalid and
+using `%movie_id` or `%input.include_cast`, the decorator becomes invalid and
 the compiler reports an unresolved decorator path diagnostic.
 
 Variable roots:
@@ -97,7 +97,7 @@ input
 context
 ```
 
-`params` targets path variables inferred from `$$name` or equivalent query
+`params` targets path variables inferred from `%name` or equivalent query
 parameter usage. `input` targets generated input object paths, including nested
 input used by generated filters, forms, or conditional directives. `context`
 targets runtime context variables when such variables are part of the checked
@@ -160,7 +160,7 @@ Result decorators attach metadata to generated result paths.
 
 ```dsql
 query MovieDetail {
-  movies(where .id == $$movie_id) {
+  movies(where .id == %movie_id) {
     id
     title
     director {
@@ -277,10 +277,10 @@ non-repeatable directives and unsupported locations.
 
 ```dsql
 query MovieDetail {
-  movies(where .id == $$movie_id) {
+  movies(where .id == %movie_id) {
     id
     title
-    cast @.include_if(if: $$input.include_cast) {
+    cast @.include_if(if: %input.include_cast) {
       actor {
         name
         profile {

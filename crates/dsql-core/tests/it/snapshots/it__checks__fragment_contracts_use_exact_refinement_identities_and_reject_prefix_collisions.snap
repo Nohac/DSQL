@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/checks.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[389..404]: input `limit` inherits a fragment root contract and cannot be refined at the caller
-Error[471..476]: structured input `count` is ambiguous; it matches input.posts.clause.limit.count, input.users.body.posts.clause.limit.count
-Error[645..670]: query `ScalarPrefixCollision` infers `params.window` as both a value and an input namespace through `params.window.limit` (first used at 633..641)
-Error[753..778]: query `DynamicPrefixCollision` infers `params.window` as both a value and an input namespace through `params.window.limit` (first used at 732..744)
+Error[378..392]: input `limit` inherits a fragment root contract and cannot be refined at the caller
+Error[458..463]: structured input `count` is ambiguous; it matches input.posts.clause.limit.count, input.users.body.posts.clause.limit.count
+Error[631..654]: query `ScalarPrefixCollision` infers `params.window` as both a value and an input namespace through `params.window.limit` (first used at 620..627)
+Error[735..758]: query `DynamicPrefixCollision` infers `params.window` as both a value and an input namespace through `params.window.limit` (first used at 716..727)

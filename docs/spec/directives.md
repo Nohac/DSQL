@@ -792,14 +792,14 @@ query UserCard @cache(
     },
   ],
 ) {
-  users(where .id == $$user_id) {
+  users(where .id == %user_id) {
     id
     name
   }
 }
 
 query UserCardCacheKey {
-  users(where .id == $$id) {
+  users(where .id == %id) {
     id
     updated_at
   }

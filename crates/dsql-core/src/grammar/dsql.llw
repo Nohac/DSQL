@@ -1,5 +1,5 @@
 token Query='query' Fragment='fragment' Filter='filter' Condition='condition' On='on' Selected='selected' Indexed='indexed' SelectedIndexed='selected_indexed' Searchable='searchable' Apply='apply' When='when' Field='field' Where='where' Order='order' By='by' Limit='limit' Offset='offset' Asc='asc' Desc='desc' True='true' False='false' Null='null' Like='like' And='and' Or='or' Not='not' In='in' Is='is' Exists='exists';
-token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' LeftArrow='<-' Arrow='->' Colon=':' At='@' Comma=',' Pipe='|' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' DollarDollar='$$' Dollar='$' Question='?' Assign='=';
+token LBrace='{' RBrace='}' LPar='(' RPar=')' LBracket='[' RBracket=']' ColonColon='::' LeftArrow='<-' Arrow='->' Colon=':' At='@' Comma=',' Pipe='|' Ellipsis='...' DotDot='..' Dot='.' Tilde='~' Percent='%' Dollar='$' Question='?' Assign='=';
 token Eq='==' Ne='!=' Gt='>' Ge='>=' Lt='<' Le='<=';
 token Name='<name>' String='<string>' Number='<number>';
 token Whitespace Comment;
@@ -32,7 +32,7 @@ field_rule: 'field' (Name | contextual_name) (?1 ',' (Name | contextual_name))* 
 query_header: '(' (input_refinement | filter_assignment)+ ')';
 fragment_header: '(' input_refinement+ ')';
 input_refinement: public_variable ('?' ['=' default_value] | '=' default_value);
-public_variable: '$$' variable_name | '$' variable_name;
+public_variable: '%' variable_name | '$' variable_name;
 default_value: literal | default_collection | empty_object;
 default_collection: '[' [default_value (?1 ',' default_value)* [',']] ']';
 empty_object: '{' '}';
@@ -41,11 +41,11 @@ qualified_name: (Name | contextual_name) [?1 '::' (Name | contextual_name)];
 relation_ref: qualified_name ['->' (Name | contextual_name)];
 scoped_path_segment: qualified_name ['->' (Name | contextual_name)];
 scoped_path: ('.' | '..' | '~') scoped_path_segment ('.' scoped_path_segment)*;
-value_variable: '$$' [?1 variable_name] | '$' (':' Name / [?2 variable_name]);
-dynamic_input: '$$' [variable_name] 'on' dynamic_surface;
+value_variable: '%' [?1 variable_name] | '$' (':' Name / [?2 variable_name]);
+dynamic_input: '%' [variable_name] 'on' dynamic_surface;
 dynamic_surface: 'selected' | 'indexed' | 'selected_indexed' | 'searchable';
 comparison_operator: '==' | '!=' | '>' | '>=' | '<' | '<=' | 'like';
-operator_variable: ('$' | '$$') [variable_name] '[' comparison_operator (?1 ',' comparison_operator)* [','] ']';
+operator_variable: ('$' | '%') [variable_name] '[' comparison_operator (?1 ',' comparison_operator)* [','] ']';
 binary_operator: comparison_operator | ?1 operator_variable;
 selection_set: '{' selection* '}';
 selection:
@@ -55,7 +55,7 @@ selection:
 fragment_spread: '...' (Name | contextual_name) [binding_list] directive*;
 binding_list: '(' binding_item (?1 [','] binding_item)* [','] ')';
 binding_item: binding_variable ['<-' binding_variable];
-binding_variable: '$$' [variable_name] | '$' [variable_name];
+binding_variable: '%' [variable_name] | '$' [variable_name];
 field_selection: ['...'] relation_ref field_selection_tail;
 field_selection_tail:
   ':' relation_ref field_suffix

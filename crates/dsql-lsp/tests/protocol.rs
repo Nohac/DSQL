@@ -549,6 +549,10 @@ async fn semantic_tokens_advertise_and_encode_the_host_wire_contract() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completion_edits_replace_the_word_under_the_cursor() {
     let mut session = Session::start("completion-edits").await;
+    assert_eq!(
+        session.initialize["result"]["capabilities"]["completionProvider"]["triggerCharacters"],
+        json!([".", "$", "%", "@"])
+    );
 
     // Plain document: cursor inside `kin` on line 2; the edit must span
     // exactly that word.

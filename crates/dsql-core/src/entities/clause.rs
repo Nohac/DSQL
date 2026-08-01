@@ -53,7 +53,7 @@ pub enum ClauseFact {
     },
 }
 
-/// One `field [asc|desc|$$var]` entry of an `order by` clause.
+/// One `field [asc|desc|%var]` entry of an `order by` clause.
 #[derive(Debug, Clone, Hash, PartialEq)]
 pub struct OrderItem {
     pub field: String,

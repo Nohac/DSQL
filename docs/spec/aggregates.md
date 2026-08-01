@@ -257,7 +257,7 @@ this source under the normal enforcement rules:
 ```dsql
 query UserStats {
   all_user_stats: users(
-    filter SoftDelete when not $$includeDeleted
+    filter SoftDelete when not %includeDeleted
   ) | aggregate {
     count
   }
@@ -425,7 +425,7 @@ Schema qualification and relation-edge selectors are valid on flattened
 relations. A fragment name remains one unqualified name.
 
 Future fragment binding lists and relation clause lists share a parenthesized
-prefix but have disjoint first tokens: bindings begin with `$` or `$$`, while
+prefix but have disjoint first tokens: bindings begin with `$` or `%`, while
 selection clauses begin with clause keywords. Empty ambiguous parentheses are a
 diagnostic. An ellipsis selection classified as a relation but followed by
 neither a selection set nor a pipe is also a diagnostic. `aggregate` followed
@@ -486,7 +486,7 @@ Purpose-built scalar relation aggregates are supported in predicates:
 
 ```dsql
 query PopularUsers {
-  users(where (.posts | count) >= $$minimum_posts) {
+  users(where (.posts | count) >= %minimum_posts) {
     id
     name
   }

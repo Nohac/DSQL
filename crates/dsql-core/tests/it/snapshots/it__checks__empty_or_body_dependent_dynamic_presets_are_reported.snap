@@ -2,7 +2,7 @@
 source: crates/dsql-core/tests/it/checks.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[162..184]: `on searchable` exposes no fields on this source
-Error[258..278]: `on selected` requires a row selection body
-Error[331..338]: table `missing` not found
-Error[68..95]: `on selected_indexed` exposes no fields on this source
+Error[159..180]: `on searchable` exposes no fields on this source
+Error[253..272]: `on selected` requires a row selection body
+Error[325..332]: table `missing` not found
+Error[67..93]: `on selected_indexed` exposes no fields on this source

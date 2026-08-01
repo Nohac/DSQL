@@ -2,6 +2,6 @@
 source: crates/dsql-core/tests/it/checks.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[215..242]: integer default for `below` must be between -9007199254740991 and 9007199254740991
-Error[245..271]: integer default for `above` must be between -9007199254740991 and 9007199254740991
-Error[274..306]: integer default for `values` must be between -9007199254740991 and 9007199254740991
+Error[211..237]: integer default for `below` must be between -9007199254740991 and 9007199254740991
+Error[240..265]: integer default for `above` must be between -9007199254740991 and 9007199254740991
+Error[268..299]: integer default for `values` must be between -9007199254740991 and 9007199254740991

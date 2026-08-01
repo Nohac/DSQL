@@ -2,5 +2,5 @@
 source: crates/dsql-core/tests/it/lowering.rs
 expression: render_clauses(&bowl).await
 ---
-selected: limit $$limit
-selected: where ((.indexed $searchable[==] $selected) and (.selected_indexed == $$indexed))
+selected: limit %limit
+selected: where ((.indexed $searchable[==] $selected) and (.selected_indexed == %indexed))

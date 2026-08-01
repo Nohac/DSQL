@@ -1,5 +1,5 @@
 //! Variable inference: structured (`$`)
-//! versus top-level (`$$`) paths, operator allowlists, sort directions, and
+//! versus top-level (`%`) paths, operator allowlists, sort directions, and
 //! fragment envelopes. Demand-gated on `VariablesDemand`.
 
 use bowl::{Bowl, Entity, Query, Singleton};
@@ -33,39 +33,39 @@ async fn native_enum_bindings_infer_closed_values_and_validate_defaults() {
         "native-enum-bindings.dsql",
         indoc::indoc! {r#"
             query ValidEnumInputs(
-              $$status = "active"
-              $$statuses = ["pending", "archived"]
+              %status = "active"
+              %statuses = ["pending", "archived"]
             ) {
               enum_records(
-                where .status == $$status
-                  and .status in $$statuses
+                where .status == %status
+                  and .status in %statuses
               ) {
                 status
               }
             }
             query InvalidEnumDefaults(
-              $$status = "missing"
-              $$statuses = ["active", "missing"]
+              %status = "missing"
+              %statuses = ["active", "missing"]
             ) {
               enum_records(
-                where .status == $$status
-                  and .status in $$statuses
+                where .status == %status
+                  and .status in %statuses
               ) {
                 status
               }
             }
             query NominalEnumConflict {
               enum_records(
-                where .status == $$shared
-                  and .audit_status == $$shared
+                where .status == %shared
+                  and .audit_status == %shared
               ) {
                 status
               }
             }
             query DomainEnumConflict {
               enum_records(
-                where .status == $$shared
-                  and .domain_status == $$shared
+                where .status == %shared
+                  and .domain_status == %shared
               ) {
                 status
               }
@@ -90,13 +90,13 @@ async fn comparison_operator_defaults_remain_closed_strings() {
         &bowl,
         "operator-defaults.dsql",
         indoc::indoc! {r#"
-            query ValidOperatorDefault($$operator = "==") {
-              metrics(where .amount $$operator[==, !=] 10) {
+            query ValidOperatorDefault(%operator = "==") {
+              metrics(where .amount %operator[==, !=] 10) {
                 amount
               }
             }
-            query InvalidOperatorDefault($$operator = 5) {
-              metrics(where .amount $$operator[==, !=] 10) {
+            query InvalidOperatorDefault(%operator = 5) {
+              metrics(where .amount %operator[==, !=] 10) {
                 amount
               }
             }
@@ -197,22 +197,22 @@ async fn case(name: &str, source: &str) -> String {
 async fn variable_bindings_match_reference_shapes() {
     let scalar = case(
             "scalar",
-            "\nquery VariableSearch {\n  public::users(where .id > $min_id and .posts.title like $$title limit $ offset $$) {\n    id\n    posts(limit $post_limit) {\n      title\n    }\n  }\n}\n",
+            "\nquery VariableSearch {\n  public::users(where .id > $min_id and .posts.title like %title limit $ offset %) {\n    id\n    posts(limit $post_limit) {\n      title\n    }\n  }\n}\n",
         )
         .await;
     let operator = case(
             "operator",
-            "\nquery PostSearch {\n  posts(where .created_at $[>, >=] $min_created_at and .title $$title_op[==, !=, like] $title limit $) {\n    id\n  }\n}\n",
+            "\nquery PostSearch {\n  posts(where .created_at $[>, >=] $min_created_at and .title %title_op[==, !=, like] $title limit $) {\n    id\n  }\n}\n",
         )
         .await;
     let order_by_direction = case(
             "order_by_direction",
-            "\nquery PostOrdering {\n  posts(order by created_at $created_dir, title $$) {\n    id\n  }\n}\n",
+            "\nquery PostOrdering {\n  posts(order by created_at $created_dir, title %) {\n    id\n  }\n}\n",
         )
         .await;
     let fragment = case(
             "fragment",
-            "\nfragment UserPosts on public::users {\n  posts(where .title like $$search limit $post_limit) {\n    title\n  }\n}\n",
+            "\nfragment UserPosts on public::users {\n  posts(where .title like %search limit $post_limit) {\n    title\n  }\n}\n",
         )
         .await;
 
@@ -251,16 +251,16 @@ async fn fragment_inputs_are_contained_lifted_namespaced_and_defaulted() {
         &bowl,
         "fragment-inputs.dsql",
         indoc::indoc! {r#"
-            fragment UserPanel($created_after? = null $$limit = 10) on public::users {
-              posts(where .created_at > $created_after limit $$) { id }
+            fragment UserPanel($created_after? = null %limit = 10) on public::users {
+              posts(where .created_at > $created_after limit %) { id }
             }
             query Contained { public::users { ...UserPanel } }
-            query Lifted($$page_size = 20) {
-              public::users { ...UserPanel($, $$limit <- $$page_size) }
+            query Lifted(%page_size = 20) {
+              public::users { ...UserPanel($, %limit <- %page_size) }
             }
             query Namespaced {
               public::users {
-                ...UserPanel($ <- $$panel_input, $$ <- $$panel_params)
+                ...UserPanel($ <- %panel_input, % <- %panel_params)
               }
             }
         "#},
@@ -278,10 +278,10 @@ async fn nested_fragment_contracts_rederive_after_cross_file_edits() {
         "window.dsql",
         indoc::indoc! {r#"
             fragment Window on public::users {
-              posts(limit $$first) { id }
+              posts(limit %first) { id }
             }
             fragment Parent on public::users {
-              ...Window($$)
+              ...Window(%)
             }
         "#},
     )
@@ -289,12 +289,12 @@ async fn nested_fragment_contracts_rederive_after_cross_file_edits() {
     insert_source(
         &bowl,
         "query.dsql",
-        "query Nested { public::users { ...Parent($$) } }\n",
+        "query Nested { public::users { ...Parent(%) } }\n",
     )
     .await;
     let before = render_definition_bindings(&bowl).await;
 
-    crate::replace_source_text(&bowl, fragment, "$$first", "$$second").await;
+    crate::replace_source_text(&bowl, fragment, "%first", "%second").await;
     let after = render_definition_bindings(&bowl).await;
 
     insta::assert_snapshot!(format!("before:\n{before}\n\nafter:\n{after}"));
@@ -308,11 +308,11 @@ async fn cycle_cuts_do_not_poison_later_sibling_fragment_contracts() {
         "cycle-cut.dsql",
         indoc::indoc! {r#"
             fragment B on public::users {
-              posts(limit $$b) { id }
+              posts(limit %b) { id }
               ...C
             }
             fragment C on public::users {
-              posts(offset $$c) { id }
+              posts(offset %c) { id }
               ...B
             }
             query Siblings {
@@ -361,8 +361,8 @@ async fn aggregate_predicate_inputs_use_resolved_result_types_and_paths() {
         indoc::indoc! {r#"
             query AggregatePredicateInputs {
               title(
-                where (.movie_info_idx | count) >= $$minimum_posts
-                  and (.movie_info_idx | min .info) >= $$earliest
+                where (.movie_info_idx | count) >= %minimum_posts
+                  and (.movie_info_idx | min .info) >= %earliest
                   and (.movie_info_idx | sum .info_type_id) >= $total
                 limit 1
               ) { id }
@@ -384,7 +384,7 @@ async fn predicate_extensions_infer_boolean_scalar_and_collection_bindings() {
         "predicate-bindings.dsql",
         indoc::indoc! {r#"
             query PredicateBindings {
-              title(where not $$disabled and .id in $$ids
+              title(where not %disabled and .id in %ids
                 and exists .movie_info_idx(where .info_type_id in $:allowed_types)) { id }
             }
         "#},
@@ -464,21 +464,21 @@ async fn provider_scalar_bindings_keep_nominal_identity_when_merged() {
         indoc::indoc! {r#"
             query DistinctProviderTypes {
               events(
-                where .event_date == $$shared and .address == $$shared
+                where .event_date == %shared and .address == %shared
               ) { event_date }
             }
             query CompatibleAliases {
               current: events(
-                where .short_label == $$text_alias
-                  and .long_label == $$text_alias
-                  and .small_id == $$integer_alias
-                  and .big_id == $$integer_alias
-                  and .active == $$boolean_alias
-                  and $$boolean_alias
-                  and .event_date == $$same_provider
+                where .short_label == %text_alias
+                  and .long_label == %text_alias
+                  and .small_id == %integer_alias
+                  and .big_id == %integer_alias
+                  and .active == %boolean_alias
+                  and %boolean_alias
+                  and .event_date == %same_provider
               ) { event_date }
               archived: event_archive(
-                where .event_date == $$same_provider
+                where .event_date == %same_provider
               ) { event_date }
             }
         "#},

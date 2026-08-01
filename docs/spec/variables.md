@@ -118,15 +118,15 @@ manually shaped APIs.
 
 ```dsql
 query UserLookup {
-  users(where .id > $$id limit $$) {
+  users(where .id > %id limit %) {
     id
   }
 }
 ```
 
-`$$id` is a named top-level param. It maps to `params.id`.
+`%id` is a named top-level param. It maps to `params.id`.
 
-`$$` is an anonymous top-level param. Its name is inferred from usage, but it is
+`%` is an anonymous top-level param. Its name is inferred from usage, but it is
 still emitted under `params`, not under the structured `input` tree.
 
 Conceptual generated input shape:
@@ -150,8 +150,8 @@ The four variable forms are:
 ```dsql
 $        # structured anonymous inferred input
 $name    # structured named input
-$$       # top-level anonymous inferred param
-$$name   # top-level named param
+%       # top-level anonymous inferred param
+%name   # top-level named param
 ```
 
 Host-provided global context uses a separate form:
@@ -171,13 +171,13 @@ the logical type of `.tenant_id`.
 
 Top-level params still infer type from usage:
 
-- `where .id > $$id` creates `params.id` with the catalog type of `.id`.
-- `where .id > $$` creates `params.id`.
-- `limit $$` creates `params.limit` with integer type.
-- `offset $$` creates `params.offset` with integer type.
-- `filter SoftDelete when $$` creates boolean `params.soft_delete`, inferred by
+- `where .id > %id` creates `params.id` with the catalog type of `.id`.
+- `where .id > %` creates `params.id`.
+- `limit %` creates `params.limit` with integer type.
+- `offset %` creates `params.offset` with integer type.
+- `filter SoftDelete when %` creates boolean `params.soft_delete`, inferred by
   converting the filter name to the normal generated lower-snake-case form.
-- `where .posts.comments.created_at > $$` creates `params.created_at` by
+- `where .posts.comments.created_at > %` creates `params.created_at` by
   default.
 
 Reusing a top-level param is allowed when every usage infers a compatible type
@@ -185,8 +185,8 @@ and semantic role.
 
 ```dsql
 query UserLookup {
-  users(where .id > $$id) {
-    posts(where .author.id == $$id) {
+  users(where .id > %id) {
+    posts(where .author.id == %id) {
       id
     }
   }
@@ -198,7 +198,7 @@ paths, the compiler should report a diagnostic rather than silently merge them.
 
 ```dsql
 query AmbiguousIds {
-  users(where .id > $$ and .posts.author.id > $$) {
+  users(where .id > % and .posts.author.id > %) {
     id
   }
 }
@@ -209,7 +209,7 @@ should name them:
 
 ```dsql
 query AmbiguousIds {
-  users(where .id > $$user_id and .posts.author.id > $$author_id) {
+  users(where .id > %user_id and .posts.author.id > %author_id) {
     id
   }
 }
@@ -223,10 +223,10 @@ a default:
 
 ```dsql
 query RecentMovies(
-  $$limit? = null
+  %limit? = null
   $cast_limit = 5
 ) {
-  titles(limit $$) {
+  titles(limit %) {
     cast(limit $cast_limit) {
       name
     }
@@ -235,9 +235,9 @@ query RecentMovies(
 
 fragment RecentPosts(
   $created_after? = null
-  $$limit = 5
+  %limit = 5
 ) on users {
-  posts(where .created_at > $created_after limit $$) {
+  posts(where .created_at > $created_after limit %) {
     id
   }
 }
@@ -254,17 +254,17 @@ Conceptually:
 ```text
 query_header_item = input_refinement | filter_assignment
 fragment_header_item = input_refinement
-input_refinement = ("$" | "$$") Name ("?" ["=" default_value] | "=" default_value)
+input_refinement = ("$" | "%") Name ("?" ["=" default_value] | "=" default_value)
 ```
 
 The name in a refinement identifies the generated binding, regardless of
-whether its body occurrence was named explicitly. For example, `limit $$`
-infers `params.limit`; completion after `$$` in the query header offers
-`limit`, and `$$limit? = null` refines that anonymous occurrence. The same
+whether its body occurrence was named explicitly. For example, `limit %`
+infers `params.limit`; completion after `%` in the query header offers
+`limit`, and `%limit? = null` refines that anonymous occurrence. The same
 applies to a structured anonymous `$` occurrence and its inferred key.
 
 Header completion offers every inferred binding not already refined, including
-its generated path, type, role, and source location. A `$$name` entry identifies
+its generated path, type, role, and source location. A `%name` entry identifies
 the compatible top-level param at `params.name` and may cover compatible
 repeated usages. A `$name` entry must identify exactly one structured input
 path. If multiple structured paths infer the same key, the diagnostic and
@@ -272,7 +272,7 @@ completion details name every candidate; the author must name the body
 occurrences distinctly before refining them. An entry with no matching inferred
 binding is a diagnostic.
 
-Bare `$` and `$$` remain valid anonymous usage-site variables, but are not
+Bare `$` and `%` remain valid anonymous usage-site variables, but are not
 valid refinement entries because a header needs a stable inferred key. In a
 definition-reference binding list, those bare sigils instead denote complete
 input roots. Trusted `$:name` context cannot be refined by query source;
@@ -286,10 +286,10 @@ Requiredness and nullability are independent:
 | Source contract | Required | Nullable | Omission |
 | --- | ---: | ---: | --- |
 | no header entry | yes | no | error |
-| `$$value = 10` | no | no | substitute `10` |
-| `$$value?` | yes | yes | error |
-| `$$value? = 10` | no | yes | substitute `10` |
-| `$$value? = null` | no | yes | substitute `null` |
+| `%value = 10` | no | no | substitute `10` |
+| `%value?` | yes | yes | error |
+| `%value? = 10` | no | yes | substitute `10` |
+| `%value? = null` | no | yes | substitute `null` |
 
 The same matrix applies to `$name`. There is no optional-without-a-default
 state: optionality means omission has a deterministic replacement value.
@@ -327,14 +327,14 @@ operator:
 
 ```dsql
 query Movies(
-  $$from? = null
-  $$to? = null
+  %from? = null
+  %to? = null
 ) {
   titles(
     where .kind_id == 1
       and (
-        .production_year >= $$from
-        or .production_year <= $$to
+        .production_year >= %from
+        or .production_year <= %to
       )
   ) {
     id
@@ -474,7 +474,7 @@ variables. Fragment spreads are the first example, but the same model should
 also apply to query references in directives, split-fetch handles, and future
 definition-like language constructs.
 
-The target definition infers its own `$` structured inputs and `$$` top-level
+The target definition infers its own `$` structured inputs and `%` top-level
 params from its body and refines that contract in its definition header. A
 reference may leave those roots contained, bind individual leaves, flatten a
 complete root into the caller, or place a complete root beneath a caller
@@ -494,7 +494,7 @@ mappings:
 ```text
 binding_list = "(" binding_item (","? binding_item)* [","] ")"
 binding_item = variable_ref ["<-" variable_ref]
-variable_ref = ("$" | "$$") [Name]
+variable_ref = ("$" | "%") [Name]
 ```
 
 Items may be separated by whitespace or commas, and a trailing comma is valid.
@@ -508,9 +508,9 @@ contained under the spread path.
 ```dsql
 fragment UserPanel(
   $created_after? = null
-  $$limit = 10
+  %limit = 10
 ) on users {
-  posts(where .created_at > $created_after limit $$) {
+  posts(where .created_at > $created_after limit %) {
     id
   }
 }
@@ -543,12 +543,12 @@ caller input:
 
 ```dsql
 query Users(
-  $$page_size = 20
+  %page_size = 20
 ) {
-  users(where .created_at > $after limit $$page_size) {
+  users(where .created_at > $after limit %page_size) {
     ...UserPanel(
       $created_after <- $after,
-      $$limit <- $$page_size,
+      %limit <- %page_size,
     )
   }
 }
@@ -564,7 +564,7 @@ and role as its inference context.
 An explicit leaf binding replaces the target leaf's default and requiredness
 with the caller source contract. In the example, omission materializes the
 query's `20` and forwards it; the fragment's `10` is no longer consulted. With
-no query refinement, `$$page_size` is required and non-null. This follows
+no query refinement, `%page_size` is required and non-null. This follows
 ordinary function-call behavior: omitting an argument uses the callee default,
 while explicitly supplying an argument delegates its value contract to the
 caller expression.
@@ -574,8 +574,8 @@ compatible:
 
 ```dsql
 ...UserPanel(
-  $inner_input <- $$outer_param,
-  $$inner_param <- $outer_input,
+  $inner_input <- %outer_param,
+  %inner_param <- $outer_input,
 )
 ```
 
@@ -595,23 +595,23 @@ A named binding item may omit `<-` when the target and source generated names
 are the same:
 
 ```dsql
-...UserPanel($created_after, $$limit)
+...UserPanel($created_after, %limit)
 ```
 
 This is equivalent to forwarding target `$created_after` from caller
-`$created_after`, and target `$$limit` from caller `$$limit`.
+`$created_after`, and target `%limit` from caller `%limit`.
 
 ### Whole-Root Lifting
 
-Bare `$` and `$$` in a binding list are root operators, not requests to guess
+Bare `$` and `%` in a binding list are root operators, not requests to guess
 one anonymous leaf:
 
 ```dsql
-...UserPanel($, $$)
+...UserPanel($, %)
 ```
 
 A bare `$` flattens the target's complete structured-input root into the caller
-at the spread path. A bare `$$` flattens the complete target params root into
+at the spread path. A bare `%` flattens the complete target params root into
 the caller params root. Every leaf keeps the fragment's inferred name and path,
 type, role, requiredness, nullability, default, bounded dynamic surface, and
 conditional-access metadata. Anonymous occurrences in the fragment already
@@ -636,8 +636,8 @@ A complete target root may instead be remapped beneath a named caller object:
 
 ```dsql
 ...SearchableUser(
-  $ <- $$searchable_user_input
-  $$ <- $$searchable_user_params
+  $ <- %searchable_user_input
+  % <- %searchable_user_params
 )
 ```
 
@@ -654,7 +654,7 @@ params.pattern            -> params.searchable_user_params.pattern
 This remains leaf metadata plus path-prefix transformation; it does not require
 an untyped object parameter or runtime reinterpretation. Cross-root namespace
 bindings are valid, so either target root may map beneath a named `$` structured
-object or `$$` top-level object.
+object or `%` top-level object.
 
 The namespace object is required when any contained leaf remains required. If
 every leaf has a default, the namespace is optional and omission behaves as an
@@ -673,24 +673,24 @@ Binding mode is activated independently for each target root:
 
 ```text
 $    structured input root
-$$   top-level params root
+%   top-level params root
 ```
 
 If a binding list mentions any `$` target binding, every required target
 structured input must be covered by a root binding or named leaf binding.
 Defaulted target leaves may be omitted and then use their fragment defaults.
 They do not remain contained after their root enters explicit binding mode.
-Unbound target `$$` params remain contained unless the list also mentions a
-`$$` target binding.
+Unbound target `%` params remain contained unless the list also mentions a
+`%` target binding.
 
-The same rule applies symmetrically to `$$`: every required target param must be
+The same rule applies symmetrically to `%`: every required target param must be
 covered, defaulted target params may be omitted and use their defaults, and an
 unmentioned `$` root remains contained.
 
 For example:
 
 ```dsql
-...UserPanel($$)
+...UserPanel(%)
 ```
 
 The complete target params root is flattened. The target structured input root
@@ -750,19 +750,19 @@ references a query with inferred inputs.
 query UserCard @cache(
   invalidated_by: [
     {
-      query: UserCardCacheKey($$id <- $$user_id),
+      query: UserCardCacheKey(%id <- %user_id),
       keys: [.updated_at],
     },
   ],
 ) {
-  users(where .id == $$user_id) {
+  users(where .id == %user_id) {
     id
     name
   }
 }
 
 query UserCardCacheKey {
-  users(where .id == $$id) {
+  users(where .id == %id) {
     id
     updated_at
   }
@@ -779,7 +779,7 @@ the normal context mechanism.
 
 Some generated API surfaces need programmatic, type-safe filtering and ordering
 where the exact field choice is made by application code. This should not use an
-unrestricted `where $$` placeholder. A raw predicate placeholder hides the
+unrestricted `where %` placeholder. A raw predicate placeholder hides the
 capability surface, makes relationship depth unclear, and can turn a fixed DSQL
 query into a broad dynamic query builder.
 
@@ -788,19 +788,19 @@ DSQL provides four compiler-owned capability presets:
 
 ```dsql
 query Fields(
-  $$search = {}
-  $$indexed_search = {}
-  $$order = []
-  $$indexed_order = []
+  %search = {}
+  %indexed_search = {}
+  %order = []
+  %indexed_order = []
 ) {
   fields(
-    where .context_id == $$context_id
-      and $$search on selected
-      and $$indexed_search on indexed
-    order by $$order on selected,
-      $$indexed_order on indexed
-    limit $$limit
-    offset $$offset
+    where .context_id == %context_id
+      and %search on selected
+      and %indexed_search on indexed
+    order by %order on selected,
+      %indexed_order on indexed
+    limit %limit
+    offset %offset
   ) {
     id
     name
@@ -814,13 +814,13 @@ The `on` token disambiguates a bounded dynamic input from an ordinary variable.
 Without it, a variable in predicate position is a boolean value:
 
 ```dsql
-where $$enabled
+where %enabled
 ```
 
-`on` is reserved from `variable_name` in every variable position: `$$on`,
+`on` is reserved from `variable_name` in every variable position: `%on`,
 `$on`, fragment bindings named `on`, and operator variables named `on` are
 invalid. The preset names are contextual rather than reserved:
-`$selected`, `$$indexed`, `$selected_indexed`, and `$searchable` are ordinary
+`$selected`, `%indexed`, `$selected_indexed`, and `$searchable` are ordinary
 variable names when they do not follow `on`. The other currently admitted
 keywords remain valid variable names:
 `query`, `fragment`, `where`, `order`, `by`, `limit`, `offset`, `asc`, `desc`,
@@ -831,7 +831,7 @@ bounded dynamic inputs must be named.
 
 The initial contract has these boundaries:
 
-- only named top-level `$$name` inputs are accepted;
+- only named top-level `%name` inputs are accepted;
 - the containing definition must be a query;
 - `selected`, `indexed`, `selected_indexed`, and `searchable` are accepted;
 - every preset is shallow;
@@ -888,12 +888,12 @@ an aggregate source clause list:
 
 ```dsql
 query SearchSummary(
-  $$search = {}
-  $$indexed = {}
+  %search = {}
+  %indexed = {}
 ) {
   users(
-    where $$search on searchable
-      and $$indexed on indexed
+    where %search on searchable
+      and %indexed on indexed
   ) | aggregate {
     count
   }
@@ -904,9 +904,9 @@ A preset that expands to no fields is a diagnostic rather than a generated
 empty type. A dynamic usage inside an `exists` source remains invalid because
 that nested source does not declare a public dynamic input surface.
 
-`$$search on selected` is one predicate atom. It means:
+`%search on selected` is one predicate atom. It means:
 
-- `$$search` is a top-level generated parameter.
+- `%search` is a top-level generated parameter.
 - the allowed predicate fields are scalar fields selected directly in the
   effective current selection body after fragment expansion;
 - the resolved scalar must belong to the current collection source, so
@@ -1036,9 +1036,9 @@ prunes their complete predicate atom. A dynamic caller expresses absence by
 omitting an operator key; nullable null is accepted only for the complete
 dynamic input and maps to its empty identity.
 
-`order by $$order on <preset>` means:
+`order by %order on <preset>` means:
 
-- `$$order` is a top-level generated parameter.
+- `%order` is a top-level generated parameter.
 - the allowed order fields are the same shallow field set exposed by that
   preset;
 - the input is an array, and its element order is SQL precedence order;
@@ -1097,17 +1097,17 @@ they refine scalar bindings:
 
 ```dsql
 query Fields(
-  $$search = {}
-  $$order = []
-  $$limit = 50
-  $$offset = 0
+  %search = {}
+  %order = []
+  %limit = 50
+  %offset = 0
 ) {
   fields(
-    where .context_id == $$context_id
-      and $$search on selected
-    order by $$order on selected
-    limit $$limit
-    offset $$offset
+    where .context_id == %context_id
+      and %search on selected
+    order by %order on selected
+    limit %limit
+    offset %offset
   ) {
     id
     name
@@ -1555,10 +1555,10 @@ role: limit
 Top-level param example:
 
 ```dsql
-limit $$limit
+limit %limit
 ```
 
-Hover on `$$limit`:
+Hover on `%limit`:
 
 ```text
 params.limit
@@ -1569,10 +1569,10 @@ role: limit
 Anonymous top-level param example:
 
 ```dsql
-limit $$
+limit %
 ```
 
-Hover on `$$`:
+Hover on `%`:
 
 ```text
 params.limit

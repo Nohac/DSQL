@@ -86,56 +86,56 @@ async fn invalid_input_refinements_and_fragment_bindings_are_reported() {
         "invalid-variable-contracts.dsql",
         indoc::indoc! {r#"
             fragment Required on public::users {
-              posts(limit $$count) { id }
+              posts(limit %count) { id }
             }
-            query InvalidDefaults($$missing = 1 $$limit = "many") {
-              public::users(limit $$) { id }
+            query InvalidDefaults(%missing = 1 %limit = "many") {
+              public::users(limit %) { id }
             }
-            query InvalidNull($$limit = null) { public::users(limit $$) { id } }
-            query InvalidOperator($$op? = null) {
-              public::users(where .id $$op[==, !=] "00000000-0000-0000-0000-000000000000") { id }
+            query InvalidNull(%limit = null) { public::users(limit %) { id } }
+            query InvalidOperator(%op? = null) {
+              public::users(where .id %op[==, !=] "00000000-0000-0000-0000-000000000000") { id }
             }
-            query InvalidSort($$direction = "sideways") {
-              public::users(order by id $$direction) { id }
+            query InvalidSort(%direction = "sideways") {
+              public::users(order by id %direction) { id }
             }
             query InvalidPaginationDefaults(
-              $$limit = -1
-              $$offset = 9223372036854775808
+              %limit = -1
+              %offset = 9223372036854775808
             ) {
-              public::users(limit $$limit offset $$offset) { id }
+              public::users(limit %limit offset %offset) { id }
             }
             query InvalidCollectionDefault(
-              $$ids = ["00000000-0000-0000-0000-000000000001", null]
+              %ids = ["00000000-0000-0000-0000-000000000001", null]
             ) {
-              public::users(where .id in $$ids) { id }
+              public::users(where .id in %ids) { id }
             }
             query InvalidBindings {
-              public::users { ...Required($$missing) }
+              public::users { ...Required(%missing) }
             }
-            query InvalidBindingDirection($$caller? = null) {
-              public::users { ...Required($$count <- $$caller) }
+            query InvalidBindingDirection(%caller? = null) {
+              public::users { ...Required(%count <- %caller) }
             }
-            query DuplicateRefinement($$count = 1 $$count = 2) {
-              public::users(limit $$count) { id }
+            query DuplicateRefinement(%count = 1 %count = 2) {
+              public::users(limit %count) { id }
             }
             query IncompatibleMergedContract {
-              public::users(where .id == $$value and .name == $$value) { id }
+              public::users(where .id == %value and .name == %value) { id }
             }
             query MixedRootBinding {
               public::users {
-                ...Required($$ <- $$all, $$count <- $$one)
+                ...Required(% <- %all, %count <- %one)
               }
             }
             query DuplicateLeafBinding {
               public::users {
-                ...Required($$count <- $$one, $$count <- $$two)
+                ...Required(%count <- %one, %count <- %two)
               }
             }
             filter Conditional on public::users {
               where .id is not null
             }
-            query NullableFilterAssignment($$enabled?) {
-              public::users(filter Conditional when $$enabled) { id }
+            query NullableFilterAssignment(%enabled?) {
+              public::users(filter Conditional when %enabled) { id }
             }
         "#},
     )
@@ -153,28 +153,28 @@ async fn invalid_bounded_dynamic_input_owners_and_positions_are_reported() {
         indoc::indoc! {r#"
             fragment DynamicFragment on public::users {
               posts(
-                where $$search on selected
-                order by $$order on selected
+                where %search on selected
+                order by %order on selected
               ) { id }
             }
             query AnonymousDynamic {
               public::users(
-                where $$ on selected
-                order by $$ on selected
+                where % on selected
+                order by % on selected
               ) { id name }
             }
-            query InvalidPlacement($$search = {}) {
+            query InvalidPlacement(%search = {}) {
               public::users(
                 where .id == "00000000-0000-0000-0000-000000000000"
-                  or $$search on selected
+                  or %search on selected
               ) { id name }
             }
-            query InvalidNegation($$search = {}) {
-              public::users(where not $$search on selected) { id name }
+            query InvalidNegation(%search = {}) {
+              public::users(where not %search on selected) { id name }
             }
-            query InvalidExists($$search = {}) {
+            query InvalidExists(%search = {}) {
               public::users(
-                where exists .posts(where $$search on selected)
+                where exists .posts(where %search on selected)
               ) { id name }
             }
         "#},
@@ -194,9 +194,9 @@ async fn unsupported_provider_types_are_diagnosed_only_at_input_sites() {
             query SelectedOnly {
               events { opaque }
             }
-            query InvalidUses($$search = {}) {
+            query InvalidUses(%search = {}) {
               events(
-                where .opaque == $$value and $$search on selected
+                where .opaque == %value and %search on selected
                 order by opaque asc
               ) {
                 opaque
@@ -216,15 +216,15 @@ async fn database_arrays_are_results_but_not_scalar_inputs() {
         &bowl,
         "structured-types.dsql",
         indoc::indoc! {r#"
-            query ValidDomain($$label = "primary") {
-              typed_values(where .label == $$label) {
+            query ValidDomain(%label = "primary") {
+              typed_values(where .label == %label) {
                 label
                 labels
                 big_values
               }
             }
             query InvalidArrayInput {
-              typed_values(where .labels == $$labels) {
+              typed_values(where .labels == %labels) {
                 labels
               }
             }
@@ -242,17 +242,17 @@ async fn empty_or_body_dependent_dynamic_presets_are_reported() {
         &bowl,
         "invalid-dynamic-presets.dsql",
         indoc::indoc! {r#"
-            query EmptySelectedIndexed($$order = []) {
-              public::users(order by $$order on selected_indexed) { email }
+            query EmptySelectedIndexed(%order = []) {
+              public::users(order by %order on selected_indexed) { email }
             }
-            query EmptySearchable($$search = {}) {
-              posts(where $$search on searchable) { id }
+            query EmptySearchable(%search = {}) {
+              posts(where %search on searchable) { id }
             }
-            query SelectedAggregate($$search = {}) {
-              public::users(where $$search on selected) | aggregate { count }
+            query SelectedAggregate(%search = {}) {
+              public::users(where %search on selected) | aggregate { count }
             }
             query UnresolvedSource {
-              missing(where $$search on indexed) { id }
+              missing(where %search on indexed) { id }
             }
         "#},
     )
@@ -269,21 +269,21 @@ async fn valid_pagination_and_collection_default_edges_check_cleanly() {
         "valid-default-edges.dsql",
         indoc::indoc! {r#"
             query ValidDefaults(
-              $$nullable_ids? = null
-              $$empty_ids = []
-              $$ids = ["00000000-0000-0000-0000-000000000001"]
-              $$nullable_limit? = 5
-              $$limit = 0
-              $$offset = 9007199254740991
+              %nullable_ids? = null
+              %empty_ids = []
+              %ids = ["00000000-0000-0000-0000-000000000001"]
+              %nullable_limit? = 5
+              %limit = 0
+              %offset = 9007199254740991
             ) {
-              nullable: public::users(where .id in $$nullable_ids) { id }
-              empty: public::users(where .id in $$empty_ids) { id }
+              nullable: public::users(where .id in %nullable_ids) { id }
+              empty: public::users(where .id in %empty_ids) { id }
               populated: public::users(
-                where .id in $$ids
-                limit $$nullable_limit
-                offset $$offset
+                where .id in %ids
+                limit %nullable_limit
+                offset %offset
               ) { id }
-              empty_limit: public::users(limit $$limit) { id }
+              empty_limit: public::users(limit %limit) { id }
             }
         "#},
     )
@@ -323,30 +323,30 @@ async fn fragment_contracts_use_exact_refinement_identities_and_reject_prefix_co
         &bowl,
         "fragment-contract-identities.dsql",
         indoc::indoc! {r#"
-            fragment Window($$limit = 5) on public::users {
-              posts(limit $$) { id }
+            fragment Window(%limit = 5) on public::users {
+              posts(limit %) { id }
             }
-            query LocalAndContained($$limit? = null) {
-              public::users(limit $$limit) { ...Window }
+            query LocalAndContained(%limit? = null) {
+              public::users(limit %limit) { ...Window }
             }
-            query LocalAndNamespaced($$limit? = null) {
-              public::users(limit $$limit) { ...Window($$ <- $$window) }
+            query LocalAndNamespaced(%limit? = null) {
+              public::users(limit %limit) { ...Window(% <- %window) }
             }
-            query LocalAndLifted($$limit = 7) {
-              public::users(limit $$limit) { ...Window($$limit) }
+            query LocalAndLifted(%limit = 7) {
+              public::users(limit %limit) { ...Window(%limit) }
             }
-            query RootLiftRefinement($$limit? = null) {
-              public::users { ...Window($$) }
+            query RootLiftRefinement(%limit? = null) {
+              public::users { ...Window(%) }
             }
             query StructuredAmbiguous($count? = null) {
               public::users { posts(limit $count) { id } }
               public::posts(limit $count) { id }
             }
             query ScalarPrefixCollision {
-              public::users(where .id == $$window) { ...Window($$ <- $$window) }
+              public::users(where .id == %window) { ...Window(% <- %window) }
             }
             query DynamicPrefixCollision {
-              public::users(where .id $$window[==] $$id) { ...Window($$ <- $$window) }
+              public::users(where .id %window[==] %id) { ...Window(% <- %window) }
             }
         "#},
     )
@@ -400,22 +400,22 @@ async fn integer_defaults_use_the_json_safe_number_domain() {
         "integer-defaults.dsql",
         indoc::indoc! {r#"
             query SafeIntegerDefaults(
-              $$minimum = -9007199254740991
-              $$maximum = 9007199254740991
+              %minimum = -9007199254740991
+              %maximum = 9007199254740991
             ) {
               events(
-                where .small_id >= $$minimum and .small_id <= $$maximum
+                where .small_id >= %minimum and .small_id <= %maximum
               ) { small_id }
             }
             query InvalidIntegerDefaults(
-              $$below = -9007199254740992
-              $$above = 9007199254740992
-              $$values = [1, 9007199254740992]
+              %below = -9007199254740992
+              %above = 9007199254740992
+              %values = [1, 9007199254740992]
             ) {
               events(
-                where .small_id == $$below
-                  or .small_id == $$above
-                  or .small_id in $$values
+                where .small_id == %below
+                  or .small_id == %above
+                  or .small_id in %values
               ) { small_id }
             }
         "#},
@@ -437,7 +437,7 @@ async fn predicate_extensions_report_invalid_shapes_and_types() {
                 or 1 in [1]
                 or exists .id
                 or exists .missing
-                or $$value is null
+                or %value is null
                 or [1]
                 or not [2]
                 or .production_year
@@ -548,15 +548,15 @@ async fn valid_singular_and_aggregate_flattening_check_cleanly() {
         "flattened-valid.dsql",
         indoc::indoc! {r#"
             fragment FlatOwner on posts {
-              ...users(where .name like $$owner) { owner_name: name }
+              ...users(where .name like %owner) { owner_name: name }
             }
             query Flattened {
               feed: posts(limit 2) { id ...FlatOwner }
               accounts: public::users(limit 1) {
                 id
-                ...posts(where .title like $$title) | aggregate { post_count: count }
+                ...posts(where .title like %title) | aggregate { post_count: count }
               }
-              ...public::users(where .name == $$root_name) | aggregate { user_count: count }
+              ...public::users(where .name == %root_name) | aggregate { user_count: count }
               ...public::users(limit 1) { flattened_user_id: id }
               one_account: public::users(limit 1) {
                 ...posts(limit 1) { latest_post_title: title }
@@ -579,11 +579,11 @@ async fn selection_shape_warnings_and_null_operator_errors_are_typed() {
         indoc::indoc! {r#"
             query ShapeDiagnostics {
               empty: title(limit 0) { id }
-              redundant_literal: title(where .id == $$id limit 1) { id }
-              redundant_runtime: title(where .id == $$other_id limit $$cap) { id }
+              redundant_literal: title(where .id == %id limit 1) { id }
+              redundant_runtime: title(where .id == %other_id limit %cap) { id }
               valid_limit_proof: title(limit 1) { id }
               invalid_null_order: title(where .id > null) { id }
-              invalid_null_variant: title(where .title $$operator[==, like] null) { id }
+              invalid_null_variant: title(where .title %operator[==, like] null) { id }
               parent: title(limit 1) {
                 kind_type(limit 1) { id }
               }
@@ -787,7 +787,7 @@ async fn content_roundtrip_edits_rederive_cleanly_for_hosts() {
             "fragment CompactBits on title {\n  id\n}\n\nfragment HeroBits on title {\n  ...CompactBits\n  cast: cast_info(order by nr_order asc limit 5) {\n    nr_order\n  }\n}\n",
         )
         .await;
-    let original = "export const Q = dsql(`\nquery Roundtrip {\n  title(where .id == $$movieId) {\n    ...HeroBits\n    keywords: movie_keyword(order by id asc limit 14) {\n      keyword {\n        keyword\n      }\n    }\n    full_cast: cast_info(order by nr_order asc limit 14) {\n      id\n      nr_order\n    }\n  }\n}\n`);\n";
+    let original = "export const Q = dsql(`\nquery Roundtrip {\n  title(where .id == %movieId) {\n    ...HeroBits\n    keywords: movie_keyword(order by id asc limit 14) {\n      keyword {\n        keyword\n      }\n    }\n    full_cast: cast_info(order by nr_order asc limit 14) {\n      id\n      nr_order\n    }\n  }\n}\n`);\n";
     let file = insert_embedding_source(&bowl, "roundtrip.host", original, "typescript").await;
     assert_eq!(
         render_diagnostic_facts(&bowl).await,

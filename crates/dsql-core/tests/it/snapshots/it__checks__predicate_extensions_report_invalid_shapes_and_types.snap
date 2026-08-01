@@ -4,12 +4,12 @@ expression: "format!(\"mixed predicates:\\n{}\\n\\nboolean field:\\n{}\",\nrende
 ---
 mixed predicates:
 Error[106..113]: field `missing` not found
-Error[121..128]: null-test operand must be a field path
-Error[144..147]: collection literal is not a boolean predicate
-Error[159..162]: collection literal is not a boolean predicate
-Error[170..186]: bare field `.production_year` is not a predicate; compare or test it
-Error[194..222]: bare field `.movie_info_idx.info_type_id` is not a predicate; compare or test it
-Error[230..243]: predicate atom must have type boolean
+Error[121..127]: null-test operand must be a field path
+Error[143..146]: collection literal is not a boolean predicate
+Error[158..161]: collection literal is not a boolean predicate
+Error[169..185]: bare field `.production_year` is not a predicate; compare or test it
+Error[193..221]: bare field `.movie_info_idx.info_type_id` is not a predicate; compare or test it
+Error[229..242]: predicate atom must have type boolean
 Error[48..55]: field `.id` expects number but membership uses string
 Error[64..65]: membership left operand must be a field path
 Error[88..90]: `exists` source must be a to-many relation or table

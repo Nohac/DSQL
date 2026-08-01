@@ -118,14 +118,14 @@ async fn invalid_filter_definitions_and_assignments_fail_closed() {
             filter UnknownType on { .id: mystery } { where true }
             filter Undeclared on { .id: int } { where .kind_id > 0 }
             filter Enforced on public::title { apply where true where .id > $:minimum_id }
-            filter WrongInput on public::title { where .id == $$public_id }
+            filter WrongInput on public::title { where .id == %public_id }
             filter InvalidApply on public::title { apply where RowBound where .id > 0 }
             filter InvalidExists on public::title { where exists .kind(where .missing == ..missing) }
             filter StructuralExists on { .id: int } { where exists public::title(where .id == ..id) }
             filter NestedAssignment on public::title { where exists .movie_info_idx(filter Enforced) }
             query Invalid(
               filter Missing
-              filter Enforced when $$disable
+              filter Enforced when %disable
             ) {
               title(filter Enforced when false filter Enforced) { id }
               name(filter Enforced) { id }
@@ -304,10 +304,10 @@ async fn filter_assignment_conditions_infer_boolean_inputs() {
         indoc::indoc! {r#"
             filter Manual on title { where .id > 0 }
             filter Info on movie_info_idx { where .id > 0 }
-            query Q(filter Manual when $$operation) {
+            query Q(filter Manual when %operation) {
               title(
                 filter Manual when $local
-                where exists .movie_info_idx(filter Info when $$nested)
+                where exists .movie_info_idx(filter Info when %nested)
               ) { id }
             }
         "#},

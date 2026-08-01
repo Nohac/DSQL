@@ -116,8 +116,8 @@ recursively across the operation:
 
 ```dsql
 query Administration(
-  $$includeDeleted = false
-  filter SoftDelete when not $$includeDeleted
+  %includeDeleted = false
+  filter SoftDelete when not %includeDeleted
 ) {
   users {
     id
@@ -277,7 +277,7 @@ Ellipsis syntax is classified by what follows the name:
 ```
 
 This also leaves future fragment binding lists unambiguous: binding items begin
-with `$` or `$$`, while relation clauses begin with clause keywords. Empty
+with `$` or `%`, while relation clauses begin with clause keywords. Empty
 ambiguous parentheses are diagnostics. Once an ellipsis selection is classified
 as a relation, omitting both its selection set and pipe transform is invalid.
 
@@ -388,7 +388,7 @@ cast(where .role == "lead" limit 10).actor {
 The `where` and `limit` clauses apply to `cast`.
 
 ```dsql
-cast.actor(where .name like $$actor_name) {
+cast.actor(where .name like %actor_name) {
   name
 }
 ```
@@ -610,7 +610,7 @@ A selection is at-most-one when any of these independent proofs applies:
    bypass it. Additional predicates may narrow the result further.
 3. The selection has the compile-time integer literal `limit 1`.
 
-Otherwise the selection is collection-valued. In particular, `limit $$count`,
+Otherwise the selection is collection-valued. In particular, `limit %count`,
 an optional limit, and other runtime limit expressions do not themselves prove
 at-most-one cardinality. A separate relationship or unique-predicate proof
 still applies when such a limit is present.
@@ -819,7 +819,7 @@ boolean_value  = boolean_literal | public_boolean_variable | context_boolean
 Each side of a boolean operator must be a predicate expression. Bare field paths
 are not valid boolean predicates by themselves. Boolean literals and boolean-
 typed public or trusted values are valid predicate atoms, which permits forms
-such as `$:is_admin or .owner_id == $:user_id` and `not $$includeDeleted`.
+such as `$:is_admin or .owner_id == $:user_id` and `not %includeDeleted`.
 
 `not` binds more tightly than `and`, which binds more tightly than `or`.
 Parentheses may always make the intended grouping explicit.
@@ -837,14 +837,14 @@ query ActiveOrInvitedUsers {
 }
 
 query UsersById {
-  users(where .id in $$userIds) {
+  users(where .id in %userIds) {
     id
     name
   }
 }
 ```
 
-The variable `$$userIds` is inferred as an array of the logical type of `.id`.
+The variable `%userIds` is inferred as an array of the logical type of `.id`.
 Filter declarations use the same predicate language and may consume trusted
 collections:
 
@@ -1035,7 +1035,7 @@ The assigned state may be a row-independent public or trusted boolean:
 
 ```dsql
 query Users {
-  users(filter SoftDelete when not $$includeDeleted) {
+  users(filter SoftDelete when not %includeDeleted) {
     id
     deleted_at
   }
@@ -1091,11 +1091,11 @@ Fragments define reusable selection sets for a catalog target.
 
 ```dsql
 fragment UserSummary(
-  $$post_limit = 5
+  %post_limit = 5
 ) on public::users {
   id
   name
-  posts(limit $$post_limit) {
+  posts(limit %post_limit) {
     id
   }
 }
@@ -1142,9 +1142,9 @@ fragment_spread = alias? "..." fragment_name binding_list? directives?
 ```
 
 `binding_list` uses the bound definition input syntax described in the
-variables spec. Named items bind individual inferred leaves. Bare `$` or `$$`
+variables spec. Named items bind individual inferred leaves. Bare `$` or `%`
 items lift the corresponding complete fragment input root, while a root mapping
-such as `$$ <- $$namespace` moves that complete contract beneath a caller
+such as `% <- %namespace` moves that complete contract beneath a caller
 namespace. See [Bound Definition Inputs](variables.md#bound-definition-inputs).
 
 An unaliased fragment spread merges the fragment selection set into the current
@@ -1370,7 +1370,7 @@ Relation clauses can fetch a small ordered slice of related data.
 
 ```dsql
 query Users {
-  users(where .name like $$ limit 10) {
+  users(where .name like % limit 10) {
     id
     name
 

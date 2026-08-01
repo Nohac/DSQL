@@ -3,4 +3,4 @@ source: crates/dsql-generate/tests/it/generate.rs
 expression: "error.to_string().replace(&dir.display().to_string(), \"<project>\")"
 ---
 the project has 1 error diagnostics; fix them before generating:
-<project>/dsql/queries/events.dsql:19..38: default for `date` does not match inferred type Date
+<project>/dsql/queries/events.dsql:19..37: default for `date` does not match inferred type Date

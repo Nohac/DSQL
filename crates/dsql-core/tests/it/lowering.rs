@@ -45,7 +45,7 @@ async fn render_clauses(bowl: &Bowl) -> String {
                         .iter()
                         .map(|term| match term {
                             OrderTerm::Dynamic { variable, surface } => format!(
-                                "$${} on {}",
+                                "%{} on {}",
                                 variable.name.as_deref().unwrap_or_default(),
                                 surface.as_str()
                             ),
@@ -91,7 +91,7 @@ async fn clauses_lower_with_expression_trees() {
     insert_source(
             &bowl,
             "expressions.dsql",
-            "query Exprs {\n  users(\n    where .tenant_id == $tenant and (.age >= $$min or .name like \"a%\")\n    order by created_at desc, id\n    limit $$max\n    offset 10\n  ) {\n    id\n  }\n}\nquery Aggregates {\n  users(where .posts | exists and .posts | count >= $$minimum limit 10) {\n    id\n  }\n}\n",
+            "query Exprs {\n  users(\n    where .tenant_id == $tenant and (.age >= %min or .name like \"a%\")\n    order by created_at desc, id\n    limit %max\n    offset 10\n  ) {\n    id\n  }\n}\nquery Aggregates {\n  users(where .posts | exists and .posts | count >= %minimum limit 10) {\n    id\n  }\n}\n",
         )
         .await;
 
@@ -105,7 +105,7 @@ async fn operator_variables_lower_inside_expressions() {
     insert_source(
         &bowl,
         "opvar.dsql",
-        "query OpVar {\n  title(where .id $$cmp[==, !=, >] 5) {\n    id\n  }\n}\n",
+        "query OpVar {\n  title(where .id %cmp[==, !=, >] 5) {\n    id\n  }\n}\n",
     )
     .await;
 
@@ -125,8 +125,8 @@ async fn keyword_named_variables_lower_when_adjacent_to_the_sigil() {
             query searchable {
               selected(
                 where .indexed $searchable[==] $selected
-                and .selected_indexed == $$indexed
-                limit $$limit
+                and .selected_indexed == %indexed
+                limit %limit
               ) {
                 selected
                 indexed
@@ -186,7 +186,7 @@ async fn variable_occurrences_become_facts() {
     insert_source(
             &bowl,
             "variables.dsql",
-            "query Vars {\n  users(\n    where .tenant_id == $tenant and .age >= $$min\n    order by created_at $$dir\n    limit $$count\n  ) {\n    id\n  }\n}\n",
+            "query Vars {\n  users(\n    where .tenant_id == $tenant and .age >= %min\n    order by created_at %dir\n    limit %count\n  ) {\n    id\n  }\n}\n",
         )
         .await;
 

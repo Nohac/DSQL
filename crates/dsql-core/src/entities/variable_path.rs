@@ -1,7 +1,7 @@
 //! Variable path construction.
 //!
 //! Sigil mapping: `$` (build-time) variables are *structured* — they nest
-//! under `input.<selection path>.clause...`; `$$` (query-time) variables are
+//! under `input.<selection path>.clause...`; `%` top-level parameters are
 //! *top-level* — they surface as `params.<name>`.
 
 use crate::entities::expression::{BinaryOp, Sigil};

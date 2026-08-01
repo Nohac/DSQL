@@ -58,7 +58,7 @@ Possible shape:
 
 ```dsql
 query UsersPage {
-  users(order by created_at desc limit $$limit offset $$offset) {
+  users(order by created_at desc limit %limit offset %offset) {
     id
     name
   }

@@ -1,4 +1,4 @@
-//! Variable entity: every `$name` / `$$name` occurrence as a fact.
+//! Variable entity: every `$name` / `%name` occurrence as a fact.
 //!
 //! Variables live inside expression trees structurally (see `expression`),
 //! but inference is set-oriented — "which parameters does this query take,
@@ -119,7 +119,7 @@ impl LowerStage for Variable {
 }
 
 /// Whether a binding surfaces as structured input (`$`, `input.*`) or a
-/// top-level parameter (`$$`, `params.*`).
+/// top-level parameter (`%`, `params.*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VariableSource {
     Structured,
@@ -173,7 +173,7 @@ fn build_input_refinement(
         .children(variable)
         .find_map(|child| match cst.get(child) {
             Node::Token(Token::Dollar, _) => Some(VariableSource::Structured),
-            Node::Token(Token::DollarDollar, _) => Some(VariableSource::TopLevel),
+            Node::Token(Token::Percent, _) => Some(VariableSource::TopLevel),
             _ => None,
         })?;
     let default = direct_rule(cst, node, Rule::DefaultValue)

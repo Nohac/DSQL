@@ -110,7 +110,7 @@ relation shape.
 
 ```dsql
 query Users {
-  users(where .posts.comments.body like $$search limit 10) {
+  users(where .posts.comments.body like %search limit 10) {
     id
     name
 

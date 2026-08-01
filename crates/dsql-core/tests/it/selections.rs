@@ -243,23 +243,23 @@ async fn resolved_selection_shapes_cover_catalog_predicate_and_limit_proofs() {
         &bowl,
         "shapes.dsql",
         indoc::indoc! {r#"
-            query Shapes($$value? = null $$named? = null) {
+            query Shapes(%value? = null %named? = null) {
               collection: title { id }
               literal: title(limit 1) { id }
-              runtime: title(limit $$count) { id }
-              primary: title(where .id == $$id) { id }
-              anonymous: title(where .id == $$) { id }
-              equality_operator: title(where .id $$key_op[==] $$operator_id) { id }
-              optional_operator_value: title(where .id $$optional_op[==] $$) { id }
-              optional_operator_value_reversed: title(where $$ $$optional_reverse_op[==] .id) { id }
-              optional_named_value: title(where .id $$named_op[==] $$named) { id }
-              optional_named_value_reversed: title(where $$named $$named_reverse_op[==] .id) { id }
+              runtime: title(limit %count) { id }
+              primary: title(where .id == %id) { id }
+              anonymous: title(where .id == %) { id }
+              equality_operator: title(where .id %key_op[==] %operator_id) { id }
+              optional_operator_value: title(where .id %optional_op[==] %) { id }
+              optional_operator_value_reversed: title(where % %optional_reverse_op[==] .id) { id }
+              optional_named_value: title(where .id %named_op[==] %named) { id }
+              optional_named_value_reversed: title(where %named %named_reverse_op[==] .id) { id }
               extra: title(where .id == 1 and .production_year > 2000) { id }
               different_literal_or: title(where (.id == 1 and .title == "a") or .id == 2) { id }
               same_literal_or: title(where (.id == 1 and .title == "a") or .id == 1) { id }
-              different_variable_or: title(where .id == $$left or .id == $$right) { id }
-              same_variable_or: title(where (.id == $$same and .title == "a") or .id == $$same) { id }
-              anonymous_or: title(where .id == $$ or .id == $$) { id }
+              different_variable_or: title(where .id == %left or .id == %right) { id }
+              same_variable_or: title(where (.id == %same and .title == "a") or .id == %same) { id }
+              anonymous_or: title(where .id == % or .id == %) { id }
               bypass_or: title(where .id == 1 or .title == "a") { id }
               null_key: title(where .id == null) { id }
               row_value: title(where .id == .kind_id) { id }
@@ -269,7 +269,7 @@ async fn resolved_selection_shapes_cover_catalog_predicate_and_limit_proofs() {
               }
             }
             query MandatoryOperatorValue {
-              mandatory_operator_value: title(where .id $$mandatory_op[==] $$) { id }
+              mandatory_operator_value: title(where .id %mandatory_op[==] %) { id }
             }
         "#},
     )
@@ -355,8 +355,8 @@ indexes: []
         "composite-shapes.dsql",
         indoc::indoc! {r#"
             query CompositeShapes {
-              complete: memberships(where .tenant_id == $$tenant and .user_id == $$user) { locale }
-              incomplete: memberships(where .tenant_id == $$tenant) { locale }
+              complete: memberships(where .tenant_id == %tenant and .user_id == %user) { locale }
+              incomplete: memberships(where .tenant_id == %tenant) { locale }
               different_value_or: memberships(where (.tenant_id == 1 and .user_id == 2) or (.user_id == 3 and .tenant_id == 1)) { locale }
               same_values_or: memberships(where (.tenant_id == 1 and .user_id == 2) or (.user_id == 2 and .tenant_id == 1 and .locale == "en")) { locale }
               bypass_or: memberships(where (.tenant_id == 1 and .user_id == 2) or .tenant_id == 1) { locale }
@@ -419,8 +419,8 @@ indexes:
         "included-cardinality.dsql",
         indoc::indoc! {r#"
             query IncludedCardinality {
-              key: memberships(where .tenant_id == $$tenant) { user_id }
-              include: memberships(where .user_id == $$user) { tenant_id }
+              key: memberships(where .tenant_id == %tenant) { user_id }
+              include: memberships(where .user_id == %user) { tenant_id }
             }
         "#},
     )

@@ -33,12 +33,12 @@ fragment SensorIdentity on sensors {
 
 fragment SensorReadingWindow(
   $recorded_after? = null
-  $$reading_limit? = 2
-  $$reading_direction = "desc"
+  %reading_limit? = 2
+  %reading_direction = "desc"
 ) on sensors {
   readings(where .recorded_at >= $recorded_after
-    order by recorded_at $$reading_direction, id desc
-    limit $$reading_limit
+    order by recorded_at %reading_direction, id desc
+    limit %reading_limit
   ) {
     ...ReadingRow
   }

@@ -982,8 +982,8 @@ async fn numeric_wire_types_flow_through_generated_metadata() {
         vec![document(
             "queries/frontend/numeric.dsql",
             indoc::indoc! {r#"
-                query NumericMetrics($$minimum = 12345678901234567890.12345678901234567890) {
-                  metrics(where .amount >= $$minimum and .amount in $$amounts) { amount ratio }
+                query NumericMetrics(%minimum = 12345678901234567890.12345678901234567890) {
+                  metrics(where .amount >= %minimum and .amount in %amounts) { amount ratio }
                 }
                 query NumericSummary {
                   summary: metrics | aggregate {
@@ -1020,7 +1020,7 @@ async fn provider_scalar_wire_identity_flows_through_generated_metadata() {
         provider_scalar_catalog(),
         vec![document(
             "queries/frontend/events.dsql",
-            "query Events { events(where .event_date == $$date and .big_id >= $$minimum_big_id) { event_date big_id } }",
+            "query Events { events(where .event_date == %date and .big_id >= %minimum_big_id) { event_date big_id } }",
             "frontend",
         )],
         BTreeMap::new(),
@@ -1065,15 +1065,15 @@ async fn configured_catalog_types_flow_through_generated_metadata() {
         dir,
         "dsql/queries/events.dsql",
         indoc::indoc! {r#"
-            query MappedEvents($$date = "2026-07-27") {
-              events(where .event_date == $$date) {
+            query MappedEvents(%date = "2026-07-27") {
+              events(where .event_date == %date) {
                 event_date
                 event_dates
               }
             }
 
-            query DynamicMappedEvents($$search = {}) {
-              events(where $$search on selected) {
+            query DynamicMappedEvents(%search = {}) {
+              events(where %search on selected) {
                 event_date
               }
             }
@@ -1110,7 +1110,7 @@ async fn configured_catalog_types_flow_through_generated_metadata() {
     write_test_file(
         dir,
         "dsql/queries/events.dsql",
-        "query MappedEvents($$date = \"tomorrow\") { events(where .event_date == $$date) { event_date } }",
+        "query MappedEvents(%date = \"tomorrow\") { events(where .event_date == %date) { event_date } }",
     );
     let error = generate_project(&project, GenerateOptions::default(), MatchLockMode::Update)
         .await
@@ -1143,7 +1143,7 @@ async fn provider_scalar_dynamic_inputs_use_the_effective_logical_name() {
         provider_scalar_catalog(),
         vec![document(
             "queries/frontend/events-dynamic.dsql",
-            "query DynamicEvents($$search = {}) { events(where $$search on selected) { event_date } }",
+            "query DynamicEvents(%search = {}) { events(where %search on selected) { event_date } }",
             "frontend",
         )],
         BTreeMap::new(),
@@ -1167,7 +1167,7 @@ async fn provider_array_dynamic_inputs_remain_unsupported() {
         provider_scalar_catalog(),
         vec![document(
             "queries/frontend/events-array-dynamic.dsql",
-            "query DynamicEventArrays($$search = {}) { events(where $$search on selected) { event_dates } }",
+            "query DynamicEventArrays(%search = {}) { events(where %search on selected) { event_dates } }",
             "frontend",
         )],
         BTreeMap::new(),
@@ -1186,7 +1186,7 @@ async fn structured_result_values_flow_through_generated_metadata() {
         structured_type_catalog(),
         vec![document(
             "queries/frontend/structured.dsql",
-            "query Structured($$label = \"primary\" $$address = \"127.0.0.1\") { typed_values(where .label == $$label and .address == $$address limit 1) { label address labels big_values nested_label domain_labels labeled_values } }",
+            "query Structured(%label = \"primary\" %address = \"127.0.0.1\") { typed_values(where .label == %label and .address == %address limit 1) { label address labels big_values nested_label domain_labels labeled_values } }",
             "frontend",
         )],
         BTreeMap::new(),
@@ -1215,13 +1215,13 @@ async fn native_enum_contracts_flow_through_generated_metadata() {
                   where .status == $:status
                 }
                 query NativeEnums(
-                  $$status = "active"
-                  $$statuses = ["pending", "archived"]
+                  %status = "active"
+                  %statuses = ["pending", "archived"]
                 ) {
                   enum_records(
                     filter EnumContext
-                    where .status == $$status
-                      and .status in $$statuses
+                    where .status == %status
+                      and .status in %statuses
                     limit 1
                   ) {
                     status
@@ -1229,8 +1229,8 @@ async fn native_enum_contracts_flow_through_generated_metadata() {
                     statuses
                   }
                 }
-                query DynamicEnums($$search = {}) {
-                  enum_records(where $$search on selected) {
+                query DynamicEnums(%search = {}) {
+                  enum_records(where %search on selected) {
                     status
                   }
                 }
@@ -1291,33 +1291,33 @@ async fn bounded_dynamic_inputs_flow_through_sql_and_metadata() {
                   field name where $:is_admin
                 }
                 query DynamicUsers(
-                  $$selected_search = {}
-                  $$indexed_search = {}
-                  $$searchable_search = {}
-                  $$selected_order = []
-                  $$indexed_order = []
-                  $$selected_indexed_order = []
-                  $$searchable_order = []
-                  $$aggregate_search = {}
-                  $$aggregate_indexed_search = {}
+                  %selected_search = {}
+                  %indexed_search = {}
+                  %searchable_search = {}
+                  %selected_order = []
+                  %indexed_order = []
+                  %selected_indexed_order = []
+                  %searchable_order = []
+                  %aggregate_search = {}
+                  %aggregate_indexed_search = {}
                 ) {
                   users(
-                    where $$selected_search on selected
-                      and $$indexed_search on indexed
-                      and $$searchable_search on searchable
+                    where %selected_search on selected
+                      and %indexed_search on indexed
+                      and %searchable_search on searchable
                     order by name asc,
-                      $$selected_order on selected,
-                      $$indexed_order on indexed,
-                      $$selected_indexed_order on selected_indexed,
-                      $$searchable_order on searchable,
+                      %selected_order on selected,
+                      %indexed_order on indexed,
+                      %selected_indexed_order on selected_indexed,
+                      %searchable_order on searchable,
                       id desc
                   ) {
                     id
                     label: name
                   }
                   summary: users(
-                    where $$aggregate_search on searchable
-                      and $$aggregate_indexed_search on indexed
+                    where %aggregate_search on searchable
+                      and %aggregate_indexed_search on indexed
                   ) | aggregate {
                     count
                   }
@@ -1348,9 +1348,9 @@ async fn reused_dynamic_inputs_require_identical_selected_surfaces() {
         vec![document(
             "queries/frontend/incompatible-dynamic.dsql",
             indoc::indoc! {r#"
-                query IncompatibleDynamic($$search = {}) {
-                  by_id: users(where $$search on selected) { id }
-                  by_name: users(where $$search on selected) { name }
+                query IncompatibleDynamic(%search = {}) {
+                  by_id: users(where %search on selected) { id }
+                  by_name: users(where %search on selected) { name }
                 }
             "#},
             "frontend",
@@ -1376,9 +1376,9 @@ async fn reused_dynamic_inputs_require_identical_preset_spellings() {
         vec![document(
             "queries/frontend/incompatible-preset.dsql",
             indoc::indoc! {r#"
-                query IncompatiblePreset($$search = {}) {
-                  selected: users(where $$search on selected_indexed) { id name }
-                  catalog: users(where $$search on indexed) { id name }
+                query IncompatiblePreset(%search = {}) {
+                  selected: users(where %search on selected_indexed) { id name }
+                  catalog: users(where %search on indexed) { id name }
                 }
             "#},
             "frontend",
@@ -1400,8 +1400,8 @@ async fn dynamic_predicates_reject_selected_aliases_reserved_for_composition() {
         vec![document(
             "queries/frontend/reserved-dynamic.dsql",
             indoc::indoc! {r#"
-                query ReservedDynamic($$search = {}) {
-                  users(where $$search on selected) { not: name }
+                query ReservedDynamic(%search = {}) {
+                  users(where %search on selected) { not: name }
                 }
             "#},
             "frontend",
@@ -1426,37 +1426,37 @@ async fn defaults_and_fragment_lifting_flow_through_operation_metadata() {
         vec![document(
             "queries/frontend/variable-contracts.dsql",
             indoc::indoc! {r#"
-                fragment PostWindow($$after? = null $$limit = 5) on users {
-                  posts(where .created_at >= $$after limit $$) { id }
+                fragment PostWindow(%after? = null %limit = 5) on users {
+                  posts(where .created_at >= %after limit %) { id }
                 }
                 query Contained { users { ...PostWindow } }
-                query Bound($$since = "2020-01-01T00:00:00Z") {
-                  users { ...PostWindow($$after <- $$since) }
+                query Bound(%since = "2020-01-01T00:00:00Z") {
+                  users { ...PostWindow(%after <- %since) }
                 }
-                query NullableCollection($$ids? = null) {
-                  users(where .id in $$ids) { id }
+                query NullableCollection(%ids? = null) {
+                  users(where .id in %ids) { id }
                 }
                 query CollectionDefault(
-                  $$ids = ["00000000-0000-0000-0000-000000000001"]
+                  %ids = ["00000000-0000-0000-0000-000000000001"]
                 ) {
-                  users(where .id in $$ids) { id }
+                  users(where .id in %ids) { id }
                 }
                 fragment ParentWindow on users {
-                  ...PostWindow($$)
+                  ...PostWindow(%)
                 }
                 query DeepContained {
                   users { ...ParentWindow }
                 }
-                query NullableNonNullDefault($$limit? = 5) {
-                  users(limit $$limit) { id }
+                query NullableNonNullDefault(%limit? = 5) {
+                  users(limit %limit) { id }
                 }
                 query ClosedVariants(
-                  $$operator = "=="
-                  $$direction = "asc"
+                  %operator = "=="
+                  %direction = "asc"
                 ) {
                   users(
-                    where .name $$operator[==, like] "A"
-                    order by name $$direction
+                    where .name %operator[==, like] "A"
+                    order by name %direction
                   ) { id }
                 }
             "#},
@@ -1588,11 +1588,11 @@ async fn singular_selection_shapes_flow_through_sql_and_metadata() {
             "queries/frontend/singular.dsql",
             indoc::indoc! {r#"
                 query ByLimit { users(limit 1) { id name } }
-                query ByKey { users(where .id == $$id) { id name } }
+                query ByKey { users(where .id == %id) { id name } }
                 query ByCompositeKey {
-                  memberships(where .tenant_id == $$tenant and .user_id == $$user) { locale }
+                  memberships(where .tenant_id == %tenant and .user_id == %user) { locale }
                 }
-                query RuntimeLimit { users(limit $$count) { id } }
+                query RuntimeLimit { users(limit %count) { id } }
                 query NestedLimit {
                   users(limit 1) {
                     id
@@ -1826,7 +1826,7 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
             "queries/frontend/aggregates.dsql",
             indoc::indoc! {r#"
                 fragment UserStats on users {
-                  post_stats: posts(where .title == $$title) | aggregate {
+                  post_stats: posts(where .title == %title) | aggregate {
                     count
                     latest: max .created_at
                   }
@@ -1836,13 +1836,13 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
                   }
                 }
                 fragment FlatPostStats on users {
-                  ...posts(where .title == $$flat_title) | aggregate {
+                  ...posts(where .title == %flat_title) | aggregate {
                     flat_post_count: count
                     flat_latest: max .created_at
                   }
                 }
                 query RootStats {
-                  user_stats: users(where .name == $$name) | aggregate {
+                  user_stats: users(where .name == %name) | aggregate {
                     count
                     first_name: min .name
                   }
@@ -1860,7 +1860,7 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
                   }
                 }
                 query FlattenRoot {
-                  ...users(where .name == $$flat_name) | aggregate {
+                  ...users(where .name == %flat_name) | aggregate {
                     user_count: count
                     first_name: min .name
                   }
@@ -1874,7 +1874,7 @@ async fn aggregate_objects_flow_through_operation_and_fragment_metadata() {
                 query FlattenOwner {
                   feed: posts(limit 1) {
                     id
-                    ...users(where .name == $$owner_name) {
+                    ...users(where .name == %owner_name) {
                       owner_name: name
                       owner_posts: posts(limit 1) { title }
                       ...posts | aggregate { owner_post_count: count }
@@ -1930,11 +1930,11 @@ async fn multiple_roots_assemble_as_one_operation_contract() {
                 fragment UserBits on users {
                   name
                 }
-                query UserOverview($$name? = null) {
-                  summary: users(where .name == $$name) | aggregate {
+                query UserOverview(%name? = null) {
+                  summary: users(where .name == %name) | aggregate {
                     count
                   }
-                  first: users(where .name == $$name limit 1) {
+                  first: users(where .name == %name limit 1) {
                     id
                     ...UserBits
                   }

@@ -1,6 +1,6 @@
 # Replace top-level parameter double-dollar sigil with percent
 
-**ID:** d8c4fa37 | **Status:** Open | **Created:** 2026-07-31T13:50:14+02:00
+**ID:** d8c4fa37 | **Status:** Done | **Created:** 2026-07-31T13:50:14+02:00
 
 Top-level parameters currently use `$$name` and anonymous `$$`. Repeated uses,
 especially bounded dynamic inputs, are visually noisy and easy to confuse with
@@ -36,3 +36,12 @@ Acceptance criteria:
   spelling;
 - specifications, fixtures, snapshots, and examples use the new spelling; and
 - `$$` is rejected as invalid syntax with no fallback or migration bridge.
+
+## Resolution
+
+Top-level parameters now use `%` and `%name` throughout parsing, lowering,
+formatting, completion, fragment bindings, specifications, and fixtures. The
+LSP advertises `%` as a completion trigger, and completion distinguishes the
+sigil token structurally so a percent wildcard inside a string is not treated
+as a parameter. Directly adjacent binding sigils are invalid, preventing the
+removed `$$name` spelling from being reinterpreted as two structured bindings.

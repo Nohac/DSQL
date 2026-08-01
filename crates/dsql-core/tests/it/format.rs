@@ -32,7 +32,7 @@ fn formatter_cases_match_expected_output() {
                 query FeaturedMovie {
                   featured: movie_info_idx(
                     where .info_type_id == 101
-                    and .info like $$
+                    and .info like %
                     and .title.kind_id == $
                     and .title.movie_info_idx.info_type_id == 100
                     order by info desc, id asc limit 1
@@ -52,7 +52,7 @@ fn formatter_cases_match_expected_output() {
         ),
         (
             "variables_in_clauses",
-            "query KeywordDiscovery { keyword(where .movie_keyword.title.production_year $[>, >=] $ order by keyword $sort_dir limit $movie_limit offset $$) { id } }",
+            "query KeywordDiscovery { keyword(where .movie_keyword.title.production_year $[>, >=] $ order by keyword $sort_dir limit $movie_limit offset %) { id } }",
         ),
         (
             "long_inline_clauses",
@@ -64,11 +64,11 @@ fn formatter_cases_match_expected_output() {
         ),
         (
             "aggregate_predicates",
-            "query Popular { title(where .movie_info_idx|exists and .movie_info_idx|count>=$$minimum limit 10) { id } }",
+            "query Popular { title(where .movie_info_idx|exists and .movie_info_idx|count>=%minimum limit 10) { id } }",
         ),
         (
             "predicate_extensions",
-            "query Visible { users(where not $$disabled or .id in [1,null,2,] and .deleted_at is not null and exists .posts(filter Published when $$enabled where .title not in $$titles)) { id } }",
+            "query Visible { users(where not %disabled or .id in [1,null,2,] and .deleted_at is not null and exists .posts(filter Published when %enabled where .title not in %titles)) { id } }",
         ),
         (
             "contextual_identifiers",
@@ -76,23 +76,23 @@ fn formatter_cases_match_expected_output() {
         ),
         (
             "filters_and_conditions",
-            "condition Admin{where $:is_admin} filter SoftDelete on{.deleted_at:timestamptz}{apply where false where .deleted_at is null field deleted_at,field where Admin} query Users(filter SoftDelete when not $$includeDeleted){users(filter SoftDelete when false){id}}",
+            "condition Admin{where $:is_admin} filter SoftDelete on{.deleted_at:timestamptz}{apply where false where .deleted_at is null field deleted_at,field where Admin} query Users(filter SoftDelete when not %includeDeleted){users(filter SoftDelete when false){id}}",
         ),
         (
             "flattened_selections",
-            "query Summary { users(limit 1) { id ...posts(where .title like $$title)|aggregate{post_count:count} } ...public::users|aggregate{user_count:count} }",
+            "query Summary { users(limit 1) { id ...posts(where .title like %title)|aggregate{post_count:count} } ...public::users|aggregate{user_count:count} }",
         ),
         (
             "variable_contracts",
-            "fragment Panel($after?=null $$limit=10) on public::users{posts(where .created_at>$after limit $$){id}} query Users($$page_size=20 filter SoftDelete when $$enabled $$offset?=null){public::users(offset $$){...Panel($,$$limit<-$$page_size)}}",
+            "fragment Panel($after?=null %limit=10) on public::users{posts(where .created_at>$after limit %){id}} query Users(%page_size=20 filter SoftDelete when %enabled %offset?=null){public::users(offset %){...Panel($,%limit<-%page_size)}}",
         ),
         (
             "bounded_dynamic_inputs",
-            "query Search($$search={} $$indexed={} $$selected_indexed={} $$searchable={} $$order=[]){public::users(where .id>0 and $$search on selected and $$indexed on indexed and $$selected_indexed on selected_indexed and $$searchable on searchable order by name asc,$$order on indexed,id desc){id label:name}}",
+            "query Search(%search={} %indexed={} %selected_indexed={} %searchable={} %order=[]){public::users(where .id>0 and %search on selected and %indexed on indexed and %selected_indexed on selected_indexed and %searchable on searchable order by name asc,%order on indexed,id desc){id label:name}}",
         ),
         (
             "dynamic_surface_contextual_names",
-            "query searchable($selected=1 $$indexed=2){selected(where .indexed $searchable[==] $selected){selected indexed selected_indexed searchable}}",
+            "query searchable($selected=1 %indexed=2){selected(where .indexed $searchable[==] $selected){selected indexed selected_indexed searchable}}",
         ),
         (
             "variable_contract_comments",
@@ -102,16 +102,16 @@ fn formatter_cases_match_expected_output() {
                   $after? = null # after first refinement
                   # between refinements
                   # retained comment block
-                  $$limit = 10
+                  %limit = 10
                   # trailing header comment
                 ) on public::users {
                   id
                 }
                 query Users(
                   # leading query comment
-                  $$page_size = 20
+                  %page_size = 20
                   # between query items
-                  filter SoftDelete when $$enabled
+                  filter SoftDelete when %enabled
                   # trailing query comment
                 ) {
                   public::users {
@@ -119,7 +119,7 @@ fn formatter_cases_match_expected_output() {
                       # leading binding comment
                       $after <- $created_after # after first binding
                       # between bindings
-                      $$limit <- $$page_size
+                      %limit <- %page_size
                       # trailing binding comment
                     )
                   }
@@ -153,7 +153,7 @@ fn formatter_cases_match_expected_output() {
 
 #[test]
 fn formatting_is_idempotent() {
-    let source = "condition Admin { where $:is_admin }\nfilter SoftDelete on { .deleted_at: timestamptz } { apply where false where .deleted_at is null }\nquery Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra ...posts(where .title == $$title) | aggregate { count latest: max .created_at } } ...public::users | aggregate { user_count: count } }\nfragment Extra on users {\n  email\n}\nquery Filtered { public::users(where .posts | exists and .posts | count >= $$minimum limit 1) { id } }\n";
+    let source = "condition Admin { where $:is_admin }\nfilter SoftDelete on { .deleted_at: timestamptz } { apply where false where .deleted_at is null }\nquery Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra ...posts(where .title == %title) | aggregate { count latest: max .created_at } } ...public::users | aggregate { user_count: count } }\nfragment Extra on users {\n  email\n}\nquery Filtered { public::users(where .posts | exists and .posts | count >= %minimum limit 1) { id } }\n";
     let once = format(source);
     let twice = format(&once.text);
     assert_eq!(once.text, twice.text, "formatting must be idempotent");

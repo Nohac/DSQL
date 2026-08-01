@@ -27,7 +27,7 @@ more polished than others.
 
 ```dsql
 query UsersTable @ui.table(total: "users_total") {
-  users(limit $$limit offset $$offset) {
+  users(limit %limit offset %offset) {
     id @ui.column(hidden: true)
     name @ui.column(label: "Name")
     email @ui.column(label: "Email")
@@ -52,7 +52,7 @@ Possible authoring shape:
 ```ts
 const UsersPage = dsql`
   query UsersPage {
-    users(limit $$limit) {
+    users(limit %limit) {
       id
       name
       email
@@ -229,10 +229,10 @@ header containing:
 
 ```dsql
 query Movies(
-  $$limit = 20
-  $$from? = null
+  %limit = 20
+  %from? = null
 ) {
-  titles(where .production_year >= $$from limit $$limit) {
+  titles(where .production_year >= %from limit %limit) {
     id
   }
 }
@@ -272,7 +272,7 @@ Authoring shape:
 ```ts
 const MyQuery = dsql`
   query MyQuery {
-    users(limit $$limit) {
+    users(limit %limit) {
       id
       name
     }
@@ -750,7 +750,7 @@ and an optional fetch helper.
 ```rust
 dsql::query! {
     pub mod users_page {
-        users(limit $$limit) {
+        users(limit %limit) {
             id
             name
         }

@@ -1,10 +1,10 @@
 query RecentReadings(
-  $$ids = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
-  $$direction = "desc"
+  %ids = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
+  %direction = "desc"
 ) {
   readings(
-    where .id in $$ids
-    order by flagged asc, id $$direction
+    where .id in %ids
+    order by flagged asc, id %direction
     limit 10
   ) {
     ...ReadingRow
@@ -13,12 +13,12 @@ query RecentReadings(
 
 query TypedReading {
   readings(
-    where .network_code == $$network
-    and .recorded_at >= $$since
-    and .value >= $$minimum
-    and .confidence >= $$confidence
-    and .flagged == $$flagged
-    and .payload == $$payload
+    where .network_code == %network
+    and .recorded_at >= %since
+    and .value >= %minimum
+    and .confidence >= %confidence
+    and .flagged == %flagged
+    and .payload == %payload
     limit 1
   ) {
     id
@@ -54,9 +54,9 @@ query MultiRootOverview {
 
 query PrivacyProbe {
   readings(
-    where .confidence == $$confidence
+    where .confidence == %confidence
     or .confidence is null
-    or .confidence in $$confidences
+    or .confidence in %confidences
     limit 1
   ) {
     id
@@ -64,19 +64,19 @@ query PrivacyProbe {
 }
 
 query ManualFilterProbe(
-  $$onlyFlagged = false
+  %onlyFlagged = false
 ) {
-  readings(filter FlaggedOnly when $$onlyFlagged order by id asc limit 1) {
+  readings(filter FlaggedOnly when %onlyFlagged order by id asc limit 1) {
     id
     flagged
   }
 }
 
 query OptionalPredicateProbe(
-  $$minimum? = null
+  %minimum? = null
 ) {
   readings(
-    where $$minimum <= .id
+    where %minimum <= .id
     or .flagged == true
     order by id asc
   ) {
@@ -85,30 +85,30 @@ query OptionalPredicateProbe(
 }
 
 query OptionalLikeProbe(
-  $$code?
+  %code?
 ) {
-  sensors(where .code like $$code order by code asc limit 1) {
+  sensors(where .code like %code order by code asc limit 1) {
     code
   }
 }
 
 query DynamicReadingSearch(
-  $$search = {}
-  $$indexed_search = {}
-  $$selected_indexed_search = {}
-  $$order = []
-  $$indexed_order = []
-  $$selected_indexed_order = []
-  $$sensor_search = {}
-  $$sensor_order = []
+  %search = {}
+  %indexed_search = {}
+  %selected_indexed_search = {}
+  %order = []
+  %indexed_order = []
+  %selected_indexed_order = []
+  %sensor_search = {}
+  %sensor_order = []
 ) {
   readings(
-    where $$search on selected
-    and $$indexed_search on indexed
-    and $$selected_indexed_search on selected_indexed
-    order by $$order on selected,
-      $$indexed_order on indexed,
-      $$selected_indexed_order on selected_indexed
+    where %search on selected
+    and %indexed_search on indexed
+    and %selected_indexed_search on selected_indexed
+    order by %order on selected,
+      %indexed_order on indexed,
+      %selected_indexed_order on selected_indexed
     limit 5
   ) {
     id
@@ -118,8 +118,8 @@ query DynamicReadingSearch(
     flagged
   }
   matching_sensors: sensors(
-    where $$sensor_search on searchable
-    order by $$sensor_order on searchable
+    where %sensor_search on searchable
+    order by %sensor_order on searchable
     limit 1
   ) {
     code
@@ -139,7 +139,7 @@ query EmptyAggregateCount {
 query EmptyAggregateMinimum {
   sensors(
     where .code == "humidity"
-    and (.readings | min .recorded_at) != $$never
+    and (.readings | min .recorded_at) != %never
     limit 1
   ) {
     code
@@ -156,12 +156,12 @@ query WideIntegerPrecision {
 }
 
 query StructuredTypeValues(
-  $$label = "primary"
-  $$address = "127.0.0.1"
+  %label = "primary"
+  %address = "127.0.0.1"
 ) {
   structured_type_values(
-    where .label == $$label
-    and .address == $$address
+    where .label == %label
+    and .address == %address
   ) {
     label
     address
@@ -173,10 +173,10 @@ query StructuredTypeValues(
 }
 
 query CountPredicate(
-  $$minimum_posts = "0"
+  %minimum_posts = "0"
 ) {
   sensors(
-    where (.readings | count) >= $$minimum_posts
+    where (.readings | count) >= %minimum_posts
     limit 1
   ) {
     code
@@ -199,24 +199,24 @@ query ContainedSensorWindow {
 query LiftedSensorWindow {
   sensors(where .code == "temperature" order by station_code asc limit 1) {
     code
-    ...SensorReadingWindow($, $$)
+    ...SensorReadingWindow($, %)
   }
 }
 
 query NamespacedSensorWindow {
   sensors(where .code == "temperature" order by station_code asc limit 1) {
     code
-    ...SensorReadingWindow($ <- $$window_input, $$ <- $$window_params)
+    ...SensorReadingWindow($ <- %window_input, % <- %window_params)
   }
 }
 
 query MappedSensorWindow(
   $recorded_after? = null
   $page_size = 1
-  $$sort = "asc"
+  %sort = "asc"
 ) {
   sensors(where .code == "temperature" order by station_code asc limit 1) {
     code
-    ...SensorReadingWindow($recorded_after, $$reading_limit <- $page_size, $$reading_direction <- $$sort)
+    ...SensorReadingWindow($recorded_after, %reading_limit <- $page_size, %reading_direction <- %sort)
   }
 }

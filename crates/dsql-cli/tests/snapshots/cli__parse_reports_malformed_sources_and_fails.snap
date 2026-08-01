@@ -1,6 +1,5 @@
 ---
 source: crates/dsql-cli/tests/cli.rs
-assertion_line: 390
 expression: stdout(&output)
 ---
 document [0..29]
@@ -26,4 +25,4 @@ document [0..29]
                                         Limit "limit" [23..28]
     Whitespace "\n" [28..29]
 ---
-invalid syntax, expected one of: '$', '$$', '.', '..', 'exists', 'false', '[', '(', <name>, 'not', 'null', <number>, <string>, '~', 'true'
+invalid syntax, expected one of: '$', '.', '..', 'exists', 'false', '[', '(', <name>, 'not', 'null', <number>, '%', <string>, '~', 'true'

@@ -5,11 +5,12 @@
 
 use std::sync::Arc;
 
-use bowl::Singleton;
+use bowl::{Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
+use dsql_core::entities::variable::VariableSource;
 use dsql_core::facts::VariablesDemand;
 use dsql_core::language_bowl;
-use dsql_core::service::{CompletionList, CompletionRequest, Position};
+use dsql_core::service::{CompletionContext, CompletionList, CompletionRequest, Position};
 use dsql_core::source::{FilePath, insert_source};
 
 async fn completions(source_with_cursor: &str) -> String {
@@ -51,6 +52,33 @@ async fn completion_list_with_catalog(
     .take::<CompletionList>()
     .await
     .expect("completion requests with a known file are answered")
+}
+
+async fn completion_variable_source(source_with_cursor: &str) -> Option<VariableSource> {
+    let offset = source_with_cursor
+        .find('|')
+        .expect("test source marks the cursor with |");
+    let source = source_with_cursor.replacen('|', "", 1);
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, Catalog::hardcoded()).await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
+    insert_source(&bowl, "test.dsql", &source).await;
+
+    let inserted = bowl
+        .insert((
+            CompletionRequest,
+            FilePath("test.dsql".to_string()),
+            Position { offset },
+        ))
+        .await;
+    let request = inserted.entity();
+    let contexts = bowl.scoop::<Query<(Entity, &CompletionContext)>>().await;
+    contexts
+        .collect()
+        .into_iter()
+        .find(|(entity, _)| *entity == request)
+        .and_then(|(_, context)| context.variable_source)
 }
 
 #[tokio::test]
@@ -124,13 +152,26 @@ async fn document_root_offers_definition_keywords() {
 
 #[tokio::test]
 async fn definition_headers_complete_inferred_input_names() {
-    let top_level = completions("query Page($$|) { public::users(limit $$) { id } }").await;
+    let top_level = completions("query Page(%|) { public::users(limit %) { id } }").await;
     let structured =
         completions("query Search($|) { public::users(where .name == $search) { id } }").await;
 
     insta::assert_snapshot!(format!(
         "top-level:\n{top_level}\n\nstructured:\n{structured}"
     ));
+}
+
+#[tokio::test]
+async fn percent_completion_context_ignores_like_wildcards() {
+    let top_level =
+        completion_variable_source("query Page(%|) { public::users(limit %) { id } }").await;
+    let wildcard = completion_variable_source(
+        "query Search { public::users(where .name like \"prefix%|\") { id } }",
+    )
+    .await;
+
+    assert_eq!(top_level, Some(VariableSource::TopLevel));
+    assert_eq!(wildcard, None);
 }
 
 #[tokio::test]
@@ -254,11 +295,11 @@ async fn order_by_offers_columns_and_directions() {
 #[tokio::test]
 async fn bounded_dynamic_inputs_complete_capability_presets() {
     let predicate = completions(
-        "query Q($$search = {}) {\n  public::users(where $$search on |) {\n    id\n  }\n}\n",
+        "query Q(%search = {}) {\n  public::users(where %search on |) {\n    id\n  }\n}\n",
     )
     .await;
     let order = completions(
-        "query Q($$order = []) {\n  public::users(order by $$order on |) {\n    id\n  }\n}\n",
+        "query Q(%order = []) {\n  public::users(order by %order on |) {\n    id\n  }\n}\n",
     )
     .await;
 

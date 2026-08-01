@@ -3,8 +3,8 @@ source: crates/dsql-core/tests/it/variables.rs
 expression: "format!(\"diagnostics:\\n{}\\n\\nbindings:\\n{bindings}\",\nrender_diagnostic_facts(&bowl).await,)"
 ---
 diagnostics:
-Error[302..317]: query `CompatibleAliases` infers incompatible contracts for `params.integer_alias` (first used at 265..280)
-Error[90..98]: query `DistinctProviderTypes` infers incompatible contracts for `params.shared` (first used at 65..73)
+Error[297..311]: query `CompatibleAliases` infers incompatible contracts for `params.integer_alias` (first used at 261..275)
+Error[89..96]: query `DistinctProviderTypes` infers incompatible contracts for `params.shared` (first used at 65..72)
 
 bindings:
 params.shared TextCast pg_catalog.date Text

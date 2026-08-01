@@ -164,7 +164,7 @@ async fn variables_render_as_parameters_and_variants() {
     insert_source(
             &bowl,
             "params.dsql",
-            "query UsersPage {\n  public::users(\n    where .name $$name_op[==, like] $$name and .id == $tenant\n    order by created_at $$dir\n    limit $$max\n    offset $skip\n  ) {\n    id\n    posts(limit 5) {\n      title\n    }\n  }\n}\n",
+            "query UsersPage {\n  public::users(\n    where .name %name_op[==, like] %name and .id == $tenant\n    order by created_at %dir\n    limit %max\n    offset $skip\n  ) {\n    id\n    posts(limit 5) {\n      title\n    }\n  }\n}\n",
         )
         .await;
 
@@ -180,9 +180,9 @@ async fn formatted_and_compact_sql_share_template_substitutions() {
         indoc::indoc! {r#"
             query OutputModes {
               public::users(
-                where .id >= $$minimum
-                order by id $$direction[asc, desc]
-                limit $$limit
+                where .id >= %minimum
+                order by id %direction[asc, desc]
+                limit %limit
               ) {
                 id
                 name
@@ -202,10 +202,10 @@ async fn bounded_dynamic_markers_retry_on_generated_sql_collisions() {
         &bowl,
         "dynamic-marker-collision.dsql",
         indoc::indoc! {r#"
-            query MarkerCollision($$search = {}) {
+            query MarkerCollision(%search = {}) {
               title(
                 where .title == "{{dynamic:0}}"
-                  and $$search on selected
+                  and %search on selected
                 limit 1
               ) {
                 id
@@ -227,32 +227,32 @@ async fn nullable_inputs_prune_predicates_clauses_ordering_and_cardinality() {
         "nullable-inputs.dsql",
         indoc::indoc! {r#"
             query NullableInputs(
-              $$id? = null
-              $$from? = null
-              $$to? = null
-              $$direction? = null
-              $$limit? = null
+              %id? = null
+              %from? = null
+              %to? = null
+              %direction? = null
+              %limit? = null
             ) {
               public::users(
-                where .id == $$id and (.id >= $$from or not (.id <= $$to))
-                order by id $$direction
-                limit $$limit
+                where .id == %id and (.id >= %from or not (.id <= %to))
+                order by id %direction
+                limit %limit
               ) { id }
             }
-            query DefaultedUnique($$id = 1) {
-              public::users(where .id == $$id) { id }
+            query DefaultedUnique(%id = 1) {
+              public::users(where .id == %id) { id }
             }
             query OptionalEdges(
-              $$ids? = null
-              $$offset? = null
-              $$enabled? = null
-              $$reversed? = null
+              %ids? = null
+              %offset? = null
+              %enabled? = null
+              %reversed? = null
             ) {
               public::users(
-                where .id in $$ids
-                  or $$enabled
-                  or $$reversed == .id
-                offset $$offset
+                where .id in %ids
+                  or %enabled
+                  or %reversed == .id
+                offset %offset
               ) { id }
             }
         "#},
@@ -272,25 +272,25 @@ async fn nullable_predicate_operands_wrap_complete_atoms_in_every_order() {
         "nullable-predicate-operands.dsql",
         indoc::indoc! {r#"
             query OptionalAtoms(
-              $$id? = null
-              $$left? = null
-              $$name? = null
-              $$required_name?
-              $$right? = null
+              %id? = null
+              %left? = null
+              %name? = null
+              %required_name?
+              %right? = null
             ) {
-              direct: public::users(where .id == $$id) { id }
-              pattern: public::users(where .name like $$name) { id }
+              direct: public::users(where .id == %id) { id }
+              pattern: public::users(where .name like %name) { id }
               required_pattern: public::users(
-                where .name like $$required_name
+                where .name like %required_name
               ) { id }
-              seed: public::users(where .id == $$left and .id == $$right) { id }
+              seed: public::users(where .id == %left and .id == %right) { id }
               reversed: public::users(
-                where $$id == .id or .name == "fallback"
+                where %id == .id or .name == "fallback"
               ) { id }
               multiple: public::users(
-                where $$left == $$right or .name == "fallback"
+                where %left == %right or .name == "fallback"
               ) { id }
-              negated: public::users(where not ($$id == .id)) { id }
+              negated: public::users(where not (%id == .id)) { id }
             }
         "#},
     )
@@ -322,10 +322,10 @@ async fn featured_movie_optional_like_sql_is_typed_before_its_presence_guard() {
         indoc::indoc! {r#"
             export const FeaturedMovieQuery = dsql(`
             query FeaturedMovieQuery(
-              $$info?
+              %info?
             ) {
               featured: movie_info_idx(where .info_type_id == 101
-                and .info like $$
+                and .info like %
                 and .title.kind_id == 1
                 and .title.movie_info_idx.info_type_id == 100
                 order by info desc, id asc limit 1
@@ -359,29 +359,29 @@ async fn nested_optional_predicate_trees_keep_parameters_typed() {
         "nested-optional-predicates.dsql",
         indoc::indoc! {r#"
             query NestedOptionalPredicates(
-              $$user_name? = null
-              $$post_title? = null
-              $$author_name? = null
-              $$minimum_id? = null
-              $$maximum_id? = null
+              %user_name? = null
+              %post_title? = null
+              %author_name? = null
+              %minimum_id? = null
+              %maximum_id? = null
             ) {
               public::users(
                 where (
-                  .name like $$user_name
-                  or not (.id >= $$minimum_id and .id <= $$maximum_id)
+                  .name like %user_name
+                  or not (.id >= %minimum_id and .id <= %maximum_id)
                 ) and (
-                  .posts.title like $$post_title
-                  or .posts.users.name like $$author_name
+                  .posts.title like %post_title
+                  or .posts.users.name like %author_name
                 )
               ) {
                 id
                 posts(
                   where (
-                    .title like $$post_title
-                    and .users.name like $$author_name
+                    .title like %post_title
+                    and .users.name like %author_name
                   ) or not (
-                    .users.id >= $$minimum_id
-                    and .users.id <= $$maximum_id
+                    .users.id >= %minimum_id
+                    and .users.id <= %maximum_id
                   )
                 ) {
                   id
@@ -407,31 +407,31 @@ async fn valid_collection_and_pagination_defaults_survive_every_binding_shape() 
         "default-binding-shapes.dsql",
         indoc::indoc! {r#"
             fragment DefaultWindow(
-              $$ids = ["00000000-0000-0000-0000-000000000001"]
-              $$limit = 5
-              $$offset = 2
+              %ids = ["00000000-0000-0000-0000-000000000001"]
+              %limit = 5
+              %offset = 2
             ) on public::users {
-              posts(where .id in $$ids limit $$limit offset $$offset) { id }
+              posts(where .id in %ids limit %limit offset %offset) { id }
             }
             query DirectDefaults(
-              $$ids? = null
-              $$limit = 0
-              $$offset = 2
+              %ids? = null
+              %limit = 0
+              %offset = 2
             ) {
               public::posts(
-                where .id in $$ids
-                limit $$limit
-                offset $$offset
+                where .id in %ids
+                limit %limit
+                offset %offset
               ) { id }
             }
             query ContainedDefaults {
               public::users { ...DefaultWindow }
             }
             query LiftedDefaults {
-              public::users { ...DefaultWindow($$) }
+              public::users { ...DefaultWindow(%) }
             }
-            query OmittedDefaults($$limit = 7) {
-              public::users { ...DefaultWindow($$limit) }
+            query OmittedDefaults(%limit = 7) {
+              public::users { ...DefaultWindow(%limit) }
             }
         "#},
     )
@@ -480,21 +480,21 @@ async fn fragment_bindings_rewrite_sql_inputs_and_inline_omitted_defaults() {
         &bowl,
         "fragment-bindings.dsql",
         indoc::indoc! {r#"
-            fragment PostWindow($$minimum = "M" $$limit = 5) on public::users {
-              posts(where .title >= $$minimum limit $$) { id }
+            fragment PostWindow(%minimum = "M" %limit = 5) on public::users {
+              posts(where .title >= %minimum limit %) { id }
             }
             fragment ParentWindow on public::users {
-              ...PostWindow($$)
+              ...PostWindow(%)
             }
             query Contained { public::users { ...PostWindow } }
-            query Bound($$outer = "N") {
-              public::users { ...PostWindow($$minimum <- $$outer) }
+            query Bound(%outer = "N") {
+              public::users { ...PostWindow(%minimum <- %outer) }
             }
             query Namespaced {
-              public::users { ...PostWindow($$ <- $$window) }
+              public::users { ...PostWindow(% <- %window) }
             }
-            query Nested($$outer = "N") {
-              public::users { ...ParentWindow($$minimum <- $$outer) }
+            query Nested(%outer = "N") {
+              public::users { ...ParentWindow(%minimum <- %outer) }
             }
             query DeepContained {
               public::users { ...ParentWindow }
@@ -515,8 +515,8 @@ async fn predicate_extensions_render_with_postgres_semantics() {
         indoc::indoc! {r#"
             query PredicateExtensions {
               title(
-                where not $$disabled
-                  or .id in $$ids
+                where not %disabled
+                  or .id in %ids
                   and .production_year not in [1956, null]
                   and .episode_nr is null
                   and exists .movie_info_idx(where .info_type_id == ..kind_id)
@@ -563,7 +563,7 @@ async fn row_policies_apply_to_roots_relations_aggregates_and_predicate_sources(
             query ConditionalBypass(filter InfoRows when false) {
               title(filter TitleRows when false where exists .movie_info_idx) { id }
             }
-            query ManualRows(filter PositiveInfo when $$positive_only) {
+            query ManualRows(filter PositiveInfo when %positive_only) {
               movie_info_idx { id }
             }
         "#},
@@ -595,12 +595,12 @@ async fn field_filters_mask_every_query_authored_read_and_relation_traversal() {
             }
             query MaskedReads {
               title(
-                where .title == $$guess
+                where .title == %guess
                   and (.title is null or .title is not null)
-                  and .movie_info_idx.info in $$infos
-                  and exists .movie_info_idx(where .info == $$info_guess)
+                  and .movie_info_idx.info in %infos
+                  and exists .movie_info_idx(where .info == %info_guess)
                   and (.movie_info_idx | count .info) > 0
-                order by title $$direction
+                order by title %direction
                 limit 1
               ) {
                 id
@@ -689,14 +689,14 @@ async fn provider_scalars_use_schema_qualified_text_casts_everywhere() {
               apply where true
               where .address == $:trusted_address
             }
-            query ProviderScalars($$search = {}) {
+            query ProviderScalars(%search = {}) {
               events(
-                where .event_date == $$date
-                  and .local_time >= $$start
-                  and .address in $$addresses
-                  and .big_id >= $$minimum_big_id
+                where .event_date == %date
+                  and .local_time >= %start
+                  and .address in %addresses
+                  and .big_id >= %minimum_big_id
                   and .big_id <= 9223372036854775807
-                  and $$search on selected
+                  and %search on selected
                 order by local_time asc
                 limit 1
               ) {
@@ -741,9 +741,9 @@ async fn domains_and_database_arrays_use_shape_aware_json_wires() {
         &bowl,
         "structured-types.dsql",
         indoc::indoc! {r#"
-            query StructuredTypes($$label = "primary", $$address = "127.0.0.1") {
+            query StructuredTypes(%label = "primary", %address = "127.0.0.1") {
               typed_values(
-                where .label == $$label and .address == $$address
+                where .label == %label and .address == %address
                 limit 1
               ) {
                 label
@@ -772,8 +772,8 @@ async fn numeric_template_replacements_never_rewrite_source_literals() {
                 where .amount == 9000000000000000000
                   or .amount == 9000000000000000005.5
                   or .amount == 12345678901234567890.12345678901234567890
-                limit $$page_limit
-                offset $$page_offset
+                limit %page_limit
+                offset %page_offset
               ) { amount }
             }
         "#},
@@ -862,7 +862,7 @@ async fn null_comparisons_render_postgres_null_predicates() {
               title(
                 where .production_year == null
                   or null != .kind_id
-                  or .production_year $$null_operator[==, !=] null
+                  or .production_year %null_operator[==, !=] null
                 limit 2
               ) { id }
             }
@@ -882,12 +882,12 @@ async fn singular_roots_and_relations_render_nullable_object_envelopes() {
         indoc::indoc! {r#"
             query SingularShapes {
               by_limit: title(order by id asc limit 1) { id title }
-              by_key: title(where .id == $$id) {
+              by_key: title(where .id == %id) {
                 id
                 latest_info: movie_info(order by id desc limit 1) { id info }
               }
-              runtime: title(limit $$count) { id }
-              ...title(where .id == $$flat_id) { flat_id: id flat_title: title }
+              runtime: title(limit %count) { id }
+              ...title(where .id == %flat_id) { flat_id: id flat_title: title }
             }
         "#},
     )
@@ -906,7 +906,7 @@ async fn flattened_objects_export_fields_without_wrapper_keys() {
             query FlattenOwner {
               feed: public::posts(limit 1) {
                 id
-                ...users(where .name like $$owner) {
+                ...users(where .name like %owner) {
                   owner_name: name
                   recent: posts(limit 1) { title }
                 }
@@ -915,14 +915,14 @@ async fn flattened_objects_export_fields_without_wrapper_keys() {
             query FlattenPostStats {
               accounts: public::users(limit 1) {
                 id
-                ...posts(where .title like $$title) | aggregate {
+                ...posts(where .title like %title) | aggregate {
                   post_count: count
                   latest_post: max .created_at
                 }
               }
             }
             query FlattenRoot {
-              ...public::users(where .name == $$root_name) | aggregate {
+              ...public::users(where .name == %root_name) | aggregate {
                 user_count: count
                 first_name: min .name
               }

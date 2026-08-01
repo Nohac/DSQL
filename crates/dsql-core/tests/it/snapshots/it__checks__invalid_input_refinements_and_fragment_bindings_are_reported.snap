@@ -1,21 +1,20 @@
 ---
 source: crates/dsql-core/tests/it/checks.rs
-assertion_line: 110
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[105..121]: default for `limit` does not match inferred type int
-Error[1082..1089]: query `IncompatibleMergedContract` infers incompatible contracts for `params.value` (first used at 1061..1068)
-Error[1147..1189]: fragment `Required` mixes or duplicates whole-root and leaf bindings for `params`
-Error[1277..1293]: fragment `Required` input `count` is bound more than once
-Error[1396..1406]: filter-assignment input `enabled` must be a non-null boolean
-Error[178..192]: non-null input `limit` cannot use `null` as its default
-Error[251..263]: comparison-operator input `op` cannot be nullable
-Error[373..397]: default for `direction` does not match inferred type text
-Error[486..498]: limit default for `limit` must be a non-negative integer no greater than 9007199254740991
-Error[501..531]: offset default for `offset` must be a non-negative integer no greater than 9007199254740991
-Error[626..680]: collection default for `ids` cannot contain `null` elements
-Error[772..794]: fragment `Required` requires a binding for `params.count` in explicitly bound `params` root
-Error[784..793]: fragment `Required` infers no `params` input named `missing`
-Error[829..845]: nullable caller input `caller` cannot bind a non-null fragment input
-Error[93..100]: query `InvalidDefaults` infers no top-level input named `missing`
-Error[944..949]: input `count` is refined more than once in query `DuplicateRefinement`
+Error[103..118]: default for `limit` does not match inferred type int
+Error[1058..1064]: query `IncompatibleMergedContract` infers incompatible contracts for `params.value` (first used at 1038..1044)
+Error[1122..1160]: fragment `Required` mixes or duplicates whole-root and leaf bindings for `params`
+Error[1246..1260]: fragment `Required` input `count` is bound more than once
+Error[1363..1372]: filter-assignment input `enabled` must be a non-null boolean
+Error[174..187]: non-null input `limit` cannot use `null` as its default
+Error[245..256]: comparison-operator input `op` cannot be nullable
+Error[365..388]: default for `direction` does not match inferred type text
+Error[476..487]: limit default for `limit` must be a non-negative integer no greater than 9007199254740991
+Error[490..519]: offset default for `offset` must be a non-negative integer no greater than 9007199254740991
+Error[612..665]: collection default for `ids` cannot contain `null` elements
+Error[756..777]: fragment `Required` requires a binding for `params.count` in explicitly bound `params` root
+Error[768..776]: fragment `Required` infers no `params` input named `missing`
+Error[812..827]: nullable caller input `caller` cannot bind a non-null fragment input
+Error[91..98]: query `InvalidDefaults` infers no top-level input named `missing`
+Error[922..927]: input `count` is refined more than once in query `DuplicateRefinement`

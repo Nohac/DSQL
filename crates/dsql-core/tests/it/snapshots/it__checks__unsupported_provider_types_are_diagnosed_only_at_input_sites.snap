@@ -2,6 +2,6 @@
 source: crates/dsql-core/tests/it/checks.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[121..141]: bounded dynamic input exposes unsupported fields: opaque (pg_catalog.opaque_record)
-Error[155..161]: database type `pg_catalog.opaque_record` cannot be used as an input
-Error[98..105]: database type `pg_catalog.opaque_record` cannot be used as an input
+Error[119..138]: bounded dynamic input exposes unsupported fields: opaque (pg_catalog.opaque_record)
+Error[152..158]: database type `pg_catalog.opaque_record` cannot be used as an input
+Error[97..104]: database type `pg_catalog.opaque_record` cannot be used as an input

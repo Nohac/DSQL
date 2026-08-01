@@ -3,4 +3,4 @@ source: crates/dsql-generate/tests/it/generate.rs
 expression: error
 ---
 the project has 1 error diagnostics; fix them before generating:
-queries/frontend/incompatible-preset.dsql:131..150: dynamic input `params.search` is reused: preset `indexed` conflicts with preset `selected_indexed`
+queries/frontend/incompatible-preset.dsql:129..147: dynamic input `params.search` is reused: preset `indexed` conflicts with preset `selected_indexed`

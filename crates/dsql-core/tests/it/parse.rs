@@ -58,7 +58,7 @@ fn scalar_aggregate_predicates_bind_before_comparisons_and_clauses() {
         query AggregateFilters {
           title(
             where .movie_info_idx | exists
-              and .movie_info_idx | count >= $$minimum
+              and .movie_info_idx | count >= %minimum
               and (.movie_info_idx | min .info) like "4.%"
             limit 10
           ) { id }
@@ -74,9 +74,9 @@ fn predicate_extensions_preserve_boolean_precedence_and_sources() {
     let source = indoc::indoc! {r#"
         query PredicateExtensions {
           users(
-            where not $$disabled or .id in [1, null, 2,]
+            where not %disabled or .id in [1, null, 2,]
               and .deleted_at is not null
-              and exists .posts(filter Published when $$enabled where .title not in $$titles and .user_id == ..id)
+              and exists .posts(filter Published when %enabled where .title not in %titles and .user_id == ..id)
           ) { id }
         }
     "#};
@@ -97,7 +97,7 @@ fn spreads_and_flattened_selections_are_disambiguated_by_the_suffix() {
             ...posts @include(if: true) { title }
             ...posts | aggregate { post_count: count }
           }
-          ...public::users(where .name == $$name) | aggregate { user_count: count }
+          ...public::users(where .name == %name) | aggregate { user_count: count }
         }
     "#};
     let (cst, diagnostics) = parse(source);
@@ -120,6 +120,25 @@ fn directives_are_rejected_at_aggregate_owned_positions() {
         })
         .collect::<Vec<_>>()
         .join("---\n");
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn removed_double_dollar_syntax_is_rejected() {
+    let sources = [
+        "query Legacy($$value = 1) { users { id } }",
+        "query Legacy { users(limit $$value) { id } }",
+        "fragment Bits($value? = null) on users { id }\nquery Legacy { users { ...Bits($$value) } }",
+    ];
+    let rendered = sources
+        .iter()
+        .map(|source| {
+            let (_, diagnostics) = parse(source);
+            render_diagnostics(source, &diagnostics)
+        })
+        .collect::<Vec<_>>()
+        .join("---\n");
+
     insta::assert_snapshot!(rendered);
 }
 

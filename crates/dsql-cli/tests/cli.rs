@@ -200,7 +200,7 @@ fn operation_execute_reports_unmapped_types_before_connecting() {
     std::fs::write(&schema, raw).expect("unsupported column added");
     std::fs::write(
         dir.join("dsql/queries/unmapped.dsql"),
-        "query Unmapped { title(where .opaque == $$value limit 1) { id } }\n",
+        "query Unmapped { title(where .opaque == %value limit 1) { id } }\n",
     )
     .expect("unmapped query");
 

@@ -13,7 +13,7 @@ params.shared TopLevel WhereValue Text Some("shared") operators=[] enum=[pending
 params.shared TopLevel WhereValue Text Some("shared") operators=[] enum=[pending|active|archived]
 
 diagnostics:
-Error[218..238]: default for `status` does not match inferred type public.status (one of "pending", "active", "archived")
-Error[241..275]: default for `statuses` does not match inferred type public.status[] (one of "pending", "active", "archived")
-Error[482..490]: query `NominalEnumConflict` infers incompatible contracts for `params.shared` (first used at 446..454)
-Error[615..623]: query `DomainEnumConflict` infers incompatible contracts for `params.shared` (first used at 578..586)
+Error[214..233]: default for `status` does not match inferred type public.status (one of "pending", "active", "archived")
+Error[236..269]: default for `statuses` does not match inferred type public.status[] (one of "pending", "active", "archived")
+Error[473..480]: query `NominalEnumConflict` infers incompatible contracts for `params.shared` (first used at 438..445)
+Error[604..611]: query `DomainEnumConflict` infers incompatible contracts for `params.shared` (first used at 568..575)

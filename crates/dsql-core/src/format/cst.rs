@@ -578,8 +578,8 @@ impl<'a> CstFormatter<'a> {
     }
 
     fn variable_reference(&mut self, node: NodeRef) {
-        if self.direct_token_text(node, Token::DollarDollar).is_some() {
-            self.out.push_str("$$");
+        if self.direct_token_text(node, Token::Percent).is_some() {
+            self.out.push('%');
         } else {
             self.out.push('$');
         }

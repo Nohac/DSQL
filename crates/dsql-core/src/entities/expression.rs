@@ -61,7 +61,7 @@ pub enum Expr {
         variable: VariableRef,
         span: Span,
     },
-    /// One bounded dynamic predicate input such as `$$search on selected`.
+    /// One bounded dynamic predicate input such as `%search on selected`.
     DynamicPredicate {
         variable: VariableRef,
         surface: DynamicInputSurface,
@@ -230,15 +230,15 @@ pub struct PathSegment {
     pub span: Span,
 }
 
-/// One `$name` / `$$name` reference, or an operator variable with its
+/// One `$name` / `%name` reference, or an operator variable with its
 /// allowed comparison set.
 #[derive(Debug, Clone, Hash, PartialEq)]
 pub struct VariableRef {
     pub sigil: Sigil,
-    /// Anonymous variables (`$$` with no name) are allowed syntactically;
+    /// Anonymous variables (`%` with no name) are allowed syntactically;
     /// the variables stage decides what they mean.
     pub name: Option<String>,
-    /// `Some` only for operator variables like `$$op[==, !=]`.
+    /// `Some` only for operator variables like `%op[==, !=]`.
     pub operators: Option<Vec<ComparisonOp>>,
     pub span: Span,
 }
@@ -605,7 +605,7 @@ pub(crate) fn build_variable_ref(cst: &CstData, source: &str, node: NodeRef) -> 
         .children(node)
         .find_map(|child| match cst.get(child) {
             Node::Token(Token::Dollar, _) => Some(Sigil::Build),
-            Node::Token(Token::DollarDollar, _) => Some(Sigil::Query),
+            Node::Token(Token::Percent, _) => Some(Sigil::Query),
             _ => None,
         })
         .map(|sigil| if context { Sigil::Context } else { sigil })
@@ -628,7 +628,7 @@ pub(crate) fn build_variable_ref(cst: &CstData, source: &str, node: NodeRef) -> 
     }
 }
 
-/// Whether a variable binds at build time (`$`) or query time (`$$`).
+/// Whether a variable binds as structured input (`$`) or a top-level param (`%`).
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Sigil {
     Build,
@@ -640,7 +640,7 @@ impl Sigil {
     pub fn as_str(self) -> &'static str {
         match self {
             Sigil::Build => "$",
-            Sigil::Query => "$$",
+            Sigil::Query => "%",
             Sigil::Context => "$:",
         }
     }

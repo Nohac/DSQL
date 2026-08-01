@@ -38,7 +38,7 @@ Functions may appear as predicate values first.
 
 ```dsql
 query Users {
-  users(where lower(.email) like $$email_pattern) {
+  users(where lower(.email) like %email_pattern) {
     id
     email
   }

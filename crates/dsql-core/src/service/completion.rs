@@ -342,6 +342,11 @@ async fn enrich_completion_requests(
     // full-source tree bails frontier text out to the document, so it
     // works identically for well-formed and mid-edit sources.
     let truncated_cst = truncated.into_data();
+    let variable_source = match last_token(&truncated_cst, NodeRef::ROOT) {
+        Some(Token::Dollar) => Some(VariableSource::Structured),
+        Some(Token::Percent) => Some(VariableSource::TopLevel),
+        _ => None,
+    };
     let (spine, stop) = open_spine(&truncated_cst);
     let spread_dots = prefix
         .bytes()
@@ -363,9 +368,7 @@ async fn enrich_completion_requests(
             site => site,
         },
     };
-    if matches!(prefix.as_bytes().last(), Some(b'$'))
-        && definition_header_contains(&parsed.cst, cursor)
-    {
+    if variable_source.is_some() && definition_header_contains(&parsed.cst, cursor) {
         site = CompletionSite::DefinitionInput;
     }
 
@@ -517,13 +520,7 @@ async fn enrich_completion_requests(
         scope: scope.0.clone(),
         keywords,
         spread_dots,
-        variable_source: if prefix.ends_with("$$") {
-            Some(VariableSource::TopLevel)
-        } else if prefix.ends_with('$') {
-            Some(VariableSource::Structured)
-        } else {
-            None
-        },
+        variable_source,
     });
 }
 

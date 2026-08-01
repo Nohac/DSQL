@@ -112,7 +112,7 @@ The initial condition contract is intentionally small:
 
 - Conditions may use literals, boolean operators, trusted `$:` context, and
   fields declared by their target.
-- Public and inferred `$` or `$$` variables are not allowed.
+- Public and inferred `$` or `%` variables are not allowed.
 - Conditions are usable only by filter definitions.
 - A condition does not take parameters or reference another condition.
 - A filter target using a condition must satisfy the condition's target.
@@ -214,7 +214,7 @@ Without `when`, the assigned state is `true`. A row-independent boolean
 condition assigns the state dynamically:
 
 ```dsql
-posts(filter Published when $$publishedOnly) {
+posts(filter Published when %publishedOnly) {
   id
 }
 ```
@@ -222,7 +222,7 @@ posts(filter Published when $$publishedOnly) {
 A default-active filter is turned off by assigning `false`:
 
 ```dsql
-users(filter SoftDelete when not $$includeDeleted) {
+users(filter SoftDelete when not %includeDeleted) {
   id
   deleted_at
 }
@@ -240,7 +240,7 @@ users(filter SoftDelete when false) {
 With the conditionally enforced `SoftDelete` above, effective application is:
 
 ```text
-PreventReadDeleted or not $$includeDeleted
+PreventReadDeleted or not %includeDeleted
 ```
 
 An unauthorized request therefore keeps the filter active. An authorized
@@ -259,10 +259,10 @@ Query headers may establish recursive filter assignments:
 
 ```dsql
 query Administration(
-  $$includeDeleted = false
-  $$publishedOnly = false
-  filter SoftDelete when not $$includeDeleted
-  filter Published when $$publishedOnly
+  %includeDeleted = false
+  %publishedOnly = false
+  filter SoftDelete when not %includeDeleted
+  filter Published when %publishedOnly
 ) {
   projects {
     id
@@ -360,7 +360,7 @@ end
 
 This prevents a caller from learning a hidden value through filtering,
 ordering, grouping, or aggregation. An unauthorized comparison such as `.email
-== $$guess` compares `NULL` with the guess and never confirms the hidden value.
+== %guess` compares `NULL` with the guess and never confirms the hidden value.
 
 When a relation-field condition is false:
 

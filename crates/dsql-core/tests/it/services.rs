@@ -149,10 +149,10 @@ async fn hover_on_variables_reports_bindings() {
     insert_catalog(&bowl, dsql_core::catalog::Catalog::hardcoded()).await;
     bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
         .await;
-    let source = "query Q {\n  public::users(where .name like $$search) {\n    id\n  }\n}\n";
+    let source = "query Q {\n  public::users(where .name like %search) {\n    id\n  }\n}\n";
     insert_source(&bowl, "vars.dsql", source).await;
 
-    let offset = source.find("$$search").expect("test text") + "$$".len();
+    let offset = source.find("%search").expect("test text") + "%".len();
     let info = bowl
         .insert((
             HoverRequest,
@@ -175,10 +175,10 @@ async fn hover_on_bounded_dynamic_variables_reports_their_roles() {
     let source = indoc::indoc! {r#"
         query Q {
           public::users(
-            where $$search on selected
-              and $$indexed_search on indexed
-              and $$selected_indexed_search on selected_indexed
-            order by $$order on selected
+            where %search on selected
+              and %indexed_search on indexed
+              and %selected_indexed_search on selected_indexed
+            order by %order on selected
           ) {
             id
             name
@@ -198,9 +198,9 @@ async fn hover_on_bounded_dynamic_variables_reports_their_roles() {
     ]
     .map(|name| {
         let offset = source
-            .find(&format!("$${name}"))
+            .find(&format!("%{name}"))
             .expect("test variable exists")
-            + "$$".len();
+            + "%".len();
         (name, offset)
     });
     let mut rendered = Vec::new();
@@ -214,10 +214,10 @@ async fn hover_on_bounded_dynamic_variables_reports_their_roles() {
 #[tokio::test]
 async fn query_definition_hover_reports_inferred_variables() {
     let source = indoc::indoc! {r#"
-        query MovieDetailPageQuery($$movieId? = null $$direction = "desc" $count = 10) {
+        query MovieDetailPageQuery(%movieId? = null %direction = "desc" $count = 10) {
           public::users(
-            where .id == $$movieId
-            order by created_at $$direction
+            where .id == %movieId
+            order by created_at %direction
             limit $count
           ) {
             id
@@ -229,18 +229,18 @@ async fn query_definition_hover_reports_inferred_variables() {
           }
         }
         query DynamicReadingSearch(
-          $$selected_search = {}
-          $$indexed_search = {}
-          $$searchable_search = {}
-          $$selected_order = []
-          $$selected_indexed_order = []
+          %selected_search = {}
+          %indexed_search = {}
+          %searchable_search = {}
+          %selected_order = []
+          %selected_indexed_order = []
         ) {
           public::users(
-            where $$selected_search on selected
-              and $$indexed_search on indexed
-              and $$searchable_search on searchable
-            order by $$selected_order on selected,
-              $$selected_indexed_order on selected_indexed
+            where %selected_search on selected
+              and %indexed_search on indexed
+              and %searchable_search on searchable
+            order by %selected_order on selected,
+              %selected_indexed_order on selected_indexed
           ) {
             id
             display: name
@@ -277,20 +277,20 @@ async fn query_definition_hover_reports_inferred_variables() {
 #[tokio::test]
 async fn query_definition_hover_rederives_dynamic_shapes_after_edits() {
     let initial = indoc::indoc! {r#"
-        query DynamicReadingSearch($$search = {} $$order = []) {
+        query DynamicReadingSearch(%search = {} %order = []) {
           public::users(
-            where $$search on selected
-            order by $$order on selected
+            where %search on selected
+            order by %order on selected
           ) {
             id
           }
         }
     "#};
     let updated = indoc::indoc! {r#"
-        query DynamicReadingSearch($$search = {} $$order = []) {
+        query DynamicReadingSearch(%search = {} %order = []) {
           public::users(
-            where $$search on selected
-            order by $$order on selected
+            where %search on selected
+            order by %order on selected
           ) {
             contact: email
             recorded: created_at

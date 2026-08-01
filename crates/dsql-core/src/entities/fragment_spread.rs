@@ -31,7 +31,7 @@ pub struct SpreadDecl {
     pub bindings: Vec<SpreadBinding>,
 }
 
-/// One `$name`, `$$name`, `$`, or `$$` side of a spread binding.
+/// One `$name`, `%name`, `$`, or `%` side of a spread binding.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SpreadBindingRef {
     pub source: VariableSource,
@@ -181,7 +181,7 @@ fn build_binding_ref(
         .children(variable)
         .find_map(|child| match cst.get(child) {
             Node::Token(Token::Dollar, _) => Some(VariableSource::Structured),
-            Node::Token(Token::DollarDollar, _) => Some(VariableSource::TopLevel),
+            Node::Token(Token::Percent, _) => Some(VariableSource::TopLevel),
             _ => None,
         })?;
     let name_span = direct_name(cst, variable);

@@ -72,7 +72,7 @@ single user's posts can fetch the next page without rerunning the full
 
 ```dsql
 fragment UserPosts on users @fetchable(key: "userPosts") {
-  posts(first $$first after $$after) {
+  posts(first %first after %after) {
     id
     title
     created_at
@@ -80,7 +80,7 @@ fragment UserPosts on users @fetchable(key: "userPosts") {
 }
 
 query UsersPage {
-  users(limit $$limit) {
+  users(limit %limit) {
     id
     name
     ...UserPosts

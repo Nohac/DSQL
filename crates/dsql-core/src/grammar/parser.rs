@@ -58,7 +58,7 @@ fn starts_expression(token: Token) -> bool {
                 | Token::DotDot
                 | Token::Tilde
                 | Token::Dollar
-                | Token::DollarDollar
+                | Token::Percent
                 | Token::LPar
         )
 }
@@ -189,7 +189,7 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     }
 
     fn predicate_order_by_clause_1(&self) -> bool {
-        is_name_token(self.peek(1)) || self.peek(1) == Token::DollarDollar
+        is_name_token(self.peek(1)) || self.peek(1) == Token::Percent
     }
 
     fn predicate_operator_variable_1(&self) -> bool {
@@ -221,10 +221,9 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     }
 
     fn predicate_binding_list_1(&self) -> bool {
-        matches!(
-            self.current,
-            Token::Comma | Token::Dollar | Token::DollarDollar
-        )
+        self.current == Token::Comma
+            || matches!(self.current, Token::Dollar | Token::Percent)
+                && !current_follows_previous_directly(self)
     }
 
     fn predicate_qualified_name_1(&self) -> bool {
@@ -252,7 +251,7 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
         self.current == Token::Exists
             && (matches!(self.peek(1), Token::Dot | Token::DotDot | Token::Tilde)
                 || is_name_token(self.peek(1)))
-            || self.current == Token::DollarDollar
+            || self.current == Token::Percent
                 && (self.peek(1) == Token::On
                     || is_variable_name_token(self.peek(1)) && self.peek(2) == Token::On)
     }
@@ -266,7 +265,7 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
     }
 
     fn predicate_expr_4(&self) -> bool {
-        !matches!(self.current, Token::Dollar | Token::DollarDollar)
+        !matches!(self.current, Token::Dollar | Token::Percent)
             || self.peek(1) == Token::LBracket
             || is_variable_name_token(self.peek(1)) && self.peek(2) == Token::LBracket
     }
@@ -278,7 +277,7 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
                 Token::ColonColon | Token::Arrow | Token::LBrace | Token::Pipe
             )
             || (self.peek(2) == Token::LPar
-                && !matches!(self.peek(3), Token::Dollar | Token::DollarDollar))
+                && !matches!(self.peek(3), Token::Dollar | Token::Percent))
             || (self.peek(2) == Token::At && directives_end_in_selection_set(self))
     }
 }
