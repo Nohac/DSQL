@@ -1,0 +1,84 @@
+# semantic DSQL highlighting
+# <- comment
+
+query Find(%year = 2000 $title? filter visible when $:tenant) @dsql.deprecated(reason: "old") {
+# <- keyword.declaration
+#     ^^^^ function
+#           ^ variable.parameter
+#                        ^ variable
+#                                      ^^^^^^^ function.macro
+#                                                     ^^^^^^ variable.builtin
+#                                                             ^ punctuation.special
+#                                                              ^^^^ namespace
+#                                                                   ^^^^^^^^^^ attribute
+#                                                                              ^^^^^^ variable.parameter
+#                                                                                       ^^^^^ string
+  ...movie: movies->title(where .production_year >= %year and .name like "A%") {
+# ^^^ operator
+#    ^^^^^ property.definition
+#           ^^^^^^ property
+#                   ^^^^^ property
+#                                ^^^^^^^^^^^^^^^ property
+#                                                ^^ operator
+#                                                    ^^^^ variable.parameter
+#                                                         ^^^ operator
+#                                                              ^^^^^ property
+#                                                                    ^^^^ operator
+    ...filter
+#   ^^^ operator
+#      ^^^^^^ type
+  }
+  ratings | stats by year: .production_year {
+# ^^^^^^^ property
+#           ^^^^^ function.builtin
+#                    ^^^^ property.definition
+    total: count .rating
+#   ^^^^^ property.definition
+#          ^^^^^ function.builtin
+#                 ^^^^^^^ property
+  }
+}
+
+fragment filter on imdb::title {
+# <- keyword.declaration
+#        ^^^^^^ type
+#                  ^^^^ namespace
+#                        ^^^^^ type
+  id
+}
+
+filter visible on { .id: integer } {
+# <- keyword.declaration
+#      ^^^^^^^ function.macro
+#                    ^^ property.definition
+#                        ^^^^^^^ type
+  apply where .id == 1
+# ^^^^^ keyword
+#              ^^ property
+#                 ^^ operator
+#                    ^ number
+}
+
+condition available on title {
+# <- keyword.declaration
+#         ^^^^^^^^^ function.macro
+  where .active == true and .deleted_at is null
+#        ^^^^^^^ property
+#               ^^ operator
+#                  ^^^^ boolean
+#                       ^^^ operator
+#                            ^^^^^^^^^^^ property
+#                                       ^^ operator
+#                                          ^^^^ constant.builtin
+}
+
+query Search {
+  title(where matches and %term on selected_indexed and allowed) {
+#             ^^^^^^^ function.call
+#                          ^^^^ variable.parameter
+#                               ^^ keyword
+#                                  ^^^^^^^^^^^^^^^^ constant.builtin
+#                                                       ^^^^^^^ function.call
+    id
+  }
+}

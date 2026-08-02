@@ -23,6 +23,11 @@
   by the vendored lelwel; editing the `.llw` regenerates it on the next build.
   Adding a grammar rule intentionally breaks compilation until an entity claims
   it in the `lower_rule` dispatch.
+- The editor grammar under `integrations/editor/tree-sitter` is maintained manually.
+  Changes to `dsql.llw` or the lexer patterns in `crates/dsql-core/build.rs` must update
+  it and pass `bun run check:surface`, `bun run check:captures`, and
+  `bun run test:corpus` from that directory. The surface check would, for example,
+  have caught the removed double sigil and its percent replacement.
 
 ## Testing
 

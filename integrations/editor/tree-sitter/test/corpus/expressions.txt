@@ -1,0 +1,213 @@
+==================
+Expression and variable forms
+==================
+
+query ExpressionMatrix(
+  %value = 1
+  %values = [1, 2, 3,]
+  $field? = null
+) {
+  title(
+    where not (.id %comparison[==, !=,] %value)
+      or .id in %values
+      and .name not in ["x", "y"]
+      and .note is null
+      and .kind is not null
+      and exists .cast_info(filter visible when $:tenant where .note != null)
+      and exists catalog::title
+      and (.cast_info | count) >= 2
+      and ~title.id == ..parent.id
+      and %search on searchable
+    order by %sort on selected_indexed
+  ) {
+    id
+  }
+}
+
+---
+
+(document
+  (query_definition
+    name: (name
+      (identifier))
+    inputs: (query_header
+      (input_refinement
+        parameter: (top_level_parameter
+          name: (variable_name
+            (identifier)))
+        default: (default_value
+          (literal
+            (number))))
+      (input_refinement
+        parameter: (top_level_parameter
+          name: (variable_name
+            (identifier)))
+        default: (default_value
+          (default_collection
+            (default_value
+              (literal
+                (number)))
+            (default_value
+              (literal
+                (number)))
+            (default_value
+              (literal
+                (number))))))
+      (input_refinement
+        parameter: (structured_parameter
+          name: (variable_name
+            (contextual_name)))
+        default: (default_value
+          (literal))))
+    body: (selection_set
+      (selection
+        (field_selection
+          field: (relation_reference
+            name: (name
+              (identifier)))
+          (field_suffix
+            (clause_list
+              (where_clause
+                condition: (binary_expression
+                  left: (unary_expression
+                    operand: (parenthesized_expression
+                      expression: (binary_expression
+                        left: (scoped_path
+                          anchor: (path_anchor)
+                          segment: (scoped_path_segment
+                            name: (name
+                              (identifier))))
+                        operator: (binary_operator
+                          (operator_variable
+                            parameter: (top_level_variable
+                              name: (variable_name
+                                (identifier)))
+                            (comparison_operator)
+                            (comparison_operator)))
+                        right: (value_variable
+                          (top_level_variable
+                            name: (variable_name
+                              (identifier)))))))
+                  right: (binary_expression
+                    left: (binary_expression
+                      left: (binary_expression
+                        left: (binary_expression
+                          left: (binary_expression
+                            left: (binary_expression
+                              left: (binary_expression
+                                left: (binary_expression
+                                  left: (binary_expression
+                                    left: (scoped_path
+                                      anchor: (path_anchor)
+                                      segment: (scoped_path_segment
+                                        name: (name
+                                          (identifier))))
+                                    right: (value_variable
+                                      (top_level_variable
+                                        name: (variable_name
+                                          (identifier)))))
+                                  right: (binary_expression
+                                    left: (scoped_path
+                                      anchor: (path_anchor)
+                                      segment: (scoped_path_segment
+                                        name: (name
+                                          (identifier))))
+                                    right: (collection_literal
+                                      (literal
+                                        (string))
+                                      (literal
+                                        (string)))))
+                                right: (null_test_expression
+                                  value: (scoped_path
+                                    anchor: (path_anchor)
+                                    segment: (scoped_path_segment
+                                      name: (name
+                                        (identifier))))))
+                              right: (null_test_expression
+                                value: (scoped_path
+                                  anchor: (path_anchor)
+                                  segment: (scoped_path_segment
+                                    name: (name
+                                      (identifier))))))
+                            right: (exists_expression
+                              source: (exists_source
+                                source: (scoped_path
+                                  anchor: (path_anchor)
+                                  segment: (scoped_path_segment
+                                    name: (name
+                                      (identifier))))
+                                (filter_assignment
+                                  filter: (name
+                                    (identifier))
+                                  condition: (value_variable
+                                    (context_variable
+                                      name: (identifier))))
+                                (where_clause
+                                  condition: (binary_expression
+                                    left: (scoped_path
+                                      anchor: (path_anchor)
+                                      segment: (scoped_path_segment
+                                        name: (name
+                                          (identifier))))
+                                    operator: (binary_operator
+                                      (comparison_operator))
+                                    right: (literal))))))
+                          right: (exists_expression
+                            source: (exists_source
+                              source: (qualified_name
+                                namespace: (name
+                                  (identifier))
+                                name: (name
+                                  (identifier))))))
+                        right: (binary_expression
+                          left: (parenthesized_expression
+                            expression: (scalar_aggregate_expression
+                              source: (scoped_path
+                                anchor: (path_anchor)
+                                segment: (scoped_path_segment
+                                  name: (name
+                                    (identifier))))
+                              function: (name
+                                (identifier))))
+                          operator: (binary_operator
+                            (comparison_operator))
+                          right: (literal
+                            (number))))
+                      right: (binary_expression
+                        left: (scoped_path
+                          anchor: (path_anchor)
+                          segment: (scoped_path_segment
+                            name: (name
+                              (identifier)))
+                          segment: (scoped_path_segment
+                            name: (name
+                              (identifier))))
+                        operator: (binary_operator
+                          (comparison_operator))
+                        right: (scoped_path
+                          anchor: (path_anchor)
+                          segment: (scoped_path_segment
+                            name: (name
+                              (identifier)))
+                          segment: (scoped_path_segment
+                            name: (name
+                              (identifier))))))
+                    right: (dynamic_input
+                      parameter: (top_level_variable
+                        name: (variable_name
+                          (identifier)))
+                      surface: (dynamic_surface)))))
+              (order_by_clause
+                item: (order_item
+                  (dynamic_input
+                    parameter: (top_level_variable
+                      name: (variable_name
+                        (identifier)))
+                    surface: (dynamic_surface)))))
+            (field_continuation
+              (selection_set
+                (selection
+                  (field_selection
+                    field: (relation_reference
+                      name: (name
+                        (identifier)))))))))))))

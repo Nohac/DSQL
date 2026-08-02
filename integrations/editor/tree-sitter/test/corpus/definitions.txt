@@ -1,0 +1,165 @@
+==================
+Definitions and keyword-shaped names
+==================
+
+query filter(
+  %where = 1
+  $limit?
+  filter filter when %where > 0
+) @dsql.deprecated(reason: "old") {
+  filter
+}
+
+fragment filter($query? = null) on catalog::condition {
+  field
+}
+
+filter condition on catalog::filter {
+  apply
+  apply where .selected == $field
+  field filter, when where .indexed == true
+  where .searchable is not null
+}
+
+condition apply on {
+  .field: selected,
+  .when: searchable
+} {
+  where .field != null
+}
+
+---
+
+(document
+  (query_definition
+    name: (name
+      (contextual_name))
+    inputs: (query_header
+      (input_refinement
+        parameter: (top_level_parameter
+          name: (variable_name))
+        default: (default_value
+          (literal
+            (number))))
+      (input_refinement
+        parameter: (structured_parameter
+          name: (variable_name)))
+      (filter_assignment
+        filter: (name
+          (contextual_name))
+        condition: (binary_expression
+          left: (value_variable
+            (top_level_variable
+              name: (variable_name)))
+          operator: (binary_operator
+            (comparison_operator))
+          right: (literal
+            (number)))))
+    directive: (directive
+      name: (directive_name
+        namespace: (name
+          (identifier))
+        member: (name
+          (identifier)))
+      (directive_argument
+        name: (name
+          (identifier))
+        value: (literal
+          (string))))
+    body: (selection_set
+      (selection
+        (field_selection
+          field: (relation_reference
+            name: (name
+              (contextual_name)))))))
+  (fragment_definition
+    name: (name
+      (contextual_name))
+    inputs: (fragment_header
+      (input_refinement
+        parameter: (structured_parameter
+          name: (variable_name))
+        default: (default_value
+          (literal))))
+    target: (type_reference
+      namespace: (name
+        (identifier))
+      name: (name
+        (contextual_name)))
+    body: (selection_set
+      (selection
+        (field_selection
+          field: (relation_reference
+            name: (name
+              (contextual_name)))))))
+  (filter_definition
+    name: (name
+      (contextual_name))
+    target: (policy_target
+      (type_reference
+        namespace: (name
+          (identifier))
+        name: (name
+          (contextual_name))))
+    body: (filter_body
+      (apply_rule)
+      (apply_rule
+        condition: (binary_expression
+          left: (scoped_path
+            anchor: (path_anchor)
+            segment: (scoped_path_segment
+              name: (name
+                (contextual_name))))
+          operator: (binary_operator
+            (comparison_operator))
+          right: (value_variable
+            (structured_variable
+              name: (variable_name
+                (contextual_name))))))
+      (field_rule
+        field: (name
+          (contextual_name))
+        field: (name
+          (contextual_name))
+        condition: (binary_expression
+          left: (scoped_path
+            anchor: (path_anchor)
+            segment: (scoped_path_segment
+              name: (name
+                (contextual_name))))
+          operator: (binary_operator
+            (comparison_operator))
+          right: (literal)))
+      (where_clause
+        condition: (null_test_expression
+          value: (scoped_path
+            anchor: (path_anchor)
+            segment: (scoped_path_segment
+              name: (name
+                (contextual_name))))))))
+  (condition_definition
+    name: (name
+      (contextual_name))
+    target: (policy_target
+      (shape_target
+        (shape_field
+          name: (name
+            (contextual_name))
+          type: (name
+            (contextual_name)))
+        (shape_field
+          name: (name
+            (contextual_name))
+          type: (name
+            (contextual_name)))))
+    body: (condition_body
+      condition: (where_clause
+        condition: (binary_expression
+          left: (scoped_path
+            anchor: (path_anchor)
+            segment: (scoped_path_segment
+              name: (name
+                (contextual_name))))
+          operator: (binary_operator
+            (comparison_operator))
+          right: (literal))))))

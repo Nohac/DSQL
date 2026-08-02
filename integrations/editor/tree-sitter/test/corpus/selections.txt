@@ -1,0 +1,292 @@
+==================
+Selections, clauses, bindings, directives, and aggregates
+==================
+
+fragment Bits(%page? = null $structured? = null) on title {
+  id
+}
+
+query SelectionMatrix(%page = 0 %direction = "desc" %options = {}) {
+  ...Bits(%page <- %page, $structured, %, $) @.deprecated(reason: "binding")
+  ...Bits @.deprecated(reason: "bare")
+  ...movie: movies->title(
+    filter visible when $:tenant
+    where .production_year >= %year
+      and .title like %search
+    order by catalog::production_year %direction,
+      %selected on selected,
+      %indexed on indexed,
+      %order on selected_indexed,
+      %search on searchable,
+    limit %page
+    offset 1
+  ) @dsql.deprecated(reason: "field") {
+    ...aliases {
+      id
+    }
+    cast_info->title
+  }
+  ratings | stats by year: .production_year, .kind_id {
+    total: count,
+    max .rating,
+  }
+}
+
+---
+
+(document
+  (fragment_definition
+    name: (name
+      (identifier))
+    inputs: (fragment_header
+      (input_refinement
+        parameter: (top_level_parameter
+          name: (variable_name
+            (identifier)))
+        default: (default_value
+          (literal)))
+      (input_refinement
+        parameter: (structured_parameter
+          name: (variable_name
+            (identifier)))
+        default: (default_value
+          (literal))))
+    target: (type_reference
+      name: (name
+        (identifier)))
+    body: (selection_set
+      (selection
+        (field_selection
+          field: (relation_reference
+            name: (name
+              (identifier)))))))
+  (query_definition
+    name: (name
+      (identifier))
+    inputs: (query_header
+      (input_refinement
+        parameter: (top_level_parameter
+          name: (variable_name
+            (identifier)))
+        default: (default_value
+          (literal
+            (number))))
+      (input_refinement
+        parameter: (top_level_parameter
+          name: (variable_name
+            (identifier)))
+        default: (default_value
+          (literal
+            (string))))
+      (input_refinement
+        parameter: (top_level_parameter
+          name: (variable_name
+            (identifier)))
+        default: (default_value
+          (empty_object))))
+    body: (selection_set
+      (selection
+        (fragment_spread
+          fragment: (name
+            (identifier))
+          bindings: (binding_list
+            (binding_item
+              target: (binding_variable
+                (top_level_variable
+                  name: (variable_name
+                    (identifier))))
+              source: (binding_variable
+                (top_level_variable
+                  name: (variable_name
+                    (identifier)))))
+            (binding_item
+              target: (binding_variable
+                (structured_variable
+                  name: (variable_name
+                    (identifier)))))
+            (binding_item
+              target: (binding_variable
+                (top_level_variable)))
+            (binding_item
+              target: (binding_variable
+                (structured_variable))))
+          directive: (directive
+            name: (directive_name
+              member: (name
+                (identifier)))
+            (directive_argument
+              name: (name
+                (identifier))
+              value: (literal
+                (string))))))
+      (selection
+        (fragment_spread
+          fragment: (name
+            (identifier))
+          directive: (directive
+            name: (directive_name
+              member: (name
+                (identifier)))
+            (directive_argument
+              name: (name
+                (identifier))
+              value: (literal
+                (string))))))
+      (selection
+        (field_selection
+          alias: (relation_reference
+            name: (name
+              (identifier)))
+          field: (relation_reference
+            name: (name
+              (identifier))
+            reverse: (name
+              (identifier)))
+          (field_suffix
+            (clause_list
+              (filter_assignment
+                filter: (name
+                  (identifier))
+                condition: (value_variable
+                  (context_variable
+                    name: (identifier))))
+              (where_clause
+                condition: (binary_expression
+                  left: (binary_expression
+                    left: (scoped_path
+                      anchor: (path_anchor)
+                      segment: (scoped_path_segment
+                        name: (name
+                          (identifier))))
+                    operator: (binary_operator
+                      (comparison_operator))
+                    right: (value_variable
+                      (top_level_variable
+                        name: (variable_name
+                          (identifier)))))
+                  right: (binary_expression
+                    left: (scoped_path
+                      anchor: (path_anchor)
+                      segment: (scoped_path_segment
+                        name: (name
+                          (identifier))))
+                    operator: (binary_operator
+                      (comparison_operator))
+                    right: (value_variable
+                      (top_level_variable
+                        name: (variable_name
+                          (identifier)))))))
+              (order_by_clause
+                item: (order_item
+                  field: (qualified_name
+                    namespace: (name
+                      (identifier))
+                    name: (name
+                      (identifier)))
+                  direction: (sort_direction
+                    (value_variable
+                      (top_level_variable
+                        name: (variable_name
+                          (identifier))))))
+                item: (order_item
+                  (dynamic_input
+                    parameter: (top_level_variable
+                      name: (variable_name
+                        (contextual_name)))
+                    surface: (dynamic_surface)))
+                item: (order_item
+                  (dynamic_input
+                    parameter: (top_level_variable
+                      name: (variable_name
+                        (contextual_name)))
+                    surface: (dynamic_surface)))
+                item: (order_item
+                  (dynamic_input
+                    parameter: (top_level_variable
+                      name: (variable_name))
+                    surface: (dynamic_surface)))
+                item: (order_item
+                  (dynamic_input
+                    parameter: (top_level_variable
+                      name: (variable_name
+                        (identifier)))
+                    surface: (dynamic_surface))))
+              (limit_clause
+                value: (value_variable
+                  (top_level_variable
+                    name: (variable_name
+                      (identifier)))))
+              (offset_clause
+                value: (literal
+                  (number))))
+            (field_continuation
+              (directive
+                name: (directive_name
+                  namespace: (name
+                    (identifier))
+                  member: (name
+                    (identifier)))
+                (directive_argument
+                  name: (name
+                    (identifier))
+                  value: (literal
+                    (string))))
+              (selection_set
+                (selection
+                  (field_selection
+                    field: (relation_reference
+                      name: (name
+                        (identifier)))
+                    (field_suffix
+                      (field_continuation
+                        (selection_set
+                          (selection
+                            (field_selection
+                              field: (relation_reference
+                                name: (name
+                                  (identifier))))))))))
+                (selection
+                  (field_selection
+                    field: (relation_reference
+                      name: (name
+                        (identifier))
+                      reverse: (name
+                        (identifier))))))))))
+      (selection
+        (field_selection
+          field: (relation_reference
+            name: (name
+              (identifier)))
+          (field_suffix
+            (field_continuation
+              (pipe_transform
+                function: (name
+                  (identifier))
+                group: (aggregate_group_key
+                  alias: (name
+                    (identifier))
+                  path: (scoped_path
+                    anchor: (path_anchor)
+                    segment: (scoped_path_segment
+                      name: (name
+                        (identifier)))))
+                group: (aggregate_group_key
+                  path: (scoped_path
+                    anchor: (path_anchor)
+                    segment: (scoped_path_segment
+                      name: (name
+                        (identifier)))))
+                body: (aggregate_set
+                  (aggregate_field
+                    alias: (name
+                      (identifier))
+                    function: (name
+                      (identifier)))
+                  (aggregate_field
+                    function: (name
+                      (identifier))
+                    path: (scoped_path
+                      anchor: (path_anchor)
+                      segment: (scoped_path_segment
+                        name: (name
+                          (identifier))))))))))))))
