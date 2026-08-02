@@ -8,6 +8,7 @@
     "check:surface": "node scripts/check-language-surface.mjs",
     "test:corpus": "node scripts/test-corpus.mjs",
     "check:captures": "node scripts/check-captures.mjs",
+    "test:indents": "node scripts/check-indents.mjs",
     "test:fixtures": "node scripts/check-fixtures.mjs",
     "test": "bun run check:surface && bun run check:captures && bun run test:corpus && bun run test:fixtures"
   }

@@ -25,9 +25,11 @@
   it in the `lower_rule` dispatch.
 - The editor grammar under `integrations/editor/tree-sitter` is maintained manually.
   Changes to `dsql.llw` or the lexer patterns in `crates/dsql-core/build.rs` must update
-  it and pass `bun run check:surface`, `bun run check:captures`, and
-  `bun run test:corpus` from that directory. The surface check would, for example,
-  have caught the removed double sigil and its percent replacement.
+  it and pass `bun run check:surface`, `bun run check:captures`,
+  `bun run test:corpus`, and `bun run test:fixtures` from that directory. The surface
+  check would, for example, have caught the removed double sigil and its percent
+  replacement. Indentation-query changes must also pass `bun run test:indents`; this
+  editor-specific gate requires Neovim with `nvim-treesitter` installed.
 
 ## Testing
 
