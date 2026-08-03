@@ -36,7 +36,8 @@ fragment SensorReadingWindow(
   %reading_limit? = 2
   %reading_direction = "desc"
 ) on sensors {
-  readings(where .recorded_at >= $recorded_after
+  readings(
+    where .recorded_at >= $recorded_after
     order by recorded_at %reading_direction, id desc
     limit %reading_limit
   ) {
