@@ -100,8 +100,8 @@ context
 `params` targets path variables inferred from `%name` or equivalent query
 parameter usage. `input` targets generated input object paths, including nested
 input used by generated filters, forms, or conditional directives. `context`
-targets runtime context variables when such variables are part of the checked
-query model.
+targets the scope-visible trusted-context declarations used by the checked
+query.
 
 ## Flat Paths
 

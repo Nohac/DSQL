@@ -74,6 +74,11 @@ must have a type compatible with the declared shape type. Relationship
 requirements may be added later, but must participate in the same lock
 workflow.
 
+Initial structural target shapes declare scalar catalog fields only. The
+collection suffix defined for trusted-context declarations in
+[`variables.md`](variables.md) is not valid in filter or condition target
+shapes.
+
 For the initial structural matcher, every field referenced by a row rule or
 named by a field rule must be declared in the target shape. Relationship paths
 in rules require a concrete target until structural relationship requirements
@@ -418,9 +423,10 @@ $:is_admin
 $:tenant_ids
 ```
 
-Context values may be declared by filters, conditions, project configuration,
-or provider metadata. Their types are checked from use or explicit
-declarations. They may be scalars or collections.
+Context values must resolve to explicit scope-visible DSQL declarations defined
+by [`variables.md`](variables.md). Those declarations provide the authoritative
+scalar or collection type; filters and conditions consume them but never
+declare or infer them.
 
 Rules:
 

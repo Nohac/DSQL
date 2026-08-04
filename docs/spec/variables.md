@@ -2,16 +2,18 @@
 
 Status: implemented for inferred scalar and collection variables, defaults,
 nullability, fragment bindings, and bounded dynamic input capability presets.
-Provider-defined types and the deferred extensions called out below remain
-unfinished.
+Trusted-context declarations, provider-defined types, and the deferred
+extensions called out below remain unfinished.
 
 Variables allow query input values to be inferred from their usage and bound at
 execution or generation time.
 
 ## Intended Shape
 
-Queries should not need explicit variable declarations. Variable names and types
-are inferred from where variables appear.
+Queries should not need explicit public-input declarations. Public variable
+names and types are inferred from where variables appear. Trusted host context
+is declared separately because declaration-by-use would make misspellings look
+like new context inputs.
 
 ```dsql
 query UserSearch {
@@ -160,14 +162,66 @@ Host-provided global context uses a separate form:
 $:name   # host-provided context value
 ```
 
-Context values are not public query inputs. They are declared by filters,
-conditions, project configuration, or provider metadata and supplied by a trusted
-server-side adapter or request boundary. A generated client cannot bind or
-override them. Execution refuses to start when required context is missing.
+Context values are not public query inputs. They are declared explicitly in
+standalone DSQL source and supplied by a trusted server-side adapter or request
+boundary. A generated client cannot bind or override them. Execution refuses
+to start when required context is missing.
 
-Context values may be scalars or typed collections. For example,
-`.tenant_id in $:tenant_ids` infers or validates `tenant_ids` as a collection of
-the logical type of `.tenant_id`.
+### Trusted-Context Declarations
+
+A scope declares its trusted context in one or more scope-level blocks:
+
+```dsql
+context {
+  user_id: uuid
+  tenant_id: uuid
+  tenant_ids: uuid[]
+  is_admin: boolean
+  status: public::account_status
+}
+```
+
+Each entry declares one context name and its authoritative logical type. A type
+may be an unqualified built-in logical type or a schema-qualified
+catalog/provider type. Catalog/provider types must be qualified; the compiler
+does not choose between same-named types from different schemas. `T[]` declares
+a collection of `T`; the collection suffix is part of context declaration
+syntax in this contract and does not extend structural filter or condition
+target shapes.
+
+Context blocks are ordinary standalone DSQL definitions for visibility
+purposes, but their entries are the names resolved by the effective scope.
+Normal resolution-scope collision rules apply to those entry names verbatim:
+duplicate local entries, a local entry colliding with an imported entry, and
+two imports supplying the same entry are diagnostics. Independent scopes may
+declare the same entry name. Context blocks are not allowed in embedded host
+regions because they produce no host-language value.
+
+Every `$:name` usage must resolve to exactly one visible entry. The compiler
+does not create a declaration from a use, infer a context type from an
+expression, or fall back to project configuration or provider metadata for a
+missing declaration. The declared type is checked against every use, including
+scalar versus collection shape, boolean-only positions, and the nominal
+identity of catalog enums or other provider types. For example,
+`.tenant_id in $:tenant_ids` requires `tenant_ids` to be declared as a
+collection compatible with the logical type of `.tenant_id`.
+
+The initial declaration contract is required and non-null. Query source cannot
+mark context optional or give it a default. Trusted-context defaults, if later
+supported, remain a server/provider-boundary concern rather than a way for a
+query to weaken an enforcement requirement.
+
+Context remains operation-global rather than fragment-bound. A fragment use is
+carried unchanged into the consuming operation, and generated metadata contains
+only the visible context entries actually used by that operation and its
+effective fragment, filter, and condition closure.
+
+Completion after the context sigil offers visible declared entry names. Hover
+shows the declaration's logical type and trusted requiredness. Goto-definition
+targets the declaring entry, including an imported declaration. An undeclared,
+ambiguous, or type-incompatible use is a language diagnostic.
+
+This declaration syntax and behavior are specified but not yet implemented.
 
 Top-level params still infer type from usage:
 
