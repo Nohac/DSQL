@@ -3,6 +3,7 @@ export const KEYWORDS = Object.freeze({
   fragment: "fragment",
   filter: "filter",
   condition: "condition",
+  context: "context",
   on: "on",
   selected: "selected",
   indexed: "indexed",

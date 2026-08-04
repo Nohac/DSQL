@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/contexts.rs
+expression: render_bindings(&bowl).await
+---
+context.status Context WhereValue Text Some("status") operators=[] enum=[pending|active|archived]
+context.statuses Context WhereValue Text Some("statuses") collection operators=[] enum=[pending|active|archived]
+context.direction Context SortDirection Text Some("direction") operators=[] enum=[asc|desc]
+context.page_size Context Limit Int Some("page_size") operators=[] enum=[]

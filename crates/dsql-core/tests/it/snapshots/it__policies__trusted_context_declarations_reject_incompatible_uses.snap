@@ -1,0 +1,17 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+expression: "format!(\"policy-policy:\\n{policies}\\n\\npolicy-query:\\n{query}\\n\\ncross-root:\\n{roots}\\n\\nfragments:\\n{fragments}\")"
+---
+policy-policy:
+Error[144..152]: trusted context `context.shared` is declared as `int` but this use requires `pg_catalog::text`
+Error[161..169]: filter `ByName` affects this operation but could not be compiled; fix its definition diagnostics
+
+policy-query:
+Error[125..133]: trusted context `context.shared` is declared as `int` but this use requires `pg_catalog::text`
+
+cross-root:
+Error[162..170]: trusted context `context.shared` is declared as `int` but this use requires `pg_catalog::text`
+Error[179..187]: filter `InfoByValue` affects this operation but could not be compiled; fix its definition diagnostics
+
+fragments:
+Error[185..193]: trusted context `context.shared` is declared as `int` but this use requires `pg_catalog::text`

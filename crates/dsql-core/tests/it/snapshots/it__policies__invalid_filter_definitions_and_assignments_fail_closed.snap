@@ -2,20 +2,20 @@
 source: crates/dsql-core/tests/it/policies.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
-Error[102..115]: filter `MissingTarget` must declare an `on` target
-Error[152..154]: structural targets must declare at least one field
-Error[199..206]: unknown logical type `mystery` in policy target
-Error[267..274]: field `kind_id` must be declared in the structural target
-Error[410..420]: filter rules may use trusted `$:` context but not public or build variables
-Error[474..482]: condition `RowBound` has a row target and cannot be used by `apply where`
-Error[553..557]: `exists` relation source must be a collection
-Error[637..676]: relationship and table traversal require a concrete policy target
-Error[751..766]: filter-authored `exists` sources cannot assign query filters
-Error[794..801]: filter `Missing` not found
-Error[825..833]: filter `Enforced` is always enforced and cannot be disabled
-Error[86..88]: row paths require an `on` target
-Error[867..872]: filter `Enforced` is always enforced and cannot be disabled
-Error[880..888]: duplicate assignment for filter `Enforced`
-Error[911..919]: filter `Enforced` does not match table `name`
-Warning[880..888]: filter `Enforced` is always enforced; this assignment is redundant
-Warning[911..919]: filter `Enforced` is always enforced; this assignment is redundant
+Error[114..116]: row paths require an `on` target
+Error[130..143]: filter `MissingTarget` must declare an `on` target
+Error[180..182]: structural targets must declare at least one field
+Error[227..234]: unknown logical type `mystery` in policy target
+Error[295..302]: field `kind_id` must be declared in the structural target
+Error[438..448]: filter rules may use trusted `$:` context but not public or build variables
+Error[502..510]: condition `RowBound` has a row target and cannot be used by `apply where`
+Error[581..585]: `exists` relation source must be a collection
+Error[665..704]: relationship and table traversal require a concrete policy target
+Error[779..794]: filter-authored `exists` sources cannot assign query filters
+Error[822..829]: filter `Missing` not found
+Error[853..861]: filter `Enforced` is always enforced and cannot be disabled
+Error[895..900]: filter `Enforced` is always enforced and cannot be disabled
+Error[908..916]: duplicate assignment for filter `Enforced`
+Error[939..947]: filter `Enforced` does not match table `name`
+Warning[908..916]: filter `Enforced` is always enforced; this assignment is redundant
+Warning[939..947]: filter `Enforced` is always enforced; this assignment is redundant

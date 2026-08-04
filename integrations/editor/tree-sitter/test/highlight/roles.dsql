@@ -1,6 +1,11 @@
 # semantic DSQL highlighting
 # <- comment
 
+context { tenant: bool }
+# <- keyword.declaration
+#         ^^^^^^ variable.builtin
+#                 ^^^^ type
+
 query Find(%year = 2000 $title? filter visible when $:tenant) @dsql.deprecated(reason: "old") {
 # <- keyword.declaration
 #     ^^^^ function

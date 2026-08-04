@@ -1,0 +1,6 @@
+---
+source: crates/dsql-core/tests/it/contexts.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[10..19]: context entry `tenant_id` collides with a declaration imported from scope `shared`
+Error[37..48]: trusted context `tenant_id` is ambiguous across scopes `frontend`, `shared`

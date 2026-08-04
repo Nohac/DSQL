@@ -1,0 +1,12 @@
+---
+source: crates/dsql-core/tests/it/contexts.rs
+expression: "format!(\"before:\\n{before}\\n\\nafter:\\n{after}\\n\\nbindings:\\n{bindings}\")"
+---
+before:
+Error[64..72]: trusted context `context.status` is declared as `int` but this use requires `public::status`
+
+after:
+
+
+bindings:
+context.status Context WhereValue Text Some("status") operators=[] enum=[pending|active|archived]

@@ -2,10 +2,10 @@
 source: crates/dsql-core/tests/it/parse.rs
 expression: rendered
 ---
-error[14..15]: invalid syntax, expected one of: 'apply', 'asc', 'by', 'condition', 'desc', 'exists', 'field', 'filter', 'fragment', 'in', 'indexed', 'is', 'limit', <name>, 'not', 'offset', 'order', 'query', 'searchable', 'selected', 'selected_indexed', 'when', 'where' ("$")
+error[14..15]: invalid syntax, expected one of: 'apply', 'asc', 'by', 'condition', 'context', 'desc', 'exists', 'field', 'filter', 'fragment', 'in', 'indexed', 'is', 'limit', <name>, 'not', 'offset', 'order', 'query', 'searchable', 'selected', 'selected_indexed', 'when', 'where' ("$")
 ---
 error[28..29]: invalid syntax, expected one of: 'filter', 'limit', 'offset', 'order', ')', 'where' ("$")
-error[34..35]: invalid syntax, expected one of: 'apply', '->', '@', ':', ',', 'condition', '...', 'exists', 'field', 'filter', 'in', 'indexed', 'is', '{', '(', <name>, 'not', '|', '}', 'searchable', 'selected', 'selected_indexed', 'when' (")")
+error[34..35]: invalid syntax, expected one of: 'apply', '->', '@', ':', ',', 'condition', 'context', '...', 'exists', 'field', 'filter', 'in', 'indexed', 'is', '{', '(', <name>, 'not', '|', '}', 'searchable', 'selected', 'selected_indexed', 'when' (")")
 ---
 error[78..79]: invalid syntax, expected one of: ',', '$', '%', ')' ("$")
-error[84..85]: invalid syntax, expected one of: 'apply', '->', '@', ':', ',', 'condition', '...', 'exists', 'field', 'filter', 'in', 'indexed', 'is', '{', '(', <name>, 'not', '|', '}', 'searchable', 'selected', 'selected_indexed', 'when' (")")
+error[84..85]: invalid syntax, expected one of: 'apply', '->', '@', ':', ',', 'condition', 'context', '...', 'exists', 'field', 'filter', 'in', 'indexed', 'is', '{', '(', <name>, 'not', '|', '}', 'searchable', 'selected', 'selected_indexed', 'when' (")")

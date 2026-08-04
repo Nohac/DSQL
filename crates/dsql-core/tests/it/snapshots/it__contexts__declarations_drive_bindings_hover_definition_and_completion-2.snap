@@ -1,0 +1,5 @@
+---
+source: crates/dsql-core/tests/it/contexts.rs
+expression: hover.text.as_str()
+---
+`status` — `context.status`: public::status (trusted context, required)

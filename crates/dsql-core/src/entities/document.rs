@@ -133,7 +133,13 @@ impl FormatStage for Document {
                     formatter.write_node_text(child);
                 }
                 (
-                    Some(Rule::QueryDef | Rule::FragmentDef | Rule::FilterDef | Rule::ConditionDef),
+                    Some(
+                        Rule::QueryDef
+                        | Rule::FragmentDef
+                        | Rule::FilterDef
+                        | Rule::ConditionDef
+                        | Rule::ContextDef,
+                    ),
                     _,
                 ) => {
                     formatter.blank_between_definitions(&mut first);

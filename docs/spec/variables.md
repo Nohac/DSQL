@@ -1,9 +1,9 @@
 # Variables
 
 Status: implemented for inferred scalar and collection variables, defaults,
-nullability, fragment bindings, and bounded dynamic input capability presets.
-Trusted-context declarations, provider-defined types, and the deferred
-extensions called out below remain unfinished.
+nullability, fragment bindings, bounded dynamic input capability presets, and
+explicit trusted-context declarations. The deferred extensions called out
+below remain unfinished.
 
 Variables allow query input values to be inferred from their usage and bound at
 execution or generation time.
@@ -221,7 +221,7 @@ shows the declaration's logical type and trusted requiredness. Goto-definition
 targets the declaring entry, including an imported declaration. An undeclared,
 ambiguous, or type-incompatible use is a language diagnostic.
 
-This declaration syntax and behavior are specified but not yet implemented.
+This declaration syntax and behavior are implemented.
 
 Top-level params still infer type from usage:
 

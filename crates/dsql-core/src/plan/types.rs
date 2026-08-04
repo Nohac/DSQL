@@ -354,44 +354,6 @@ pub struct PolicyContextRequirement {
     pub collection: bool,
 }
 
-impl PolicyContextRequirement {
-    /// Whether two uses of one trusted-context path require incompatible values.
-    pub(crate) fn conflicts_with(&self, other: &Self) -> bool {
-        if self.collection != other.collection {
-            return true;
-        }
-        if self.wire == WireEncoding::TextCast || other.wire == WireEncoding::TextCast {
-            return self.wire != other.wire || self.provider_type != other.provider_type;
-        }
-        self.data_type != other.data_type || self.wire != other.wire
-    }
-
-    pub(crate) fn conflict_message(&self, other: &Self) -> String {
-        format!(
-            "trusted context `{}` is required as both {} and {}",
-            self.path,
-            self.shape(),
-            other.shape()
-        )
-    }
-
-    fn shape(&self) -> String {
-        let data_type = self
-            .provider_type
-            .as_ref()
-            .filter(|_| self.wire == WireEncoding::TextCast)
-            .map_or_else(
-                || self.data_type.as_str().to_string(),
-                |key| format!("{}.{}", key.schema, key.name),
-            );
-        if self.collection {
-            format!("a collection of `{data_type}`")
-        } else {
-            format!("`{data_type}`")
-        }
-    }
-}
-
 /// How one collection source becomes public result data.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CollectionResultPlan {

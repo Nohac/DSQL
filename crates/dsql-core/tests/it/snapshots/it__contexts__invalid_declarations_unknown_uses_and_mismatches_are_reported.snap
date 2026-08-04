@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/contexts.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[151..162]: trusted context `context.page_size` is declared as `int` but this use requires `public::status`
+Error[184..193]: trusted context `missing` is not declared
+Error[47..53]: unknown built-in context type `status`; catalog/provider types must be schema-qualified
+Error[72..87]: provider array type `public::_status` cannot be declared directly; declare its element type with `[]`

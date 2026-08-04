@@ -13,6 +13,7 @@ use crate::catalog::{CatalogSnapshot, CatalogSourceRoot};
 use crate::embedding::{ExtractionRegistry, ResolvedEmbeddedExpression};
 use crate::entities::aggregate::{AggregateTransformFact, ResolvedAggregate};
 use crate::entities::clause::ClauseFact;
+use crate::entities::context::{ContextDecl, ContextIndex, ResolvedContextUse};
 use crate::entities::definition::{DefDecl, DefIndex, FragmentKey, FragmentTarget};
 use crate::entities::directive::DirectiveFact;
 use crate::entities::document::ParsedFile;
@@ -108,6 +109,13 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
     ),
+    context_declaration: (
+        NodeKey,
+        ContextDecl,
+        ResolutionScope,
+        BelongsToFile,
+        DerivedFrom,
+    ),
     field_selection: (
         NodeKey,
         FieldSel,
@@ -154,6 +162,7 @@ pub struct DsqlSchema {
     variable_use: (
         NodeKey,
         VariableUse,
+        ResolutionScope,
         BelongsToFile,
         DerivedFrom,
         Option<ChildOf>,
@@ -181,13 +190,19 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
     ),
-    def_index: (Singleton<DefIndex>, DefIndex, Option<PolicyPlanIndex>),
+    def_index: (
+        Singleton<DefIndex>,
+        DefIndex,
+        Option<PolicyPlanIndex>,
+        Option<ContextIndex>,
+    ),
     policy_index: (
         Singleton<PolicyIndex>,
         PolicyIndex,
         Option<CompiledPolicyIndex>,
     ),
     policy_body_index: (Singleton<PolicyBodyIndex>, PolicyBodyIndex),
+    resolved_context_use: (ResolvedContextUse, BelongsToFile, DerivedFrom),
     resolved_selection: (ResolvedSelection, ResolutionOf, BelongsToFile, DerivedFrom),
     resolved_aggregate: (ResolvedAggregate, BelongsToFile, DerivedFrom),
     resolved_clause: (ResolvedClause, BelongsToFile, DerivedFrom),
@@ -259,6 +274,7 @@ pub struct DsqlSchema {
 pub type AstFacts = (
     dsql_schema::Def,
     dsql_schema::PolicyDefinition,
+    dsql_schema::ContextDeclaration,
     dsql_schema::FieldSelection,
     dsql_schema::AggregateTransform,
     dsql_schema::Spread,

@@ -40,7 +40,7 @@ pub enum Severity {
 /// Machine-readable diagnostic identity. Editor
 /// integrations and tests key on these; messages are for humans only.
 /// Variants are added as the checks that emit them land.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[component(hash)]
 pub enum DiagnosticCode {
     InvalidToken,
@@ -84,8 +84,10 @@ pub enum DiagnosticCode {
     DuplicateAnonymousVariable,
     InvalidVariableRefinement,
     InvalidFragmentBinding,
-    TrustedContextBindingUnavailable,
-    TrustedContextTypeConflict,
+    UnknownTrustedContext,
+    AmbiguousTrustedContext,
+    InvalidContextDefinition,
+    TrustedContextTypeMismatch,
     FilterExecutionUnavailable,
     InvalidPolicyDefinition,
     UnknownFilter,

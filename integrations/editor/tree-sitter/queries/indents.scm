@@ -2,6 +2,8 @@
   (shape_target)
   (filter_body)
   (condition_body)
+  (context_definition)
+  (context_type)
   (query_header)
   (fragment_header)
   (default_collection)

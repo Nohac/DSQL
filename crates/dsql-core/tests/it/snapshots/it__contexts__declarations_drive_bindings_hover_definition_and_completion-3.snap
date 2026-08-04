@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/contexts.rs
+expression: rendered
+---
+direction: text (trusted context, required)
+page_size: int (trusted context, required)
+status: public::status (trusted context, required)
+statuses: public::status[] (trusted context, required)

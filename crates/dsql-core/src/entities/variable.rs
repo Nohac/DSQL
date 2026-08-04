@@ -23,6 +23,9 @@ use crate::catalog::{
     WireEncoding,
 };
 use crate::entities::clause::{ClauseFact, OrderDirection, OrderTerm};
+use crate::entities::context::{
+    ContextIndex, ContextLookup, ContextValueContract, validate_context_use,
+};
 use crate::entities::definition::{DefDecl, DefKind, describe_dynamic_variable};
 use crate::entities::expression::{
     BinaryOp, ComparisonOp, Expr, Sigil, VariableRef, build_variable_ref,
@@ -101,6 +104,7 @@ impl LowerStage for Variable {
                     DerivedFrom::new(ctx.file),
                     BelongsToFile(ctx.file),
                     key,
+                    ResolutionScope(ctx.scope.to_string()),
                     VariableUse(variable),
                     ChildOf(parent),
                 ))
@@ -110,6 +114,7 @@ impl LowerStage for Variable {
                     DerivedFrom::new(ctx.file),
                     BelongsToFile(ctx.file),
                     key,
+                    ResolutionScope(ctx.scope.to_string()),
                     VariableUse(variable),
                 ))
                 .untyped(),
@@ -362,7 +367,11 @@ async fn infer_variables(
     _: Query<Entity, With<VariablesDemand>>,
     defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
+    index: Query<(
+        Entity,
+        &crate::entities::definition::DefIndex,
+        &ContextIndex,
+    )>,
     views: VariableSemanticViews<'_>,
     mut commands: Commands<(
         dsql_schema::DefinitionVariables,
@@ -382,6 +391,7 @@ async fn infer_variables(
         resolved_clauses: &resolved_clauses,
         catalog: snapshot.catalog(),
         imports: views.imports.item().1,
+        contexts: index.item().2,
         stack: Vec::new(),
         completed: HashMap::new(),
     };
@@ -446,6 +456,7 @@ struct ContractContext<'a> {
     resolved_clauses: &'a HashMap<Entity, &'a ResolvedClause>,
     catalog: &'a Catalog,
     imports: &'a ScopeImports,
+    contexts: &'a ContextIndex,
     stack: Vec<Entity>,
     completed: HashMap<Entity, DefinitionContract>,
 }
@@ -480,7 +491,11 @@ impl ContractContext<'_> {
             tree: self.tree,
             resolved_clauses: self.resolved_clauses,
             catalog: self.catalog,
+            imports: self.imports,
+            contexts: self.contexts,
+            definition_scope: scope,
             bindings: Vec::new(),
+            problems: Vec::new(),
         };
         collect_local_definition(&mut inference, definition, decl);
         inference
@@ -488,7 +503,7 @@ impl ContractContext<'_> {
             .sort_by_key(|(span, _)| (span.start, span.end));
         let local_bindings = inference.bindings.clone();
 
-        let mut problems = Vec::new();
+        let mut problems = inference.problems;
         let mut rewrites = BTreeMap::new();
         let mut cycle_cut = false;
         for (spread_entity, spread, path) in spread_sites(definition, decl, self.tree, self.catalog)
@@ -1325,8 +1340,15 @@ fn merge_bindings(
 ) -> Vec<VariableBinding> {
     let mut merged = BTreeMap::<String, (Span, VariableBinding)>::new();
     for (span, binding) in bindings {
-        if let Some((first_span, existing)) = merged.get(&binding.path) {
-            if !bindings_compatible(existing, binding) {
+        if let Some((first_span, existing)) = merged.get_mut(&binding.path) {
+            let compatible = if existing.source == VariableSource::Context
+                && binding.source == VariableSource::Context
+            {
+                merge_context_bindings(existing, binding)
+            } else {
+                bindings_compatible(existing, binding)
+            };
+            if !compatible {
                 problems.push(VariableProblem {
                     span: *span,
                     code: DiagnosticCode::InvalidVariableRefinement,
@@ -1386,6 +1408,28 @@ fn bindings_compatible(left: &VariableBinding, right: &VariableBinding) -> bool 
         && left.default == right.default
 }
 
+fn merge_context_bindings(left: &mut VariableBinding, right: &VariableBinding) -> bool {
+    if !binding_types_compatible(left, right)
+        || left.collection != right.collection
+        || left.required != right.required
+        || left.nullable != right.nullable
+        || left.default != right.default
+    {
+        return false;
+    }
+
+    if left.closed_values.is_empty() {
+        left.closed_values.clone_from(&right.closed_values);
+    } else if !right.closed_values.is_empty() {
+        left.closed_values
+            .retain(|value| right.closed_values.contains(value));
+        if left.closed_values.is_empty() {
+            return false;
+        }
+    }
+    true
+}
+
 fn binding_types_compatible(left: &VariableBinding, right: &VariableBinding) -> bool {
     if matches!(left.wire, WireEncoding::TextCast) || matches!(right.wire, WireEncoding::TextCast) {
         return left.wire == right.wire && left.provider_type == right.provider_type;
@@ -1437,7 +1481,11 @@ struct Inference<'a> {
     resolved_clauses: &'a HashMap<Entity, &'a ResolvedClause>,
     tree: &'a SelectionTree<'a>,
     catalog: &'a Catalog,
+    imports: &'a ScopeImports,
+    contexts: &'a ContextIndex,
+    definition_scope: &'a str,
     bindings: Vec<(Span, VariableBinding)>,
+    problems: Vec<VariableProblem>,
 }
 
 impl Inference<'_> {
@@ -1933,6 +1981,56 @@ impl Inference<'_> {
         variable: &VariableRef,
     ) {
         let name = variable.name.clone();
+        if variable.sigil == Sigil::Context {
+            let Some(name) = name else {
+                return;
+            };
+            let ContextLookup::Resolved(_, declared) =
+                self.contexts
+                    .lookup(self.definition_scope, &name, self.imports)
+            else {
+                return;
+            };
+            let expected = ContextValueContract {
+                data_type: context.data_type,
+                wire: context.wire,
+                provider_type: context.provider_type,
+                collection: context.collection,
+                closed_values: context.closed_values,
+            };
+            let closed_values = match validate_context_use(&name, declared, &expected) {
+                Ok(closed_values) => closed_values,
+                Err(message) => {
+                    self.problems.push(VariableProblem {
+                        span: variable.span,
+                        code: DiagnosticCode::TrustedContextTypeMismatch,
+                        message,
+                    });
+                    return;
+                }
+            };
+            self.bindings.push((
+                variable.span,
+                VariableBinding {
+                    path: format!("context.{name}"),
+                    source: VariableSource::Context,
+                    name: Some(name),
+                    data_type: declared.data_type,
+                    wire: declared.wire,
+                    provider_type: declared.provider_type.clone(),
+                    collection: declared.collection,
+                    role: context.role,
+                    operators: context.operators,
+                    closed_values,
+                    required: true,
+                    nullable: false,
+                    default: None,
+                    allows_nullable: false,
+                    refinable: false,
+                },
+            ));
+            return;
+        }
         let path = variable_path(
             selection_path,
             VariablePathContext {
@@ -2069,7 +2167,7 @@ async fn hover_variables(
     let (request, _file, cursor) = query.item();
     let (_, span, binding, _) = bindings.item();
 
-    if !span.contains(cursor.0) {
+    if binding.source == VariableSource::Context || !span.contains(cursor.0) {
         return;
     }
 

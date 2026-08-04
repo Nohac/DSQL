@@ -163,3 +163,76 @@ condition apply on {
           operator: (binary_operator
             (comparison_operator))
           right: (literal))))))
+
+==================
+Trusted context declarations
+==================
+
+context {
+  tenant_id: uuid
+  statuses: public::status[],
+  context: text
+}
+
+query UsesContext {
+  users(where .tenant_id == $:tenant_id) { id }
+}
+
+---
+
+(document
+  (context_definition
+    (context_entry
+      name: (variable_name
+        (identifier))
+      type: (context_type
+        value: (type_reference
+          name: (name
+            (identifier)))))
+    (context_entry
+      name: (variable_name
+        (identifier))
+      type: (context_type
+        value: (type_reference
+          namespace: (name
+            (identifier))
+          name: (name
+            (identifier)))))
+    (context_entry
+      name: (variable_name
+        (contextual_name))
+      type: (context_type
+        value: (type_reference
+          name: (name
+            (identifier))))))
+  (query_definition
+    name: (name
+      (identifier))
+    body: (selection_set
+      (selection
+        (field_selection
+          field: (relation_reference
+            name: (name
+              (identifier)))
+          (field_suffix
+            (clause_list
+              (where_clause
+                condition: (binary_expression
+                  left: (scoped_path
+                    anchor: (path_anchor)
+                    segment: (scoped_path_segment
+                      name: (name
+                        (identifier))))
+                  operator: (binary_operator
+                    (comparison_operator))
+                  right: (value_variable
+                    (context_variable
+                      name: (variable_name
+                        (identifier)))))))
+            (field_continuation
+              (selection_set
+                (selection
+                  (field_selection
+                    field: (relation_reference
+                      name: (name
+                        (identifier)))))))))))))

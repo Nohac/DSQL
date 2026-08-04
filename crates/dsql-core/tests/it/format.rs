@@ -76,7 +76,7 @@ fn formatter_cases_match_expected_output() {
         ),
         (
             "filters_and_conditions",
-            "condition Admin{where $:is_admin} filter SoftDelete on{.deleted_at:timestamptz}{apply where false where .deleted_at is null field deleted_at,field where Admin} query Users(filter SoftDelete when not %includeDeleted){users(filter SoftDelete when false){id}}",
+            "context{is_admin:bool # context comment\n statuses: public :: status [ ]} condition Admin{where $:is_admin} filter SoftDelete on{.deleted_at:timestamptz}{apply where false where .deleted_at is null field deleted_at,field where Admin} query Users(filter SoftDelete when not %includeDeleted){users(filter SoftDelete when false){id}}",
         ),
         (
             "flattened_selections",
@@ -153,7 +153,7 @@ fn formatter_cases_match_expected_output() {
 
 #[test]
 fn formatting_is_idempotent() {
-    let source = "condition Admin { where $:is_admin }\nfilter SoftDelete on { .deleted_at: timestamptz } { apply where false where .deleted_at is null }\nquery Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra ...posts(where .title == %title) | aggregate { count latest: max .created_at } } ...public::users | aggregate { user_count: count } }\nfragment Extra on users {\n  email\n}\nquery Filtered { public::users(where .posts | exists and .posts | count >= %minimum limit 1) { id } }\n";
+    let source = "context { is_admin: bool }\ncondition Admin { where $:is_admin }\nfilter SoftDelete on { .deleted_at: timestamptz } { apply where false where .deleted_at is null }\nquery Users { users(where .id > 18 and (.name like \"a%\" or .email like \"b%\") order by name desc limit 10) { id posts { title } ...Extra ...posts(where .title == %title) | aggregate { count latest: max .created_at } } ...public::users | aggregate { user_count: count } }\nfragment Extra on users {\n  email\n}\nquery Filtered { public::users(where .posts | exists and .posts | count >= %minimum limit 1) { id } }\n";
     let once = format(source);
     let twice = format(&once.text);
     assert_eq!(once.text, twice.text, "formatting must be idempotent");

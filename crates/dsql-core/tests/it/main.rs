@@ -5,6 +5,7 @@ mod aggregates;
 mod catalog;
 mod checks;
 mod completions;
+mod contexts;
 mod definitions;
 mod embedding;
 mod format;

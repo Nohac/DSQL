@@ -1,7 +1,6 @@
 ---
 source: crates/dsql-generate/tests/it/generate.rs
-assertion_line: 767
 expression: error.to_string()
 ---
 the project has 1 error diagnostics; fix them before generating:
-queries/frontend/policy.dsql:73..81: trusted context `context.shared` is required as both `pg_catalog.date` and `pg_catalog.inet`
+queries/frontend/policy.dsql:110..118: trusted context `context.shared` is declared as `pg_catalog::date` but this use requires `pg_catalog::inet`

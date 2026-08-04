@@ -383,6 +383,7 @@ async fn predicate_extensions_infer_boolean_scalar_and_collection_bindings() {
         &bowl,
         "predicate-bindings.dsql",
         indoc::indoc! {r#"
+            context { allowed_types: int[] }
             query PredicateBindings {
               title(where not %disabled and .id in %ids
                 and exists .movie_info_idx(where .info_type_id in $:allowed_types)) { id }

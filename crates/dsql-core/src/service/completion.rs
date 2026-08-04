@@ -104,6 +104,8 @@ pub enum CompletionSite {
     SpreadName,
     /// Refining an inferred public input in a definition header.
     DefinitionInput,
+    /// Naming an explicitly declared trusted-context value after `$:`.
+    ContextVariable,
     /// Inside an aggregate result body.
     AggregateBody,
     /// Inside one `aggregate by` key.
@@ -343,6 +345,7 @@ async fn enrich_completion_requests(
     // works identically for well-formed and mid-edit sources.
     let truncated_cst = truncated.into_data();
     let variable_source = match last_token(&truncated_cst, NodeRef::ROOT) {
+        Some(Token::Colon) if prefix.ends_with("$:") => Some(VariableSource::Context),
         Some(Token::Dollar) => Some(VariableSource::Structured),
         Some(Token::Percent) => Some(VariableSource::TopLevel),
         _ => None,
@@ -370,6 +373,9 @@ async fn enrich_completion_requests(
     };
     if variable_source.is_some() && definition_header_contains(&parsed.cst, cursor) {
         site = CompletionSite::DefinitionInput;
+    }
+    if variable_source == Some(VariableSource::Context) {
+        site = CompletionSite::ContextVariable;
     }
 
     // Semantic layer: the innermost open set or clause decides the context
@@ -452,6 +458,7 @@ async fn enrich_completion_requests(
             | CompletionSite::SelectionBody
             | CompletionSite::SpreadName
             | CompletionSite::DefinitionInput
+            | CompletionSite::ContextVariable
             | CompletionSite::AggregateBody
             | CompletionSite::AggregateGroupKey
             | CompletionSite::PipeTransform
@@ -553,7 +560,7 @@ fn definition_header_contains(cst: &crate::grammar::parser::CstData, cursor: usi
 
 fn policy_keyword_applies(site: CompletionSite, keyword: &str) -> bool {
     match keyword {
-        "condition" => site == CompletionSite::DocumentRoot,
+        "condition" | "context" => site == CompletionSite::DocumentRoot,
         "filter" => matches!(
             site,
             CompletionSite::DocumentRoot | CompletionSite::ClauseList

@@ -1,3 +1,8 @@
+context {
+  tenant_id: uuid
+  can_read_payload: bool
+}
+
 filter TenantScope on {
   .tenant_id: uuid
 } {

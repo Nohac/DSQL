@@ -542,6 +542,10 @@ async fn row_policies_apply_to_roots_relations_aggregates_and_predicate_sources(
         &bowl,
         "row-policies.dsql",
         indoc::indoc! {r#"
+            context {
+              can_bypass_titles: bool
+              kind_id: int
+            }
             condition PreventTitleBypass { where not $:can_bypass_titles }
             filter TitleRows on title {
               apply where PreventTitleBypass
@@ -580,6 +584,11 @@ async fn field_filters_mask_every_query_authored_read_and_relation_traversal() {
         &bowl,
         "field-policies.dsql",
         indoc::indoc! {r#"
+            context {
+              can_read_title: bool
+              can_read_info: bool
+              unused: bool
+            }
             condition CanReadTitle { where $:can_read_title }
             filter TitlePrivacy on title {
               apply
@@ -685,6 +694,7 @@ async fn provider_scalars_use_schema_qualified_text_casts_everywhere() {
         &bowl,
         "provider-scalars.dsql",
         indoc::indoc! {r#"
+            context { trusted_address: pg_catalog::inet }
             filter AddressGate on events {
               apply where true
               where .address == $:trusted_address

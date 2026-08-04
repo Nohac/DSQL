@@ -19,10 +19,10 @@ lock: `default <- default::TitleAccess`
 matches: public.title
 
 condition definition:
-policies.dsql[10..15] -> `Admin`
+policies.dsql[37..42] -> `Admin`
 
 filter definition:
-policies.dsql[44..55] -> `TitleAccess`
+policies.dsql[71..82] -> `TitleAccess`
 
 header completion:
 context: FilterAssignment table=<unresolved> scope=default replace=[20..21]
@@ -44,10 +44,10 @@ Keyword not
 Keyword when
 
 policy tokens:
-10..15 `Admin`
-44..55 `TitleAccess`
-81..86 `Admin`
-117..122 `Admin`
-132..142 `NameAccess`
-184..195 `TitleAccess`
-225..236 `TitleAccess`
+37..42 `Admin`
+71..82 `TitleAccess`
+108..113 `Admin`
+144..149 `Admin`
+159..169 `NameAccess`
+211..222 `TitleAccess`
+252..263 `TitleAccess`

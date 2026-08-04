@@ -141,7 +141,8 @@ query ExpressionMatrix(
                                     (identifier))
                                   condition: (value_variable
                                     (context_variable
-                                      name: (identifier))))
+                                      name: (variable_name
+                                        (identifier)))))
                                 (where_clause
                                   condition: (binary_expression
                                     left: (scoped_path

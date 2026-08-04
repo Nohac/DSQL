@@ -1,6 +1,6 @@
 # Require explicit trusted-context declarations
 
-**ID:** b566b875 | **Status:** Open | **Created:** 2026-08-04T22:15:42+02:00
+**ID:** b566b875 | **Status:** Done | **Created:** 2026-08-04T22:15:42+02:00
 
 Trusted context is currently inferred from each `$:name` use. A misspelling
 therefore creates another inferred input instead of identifying an unknown

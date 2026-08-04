@@ -3,6 +3,7 @@
 
 pub mod aggregate;
 pub mod clause;
+pub mod context;
 pub mod definition;
 pub mod directive;
 pub mod document;

@@ -14,10 +14,7 @@ use crate::resolution::{
     PathTerminal, ResolvedClause, ResolvedSelection, ResolvedSelectionShape, index_resolved_clauses,
 };
 use crate::schema::dsql_schema;
-use bowl::{
-    Commands, DerivedFrom, Entity, Eq as BowlEq, Query, Registrar, SystemExt, SystemParam, View,
-    Where, With,
-};
+use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View, With};
 
 use super::types::{
     AggregateGroupProjection, AggregatePlan, AggregateProjection, CollectionPlan,
@@ -36,6 +33,9 @@ use crate::catalog::{
 };
 use crate::entities::aggregate::ResolvedAggregate;
 use crate::entities::clause::{ClauseFact, OrderDirection, OrderTerm, parse_pagination_value};
+use crate::entities::context::{
+    ContextIndex, ContextLookup, ContextValueContract, validate_context_use,
+};
 use crate::entities::definition::{DefDecl, DefKind};
 use crate::entities::expression::{
     BinaryOp, DynamicInputSurface, Expr, LiteralValue, PathAnchor, VariableRef,
@@ -47,15 +47,15 @@ use crate::entities::policy::{
 };
 use crate::entities::variable::{
     DefinitionInputRewrites, DefinitionVariableOwner, DefinitionVariables, InputDefault,
-    VariableBinding, VariableRole, VariableSource, lower_snake_case,
+    VariableBinding, VariableRole, lower_snake_case,
 };
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope, VariableValue,
     predicate_anonymous_key, variable_path, variable_value,
 };
 use crate::facts::{
-    BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
-    NodeKey, PlanDemand, PlanKey, Severity, Span, emit_diagnostic,
+    BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, NodeKey, PlanDemand,
+    PlanKey, Severity, Span, emit_diagnostic,
 };
 use crate::source::ScopeImports;
 
@@ -64,7 +64,6 @@ use crate::source::ScopeImports;
 pub fn register_planning(reg: &mut Registrar<'_>) {
     // Views lowered facts ambiently: behind the Complete barrier.
     reg.system(plan_queries.run_during(bowl::Phase::Complete));
-    reg.system(diagnose_policy_query_context_conflicts);
 }
 
 /// Plans every root selection of each query definition. Root spreads are
@@ -90,6 +89,7 @@ async fn plan_queries(
         Entity,
         &crate::entities::definition::DefIndex,
         &PolicyPlanIndex,
+        &ContextIndex,
     )>,
     imports: Query<(Entity, &ScopeImports)>,
     views: TreeViews<'_>,
@@ -105,7 +105,7 @@ async fn plan_queries(
     let decl = &owner.declaration;
     let scope = &owner.scope;
     let (catalog_entity, snapshot) = catalog.item();
-    let (_, _, planning_index) = planning_index.item();
+    let (_, _, planning_index, contexts) = planning_index.item();
     let policy_index = &planning_index.resolution;
     let compiled_policies = &planning_index.compiled;
     let (_, imports) = imports.item();
@@ -131,6 +131,7 @@ async fn plan_queries(
         catalog: snapshot.catalog(),
         scope: &scope.0,
         imports,
+        contexts,
         policy_index,
         compiled_policies,
         variables: &definition_variables.bindings,
@@ -239,11 +240,7 @@ async fn plan_queries(
                         walk.dynamic_inputs,
                         walk.diagnostics,
                     );
-                    let policy_context = deduplicate_policy_context(
-                        policy_context,
-                        field.name_span,
-                        &mut diagnostics,
-                    );
+                    let policy_context = deduplicate_policy_context(policy_context);
                     operation_policy_context.extend(policy_context);
                     operation_spreads.extend(spreads);
                     planned_roots.push(QueryRootPlan {
@@ -272,8 +269,7 @@ async fn plan_queries(
 
     if !planned_roots.is_empty() {
         operation_dynamic_inputs.sort_by(|left, right| left.path.cmp(&right.path));
-        let policy_context =
-            deduplicate_policy_context(operation_policy_context, decl.span, &mut diagnostics);
+        let policy_context = deduplicate_policy_context(operation_policy_context);
         let plan_entity = commands.insert((
             DerivedFrom::many([def_entity, catalog_entity]),
             BelongsToFile(file.0),
@@ -341,53 +337,6 @@ fn emit_plan_diagnostics(
             },
         );
     }
-}
-
-/// Rejects one trusted-context path whose query predicate and active policy
-/// require incompatible value shapes. The bound [`DefKey`] join keeps the
-/// diagnostic tracked on both semantic inputs, so fixing either side retires
-/// it.
-async fn diagnose_policy_query_context_conflicts(
-    _: Query<Entity, With<DiagnosticsDemand>>,
-    plans: Query<(Entity, &QueryPlanFact, &DefKey, &BelongsToFile)>,
-    bindings: Query<(Entity, &VariableBinding, &DefKey, &Span), Where<BowlEq<DefKey>>>,
-    mut commands: Commands<(dsql_schema::Diagnostic,)>,
-) {
-    let (plan_entity, plan, _, file) = plans.item();
-    let (binding_entity, binding, _, span) = bindings.item();
-    if binding.source != VariableSource::Context {
-        return;
-    }
-    let Some(requirement) = plan
-        .0
-        .policy_context
-        .iter()
-        .find(|requirement| requirement.path == binding.path)
-    else {
-        return;
-    };
-    let binding_requirement = PolicyContextRequirement {
-        path: binding.path.clone(),
-        data_type: binding.data_type,
-        wire: binding.wire,
-        provider_type: binding.provider_type.clone(),
-        collection: binding.collection,
-    };
-    if !requirement.conflicts_with(&binding_requirement) {
-        return;
-    }
-    emit_diagnostic(
-        &mut commands,
-        DiagnosticFacts {
-            derived_from: DerivedFrom::many([plan_entity, binding_entity]),
-            file: file.0,
-            span: *span,
-            severity: Severity::Error,
-            source: DiagnosticSource::Plan,
-            code: DiagnosticCode::TrustedContextTypeConflict,
-            message: requirement.conflict_message(&binding_requirement),
-        },
-    );
 }
 
 /// Plans a fragment body against its declared table: no SQL renders from
@@ -483,6 +432,7 @@ struct Planner<'a> {
     catalog: &'a Catalog,
     scope: &'a str,
     imports: &'a ScopeImports,
+    contexts: &'a ContextIndex,
     policy_index: &'a PolicyIndex,
     compiled_policies: &'a CompiledPolicyIndex,
     variables: &'a [VariableBinding],
@@ -657,6 +607,7 @@ impl Planner<'_> {
                     name,
                     selection_path,
                     variable_scope,
+                    definition_scope,
                     &mut context,
                 )
             },
@@ -674,10 +625,44 @@ impl Planner<'_> {
         filter_name: &str,
         selection_path: &[String],
         variable_scope: &VariablePathScope,
+        definition_scope: &str,
         context: &mut Vec<PolicyContextRequirement>,
     ) -> Option<FilterExpr> {
         match expr {
             Expr::Variable { variable, .. } => {
+                if variable.sigil == crate::entities::expression::Sigil::Context {
+                    let name = variable.name.as_deref()?;
+                    // Fragment-authored assignments resolve their context in
+                    // the fragment's scope, matching inference and services.
+                    let ContextLookup::Resolved(_, declared) =
+                        self.contexts.lookup(definition_scope, name, self.imports)
+                    else {
+                        return None;
+                    };
+                    let expected = ContextValueContract {
+                        data_type: crate::catalog::DataType::Boolean,
+                        wire: WireEncoding::Boolean,
+                        provider_type: None,
+                        collection: false,
+                        closed_values: Vec::new(),
+                    };
+                    validate_context_use(name, declared, &expected).ok()?;
+                    let path = format!("context.{name}");
+                    context.push(PolicyContextRequirement {
+                        path: path.clone(),
+                        data_type: declared.data_type,
+                        wire: declared.wire,
+                        provider_type: declared.provider_type.clone(),
+                        collection: declared.collection,
+                    });
+                    return Some(FilterExpr::Parameter(SqlParameter {
+                        path,
+                        text_cast: (declared.wire == WireEncoding::TextCast)
+                            .then(|| declared.provider_type.clone())
+                            .flatten(),
+                        collection: declared.collection,
+                    }));
+                }
                 let path = variable_path(
                     selection_path,
                     VariablePathContext {
@@ -689,15 +674,6 @@ impl Planner<'_> {
                     variable.sigil,
                     variable.name.as_deref(),
                 );
-                if variable.sigil == crate::entities::expression::Sigil::Context {
-                    context.push(PolicyContextRequirement {
-                        path: path.clone(),
-                        data_type: crate::catalog::DataType::Boolean,
-                        wire: WireEncoding::Boolean,
-                        provider_type: None,
-                        collection: false,
-                    });
-                }
                 Some(FilterExpr::Parameter(SqlParameter {
                     path,
                     text_cast: None,
@@ -714,6 +690,7 @@ impl Planner<'_> {
                     filter_name,
                     selection_path,
                     variable_scope,
+                    definition_scope,
                     context,
                 )
                 .map(not_filter),
@@ -723,6 +700,7 @@ impl Planner<'_> {
                     filter_name,
                     selection_path,
                     variable_scope,
+                    definition_scope,
                     context,
                 )?;
                 let right = self.plan_assignment_expr(
@@ -730,6 +708,7 @@ impl Planner<'_> {
                     filter_name,
                     selection_path,
                     variable_scope,
+                    definition_scope,
                     context,
                 )?;
                 let op = match op {
@@ -752,6 +731,7 @@ impl Planner<'_> {
                     filter_name,
                     selection_path,
                     variable_scope,
+                    definition_scope,
                     context,
                 )?),
                 negated: *negated,
@@ -2873,22 +2853,12 @@ fn and_filter(left: FilterExpr, right: FilterExpr) -> FilterExpr {
 
 fn deduplicate_policy_context(
     context: Vec<PolicyContextRequirement>,
-    span: Span,
-    diagnostics: &mut PlanDiagnostics,
 ) -> Vec<PolicyContextRequirement> {
     let mut by_path: BTreeMap<String, PolicyContextRequirement> = BTreeMap::new();
     for requirement in context {
-        if let Some(existing) = by_path.get(&requirement.path) {
-            if existing.conflicts_with(&requirement) {
-                diagnostics.push((
-                    span,
-                    DiagnosticCode::TrustedContextTypeConflict,
-                    existing.conflict_message(&requirement),
-                ));
-            }
-        } else {
-            by_path.insert(requirement.path.clone(), requirement);
-        }
+        by_path
+            .entry(requirement.path.clone())
+            .or_insert(requirement);
     }
     by_path.into_values().collect()
 }

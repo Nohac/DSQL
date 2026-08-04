@@ -6,6 +6,7 @@ diagnostics:
 error[36..37]: invalid syntax, expected one of: '$', '.', '..', 'exists', 'false', '[', '(', <name>, 'not', 'null', <number>, '%', <string>, '~', 'true' ("}")
 expected tokens:
 Condition@38..38
+Context@38..38
 Dollar@36..37
 Dot@36..37
 DotDot@36..37

@@ -916,6 +916,7 @@ async fn filter_match_lock_records_effective_scopes_and_resolved_identities() {
         document(
             "queries/shared/policies.dsql",
             indoc::indoc! {r#"
+                context { allowed: bool }
                 condition Allowed { where $:allowed }
                 filter SharedStructural on { .id: uuid } {
                   apply where Allowed
@@ -1211,6 +1212,7 @@ async fn native_enum_contracts_flow_through_generated_metadata() {
         vec![document(
             "queries/frontend/native-enums.dsql",
             indoc::indoc! {r#"
+                context { status: public::status }
                 filter EnumContext on enum_records {
                   where .status == $:status
                 }
@@ -1255,12 +1257,13 @@ async fn native_enum_contracts_flow_through_generated_metadata() {
 }
 
 #[tokio::test]
-async fn provider_policy_context_conflicts_block_generation() {
+async fn provider_policy_context_mismatches_block_generation() {
     let bowl = memory_bowl(
         provider_scalar_catalog(),
         vec![document(
             "queries/frontend/policy.dsql",
             indoc::indoc! {r#"
+                context { shared: pg_catalog::date }
                 filter Mixed on events {
                   where .event_date == $:shared and .address == $:shared
                 }
@@ -1286,6 +1289,7 @@ async fn bounded_dynamic_inputs_flow_through_sql_and_metadata() {
         vec![document(
             "queries/frontend/dynamic.dsql",
             indoc::indoc! {r#"
+                context { is_admin: bool }
                 filter NameAccess on public::users {
                   apply where true
                   field name where $:is_admin
@@ -1500,6 +1504,10 @@ async fn trusted_context_flows_through_sql_and_operation_metadata() {
         vec![document(
             "queries/frontend/context.dsql",
             indoc::indoc! {r#"
+                context {
+                  user_id: uuid
+                  unused_context: bool
+                }
                 filter CurrentUserOnly on users {
                   apply where true
                   where .id == $:user_id
@@ -1532,12 +1540,87 @@ async fn trusted_context_flows_through_sql_and_operation_metadata() {
 }
 
 #[tokio::test]
+async fn field_filter_context_metadata_follows_reached_guards() {
+    const FILTERS: &str = indoc::indoc! {r#"
+        context {
+          name_guard: text
+          id_guard: uuid
+        }
+        filter NameAccess on users {
+          apply
+          field name where .name == $:name_guard
+        }
+        filter IdAccess on users {
+          apply
+          field id where .id == $:id_guard
+        }
+    "#};
+
+    async fn operation_context(catalog: Catalog, source: String, operation: &str) -> Vec<String> {
+        let bowl = memory_bowl(
+            catalog,
+            vec![document(
+                "queries/frontend/guards.dsql",
+                &source,
+                "frontend",
+            )],
+            BTreeMap::new(),
+        )
+        .await;
+        let assembled = assemble_bowl(&bowl, None, GenerateOptions::default())
+            .await
+            .expect("field guard metadata assembles");
+        let artifact = assembled
+            .snapshot
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.name == operation)
+            .expect("operation artifact exists");
+        let metadata: dsql_metadata::OperationMetadata =
+            facet_json::from_str(&artifact.serialized).expect("operation metadata parses");
+        metadata
+            .context
+            .into_iter()
+            .map(|field| field.path)
+            .collect()
+    }
+
+    let unused = operation_context(
+        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
+        format!("{FILTERS}query Unused {{ users(limit 1) {{ posts {{ title }} }} }}\n"),
+        "Unused",
+    )
+    .await;
+    let one = operation_context(
+        catalog_from_tables([USERS_SCHEMA]),
+        format!("{FILTERS}query One {{ users(limit 1) {{ name }} }}\n"),
+        "One",
+    )
+    .await;
+    let both = operation_context(
+        catalog_from_tables([USERS_SCHEMA]),
+        format!("{FILTERS}query Both {{ users(limit 1) {{ id name }} }}\n"),
+        "Both",
+    )
+    .await;
+
+    assert!(unused.is_empty());
+    assert_eq!(one, ["context.name_guard"]);
+    assert_eq!(both, ["context.id_guard", "context.name_guard"]);
+}
+
+#[tokio::test]
 async fn policy_metadata_explains_composed_access_and_disabled_assignments() {
     let bowl = memory_bowl(
         catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
         vec![document(
             "queries/frontend/access.dsql",
             indoc::indoc! {r#"
+                context {
+                  is_admin: bool
+                  user_id: uuid
+                  can_read_posts: bool
+                }
                 filter ContextName on users {
                   apply
                   field name where $:is_admin
@@ -1680,6 +1763,7 @@ async fn field_filter_types_are_conservative_across_fragment_consumers() {
             document(
                 "queries/frontend/filtered.dsql",
                 indoc::indoc! {r#"
+                    context { can_read_users: bool }
                     filter UserPrivacy on users {
                       apply where true
                       field name, posts where $:can_read_users
@@ -1732,90 +1816,6 @@ async fn field_filter_types_are_conservative_across_fragment_consumers() {
     artifacts.sort();
 
     insta::assert_snapshot!(artifacts.join("\n---\n"));
-}
-
-#[tokio::test]
-async fn field_filter_context_conflicts_only_fail_when_both_guards_are_reached() {
-    const FILTERS: &str = indoc::indoc! {r#"
-        filter NameAccess on users {
-          apply
-          field name where .name == $:shared
-        }
-        filter IdAccess on users {
-          apply
-          field id where .id == $:shared
-        }
-    "#};
-
-    let unused = memory_bowl(
-        catalog_from_tables([USERS_SCHEMA, POSTS_SCHEMA]),
-        vec![document(
-            "queries/frontend/unused-context.dsql",
-            &format!("{FILTERS}query Unused {{ users(limit 1) {{ posts {{ title }} }} }}\n"),
-            "frontend",
-        )],
-        BTreeMap::new(),
-    )
-    .await;
-    let unused = assemble_bowl(&unused, None, GenerateOptions::default())
-        .await
-        .expect("unused field guards do not conflict");
-    let unused = unused
-        .snapshot
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.name == "Unused")
-        .expect("unused operation artifact");
-    let unused: dsql_metadata::OperationMetadata =
-        facet_json::from_str(&unused.serialized).expect("unused metadata parses");
-    assert!(unused.context.is_empty());
-
-    let one = memory_bowl(
-        catalog_from_tables([USERS_SCHEMA]),
-        vec![document(
-            "queries/frontend/one-context.dsql",
-            &format!("{FILTERS}query One {{ users(limit 1) {{ name }} }}\n"),
-            "frontend",
-        )],
-        BTreeMap::new(),
-    )
-    .await;
-    let one = assemble_bowl(&one, None, GenerateOptions::default())
-        .await
-        .expect("one reached field guard has one context type");
-    let one = one
-        .snapshot
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.name == "One")
-        .expect("single-guard operation artifact");
-    let one: dsql_metadata::OperationMetadata =
-        facet_json::from_str(&one.serialized).expect("single-guard metadata parses");
-    assert_eq!(one.context.len(), 1);
-    assert_eq!(one.context[0].path, "context.shared");
-    assert_eq!(one.context[0].data_type, "text");
-
-    let both = memory_bowl(
-        catalog_from_tables([USERS_SCHEMA]),
-        vec![document(
-            "queries/frontend/conflicting-context.dsql",
-            &format!("{FILTERS}query Both {{ users(limit 1) {{ id name }} }}\n"),
-            "frontend",
-        )],
-        BTreeMap::new(),
-    )
-    .await;
-    let error = assemble_bowl(&both, None, GenerateOptions::default())
-        .await
-        .expect_err("two reached incompatible guards fail generation");
-    let message = error.to_string();
-    assert!(
-        message.contains("context.shared")
-            && message.contains("incompatible")
-            && message.contains("uuid")
-            && message.contains("text"),
-        "unexpected context conflict: {message}",
-    );
 }
 
 #[tokio::test]

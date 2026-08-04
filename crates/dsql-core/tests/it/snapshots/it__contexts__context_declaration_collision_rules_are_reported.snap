@@ -1,0 +1,7 @@
+---
+source: crates/dsql-core/tests/it/contexts.rs
+expression: render_diagnostic_facts(&bowl).await
+---
+Error[10..19]: context entry `tenant_id` is provided to scope `frontend` by scopes `shared_a`, `shared_b`
+Error[10..19]: duplicate context entry `local_key`
+Error[37..48]: trusted context `tenant_id` is ambiguous across scopes `shared_a`, `shared_b`

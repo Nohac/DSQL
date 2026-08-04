@@ -25,6 +25,7 @@ use bowl::{
 
 use crate::entities::aggregate::Aggregate;
 use crate::entities::clause::Clause;
+use crate::entities::context::Context;
 use crate::entities::definition::Definition;
 use crate::entities::directive::Directive;
 use crate::entities::document::Document;
@@ -49,6 +50,7 @@ impl Plugin for DsqlPlugin {
     fn build(&self, reg: &mut Registrar<'_>) {
         register_entity::<Document>(reg);
         register_entity::<Definition>(reg);
+        register_entity::<Context>(reg);
         register_entity::<FieldSelection>(reg);
         register_entity::<Aggregate>(reg);
         register_entity::<FragmentSpread>(reg);

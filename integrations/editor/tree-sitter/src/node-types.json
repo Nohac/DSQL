@@ -373,6 +373,77 @@
     }
   },
   {
+    "type": "context_definition",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "context_entry",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "context_entry",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "variable_name",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "context_type",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "context_type",
+    "named": true,
+    "fields": {
+      "collection": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "[",
+            "named": false
+          },
+          {
+            "type": "]",
+            "named": false
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "type_reference",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "context_variable",
     "named": true,
     "fields": {
@@ -381,7 +452,7 @@
         "required": true,
         "types": [
           {
-            "type": "identifier",
+            "type": "variable_name",
             "named": true
           }
         ]
@@ -520,6 +591,10 @@
       "types": [
         {
           "type": "condition_definition",
+          "named": true
+        },
+        {
+          "type": "context_definition",
           "named": true
         },
         {
@@ -1817,6 +1892,10 @@
   },
   {
     "type": "condition",
+    "named": false
+  },
+  {
+    "type": "context",
     "named": false
   },
   {

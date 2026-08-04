@@ -27,6 +27,15 @@
 
 (condition_definition "on" @keyword)
 
+(context_definition
+  "context" @keyword.declaration)
+
+(context_entry
+  name: (variable_name) @variable.builtin)
+
+(context_type
+  value: (type_reference) @type)
+
 (type_reference
   namespace: (name) @namespace
   name: (name) @type)
@@ -97,7 +106,7 @@
   name: (variable_name)? @variable)
 
 (context_variable
-  name: (identifier) @variable.builtin)
+  name: (variable_name) @variable.builtin)
 
 (fragment_spread
   fragment: (name) @type)

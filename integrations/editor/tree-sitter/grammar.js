@@ -30,6 +30,7 @@ export default grammar({
       $.fragment_definition,
       $.filter_definition,
       $.condition_definition,
+      $.context_definition,
     ),
 
     query_definition: $ => seq(
@@ -61,6 +62,25 @@ export default grammar({
       field("name", $.name),
       optional(seq(K.on, field("target", $.policy_target))),
       field("body", $.condition_body),
+    ),
+
+    context_definition: $ => seq(
+      K.context,
+      S.leftBrace,
+      repeat($.context_entry),
+      S.rightBrace,
+    ),
+
+    context_entry: $ => seq(
+      field("name", $.variable_name),
+      S.colon,
+      field("type", $.context_type),
+      optional(S.comma),
+    ),
+
+    context_type: $ => seq(
+      field("value", $.type_reference),
+      optional(field("collection", seq(S.leftBracket, S.rightBracket))),
     ),
 
     policy_target: $ => choice($.type_reference, $.shape_target),
@@ -173,7 +193,7 @@ export default grammar({
       optional(field("name", $.variable_name)),
     )),
 
-    context_variable: $ => seq(S.structured, S.colon, field("name", $.identifier)),
+    context_variable: $ => seq(S.structured, S.colon, field("name", $.variable_name)),
 
     dynamic_input: $ => seq(
       field("parameter", $.top_level_variable),
@@ -437,6 +457,7 @@ export default grammar({
       K.exists,
       K.filter,
       K.condition,
+      K.context,
       K.apply,
       K.when,
       K.field,

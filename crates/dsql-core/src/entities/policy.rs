@@ -16,6 +16,9 @@ use crate::catalog::{
     Catalog, CatalogSnapshot, DataType, FieldCheckResult, FieldRef, RelationCardinality, TableId,
     TableRef, TableResolution, TypeKey, WireEncoding,
 };
+use crate::entities::context::{
+    ContextIndex, ContextLookup, ContextValueContract, validate_context_use,
+};
 use crate::entities::definition::DefIndex;
 use crate::entities::document::ParsedFile;
 use crate::entities::expression::{
@@ -223,6 +226,7 @@ pub struct CompiledPolicyIndex {
 pub struct PolicyCompileProblem {
     pub entity: Entity,
     pub span: Span,
+    pub code: DiagnosticCode,
     pub message: String,
 }
 
@@ -1232,14 +1236,14 @@ async fn compile_policies(
     body_index: Query<(Entity, &PolicyBodyIndex)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     imports: Query<(Entity, &ScopeImports)>,
-    definitions: Query<(Entity, &DefIndex)>,
+    definitions: Query<(Entity, &DefIndex, &ContextIndex)>,
     mut commands: Commands<(dsql_schema::PolicyIndex, dsql_schema::DefIndex)>,
 ) {
     let (policy_index_entity, policy_index) = policy_index.item();
     let (_, body_index) = body_index.item();
     let (_, snapshot) = catalog.item();
     let (_, imports) = imports.item();
-    let (definitions_entity, _) = definitions.item();
+    let (definitions_entity, _, contexts) = definitions.item();
     let declarations = body_index
         .declarations
         .iter()
@@ -1264,6 +1268,7 @@ async fn compile_policies(
                 index: policy_index,
                 declarations: &declarations,
                 imports,
+                contexts,
                 scope: &entry.scope,
                 context: Vec::new(),
                 conditions: BTreeSet::new(),
@@ -1305,10 +1310,11 @@ async fn compile_policies(
                     field_rules.push(CompiledPolicyFieldRule { fields, condition });
                 }
             }
-            problems.extend(compiler.problems.drain(..).map(|(span, message)| {
+            problems.extend(compiler.problems.drain(..).map(|(span, code, message)| {
                 PolicyCompileProblem {
                     entity: entry.entity,
                     span,
+                    code,
                     message,
                 }
             }));
@@ -1354,10 +1360,11 @@ struct PolicyCompiler<'a> {
     index: &'a PolicyIndex,
     declarations: &'a BTreeMap<Entity, &'a PolicyDecl>,
     imports: &'a ScopeImports,
+    contexts: &'a ContextIndex,
     scope: &'a str,
     context: Vec<PolicyContextRequirement>,
     conditions: BTreeSet<CompiledPolicyReference>,
-    problems: Vec<(Span, String)>,
+    problems: Vec<(Span, DiagnosticCode, String)>,
     failed: bool,
 }
 
@@ -1397,12 +1404,6 @@ impl PolicyExpectedType {
             provider_type: Some(path.provider_type.clone()),
             closed_values: path.closed_values.clone(),
         }
-    }
-
-    fn text_cast(&self) -> Option<TypeKey> {
-        (self.wire == WireEncoding::TextCast)
-            .then(|| self.provider_type.clone())
-            .flatten()
     }
 }
 
@@ -1448,11 +1449,15 @@ impl PolicyCompiler<'_> {
                 let Some(rule) = declaration.row_rules.first() else {
                     return self.fail();
                 };
-                self.expr(
+                let previous_scope = self.scope;
+                self.scope = &condition.scope;
+                let compiled = self.expr(
                     rule,
                     row,
                     Some(PolicyExpectedType::builtin(DataType::Boolean)),
-                )
+                );
+                self.scope = previous_scope;
+                compiled
             }
             Expr::Variable { variable, .. } => self.context_parameter(
                 variable,
@@ -1528,6 +1533,7 @@ impl PolicyCompiler<'_> {
                     );
                     self.problems.push((
                         *span,
+                        DiagnosticCode::InvalidPolicyDefinition,
                         format!(
                             "expected a variant of `{identity}`; allowed values are {}",
                             expected
@@ -1795,32 +1801,42 @@ impl PolicyCompiler<'_> {
         }
         let name = variable.name.as_deref()?;
         let path = format!("context.{name}");
-        if let Some(existing) = self.context.iter().find(|item| item.path == path) {
-            let requirement = PolicyContextRequirement {
-                path: path.clone(),
-                data_type: expected.data_type,
-                wire: expected.wire,
-                provider_type: expected.provider_type.clone(),
-                collection,
-            };
-            if existing.conflicts_with(&requirement) {
-                self.problems
-                    .push((variable.span, existing.conflict_message(&requirement)));
-                return self.fail();
-            }
-        } else {
-            self.context.push(PolicyContextRequirement {
-                path: path.clone(),
-                data_type: expected.data_type,
-                wire: expected.wire,
-                provider_type: expected.provider_type.clone(),
-                collection,
-            });
+        let ContextLookup::Resolved(_, declared) =
+            self.contexts.lookup(self.scope, name, self.imports)
+        else {
+            return self.fail();
+        };
+        let expected_contract = ContextValueContract {
+            data_type: expected.data_type,
+            wire: expected.wire,
+            provider_type: expected.provider_type.clone(),
+            collection,
+            closed_values: expected.closed_values.clone(),
+        };
+        if let Err(message) = validate_context_use(name, declared, &expected_contract) {
+            self.problems.push((
+                variable.span,
+                DiagnosticCode::TrustedContextTypeMismatch,
+                message,
+            ));
+            return self.fail();
+        }
+        let requirement = PolicyContextRequirement {
+            path: path.clone(),
+            data_type: declared.data_type,
+            wire: declared.wire,
+            provider_type: declared.provider_type.clone(),
+            collection: declared.collection,
+        };
+        if !self.context.iter().any(|item| item.path == path) {
+            self.context.push(requirement);
         }
         Some(SqlParameter {
             path,
-            text_cast: expected.text_cast(),
-            collection,
+            text_cast: (declared.wire == WireEncoding::TextCast)
+                .then(|| declared.provider_type.clone())
+                .flatten(),
+            collection: declared.collection,
         })
     }
 
@@ -1970,6 +1986,24 @@ async fn check_policy_definitions(
     let Some(entry) = index.entry(entity) else {
         return;
     };
+    for problem in compiled
+        .problems
+        .iter()
+        .filter(|problem| problem.entity == entity)
+    {
+        emit_diagnostic(
+            &mut commands,
+            DiagnosticFacts {
+                derived_from: DerivedFrom::many([entity, index_entity, catalog_entity]),
+                file: file.0,
+                span: problem.span,
+                severity: Severity::Error,
+                source: DiagnosticSource::Check,
+                code: problem.code,
+                message: problem.message.clone(),
+            },
+        );
+    }
     let mut emit = |span: Span, message: String| {
         emit_diagnostic(
             &mut commands,
@@ -1993,14 +2027,6 @@ async fn check_policy_definitions(
                 decl.kind
             ),
         );
-    }
-
-    for problem in compiled
-        .problems
-        .iter()
-        .filter(|problem| problem.entity == entity)
-    {
-        emit(problem.span, problem.message.clone());
     }
 
     diagnose_target_problem(decl, entry, &mut emit);

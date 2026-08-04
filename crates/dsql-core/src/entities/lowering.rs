@@ -11,6 +11,7 @@ use bowl::{Commands, Entity, Query};
 
 use super::aggregate::Aggregate;
 use super::clause::Clause;
+use super::context::Context;
 use super::definition::Definition;
 use super::directive::Directive;
 use super::document::{Document, ParsedFile};
@@ -34,6 +35,7 @@ fn lower_rule(
     match rule {
         Rule::Document => Document::lower(ctx, node, commands),
         Rule::QueryDef | Rule::FragmentDef => Definition::lower(ctx, node, commands),
+        Rule::ContextDef => Context::lower(ctx, node, commands),
         Rule::FilterDef | Rule::ConditionDef => Policy::lower(ctx, node, commands),
         Rule::FieldSelection => FieldSelection::lower(ctx, node, commands),
         Rule::PipeTransform => Aggregate::lower(ctx, node, commands),
@@ -78,6 +80,8 @@ fn lower_rule(
         | Rule::ConditionBody
         | Rule::ApplyRule
         | Rule::FieldRule => None,
+        // Consumed by Context lowering from the declaration block.
+        Rule::ContextEntry | Rule::ContextType => None,
         // Consumed by Aggregate lowering from the pipe_transform node.
         Rule::AggregateField | Rule::AggregateGroupKey | Rule::AggregateSet => None,
         // Consumed by Clause lowering from the clause nodes.
@@ -237,6 +241,7 @@ pub fn format_rule(
     match rule {
         Rule::Document => Document::format(formatter, node),
         Rule::QueryDef | Rule::FragmentDef => Definition::format(formatter, node),
+        Rule::ContextDef => Context::format(formatter, node),
         Rule::FilterDef | Rule::ConditionDef => Policy::format(formatter, node),
         Rule::FieldSelection => FieldSelection::format(formatter, node),
         Rule::PipeTransform => Aggregate::format(formatter, node),
@@ -295,6 +300,8 @@ pub fn format_rule(
         | Rule::ConditionBody
         | Rule::ApplyRule
         | Rule::FieldRule
+        | Rule::ContextEntry
+        | Rule::ContextType
         | Rule::DirectiveName
         | Rule::DirectiveNamespace
         | Rule::DirectiveMember

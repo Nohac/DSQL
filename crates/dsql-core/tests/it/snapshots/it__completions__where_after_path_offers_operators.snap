@@ -1,6 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/completions.rs
-expression: "completions(\"query Q {\\n  users(where .id |) {\\n    id\\n  }\\n}\\n\").await"
+expression: "completions(\"query Q {\\n  public::users(where .id |) {\\n    id\\n  }\\n}\\n\").await"
 ---
 Column created_at (timestamptz)
 Column email (text)
@@ -17,8 +17,10 @@ Operator >
 Operator >=
 Keyword and
 Keyword asc
+Keyword by
 Keyword desc
 Keyword exists
+Keyword fragment
 Keyword in
 Keyword is
 Keyword like
@@ -27,4 +29,5 @@ Keyword not
 Keyword offset
 Keyword or
 Keyword order
+Keyword query
 Keyword where

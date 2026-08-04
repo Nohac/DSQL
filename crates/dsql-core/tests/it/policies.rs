@@ -111,6 +111,7 @@ async fn invalid_filter_definitions_and_assignments_fail_closed() {
         &bowl,
         "invalid-policies.dsql",
         indoc::indoc! {r#"
+            context { minimum_id: int }
             condition RowBound on { .id: int } { where .id > 0 }
             condition MissingTarget { where .id > 0 }
             filter MissingTarget { where true }
@@ -318,7 +319,7 @@ async fn filter_assignment_conditions_infer_boolean_inputs() {
 }
 
 #[tokio::test]
-async fn trusted_context_type_conflicts_fail_across_policy_and_operation_boundaries() {
+async fn trusted_context_declarations_reject_incompatible_uses() {
     async fn case(source: &str) -> String {
         let bowl = language_bowl().await;
         insert_catalog(&bowl, imdb_catalog()).await;
@@ -330,23 +331,27 @@ async fn trusted_context_type_conflicts_fail_across_policy_and_operation_boundar
     }
 
     let policies = case(indoc::indoc! {r#"
+        context { shared: int }
         filter ById on title { apply where true where .id > $:shared }
         filter ByName on title { apply where true where .title > $:shared }
         query Conflict { title { id } }
     "#})
     .await;
     let query = case(indoc::indoc! {r#"
+        context { shared: int }
         filter ById on title { apply where true where .id > $:shared }
         query Conflict { title(where .title > $:shared) { id } }
     "#})
     .await;
     let roots = case(indoc::indoc! {r#"
+        context { shared: int }
         filter TitleById on title { apply where true where .id > $:shared }
         filter InfoByValue on movie_info_idx { apply where true where .info > $:shared }
         query Conflict { title { id } movie_info_idx { id } }
     "#})
     .await;
     let fragments = case(indoc::indoc! {r#"
+        context { shared: int }
         fragment ByIdContext on title {
           by_id: movie_info_idx(where .id > $:shared) { id }
         }
@@ -363,7 +368,7 @@ async fn trusted_context_type_conflicts_fail_across_policy_and_operation_boundar
 }
 
 #[tokio::test]
-async fn provider_policy_context_conflicts_are_order_independent() {
+async fn provider_policy_context_mismatches_are_order_independent() {
     async fn case(source: &str) -> String {
         let bowl = language_bowl().await;
         insert_catalog(&bowl, provider_scalar_catalog()).await;
@@ -373,13 +378,13 @@ async fn provider_policy_context_conflicts_are_order_independent() {
     }
 
     let date_then_inet =
-        case("filter Mixed on events { where .event_date == $:shared and .address == $:shared }")
+        case("context { shared: pg_catalog::date } filter Mixed on events { where .event_date == $:shared and .address == $:shared }")
             .await;
     let inet_then_date =
-        case("filter Mixed on events { where .address == $:shared and .event_date == $:shared }")
+        case("context { shared: pg_catalog::date } filter Mixed on events { where .address == $:shared and .event_date == $:shared }")
             .await;
     let matching = case(
-        "filter Matching on events { where .event_date >= $:shared and .event_date <= $:shared }",
+        "context { shared: pg_catalog::date } filter Matching on events { where .event_date >= $:shared and .event_date <= $:shared }",
     )
     .await;
 

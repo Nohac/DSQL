@@ -111,6 +111,44 @@ impl<'a> CstFormatter<'a> {
         self.out.push('}');
     }
 
+    /// Formats one scope-level trusted-context declaration block.
+    pub fn context_definition(&mut self, node: NodeRef) {
+        self.out.push_str("context {\n");
+        self.indent += 1;
+        for child in self.children(node) {
+            match (self.rule(child), self.token(child)) {
+                (Some(Rule::ContextEntry), _) => {
+                    self.write_indent(self.indent);
+                    if let Some(name) = self.direct_name_text(child) {
+                        self.out.push_str(&name);
+                    }
+                    self.out.push_str(": ");
+                    if let Some(context_type) = self.direct_rule(child, Rule::ContextType) {
+                        if let Some(name) = self.direct_qualified_name_text(context_type) {
+                            self.out.push_str(&name);
+                        }
+                        if self
+                            .direct_token_text(context_type, Token::LBracket)
+                            .is_some()
+                        {
+                            self.out.push_str("[]");
+                        }
+                    }
+                    self.out.push('\n');
+                }
+                (_, Some(Token::Comment)) => {
+                    self.write_indent(self.indent);
+                    self.write_node_text(child);
+                    self.out.push('\n');
+                }
+                _ => {}
+            }
+        }
+        self.indent = self.indent.saturating_sub(1);
+        self.write_indent(self.indent);
+        self.out.push('}');
+    }
+
     /// Formats one standalone filter or reusable condition definition.
     pub fn policy_definition(&mut self, node: NodeRef) {
         let keyword = if self.rule(node) == Some(Rule::FilterDef) {

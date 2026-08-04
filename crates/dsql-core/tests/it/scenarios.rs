@@ -233,6 +233,7 @@ async fn policy_services_follow_scope_and_collection_targets() {
 
     let scenario = Scenario::new().await;
     let policy_source = indoc::indoc! {r#"
+        context { is_admin: bool }
         condition <|>Admin { where $:is_admin }
         filter <|>TitleAccess on title {
           apply where <|>Admin
