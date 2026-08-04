@@ -2,6 +2,7 @@
 //! errors surface as diagnostics with structured expected-token records.
 
 use dsql_core::grammar::parse;
+use dsql_core::grammar::parser::{Cst, Node, NodeRef, Rule};
 
 use crate::{fixture, render_diagnostics};
 
@@ -162,4 +163,51 @@ fn syntax_error_reports_expected_tokens() {
         render_diagnostics(source, &diagnostics),
         expected_tokens.join("\n"),
     ));
+}
+
+#[test]
+fn truncated_context_reference_has_valid_cst_spans() {
+    fn visit(cst: &Cst<'_>, node: NodeRef, spans: &mut Vec<(Rule, std::ops::Range<usize>)>) {
+        let span = cst.span(node);
+        if let Node::Rule(rule, _) = cst.get(node) {
+            spans.push((rule, span));
+            for child in cst.children(node) {
+                visit(cst, child, spans);
+            }
+        }
+    }
+
+    let source = "context { tenant_id: uuid }\nfilter TenantScope on { .tenant_id: uuid } {\n  where .tenant_id == $:tenant_id\n}";
+    let context_reference = source.find("$:tenant_id").expect("context reference");
+    for end in [context_reference + 1, context_reference + 2] {
+        let prefix = &source[..end];
+        let (cst, diagnostics) = parse(prefix);
+        let mut spans = Vec::new();
+        visit(&cst, NodeRef::ROOT, &mut spans);
+
+        assert!(
+            spans.iter().all(|(_, span)| span.end <= prefix.len()),
+            "every recovery node stays within the source"
+        );
+        assert!(
+            cst.expected_tokens()
+                .iter()
+                .any(|expected| expected.span == (prefix.len()..prefix.len())),
+            "the completion frontier keeps grammar expectations"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "the prefix is intentionally incomplete"
+        );
+        let error_spans = spans
+            .iter()
+            .filter_map(|(rule, span)| (*rule == Rule::Error).then_some(span.clone()))
+            .collect::<Vec<_>>();
+        let expected_error = if end == context_reference + 1 {
+            prefix.len()..prefix.len()
+        } else {
+            context_reference + 1..prefix.len()
+        };
+        assert_eq!(error_spans.last(), Some(&expected_error));
+    }
 }

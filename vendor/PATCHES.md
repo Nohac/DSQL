@@ -51,6 +51,21 @@ not listed here, it does not exist. See CONTRIBUTING.md for the rules.
      spellings — dsql previously hand-maintained ~40 duplicated
      `#[token("...")]` attributes plus a keyword list for completions.
 
+3. **Keep end-of-input sentinels out of recovery CSTs.**
+   - What: parser recovery at an already-reached end of input leaves the
+     parser position unchanged and does not append the sentinel as a token;
+     CST token insertion also debug-asserts that a matching source span exists.
+   - Where: `src/skeleton/generated.rs` (parser template),
+     `src/frontend/generated.rs` (regenerated self-hosted parser), and
+     `src/frontend/parser.rs` (regression test).
+     Regeneration also brought the previously stale self-hosted parser in sync
+     with the expected-token batching and clean-prefix recording in patch 1.
+   - Why: sentinels have no source span. Appending one produced structurally
+     invalid recovery trees whose later span lookup panicked in editor services.
+     Clamping the position also removes the spurious trailing end-of-file
+     diagnostic previously caused by advancing beyond the token count. This
+     fixes an upstream parser recovery bug rather than extending lelwel.
+
 ## logos
 
 - Upstream: <https://github.com/maciejhirsz/logos>

@@ -626,6 +626,60 @@ async fn completion_edits_replace_the_word_under_the_cursor() {
     );
 }
 
+/// Recovery at the end of a trusted-context prefix must not put the parser's
+/// end-of-input sentinel into the CST. A second request proves the worker did
+/// not answer just before terminating.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_completion_at_end_of_input_keeps_the_server_alive() {
+    let mut session = Session::start("context-completion-eof").await;
+    let uri = session.uri("queries/frontend/context-prefix.dsql");
+    let text = "context { tenant_id: uuid }\nquery Q { title(where .id == $";
+    session.open(&uri, "dsql", text).await;
+
+    let completion = session
+        .request_response(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": protocol_position(text, text.len()),
+            }),
+        )
+        .await;
+    assert!(
+        completion["result"].is_array(),
+        "the first frontier answers"
+    );
+
+    let text = format!("{text}:");
+    session.replace(&uri, 2, &text).await;
+    let second = session
+        .request_response(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": protocol_position(&text, text.len()),
+            }),
+        )
+        .await;
+    assert!(
+        second["result"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["label"] == "tenant_id")),
+        "declared context fields complete at the next frontier: {second}"
+    );
+
+    let third = session
+        .request_response(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": 0},
+            }),
+        )
+        .await;
+    assert!(third["result"].is_array(), "the server remains responsive");
+}
+
 /// A newly created file in a configured scope resolves that scope's
 /// imports (the default-scope bug would leave `TitleBits` unknown), and
 /// closing an edited buffer restores the disk revision.

@@ -165,6 +165,10 @@ impl CstData {{
         MarkClosed(mark.0)
     }}
     fn advance(&mut self, token: Token, skip: bool) {{
+        debug_assert!(
+            self.token_count < self.spans.len(),
+            "CST tokens must have a corresponding source span"
+        );
         self.nodes.push(Node::Token(token, self.token_count.into()));
         self.token_count += 1;
         if !skip {{
@@ -441,6 +445,11 @@ impl<'a> Parser<'a> {{
         if !error {{
             self.close_error_node(diags);
             self.error_since_advance = false;
+        }}
+        // End-of-input is a parser sentinel, not a source token.
+        if self.pos >= self.tokens.len() {{
+            self.current = self.end_of_input;
+            return;
         }}
         self.cst.data.advance(self.current, false);
         loop {{

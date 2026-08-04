@@ -26,3 +26,25 @@ impl<'a> ParserCallbacks<'a> for Parser<'a> {
         peek == Token::Colon || (peek == Token::Hat && self.peek(2) == Token::Colon)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Parser;
+
+    #[test]
+    fn advancing_recovery_at_end_of_input_is_a_no_op() {
+        let mut diagnostics = Vec::new();
+        let mut parser = Parser::new("start", &mut diagnostics);
+        parser.init_skip();
+        parser.advance(false, &mut diagnostics);
+        let node_count = parser.cst.data.nodes.len();
+
+        parser.advance(true, &mut diagnostics);
+
+        assert_eq!(parser.pos, parser.tokens.len());
+        assert_eq!(parser.cst.data.nodes.len(), node_count);
+        for index in 0..node_count {
+            let _ = parser.cst.data.span(super::NodeRef(index));
+        }
+    }
+}
