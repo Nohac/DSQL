@@ -214,7 +214,7 @@ pub struct DsqlSchema {
     resolved_context_use: (ResolvedContextUse, BelongsToFile, DerivedFrom),
     resolved_selection: (ResolvedSelection, ResolutionOf, BelongsToFile, DerivedFrom),
     resolved_aggregate: (ResolvedAggregate, BelongsToFile, DerivedFrom),
-    resolved_clause: (ResolvedClause, BelongsToFile, DerivedFrom),
+    resolved_clause: (ResolvedClause, NodeKey, BelongsToFile, DerivedFrom),
     resolved_fragment_target: (ResolvedFragmentTarget, BelongsToFile, DerivedFrom),
     resolved_spread: (ResolvedSpread, BelongsToFile, DerivedFrom),
     definition_variables: (

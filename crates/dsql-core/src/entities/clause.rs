@@ -13,16 +13,20 @@ use bowl::{
 };
 
 use crate::catalog::{CatalogSnapshot, WireEncoding};
+use crate::entities::definition::DefKind;
 use crate::entities::expression::{
     DynamicInputSurface, Expr, PathAnchor, VariableRef, build_expr, build_filter_assignment,
     build_variable_ref, dynamic_input_surface, expr_child,
 };
 use crate::entities::{direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
-use crate::facts::{BelongsToFile, ChildOf, NodeKey, Span};
+use crate::facts::{
+    BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
+    NodeKey, Severity, Span, emit_diagnostic,
+};
 use crate::format::CstFormatter;
 use crate::grammar::parser::{CstData, NodeRef, Rule};
-use crate::resolution::{PathTerminal, ResolvedClause};
+use crate::resolution::{PathTerminal, ResolvedClause, ResolvedValueType};
 use crate::service::hover::{
     Cursor, HoverEnriched, describe_column, describe_relation, emit_hover_candidate, priority,
 };
@@ -98,6 +102,7 @@ impl LanguageEntity for Clause {
     const NAME: &'static str = "clause";
 
     fn register(reg: &mut Registrar<'_>) {
+        reg.system(check_resolved_clause);
         reg.system(hover_clause_fields);
         reg.system(complete_clause_positions.run_during(bowl::Phase::Complete));
     }
@@ -299,30 +304,78 @@ fn order_items(cst: &CstData, source: &str, node: NodeRef) -> Vec<OrderTerm> {
         .collect()
 }
 
-/// Checks one clause against its field's context table during the
-/// selection check walk (`field_selection::check_selections`). Path and
-/// order-item resolution comes from the clause's [`ResolvedClause`] fact —
-/// checks diagnose resolution outcomes, they never re-resolve.
-pub(crate) fn check_clause(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
-    table: crate::catalog::TableId,
+/// Checks one exact clause-resolution result without reopening the catalog or
+/// any ambient syntax view. [`ChildOf`] is a tree, so each clause currently
+/// has one resolution context; if parent multiplicity changes, diagnostics
+/// must gain an explicit context identity before this becomes one-to-many.
+async fn check_resolved_clause(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    resolutions: Query<(Entity, &ResolvedClause, &NodeKey, &BelongsToFile)>,
+    clauses: Query<(Entity, &ClauseFact, &Span), Where<BowlEq<NodeKey>>>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (resolution_entity, resolved, _, file) = resolutions.item();
+    let (clause_entity, clause, span) = clauses.item();
+    let mut diagnostics = ResolvedClauseDiagnostics {
+        clause: clause_entity,
+        resolution: resolution_entity,
+        file: file.0,
+        definition_kind: resolved.definition_kind,
+        commands: &mut commands,
+    };
+    check_clause_semantics(&mut diagnostics, resolved, clause_entity, clause, *span);
+}
+
+trait ClauseDiagnostics {
+    fn error(&mut self, entity: Entity, span: Span, code: DiagnosticCode, message: String);
+    fn definition_kind(&self) -> DefKind;
+}
+
+struct ResolvedClauseDiagnostics<'a> {
+    clause: Entity,
+    resolution: Entity,
+    file: Entity,
+    definition_kind: DefKind,
+    commands: &'a mut Commands<(dsql_schema::Diagnostic,)>,
+}
+
+impl ClauseDiagnostics for ResolvedClauseDiagnostics<'_> {
+    fn error(&mut self, _entity: Entity, span: Span, code: DiagnosticCode, message: String) {
+        emit_diagnostic(
+            self.commands,
+            DiagnosticFacts {
+                derived_from: DerivedFrom::many([self.clause, self.resolution]),
+                file: self.file,
+                span,
+                severity: Severity::Error,
+                source: DiagnosticSource::Check,
+                code,
+                message,
+            },
+        );
+    }
+
+    fn definition_kind(&self) -> DefKind {
+        self.definition_kind
+    }
+}
+
+/// Checks syntax-local clause semantics from the shared resolution result.
+fn check_clause_semantics(
+    ctx: &mut impl ClauseDiagnostics,
+    resolved: &ResolvedClause,
     entity: bowl::Entity,
     clause: &ClauseFact,
     span: Span,
 ) {
-    use crate::facts::DiagnosticCode;
-
-    let resolved = ctx.clause_resolutions.get(&entity).copied();
-    if let Some(resolved) = resolved {
-        crate::entities::field_selection::collect_resolved_clause_tables(
-            resolved,
-            &mut ctx.observed_tables,
-        );
-    }
+    // A resolved child context always carries its query/fragment root today.
+    // `resolve_clauses` therefore lacks context only when the owning selection
+    // is already unresolved, matching the residual walk's cascade cutoff.
+    let Some(table) = resolved.context.map(|context| context.table) else {
+        return;
+    };
     match clause {
-        ClauseFact::FilterAssignment { .. } => {
-            crate::entities::policy::check_filter_assignment(ctx, table, entity, clause);
-        }
+        ClauseFact::FilterAssignment { .. } => {}
         ClauseFact::Where { expr } => {
             check_dynamic_predicate_placement(
                 ctx,
@@ -330,7 +383,7 @@ pub(crate) fn check_clause(
                 expr,
                 DynamicPredicatePlacement::Conjunctive,
             );
-            check_predicate_expr(ctx, resolved, table, entity, expr, true);
+            check_predicate_expr(ctx, Some(resolved), table, entity, expr, true);
         }
         ClauseFact::OrderBy { items } => {
             for variable in items.iter().filter_map(|item| match item {
@@ -343,18 +396,22 @@ pub(crate) fn check_clause(
                 OrderTerm::Column(item) => Some(item),
                 OrderTerm::Dynamic { .. } => None,
             }) {
-                let resolved_item =
-                    resolved.and_then(|resolved| resolved.order_item_at(item.field_span));
+                let resolved_item = resolved.order_item_at(item.field_span);
                 if resolved_item.is_none_or(|item| item.column.is_none()) {
-                    let table_name = table_name(ctx, table);
+                    let table_name = resolved
+                        .context_table_name
+                        .as_deref()
+                        .unwrap_or("<unknown>");
                     ctx.error(
                         entity,
                         item.field_span,
                         DiagnosticCode::FieldNotFound,
                         format!("field `{}` not found on table `{table_name}`", item.field),
                     );
-                } else if let Some(column) = resolved_item.and_then(|item| item.column) {
-                    check_unmapped_column_type(ctx, entity, item.field_span, column);
+                } else if let Some(value_type) =
+                    resolved_item.and_then(|item| item.value_type.as_ref())
+                {
+                    check_unmapped_value_type(ctx, entity, item.field_span, value_type);
                 }
             }
         }
@@ -367,8 +424,99 @@ pub(crate) fn check_clause(
     }
 }
 
-fn check_dynamic_input_owner(
+/// Retains the operation-wide policy effects that still belong to the
+/// residual definition walk. Pure clause diagnostics are emitted by
+/// [`check_resolved_clause`].
+pub(crate) fn collect_clause_policy_effects(
     ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    table: crate::catalog::TableId,
+    entity: Entity,
+    clause: &ClauseFact,
+) {
+    let resolved = ctx.clause_resolutions.get(&entity).copied();
+    if let Some(resolved) = resolved {
+        crate::entities::field_selection::collect_resolved_clause_tables(
+            resolved,
+            &mut ctx.observed_tables,
+        );
+    }
+    match clause {
+        ClauseFact::FilterAssignment { .. } => {
+            crate::entities::policy::check_filter_assignment(ctx, table, entity, clause);
+        }
+        ClauseFact::Where { expr } => {
+            collect_predicate_policy_effects(ctx, resolved, table, entity, expr);
+        }
+        ClauseFact::OrderBy { .. } | ClauseFact::Limit { .. } | ClauseFact::Offset { .. } => {}
+    }
+}
+
+fn collect_predicate_policy_effects(
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    resolved: Option<&ResolvedClause>,
+    table: crate::catalog::TableId,
+    entity: Entity,
+    expr: &Expr,
+) {
+    match expr {
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_predicate_policy_effects(ctx, resolved, table, entity, lhs);
+            collect_predicate_policy_effects(ctx, resolved, table, entity, rhs);
+        }
+        Expr::Unary { operand, .. } | Expr::NullTest { operand, .. } => {
+            collect_predicate_policy_effects(ctx, resolved, table, entity, operand);
+        }
+        Expr::List { items, .. } => {
+            for item in items {
+                collect_predicate_policy_effects(ctx, resolved, table, entity, item);
+            }
+        }
+        Expr::Exists {
+            filters,
+            predicate,
+            span,
+            ..
+        } => {
+            let nested_table = resolved
+                .and_then(|resolved| resolved.existence_at(*span))
+                .and_then(|existence| {
+                    existence.source.as_ref().map(|source| match source {
+                        crate::resolution::ResolvedExistenceSource::Relation(relation) => {
+                            relation.table
+                        }
+                        crate::resolution::ResolvedExistenceSource::Table(table) => *table,
+                    })
+                });
+            if let Some(nested_table) = nested_table {
+                crate::entities::policy::check_exists_filter_assignments(
+                    ctx,
+                    nested_table,
+                    entity,
+                    filters,
+                );
+            }
+            if let Some(predicate) = predicate {
+                collect_predicate_policy_effects(
+                    ctx,
+                    resolved,
+                    nested_table.unwrap_or(table),
+                    entity,
+                    predicate,
+                );
+            }
+        }
+        Expr::Aggregate { .. }
+        | Expr::Path { .. }
+        | Expr::Variable { .. }
+        | Expr::DynamicPredicate { .. }
+        | Expr::PredicateRef { .. }
+        | Expr::Literal { .. }
+        | Expr::Error { .. } => {}
+    }
+}
+
+fn check_dynamic_input_owner(
+    ctx: &mut impl ClauseDiagnostics,
     entity: bowl::Entity,
     variable: &VariableRef,
     kind: &str,
@@ -383,7 +531,7 @@ fn check_dynamic_input_owner(
             format!("bounded dynamic {kind} inputs must be named top-level query inputs"),
         );
     }
-    if ctx.enclosing_fragment.is_some() {
+    if ctx.definition_kind() == DefKind::Fragment {
         ctx.error(
             entity,
             variable.span,
@@ -394,7 +542,7 @@ fn check_dynamic_input_owner(
 }
 
 fn check_dynamic_predicate_placement(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     entity: bowl::Entity,
     expr: &Expr,
     placement: DynamicPredicatePlacement,
@@ -487,17 +635,8 @@ impl DynamicPredicatePlacement {
     }
 }
 
-fn table_name(
-    ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
-    table: crate::catalog::TableId,
-) -> String {
-    ctx.catalog
-        .table_by_id(table)
-        .map_or("<unknown>".to_string(), |table| table.name.clone())
-}
-
 fn check_predicate_expr(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     resolved: Option<&crate::resolution::ResolvedClause>,
     table: crate::catalog::TableId,
     entity: bowl::Entity,
@@ -509,9 +648,11 @@ fn check_predicate_expr(
 
     match expr {
         Expr::Path { .. } => {
-            let data_type = resolved_path_type(ctx, resolved, expr);
+            let data_type = resolved_path_type(resolved, expr);
             if data_type.is_none() {
-                let table_name = table_name(ctx, table);
+                let table_name = resolved
+                    .and_then(|resolved| resolved.context_table_name.as_deref())
+                    .unwrap_or("<unknown>");
                 ctx.error(
                     entity,
                     expr.span(),
@@ -575,7 +716,7 @@ fn check_predicate_expr(
             }
         }
         Expr::Exists {
-            filters,
+            filters: _,
             predicate,
             span,
             ..
@@ -636,14 +777,6 @@ fn check_predicate_expr(
                         crate::resolution::ResolvedExistenceSource::Table(table) => *table,
                     })
                 });
-                if let Some(nested_table) = nested_table {
-                    crate::entities::policy::check_exists_filter_assignments(
-                        ctx,
-                        nested_table,
-                        entity,
-                        filters,
-                    );
-                }
                 check_predicate_expr(
                     ctx,
                     resolved,
@@ -651,20 +784,6 @@ fn check_predicate_expr(
                     entity,
                     predicate,
                     true,
-                );
-            } else if let Some(nested_table) = existence.and_then(|existence| {
-                existence.source.as_ref().map(|source| match source {
-                    crate::resolution::ResolvedExistenceSource::Relation(relation) => {
-                        relation.table
-                    }
-                    crate::resolution::ResolvedExistenceSource::Table(table) => *table,
-                })
-            }) {
-                crate::entities::policy::check_exists_filter_assignments(
-                    ctx,
-                    nested_table,
-                    entity,
-                    filters,
                 );
             }
         }
@@ -716,7 +835,7 @@ fn check_predicate_expr(
 }
 
 fn check_membership_types(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     resolved: Option<&crate::resolution::ResolvedClause>,
     entity: bowl::Entity,
     lhs: &Expr,
@@ -733,10 +852,10 @@ fn check_membership_types(
         );
         return;
     }
-    let Some((_, capabilities)) = resolved_expr_semantics(ctx, resolved, lhs) else {
+    let Some((_, capabilities)) = resolved_expr_semantics(resolved, lhs) else {
         return;
     };
-    let enum_contract = resolved_expr_enum_contract(ctx, resolved, lhs);
+    let enum_contract = resolved_expr_enum_contract(resolved, lhs);
     if capabilities.wire == WireEncoding::Unsupported {
         return;
     }
@@ -774,7 +893,7 @@ fn check_membership_types(
 }
 
 fn check_literal_for_capabilities(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     entity: bowl::Entity,
     capabilities: &crate::catalog::TypeCapabilities,
     enum_contract: Option<&(crate::catalog::TypeKey, Vec<String>)>,
@@ -810,7 +929,7 @@ fn check_literal_for_capabilities(
 }
 
 fn check_aggregate_comparison_path(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     resolved: Option<&crate::resolution::ResolvedClause>,
     entity: bowl::Entity,
     lhs: &Expr,
@@ -832,7 +951,7 @@ fn check_aggregate_comparison_path(
     if segments.len() == 1 && matches!(anchor, PathAnchor::Current | PathAnchor::Root) {
         return;
     }
-    if resolved_path_type(ctx, resolved, path).is_none() {
+    if resolved_path_type(resolved, path).is_none() {
         return;
     }
     ctx.error(
@@ -845,7 +964,7 @@ fn check_aggregate_comparison_path(
 }
 
 fn check_aggregate_comparison_operator(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     resolved: Option<&crate::resolution::ResolvedClause>,
     entity: bowl::Entity,
     lhs: &Expr,
@@ -860,7 +979,7 @@ fn check_aggregate_comparison_operator(
         }
         _ => return,
     };
-    let Some((data_type, capabilities)) = resolved_expr_semantics(ctx, resolved, aggregate) else {
+    let Some((data_type, capabilities)) = resolved_expr_semantics(resolved, aggregate) else {
         return;
     };
     if !capabilities.supports(op) {
@@ -878,7 +997,7 @@ fn check_aggregate_comparison_operator(
 }
 
 fn check_operator_variable(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     resolved: Option<&crate::resolution::ResolvedClause>,
     entity: bowl::Entity,
     lhs: &Expr,
@@ -901,7 +1020,7 @@ fn check_operator_variable(
         );
         return;
     }
-    let Some((data_type, capabilities)) = resolved_expr_semantics(ctx, resolved, path) else {
+    let Some((data_type, capabilities)) = resolved_expr_semantics(resolved, path) else {
         return;
     };
     if capabilities.wire == WireEncoding::Unsupported {
@@ -958,7 +1077,7 @@ fn check_operator_variable(
 }
 
 fn check_binary_predicate_types(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     resolved: Option<&crate::resolution::ResolvedClause>,
     entity: bowl::Entity,
     lhs: &Expr,
@@ -970,11 +1089,10 @@ fn check_binary_predicate_types(
     use crate::facts::DiagnosticCode;
 
     if let (Expr::Path { .. }, Expr::Path { .. }) = (lhs, rhs) {
-        let left = resolved_path_catalog_type(ctx, resolved, lhs);
-        let right = resolved_path_catalog_type(ctx, resolved, rhs);
+        let left = resolved_path_value_type(resolved, lhs);
+        let right = resolved_path_value_type(resolved, rhs);
         if let (Some(left), Some(right)) = (left, right)
-            && (ctx.catalog.enum_type_for_type(left.id).is_some()
-                || ctx.catalog.enum_type_for_type(right.id).is_some())
+            && (left.enum_variants.is_some() || right.enum_variants.is_some())
             && left.key != right.key
         {
             ctx.error(
@@ -983,7 +1101,7 @@ fn check_binary_predicate_types(
                 DiagnosticCode::PredicateTypeMismatch,
                 format!(
                     "cannot compare nominal types `{}` and `{}`",
-                    left.readable_type, right.readable_type
+                    left.readable, right.readable
                 ),
             );
         }
@@ -999,10 +1117,10 @@ fn check_binary_predicate_types(
         }
         _ => return,
     };
-    let Some((_, capabilities)) = resolved_expr_semantics(ctx, resolved, path) else {
+    let Some((_, capabilities)) = resolved_expr_semantics(resolved, path) else {
         return;
     };
-    let enum_contract = resolved_expr_enum_contract(ctx, resolved, path);
+    let enum_contract = resolved_expr_enum_contract(resolved, path);
     if capabilities.wire == WireEncoding::Unsupported {
         return;
     }
@@ -1067,7 +1185,7 @@ fn check_binary_predicate_types(
 }
 
 fn check_enum_literal(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     entity: bowl::Entity,
     enum_contract: Option<&(crate::catalog::TypeKey, Vec<String>)>,
     path: &Expr,
@@ -1097,50 +1215,38 @@ fn check_enum_literal(
     );
 }
 
-fn resolved_path_catalog_type<'a>(
-    ctx: &crate::entities::field_selection::CheckCtx<'a, '_>,
-    resolved: Option<&crate::resolution::ResolvedClause>,
+fn resolved_path_value_type<'a>(
+    resolved: Option<&'a ResolvedClause>,
     expr: &Expr,
-) -> Option<&'a crate::catalog::CatalogType> {
+) -> Option<&'a ResolvedValueType> {
     let Expr::Path { .. } = expr else {
         return None;
     };
-    let column = resolved?.path_at(expr.span())?.terminal.column()?;
-    ctx.catalog.type_for_column(column)
+    let PathTerminal::Column { value_type, .. } = &resolved?.path_at(expr.span())?.terminal else {
+        return None;
+    };
+    value_type.as_deref()
 }
 
 fn resolved_expr_enum_contract(
-    ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
-    resolved: Option<&crate::resolution::ResolvedClause>,
+    resolved: Option<&ResolvedClause>,
     expr: &Expr,
 ) -> Option<(crate::catalog::TypeKey, Vec<String>)> {
-    let declared = resolved_path_catalog_type(ctx, resolved, expr)?;
-    let (_, enumeration) = ctx.catalog.enum_type_for_type(declared.id)?;
-    Some((
-        declared.key.clone(),
-        enumeration
-            .variants
-            .iter()
-            .map(|variant| variant.variant.clone())
-            .collect(),
-    ))
+    let value_type = resolved_path_value_type(resolved, expr)?;
+    Some((value_type.key.clone(), value_type.enum_variants.clone()?))
 }
 
 /// The terminal column type of a path, read from the clause's
 /// resolution fact.
 fn resolved_path_type(
-    ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
-    resolved: Option<&crate::resolution::ResolvedClause>,
+    resolved: Option<&ResolvedClause>,
     path: &Expr,
 ) -> Option<crate::catalog::DataType> {
-    let column = resolved?.path_at(path.span())?.terminal.column()?;
-    ctx.catalog
-        .column_by_id(column)
-        .map(|column| ctx.catalog.data_type_for_column(column.id))
+    resolved_path_value_type(resolved, path).map(|value_type| value_type.logical)
 }
 
 fn check_unmapped_comparison_operand(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     resolved: Option<&crate::resolution::ResolvedClause>,
     entity: bowl::Entity,
     lhs: &Expr,
@@ -1157,25 +1263,19 @@ fn check_unmapped_comparison_operand(
         ) => path,
         _ => return,
     };
-    let Some(column) = resolved
-        .and_then(|resolved| resolved.path_at(path.span()))
-        .and_then(|path| path.terminal.column())
-    else {
+    let Some(value_type) = resolved_path_value_type(resolved, path) else {
         return;
     };
-    check_unmapped_column_type(ctx, entity, path.span(), column);
+    check_unmapped_value_type(ctx, entity, path.span(), value_type);
 }
 
-fn check_unmapped_column_type(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+fn check_unmapped_value_type(
+    ctx: &mut impl ClauseDiagnostics,
     entity: bowl::Entity,
     span: Span,
-    column: crate::catalog::ColumnId,
+    value_type: &ResolvedValueType,
 ) {
-    let Some(data_type) = ctx.catalog.type_for_column(column) else {
-        return;
-    };
-    if data_type.capabilities.wire != WireEncoding::Unsupported {
+    if value_type.capabilities.wire != WireEncoding::Unsupported {
         return;
     }
     ctx.error(
@@ -1184,14 +1284,13 @@ fn check_unmapped_column_type(
         crate::facts::DiagnosticCode::UnmappedType,
         format!(
             "database type `{}` cannot be used as an input",
-            data_type.readable_type
+            value_type.readable
         ),
     );
 }
 
 fn resolved_expr_semantics<'a>(
-    ctx: &crate::entities::field_selection::CheckCtx<'a, '_>,
-    resolved: Option<&crate::resolution::ResolvedClause>,
+    resolved: Option<&'a ResolvedClause>,
     expr: &Expr,
 ) -> Option<(
     crate::catalog::DataType,
@@ -1199,15 +1298,11 @@ fn resolved_expr_semantics<'a>(
 )> {
     match expr {
         Expr::Path { .. } => {
-            let column = resolved?.path_at(expr.span())?.terminal.column()?;
-            let data_type = ctx.catalog.type_for_column(column)?;
-            Some((
-                data_type.logical_data_type(),
-                Cow::Borrowed(&data_type.capabilities),
-            ))
+            let value_type = resolved_path_value_type(resolved, expr)?;
+            Some((value_type.logical, Cow::Borrowed(&value_type.capabilities)))
         }
         Expr::Aggregate { .. } => {
-            let data_type = resolved_expr_type(ctx, resolved, expr)?;
+            let data_type = resolved_expr_type(resolved, expr)?;
             Some((
                 data_type,
                 Cow::Owned(crate::catalog::Catalog::builtin_capabilities(data_type)),
@@ -1218,12 +1313,11 @@ fn resolved_expr_semantics<'a>(
 }
 
 fn resolved_expr_type(
-    ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
-    resolved: Option<&crate::resolution::ResolvedClause>,
+    resolved: Option<&ResolvedClause>,
     expr: &Expr,
 ) -> Option<crate::catalog::DataType> {
     match expr {
-        Expr::Path { .. } => resolved_path_type(ctx, resolved, expr),
+        Expr::Path { .. } => resolved_path_type(resolved, expr),
         Expr::Aggregate { .. } => {
             let aggregate = resolved?.aggregate_at(expr.span())?;
             if !aggregate.is_valid() {
@@ -1245,7 +1339,7 @@ fn resolved_expr_type(
 }
 
 fn check_non_negative_integer(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut impl ClauseDiagnostics,
     entity: bowl::Entity,
     clause: &str,
     expr: &Expr,

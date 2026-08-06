@@ -3,6 +3,7 @@
 //! profiling counters) pin the intended shape directly.
 
 use bowl::{Bowl, Entity, Query, Singleton};
+use dsql_core::catalog::TableRef;
 use dsql_core::facts::DiagnosticsDemand;
 use dsql_core::language_bowl;
 use dsql_core::source::{FilePath, insert_source};
@@ -31,13 +32,11 @@ async fn edit_file(bowl: &Bowl, path: &str, replace: (&str, &str)) {
     let _ = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
 }
 
-/// One query-file edit re-runs that file's checks, not the project's:
-/// query bodies are not cross-file inputs, so the definition index (and
-/// with it every other definition's walk) must stay untouched. A
-/// fragment-file edit is the deliberate opposite — fragment bodies ARE
-/// cross-file inputs, and every dependent walk re-runs.
+/// Exact field-resolution checks follow changed fields, not definition-wide
+/// ambient invalidation. A fragment body is checked under its own declared
+/// target; callers retain separate spread-site compatibility checks.
 #[tokio::test]
-async fn query_edits_rerun_one_definition_fragment_edits_rerun_all() {
+async fn selection_checks_follow_changed_resolution_pairs_only() {
     let bowl = language_bowl().await;
     dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
     bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
@@ -60,21 +59,91 @@ async fn query_edits_rerun_one_definition_fragment_edits_rerun_all() {
     .await;
     let _ = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
 
-    let baseline = runs_of(&bowl, "check_selections").await;
+    let baseline = runs_of(&bowl, "check_resolved_selection").await;
 
     edit_file(&bowl, "query-3.dsql", ("limit 1", "limit 2")).await;
-    let after_query_edit = runs_of(&bowl, "check_selections").await;
-    assert!(
-        after_query_edit - baseline <= 2,
-        "a query edit re-runs its own definition only, got {} extra runs",
-        after_query_edit - baseline
+    let after_query_edit = runs_of(&bowl, "check_resolved_selection").await;
+    assert_eq!(
+        after_query_edit - baseline,
+        2,
+        "syntax and resolution revisions converge on the one changed pair"
     );
 
     edit_file(&bowl, "fragments.dsql", ("  id", "  title")).await;
-    let after_fragment_edit = runs_of(&bowl, "check_selections").await;
-    assert!(
-        after_fragment_edit - after_query_edit >= FILES,
-        "a fragment body edit re-runs every dependent walk, got {} runs",
-        after_fragment_edit - after_query_edit
+    let after_fragment_edit = runs_of(&bowl, "check_resolved_selection").await;
+    assert_eq!(
+        after_fragment_edit - after_query_edit,
+        2,
+        "syntax and resolution revisions converge on the one local fragment pair"
+    );
+}
+
+/// Catalog replacements rerun the resolution systems because the catalog is
+/// one tracked singleton. Fingerprint cutoff on the normalized clause result
+/// must prevent an unchanged sibling type contract from reaching its check.
+#[tokio::test]
+async fn clause_checks_follow_changed_catalog_type_contracts_only() {
+    let bowl = language_bowl().await;
+    let mut catalog = imdb_catalog();
+    dsql_core::catalog::insert_catalog(&bowl, catalog.clone()).await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+
+    let first = insert_source(
+        &bowl,
+        "first.dsql",
+        "query First {\n  title(where .id == 1) { id }\n}\n",
+    )
+    .await;
+    insert_source(
+        &bowl,
+        "second.dsql",
+        "query Second {\n  title(where .title == \"x\") { title }\n}\n",
+    )
+    .await;
+    let _ = bowl
+        .scoop::<Query<(Entity, &dsql_core::facts::Diagnostic)>>()
+        .await;
+    let baseline = runs_of(&bowl, "check_resolved_clause").await;
+
+    replace_source_text(&bowl, first, ".id == 1", ".id == 2").await;
+    let _ = bowl
+        .scoop::<Query<(Entity, &dsql_core::facts::Diagnostic)>>()
+        .await;
+    assert_eq!(
+        runs_of(&bowl, "check_resolved_clause").await - baseline,
+        1,
+        "a content-only clause edit reruns only its exact syntax-resolution pair"
+    );
+    let before_catalog = runs_of(&bowl, "check_resolved_clause").await;
+
+    let id_column = catalog
+        .table_ref_for(TableRef::parse("title"))
+        .and_then(|table| {
+            table.columns.iter().find_map(|column| {
+                catalog
+                    .column_by_id(*column)
+                    .filter(|column| column.name == "id")
+                    .map(|column| column.id)
+            })
+        })
+        .expect("the imdb title table has an id column");
+    let type_id = catalog
+        .column_by_id(id_column)
+        .expect("the id column remains in the catalog")
+        .type_id;
+    catalog.types[type_id.0]
+        .capabilities
+        .description
+        .push_str(" (probe)");
+    dsql_core::catalog::insert_catalog(&bowl, catalog).await;
+    let _ = bowl
+        .scoop::<Query<(Entity, &dsql_core::facts::Diagnostic)>>()
+        .await;
+
+    assert_eq!(
+        runs_of(&bowl, "check_resolved_clause").await - before_catalog,
+        1,
+        "only the clause whose resolved value contract changed reruns"
     );
 }

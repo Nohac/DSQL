@@ -122,6 +122,21 @@ index-tracked per-spread system: the fingerprinted `DefIndex` and
 `ScopeImports` are tracked inputs, so rows rerun exactly when the
 definition set or the scope graph changes.
 
+Field and clause diagnostics consume exact resolution rows at Evaluate. A
+`ResolvedSelection` carries structured lookup failures and the owned scalar
+type contract needed by its field check. A `ResolvedClause` carries the same
+owned type contracts for paths and order items plus its syntax `NodeKey`, so
+each resolution context binds its one source clause without an ambient view or
+catalog re-read. Catalog-wide resolution still observes the catalog singleton;
+fingerprint cutoff on unchanged resolution rows prevents unrelated checks from
+rerunning.
+
+The remaining Complete-phase definition check is deliberately residual: it
+still walks selection syntax for output-key expansion, fragment compatibility
+and cycles, and operation-wide policy/table summaries. Those set-wide results
+will become bottom-up relationship-owned summary facts before the walk is
+removed; field and clause diagnostics no longer depend on it.
+
 ## Stages and demand
 
 Checks, inference, planning, and SQL generation are systems gated on demand

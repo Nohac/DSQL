@@ -129,7 +129,7 @@ impl LanguageEntity for Definition {
 }
 
 /// A fragment's `on` target must resolve to a catalog table; its body is
-/// only checked once it does (see `field_selection::check_selections`).
+/// only checked once it does (see the field-selection check systems).
 async fn check_fragment_targets(
     _: Query<Entity, With<DiagnosticsDemand>>,
     query: Query<(Entity, &ResolvedFragmentTarget, &BelongsToFile)>,

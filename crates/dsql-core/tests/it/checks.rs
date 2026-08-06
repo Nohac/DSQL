@@ -657,6 +657,33 @@ async fn fragment_checks_report_target_and_compat_mismatches() {
 }
 
 #[tokio::test]
+async fn fragment_body_and_spread_site_diagnostics_keep_their_cardinality() {
+    let bowl = checked_bowl(imdb_catalog()).await;
+
+    insert_source(
+        &bowl,
+        "fragment-cardinality.dsql",
+        indoc::indoc! {r#"
+            fragment BrokenTitle on title {
+              missing_field
+            }
+            query First {
+              title(limit 1) { ...BrokenTitle }
+            }
+            query Second {
+              title(limit 1) { ...BrokenTitle }
+            }
+            query WrongContext {
+              kind_type(limit 1) { ...BrokenTitle }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
 async fn catalog_replacement_retires_and_recomputes_diagnostics() {
     let bowl = checked_bowl(Catalog::hardcoded()).await;
 

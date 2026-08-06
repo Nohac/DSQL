@@ -267,8 +267,7 @@ async fn resolve_spreads(
     ));
 }
 
-/// Checks one spread site during the selection check walk (see
-/// `field_selection::check_selections`): the named fragment's target must
+/// Checks one spread site during the residual definition walk: the named fragment's target must
 /// match the context table, and following spreads through fragments must
 /// not cycle. Lives here because spread semantics belong to this entity;
 /// the walk only orchestrates.

@@ -80,6 +80,10 @@
   pairs (the `resolution.rs` pattern) or engine subtree fingerprints,
   replacing the `DefDecl::source_hash` + fragment-file-hash invalidation
   with row-granular deps and retiring the remaining ambient body reads.
+  Field and clause diagnostics now consume exact `ResolvedSelection` and
+  `ResolvedClause` pairs with owned type contracts. The remaining check walk
+  is limited to output-key/fragment expansion and operation policy summaries;
+  replace those with bottom-up `Children`/`Related` summary facts next.
 
 # Porridge issue: staleness on content revisit (A -> B -> A)
 

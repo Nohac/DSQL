@@ -27,7 +27,7 @@ use crate::grammar::lexer::Token;
 use crate::grammar::parser::{NodeRef, Rule};
 use crate::resolution::{
     FieldResolutions, ResolvedClause, ResolvedSelection, ResolvedSelectionLimit,
-    SelectionCardinality, SelectionCardinalityProof, SelectionTarget,
+    SelectionCardinality, SelectionCardinalityProof, SelectionResolutionProblem, SelectionTarget,
 };
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::completion::{CompletionContext, CompletionRequest};
@@ -133,8 +133,10 @@ impl LanguageEntity for FieldSelection {
     const NAME: &'static str = "field_selection";
 
     fn register(reg: &mut Registrar<'_>) {
-        // Views lowered facts ambiently: behind the Complete barrier.
-        reg.system(check_selections.run_during(bowl::Phase::Complete));
+        // Set-wide fragment/output/policy checks still use the residual walk
+        // and therefore remain behind Complete until the summary-fact slice.
+        reg.system(residual_definition_checks.run_during(bowl::Phase::Complete));
+        reg.system(check_resolved_selection);
         reg.system(check_selection_shape);
         reg.system(hover_fields);
         reg.system(complete_selections.run_during(bowl::Phase::Complete));
@@ -426,8 +428,9 @@ impl SelectionTree<'_> {
 ///
 /// The per-construct logic stays with its owning entity: spread sites are
 /// checked by [`check_spread_site`] in `fragment_spread`.
-/// The ambient views the check and inference walks read, bundled to keep
-/// system signatures within porridge's parameter arity.
+/// The ambient views the residual definition check, inference, and planning
+/// walks read, bundled to keep system signatures within porridge's parameter
+/// arity. Field and clause diagnostics no longer consume this tree.
 #[derive(SystemParam)]
 pub(crate) struct TreeViews<'a> {
     fields: View<'a, (Entity, &'a FieldSel, &'a NodeKey, &'a ChildOf)>,
@@ -440,7 +443,7 @@ pub(crate) struct TreeViews<'a> {
     clippy::too_many_arguments,
     reason = "system parameters are the tracked join, not an API surface"
 )]
-async fn check_selections(
+async fn residual_definition_checks(
     _: Query<Entity, With<DiagnosticsDemand>>,
     defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
@@ -600,12 +603,11 @@ impl CheckCtx<'_, '_> {
                         .map(|(entity, clause, span, _)| (*entity, *clause, *span))
                         .collect();
                     for (clause_entity, clause, clause_span) in root_clauses {
-                        crate::entities::clause::check_clause(
+                        crate::entities::clause::collect_clause_policy_effects(
                             self,
                             table_id,
                             clause_entity,
                             clause,
-                            clause_span,
                         );
                         if field.has_transform() {
                             crate::entities::aggregate::check_source_clause(
@@ -617,48 +619,16 @@ impl CheckCtx<'_, '_> {
                         }
                     }
                     if field.flattened && field.body == FieldBodyKind::None {
-                        self.missing_flattened_body(entity, field);
                         continue;
                     }
                     if !field.has_selection_set() && !field.has_transform() {
-                        self.error(
-                            entity,
-                            field.name_span,
-                            DiagnosticCode::RelationSelectionSet,
-                            format!("relation field `{}` must have a selection set", field.name),
-                        );
                         continue;
                     }
                     if field.has_selection_set() {
                         self.check_set(table_id, entity);
                     }
                 }
-                TableResolution::NotFound { reference } => {
-                    self.error(
-                        entity,
-                        field.name_span,
-                        DiagnosticCode::TableNotFound,
-                        format!("table `{reference}` not found"),
-                    );
-                }
-                TableResolution::Ambiguous {
-                    reference,
-                    candidates,
-                } => {
-                    let candidates: Vec<String> = candidates
-                        .iter()
-                        .map(|key| format!("{}::{}", key.schema, key.table))
-                        .collect();
-                    self.error(
-                        entity,
-                        field.name_span,
-                        DiagnosticCode::AmbiguousTable,
-                        format!(
-                            "table `{reference}` is ambiguous; use an alias with a schema-qualified name ({})",
-                            candidates.join(", ")
-                        ),
-                    );
-                }
+                TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => {}
             }
         }
     }
@@ -689,10 +659,9 @@ impl CheckCtx<'_, '_> {
         self.observed_tables.insert(table);
         self.check_output_keys(parent);
 
-        let table_name = match self.catalog.table_by_id(table) {
-            Some(table) => table.name.clone(),
-            None => return,
-        };
+        if self.catalog.table_by_id(table).is_none() {
+            return;
+        }
 
         let fields: Vec<_> = self
             .tree
@@ -705,48 +674,7 @@ impl CheckCtx<'_, '_> {
                 selector: field.relation_path.as_deref(),
             };
             match self.catalog.check_field_ref(table, reference) {
-                FieldCheckResult::Column(column) => {
-                    let data_type = self.catalog.data_type_for_column(column.id);
-                    if field.has_selection_set() {
-                        if field.flattened {
-                            self.error(
-                                entity,
-                                field.name_span,
-                                DiagnosticCode::FlattenedSelectionCardinality,
-                                format!(
-                                    "scalar field `{}` ({}) cannot be flattened",
-                                    field.name,
-                                    data_type.as_str()
-                                ),
-                            );
-                        } else {
-                            self.error(
-                                entity,
-                                field.name_span,
-                                DiagnosticCode::ScalarSelectionSet,
-                                format!(
-                                    "field `{}` is a scalar ({}) and cannot have a selection set",
-                                    field.name,
-                                    data_type.as_str()
-                                ),
-                            );
-                        }
-                    } else if field.flattened && field.body == FieldBodyKind::None {
-                        self.missing_flattened_body(entity, field);
-                    }
-                    if field.has_clause_list {
-                        self.error(
-                            entity,
-                            field.name_span,
-                            DiagnosticCode::ScalarClauses,
-                            format!(
-                                "field `{}` is a scalar ({}); only relations can have clauses",
-                                field.name,
-                                data_type.as_str()
-                            ),
-                        );
-                    }
-                }
+                FieldCheckResult::Column(_) => {}
                 FieldCheckResult::Relation(relation) => {
                     let relation_table = relation.table.id;
                     self.observed_tables.insert(relation_table);
@@ -756,12 +684,11 @@ impl CheckCtx<'_, '_> {
                         .map(|(entity, clause, span, _)| (*entity, *clause, *span))
                         .collect();
                     for (clause_entity, clause, clause_span) in field_clauses {
-                        crate::entities::clause::check_clause(
+                        crate::entities::clause::collect_clause_policy_effects(
                             self,
                             relation_table,
                             clause_entity,
                             clause,
-                            clause_span,
                         );
                         if field.has_transform() {
                             crate::entities::aggregate::check_source_clause(
@@ -773,47 +700,16 @@ impl CheckCtx<'_, '_> {
                         }
                     }
                     if field.flattened && field.body == FieldBodyKind::None {
-                        self.missing_flattened_body(entity, field);
                         continue;
                     }
                     if !field.has_selection_set() && !field.has_transform() {
-                        self.error(
-                            entity,
-                            field.name_span,
-                            DiagnosticCode::RelationSelectionSet,
-                            format!("relation field `{}` must have a selection set", field.name),
-                        );
                         continue;
                     }
                     if field.has_selection_set() {
                         self.check_set(relation_table, entity);
                     }
                 }
-                FieldCheckResult::NotFound => {
-                    self.error(
-                        entity,
-                        field.name_span,
-                        DiagnosticCode::FieldNotFound,
-                        format!(
-                            "field `{}` not found on table `{table_name}`",
-                            reference.display_text()
-                        ),
-                    );
-                }
-                FieldCheckResult::AmbiguousRelation {
-                    reference,
-                    candidates,
-                } => {
-                    self.error(
-                        entity,
-                        field.name_span,
-                        DiagnosticCode::AmbiguousRelation,
-                        format!(
-                            "relation `{reference}` has multiple foreign-key paths; use one of: {}",
-                            candidates.join(", ")
-                        ),
-                    );
-                }
+                FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {}
             }
         }
 
@@ -921,18 +817,6 @@ impl CheckCtx<'_, '_> {
             format!(
                 "filter `{}` affects this operation but could not be compiled; fix its definition diagnostics",
                 filter.name
-            ),
-        );
-    }
-
-    fn missing_flattened_body(&mut self, entity: Entity, field: &FieldSel) {
-        self.error(
-            entity,
-            field.name_span,
-            DiagnosticCode::MissingFlattenedSelectionBody,
-            format!(
-                "flattened selection `{}` must have a selection set or object-producing transform",
-                field.name
             ),
         );
     }
@@ -1305,6 +1189,142 @@ pub(crate) fn collect_resolved_clause_tables(
             }
             None => {}
         }
+    }
+}
+
+/// Emits diagnostics owned by one exact field-resolution pair.
+///
+/// Resolution failures and scalar/relation body rules depend only on the
+/// normalized [`ResolvedSelection`] value. They therefore stay phase-free and
+/// do not reopen the project-wide selection tree or catalog.
+async fn check_resolved_selection(
+    _: Query<Entity, With<DiagnosticsDemand>>,
+    fields: Query<(Entity, &FieldSel, &FieldResolutions, &BelongsToFile)>,
+    resolutions: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
+    mut commands: Commands<(dsql_schema::Diagnostic,)>,
+) {
+    let (field_entity, field, _, file) = fields.item();
+    let (resolution_entity, resolved) = resolutions.item();
+
+    let mut emit = |span, code, message| {
+        emit_diagnostic(
+            &mut commands,
+            DiagnosticFacts {
+                derived_from: DerivedFrom::many([field_entity, resolution_entity]),
+                file: file.0,
+                span,
+                severity: Severity::Error,
+                source: DiagnosticSource::Check,
+                code,
+                message,
+            },
+        );
+    };
+
+    if let Some(problem) = &resolved.problem {
+        let (code, message) = match problem {
+            SelectionResolutionProblem::TableNotFound { reference } => (
+                DiagnosticCode::TableNotFound,
+                format!("table `{reference}` not found"),
+            ),
+            SelectionResolutionProblem::AmbiguousTable {
+                reference,
+                candidates,
+            } => (
+                DiagnosticCode::AmbiguousTable,
+                format!(
+                    "table `{reference}` is ambiguous; use an alias with a schema-qualified name ({})",
+                    candidates
+                        .iter()
+                        .map(|key| format!("{}::{}", key.schema, key.table))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ),
+            SelectionResolutionProblem::FieldNotFound { reference, table } => (
+                DiagnosticCode::FieldNotFound,
+                format!("field `{reference}` not found on table `{table}`"),
+            ),
+            SelectionResolutionProblem::AmbiguousRelation {
+                reference,
+                candidates,
+            } => (
+                DiagnosticCode::AmbiguousRelation,
+                format!(
+                    "relation `{reference}` has multiple foreign-key paths; use one of: {}",
+                    candidates.join(", ")
+                ),
+            ),
+        };
+        emit(field.name_span, code, message);
+        return;
+    }
+
+    match &resolved.target {
+        SelectionTarget::Table(_) | SelectionTarget::Relation { .. } => {
+            if field.flattened && field.body == FieldBodyKind::None {
+                emit(
+                    field.name_span,
+                    DiagnosticCode::MissingFlattenedSelectionBody,
+                    format!(
+                        "flattened selection `{}` must have a selection set or object-producing transform",
+                        field.name
+                    ),
+                );
+            } else if !field.has_selection_set() && !field.has_transform() {
+                emit(
+                    field.name_span,
+                    DiagnosticCode::RelationSelectionSet,
+                    format!("relation field `{}` must have a selection set", field.name),
+                );
+            }
+        }
+        SelectionTarget::Column(_) => {
+            let data_type = resolved
+                .value_type
+                .as_ref()
+                .map_or("unknown", |value_type| value_type.logical.as_str());
+            if field.has_selection_set() {
+                let (code, message) = if field.flattened {
+                    (
+                        DiagnosticCode::FlattenedSelectionCardinality,
+                        format!(
+                            "scalar field `{}` ({data_type}) cannot be flattened",
+                            field.name
+                        ),
+                    )
+                } else {
+                    (
+                        DiagnosticCode::ScalarSelectionSet,
+                        format!(
+                            "field `{}` is a scalar ({data_type}) and cannot have a selection set",
+                            field.name
+                        ),
+                    )
+                };
+                emit(field.name_span, code, message);
+            } else if field.flattened && field.body == FieldBodyKind::None {
+                emit(
+                    field.name_span,
+                    DiagnosticCode::MissingFlattenedSelectionBody,
+                    format!(
+                        "flattened selection `{}` must have a selection set or object-producing transform",
+                        field.name
+                    ),
+                );
+            }
+            if field.has_clause_list {
+                emit(
+                    field.name_span,
+                    DiagnosticCode::ScalarClauses,
+                    format!(
+                        "field `{}` is a scalar ({data_type}); only relations can have clauses",
+                        field.name
+                    ),
+                );
+            }
+        }
+        SelectionTarget::Unresolved => {}
     }
 }
 

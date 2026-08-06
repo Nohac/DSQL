@@ -26,7 +26,7 @@ use bowl::{Commands, Component, DerivedFrom, Entity, In, Query, Registrar, Where
 
 use crate::catalog::{
     CatalogSnapshot, ColumnId, DataType, FieldCheckResult, FieldRef, RelationCardinality,
-    RelationId, TableId, TableKey, TableRef, TableResolution,
+    RelationId, TableId, TableKey, TableRef, TableResolution, TypeCapabilities, TypeKey,
 };
 use crate::entities::aggregate::{
     AggregateFunction, AggregateMode, AggregateProblem, AggregateProblemKind,
@@ -64,10 +64,70 @@ pub struct ResolvedSelection {
     /// never resolved.
     pub context: Option<TableId>,
     pub target: SelectionTarget,
+    /// Stable semantic failure details. Identifiers remain structured here;
+    /// diagnostic wording belongs to the check stage.
+    pub problem: Option<SelectionResolutionProblem>,
+    /// Public scalar contract when [`SelectionTarget::Column`] resolved.
+    pub value_type: Option<ResolvedValueType>,
+    /// Whether the enclosing semantic root is a query or fragment.
+    pub definition_kind: DefKind,
     /// The authoritative row shape for table and relation selections.
     pub shape: Option<ResolvedSelectionShape>,
     /// Definition-level refinements used by descendant cardinality proofs.
     pub input_refinements: Vec<InputRefinement>,
+}
+
+/// Stable failure details for one selection name.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum SelectionResolutionProblem {
+    TableNotFound {
+        reference: String,
+    },
+    AmbiguousTable {
+        reference: String,
+        candidates: Vec<TableKey>,
+    },
+    FieldNotFound {
+        reference: String,
+        table: String,
+    },
+    AmbiguousRelation {
+        reference: String,
+        candidates: Vec<String>,
+    },
+}
+
+/// Owned query-facing type semantics copied from the catalog at resolution.
+///
+/// This deliberately stores identifiers, capabilities, and enum values, not
+/// rendered diagnostic sentences. Exact consumers can therefore depend on
+/// one resolved value without joining the project-wide catalog singleton.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct ResolvedValueType {
+    pub key: TypeKey,
+    pub logical: DataType,
+    pub readable: String,
+    pub capabilities: TypeCapabilities,
+    pub enum_variants: Option<Vec<String>>,
+}
+
+impl ResolvedValueType {
+    fn for_column(catalog: &crate::catalog::Catalog, column: ColumnId) -> Option<Self> {
+        let catalog_type = catalog.type_for_column(column)?;
+        Some(Self {
+            key: catalog_type.key.clone(),
+            logical: catalog_type.logical_data_type(),
+            readable: catalog_type.readable_type.clone(),
+            capabilities: catalog_type.capabilities.clone(),
+            enum_variants: catalog_type.enumeration.as_ref().map(|enumeration| {
+                enumeration
+                    .variants
+                    .iter()
+                    .map(|variant| variant.variant.clone())
+                    .collect()
+            }),
+        })
+    }
 }
 
 /// The semantic row cardinality of a resolved table or relation selection.
@@ -202,6 +262,10 @@ pub struct FieldResolutions(pub Vec<Entity>);
 pub struct ResolvedClause {
     /// The clause entity this resolution is about.
     pub clause: Entity,
+    /// Whether the enclosing semantic root is a query or fragment.
+    pub definition_kind: DefKind,
+    /// Display name of [`ClauseContext::table`], when the context resolved.
+    pub context_table_name: Option<String>,
     pub context: Option<ClauseContext>,
     /// Every `Expr::Path` in the clause, in expression order, keyed by
     /// its span.
@@ -391,6 +455,8 @@ pub enum PathTerminal {
         display: String,
         table: TableId,
         column: ColumnId,
+        /// Query-facing type semantics of `column`.
+        value_type: Option<Box<ResolvedValueType>>,
     },
     /// Resolution failed (at a relation step or the terminal); the whole
     /// path diagnoses against the clause context.
@@ -415,6 +481,7 @@ pub struct ResolvedOrderItem {
     pub span: Span,
     /// The terminal column, when the item names one.
     pub column: Option<ColumnId>,
+    pub value_type: Option<ResolvedValueType>,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -478,6 +545,8 @@ fn emit(
     root: Option<TableId>,
     context: Option<TableId>,
     target: SelectionTarget,
+    problem: Option<SelectionResolutionProblem>,
+    definition_kind: DefKind,
     input_refinements: &[InputRefinement],
 ) {
     let written = match &selection.relation_path {
@@ -485,6 +554,12 @@ fn emit(
         None => selection.name.clone(),
     };
     let shape = resolve_selection_shape(catalog, selection, context, &target, input_refinements);
+    let value_type = match target {
+        SelectionTarget::Column(column) => ResolvedValueType::for_column(catalog, column),
+        SelectionTarget::Table(_)
+        | SelectionTarget::Relation { .. }
+        | SelectionTarget::Unresolved => None,
+    };
     commands.insert((
         DerivedFrom::many([field, catalog_entity]),
         BelongsToFile(file),
@@ -498,6 +573,9 @@ fn emit(
             root,
             context,
             target,
+            problem,
+            value_type,
+            definition_kind,
             shape,
             input_refinements: input_refinements.to_vec(),
         },
@@ -812,13 +890,28 @@ async fn resolve_roots(
 
     match decl.kind {
         DefKind::Query => {
-            let (root, resolved) = match catalog.resolve_table_ref_for(TableRef::parse(&field.name))
-            {
-                TableResolution::Found(table) => (Some(table.id), SelectionTarget::Table(table.id)),
-                TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => {
-                    (None, SelectionTarget::Unresolved)
-                }
-            };
+            let (root, resolved, problem) =
+                match catalog.resolve_table_ref_for(TableRef::parse(&field.name)) {
+                    TableResolution::Found(table) => {
+                        (Some(table.id), SelectionTarget::Table(table.id), None)
+                    }
+                    TableResolution::NotFound { reference } => (
+                        None,
+                        SelectionTarget::Unresolved,
+                        Some(SelectionResolutionProblem::TableNotFound { reference }),
+                    ),
+                    TableResolution::Ambiguous {
+                        reference,
+                        candidates,
+                    } => (
+                        None,
+                        SelectionTarget::Unresolved,
+                        Some(SelectionResolutionProblem::AmbiguousTable {
+                            reference,
+                            candidates,
+                        }),
+                    ),
+                };
             emit(
                 &mut commands,
                 catalog,
@@ -829,6 +922,8 @@ async fn resolve_roots(
                 root,
                 None,
                 resolved,
+                problem,
+                decl.kind,
                 &decl.input_refinements,
             );
         }
@@ -836,14 +931,14 @@ async fn resolve_roots(
             let table = target
                 .and_then(|target| catalog.table_ref_for(TableRef::parse(&target.name)))
                 .map(|table| table.id);
-            let (root, context, resolved) = match table {
-                Some(table) => (
-                    Some(table),
-                    Some(table),
-                    resolve_reference(catalog, table, field),
-                ),
-                // Unresolvable target: the whole body is unresolved.
-                None => (None, None, SelectionTarget::Unresolved),
+            let (root, context, resolved, problem) = match table {
+                Some(table) => {
+                    let (target, problem) = resolve_reference(catalog, table, field);
+                    (Some(table), Some(table), target, problem)
+                }
+                // Unresolvable target: the whole body is unresolved and the
+                // fragment declaration owns the primary diagnostic.
+                None => (None, None, SelectionTarget::Unresolved, None),
             };
             emit(
                 &mut commands,
@@ -855,6 +950,8 @@ async fn resolve_roots(
                 root,
                 context,
                 resolved,
+                problem,
+                decl.kind,
                 &decl.input_refinements,
             );
         }
@@ -883,10 +980,13 @@ async fn resolve_nested(
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
-    let (context, resolved) = match parent_resolved.target.child_context() {
-        Some(table) => (Some(table), resolve_reference(catalog, table, field)),
+    let (context, resolved, problem) = match parent_resolved.target.child_context() {
+        Some(table) => {
+            let (target, problem) = resolve_reference(catalog, table, field);
+            (Some(table), target, problem)
+        }
         // Under a scalar or unresolved parent nothing resolves.
-        None => (None, SelectionTarget::Unresolved),
+        None => (None, SelectionTarget::Unresolved, None),
     };
     let root = parent_resolved.root.filter(|_| context.is_some());
     emit(
@@ -899,6 +999,8 @@ async fn resolve_nested(
         root,
         context,
         resolved,
+        problem,
+        parent_resolved.definition_kind,
         &parent_resolved.input_refinements,
     );
 }
@@ -917,13 +1019,13 @@ async fn resolve_clauses(
         &BelongsToFile,
     )>,
     resolution: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
-    clauses: Query<(Entity, &ClauseFact), Where<In<Children>>>,
+    clauses: Query<(Entity, &ClauseFact, &crate::facts::NodeKey), Where<In<Children>>>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands<(dsql_schema::ResolvedClause,)>,
 ) {
     let (field_entity, _, _, _, file) = parents.item();
     let (_, parent_resolved) = resolution.item();
-    let (clause_entity, clause) = clauses.item();
+    let (clause_entity, clause, node_key) = clauses.item();
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
@@ -960,13 +1062,18 @@ async fn resolve_clauses(
                         target: TableRef::parse(&item.field),
                         selector: None,
                     };
-                    let column = match catalog.check_field_ref(context.table, reference) {
-                        FieldCheckResult::Column(column) => Some(column.id),
-                        _ => None,
-                    };
+                    let (column, value_type) =
+                        match catalog.check_field_ref(context.table, reference) {
+                            FieldCheckResult::Column(column) => (
+                                Some(column.id),
+                                ResolvedValueType::for_column(catalog, column.id),
+                            ),
+                            _ => (None, None),
+                        };
                     Some(ResolvedOrderItem {
                         span: item.field_span,
                         column,
+                        value_type,
                     })
                 }));
             }
@@ -986,8 +1093,15 @@ async fn resolve_clauses(
     commands.insert((
         DerivedFrom::many([field_entity, clause_entity, catalog_entity]),
         BelongsToFile(file.0),
+        *node_key,
         ResolvedClause {
             clause: clause_entity,
+            definition_kind: parent_resolved.definition_kind,
+            context_table_name: context.and_then(|context| {
+                catalog
+                    .table_by_id(context.table)
+                    .map(|table| table.name.clone())
+            }),
             context,
             paths,
             aggregates,
@@ -1370,6 +1484,7 @@ fn resolve_path(
             display: reference.display_text(),
             table: current,
             column: column.id,
+            value_type: ResolvedValueType::for_column(catalog, column.id).map(Box::new),
         },
         _ => PathTerminal::Failed,
     };
@@ -1387,20 +1502,42 @@ fn resolve_reference(
     catalog: &crate::catalog::Catalog,
     table: TableId,
     field: &FieldSel,
-) -> SelectionTarget {
+) -> (SelectionTarget, Option<SelectionResolutionProblem>) {
     let reference = FieldRef {
         target: TableRef::parse(&field.name),
         selector: field.relation_path.as_deref(),
     };
     match catalog.check_field_ref(table, reference) {
-        FieldCheckResult::Column(column) => SelectionTarget::Column(column.id),
-        FieldCheckResult::Relation(relation) => SelectionTarget::Relation {
-            table: relation.table.id,
-            relation: relation.relation.id,
-            selector: relation.selector.clone(),
-        },
-        FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {
-            SelectionTarget::Unresolved
+        FieldCheckResult::Column(column) => (SelectionTarget::Column(column.id), None),
+        FieldCheckResult::Relation(relation) => (
+            SelectionTarget::Relation {
+                table: relation.table.id,
+                relation: relation.relation.id,
+                selector: relation.selector.clone(),
+            },
+            None,
+        ),
+        FieldCheckResult::NotFound => {
+            let table = catalog
+                .table_by_id(table)
+                .map_or_else(|| "<unknown>".to_string(), |table| table.name.clone());
+            (
+                SelectionTarget::Unresolved,
+                Some(SelectionResolutionProblem::FieldNotFound {
+                    reference: reference.display_text(),
+                    table,
+                }),
+            )
         }
+        FieldCheckResult::AmbiguousRelation {
+            reference,
+            candidates,
+        } => (
+            SelectionTarget::Unresolved,
+            Some(SelectionResolutionProblem::AmbiguousRelation {
+                reference,
+                candidates,
+            }),
+        ),
     }
 }
