@@ -10,10 +10,9 @@ use std::{collections::BTreeMap, fmt};
 
 use bowl::{
     Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Registrar, Singleton,
-    SystemExt, View, Where, With,
+    SystemExt, TrackedView, View, Where, With,
 };
 
-use crate::entities::document::ParsedFile;
 use crate::entities::variable::{
     DefinitionVariables, InputRefinement, VariableBinding, VariableRole, build_input_refinements,
     input_default_label, variable_type_label,
@@ -266,21 +265,20 @@ impl LowerStage for Definition {
     }
 }
 
-/// Aggregates the definition set into the [`DefIndex`] singleton, driven
-/// per parsed file so any text change recomputes it. Ungated: spread
-/// resolution and planning consume it, not just diagnostics. Runs at
-/// Complete, behind the phase barrier its ambient view of lowered
-/// definitions needs; index-tracked consumers replan when it commits, and
-/// since services arbitrate through tracked joins (no settle-phase
-/// answering), the extra generation costs latency only, never answers.
+/// Aggregates the definition set into the [`DefIndex`] singleton. The tracked
+/// views form one zero-key invocation over the complete owner set, so adding or
+/// removing a source reruns the same derived owner instead of letting per-file
+/// invocations compete over one singleton. Equal recomputation is
+/// fingerprint-neutral.
+///
+/// Ungated: spread resolution and planning consume it, not just diagnostics.
+/// Runs at Complete, behind the phase barrier its lowered facts need;
+/// index-tracked consumers replan when it commits.
 async fn index_defs(
-    query: Query<(Entity, &ParsedFile)>,
-    defs: View<'_, (Entity, &DefDecl, &ResolutionScope, &BelongsToFile)>,
-    files: View<'_, (Entity, &SourceText)>,
+    defs: TrackedView<'_, (Entity, &DefDecl, &ResolutionScope, &BelongsToFile)>,
+    files: TrackedView<'_, (Entity, &SourceText)>,
     mut commands: Commands<(dsql_schema::DefIndex,)>,
 ) {
-    let _ = query.item();
-
     let file_hashes: std::collections::HashMap<Entity, u64> = files
         .iter()
         .map(|(entity, text)| (entity, text.content_hash()))

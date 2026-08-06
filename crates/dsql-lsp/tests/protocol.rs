@@ -131,6 +131,28 @@ impl Session {
         .await;
     }
 
+    async fn edit(
+        &mut self,
+        uri: &str,
+        version: i64,
+        text: &str,
+        start: usize,
+        end: usize,
+        replacement: &str,
+    ) {
+        self.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": uri, "version": version},
+                "contentChanges": [{
+                    "range": protocol_range(text, start, end),
+                    "text": replacement,
+                }],
+            }),
+        )
+        .await;
+    }
+
     async fn formatting(&mut self, uri: &str) -> Value {
         self.request_response(
             "textDocument/formatting",
@@ -454,6 +476,62 @@ async fn diagnostics_follow_edits() {
         clean_again.as_array().map(Vec::len),
         Some(0),
         "reverting must clear the diagnostic"
+    );
+}
+
+/// Trusted-context diagnostics follow ranged edits to both the use and its
+/// declaration instead of retaining the spans from an earlier settle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_diagnostics_follow_ranged_line_moves() {
+    let mut session = Session::start("context-diagnostic-ranges").await;
+    let declaration_uri = session.uri("queries/shared/definitions.dsql");
+    let use_uri = session.uri("queries/frontend/context-query.dsql");
+    let declaration = "context { tenant_id: text }\n";
+    let use_source = "query Q { title(where .id == $:tenant_id) { id } }\n";
+
+    session.open(&declaration_uri, "dsql", declaration).await;
+    let declaration_diagnostics = session.diagnostics_for(&declaration_uri).await;
+    assert_eq!(declaration_diagnostics.as_array().map(Vec::len), Some(0));
+    session.open(&use_uri, "dsql", use_source).await;
+    let initial = session.diagnostics_for(&use_uri).await;
+    assert_eq!(initial.as_array().map(Vec::len), Some(1));
+    assert_eq!(initial[0]["range"]["start"]["line"], 0);
+
+    session.edit(&use_uri, 2, use_source, 0, 0, "\n").await;
+    let moved_use = session.diagnostics_for(&use_uri).await;
+    assert_eq!(moved_use.as_array().map(Vec::len), Some(1));
+    assert_eq!(moved_use[0]["range"]["start"]["line"], 1);
+
+    session
+        .edit(&declaration_uri, 2, declaration, 0, 0, "\n")
+        .await;
+    let declaration_moved = session.diagnostics_for(&use_uri).await;
+    assert_eq!(declaration_moved.as_array().map(Vec::len), Some(1));
+    assert_eq!(declaration_moved[0]["range"]["start"]["line"], 1);
+
+    let moved_declaration = format!("\n{declaration}");
+    let type_start = moved_declaration.rfind("text").expect("context type");
+    session
+        .edit(
+            &declaration_uri,
+            3,
+            &moved_declaration,
+            type_start,
+            type_start + "text".len(),
+            "int",
+        )
+        .await;
+    let repaired_declaration = session.diagnostics_for(&declaration_uri).await;
+    assert_eq!(
+        repaired_declaration.as_array().map(Vec::len),
+        Some(0),
+        "the edited declaration must remain valid: {repaired_declaration}"
+    );
+    let repaired = session.diagnostics_for(&use_uri).await;
+    assert_eq!(
+        repaired.as_array().map(Vec::len),
+        Some(0),
+        "changing the declaration contract must clear the use diagnostic: {repaired}"
     );
 }
 

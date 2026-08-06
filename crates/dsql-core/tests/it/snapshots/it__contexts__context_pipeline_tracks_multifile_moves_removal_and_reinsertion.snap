@@ -1,0 +1,102 @@
+---
+source: crates/dsql-core/tests/it/contexts.rs
+expression: "format!(\"initial:\\n{initial}\\n\\ndeclaration moved:\\n{declaration_moved}\\n\\nuse moved:\\n{use_moved}\\n\\nrepaired:\\n{repaired}\\n\\nemptied:\\n{emptied}\\n\\nrestored:\\n{restored}\\n\\ndespawned:\\n{despawned}\\n\\nreinserted:\\n{reinserted}\\n\\nbatched replacement:\\n{replaced}\")"
+---
+initial:
+declaration definitions.dsql tenant_id name=[10..19] type=[21..25]
+definition-indices 1
+diagnostic query.dsql [37..48] trusted context `context.tenant_id` is declared as `text` but this use requires `pg_catalog::uuid`
+index shared:tenant_id definitions.dsql name=[10..19] type=[21..25] contract=text
+indices 1
+parsed definitions.dsql bytes=28
+parsed query.dsql bytes=59
+resolved-use query.dsql tenant_id [37..48] resolved declaration=[10..19] contract=text
+use query.dsql tenant_id [37..48]
+variable-problem query.dsql [37..48]
+
+declaration moved:
+declaration definitions.dsql tenant_id name=[11..20] type=[22..26]
+definition-indices 1
+diagnostic query.dsql [37..48] trusted context `context.tenant_id` is declared as `text` but this use requires `pg_catalog::uuid`
+index shared:tenant_id definitions.dsql name=[11..20] type=[22..26] contract=text
+indices 1
+parsed definitions.dsql bytes=29
+parsed query.dsql bytes=59
+resolved-use query.dsql tenant_id [37..48] resolved declaration=[11..20] contract=text
+use query.dsql tenant_id [37..48]
+variable-problem query.dsql [37..48]
+
+use moved:
+declaration definitions.dsql tenant_id name=[11..20] type=[22..26]
+definition-indices 1
+diagnostic query.dsql [38..49] trusted context `context.tenant_id` is declared as `text` but this use requires `pg_catalog::uuid`
+index shared:tenant_id definitions.dsql name=[11..20] type=[22..26] contract=text
+indices 1
+parsed definitions.dsql bytes=29
+parsed query.dsql bytes=60
+resolved-use query.dsql tenant_id [38..49] resolved declaration=[11..20] contract=text
+use query.dsql tenant_id [38..49]
+variable-problem query.dsql [38..49]
+
+repaired:
+declaration definitions.dsql tenant_id name=[11..20] type=[22..26]
+definition-indices 1
+index shared:tenant_id definitions.dsql name=[11..20] type=[22..26] contract=uuid
+indices 1
+parsed definitions.dsql bytes=29
+parsed query.dsql bytes=60
+resolved-use query.dsql tenant_id [38..49] resolved declaration=[11..20] contract=uuid
+use query.dsql tenant_id [38..49]
+
+emptied:
+definition-indices 1
+diagnostic query.dsql [38..49] trusted context `tenant_id` is not declared
+indices 1
+parsed definitions.dsql bytes=0
+parsed query.dsql bytes=60
+resolved-use query.dsql tenant_id [38..49] unknown
+use query.dsql tenant_id [38..49]
+
+restored:
+declaration definitions.dsql tenant_id name=[10..19] type=[21..25]
+definition-indices 1
+diagnostic query.dsql [38..49] trusted context `context.tenant_id` is declared as `text` but this use requires `pg_catalog::uuid`
+index shared:tenant_id definitions.dsql name=[10..19] type=[21..25] contract=text
+indices 1
+parsed definitions.dsql bytes=28
+parsed query.dsql bytes=60
+resolved-use query.dsql tenant_id [38..49] resolved declaration=[10..19] contract=text
+use query.dsql tenant_id [38..49]
+variable-problem query.dsql [38..49]
+
+despawned:
+definition-indices 1
+diagnostic query.dsql [38..49] trusted context `tenant_id` is not declared
+indices 1
+parsed query.dsql bytes=60
+resolved-use query.dsql tenant_id [38..49] unknown
+use query.dsql tenant_id [38..49]
+
+reinserted:
+declaration definitions.dsql tenant_id name=[10..19] type=[21..25]
+definition-indices 1
+diagnostic query.dsql [38..49] trusted context `context.tenant_id` is declared as `text` but this use requires `pg_catalog::uuid`
+index shared:tenant_id definitions.dsql name=[10..19] type=[21..25] contract=text
+indices 1
+parsed definitions.dsql bytes=28
+parsed query.dsql bytes=60
+resolved-use query.dsql tenant_id [38..49] resolved declaration=[10..19] contract=text
+use query.dsql tenant_id [38..49]
+variable-problem query.dsql [38..49]
+
+batched replacement:
+declaration definitions.dsql tenant_id name=[10..19] type=[21..25]
+definition-indices 1
+diagnostic query.dsql [38..49] trusted context `context.tenant_id` is declared as `text` but this use requires `pg_catalog::uuid`
+index shared:tenant_id definitions.dsql name=[10..19] type=[21..25] contract=text
+indices 1
+parsed definitions.dsql bytes=28
+parsed query.dsql bytes=60
+resolved-use query.dsql tenant_id [38..49] resolved declaration=[10..19] contract=text
+use query.dsql tenant_id [38..49]
+variable-problem query.dsql [38..49]

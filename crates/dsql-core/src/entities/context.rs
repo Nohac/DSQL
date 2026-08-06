@@ -9,12 +9,11 @@ use std::hash::{Hash, Hasher};
 
 use bowl::{
     Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Registrar, SystemExt,
-    View, Where, With,
+    TrackedView, Where, With,
 };
 
 use crate::catalog::{Catalog, CatalogSnapshot, CatalogTypeShape, DataType, TypeKey, WireEncoding};
 use crate::entities::definition::DefIndex;
-use crate::entities::document::ParsedFile;
 use crate::entities::expression::Sigil;
 use crate::entities::variable::VariableUse;
 use crate::entities::{direct_name, direct_rule, node_span, text};
@@ -97,8 +96,12 @@ pub struct ContextIndex {
 impl Hash for ContextIndex {
     fn hash<H: Hasher>(&self, state: &mut H) {
         for entry in &self.entries {
-            // Entity ids are navigation payload, not semantic identity. Stable
-            // paths and spans keep edits honest without churning on re-lowering.
+            // The source entity is stable across text edits but changes when a
+            // document is replaced, so it keeps navigation targets current.
+            // The lowered declaration entity is deliberately omitted: it is
+            // re-minted on any re-lowering and would invalidate every context
+            // consumer after unrelated edits in the declaring file.
+            entry.file.hash(state);
             entry.file_path.hash(state);
             entry.scope.hash(state);
             entry.name.hash(state);
@@ -313,12 +316,11 @@ impl FormatStage for Context {
 }
 
 async fn index_contexts(
-    _: Query<(Entity, &ParsedFile)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     definitions: Query<(Entity, &DefIndex)>,
-    declarations: View<'_, (Entity, &ContextDecl, &BelongsToFile, &ResolutionScope)>,
-    files: View<'_, (Entity, &FilePath)>,
-    embedded: View<'_, (Entity, &BelongsToHost)>,
+    declarations: TrackedView<'_, (Entity, &ContextDecl, &BelongsToFile, &ResolutionScope)>,
+    files: TrackedView<'_, (Entity, &FilePath)>,
+    embedded: TrackedView<'_, (Entity, &BelongsToHost)>,
     mut commands: Commands<(dsql_schema::DefIndex,)>,
 ) {
     let (_, snapshot) = catalog.item();
