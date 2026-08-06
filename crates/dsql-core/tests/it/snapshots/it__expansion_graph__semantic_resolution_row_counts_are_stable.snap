@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/expansion_graph.rs
+expression: counts
+---
+selections: 5
+clauses: 1
+aggregates: 1
+spreads: 1

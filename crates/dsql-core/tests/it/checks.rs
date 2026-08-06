@@ -657,6 +657,45 @@ async fn fragment_checks_report_target_and_compat_mismatches() {
 }
 
 #[tokio::test]
+async fn fragment_cycle_diagnostics_currently_multiply_per_reaching_root() {
+    let bowl = checked_bowl(imdb_catalog()).await;
+
+    insert_source(
+        &bowl,
+        "fragment-cycle-cardinality.dsql",
+        indoc::indoc! {r#"
+            fragment UncalledSelf on title {
+              ...UncalledSelf
+            }
+            fragment SingleCallerSelf on title {
+              ...SingleCallerSelf
+            }
+            fragment CalledSelf on title {
+              ...CalledSelf
+            }
+            fragment MutualA on title {
+              ...MutualB
+            }
+            fragment MutualB on title {
+              ...MutualA
+            }
+            query Single {
+              title(limit 1) { ...SingleCallerSelf }
+            }
+            query First {
+              title(limit 1) { ...CalledSelf }
+            }
+            query Second {
+              title(limit 1) { ...CalledSelf }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
 async fn fragment_body_and_spread_site_diagnostics_keep_their_cardinality() {
     let bowl = checked_bowl(imdb_catalog()).await;
 

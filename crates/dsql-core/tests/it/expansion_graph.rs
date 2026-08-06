@@ -3,12 +3,15 @@
 use std::collections::HashMap;
 
 use bowl::{Bowl, Entity, Query};
+use dsql_core::catalog::{Catalog, insert_catalog};
+use dsql_core::entities::aggregate::ResolvedAggregate;
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::expansion::{
     ExpansionCycle, ExpansionCycles, ExpansionOccurrence, ExpansionOccurrences,
 };
 use dsql_core::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use dsql_core::facts::SemanticRoot;
+use dsql_core::resolution::{ResolvedClause, ResolvedSelection};
 use dsql_core::source::insert_source;
 
 use crate::replace_source_text;
@@ -162,6 +165,44 @@ async fn expansion_paths_preserve_occurrences_and_cut_name_cycles() {
     .await;
 
     insta::assert_snapshot!(expansion_snapshot(&bowl).await);
+}
+
+#[tokio::test]
+async fn semantic_resolution_row_counts_are_stable() {
+    let bowl = dsql_core::language_bowl().await;
+    insert_catalog(&bowl, Catalog::hardcoded()).await;
+    insert_source(
+        &bowl,
+        "resolution-counts.dsql",
+        indoc::indoc! {r#"
+            fragment PostBits on public::posts {
+              id
+            }
+            query ResolutionCounts {
+              public::users {
+                id
+                posts(where .id > 0) {
+                  ...PostBits
+                }
+                posts | aggregate { count }
+              }
+            }
+        "#},
+    )
+    .await;
+
+    let counts = format!(
+        "selections: {}\nclauses: {}\naggregates: {}\nspreads: {}",
+        bowl.scoop::<Query<(Entity, &ResolvedSelection)>>()
+            .await
+            .len(),
+        bowl.scoop::<Query<(Entity, &ResolvedClause)>>().await.len(),
+        bowl.scoop::<Query<(Entity, &ResolvedAggregate)>>()
+            .await
+            .len(),
+        bowl.scoop::<Query<(Entity, &ResolvedSpread)>>().await.len(),
+    );
+    insta::assert_snapshot!(counts);
 }
 
 #[tokio::test]
