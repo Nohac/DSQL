@@ -6,6 +6,7 @@ use bowl::{
 };
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
+use crate::entities::expansion::{SemanticDefinitionKey, SpreadResolutionOf};
 use crate::entities::variable::VariableSource;
 use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
@@ -70,6 +71,8 @@ pub struct ResolvedSpread {
 pub struct SpreadTarget {
     /// The fragment definition entity.
     pub fragment: Entity,
+    /// Stable syntax key shared with the target fragment's semantic group.
+    pub definition_key: NodeKey,
     /// The file holding the definition.
     pub file: Entity,
     /// The definition's name span within that file.
@@ -220,44 +223,67 @@ pub(crate) fn visible_fragments<'a>(
 /// [`ScopeImports`] inputs rerun rows when the definition set or the scope
 /// graph changes.
 async fn resolve_spreads(
+    // Ownership is required deliberately: syntax orphaned when its enclosing
+    // definition fails to lower has no semantic resolution. The untracked edge
+    // is safe to copy because the group and all members are spawned by the same
+    // lowering invocation; an ownership move retires and recreates the spread
+    // row, so the edge cannot change independently for a surviving invocation.
     spreads: Query<(
         Entity,
         &SpreadDecl,
         &ResolutionScope,
         &crate::facts::BelongsToFile,
+        &crate::facts::SemanticMemberOf,
     )>,
     _index: Query<(Entity, &DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
-    fragments: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
+    fragments: View<'_, (Entity, &DefDecl, &ResolutionScope, &NodeKey)>,
     files: View<'_, (Entity, &DefDecl, &crate::facts::BelongsToFile)>,
     targets: View<'_, (Entity, &crate::entities::definition::FragmentTarget)>,
     mut commands: Commands<(dsql_schema::ResolvedSpread,)>,
 ) {
-    let (spread, decl, scope, file) = spreads.item();
+    let (spread, decl, scope, file, semantic_group) = spreads.item();
     let (_, imports) = imports.item();
 
-    let candidates = visible_fragments(&decl.name, &scope.0, imports, fragments.iter());
+    let candidates = visible_fragments(
+        &decl.name,
+        &scope.0,
+        imports,
+        fragments
+            .iter()
+            .map(|(entity, declaration, fragment_scope, _)| (entity, declaration, fragment_scope)),
+    );
     let target = if let [(fragment, fragment_decl, _)] = candidates.as_slice() {
         let fragment = *fragment;
         files
             .iter()
             .find(|(entity, _, _)| *entity == fragment)
-            .map(|(_, _, fragment_file)| SpreadTarget {
-                fragment,
-                file: fragment_file.0,
-                name_span: fragment_decl.name_span,
-                on: targets
+            .and_then(|(_, _, fragment_file)| {
+                let definition_key = fragments
                     .iter()
-                    .find(|(entity, _)| *entity == fragment)
-                    .map(|(_, target)| target.name.clone()),
+                    .find_map(|(entity, _, _, key)| (entity == fragment).then_some(*key))?;
+                Some(SpreadTarget {
+                    fragment,
+                    definition_key,
+                    file: fragment_file.0,
+                    name_span: fragment_decl.name_span,
+                    on: targets
+                        .iter()
+                        .find(|(entity, _)| *entity == fragment)
+                        .map(|(_, target)| target.name.clone()),
+                })
             })
     } else {
         None
     };
 
-    commands.insert((
+    let target_key = target
+        .as_ref()
+        .map(|target| SemanticDefinitionKey(target.definition_key));
+    let resolved = commands.insert((
         DerivedFrom::new(spread),
         crate::facts::BelongsToFile(file.0),
+        SpreadResolutionOf(semantic_group.0),
         ResolvedSpread {
             spread,
             name: decl.name.clone(),
@@ -265,6 +291,9 @@ async fn resolve_spreads(
             target,
         },
     ));
+    if let Some(target_key) = target_key {
+        commands.entity(resolved).insert(target_key);
+    }
 }
 
 /// Checks one spread site during the residual definition walk: the named fragment's target must

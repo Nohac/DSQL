@@ -8,6 +8,7 @@ mod completions;
 mod contexts;
 mod definitions;
 mod embedding;
+mod expansion_graph;
 mod format;
 mod input;
 mod lints;

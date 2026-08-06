@@ -15,6 +15,7 @@ use super::context::Context;
 use super::definition::Definition;
 use super::directive::Directive;
 use super::document::{Document, ParsedFile};
+use super::expansion::SemanticDefinitionKey;
 use super::expression::Expression;
 use super::field_selection::FieldSelection;
 use super::fragment_spread::FragmentSpread;
@@ -154,6 +155,10 @@ fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands<AstFacts>) {
                             file: ctx.file,
                             node: node.0,
                         },
+                        SemanticDefinitionKey(NodeKey {
+                            file: ctx.file,
+                            node: node.0,
+                        }),
                         SemanticRoot(root),
                     ))
                     .untyped()

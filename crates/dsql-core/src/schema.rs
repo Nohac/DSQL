@@ -17,6 +17,11 @@ use crate::entities::context::{ContextDecl, ContextIndex, ResolvedContextUse};
 use crate::entities::definition::{DefDecl, DefIndex, FragmentKey, FragmentTarget};
 use crate::entities::directive::DirectiveFact;
 use crate::entities::document::ParsedFile;
+use crate::entities::expansion::{
+    DependsOnSemanticGroup, ExpansionCycle, ExpansionCycleOf, ExpansionCycles, ExpansionOccurrence,
+    ExpansionOccurrenceOf, ExpansionOccurrences, SemanticDefinitionKey, SemanticDependents,
+    SpreadResolutionOf, SpreadResolutions,
+};
 use crate::entities::field_selection::FieldSel;
 use crate::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use crate::entities::policy::{
@@ -117,8 +122,12 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
     ),
-    semantic_group: (NodeKey, SemanticRoot, DerivedFrom),
+    semantic_group: (NodeKey, SemanticDefinitionKey, SemanticRoot, DerivedFrom),
     semantic_members: (SemanticMembers,),
+    spread_resolutions: (SpreadResolutions,),
+    semantic_dependents: (SemanticDependents,),
+    expansion_occurrences: (ExpansionOccurrences,),
+    expansion_cycles: (ExpansionCycles,),
     field_selection: (
         NodeKey,
         FieldSel,
@@ -216,7 +225,21 @@ pub struct DsqlSchema {
     resolved_aggregate: (ResolvedAggregate, BelongsToFile, DerivedFrom),
     resolved_clause: (ResolvedClause, NodeKey, BelongsToFile, DerivedFrom),
     resolved_fragment_target: (ResolvedFragmentTarget, BelongsToFile, DerivedFrom),
-    resolved_spread: (ResolvedSpread, BelongsToFile, DerivedFrom),
+    resolved_spread: (
+        ResolvedSpread,
+        SpreadResolutionOf,
+        BelongsToFile,
+        DerivedFrom,
+        Option<SemanticDefinitionKey>,
+        Option<DependsOnSemanticGroup>,
+    ),
+    expansion_occurrence: (
+        ExpansionOccurrence,
+        SemanticDefinitionKey,
+        ExpansionOccurrenceOf,
+        DerivedFrom,
+    ),
+    expansion_cycle: (ExpansionCycle, ExpansionCycleOf, DerivedFrom),
     definition_variables: (
         DefinitionVariables,
         DefinitionInputRewrites,

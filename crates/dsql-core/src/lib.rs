@@ -67,6 +67,7 @@ impl Plugin for DsqlPlugin {
         lint::register_lints(reg);
         plan::register_planning(reg);
         resolution::register_resolution(reg);
+        entities::expansion::register_expansion(reg);
         sql::register_sql(reg);
         service::register_services(reg);
 

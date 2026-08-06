@@ -1,0 +1,26 @@
+---
+source: crates/dsql-core/tests/it/expansion_graph.rs
+assertion_line: 139
+expression: expansion_snapshot(&bowl).await
+---
+fragment CycleA: CycleB -> fragment CycleB
+fragment CycleA: CycleB > CycleA -> cycle
+fragment CycleB: CycleA -> fragment CycleA
+fragment CycleB: CycleA > CycleB -> cycle
+fragment Diamond: Left -> fragment Left
+fragment Diamond: Left > Leaf -> fragment Leaf
+fragment Diamond: Right -> fragment Right
+fragment Diamond: Right > Leaf -> fragment Leaf
+fragment Left: Leaf -> fragment Leaf
+fragment Right: Leaf -> fragment Leaf
+fragment Self: Self -> cycle
+fragment Twice: Leaf -> fragment Leaf
+fragment Twice: Leaf -> fragment Leaf
+query Root: Diamond -> fragment Diamond
+query Root: Diamond > Left -> fragment Left
+query Root: Diamond > Left > Leaf -> fragment Leaf
+query Root: Diamond > Right -> fragment Right
+query Root: Diamond > Right > Leaf -> fragment Leaf
+query Root: Twice -> fragment Twice
+query Root: Twice > Leaf -> fragment Leaf
+query Root: Twice > Leaf -> fragment Leaf
