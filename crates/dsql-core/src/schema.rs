@@ -28,7 +28,8 @@ use crate::entities::variable::{
 };
 use crate::facts::{
     BelongsToFile, ChildOf, Children, DefKey, Diagnostic, DiagnosticCode, DiagnosticSource,
-    DiagnosticsDemand, NodeKey, PlanDemand, PlanKey, Severity, Span, SqlDemand, VariablesDemand,
+    DiagnosticsDemand, NodeKey, PlanDemand, PlanKey, SemanticMemberOf, SemanticMembers,
+    SemanticRoot, Severity, Span, SqlDemand, VariablesDemand,
 };
 use crate::lint::LintConfig;
 use crate::plan::{FragmentPlanFact, OperationSeed, QueryPlanFact};
@@ -116,12 +117,15 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
     ),
+    semantic_group: (NodeKey, SemanticRoot, DerivedFrom),
+    semantic_members: (SemanticMembers,),
     field_selection: (
         NodeKey,
         FieldSel,
         BelongsToFile,
         DerivedFrom,
         Option<ChildOf>,
+        Option<SemanticMemberOf>,
     ),
     aggregate_transform: (
         NodeKey,
@@ -129,6 +133,7 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
         Option<ChildOf>,
+        Option<SemanticMemberOf>,
     ),
     spread: (
         NodeKey,
@@ -138,6 +143,7 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
         Option<ChildOf>,
+        Option<SemanticMemberOf>,
     ),
     clause: (
         NodeKey,
@@ -147,6 +153,7 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
         Option<ChildOf>,
+        Option<SemanticMemberOf>,
     ),
     /// Engine-maintained relationship inverses (ownerless base writes,
     /// named so the component universe closes over them).
@@ -158,6 +165,7 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
         Option<ChildOf>,
+        Option<SemanticMemberOf>,
     ),
     variable_use: (
         NodeKey,
@@ -166,6 +174,7 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
         Option<ChildOf>,
+        Option<SemanticMemberOf>,
     ),
     // Derived analysis facts.
     region: (
@@ -264,21 +273,75 @@ pub struct DsqlSchema {
     definition_answer: (DefinitionTarget,),
 }
 
-/// Everything the shared lowering walk may spawn — the *normalized AST*:
+/// Everything the shared lowering walk may spawn or add — the *normalized AST*:
 /// there is no owned tree value, the fact graph (these shapes plus the
 /// `ChildOf`/`Children` relationships) is the syntax representation
 /// consumers join against. The group every [`LowerStage`] implementation
 /// declares through its `Commands`.
+///
+/// The six nested spawn shapes deliberately repeat their pre-edge tuples
+/// instead of using the generated schema aliases. [`SemanticMemberOf`] is an
+/// optional part of all six runtime shapes, but listing those aliases here
+/// would give the walker's untyped central edge write six valid declaration
+/// witnesses and make type inference ambiguous. Declaring the edge once keeps
+/// that write centralized. This trades away static proof that the edge targets
+/// a permitting shape; the semantic-ownership integration fixture therefore
+/// exercises every tuple below through commit-time schema conformance. Future
+/// cross-cutting optional components spanning multiple shapes require the same
+/// output-declaration split.
 ///
 /// [`LowerStage`]: crate::entity::LowerStage
 pub type AstFacts = (
     dsql_schema::Def,
     dsql_schema::PolicyDefinition,
     dsql_schema::ContextDeclaration,
-    dsql_schema::FieldSelection,
-    dsql_schema::AggregateTransform,
-    dsql_schema::Spread,
-    dsql_schema::Clause,
-    dsql_schema::Directive,
-    dsql_schema::VariableUse,
+    dsql_schema::SemanticGroup,
+    (
+        NodeKey,
+        FieldSel,
+        BelongsToFile,
+        DerivedFrom,
+        Option<ChildOf>,
+    ),
+    (
+        NodeKey,
+        AggregateTransformFact,
+        BelongsToFile,
+        DerivedFrom,
+        Option<ChildOf>,
+    ),
+    (
+        NodeKey,
+        SpreadDecl,
+        FragmentKey,
+        ResolutionScope,
+        BelongsToFile,
+        DerivedFrom,
+        Option<ChildOf>,
+    ),
+    (
+        NodeKey,
+        ClauseFact,
+        Span,
+        ResolutionScope,
+        BelongsToFile,
+        DerivedFrom,
+        Option<ChildOf>,
+    ),
+    (
+        NodeKey,
+        DirectiveFact,
+        BelongsToFile,
+        DerivedFrom,
+        Option<ChildOf>,
+    ),
+    (
+        NodeKey,
+        VariableUse,
+        ResolutionScope,
+        BelongsToFile,
+        DerivedFrom,
+        Option<ChildOf>,
+    ),
+    (SemanticMemberOf,),
 );

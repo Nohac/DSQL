@@ -56,6 +56,10 @@ pub struct LowerCtx<'a> {
     /// [`ChildOf`]: crate::facts::ChildOf
     /// [`Children`]: crate::facts::Children
     pub parent: Option<Entity>,
+    /// Dedicated semantic group for the enclosing query, fragment, filter, or
+    /// condition. Unlike [`LowerCtx::parent`], this remains constant while
+    /// descending through nested selections and clauses.
+    pub semantic_group: Option<Entity>,
 }
 
 /// Syntax stage: lower an owned CST rule node into fact components,

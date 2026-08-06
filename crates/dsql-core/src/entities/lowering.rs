@@ -7,7 +7,7 @@
 //! listed as structural.
 
 use crate::schema::AstFacts;
-use bowl::{Commands, Entity, Query};
+use bowl::{Commands, DerivedFrom, Entity, Query};
 
 use super::aggregate::Aggregate;
 use super::clause::Clause;
@@ -21,7 +21,7 @@ use super::fragment_spread::FragmentSpread;
 use super::policy::Policy;
 use super::variable::Variable;
 use crate::entity::{LowerCtx, LowerStage};
-use crate::facts::Span;
+use crate::facts::{NodeKey, SemanticMemberOf, SemanticRoot, Span};
 use crate::grammar::lexer::Token;
 use crate::grammar::parser::{CstData, Node, NodeRef, Rule};
 use crate::source::ResolutionScope;
@@ -133,6 +133,7 @@ pub async fn lower_syntax_facts(
         file,
         scope: &scope.0,
         parent: None,
+        semantic_group: None,
     };
     walk(&ctx, NodeRef::ROOT, &mut commands);
 }
@@ -140,6 +141,29 @@ pub async fn lower_syntax_facts(
 fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands<AstFacts>) {
     if let Node::Rule(rule, _) = ctx.cst.get(node) {
         let created = lower_rule(ctx, rule, node, commands);
+        let is_semantic_root = matches!(
+            rule,
+            Rule::QueryDef | Rule::FragmentDef | Rule::FilterDef | Rule::ConditionDef
+        );
+        let semantic_group = if is_semantic_root {
+            created.map(|root| {
+                commands
+                    .insert((
+                        DerivedFrom::new(root),
+                        NodeKey {
+                            file: ctx.file,
+                            node: node.0,
+                        },
+                        SemanticRoot(root),
+                    ))
+                    .untyped()
+            })
+        } else {
+            if let (Some(member), Some(group)) = (created, ctx.semantic_group) {
+                commands.entity(member).insert(SemanticMemberOf(group));
+            }
+            ctx.semantic_group
+        };
 
         // Definitions and field selections form the selection tree; spreads,
         // clauses, and directives are attachment points for the facts nested
@@ -170,6 +194,7 @@ fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands<AstFacts>) {
                 file: ctx.file,
                 scope: ctx.scope,
                 parent: created,
+                semantic_group,
             };
             for child in ctx.cst.children(node) {
                 walk(&scoped, child, commands);

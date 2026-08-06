@@ -1,0 +1,9 @@
+---
+source: crates/dsql-core/tests/it/semantic_ownership.rs
+assertion_line: 183
+expression: render_semantic_groups(&bowl).await
+---
+condition Enabled: where_clause@9
+filter Titles: value_variable@61, where_clause@45
+fragment Bits: field_selection@15
+query First: directive@106, directive@29, field_selection@116, field_selection@51, filter_assignment@60, fragment_spread@102, limit_clause@88, pipe_transform@123, value_variable@82, value_variable@92, where_clause@66

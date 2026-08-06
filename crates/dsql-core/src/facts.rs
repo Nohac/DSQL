@@ -153,6 +153,38 @@ pub struct ChildOf(pub Entity);
 #[relationship_target(relationship = ChildOf)]
 pub struct Children(pub Vec<Entity>);
 
+/// Dedicated semantic root represented by a lowering-owned group entity.
+///
+/// Compiler systems drive from this group and join the referenced definition
+/// or policy through the group's [`NodeKey`]. Keeping membership off the root
+/// prevents syntax membership changes from invalidating facts anchored to the
+/// root entity itself.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(hash)]
+pub struct SemanticRoot(pub Entity);
+
+/// Relationship edge from a nested syntax fact to its semantic group.
+///
+/// This edge is untracked relationship plumbing: changing it maintains the
+/// tracked [`SemanticMembers`] inverses on the old and new groups without
+/// lifting the nested fact's entity revision. Only the Evaluate-phase lowering
+/// walk writes this component. Semantic consumers read the inverse, never the
+/// edge directly.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(untracked)]
+#[relationship(target = SemanticMembers)]
+pub struct SemanticMemberOf(pub Entity);
+
+/// Engine-maintained semantic members of one [`SemanticRoot`] group.
+///
+/// Membership is entity ordered and fingerprinted. A [`bowl::Related`]
+/// projection may expose fewer rows when a member lacks required projected
+/// components; those absences remain tracked and make the group rerun when the
+/// components appear.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = SemanticMemberOf)]
+pub struct SemanticMembers(pub Vec<Entity>);
+
 /// Human-readable diagnostic message. A diagnostic entity carries this plus
 /// [`Severity`], [`Span`], [`BelongsToFile`], and `DerivedFrom` (ownership,
 /// so stale diagnostics clean up when their source changes).

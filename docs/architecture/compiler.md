@@ -91,9 +91,25 @@ rule node to its owner. Facts carry:
 - `ChildOf` — relationship edge to the nearest enclosing
   selection/definition; the engine maintains the `Children` inverse
   (sibling *source* order is span order — the inverse is entity-ordered);
+- `SemanticMemberOf` — untracked relationship plumbing from every nested
+  syntax fact to a dedicated group for its enclosing query, fragment, filter,
+  or condition. Lowering is its only writer. The engine-maintained,
+  fingerprinted `SemanticMembers` inverse lives on the group, not the semantic
+  root, so membership changes cannot invalidate facts anchored to the root;
+- `SemanticRoot` — the root entity referenced by a semantic group. The group
+  and root share a `NodeKey`: relationship-scoped consumers drive from the
+  group and bind the root second through that key. This direction lets a
+  member change translate to its exact driving group in one scheduler hint;
 - `BelongsToFile` — join key for per-file filtering;
 - `DerivedFrom` — ownership: any text change re-lowers the file and retires
   every fact derived from it.
+
+`SemanticMembers` records relationship membership, while
+`Related<SemanticMembers, P>` returns only members satisfying the required
+parts in `P`. A missing required part therefore removes a row from the fetched
+set but remains an observed dependency: adding it reruns that one group.
+Semantic roots never carry `SemanticMemberOf`, including if the grammar later
+permits nested definitions.
 
 Definition and spread facts also carry their file's `ResolutionScope`
 (docs/spec/resolution-scopes.md): fragments resolve against the *effective
