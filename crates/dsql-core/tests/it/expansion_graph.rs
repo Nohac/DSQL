@@ -4,11 +4,14 @@ use std::collections::HashMap;
 
 use bowl::{Bowl, Entity, Query};
 use dsql_core::catalog::{Catalog, insert_catalog};
-use dsql_core::entities::aggregate::ResolvedAggregate;
+use dsql_core::entities::aggregate::{AggregateTransformFact, ResolvedAggregate};
+use dsql_core::entities::clause::ClauseFact;
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::expansion::{
-    ExpansionCycle, ExpansionCycles, ExpansionOccurrence, ExpansionOccurrences,
+    CycleSiteRoot, ExpansionBody, ExpansionCycle, ExpansionCycles, ExpansionOccurrence,
+    ExpansionOccurrences,
 };
+use dsql_core::entities::field_selection::FieldSel;
 use dsql_core::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use dsql_core::facts::SemanticRoot;
 use dsql_core::resolution::{ResolvedClause, ResolvedSelection};
@@ -107,6 +110,71 @@ async fn expansion_snapshot(bowl: &Bowl) -> String {
     lines.join("\n")
 }
 
+async fn expansion_body_snapshot(bowl: &Bowl) -> String {
+    let definition_labels = definition_labels(bowl).await;
+    let groups = bowl.scoop::<Query<(Entity, &SemanticRoot)>>().await;
+    let group_labels = groups
+        .collect()
+        .into_iter()
+        .filter_map(|(group, root)| {
+            definition_labels
+                .get(&root.0)
+                .cloned()
+                .map(|label| (group, label))
+        })
+        .collect::<HashMap<_, _>>();
+    drop(groups);
+    let occurrences = bowl.scoop::<Query<(Entity, &ExpansionOccurrence)>>().await;
+    let paths = occurrences
+        .collect()
+        .into_iter()
+        .map(|(entity, occurrence)| {
+            let path = occurrence
+                .path
+                .iter()
+                .map(|step| step.fragment.as_str())
+                .collect::<Vec<_>>()
+                .join(" > ");
+            (entity, (occurrence.root_group, path))
+        })
+        .collect::<HashMap<_, _>>();
+    drop(occurrences);
+    let bodies = bowl.scoop::<Query<(Entity, &ExpansionBody)>>().await;
+    let mut lines = Vec::new();
+    for (_, body) in bodies.collect() {
+        let Some((root_group, path)) = paths.get(&body.occurrence) else {
+            continue;
+        };
+        let Some(root) = group_labels.get(root_group) else {
+            continue;
+        };
+        let mut fields = body
+            .members
+            .iter()
+            .filter_map(|member| member.field.as_ref().map(|field| field.name.as_str()))
+            .collect::<Vec<_>>();
+        fields.sort();
+        let mut spreads = body
+            .members
+            .iter()
+            .filter_map(|member| member.spread.as_ref().map(|spread| spread.name.as_str()))
+            .collect::<Vec<_>>();
+        spreads.sort();
+        lines.push(format!(
+            "{root}: {path} -> {} fields=[{}] spreads=[{}] resolutions=selection:{} clause:{} aggregate:{} spread:{}",
+            body.declaration.name,
+            fields.join(","),
+            spreads.join(","),
+            body.selections.len(),
+            body.clauses.len(),
+            body.aggregates.len(),
+            body.spreads.len(),
+        ));
+    }
+    lines.sort();
+    lines.join("\n")
+}
+
 async fn root_paths(bowl: &Bowl, wanted: &str) -> Vec<String> {
     expansion_snapshot(bowl)
         .await
@@ -119,10 +187,28 @@ async fn root_paths(bowl: &Bowl, wanted: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn orphaned_spreads_stay_out_of_the_semantic_graph() {
+async fn orphaned_syntax_stays_out_of_the_semantic_graph() {
     let bowl = dsql_core::language_bowl().await;
-    insert_source(&bowl, "orphan.dsql", "query { title { ...Missing } }").await;
+    insert_source(
+        &bowl,
+        "orphan.dsql",
+        "query { title(where .id > 0) { ...Missing } title | aggregate { count } }",
+    )
+    .await;
 
+    assert!(!bowl.scoop::<Query<(Entity, &FieldSel)>>().await.is_empty());
+    assert!(
+        !bowl
+            .scoop::<Query<(Entity, &ClauseFact)>>()
+            .await
+            .is_empty()
+    );
+    assert!(
+        !bowl
+            .scoop::<Query<(Entity, &AggregateTransformFact)>>()
+            .await
+            .is_empty()
+    );
     assert_eq!(
         bowl.scoop::<Query<(Entity, &SpreadDecl)>>().await.len(),
         1,
@@ -134,17 +220,42 @@ async fn orphaned_spreads_stay_out_of_the_semantic_graph() {
         "syntax without a lowered semantic root is not resolved"
     );
     assert_eq!(
+        bowl.scoop::<Query<(Entity, &ResolvedSelection)>>()
+            .await
+            .len(),
+        0,
+        "orphaned selections have no semantic resolution"
+    );
+    assert_eq!(
+        bowl.scoop::<Query<(Entity, &ResolvedClause)>>().await.len(),
+        0,
+        "orphaned clauses have no semantic resolution"
+    );
+    assert_eq!(
+        bowl.scoop::<Query<(Entity, &ResolvedAggregate)>>()
+            .await
+            .len(),
+        0,
+        "orphaned aggregates have no semantic resolution"
+    );
+    assert_eq!(
         bowl.scoop::<Query<(Entity, &ExpansionOccurrence)>>()
             .await
             .len(),
         0,
         "orphaned syntax never enters expansion"
     );
+    assert_eq!(
+        bowl.scoop::<Query<(Entity, &ExpansionBody)>>().await.len(),
+        0,
+        "orphaned syntax never materializes an expansion body"
+    );
 }
 
 #[tokio::test]
 async fn expansion_paths_preserve_occurrences_and_cut_name_cycles() {
     let bowl = dsql_core::language_bowl().await;
+    insert_catalog(&bowl, crate::imdb_catalog()).await;
     insert_source(
         &bowl,
         "expansion.dsql",
@@ -165,6 +276,7 @@ async fn expansion_paths_preserve_occurrences_and_cut_name_cycles() {
     .await;
 
     insta::assert_snapshot!(expansion_snapshot(&bowl).await);
+    insta::assert_snapshot!(expansion_body_snapshot(&bowl).await);
 }
 
 #[tokio::test]
@@ -242,6 +354,11 @@ async fn expansion_paths_rebuild_after_content_roundtrips() {
         expansion_snapshot(&cold).await,
         "cold and incrementally restored semantic paths agree"
     );
+    assert_eq!(
+        expansion_body_snapshot(&incremental).await,
+        expansion_body_snapshot(&cold).await,
+        "cold and incrementally restored bodies agree"
+    );
 
     let final_bowl = dsql_core::language_bowl().await;
     insert_source(&final_bowl, "roundtrip.dsql", FINAL).await;
@@ -273,9 +390,21 @@ async fn expansion_depth_converges_without_a_fixed_walk_limit() {
         "the complete depth-eight path tree settles"
     );
     assert!(paths.iter().all(|path| !path.ends_with("cycle")));
+    assert_eq!(
+        bowl.scoop::<Query<(Entity, &CycleSiteRoot)>>().await.len(),
+        17,
+        "each of the sixteen fragment spreads and one query spread owns one cycle site"
+    );
 
     let explanation = bowl.explain("extend_expansion_occurrences").await;
     assert_eq!(explanation.matched_rows, 1515);
     assert_eq!(explanation.memoized_rows, explanation.matched_rows);
     assert_eq!(explanation.stale_views, 0);
+    let body_explanation = bowl.explain("materialize_expansion_bodies").await;
+    assert_eq!(body_explanation.matched_rows, 1515);
+    assert_eq!(
+        body_explanation.memoized_rows,
+        body_explanation.matched_rows
+    );
+    assert_eq!(body_explanation.stale_views, 0);
 }

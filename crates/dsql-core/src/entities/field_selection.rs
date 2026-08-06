@@ -5,22 +5,26 @@
 use std::collections::HashMap;
 
 use bowl::{
-    Commands, Component, DerivedFrom, Entity, In, Query, Registrar, SystemExt, SystemParam, View,
-    Where, With,
+    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, In, Query, Registrar, Related,
+    SystemExt, SystemParam, View, Where, With,
 };
 
-use crate::catalog::{CatalogSnapshot, FieldCheckResult, FieldRef, TableRef, TableResolution};
+use crate::catalog::{CatalogSnapshot, TableRef};
 use crate::entities::aggregate::aggregate_output_keys;
 use crate::entities::clause::{ClauseFact, clause_expr};
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
-use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
+use crate::entities::expansion::{
+    ClauseResolutionRows, ExpansionBodies, ExpansionBody, RawSemanticMembers,
+    SelectionResolutionRows, SemanticDefinitionKey, SpreadResolutionRows, clone_clause_resolutions,
+    clone_selection_resolutions, clone_semantic_members, clone_spread_resolutions,
+};
 use crate::entities::expression::{Expr, LiteralValue};
-use crate::entities::fragment_spread::{SpreadDecl, check_spread_site};
+use crate::entities::fragment_spread::SpreadDecl;
 use crate::entities::{direct_name, direct_rule, direct_token, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
-    NodeKey, Severity, Span, emit_diagnostic,
+    NodeKey, SemanticRoot, Severity, Span, emit_diagnostic,
 };
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
@@ -44,7 +48,7 @@ pub(crate) const POSTGRES_RESULT_ALIAS_MAX_BYTES: usize = 63;
 /// One field selection, lowered from `field_selection`. Together with
 /// [`ChildOf`] these facts are the flat encoding of the selection tree;
 /// sibling order is byte order of [`FieldSel::span`].
-#[derive(Component, Debug, Hash)]
+#[derive(Component, Debug, Clone, Hash)]
 #[component(hash)]
 pub struct FieldSel {
     /// Whether `...` merges this selection's object fields into its parent.
@@ -133,9 +137,7 @@ impl LanguageEntity for FieldSelection {
     const NAME: &'static str = "field_selection";
 
     fn register(reg: &mut Registrar<'_>) {
-        // Set-wide fragment/output/policy checks still use the residual walk
-        // and therefore remain behind Complete until the summary-fact slice.
-        reg.system(residual_definition_checks.run_during(bowl::Phase::Complete));
+        reg.system(residual_definition_checks);
         reg.system(check_resolved_selection);
         reg.system(check_selection_shape);
         reg.system(hover_fields);
@@ -426,11 +428,11 @@ impl SelectionTree<'_> {
 /// definition; the catalog query is a tracked input, so a schema change
 /// reruns every definition. Demand-gated like every check.
 ///
-/// The per-construct logic stays with its owning entity: spread sites are
-/// checked by [`check_spread_site`] in `fragment_spread`.
-/// The ambient views the residual definition check, inference, and planning
-/// walks read, bundled to keep system signatures within porridge's parameter
-/// arity. Field and clause diagnostics no longer consume this tree.
+/// Spread-site compatibility remains a per-site check, while intrinsic cycle
+/// errors are emitted from the materialized expansion graph.
+/// The ambient views variable inference, planning, and completion still read,
+/// bundled to keep system signatures within porridge's parameter arity. The
+/// residual checker consumes relationship-scoped expansion bodies instead.
 #[derive(SystemParam)]
 pub(crate) struct TreeViews<'a> {
     fields: View<'a, (Entity, &'a FieldSel, &'a NodeKey, &'a ChildOf)>,
@@ -439,13 +441,194 @@ pub(crate) struct TreeViews<'a> {
     clauses: View<'a, (Entity, &'a ClauseFact, &'a Span, &'a ChildOf)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct InstanceNode {
+    pub(crate) instance: Option<Entity>,
+    pub(crate) source: Entity,
+}
+
+#[derive(Default)]
+struct DefinitionClosure {
+    fields: HashMap<InstanceNode, Vec<(InstanceNode, FieldSel)>>,
+    spreads: HashMap<InstanceNode, Vec<(InstanceNode, SpreadDecl)>>,
+    clauses: HashMap<InstanceNode, Vec<(InstanceNode, ClauseFact, Span)>>,
+    selections: HashMap<InstanceNode, ResolvedSelection>,
+    clause_resolutions: HashMap<InstanceNode, ResolvedClause>,
+    spread_resolutions: HashMap<InstanceNode, crate::entities::fragment_spread::ResolvedSpread>,
+    child_occurrences: HashMap<InstanceNode, Entity>,
+    body_roots: HashMap<Entity, Entity>,
+    scopes: HashMap<Option<Entity>, String>,
+}
+
+impl DefinitionClosure {
+    fn node(instance: Option<Entity>, source: Entity) -> InstanceNode {
+        InstanceNode { instance, source }
+    }
+
+    fn add_members(
+        &mut self,
+        instance: Option<Entity>,
+        members: impl IntoIterator<Item = crate::entities::expansion::ExpansionMember>,
+    ) {
+        for member in members {
+            let node = Self::node(instance, member.source);
+            let Some(parent) = member.parent.map(|parent| Self::node(instance, parent)) else {
+                continue;
+            };
+            if let Some(field) = member.field {
+                self.fields.entry(parent).or_default().push((node, field));
+            }
+            if let Some(spread) = member.spread {
+                self.spreads.entry(parent).or_default().push((node, spread));
+            }
+            if let Some(clause) = member.clause {
+                let Some(span) = member.span else {
+                    continue;
+                };
+                self.clauses
+                    .entry(parent)
+                    .or_default()
+                    .push((node, clause, span));
+            }
+        }
+    }
+
+    fn fields_under(
+        &self,
+        parent: InstanceNode,
+    ) -> impl Iterator<Item = &(InstanceNode, FieldSel)> {
+        self.fields.get(&parent).into_iter().flatten()
+    }
+
+    fn spreads_under(
+        &self,
+        parent: InstanceNode,
+    ) -> impl Iterator<Item = &(InstanceNode, SpreadDecl)> {
+        self.spreads.get(&parent).into_iter().flatten()
+    }
+
+    fn clauses_under(
+        &self,
+        parent: InstanceNode,
+    ) -> impl Iterator<Item = &(InstanceNode, ClauseFact, Span)> {
+        self.clauses.get(&parent).into_iter().flatten()
+    }
+
+    fn child_root(&self, spread: InstanceNode) -> Option<InstanceNode> {
+        let occurrence = self.child_occurrences.get(&spread)?;
+        self.body_roots
+            .get(occurrence)
+            .map(|source| Self::node(Some(*occurrence), *source))
+    }
+
+    fn scope_for(&self, node: InstanceNode) -> Option<&str> {
+        self.scopes.get(&node.instance).map(String::as_str)
+    }
+
+    fn build(
+        root_scope: &str,
+        root_members: Vec<crate::entities::expansion::ExpansionMember>,
+        root_selections: Vec<ResolvedSelection>,
+        root_clauses: Vec<ResolvedClause>,
+        root_spreads: Vec<crate::entities::fragment_spread::ResolvedSpread>,
+        bodies: impl IntoIterator<Item = ExpansionBody>,
+    ) -> Self {
+        let mut closure = Self::default();
+        closure.scopes.insert(None, root_scope.to_string());
+        closure.add_members(None, root_members);
+        for resolved in root_selections {
+            closure
+                .selections
+                .insert(Self::node(None, resolved.field), resolved);
+        }
+        for resolved in root_clauses {
+            closure
+                .clause_resolutions
+                .insert(Self::node(None, resolved.clause), resolved);
+        }
+        for resolved in root_spreads {
+            closure
+                .spread_resolutions
+                .insert(Self::node(None, resolved.spread), resolved);
+        }
+
+        for body in bodies {
+            let instance = Some(body.occurrence);
+            closure.child_occurrences.insert(
+                Self::node(body.parent, body.incoming_spread),
+                body.occurrence,
+            );
+            closure.body_roots.insert(body.occurrence, body.definition);
+            closure.scopes.insert(instance, body.scope.0.clone());
+            closure.add_members(instance, body.members);
+            for resolved in body.selections {
+                closure
+                    .selections
+                    .insert(Self::node(instance, resolved.field), resolved);
+            }
+            for resolved in body.clauses {
+                closure
+                    .clause_resolutions
+                    .insert(Self::node(instance, resolved.clause), resolved);
+            }
+            for resolved in body.spreads {
+                closure
+                    .spread_resolutions
+                    .insert(Self::node(instance, resolved.spread), resolved);
+            }
+        }
+
+        for fields in closure.fields.values_mut() {
+            fields.sort_by_key(|(_, field)| field.span.start);
+        }
+        for spreads in closure.spreads.values_mut() {
+            spreads.sort_by_key(|(_, spread)| spread.span.start);
+        }
+        for clauses in closure.clauses.values_mut() {
+            clauses.sort_by_key(|(_, _, span)| span.start);
+        }
+        closure
+    }
+}
+
+type ResidualRootInput<'a> = Query<(
+    Entity,
+    &'a SemanticRoot,
+    &'a SemanticDefinitionKey,
+    &'a NodeKey,
+    RawSemanticMembers<'a>,
+    SelectionResolutionRows<'a>,
+    ClauseResolutionRows<'a>,
+    SpreadResolutionRows<'a>,
+)>;
+type ResidualDefinition<'a> = Query<
+    (
+        Entity,
+        &'a DefDecl,
+        Option<&'a FragmentTarget>,
+        &'a BelongsToFile,
+        &'a ResolutionScope,
+    ),
+    Where<BowlEq<NodeKey>>,
+>;
+type ResidualExpansions<'a> = Query<
+    (
+        Entity,
+        &'a SemanticRoot,
+        Related<ExpansionBodies, (&'a ExpansionBody,)>,
+    ),
+    Where<BowlEq<SemanticDefinitionKey>>,
+>;
+
 #[expect(
     clippy::too_many_arguments,
-    reason = "system parameters are the tracked join, not an API surface"
+    reason = "system parameters are exact tracked joins, not an API surface"
 )]
 async fn residual_definition_checks(
     _: Query<Entity, With<DiagnosticsDemand>>,
-    defs: Query<(Entity, &DefDecl, &BelongsToFile, &ResolutionScope)>,
+    root_input: ResidualRootInput<'_>,
+    definition: ResidualDefinition<'_>,
+    expansions: ResidualExpansions<'_>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     policies: Query<(
         Entity,
@@ -453,25 +636,33 @@ async fn residual_definition_checks(
         &crate::entities::policy::CompiledPolicyIndex,
     )>,
     imports: Query<(Entity, &ScopeImports)>,
-    views: TreeViews<'_>,
-    resolutions: View<'_, (Entity, &ResolvedClause)>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
-    let (def_entity, decl, file, scope) = defs.item();
+    let (root_group, root, _, _, members, selections, clauses, spread_resolutions) =
+        root_input.item();
+    let (def_entity, decl, fragment_target, file, scope) = definition.item();
+    let (expansion_group, _, bodies) = expansions.item();
+    debug_assert_eq!(root.0, def_entity);
+    debug_assert_eq!(root_group, expansion_group);
     let (catalog_entity, snapshot) = catalog.item();
     let (_, imports) = imports.item();
     let (policy_index_entity, policy_index, compiled_policies) = policies.item();
     let catalog = snapshot.catalog();
 
-    let tree = SelectionTree::collect(&views);
-    let clause_resolutions: std::collections::HashMap<Entity, &ResolvedClause> = resolutions
-        .iter()
-        .map(|(_, resolved)| (resolved.clause, resolved))
-        .collect();
+    let tree = DefinitionClosure::build(
+        &scope.0,
+        clone_semantic_members(&members),
+        clone_selection_resolutions(&selections),
+        clone_clause_resolutions(&clauses),
+        clone_spread_resolutions(&spread_resolutions),
+        bodies
+            .iter()
+            .map(|(_, (body,))| (*body).clone())
+            .collect::<Vec<_>>(),
+    );
 
     let mut ctx = CheckCtx {
         tree: &tree,
-        clause_resolutions: &clause_resolutions,
         catalog,
         catalog_entity,
         policy_index,
@@ -479,7 +670,6 @@ async fn residual_definition_checks(
         policy_index_entity,
         file: file.0,
         scope: &scope.0,
-        enclosing_fragment: None,
         observed_tables: std::collections::HashSet::new(),
         affected_filters: std::collections::HashSet::new(),
         commands: &mut commands,
@@ -488,20 +678,20 @@ async fn residual_definition_checks(
 
     match decl.kind {
         DefKind::Query => {
-            ctx.check_query_roots(def_entity);
-            ctx.check_operation_filter_assignments(def_entity);
+            let root = DefinitionClosure::node(None, def_entity);
+            ctx.check_query_roots(root);
+            ctx.check_operation_filter_assignments(root);
             ctx.block_unimplemented_filter_execution(def_entity, decl.name_span);
         }
-        DefKind::Fragment => ctx.check_fragment_body(def_entity),
+        DefKind::Fragment => {
+            ctx.check_fragment_body(DefinitionClosure::node(None, def_entity), fragment_target)
+        }
     }
 }
 
 /// Shared state of one definition's check walk.
-pub(crate) struct CheckCtx<'a, 'view> {
-    pub(crate) tree: &'a SelectionTree<'view>,
-    /// Clause resolutions by clause entity: the one place predicate paths
-    /// and order items were resolved.
-    pub(crate) clause_resolutions: &'a std::collections::HashMap<Entity, &'view ResolvedClause>,
+pub(crate) struct CheckCtx<'a> {
+    tree: &'a DefinitionClosure,
     pub(crate) catalog: &'a crate::catalog::Catalog,
     pub(crate) catalog_entity: Entity,
     pub(crate) policy_index: &'a crate::entities::policy::PolicyIndex,
@@ -510,16 +700,13 @@ pub(crate) struct CheckCtx<'a, 'view> {
     pub(crate) file: Entity,
     /// Resolution scope of the definition being checked.
     pub(crate) scope: &'a str,
-    /// Name of the fragment whose body is being checked, when any: seeds
-    /// spread expansion so self-spreads read as cycles, not duplicates.
-    pub(crate) enclosing_fragment: Option<String>,
     pub(crate) observed_tables: std::collections::HashSet<crate::catalog::TableId>,
     pub(crate) affected_filters: std::collections::HashSet<Entity>,
     pub(crate) imports: &'a ScopeImports,
     pub(crate) commands: &'a mut Commands<(dsql_schema::Diagnostic,)>,
 }
 
-impl CheckCtx<'_, '_> {
+impl CheckCtx<'_> {
     pub(crate) fn error(
         &mut self,
         anchor: Entity,
@@ -582,53 +769,39 @@ impl CheckCtx<'_, '_> {
     }
 
     /// Query roots name tables; everything below them is field context.
-    fn check_query_roots(&mut self, def_entity: Entity) {
-        self.check_output_keys(def_entity);
+    fn check_query_roots(&mut self, definition: InstanceNode) {
+        self.check_output_keys(definition);
         let roots: Vec<_> = self
             .tree
-            .fields_under(def_entity)
-            .map(|(entity, field, _, _)| (*entity, *field))
+            .fields_under(definition)
+            .map(|(entity, field)| (*entity, field.clone()))
             .collect();
         for (entity, field) in roots {
-            match self
-                .catalog
-                .resolve_table_ref_for(TableRef::parse(&field.name))
-            {
-                TableResolution::Found(table) => {
-                    let table_id = table.id;
-                    self.observed_tables.insert(table_id);
-                    let root_clauses: Vec<_> = self
-                        .tree
-                        .clauses_under(entity)
-                        .map(|(entity, clause, span, _)| (*entity, *clause, *span))
-                        .collect();
-                    for (clause_entity, clause, clause_span) in root_clauses {
-                        crate::entities::clause::collect_clause_policy_effects(
-                            self,
-                            table_id,
-                            clause_entity,
-                            clause,
-                        );
-                        if field.has_transform() {
-                            crate::entities::aggregate::check_source_clause(
-                                self,
-                                clause_entity,
-                                clause,
-                                clause_span,
-                            );
-                        }
-                    }
-                    if field.flattened && field.body == FieldBodyKind::None {
-                        continue;
-                    }
-                    if !field.has_selection_set() && !field.has_transform() {
-                        continue;
-                    }
-                    if field.has_selection_set() {
-                        self.check_set(table_id, entity);
-                    }
-                }
-                TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => {}
+            let Some(SelectionTarget::Table(table)) = self
+                .tree
+                .selections
+                .get(&entity)
+                .map(|resolved| &resolved.target)
+            else {
+                continue;
+            };
+            let table = *table;
+            self.observed_tables.insert(table);
+            let root_clauses = self
+                .tree
+                .clauses_under(entity)
+                .map(|(entity, clause, _)| (*entity, clause.clone()))
+                .collect::<Vec<_>>();
+            for (clause_entity, clause) in root_clauses {
+                crate::entities::clause::collect_clause_policy_effects(
+                    self,
+                    table,
+                    clause_entity,
+                    &clause,
+                );
+            }
+            if field.has_selection_set() {
+                self.check_set(table, entity);
             }
         }
     }
@@ -636,26 +809,19 @@ impl CheckCtx<'_, '_> {
     /// Fragment bodies check against the fragment's declared target. An
     /// unresolvable target is reported by the definition entity's own
     /// check; the body is skipped rather than double-reported.
-    fn check_fragment_body(&mut self, def_entity: Entity) {
-        let Some((_, decl, target, _)) = self
-            .tree
-            .fragments
-            .iter()
-            .find(|(entity, _, _, _)| *entity == def_entity)
-        else {
+    fn check_fragment_body(&mut self, definition: InstanceNode, target: Option<&FragmentTarget>) {
+        let Some(target) = target else {
             return;
         };
-        self.enclosing_fragment = Some(decl.name.clone());
         let Some(table) = self.catalog.table_ref_for(TableRef::parse(&target.name)) else {
             return;
         };
-        let table_id = table.id;
-        self.check_set(table_id, def_entity);
+        self.check_set(table.id, definition);
     }
 
     /// Checks one selection set (the children of `parent`) against its
     /// context table, then recurses into relation selections.
-    pub(crate) fn check_set(&mut self, table: crate::catalog::TableId, parent: Entity) {
+    fn check_set(&mut self, table: crate::catalog::TableId, parent: InstanceNode) {
         self.observed_tables.insert(table);
         self.check_output_keys(parent);
 
@@ -666,88 +832,132 @@ impl CheckCtx<'_, '_> {
         let fields: Vec<_> = self
             .tree
             .fields_under(parent)
-            .map(|(entity, field, _, _)| (*entity, *field))
+            .map(|(entity, field)| (*entity, field.clone()))
             .collect();
         for (entity, field) in fields {
-            let reference = FieldRef {
-                target: TableRef::parse(&field.name),
-                selector: field.relation_path.as_deref(),
-            };
-            match self.catalog.check_field_ref(table, reference) {
-                FieldCheckResult::Column(_) => {}
-                FieldCheckResult::Relation(relation) => {
-                    let relation_table = relation.table.id;
+            let target = self
+                .tree
+                .selections
+                .get(&entity)
+                .map(|resolved| resolved.target.clone());
+            match target {
+                Some(SelectionTarget::Column(_)) => {}
+                Some(SelectionTarget::Relation {
+                    table: relation_table,
+                    ..
+                }) => {
                     self.observed_tables.insert(relation_table);
                     let field_clauses: Vec<_> = self
                         .tree
                         .clauses_under(entity)
-                        .map(|(entity, clause, span, _)| (*entity, *clause, *span))
+                        .map(|(entity, clause, _)| (*entity, clause.clone()))
                         .collect();
-                    for (clause_entity, clause, clause_span) in field_clauses {
+                    for (clause_entity, clause) in field_clauses {
                         crate::entities::clause::collect_clause_policy_effects(
                             self,
                             relation_table,
                             clause_entity,
-                            clause,
+                            &clause,
                         );
-                        if field.has_transform() {
-                            crate::entities::aggregate::check_source_clause(
-                                self,
-                                clause_entity,
-                                clause,
-                                clause_span,
-                            );
-                        }
-                    }
-                    if field.flattened && field.body == FieldBodyKind::None {
-                        continue;
-                    }
-                    if !field.has_selection_set() && !field.has_transform() {
-                        continue;
                     }
                     if field.has_selection_set() {
                         self.check_set(relation_table, entity);
                     }
                 }
-                FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {}
+                Some(SelectionTarget::Table(_)) | Some(SelectionTarget::Unresolved) | None => {}
             }
         }
 
         let spreads: Vec<_> = self
             .tree
             .spreads_under(parent)
-            .map(|(entity, spread, _)| (*entity, *spread))
+            .map(|(entity, spread)| (*entity, spread.clone()))
             .collect();
         for (entity, spread) in spreads {
-            check_spread_site(self, entity, spread, table);
+            self.check_spread_site(entity, &spread, table);
         }
     }
 
-    fn check_operation_filter_assignments(&mut self, def_entity: Entity) {
-        let mut expansion = SpreadExpansion::new(self.tree, self.scope, self.imports);
+    fn check_spread_site(
+        &mut self,
+        spread_node: InstanceNode,
+        spread: &SpreadDecl,
+        context_table: crate::catalog::TableId,
+    ) {
+        let Some(target_name) = self
+            .tree
+            .spread_resolutions
+            .get(&spread_node)
+            .and_then(|resolved| resolved.target.as_ref())
+            .and_then(|target| target.on.as_deref())
+        else {
+            return;
+        };
+        let Some(target_table) = self.catalog.table_ref_for(TableRef::parse(target_name)) else {
+            return;
+        };
+        if target_table.id == context_table {
+            return;
+        }
+        let context_name = self
+            .catalog
+            .table_by_id(context_table)
+            .map(|table| table.name.clone())
+            .unwrap_or_default();
+        self.error(
+            spread_node.source,
+            spread.name_span,
+            DiagnosticCode::FragmentTypeMismatch,
+            format!(
+                "fragment `{}` applies to `{}` and cannot be spread in `{context_name}`",
+                spread.name, target_table.name
+            ),
+        );
+    }
+
+    pub(crate) fn resolved_clause(&self, clause: InstanceNode) -> Option<&ResolvedClause> {
+        self.tree.clause_resolutions.get(&clause)
+    }
+
+    pub(crate) fn is_duplicate_filter_assignment(&self, clause: InstanceNode, name: &str) -> bool {
+        self.tree.clauses.values().any(|clauses| {
+            clauses.iter().any(|(candidate, candidate_clause, _)| {
+                candidate.instance == clause.instance
+                    && candidate.source < clause.source
+                    && matches!(
+                        candidate_clause,
+                        ClauseFact::FilterAssignment {
+                            name: candidate_name,
+                            ..
+                        } if candidate_name == name
+                    )
+                    && clauses.iter().any(|(current, _, _)| *current == clause)
+            })
+        })
+    }
+
+    fn check_operation_filter_assignments(&mut self, definition: InstanceNode) {
         collect_operation_tables(
             self.tree,
-            self.clause_resolutions,
-            self.catalog,
             self.policy_index,
             self.imports,
-            def_entity,
-            None,
-            self.scope,
-            &mut expansion,
+            definition,
             &mut self.observed_tables,
             &mut self.affected_filters,
         );
         let assignments = self
             .tree
-            .clauses_under(def_entity)
-            .map(|(entity, clause, _, _)| (*entity, (*clause).clone()))
+            .clauses_under(definition)
+            .map(|(entity, clause, _)| (*entity, clause.clone()))
             .collect::<Vec<_>>();
         let mut tables = self.observed_tables.iter().copied().collect::<Vec<_>>();
         tables.sort_by_key(|table| table.0);
         for (entity, clause) in assignments {
             crate::entities::policy::check_operation_filter_assignment(
-                self, &tables, entity, &clause,
+                self,
+                &tables,
+                entity.source,
+                &clause,
             );
         }
     }
@@ -823,27 +1033,23 @@ impl CheckCtx<'_, '_> {
 
     /// Output keys must be unique within one selection set and fit
     /// PostgreSQL's result-alias limit.
-    fn check_output_keys(&mut self, parent: Entity) {
+    fn check_output_keys(&mut self, parent: InstanceNode) {
         let mut seen: Vec<String> = Vec::new();
         let tree = self.tree;
-        let mut expansion = SpreadExpansion::new(tree, self.scope, self.imports);
-        if let Some(enclosing) = &self.enclosing_fragment {
-            expansion.seed(enclosing);
-        }
         let fields: Vec<_> = self
             .tree
             .fields_under(parent)
-            .map(|(entity, field, _, _)| (*entity, *field))
+            .map(|(entity, field)| (*entity, field.clone()))
             .collect();
         for (entity, field) in fields {
             if field.flattened {
                 let mut flattened = Vec::new();
-                collect_field_output_keys(tree, &mut expansion, entity, field, &mut flattened);
+                collect_closure_field_output_keys(tree, entity, &field, &mut flattened);
                 dedup_output_keys(&mut flattened);
                 for output in flattened {
                     if seen.contains(&output.key) {
                         self.error(
-                            entity,
+                            entity.source,
                             output.span,
                             DiagnosticCode::DuplicateOutputKey,
                             format!(
@@ -860,7 +1066,7 @@ impl CheckCtx<'_, '_> {
             let key = field.output_key();
             if seen.contains(&key) {
                 self.error(
-                    entity,
+                    entity.source,
                     field.name_span,
                     DiagnosticCode::DuplicateOutputKey,
                     format!("selection output key `{key}` is ambiguous; use an alias"),
@@ -871,7 +1077,7 @@ impl CheckCtx<'_, '_> {
             let bytes = key.len();
             if bytes > POSTGRES_RESULT_ALIAS_MAX_BYTES {
                 self.error(
-                    entity,
+                    entity.source,
                     field.alias_span.unwrap_or(field.name_span),
                     DiagnosticCode::OutputKeyTooLong,
                     format!(
@@ -887,23 +1093,19 @@ impl CheckCtx<'_, '_> {
         let spreads: Vec<_> = self
             .tree
             .spreads_under(parent)
-            .map(|(entity, spread, _)| (*entity, spread.name.clone(), spread.name_span))
+            .map(|(entity, spread)| (*entity, spread.name.clone(), spread.name_span))
             .collect();
         for (entity, name, name_span) in spreads {
-            let ExpandedSpread::Fragment {
-                entity: fragment, ..
-            } = expansion.enter(&name)
-            else {
+            let Some(fragment) = tree.child_root(entity) else {
                 continue;
             };
             let mut keys = Vec::new();
-            collect_selection_output_keys(tree, &mut expansion, fragment, &mut keys);
-            expansion.leave();
+            collect_closure_selection_output_keys(tree, fragment, &mut keys);
             dedup_output_keys(&mut keys);
             for output in keys {
                 if seen.contains(&output.key) {
                     self.error(
-                        entity,
+                        entity.source,
                         name_span,
                         DiagnosticCode::DuplicateOutputKey,
                         format!(
@@ -919,48 +1121,29 @@ impl CheckCtx<'_, '_> {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the operation observation walk carries semantic indexes and its two outputs"
-)]
 fn collect_operation_tables(
-    tree: &SelectionTree<'_>,
-    resolutions: &std::collections::HashMap<Entity, &ResolvedClause>,
-    catalog: &crate::catalog::Catalog,
+    tree: &DefinitionClosure,
     policy_index: &crate::entities::policy::PolicyIndex,
     imports: &ScopeImports,
-    parent: Entity,
-    context: Option<crate::catalog::TableId>,
-    definition_scope: &str,
-    expansion: &mut SpreadExpansion<'_, '_>,
+    parent: InstanceNode,
     tables: &mut std::collections::HashSet<crate::catalog::TableId>,
     filters: &mut std::collections::HashSet<Entity>,
 ) {
+    let definition_scope = tree.scope_for(parent).unwrap_or_default();
     let fields = tree
         .fields_under(parent)
-        .map(|(entity, field, _, _)| (*entity, *field))
+        .map(|(entity, field)| (*entity, field.clone()))
         .collect::<Vec<_>>();
     for (entity, field) in fields {
-        let table = match context {
-            Some(context) => {
-                let reference = FieldRef {
-                    target: TableRef::parse(&field.name),
-                    selector: field.relation_path.as_deref(),
-                };
-                match catalog.check_field_ref(context, reference) {
-                    FieldCheckResult::Relation(relation) => relation.table.id,
-                    FieldCheckResult::Column(_)
-                    | FieldCheckResult::NotFound
-                    | FieldCheckResult::AmbiguousRelation { .. } => continue,
-                }
-            }
-            None => match catalog.resolve_table_ref_for(TableRef::parse(&field.name)) {
-                TableResolution::Found(table) => table.id,
-                TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => continue,
-            },
+        let Some(table) = tree
+            .selections
+            .get(&entity)
+            .and_then(|resolved| resolved.target.child_context())
+        else {
+            continue;
         };
         tables.insert(table);
-        for (clause_entity, clause, _, _) in tree.clauses_under(entity) {
+        for (clause_entity, clause, _) in tree.clauses_under(entity) {
             if let ClauseFact::FilterAssignment { name, .. } = clause {
                 collect_assignment_filter(
                     policy_index,
@@ -971,7 +1154,7 @@ fn collect_operation_tables(
                     filters,
                 );
             }
-            if let Some(resolved) = resolutions.get(clause_entity) {
+            if let Some(resolved) = tree.clause_resolutions.get(clause_entity) {
                 collect_resolved_clause_tables(resolved, tables);
                 let expr = match clause {
                     ClauseFact::Where { expr }
@@ -993,49 +1176,19 @@ fn collect_operation_tables(
             }
         }
         if field.has_selection_set() {
-            collect_operation_tables(
-                tree,
-                resolutions,
-                catalog,
-                policy_index,
-                imports,
-                entity,
-                Some(table),
-                definition_scope,
-                expansion,
-                tables,
-                filters,
-            );
+            collect_operation_tables(tree, policy_index, imports, entity, tables, filters);
         }
     }
 
     let spreads = tree
         .spreads_under(parent)
-        .map(|(_, spread, _)| spread.name.clone())
+        .map(|(spread, _)| *spread)
         .collect::<Vec<_>>();
     for spread in spreads {
-        let ExpandedSpread::Fragment { entity } = expansion.enter(&spread) else {
+        let Some(fragment) = tree.child_root(spread) else {
             continue;
         };
-        let fragment_scope = tree
-            .fragments
-            .iter()
-            .find_map(|(fragment, _, _, scope)| (*fragment == entity).then_some(scope.0.as_str()))
-            .unwrap_or(definition_scope);
-        collect_operation_tables(
-            tree,
-            resolutions,
-            catalog,
-            policy_index,
-            imports,
-            entity,
-            context,
-            fragment_scope,
-            expansion,
-            tables,
-            filters,
-        );
-        expansion.leave();
+        collect_operation_tables(tree, policy_index, imports, fragment, tables, filters);
     }
 }
 
@@ -1437,31 +1590,28 @@ fn dedup_output_keys(keys: &mut Vec<OutputKey>) {
 
 /// The top-level output keys a set contributes after fragment expansion and
 /// object flattening. The caller owns collision reporting for its parent set.
-fn collect_selection_output_keys(
-    tree: &SelectionTree<'_>,
-    expansion: &mut SpreadExpansion<'_, '_>,
-    parent: Entity,
+fn collect_closure_selection_output_keys(
+    tree: &DefinitionClosure,
+    parent: InstanceNode,
     keys: &mut Vec<OutputKey>,
 ) {
-    for (entity, field, _, _) in tree.fields_under(parent) {
-        collect_field_output_keys(tree, expansion, *entity, field, keys);
+    for (entity, field) in tree.fields_under(parent) {
+        collect_closure_field_output_keys(tree, *entity, field, keys);
     }
-    let spreads: Vec<String> = tree
+    let spreads = tree
         .spreads_under(parent)
-        .map(|(_, spread, _)| spread.name.clone())
-        .collect();
-    for name in spreads {
-        if let ExpandedSpread::Fragment { entity, .. } = expansion.enter(&name) {
-            collect_selection_output_keys(tree, expansion, entity, keys);
-            expansion.leave();
+        .map(|(entity, _)| *entity)
+        .collect::<Vec<_>>();
+    for spread in spreads {
+        if let Some(root) = tree.child_root(spread) {
+            collect_closure_selection_output_keys(tree, root, keys);
         }
     }
 }
 
-fn collect_field_output_keys(
-    tree: &SelectionTree<'_>,
-    expansion: &mut SpreadExpansion<'_, '_>,
-    entity: Entity,
+fn collect_closure_field_output_keys(
+    tree: &DefinitionClosure,
+    entity: InstanceNode,
     field: &FieldSel,
     keys: &mut Vec<OutputKey>,
 ) {
@@ -1471,7 +1621,7 @@ fn collect_field_output_keys(
             span: field.alias_span.unwrap_or(field.name_span),
         });
     } else if field.has_selection_set() {
-        collect_selection_output_keys(tree, expansion, entity, keys);
+        collect_closure_selection_output_keys(tree, entity, keys);
     } else if field.has_transform() {
         keys.extend(
             field

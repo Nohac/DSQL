@@ -55,7 +55,7 @@ use crate::source::{ResolutionScope, ScopeImports};
 /// One variable occurrence, lowered from `value_variable` or
 /// `operator_variable`. The inference stage (phase 7) groups these by name
 /// and derives the query's parameter set.
-#[derive(Component, Debug, Hash)]
+#[derive(Component, Debug, Clone, Hash)]
 #[component(hash)]
 pub struct VariableUse(pub VariableRef);
 

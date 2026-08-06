@@ -374,6 +374,22 @@ fn check_clause_semantics(
     let Some(table) = resolved.context.map(|context| context.table) else {
         return;
     };
+    if resolved.source_has_transform {
+        let label = match clause {
+            ClauseFact::FilterAssignment { .. } | ClauseFact::Where { .. } => None,
+            ClauseFact::OrderBy { .. } => Some("order by"),
+            ClauseFact::Limit { .. } => Some("limit"),
+            ClauseFact::Offset { .. } => Some("offset"),
+        };
+        if let Some(label) = label {
+            ctx.error(
+                entity,
+                span,
+                DiagnosticCode::AggregateClauseNotAllowed,
+                format!("aggregate sources do not support `{label}` clauses"),
+            );
+        }
+    }
     match clause {
         ClauseFact::FilterAssignment { .. } => {}
         ClauseFact::Where { expr } => {
@@ -428,13 +444,13 @@ fn check_clause_semantics(
 /// residual definition walk. Pure clause diagnostics are emitted by
 /// [`check_resolved_clause`].
 pub(crate) fn collect_clause_policy_effects(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_>,
     table: crate::catalog::TableId,
-    entity: Entity,
+    entity: crate::entities::field_selection::InstanceNode,
     clause: &ClauseFact,
 ) {
-    let resolved = ctx.clause_resolutions.get(&entity).copied();
-    if let Some(resolved) = resolved {
+    let resolved = ctx.resolved_clause(entity).cloned();
+    if let Some(ref resolved) = resolved {
         crate::entities::field_selection::collect_resolved_clause_tables(
             resolved,
             &mut ctx.observed_tables,
@@ -445,17 +461,17 @@ pub(crate) fn collect_clause_policy_effects(
             crate::entities::policy::check_filter_assignment(ctx, table, entity, clause);
         }
         ClauseFact::Where { expr } => {
-            collect_predicate_policy_effects(ctx, resolved, table, entity, expr);
+            collect_predicate_policy_effects(ctx, resolved.as_ref(), table, entity, expr);
         }
         ClauseFact::OrderBy { .. } | ClauseFact::Limit { .. } | ClauseFact::Offset { .. } => {}
     }
 }
 
 fn collect_predicate_policy_effects(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    ctx: &mut crate::entities::field_selection::CheckCtx<'_>,
     resolved: Option<&ResolvedClause>,
     table: crate::catalog::TableId,
-    entity: Entity,
+    entity: crate::entities::field_selection::InstanceNode,
     expr: &Expr,
 ) {
     match expr {
@@ -491,7 +507,7 @@ fn collect_predicate_policy_effects(
                 crate::entities::policy::check_exists_filter_assignments(
                     ctx,
                     nested_table,
-                    entity,
+                    entity.source,
                     filters,
                 );
             }

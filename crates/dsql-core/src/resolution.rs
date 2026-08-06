@@ -40,7 +40,7 @@ use crate::entities::expression::{
 use crate::entities::field_selection::{FieldSel, SelectionLimitSyntax};
 use crate::entities::variable::InputRefinement;
 use crate::entities::variable_path::predicate_anonymous_key;
-use crate::facts::{BelongsToFile, Children, Span};
+use crate::facts::{BelongsToFile, Children, SemanticMemberOf, Span};
 
 /// What one selection's name means in its context: a derived fact entity
 /// carrying everything span-addressed consumers need.
@@ -251,6 +251,28 @@ pub struct ResolutionOf(pub Entity);
 #[relationship_target(relationship = ResolutionOf)]
 pub struct FieldResolutions(pub Vec<Entity>);
 
+/// Relationship edge from a selection resolution to its semantic group.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(untracked)]
+#[relationship(target = SelectionResolutions)]
+pub struct SelectionResolutionOf(pub Entity);
+
+/// Engine-maintained selection resolutions owned by one semantic group.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = SelectionResolutionOf)]
+pub struct SelectionResolutions(pub Vec<Entity>);
+
+/// Relationship edge from a clause resolution to its semantic group.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(untracked)]
+#[relationship(target = ClauseResolutions)]
+pub struct ClauseResolutionOf(pub Entity);
+
+/// Engine-maintained clause resolutions owned by one semantic group.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = ClauseResolutionOf)]
+pub struct ClauseResolutions(pub Vec<Entity>);
+
 /// The tables one clause's expressions resolve against — plus every
 /// predicate path and order item resolved once, so checks, variable
 /// inference, planning, lints, and highlighting share one semantic
@@ -264,6 +286,8 @@ pub struct ResolvedClause {
     pub clause: Entity,
     /// Whether the enclosing semantic root is a query or fragment.
     pub definition_kind: DefKind,
+    /// Whether the clause belongs to an aggregate source selection.
+    pub source_has_transform: bool,
     /// Display name of [`ClauseContext::table`], when the context resolved.
     pub context_table_name: Option<String>,
     pub context: Option<ClauseContext>,
@@ -542,6 +566,7 @@ fn emit(
     file: Entity,
     field: Entity,
     selection: &FieldSel,
+    semantic_group: Entity,
     root: Option<TableId>,
     context: Option<TableId>,
     target: SelectionTarget,
@@ -564,6 +589,7 @@ fn emit(
         DerivedFrom::many([field, catalog_entity]),
         BelongsToFile(file),
         ResolutionOf(field),
+        SelectionResolutionOf(semantic_group),
         ResolvedSelection {
             field,
             name: selection.name.clone(),
@@ -880,13 +906,13 @@ async fn resolve_roots(
         &Children,
     )>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    roots: Query<(Entity, &FieldSel), Where<In<Children>>>,
+    roots: Query<(Entity, &FieldSel, &SemanticMemberOf), Where<In<Children>>>,
     mut commands: Commands<(dsql_schema::ResolvedSelection,)>,
 ) {
     let (_, decl, target, file, _children) = defs.item();
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
-    let (field_entity, field) = roots.item();
+    let (field_entity, field, semantic_group) = roots.item();
 
     match decl.kind {
         DefKind::Query => {
@@ -919,6 +945,7 @@ async fn resolve_roots(
                 file.0,
                 field_entity,
                 field,
+                semantic_group.0,
                 root,
                 None,
                 resolved,
@@ -947,6 +974,7 @@ async fn resolve_roots(
                 file.0,
                 field_entity,
                 field,
+                semantic_group.0,
                 root,
                 context,
                 resolved,
@@ -970,13 +998,13 @@ async fn resolve_nested(
         &BelongsToFile,
     )>,
     resolution: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
-    children: Query<(Entity, &FieldSel), Where<In<Children>>>,
+    children: Query<(Entity, &FieldSel, &SemanticMemberOf), Where<In<Children>>>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands<(dsql_schema::ResolvedSelection,)>,
 ) {
     let (_, _, _, _, file) = parents.item();
     let (_, parent_resolved) = resolution.item();
-    let (field_entity, field) = children.item();
+    let (field_entity, field, semantic_group) = children.item();
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
@@ -996,6 +1024,7 @@ async fn resolve_nested(
         file.0,
         field_entity,
         field,
+        semantic_group.0,
         root,
         context,
         resolved,
@@ -1019,13 +1048,21 @@ async fn resolve_clauses(
         &BelongsToFile,
     )>,
     resolution: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
-    clauses: Query<(Entity, &ClauseFact, &crate::facts::NodeKey), Where<In<Children>>>,
+    clauses: Query<
+        (
+            Entity,
+            &ClauseFact,
+            &crate::facts::NodeKey,
+            &SemanticMemberOf,
+        ),
+        Where<In<Children>>,
+    >,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands<(dsql_schema::ResolvedClause,)>,
 ) {
-    let (field_entity, _, _, _, file) = parents.item();
+    let (field_entity, field, _, _, file) = parents.item();
     let (_, parent_resolved) = resolution.item();
-    let (clause_entity, clause, node_key) = clauses.item();
+    let (clause_entity, clause, node_key, semantic_group) = clauses.item();
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
@@ -1094,9 +1131,11 @@ async fn resolve_clauses(
         DerivedFrom::many([field_entity, clause_entity, catalog_entity]),
         BelongsToFile(file.0),
         *node_key,
+        ClauseResolutionOf(semantic_group.0),
         ResolvedClause {
             clause: clause_entity,
             definition_kind: parent_resolved.definition_kind,
+            source_has_transform: field.has_transform(),
             context_table_name: context.and_then(|context| {
                 catalog
                     .table_by_id(context.table)

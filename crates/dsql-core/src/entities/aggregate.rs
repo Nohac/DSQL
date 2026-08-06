@@ -8,14 +8,13 @@ use bowl::{
 use crate::catalog::{
     Catalog, CatalogSnapshot, ColumnId, DataType, FieldCheckResult, FieldRef, TableId, TableRef,
 };
-use crate::entities::clause::ClauseFact;
 use crate::entities::expression::{Expr, build_expr};
 use crate::entities::field_selection::FieldSel;
 use crate::entities::{direct_name, direct_names, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, Children, DiagnosticCode, DiagnosticFacts, DiagnosticSource,
-    DiagnosticsDemand, NodeKey, Severity, Span, emit_diagnostic,
+    DiagnosticsDemand, NodeKey, SemanticMemberOf, Severity, Span, emit_diagnostic,
 };
 use crate::format::CstFormatter;
 use crate::grammar::parser::{NodeRef, Rule};
@@ -143,6 +142,17 @@ pub struct ResolvedAggregate {
     pub fields: Vec<ResolvedAggregateField>,
     pub problems: Vec<AggregateProblem>,
 }
+
+/// Relationship edge from an aggregate resolution to its semantic group.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(untracked)]
+#[relationship(target = AggregateResolutions)]
+pub struct AggregateResolutionOf(pub Entity);
+
+/// Engine-maintained aggregate resolutions owned by one semantic group.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = AggregateResolutionOf)]
+pub struct AggregateResolutions(pub Vec<Entity>);
 
 impl ResolvedAggregate {
     /// Whether the aggregate is safe for planning and artifact generation.
@@ -338,13 +348,13 @@ async fn resolve_aggregates(
         &BelongsToFile,
     )>,
     source_resolution: Query<(Entity, &ResolvedSelection), Where<In<FieldResolutions>>>,
-    transforms: Query<(Entity, &AggregateTransformFact), Where<In<Children>>>,
+    transforms: Query<(Entity, &AggregateTransformFact, &SemanticMemberOf), Where<In<Children>>>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
     mut commands: Commands<(dsql_schema::ResolvedAggregate,)>,
 ) {
     let (source_entity, source, _, _, file) = sources.item();
     let (resolution_entity, source_resolution) = source_resolution.item();
-    let (transform_entity, transform) = transforms.item();
+    let (transform_entity, transform, semantic_group) = transforms.item();
     let (catalog_entity, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
 
@@ -430,6 +440,7 @@ async fn resolve_aggregates(
             catalog_entity,
         ]),
         BelongsToFile(file.0),
+        AggregateResolutionOf(semantic_group.0),
         ResolvedAggregate {
             source: source_entity,
             transform: transform_entity,
@@ -1073,28 +1084,6 @@ impl AggregateFunction {
             Self::Avg => "avg",
         }
     }
-}
-
-/// Rejects source clauses whose semantics are not part of the first aggregate
-/// contract. Ordinary clause checking still owns path and value diagnostics.
-pub(crate) fn check_source_clause(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
-    clause_entity: Entity,
-    clause: &ClauseFact,
-    span: Span,
-) {
-    let label = match clause {
-        ClauseFact::FilterAssignment { .. } | ClauseFact::Where { .. } => return,
-        ClauseFact::OrderBy { .. } => "order by",
-        ClauseFact::Limit { .. } => "limit",
-        ClauseFact::Offset { .. } => "offset",
-    };
-    ctx.error(
-        clause_entity,
-        span,
-        DiagnosticCode::AggregateClauseNotAllowed,
-        format!("aggregate sources do not support `{label}` clauses"),
-    );
 }
 
 impl FormatStage for Aggregate {

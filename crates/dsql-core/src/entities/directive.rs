@@ -17,7 +17,7 @@ use crate::schema::dsql_schema;
 
 /// One directive occurrence, lowered from `directive`. [`ChildOf`] links it
 /// to the definition, selection, or spread it annotates.
-#[derive(Component, Debug, Hash)]
+#[derive(Component, Debug, Clone, Hash)]
 #[component(hash)]
 pub struct DirectiveFact {
     /// Explicit namespace, e.g. `dsql` in `@dsql.include_if`. `None` for

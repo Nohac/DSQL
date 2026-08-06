@@ -3,10 +3,7 @@ source: crates/dsql-core/tests/it/checks.rs
 expression: render_diagnostic_facts(&bowl).await
 ---
 Error[150..160]: fragment `CalledSelf` recursively spreads itself
-Error[150..160]: fragment `CalledSelf` recursively spreads itself
-Error[150..160]: fragment `CalledSelf` recursively spreads itself
 Error[196..203]: fragment `MutualB` recursively spreads itself
 Error[239..246]: fragment `MutualA` recursively spreads itself
 Error[38..50]: fragment `UncalledSelf` recursively spreads itself
-Error[95..111]: fragment `SingleCallerSelf` recursively spreads itself
 Error[95..111]: fragment `SingleCallerSelf` recursively spreads itself

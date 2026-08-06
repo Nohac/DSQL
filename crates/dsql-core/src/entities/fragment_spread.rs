@@ -6,7 +6,9 @@ use bowl::{
 };
 
 use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
-use crate::entities::expansion::{SemanticDefinitionKey, SpreadResolutionOf};
+use crate::entities::expansion::{
+    CycleSiteGroup, CycleSiteRoot, SemanticDefinitionKey, SpreadResolutionOf,
+};
 use crate::entities::variable::VariableSource;
 use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
@@ -22,7 +24,7 @@ use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priorit
 use crate::source::{ResolutionScope, ScopeImports};
 
 /// One `...Name` spread, lowered from `fragment_spread`.
-#[derive(Component, Debug, Hash)]
+#[derive(Component, Debug, Clone, Hash)]
 #[component(hash)]
 pub struct SpreadDecl {
     pub name: String,
@@ -150,6 +152,7 @@ impl LowerStage for FragmentSpread {
                 ))
                 .untyped(),
         };
+        commands.insert((DerivedFrom::new(entity), key, CycleSiteRoot));
         Some(entity)
     }
 }
@@ -222,19 +225,25 @@ pub(crate) fn visible_fragments<'a>(
 /// unknown/ambiguity checks report those. The tracked [`DefIndex`] and
 /// [`ScopeImports`] inputs rerun rows when the definition set or the scope
 /// graph changes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "exact tracked joins plus legacy fragment views reach the system parameter ceiling"
+)]
 async fn resolve_spreads(
-    // Ownership is required deliberately: syntax orphaned when its enclosing
-    // definition fails to lower has no semantic resolution. The untracked edge
-    // is safe to copy because the group and all members are spawned by the same
-    // lowering invocation; an ownership move retires and recreates the spread
-    // row, so the edge cannot change independently for a surviving invocation.
+    // Semantic ownership is required deliberately: syntax orphaned when its
+    // enclosing definition fails to lower has no semantic resolution. The
+    // cycle-site group is likewise spawned by the same lowering invocation.
+    // Both presence requirements therefore retire and recreate with the spread
+    // rather than changing independently for a surviving invocation.
     spreads: Query<(
         Entity,
         &SpreadDecl,
         &ResolutionScope,
         &crate::facts::BelongsToFile,
         &crate::facts::SemanticMemberOf,
+        &NodeKey,
     )>,
+    sites: Query<(Entity, &CycleSiteRoot, &NodeKey), Where<bowl::Eq<NodeKey>>>,
     _index: Query<(Entity, &DefIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     fragments: View<'_, (Entity, &DefDecl, &ResolutionScope, &NodeKey)>,
@@ -242,7 +251,10 @@ async fn resolve_spreads(
     targets: View<'_, (Entity, &crate::entities::definition::FragmentTarget)>,
     mut commands: Commands<(dsql_schema::ResolvedSpread,)>,
 ) {
-    let (spread, decl, scope, file, semantic_group) = spreads.item();
+    // This signature is at the eight-parameter system ceiling. Decompose the
+    // ambient fragment views before adding another input.
+    let (spread, decl, scope, file, semantic_group, _) = spreads.item();
+    let (cycle_site, _, _) = sites.item();
     let (_, imports) = imports.item();
 
     let candidates = visible_fragments(
@@ -284,6 +296,7 @@ async fn resolve_spreads(
         DerivedFrom::new(spread),
         crate::facts::BelongsToFile(file.0),
         SpreadResolutionOf(semantic_group.0),
+        CycleSiteGroup(cycle_site),
         ResolvedSpread {
             spread,
             name: decl.name.clone(),
@@ -294,117 +307,6 @@ async fn resolve_spreads(
     if let Some(target_key) = target_key {
         commands.entity(resolved).insert(target_key);
     }
-}
-
-/// Checks one spread site during the residual definition walk: the named fragment's target must
-/// match the context table, and following spreads through fragments must
-/// not cycle. Lives here because spread semantics belong to this entity;
-/// the walk only orchestrates.
-pub(crate) fn check_spread_site(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
-    spread_entity: Entity,
-    spread: &SpreadDecl,
-    context_table: crate::catalog::TableId,
-) {
-    use crate::catalog::TableRef;
-
-    // Unknown and ambiguous fragments are reported by
-    // check_unknown_fragments.
-    let Some((fragment_entity, _, target, _)) = ctx
-        .tree
-        .resolve_fragment(&spread.name, ctx.scope, ctx.imports)
-        .copied()
-    else {
-        return;
-    };
-
-    let Some(target_table) = ctx.catalog.table_ref_for(TableRef::parse(&target.name)) else {
-        // Unresolvable target is reported on the fragment definition.
-        return;
-    };
-    let target_table_id = target_table.id;
-    let target_table_name = target_table.name.clone();
-
-    if target_table_id != context_table {
-        let context_name = ctx
-            .catalog
-            .table_by_id(context_table)
-            .map(|table| table.name.clone())
-            .unwrap_or_default();
-        ctx.error(
-            spread_entity,
-            spread.name_span,
-            crate::facts::DiagnosticCode::FragmentTypeMismatch,
-            format!(
-                "fragment `{}` applies to `{target_table_name}` and cannot be spread in `{context_name}`",
-                spread.name
-            ),
-        );
-        return;
-    }
-
-    // Cycle detection: follow spreads through fragment bodies via the
-    // shared expansion walker; a fragment already on the path spreading
-    // again is a cycle.
-    let mut expansion =
-        crate::entities::expansion::SpreadExpansion::new(ctx.tree, ctx.scope, ctx.imports);
-    let crate::entities::expansion::ExpandedSpread::Fragment { .. } = expansion.enter(&spread.name)
-    else {
-        return;
-    };
-    detect_cycles(ctx, &mut expansion, fragment_entity);
-    expansion.leave();
-}
-
-fn detect_cycles(
-    ctx: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
-    expansion: &mut crate::entities::expansion::SpreadExpansion<'_, '_>,
-    fragment_entity: Entity,
-) {
-    use crate::entities::expansion::ExpandedSpread;
-
-    let inner_spreads = spreads_below(ctx, fragment_entity);
-    for (entity, name, name_span) in inner_spreads {
-        match expansion.enter(&name) {
-            ExpandedSpread::Cycle => {
-                ctx.error(
-                    entity,
-                    name_span,
-                    crate::facts::DiagnosticCode::CircularFragmentSpread,
-                    format!("fragment `{name}` recursively spreads itself"),
-                );
-            }
-            ExpandedSpread::Unresolved => {}
-            ExpandedSpread::Fragment {
-                entity: next_entity,
-                ..
-            } => {
-                detect_cycles(ctx, expansion, next_entity);
-                expansion.leave();
-            }
-        }
-    }
-}
-
-/// All spreads transitively below `parent` (through field selections, not
-/// through fragment definitions).
-fn spreads_below(
-    ctx: &crate::entities::field_selection::CheckCtx<'_, '_>,
-    parent: Entity,
-) -> Vec<(Entity, String, Span)> {
-    let mut found = Vec::new();
-    for (entity, spread, _) in ctx.tree.spreads_under(parent) {
-        found.push((*entity, spread.name.clone(), spread.name_span));
-    }
-    let children: Vec<Entity> = ctx
-        .tree
-        .fields_under(parent)
-        .map(|(entity, _, _, _)| *entity)
-        .collect();
-    for child in children {
-        found.extend(spreads_below(ctx, child));
-    }
-    found
 }
 
 /// Reports spreads that name no visible fragment, and spreads whose name

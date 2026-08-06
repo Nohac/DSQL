@@ -1,0 +1,22 @@
+---
+source: crates/dsql-core/tests/it/expansion_graph.rs
+expression: expansion_body_snapshot(&bowl).await
+---
+fragment CycleA: CycleB -> CycleB fields=[] spreads=[CycleA] resolutions=selection:0 clause:0 aggregate:0 spread:1
+fragment CycleB: CycleA -> CycleA fields=[] spreads=[CycleB] resolutions=selection:0 clause:0 aggregate:0 spread:1
+fragment Diamond: Left -> Left fields=[] spreads=[Leaf] resolutions=selection:0 clause:0 aggregate:0 spread:1
+fragment Diamond: Left > Leaf -> Leaf fields=[id] spreads=[] resolutions=selection:1 clause:0 aggregate:0 spread:0
+fragment Diamond: Right -> Right fields=[] spreads=[Leaf] resolutions=selection:0 clause:0 aggregate:0 spread:1
+fragment Diamond: Right > Leaf -> Leaf fields=[id] spreads=[] resolutions=selection:1 clause:0 aggregate:0 spread:0
+fragment Left: Leaf -> Leaf fields=[id] spreads=[] resolutions=selection:1 clause:0 aggregate:0 spread:0
+fragment Right: Leaf -> Leaf fields=[id] spreads=[] resolutions=selection:1 clause:0 aggregate:0 spread:0
+fragment Twice: Leaf -> Leaf fields=[id] spreads=[] resolutions=selection:1 clause:0 aggregate:0 spread:0
+fragment Twice: Leaf -> Leaf fields=[id] spreads=[] resolutions=selection:1 clause:0 aggregate:0 spread:0
+query Root: Diamond -> Diamond fields=[] spreads=[Left,Right] resolutions=selection:0 clause:0 aggregate:0 spread:2
+query Root: Diamond > Left -> Left fields=[] spreads=[Leaf] resolutions=selection:0 clause:0 aggregate:0 spread:1
+query Root: Diamond > Left > Leaf -> Leaf fields=[id] spreads=[] resolutions=selection:1 clause:0 aggregate:0 spread:0
+query Root: Diamond > Right -> Right fields=[] spreads=[Leaf] resolutions=selection:0 clause:0 aggregate:0 spread:1
+query Root: Diamond > Right > Leaf -> Leaf fields=[id] spreads=[] resolutions=selection:1 clause:0 aggregate:0 spread:0
+query Root: Twice -> Twice fields=[] spreads=[Leaf,Leaf] resolutions=selection:0 clause:0 aggregate:0 spread:2
+query Root: Twice > Leaf -> Leaf fields=[id] spreads=[] resolutions=selection:1 clause:0 aggregate:0 spread:0
+query Root: Twice > Leaf -> Leaf fields=[id] spreads=[] resolutions=selection:1 clause:0 aggregate:0 spread:0

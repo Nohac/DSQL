@@ -7,6 +7,9 @@ semantic consumers can share tracked, path-sensitive bodies. A branching
 fragment graph can therefore grow exponentially even though name-based cycle
 cutoff guarantees convergence. The depth-eight doubling fixture currently
 produces 511 occurrences for its query root and 1,515 across all roots.
+Cycle diagnostics additionally use one dedicated relationship-owner group per
+lowered spread so tracked inverses never land on syntax entities; the same
+fixture has 17 such groups (16 fragment spreads and one query spread).
 
 Before accepting untrusted project input, define and enforce a deterministic
 per-root occurrence budget. Exceeding it should emit one stable diagnostic at

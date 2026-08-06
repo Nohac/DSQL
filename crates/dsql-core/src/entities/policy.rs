@@ -158,7 +158,6 @@ pub struct PolicyEntry {
 #[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
 #[component(hash)]
 pub struct PolicyIndex {
-    pub definition_hash: u64,
     pub entries: Vec<PolicyEntry>,
 }
 
@@ -280,9 +279,9 @@ impl PolicyIndex {
 /// Validates one source-local or operation-level assignment once its owning
 /// selection walk has supplied a concrete catalog table.
 pub(crate) fn check_filter_assignment(
-    context: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    context: &mut crate::entities::field_selection::CheckCtx<'_>,
     table: TableId,
-    entity: Entity,
+    entity: crate::entities::field_selection::InstanceNode,
     clause: &crate::entities::clause::ClauseFact,
 ) {
     let crate::entities::clause::ClauseFact::FilterAssignment {
@@ -293,24 +292,12 @@ pub(crate) fn check_filter_assignment(
     else {
         return;
     };
-    let duplicate = context.tree.clauses.values().any(|clauses| {
-        clauses.iter().any(|(candidate, candidate_clause, _, _)| {
-            *candidate < entity
-                && matches!(
-                    candidate_clause,
-                    crate::entities::clause::ClauseFact::FilterAssignment {
-                        name: candidate_name,
-                        ..
-                    } if candidate_name == name
-                )
-                && clauses.iter().any(|(current, _, _, _)| *current == entity)
-        })
-    });
+    let duplicate = context.is_duplicate_filter_assignment(entity, name);
     check_filter_assignment_for_tables(
         context,
         &[table],
         false,
-        entity,
+        entity.source,
         AssignmentCheck {
             name,
             name_span: *name_span,
@@ -321,7 +308,7 @@ pub(crate) fn check_filter_assignment(
 }
 
 pub(crate) fn check_operation_filter_assignment(
-    context: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    context: &mut crate::entities::field_selection::CheckCtx<'_>,
     tables: &[TableId],
     entity: Entity,
     clause: &crate::entities::clause::ClauseFact,
@@ -349,7 +336,7 @@ pub(crate) fn check_operation_filter_assignment(
 }
 
 pub(crate) fn check_exists_filter_assignments(
-    context: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    context: &mut crate::entities::field_selection::CheckCtx<'_>,
     table: TableId,
     entity: Entity,
     filters: &[crate::entities::expression::FilterAssignmentExpr],
@@ -380,7 +367,7 @@ struct AssignmentCheck<'a> {
 }
 
 fn check_filter_assignment_for_tables(
-    context: &mut crate::entities::field_selection::CheckCtx<'_, '_>,
+    context: &mut crate::entities::field_selection::CheckCtx<'_>,
     tables: &[TableId],
     operation_wide: bool,
     entity: Entity,
@@ -1187,8 +1174,10 @@ fn lower_expr(context: &LowerCtx<'_>, node: NodeRef) -> Expr {
 async fn index_policies(
     _: Query<(Entity, &ParsedFile)>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    defs: Query<(Entity, &DefIndex)>,
-    _imports: Query<(Entity, &ScopeImports)>,
+    // Temporary post-lowering invalidation bridge. Without this input,
+    // sequential file insertion can memoize a partial ambient policy view.
+    // Remove it with the relationship-owned PolicyIndex decomposition.
+    _defs: Query<(Entity, &DefIndex)>,
     policies: View<'_, (Entity, &PolicyDecl, &BelongsToFile, &ResolutionScope)>,
     mut commands: Commands<(dsql_schema::PolicyIndex,)>,
 ) {
@@ -1205,14 +1194,7 @@ async fn index_policies(
             .then_with(|| left.name.cmp(&right.name))
             .then_with(|| left.entity.cmp(&right.entity))
     });
-    let (_, defs) = defs.item();
-    commands.insert((
-        Singleton::<PolicyIndex>::new(),
-        PolicyIndex {
-            definition_hash: defs.content_hash(),
-            entries,
-        },
-    ));
+    commands.insert((Singleton::<PolicyIndex>::new(), PolicyIndex { entries }));
 }
 
 async fn index_policy_bodies(

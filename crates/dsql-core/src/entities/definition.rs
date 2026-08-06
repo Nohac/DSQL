@@ -58,8 +58,8 @@ pub struct DefDecl {
     pub name_span: Span,
     /// Span of the whole definition.
     pub span: Span,
-    /// Fingerprint of the definition's source slice. The check, variable,
-    /// and plan walks read the definition *body* through ambient views;
+    /// Fingerprint of the definition's source slice. The variable and plan
+    /// walks still read the definition *body* through ambient views;
     /// this hash is the tracked dependency that re-runs them on any body
     /// edit — including same-length edits that move no span.
     pub source_hash: u64,
@@ -69,7 +69,7 @@ pub struct DefDecl {
 
 /// The relation a fragment is declared `on`. Only fragment entities carry
 /// this; the catalog check (phase 6) validates it against the schema.
-#[derive(Component, Debug, Hash)]
+#[derive(Component, Debug, Clone, Hash)]
 #[component(hash)]
 pub struct FragmentTarget {
     pub name: String,
@@ -91,20 +91,12 @@ pub struct FragmentKey(pub String);
 /// ambiently by the check/variable/plan walks, and this fingerprint is
 /// the tracked dependency that re-runs dependents when a fragment's
 /// content — not just its name — changes. Query entries stay name-only,
-/// so ordinary query edits never invalidate unrelated definitions.
+/// so ordinary query edits never invalidate unrelated definitions. The
+/// residual checker consumes relationship-scoped expansion bodies and does
+/// not depend on this aggregate fingerprint.
 #[derive(Component, Hash)]
 #[component(hash)]
 pub struct DefIndex(Vec<(String, DefKind, String, Option<u64>)>);
-
-impl DefIndex {
-    pub(crate) fn content_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
-    }
-}
 
 /// Owns `query_def` and `fragment_def`.
 pub struct Definition;

@@ -1,0 +1,8 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+assertion_line: 721
+expression: "&initial"
+---
+Error[113..127]: fragment `RepeatedBranch` recursively spreads itself
+Error[40..52]: fragment `RepeatedRoot` recursively spreads itself
+Error[93..107]: fragment `RepeatedBranch` recursively spreads itself

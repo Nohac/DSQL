@@ -657,7 +657,7 @@ async fn fragment_checks_report_target_and_compat_mismatches() {
 }
 
 #[tokio::test]
-async fn fragment_cycle_diagnostics_currently_multiply_per_reaching_root() {
+async fn fragment_cycles_are_intrinsic_definition_diagnostics() {
     let bowl = checked_bowl(imdb_catalog()).await;
 
     insert_source(
@@ -693,6 +693,59 @@ async fn fragment_cycle_diagnostics_currently_multiply_per_reaching_root() {
     .await;
 
     insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn fragment_cycles_report_each_closing_spread_once() {
+    let bowl = checked_bowl(imdb_catalog()).await;
+
+    let file = insert_source(
+        &bowl,
+        "fragment-cycle-closing-sites.dsql",
+        indoc::indoc! {r#"
+            fragment RepeatedBranch on title {
+              ...RepeatedRoot
+            }
+            fragment RepeatedRoot on title {
+              ...RepeatedBranch
+              ...RepeatedBranch
+            }
+        "#},
+    )
+    .await;
+
+    // RepeatedRoot contributes two distinct closing sites when expanding from
+    // RepeatedBranch. Both paths from RepeatedRoot close on the one spread in
+    // RepeatedBranch, so that site must still produce only one diagnostic.
+    let initial = render_diagnostic_facts(&bowl).await;
+    insta::assert_snapshot!(&initial);
+
+    // This field is deliberately after every spread: it changes the root's
+    // semantic-member inverse without moving either cyclic spread.
+    replace_source_text(
+        &bowl,
+        file,
+        "  ...RepeatedBranch\n}\n",
+        "  ...RepeatedBranch\n  title\n}\n",
+    )
+    .await;
+    assert_eq!(render_diagnostic_facts(&bowl).await, initial);
+
+    set_source_text(
+        &bowl,
+        file,
+        indoc::indoc! {r#"
+            fragment RepeatedBranch on title {
+              id
+            }
+            fragment RepeatedRoot on title {
+              ...RepeatedBranch
+              title
+            }
+        "#},
+    )
+    .await;
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
 }
 
 #[tokio::test]

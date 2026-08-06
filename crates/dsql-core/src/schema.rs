@@ -11,16 +11,19 @@ use bowl::{DerivedFrom, Singleton};
 
 use crate::catalog::{CatalogSnapshot, CatalogSourceRoot};
 use crate::embedding::{ExtractionRegistry, ResolvedEmbeddedExpression};
-use crate::entities::aggregate::{AggregateTransformFact, ResolvedAggregate};
+use crate::entities::aggregate::{
+    AggregateResolutionOf, AggregateResolutions, AggregateTransformFact, ResolvedAggregate,
+};
 use crate::entities::clause::ClauseFact;
 use crate::entities::context::{ContextDecl, ContextIndex, ResolvedContextUse};
 use crate::entities::definition::{DefDecl, DefIndex, FragmentKey, FragmentTarget};
 use crate::entities::directive::DirectiveFact;
 use crate::entities::document::ParsedFile;
 use crate::entities::expansion::{
-    DependsOnSemanticGroup, ExpansionCycle, ExpansionCycleOf, ExpansionCycles, ExpansionOccurrence,
-    ExpansionOccurrenceOf, ExpansionOccurrences, SemanticDefinitionKey, SemanticDependents,
-    SpreadResolutionOf, SpreadResolutions,
+    ClosingSpreadCycles, CycleSiteGroup, CycleSiteRoot, DependsOnSemanticGroup, ExpansionBodies,
+    ExpansionBody, ExpansionBodyOf, ExpansionCycle, ExpansionCycleAt, ExpansionCycleOf,
+    ExpansionCycles, ExpansionOccurrence, ExpansionOccurrenceOf, ExpansionOccurrences,
+    SemanticDefinitionKey, SemanticDependents, SpreadResolutionOf, SpreadResolutions,
 };
 use crate::entities::field_selection::FieldSel;
 use crate::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
@@ -39,7 +42,8 @@ use crate::facts::{
 use crate::lint::LintConfig;
 use crate::plan::{FragmentPlanFact, OperationSeed, QueryPlanFact};
 use crate::resolution::{
-    FieldResolutions, ResolutionOf, ResolvedClause, ResolvedFragmentTarget, ResolvedSelection,
+    ClauseResolutionOf, ClauseResolutions, FieldResolutions, ResolutionOf, ResolvedClause,
+    ResolvedFragmentTarget, ResolvedSelection, SelectionResolutionOf, SelectionResolutions,
 };
 use crate::service::completion::{
     CompletionCandidate, CompletionContext, CompletionList, CompletionRequest,
@@ -123,11 +127,14 @@ pub struct DsqlSchema {
         DerivedFrom,
     ),
     semantic_group: (NodeKey, SemanticDefinitionKey, SemanticRoot, DerivedFrom),
+    cycle_site: (NodeKey, CycleSiteRoot, DerivedFrom),
     semantic_members: (SemanticMembers,),
     spread_resolutions: (SpreadResolutions,),
     semantic_dependents: (SemanticDependents,),
     expansion_occurrences: (ExpansionOccurrences,),
     expansion_cycles: (ExpansionCycles,),
+    closing_spread_cycles: (ClosingSpreadCycles,),
+    expansion_bodies: (ExpansionBodies,),
     field_selection: (
         NodeKey,
         FieldSel,
@@ -168,6 +175,9 @@ pub struct DsqlSchema {
     /// named so the component universe closes over them).
     children: (Children,),
     field_resolutions: (FieldResolutions,),
+    selection_resolutions: (SelectionResolutions,),
+    clause_resolutions: (ClauseResolutions,),
+    aggregate_resolutions: (AggregateResolutions,),
     directive: (
         NodeKey,
         DirectiveFact,
@@ -221,15 +231,33 @@ pub struct DsqlSchema {
     ),
     policy_body_index: (Singleton<PolicyBodyIndex>, PolicyBodyIndex),
     resolved_context_use: (ResolvedContextUse, BelongsToFile, DerivedFrom),
-    resolved_selection: (ResolvedSelection, ResolutionOf, BelongsToFile, DerivedFrom),
-    resolved_aggregate: (ResolvedAggregate, BelongsToFile, DerivedFrom),
-    resolved_clause: (ResolvedClause, NodeKey, BelongsToFile, DerivedFrom),
+    resolved_selection: (
+        ResolvedSelection,
+        ResolutionOf,
+        SelectionResolutionOf,
+        BelongsToFile,
+        DerivedFrom,
+    ),
+    resolved_aggregate: (
+        ResolvedAggregate,
+        AggregateResolutionOf,
+        BelongsToFile,
+        DerivedFrom,
+    ),
+    resolved_clause: (
+        ResolvedClause,
+        ClauseResolutionOf,
+        NodeKey,
+        BelongsToFile,
+        DerivedFrom,
+    ),
     resolved_fragment_target: (ResolvedFragmentTarget, BelongsToFile, DerivedFrom),
     resolved_spread: (
         ResolvedSpread,
         SpreadResolutionOf,
         BelongsToFile,
         DerivedFrom,
+        CycleSiteGroup,
         Option<SemanticDefinitionKey>,
         Option<DependsOnSemanticGroup>,
     ),
@@ -239,7 +267,13 @@ pub struct DsqlSchema {
         ExpansionOccurrenceOf,
         DerivedFrom,
     ),
-    expansion_cycle: (ExpansionCycle, ExpansionCycleOf, DerivedFrom),
+    expansion_cycle: (
+        ExpansionCycle,
+        ExpansionCycleOf,
+        ExpansionCycleAt,
+        DerivedFrom,
+    ),
+    expansion_body: (ExpansionBody, ExpansionBodyOf, DerivedFrom),
     definition_variables: (
         DefinitionVariables,
         DefinitionInputRewrites,
@@ -319,6 +353,7 @@ pub type AstFacts = (
     dsql_schema::PolicyDefinition,
     dsql_schema::ContextDeclaration,
     dsql_schema::SemanticGroup,
+    dsql_schema::CycleSite,
     (
         NodeKey,
         FieldSel,

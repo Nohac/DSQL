@@ -147,3 +147,53 @@ async fn clause_checks_follow_changed_catalog_type_contracts_only() {
         "only the clause whose resolved value contract changed reruns"
     );
 }
+
+#[tokio::test]
+async fn fragment_body_materialization_wakes_only_dependent_roots() {
+    let bowl = language_bowl().await;
+    dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+
+    const UNRELATED: u64 = 20;
+    for index in 0..UNRELATED {
+        insert_source(
+            &bowl,
+            format!("unrelated-{index}.dsql"),
+            &format!("query Unrelated{index} {{ title(limit 1) {{ id }} }}\n"),
+        )
+        .await;
+    }
+    insert_source(
+        &bowl,
+        "dependent.dsql",
+        "fragment Bits on title { id }\nquery Dependent { title(limit 1) { ...Bits } }\n",
+    )
+    .await;
+    let _ = bowl
+        .scoop::<Query<(Entity, &dsql_core::facts::Diagnostic)>>()
+        .await;
+
+    let materialize_before = runs_of(&bowl, "materialize_expansion_bodies").await;
+    let checks_before = runs_of(&bowl, "residual_definition_checks").await;
+    edit_file(
+        &bowl,
+        "dependent.dsql",
+        ("Bits on title { id", "Bits on title { title"),
+    )
+    .await;
+    let _ = bowl
+        .scoop::<Query<(Entity, &dsql_core::facts::Diagnostic)>>()
+        .await;
+    let materialize_delta =
+        runs_of(&bowl, "materialize_expansion_bodies").await - materialize_before;
+    let checks_delta = runs_of(&bowl, "residual_definition_checks").await - checks_before;
+    assert_eq!(
+        materialize_delta, 2,
+        "only the dependent occurrence body follows syntax and resolution convergence"
+    );
+    assert_eq!(
+        checks_delta, 6,
+        "the fragment root and its dependent query converge without waking twenty unrelated roots"
+    );
+}
