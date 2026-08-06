@@ -442,6 +442,54 @@ async fn declaration_edits_rederive_context_contracts() {
 }
 
 #[tokio::test]
+async fn context_use_spelling_roundtrip_rederives_diagnostics() {
+    let broken = indoc::indoc! {r#"
+        context { can_read_payload: bool }
+
+        filter ReadingPrivacy on enum_records {
+          apply where true
+          field status where $:cn_read_payload
+        }
+    "#};
+    let bowl = context_bowl(broken).await;
+    let file = bowl
+        .scoop::<Query<(Entity, &FilePath)>>()
+        .await
+        .collect()
+        .into_iter()
+        .find_map(|(entity, path)| (path.0 == PATH).then_some(entity))
+        .expect("context source exists");
+
+    let initial = render_diagnostic_facts(&bowl).await;
+    assert!(
+        initial.contains("trusted context `cn_read_payload` is not declared"),
+        "the initial misspelling must diagnose:\n{initial}"
+    );
+
+    let fixed = broken.replace("cn_read_payload", "can_read_payload");
+    set_source_text(&bowl, file, &fixed).await;
+    let repaired = render_diagnostic_facts(&bowl).await;
+    assert_eq!(
+        repaired, "",
+        "fixing the spelling must clear the diagnostic"
+    );
+
+    set_source_text(&bowl, file, broken).await;
+    let broken_again = render_diagnostic_facts(&bowl).await;
+    let broken_again_pipeline = render_context_pipeline(&bowl).await;
+    assert!(
+        broken_again.contains("trusted context `cn_read_payload` is not declared"),
+        "reintroducing the misspelling must restore the diagnostic:\n{broken_again}\n\n{broken_again_pipeline}"
+    );
+    assert!(
+        broken_again_pipeline
+            .lines()
+            .any(|line| line.contains("resolved-use") && line.ends_with(" unknown")),
+        "the use-owned resolution must survive cleanup:\n{broken_again_pipeline}"
+    );
+}
+
+#[tokio::test]
 async fn context_pipeline_tracks_multifile_moves_removal_and_reinsertion() {
     let bowl = language_bowl().await;
     insert_catalog(&bowl, Catalog::hardcoded()).await;

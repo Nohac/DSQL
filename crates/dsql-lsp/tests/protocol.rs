@@ -535,6 +535,51 @@ async fn context_diagnostics_follow_ranged_line_moves() {
     );
 }
 
+/// A trusted-context use that returns to an earlier spelling must recreate
+/// its diagnostic instead of losing the resolved-use fact during cleanup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_use_spelling_roundtrip_republishes_diagnostics() {
+    let mut session = Session::start("context-use-spelling-roundtrip").await;
+    let uri = session.uri("queries/shared/definitions.dsql");
+    let broken = indoc::indoc! {r#"
+        context { can_read_payload: bool }
+
+        filter ReadingPrivacy on title {
+          apply where true
+          field id where $:cn_read_payload
+        }
+    "#};
+    let typo = broken.find("cn_read_payload").expect("misspelled use");
+
+    session.open(&uri, "dsql", broken).await;
+    let initial = session.diagnostics_for(&uri).await;
+    assert_eq!(initial.as_array().map(Vec::len), Some(1));
+    assert!(
+        initial[0]["message"]
+            .to_string()
+            .contains("cn_read_payload")
+    );
+
+    session.edit(&uri, 2, broken, typo + 1, typo + 1, "a").await;
+    let repaired = session.diagnostics_for(&uri).await;
+    assert_eq!(
+        repaired.as_array().map(Vec::len),
+        Some(0),
+        "fixing the spelling must clear the diagnostic: {repaired}"
+    );
+
+    let fixed = broken.replace("cn_read_payload", "can_read_payload");
+    session.edit(&uri, 3, &fixed, typo + 1, typo + 2, "").await;
+    let broken_again = session.diagnostics_for(&uri).await;
+    assert_eq!(broken_again.as_array().map(Vec::len), Some(1));
+    assert!(
+        broken_again[0]["message"]
+            .to_string()
+            .contains("cn_read_payload"),
+        "reintroducing the spelling error must republish it: {broken_again}"
+    );
+}
+
 /// Host files answer hover at host coordinates through their embedded
 /// regions; files the server does not own are ignored without breaking
 /// the session.

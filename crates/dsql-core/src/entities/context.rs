@@ -450,7 +450,7 @@ async fn resolve_context_uses(
     let Some(name) = variable.0.name.as_deref() else {
         return;
     };
-    let (index_entity, index) = index.item();
+    let (_, index) = index.item();
     let (_, imports) = imports.item();
     let resolution = match index.lookup(&scope.0, name, imports) {
         ContextLookup::Resolved(entry, contract) => ContextUseResolution::Resolved {
@@ -471,7 +471,10 @@ async fn resolve_context_uses(
         ContextLookup::Invalid => ContextUseResolution::Invalid,
     };
     commands.insert((
-        DerivedFrom::many([use_entity, index_entity]),
+        // The resolution is owned by this occurrence. ContextIndex remains a
+        // tracked query dependency, but its singleton entity also carries
+        // outputs from unrelated producers and is not a valid lifetime anchor.
+        DerivedFrom::new(use_entity),
         BelongsToFile(file.0),
         ResolvedContextUse {
             name: name.to_string(),
