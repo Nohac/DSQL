@@ -20,7 +20,9 @@ use crate::catalog::{
 use crate::entities::context::{
     ContextDeclarationSemantics, ContextNameKey, ContextValueContract, validate_context_use,
 };
-use crate::entities::definition::FragmentTarget;
+use crate::entities::definition::{
+    DefDecl, DefinitionNameKey, DefinitionPath, FragmentKey, FragmentTarget,
+};
 use crate::entities::expansion::{
     ExpansionBodies, ExpansionBody, RawSemanticMembers, SelectionResolutionRows,
     SemanticDefinitionKey,
@@ -400,13 +402,29 @@ pub struct DefinitionPolicyOf(pub Entity);
 pub struct DefinitionPolicies(pub Vec<Entity>);
 
 /// Exact policy-relevant surface of one semantic definition root.
+///
+/// Relationship rows anchor to this narrow entity rather than the semantic
+/// group that owns their inverse lists. This projection must remain tracked and
+/// must never become a relationship target: either change would couple its
+/// revision to maintained inverse membership again.
 #[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
 #[component(hash)]
 pub struct DefinitionPolicySurface {
-    pub definition: Entity,
     pub scope: String,
     pub tables: Vec<TableId>,
     pub references: Vec<String>,
+}
+
+/// Definition-owned inputs needed to derive one [`DefinitionPolicySurface`].
+///
+/// This projection separates scope and fragment-target lifetime from the
+/// syntax entity, so policy relationships never anchor to source spans or body
+/// fingerprints they do not consume.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct DefinitionPolicyOwner {
+    pub scope: String,
+    pub fragment_target: Option<String>,
 }
 
 /// One compiled filter whose field rules can affect a definition's public
@@ -1349,6 +1367,7 @@ impl LanguageEntity for Policy {
         registrar.system(compile_policy);
         registrar.system(project_policy_registry_members);
         registrar.system(assemble_policy_registry);
+        registrar.system(project_definition_policy_owners);
         registrar.system(derive_definition_policy_surface);
         registrar.system(bind_definition_policies);
         registrar.system(bind_definition_shape_policies);
@@ -2005,21 +2024,65 @@ type DefinitionPolicySurfaceRoot<'a> = Query<(
     SelectionResolutionRows<'a>,
     Related<ExpansionBodies, (&'a ExpansionBody,)>,
 )>;
-type DefinitionPolicySurfaceDefinition<'a> = Query<
-    (Entity, Option<&'a FragmentTarget>, &'a ResolutionScope),
+type DefinitionPolicySurfaceOwner<'a> =
+    Query<(Entity, &'a DefinitionPolicyOwner), Where<BowlEq<SemanticDefinitionKey>>>;
+
+type DefinitionPolicyOwnerDefinition<'a> = Query<(
+    Entity,
+    &'a NodeKey,
+    &'a DefDecl,
+    &'a DefinitionNameKey,
+    &'a DefinitionPath,
+    &'a SemanticDefinitionKey,
+)>;
+type DefinitionPolicyOwnerDetails<'a> = Query<
+    (
+        Entity,
+        Option<&'a FragmentTarget>,
+        Option<&'a FragmentKey>,
+        &'a ResolutionScope,
+        &'a BelongsToFile,
+        &'a SemanticDefinitionKey,
+    ),
     Where<BowlEq<SemanticDefinitionKey>>,
 >;
+
+/// Projects the exact definition-owned lifetime inputs for policy analysis.
+///
+/// Both queries deliberately read every tracked component in the schema's
+/// `def` group, including values not copied into the projection. Removing one
+/// of those reads, or adding another tracked definition component without
+/// adding it here, can let cleanup reap this owner without replanning it.
+async fn project_definition_policy_owners(
+    definitions: DefinitionPolicyOwnerDefinition<'_>,
+    details: DefinitionPolicyOwnerDetails<'_>,
+    mut commands: Commands<(dsql_schema::DefinitionPolicyOwner,)>,
+) {
+    let (definition, _, _, _, _, definition_key) = definitions.item();
+    let (detail_definition, fragment_target, _, scope, _, _) = details.item();
+    // The key-bound detail row must be the same syntax definition whose full
+    // component set is split across these two query inputs.
+    debug_assert_eq!(definition, detail_definition);
+    commands.insert((
+        DerivedFrom::new(definition),
+        *definition_key,
+        DefinitionPolicyOwner {
+            scope: scope.0.clone(),
+            fragment_target: fragment_target.map(|target| target.name.clone()),
+        },
+    ));
+}
 
 /// Projects the exact tables and named filter uses that can make a policy
 /// semantically relevant to one definition.
 async fn derive_definition_policy_surface(
     roots: DefinitionPolicySurfaceRoot<'_>,
-    definitions: DefinitionPolicySurfaceDefinition<'_>,
+    owners: DefinitionPolicySurfaceOwner<'_>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    mut commands: Commands<(dsql_schema::SemanticGroup,)>,
+    mut commands: Commands<(dsql_schema::DefinitionPolicySurface,)>,
 ) {
-    let (root, _, _, members, selections, bodies) = roots.item();
-    let (definition, fragment_target, scope) = definitions.item();
+    let (_, _, definition_key, members, selections, bodies) = roots.item();
+    let (owner_entity, owner) = owners.item();
     let (_, snapshot) = catalog.item();
     let catalog = snapshot.catalog();
     let mut tables = Vec::new();
@@ -2029,7 +2092,7 @@ async fn derive_definition_policy_surface(
         selections.iter().map(|(_, (selection,))| *selection),
         &mut tables,
     );
-    collect_fragment_target_table(catalog, fragment_target, &mut tables);
+    collect_fragment_target_table(catalog, owner.fragment_target.as_deref(), &mut tables);
     for (_, (_, _, _, clause, _, _, _, _)) in members.iter() {
         if let Some(clause) = clause {
             references.extend(
@@ -2042,7 +2105,11 @@ async fn derive_definition_policy_surface(
 
     for (_, (body,)) in bodies.iter() {
         collect_policy_surface_selections(body.selections.iter(), &mut tables);
-        collect_fragment_target_table(catalog, body.target.as_ref(), &mut tables);
+        collect_fragment_target_table(
+            catalog,
+            body.target.as_ref().map(|target| target.name.as_str()),
+            &mut tables,
+        );
         for member in &body.members {
             if let Some(clause) = &member.clause {
                 references.extend(
@@ -2056,12 +2123,15 @@ async fn derive_definition_policy_surface(
 
     tables.sort_by_key(|table| table.0);
     tables.dedup();
-    commands.entity(root).insert(DefinitionPolicySurface {
-        definition,
-        scope: scope.0.clone(),
-        tables,
-        references: references.into_iter().collect(),
-    });
+    commands.insert((
+        DerivedFrom::new(owner_entity),
+        *definition_key,
+        DefinitionPolicySurface {
+            scope: owner.scope.clone(),
+            tables,
+            references: references.into_iter().collect(),
+        },
+    ));
 }
 
 fn collect_policy_surface_selections<'a>(
@@ -2077,13 +2147,13 @@ fn collect_policy_surface_selections<'a>(
 
 fn collect_fragment_target_table(
     catalog: &Catalog,
-    target: Option<&FragmentTarget>,
+    target: Option<&str>,
     tables: &mut Vec<TableId>,
 ) {
     let Some(target) = target else {
         return;
     };
-    if let Some(table) = catalog.table_ref_for(TableRef::parse(&target.name)) {
+    if let Some(table) = catalog.table_ref_for(TableRef::parse(target)) {
         tables.push(table.id);
     }
 }
@@ -2102,12 +2172,14 @@ async fn bind_definition_policies(
         PolicySiteContextRows<'_>,
         &CompiledPolicy,
     )>,
-    roots: Query<(Entity, &SemanticRoot, &DefinitionPolicySurface)>,
+    surfaces: Query<(Entity, &DefinitionPolicySurface, &SemanticDefinitionKey)>,
+    roots: Query<(Entity, &SemanticRoot), Where<BowlEq<SemanticDefinitionKey>>>,
     imports: Query<(Entity, &ScopeImports)>,
     mut commands: Commands<(dsql_schema::DefinitionPolicy,)>,
 ) {
     let (_, _, contexts, compiled) = providers.item();
-    let (root, _, surface) = roots.item();
+    let (surface_entity, surface, _) = surfaces.item();
+    let (root, _) = roots.item();
     let Some((context_entity, (context,))) = contexts.iter().next() else {
         return;
     };
@@ -2128,7 +2200,7 @@ async fn bind_definition_policies(
         return;
     }
     commands.insert((
-        DerivedFrom::many([context_entity, surface.definition]),
+        DerivedFrom::many([context_entity, surface_entity]),
         DefinitionPolicyOf(root),
         DefinitionPolicy {
             resolution: context.entry.clone(),
@@ -2150,11 +2222,13 @@ async fn bind_definition_shape_policies(
         PolicySiteContextRows<'_>,
         &CompiledPolicy,
     )>,
-    roots: Query<(Entity, &SemanticRoot, &DefinitionPolicySurface)>,
+    surfaces: Query<(Entity, &DefinitionPolicySurface, &SemanticDefinitionKey)>,
+    roots: Query<(Entity, &SemanticRoot), Where<BowlEq<SemanticDefinitionKey>>>,
     mut commands: Commands<(dsql_schema::DefinitionShapePolicy,)>,
 ) {
     let (_, _, contexts, compiled) = providers.item();
-    let (root, _, surface) = roots.item();
+    let (surface_entity, surface, _) = surfaces.item();
+    let (root, _) = roots.item();
     let Some((context_entity, (context,))) = contexts.iter().next() else {
         return;
     };
@@ -2167,7 +2241,7 @@ async fn bind_definition_shape_policies(
         return;
     }
     commands.insert((
-        DerivedFrom::many([context_entity, surface.definition]),
+        DerivedFrom::many([context_entity, surface_entity]),
         DefinitionShapePolicyOf(root),
         DefinitionShapePolicy {
             compiled: compiled.entry.clone(),

@@ -111,6 +111,32 @@ set but remains an observed dependency: adding it reruns that one group.
 Semantic roots never carry `SemanticMemberOf`, including if the grammar later
 permits nested definitions.
 
+### Derived ownership and relationship anchors
+
+`DerivedFrom` observes the revision of an entire entity, not one component.
+An output may therefore anchor to an entity only when its producer depends on
+that entity's complete tracked component set. Syntax entities, semantic groups,
+and relationship targets are normally too broad: source spans, semantic
+membership, or engine-maintained inverse lists can bump them without changing
+the narrow semantic input that produced the output.
+
+Relationship rows instead anchor to narrow projection entities whose tracked
+components are all read by the emitting invocation. The relationship target is
+only the stable owner of the inverse list; it is never an anchor, because adding
+or removing another relationship row changes that owner. A projection used as
+an anchor must likewise never become a relationship target.
+
+System ownership and `DerivedFrom` are separate mechanisms. Stable relationship
+owners may deliberately omit `DerivedFrom` only when their producer's retirement
+behavior is independently proven; pair binding alone does not retire every
+output after an in-place edit removes components but leaves an entity identity
+allocated. Semantic projections normally carry `DerivedFrom` to another narrow
+input entity, and the producer reads that anchor's complete tracked component
+set so every cleanup event also replans the producer. Tests for these graphs
+include semantics-preserving source edits that change syntax fingerprints,
+membership-only edits that leave the projection unchanged, and in-place
+deletion/restoration while the file entity remains.
+
 Definition and spread facts also carry their file's `ResolutionScope`
 (docs/spec/resolution-scopes.md): fragments resolve against the *effective
 resolver* of the spread's scope — the scope's own fragments plus its direct
@@ -223,18 +249,19 @@ publishes one operation artifact under the source definition name.
 ### Policies and filters
 
 Filters and reusable conditions lower as standalone `PolicyDecl` facts and use
-the same resolution scopes as fragments. `PolicyIndex` fingerprints names,
-visibility, and concrete or structural catalog matches. `PolicyBodyIndex`
-fingerprints rule bodies separately, so editing a predicate recompiles policy
-semantics without invalidating consumers that only need the match set.
+the same resolution scopes as fragments. Stable declaration sites own exact
+visibility and trusted-context relationships. Policy compilation resolves
+conditions, row predicates, field guards, trusted-context requirements, and
+enforcement into per-policy `CompiledPolicy` facts.
 
-Policy compilation resolves conditions, row predicates, field guards, trusted
-context requirements, and enforcement into `CompiledPolicyIndex`.
-`PolicyPlanIndex` colocates that body-sensitive result with the definition index
-used by planning. Query filter assignments are resolved once against these
-tracked facts; checks, planning, SQL, metadata, hover, completion,
-go-to-definition, semantic tokens, and lock generation consume the resulting
-policy identities and matches rather than interpreting policy source again.
+Each query or fragment publishes a narrow, producer-owned
+`DefinitionPolicySurface` containing only its effective scope, referenced filter
+names, and catalog tables. Visible compiled filters relate to the definition's
+semantic group through rows anchored to that surface and the provider's policy
+context. Checks and planning consume the resulting definition-local relationship
+set. `PolicyIndex` and `CompiledPolicyIndex` are settled global snapshots for
+generation and request-time services, not invalidation inputs for definition
+analysis.
 
 ## Services
 

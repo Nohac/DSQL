@@ -52,7 +52,7 @@ use crate::entities::fragment_spread::{
 };
 use crate::entities::policy::{
     CompiledPolicy, CompiledPolicyIndex, DefinitionPolicies, DefinitionPolicy, DefinitionPolicyOf,
-    DefinitionPolicySurface, DefinitionShapePolicies, DefinitionShapePolicy,
+    DefinitionPolicyOwner, DefinitionPolicySurface, DefinitionShapePolicies, DefinitionShapePolicy,
     DefinitionShapePolicyOf, PolicyCompileProblems, PolicyContextCandidate,
     PolicyContextCandidateOf, PolicyContextCandidates, PolicyContextReference, PolicyDecl,
     PolicyIndex, PolicyNameKey, PolicyNavigation, PolicyPeer, PolicyPeerOf, PolicyPeers,
@@ -205,7 +205,6 @@ pub struct DsqlSchema {
         DerivedFrom,
         Option<NodeKey>,
         Option<SemanticDefinitionKey>,
-        Option<DefinitionPolicySurface>,
     ),
     spread_site: (NodeKey, SpreadSiteRoot, DerivedFrom),
     semantic_members: (SemanticMembers,),
@@ -318,6 +317,8 @@ pub struct DsqlSchema {
         SemanticDefinitionKey,
         DerivedFrom,
     ),
+    definition_policy_owner: (DefinitionPolicyOwner, SemanticDefinitionKey, DerivedFrom),
+    definition_policy_surface: (DefinitionPolicySurface, SemanticDefinitionKey, DerivedFrom),
     // Stable relationship owners deliberately omit DerivedFrom. Their
     // producing invocations retire them; candidate/context children carry
     // revision-sensitive lifetime anchors.

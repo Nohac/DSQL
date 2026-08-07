@@ -8,9 +8,12 @@ use dsql_core::catalog::{
     ColumnMetadata, DataType, DatabaseMetadata, ObjectType, SchemaMetadata, TableMetadata, TypeKey,
     insert_catalog,
 };
+use dsql_core::entities::expansion::SemanticDefinitionKey;
 use dsql_core::entities::policy::{
-    DefinitionPolicies, DefinitionPolicySurface, DefinitionShapePolicies, PolicyIndex,
+    DefinitionPolicies, DefinitionPolicy, DefinitionPolicyOwner, DefinitionPolicySurface,
+    DefinitionShapePolicies, DefinitionShapePolicy, PolicyIndex,
 };
+use dsql_core::facts::SemanticRoot;
 use dsql_core::facts::{PlanDemand, arm_editor_demands};
 use dsql_core::language_bowl;
 use dsql_core::plan::QueryPlanFact;
@@ -21,7 +24,7 @@ use dsql_core::source::{
 
 use crate::{
     imdb_catalog, native_enum_catalog, provider_scalar_catalog, render_diagnostic_facts,
-    replace_source_text,
+    replace_source_text, set_source_text,
 };
 
 async fn render_index(bowl: &bowl::Bowl, catalog: &dsql_core::catalog::Catalog) -> String {
@@ -50,6 +53,77 @@ async fn render_index(bowl: &bowl::Bowl, catalog: &dsql_core::catalog::Catalog) 
         .collect::<Vec<_>>();
     rendered.sort();
     rendered.join("\n")
+}
+
+async fn render_policy_graph_state(
+    bowl: &bowl::Bowl,
+    catalog: &dsql_core::catalog::Catalog,
+) -> String {
+    let diagnostics = render_diagnostic_facts(bowl).await;
+    let index = render_index(bowl, catalog).await;
+    let plans = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
+    let surfaces = bowl
+        .scoop::<Query<(Entity, &DefinitionPolicySurface, &SemanticDefinitionKey)>>()
+        .await;
+    let roots = bowl
+        .scoop::<Query<(
+            Entity,
+            &SemanticRoot,
+            &SemanticDefinitionKey,
+            Option<&DefinitionPolicies>,
+            Option<&DefinitionShapePolicies>,
+        )>>()
+        .await;
+    let policy_rows = bowl.scoop::<Query<(Entity, &DefinitionPolicy)>>().await;
+    let shape_rows = bowl
+        .scoop::<Query<(Entity, &DefinitionShapePolicy)>>()
+        .await;
+    let owners = bowl
+        .scoop::<Query<(Entity, &DefinitionPolicyOwner)>>()
+        .await;
+    let roots = roots.collect();
+    let mut rendered_surfaces = surfaces
+        .collect()
+        .into_iter()
+        .map(|(_, surface, key)| {
+            let root = roots.iter().find(|(_, _, root_key, _, _)| root_key == &key);
+            let mut table_names = surface
+                .tables
+                .iter()
+                .filter_map(|table| catalog.table_by_id(*table))
+                .map(|table| table.name.clone())
+                .collect::<Vec<_>>();
+            table_names.sort();
+            format!(
+                "scope={} tables={table_names:?} references={:?} policies={} shape={}",
+                surface.scope,
+                surface.references,
+                root.and_then(|(_, _, _, policies, _)| *policies)
+                    .map_or(0, |policies| policies.0.len()),
+                root.and_then(|(_, _, _, _, policies)| *policies)
+                    .map_or(0, |policies| policies.0.len()),
+            )
+        })
+        .collect::<Vec<_>>();
+    rendered_surfaces.sort();
+    format!(
+        "diagnostics:\n{}\nindex:\n{}\nowners: {}\nsurfaces:\n{}\nrows: policies={} shape={}\nplans: {}",
+        if diagnostics.is_empty() {
+            "<none>"
+        } else {
+            &diagnostics
+        },
+        if index.is_empty() { "<none>" } else { &index },
+        owners.collect().len(),
+        if rendered_surfaces.is_empty() {
+            "<none>".to_string()
+        } else {
+            rendered_surfaces.join("\n")
+        },
+        policy_rows.collect().len(),
+        shape_rows.collect().len(),
+        plans.collect().len(),
+    )
 }
 
 #[tokio::test]
@@ -425,56 +499,6 @@ async fn structural_matches_rederive_across_source_revisits() {
 
 #[tokio::test]
 async fn policy_relationships_survive_removal_and_batched_replacement() {
-    async fn state(bowl: &bowl::Bowl, catalog: &dsql_core::catalog::Catalog) -> String {
-        let diagnostics = render_diagnostic_facts(bowl).await;
-        let index = render_index(bowl, catalog).await;
-        let plans = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
-        let roots = bowl
-            .scoop::<Query<(
-                Entity,
-                &DefinitionPolicySurface,
-                Option<&DefinitionPolicies>,
-                Option<&DefinitionShapePolicies>,
-            )>>()
-            .await;
-        let mut surfaces = roots
-            .collect()
-            .into_iter()
-            .map(|(_, surface, policies, shape_policies)| {
-                let mut table_names = surface
-                    .tables
-                    .iter()
-                    .filter_map(|table| catalog.table_by_id(*table))
-                    .map(|table| table.name.clone())
-                    .collect::<Vec<_>>();
-                table_names.sort();
-                format!(
-                    "scope={} tables={table_names:?} references={:?} policies={} shape={}",
-                    surface.scope,
-                    surface.references,
-                    policies.map_or(0, |policies| policies.0.len()),
-                    shape_policies.map_or(0, |policies| policies.0.len()),
-                )
-            })
-            .collect::<Vec<_>>();
-        surfaces.sort();
-        format!(
-            "diagnostics:\n{}\nindex:\n{}\nsurfaces:\n{}\nplans: {}",
-            if diagnostics.is_empty() {
-                "<none>"
-            } else {
-                &diagnostics
-            },
-            if index.is_empty() { "<none>" } else { &index },
-            if surfaces.is_empty() {
-                "<none>".to_string()
-            } else {
-                surfaces.join("\n")
-            },
-            plans.collect().len(),
-        )
-    }
-
     let bowl = language_bowl().await;
     let catalog = imdb_catalog();
     insert_catalog(&bowl, catalog.clone()).await;
@@ -506,10 +530,10 @@ async fn policy_relationships_survive_removal_and_batched_replacement() {
         SourceKind::Dsql,
     )
     .await;
-    let initial = state(&bowl, &catalog).await;
+    let initial = render_policy_graph_state(&bowl, &catalog).await;
 
     bowl.entity(policy).despawn().await;
-    let removed = state(&bowl, &catalog).await;
+    let removed = render_policy_graph_state(&bowl, &catalog).await;
 
     let reinserted = insert_source_scoped(
         &bowl,
@@ -519,7 +543,7 @@ async fn policy_relationships_survive_removal_and_batched_replacement() {
         SourceKind::Dsql,
     )
     .await;
-    let restored = state(&bowl, &catalog).await;
+    let restored = render_policy_graph_state(&bowl, &catalog).await;
 
     bowl.entity(reinserted).despawn().await;
     insert_source_scoped(
@@ -530,10 +554,93 @@ async fn policy_relationships_survive_removal_and_batched_replacement() {
         SourceKind::Dsql,
     )
     .await;
-    let replaced = state(&bowl, &catalog).await;
+    let replaced = render_policy_graph_state(&bowl, &catalog).await;
 
     insta::assert_snapshot!(format!(
         "initial:\n{initial}\n\nremoved:\n{removed}\n\nrestored:\n{restored}\n\nbatched replacement:\n{replaced}"
+    ));
+}
+
+#[tokio::test]
+async fn policy_relationships_survive_semantics_preserving_edits() {
+    let bowl = language_bowl().await;
+    let catalog = imdb_catalog();
+    insert_catalog(&bowl, catalog.clone()).await;
+    arm_editor_demands(&bowl).await;
+    bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
+        .await;
+    bowl.insert((
+        Singleton::<ScopeImports>::new(),
+        ScopeImports(BTreeMap::from([
+            ("frontend".to_string(), vec!["shared".to_string()]),
+            ("shared".to_string(), Vec::new()),
+        ])),
+    ))
+    .await;
+
+    let policy_source = "filter Visible on title {\n  where .id > 0\n}\n";
+    let policy = insert_source_scoped(
+        &bowl,
+        "shared.dsql",
+        policy_source,
+        ResolutionScope("shared".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    let query_source = "query Q(\n  %enabled = true\n) {\n  title(filter Visible when %enabled limit 1) {\n    id\n    title\n  }\n}\n";
+    let query = insert_source_scoped(
+        &bowl,
+        "query.dsql",
+        query_source,
+        ResolutionScope("frontend".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    let initial = render_policy_graph_state(&bowl, &catalog).await;
+
+    set_source_text(
+        &bowl,
+        query,
+        query_source.replacen("query Q(\n", "query Q(\n\n", 1),
+    )
+    .await;
+    let header_whitespace = render_policy_graph_state(&bowl, &catalog).await;
+    assert_eq!(header_whitespace, initial);
+
+    set_source_text(&bowl, query, query_source).await;
+    let header_restored = render_policy_graph_state(&bowl, &catalog).await;
+    assert_eq!(header_restored, initial);
+
+    set_source_text(
+        &bowl,
+        query,
+        query_source.replacen("    title\n", "    title\n    production_year\n", 1),
+    )
+    .await;
+    let membership_changed = render_policy_graph_state(&bowl, &catalog).await;
+    assert_eq!(membership_changed, initial);
+
+    set_source_text(&bowl, query, query_source).await;
+    let membership_restored = render_policy_graph_state(&bowl, &catalog).await;
+    assert_eq!(membership_restored, initial);
+
+    set_source_text(&bowl, policy, policy_source.replacen("{\n", "{\n\n", 1)).await;
+    let policy_whitespace = render_policy_graph_state(&bowl, &catalog).await;
+    assert_eq!(policy_whitespace, initial);
+
+    set_source_text(&bowl, policy, policy_source).await;
+    let policy_restored = render_policy_graph_state(&bowl, &catalog).await;
+    assert_eq!(policy_restored, initial);
+
+    set_source_text(&bowl, query, "# query removed without closing its file\n").await;
+    let removed = render_policy_graph_state(&bowl, &catalog).await;
+
+    set_source_text(&bowl, query, query_source).await;
+    let restored = render_policy_graph_state(&bowl, &catalog).await;
+    assert_eq!(restored, initial);
+
+    insta::assert_snapshot!(format!(
+        "initial:\n{initial}\n\nremoved:\n{removed}\n\nrestored:\n{restored}"
     ));
 }
 

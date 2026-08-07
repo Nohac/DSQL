@@ -1,0 +1,36 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+expression: "format!(\"initial:\\n{initial}\\n\\nremoved:\\n{removed}\\n\\nrestored:\\n{restored}\")"
+---
+initial:
+diagnostics:
+<none>
+index:
+filter Visible [public::title] default=false enforced=false
+owners: 1
+surfaces:
+scope=frontend tables=["title"] references=["Visible"] policies=1 shape=1
+rows: policies=1 shape=1
+plans: 1
+
+removed:
+diagnostics:
+<none>
+index:
+filter Visible [public::title] default=false enforced=false
+owners: 0
+surfaces:
+<none>
+rows: policies=0 shape=0
+plans: 0
+
+restored:
+diagnostics:
+<none>
+index:
+filter Visible [public::title] default=false enforced=false
+owners: 1
+surfaces:
+scope=frontend tables=["title"] references=["Visible"] policies=1 shape=1
+rows: policies=1 shape=1
+plans: 1
