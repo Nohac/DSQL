@@ -1167,8 +1167,40 @@ async fn fragment_output_key_edits_recheck_in_both_directions() {
     .await;
     let consumer_healed = state(&consumer_after_provider).await;
 
+    let provider_keystrokes = scoped_bowl().await;
+    let mut fragment_text =
+        "fragment Bits on public::users {\n  id\n  \n  posts { id }\n}\n".to_string();
+    let fragment = insert_source_scoped(
+        &provider_keystrokes,
+        "fragment.dsql",
+        &fragment_text,
+        ResolutionScope("shared".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    insert_source_scoped(
+        &provider_keystrokes,
+        "query.dsql",
+        "query Lifted { public::users(limit 1) { name ...Bits } }\n",
+        ResolutionScope("api".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    let mut keystroke_states = Vec::new();
+    let mut offset = fragment_text.find("  \n  posts").expect("blank field line") + 2;
+    let mut typed = String::new();
+    for character in "name".chars() {
+        fragment_text.insert(offset, character);
+        offset += character.len_utf8();
+        typed.push(character);
+        set_source_text(&provider_keystrokes, fragment, &fragment_text).await;
+        keystroke_states.push(format!("{typed}: {}", state(&provider_keystrokes).await));
+    }
+    let second_final_scoop = state(&provider_keystrokes).await;
+
     insta::assert_snapshot!(format!(
-        "provider after consumer\ninitial:\n{initial}\n\nafter provider edit:\n{provider_edit}\n\nafter provider heal:\n{provider_healed}\n\nconsumer after provider\ninitial:\n{reverse_initial}\n\nafter consumer edit:\n{consumer_edit}\n\nafter consumer heal:\n{consumer_healed}"
+        "provider after consumer\ninitial:\n{initial}\n\nafter provider edit:\n{provider_edit}\n\nafter provider heal:\n{provider_healed}\n\nconsumer after provider\ninitial:\n{reverse_initial}\n\nafter consumer edit:\n{consumer_edit}\n\nafter consumer heal:\n{consumer_healed}\n\nprovider keystrokes\n{}\nsecond final scoop: {second_final_scoop}",
+        keystroke_states.join("\n")
     ));
 }
 

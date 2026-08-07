@@ -1,6 +1,6 @@
 ---
 source: crates/dsql-core/tests/it/checks.rs
-expression: "format!(\"provider after consumer\\ninitial:\\n{initial}\\n\\nafter provider edit:\\n{provider_edit}\\n\\nafter provider heal:\\n{provider_healed}\\n\\nconsumer after provider\\ninitial:\\n{reverse_initial}\\n\\nafter consumer edit:\\n{consumer_edit}\\n\\nafter consumer heal:\\n{consumer_healed}\")"
+expression: "format!(\"provider after consumer\\ninitial:\\n{initial}\\n\\nafter provider edit:\\n{provider_edit}\\n\\nafter provider heal:\\n{provider_healed}\\n\\nconsumer after provider\\ninitial:\\n{reverse_initial}\\n\\nafter consumer edit:\\n{consumer_edit}\\n\\nafter consumer heal:\\n{consumer_healed}\\n\\nprovider keystrokes\\n{}\\nsecond final scoop: {second_final_scoop}\",\nkeystroke_states.join(\"\\n\"))"
 ---
 provider after consumer
 initial:
@@ -21,3 +21,10 @@ Error[103..107]: spread `Bits` introduces duplicate output key `name`; use an al
 
 after consumer heal:
 <none>
+
+provider keystrokes
+n: Error[40..41]: field `n` not found on table `users`
+na: Error[40..42]: field `na` not found on table `users`
+nam: Error[40..43]: field `nam` not found on table `users`
+name: Error[48..52]: spread `Bits` introduces duplicate output key `name`; use an alias
+second final scoop: Error[48..52]: spread `Bits` introduces duplicate output key `name`; use an alias

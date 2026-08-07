@@ -210,6 +210,33 @@ impl Session {
         .unwrap_or_else(|_| panic!("no diagnostics published for {uri} within 30s"))
     }
 
+    /// Reads one publication for each requested URI without depending on the
+    /// open-document iteration order used by the server. This intentionally
+    /// relies on every edit republishing every open document; a timeout here
+    /// means that cross-file publication contract changed.
+    async fn diagnostics_for_all(&mut self, uris: &[&str]) -> Vec<Value> {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let mut diagnostics = vec![None; uris.len()];
+            while diagnostics.iter().any(Option::is_none) {
+                let message = self.read_message().await;
+                if message.get("method").and_then(Value::as_str)
+                    != Some("textDocument/publishDiagnostics")
+                {
+                    continue;
+                }
+                let Some(uri) = message["params"]["uri"].as_str() else {
+                    continue;
+                };
+                if let Some(index) = uris.iter().position(|expected| *expected == uri) {
+                    diagnostics[index] = Some(message["params"]["diagnostics"].clone());
+                }
+            }
+            diagnostics.into_iter().flatten().collect()
+        })
+        .await
+        .unwrap_or_else(|_| panic!("diagnostics were not published for {uris:?} within 30s"))
+    }
+
     async fn read_message(&mut self) -> Value {
         loop {
             if let Some(header_end) = find_subsequence(&self.buffer, b"\r\n\r\n") {
@@ -560,6 +587,98 @@ async fn spread_output_collisions_follow_provider_and_consumer_edits() {
 
     session.replace(&query_uri, 3, query_with_title).await;
     assert_duplicate(&session.diagnostics_for(&query_uri).await);
+}
+
+/// Typing a provider field creates a sequence of valid-but-unresolved fields.
+/// The final character must replace the provider error with the collision on
+/// every unchanged consumer, not require a later delete/undo cycle to heal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spread_output_collisions_follow_provider_keystrokes() {
+    let mut session = Session::start("spread-output-provider-keystrokes").await;
+    let fragment_uri = session.uri("queries/shared/fragments.dsql");
+    let query_uri = session.uri("queries/frontend/titles.dsql");
+    let mut fragment =
+        "fragment TitleBits on title {\n  id\n  \n  kind_type { id }\n}\n".to_string();
+    let query = indoc::indoc! {"
+        query Titles {
+          title(limit 2) {
+            title
+            ...TitleBits
+          }
+        }
+    "};
+
+    session.open(&fragment_uri, "dsql", &fragment).await;
+    assert_eq!(session.diagnostics_for(&fragment_uri).await, json!([]));
+    session.open(&query_uri, "dsql", query).await;
+    let initial = session
+        .diagnostics_for_all(&[&fragment_uri, &query_uri])
+        .await;
+    assert_eq!(initial, vec![json!([]), json!([])]);
+
+    let mut offset = fragment.find("  \n  kind_type").expect("blank field line") + 2;
+    let mut typed = String::new();
+    for (index, character) in "title".chars().enumerate() {
+        let character = character.to_string();
+        session
+            .edit(
+                &fragment_uri,
+                (index + 2) as i64,
+                &fragment,
+                offset,
+                offset,
+                &character,
+            )
+            .await;
+        fragment.insert_str(offset, &character);
+        typed.push_str(&character);
+        offset += character.len();
+
+        let diagnostics = session
+            .diagnostics_for_all(&[&fragment_uri, &query_uri])
+            .await;
+        if typed == "title" {
+            assert_eq!(diagnostics[0], json!([]));
+            assert_eq!(
+                diagnostics[1],
+                json!([{
+                    "range": {
+                        "start": {"line": 3, "character": 7},
+                        "end": {"line": 3, "character": 16}
+                    },
+                    "severity": 1,
+                    "source": "dsql",
+                    "message": "spread `TitleBits` introduces duplicate output key `title`; use an alias"
+                }])
+            );
+        } else {
+            assert_eq!(
+                diagnostics[0].as_array().map(Vec::len),
+                Some(1),
+                "one provider diagnostic after typing {typed}: {}",
+                diagnostics[0]
+            );
+            assert_eq!(
+                diagnostics[0][0]["message"],
+                format!("field `{typed}` not found on table `title`")
+            );
+            assert_eq!(diagnostics[1], json!([]));
+        }
+    }
+
+    let hover = session
+        .request_response(
+            "textDocument/hover",
+            json!({
+                "textDocument": {"uri": fragment_uri},
+                "position": protocol_position(&fragment, offset - 1),
+            }),
+        )
+        .await;
+    assert!(
+        hover["result"].to_string().contains("title"),
+        "the server retained the completed provider field: {hover}"
+    );
 }
 
 /// Trusted-context diagnostics follow ranged edits to both the use and its
