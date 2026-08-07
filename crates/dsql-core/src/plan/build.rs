@@ -75,7 +75,6 @@ type PlanRootStructure<'a> = Query<(
     Entity,
     &'a SemanticRoot,
     &'a SemanticDefinitionKey,
-    &'a NodeKey,
     RawSemanticMembers<'a>,
     SelectionResolutionRows<'a>,
     ClauseResolutionRows<'a>,
@@ -102,7 +101,7 @@ type PlanDefinition<'a> = Query<
         &'a BelongsToFile,
         &'a DefKey,
     ),
-    Where<BowlEq<NodeKey>>,
+    Where<BowlEq<SemanticDefinitionKey>>,
 >;
 
 #[expect(
@@ -123,19 +122,14 @@ async fn plan_queries(
         dsql_schema::Diagnostic,
     )>,
 ) {
-    let (root_group, root, _, root_key, members, selections, clauses, contexts) =
-        root_structure.item();
+    let (root_group, root, _, members, selections, clauses, contexts) = root_structure.item();
     let (resolution_group, _, aggregates, spreads, cycles, bodies) = root_resolution.item();
     let (_, definition_variables, input_rewrites, owner, node_key, file, def_key) =
         definition.item();
     let def_entity = owner.definition;
     let decl = &owner.declaration;
     let scope = &owner.scope;
-    if root_group != resolution_group
-        || root.0 != def_entity
-        || root_key != node_key
-        || def_key.0 != def_entity
-    {
+    if root_group != resolution_group || root.0 != def_entity || def_key.0 != def_entity {
         return;
     }
     let (catalog_entity, snapshot) = catalog.item();
@@ -1081,7 +1075,7 @@ impl Planner<'_> {
                     if self
                         .tree
                         .spread_resolution(spread_entity)
-                        .and_then(|resolved| resolved.target.as_ref())
+                        .and_then(|resolved| resolved.target())
                         .is_none()
                     {
                         continue;

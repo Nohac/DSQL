@@ -620,7 +620,6 @@ type ResidualRootInput<'a> = Query<(
     Entity,
     &'a SemanticRoot,
     &'a SemanticDefinitionKey,
-    &'a NodeKey,
     RawSemanticMembers<'a>,
     SelectionResolutionRows<'a>,
     ClauseResolutionRows<'a>,
@@ -634,7 +633,7 @@ type ResidualDefinition<'a> = Query<
         &'a BelongsToFile,
         &'a ResolutionScope,
     ),
-    Where<BowlEq<NodeKey>>,
+    Where<BowlEq<SemanticDefinitionKey>>,
 >;
 type ResidualExpansions<'a> = Query<
     (
@@ -663,8 +662,7 @@ async fn residual_definition_checks(
     imports: Query<(Entity, &ScopeImports)>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
-    let (root_group, root, _, _, members, selections, clauses, spread_resolutions) =
-        root_input.item();
+    let (root_group, root, _, members, selections, clauses, spread_resolutions) = root_input.item();
     let (def_entity, decl, fragment_target, file, scope) = definition.item();
     let (expansion_group, _, bodies) = expansions.item();
     debug_assert_eq!(root.0, def_entity);
@@ -917,7 +915,7 @@ impl CheckCtx<'_> {
             .tree
             .spread_resolutions
             .get(&spread_node)
-            .and_then(|resolved| resolved.target.as_ref())
+            .and_then(|resolved| resolved.target())
             .and_then(|target| target.on.as_deref())
         else {
             return;

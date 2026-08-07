@@ -9,6 +9,7 @@ use dsql_core::DsqlPlugin;
 use dsql_core::catalog::insert_catalog;
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::document::ParsedFile;
+use dsql_core::entities::expansion::SemanticDefinitionKey;
 use dsql_core::entities::policy::PolicyDecl;
 use dsql_core::entities::variable::VariableUse;
 use dsql_core::facts::{
@@ -22,7 +23,12 @@ use dsql_core::sql::GeneratedSqlFact;
 use crate::{imdb_catalog, render_diagnostic_facts, replace_source_text};
 
 type RelatedVariables<'a> = Related<SemanticMembers, (&'a NodeKey, &'a VariableUse)>;
-type SemanticGroupQuery<'a> = Query<(Entity, &'a NodeKey, &'a SemanticRoot, RelatedVariables<'a>)>;
+type SemanticGroupQuery<'a> = Query<(
+    Entity,
+    &'a SemanticDefinitionKey,
+    &'a SemanticRoot,
+    RelatedVariables<'a>,
+)>;
 
 async fn render_semantic_groups(bowl: &Bowl) -> String {
     let definition_result = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
@@ -30,7 +36,7 @@ async fn render_semantic_groups(bowl: &Bowl) -> String {
     let policy_result = bowl.scoop::<Query<(Entity, &PolicyDecl)>>().await;
     let policies = policy_result.collect();
     let group_result = bowl
-        .scoop::<Query<(Entity, &NodeKey, &SemanticRoot, Option<&SemanticMembers>)>>()
+        .scoop::<Query<(Entity, &SemanticRoot, Option<&SemanticMembers>)>>()
         .await;
     let groups = group_result.collect();
     let member_result = bowl
@@ -59,7 +65,7 @@ async fn render_semantic_groups(bowl: &Bowl) -> String {
 
     let mut lines = Vec::new();
     let mut seen_roots = BTreeSet::new();
-    for (group, _, root, inverse) in &groups {
+    for (group, root, inverse) in &groups {
         let label = root_labels
             .remove(&root.0)
             .unwrap_or_else(|| format!("<missing root {:?}>", root.0));
@@ -107,7 +113,7 @@ async fn render_semantic_groups(bowl: &Bowl) -> String {
 
 async fn semantic_group_observer(
     groups: SemanticGroupQuery<'_>,
-    _roots: Query<(Entity, &NodeKey, &DefDecl), Where<BowlEq<NodeKey>>>,
+    _roots: Query<(Entity, &DefDecl), Where<BowlEq<SemanticDefinitionKey>>>,
 ) {
     let _ = groups.item();
 }

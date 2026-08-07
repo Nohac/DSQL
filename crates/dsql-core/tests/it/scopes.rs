@@ -54,7 +54,7 @@ async fn resolutions(bowl: &Bowl) -> usize {
     spreads
         .collect()
         .into_iter()
-        .filter(|(_, resolved)| resolved.target.is_some())
+        .filter(|(_, resolved)| resolved.target().is_some())
         .count()
 }
 

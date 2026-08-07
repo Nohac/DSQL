@@ -373,7 +373,6 @@ type VariableRootInput<'a> = Query<(
     Entity,
     &'a SemanticRoot,
     &'a SemanticDefinitionKey,
-    &'a NodeKey,
     RawSemanticMembers<'a>,
     SelectionResolutionRows<'a>,
     ClauseResolutionRows<'a>,
@@ -406,8 +405,9 @@ type VariableDefinition<'a> = Query<
         Option<&'a FragmentTarget>,
         &'a BelongsToFile,
         &'a ResolutionScope,
+        &'a NodeKey,
     ),
-    Where<BowlEq<NodeKey>>,
+    Where<BowlEq<SemanticDefinitionKey>>,
 >;
 
 #[expect(
@@ -429,11 +429,11 @@ async fn infer_variables(
         dsql_schema::VariableProblem,
     )>,
 ) {
-    let (_, root, _, key, members, selections, clauses, spreads) = root_input.item();
+    let (_, root, semantic_key, members, selections, clauses, spreads) = root_input.item();
     let (_, _, contexts) = root_contexts.item();
     let (_, _, cycles) = root_cycles.item();
     let (_, _, bodies) = expansions.item();
-    let (def_entity, decl, fragment_target, file, scope) = definition.item();
+    let (def_entity, decl, fragment_target, file, scope, node_key) = definition.item();
     let (catalog_entity, snapshot) = catalog.item();
 
     let mut tree = DefinitionClosure::build(
@@ -476,7 +476,8 @@ async fn infer_variables(
             target: fragment_target.cloned(),
             scope: scope.clone(),
         },
-        *key,
+        *node_key,
+        *semantic_key,
         DefinitionVariables {
             bindings: contract.bindings,
         },
@@ -559,7 +560,7 @@ impl ContractContext<'_> {
             if self
                 .tree
                 .spread_resolution(spread_entity)
-                .and_then(|resolved| resolved.target.as_ref())
+                .and_then(|resolved| resolved.target())
                 .is_none()
             {
                 continue;

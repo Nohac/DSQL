@@ -146,22 +146,27 @@ fn walk(ctx: &LowerCtx<'_>, node: NodeRef, commands: &mut Commands<AstFacts>) {
             rule,
             Rule::QueryDef | Rule::FragmentDef | Rule::FilterDef | Rule::ConditionDef
         );
+        let is_definition = matches!(rule, Rule::QueryDef | Rule::FragmentDef);
         let semantic_group = if is_semantic_root {
             created.map(|root| {
-                commands
-                    .insert((
-                        DerivedFrom::new(root),
-                        NodeKey {
-                            file: ctx.file,
-                            node: node.0,
-                        },
-                        SemanticDefinitionKey(NodeKey {
-                            file: ctx.file,
-                            node: node.0,
-                        }),
-                        SemanticRoot(root),
-                    ))
-                    .untyped()
+                if is_definition {
+                    let definition_key = SemanticDefinitionKey(root);
+                    commands.entity(root).insert(definition_key);
+                    let group = commands.insert((DerivedFrom::new(root), SemanticRoot(root)));
+                    commands.entity(group.untyped()).insert(definition_key);
+                    group.untyped()
+                } else {
+                    commands
+                        .insert((
+                            DerivedFrom::new(root),
+                            NodeKey {
+                                file: ctx.file,
+                                node: node.0,
+                            },
+                            SemanticRoot(root),
+                        ))
+                        .untyped()
+                }
             })
         } else {
             if let (Some(member), Some(group)) = (created, ctx.semantic_group) {

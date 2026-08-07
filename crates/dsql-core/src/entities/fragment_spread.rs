@@ -2,12 +2,13 @@
 //! fragment definitions, and the unknown-fragment check.
 
 use bowl::{
-    Commands, Component, DerivedFrom, Entity, Phase, Query, Registrar, SystemExt, View, Where, With,
+    Commands, Component, DerivedFrom, Entity, Query, Registrar, Related, SystemExt, View, Where,
+    With,
 };
 
-use crate::entities::definition::{DefDecl, DefIndex, DefKind, FragmentKey};
+use crate::entities::definition::{DefDecl, FragmentKey, FragmentTarget};
 use crate::entities::expansion::{
-    CycleSiteGroup, CycleSiteRoot, SemanticDefinitionKey, SpreadResolutionOf,
+    SemanticDefinitionKey, SpreadResolutionOf, SpreadSiteGroup, SpreadSiteRoot,
 };
 use crate::entities::variable::VariableSource;
 use crate::entities::{direct_name, direct_rule, node_span, text};
@@ -65,22 +66,141 @@ pub struct ResolvedSpread {
     pub name: String,
     /// Span of the spread name in its document.
     pub name_span: crate::facts::Span,
-    /// The uniquely visible fragment, when exactly one resolves.
-    pub target: Option<SpreadTarget>,
+    /// Scope-resolution outcome for this spread name.
+    pub resolution: SpreadResolution,
 }
 
+impl ResolvedSpread {
+    /// Returns the uniquely visible fragment target, if resolution succeeded.
+    pub fn target(&self) -> Option<&SpreadTarget> {
+        match &self.resolution {
+            SpreadResolution::Resolved(target) => Some(target),
+            SpreadResolution::Missing | SpreadResolution::NonUnique { .. } => None,
+        }
+    }
+}
+
+/// Scope-resolution outcome for one fragment spread.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum SpreadResolution {
+    /// Exactly one visible fragment supplies the name.
+    Resolved(SpreadTarget),
+    /// No visible fragment supplies the name.
+    Missing,
+    /// More than one visible fragment supplies the name.
+    NonUnique {
+        /// Distinct provider scopes in lexical order.
+        provider_scopes: Vec<String>,
+    },
+}
+
+/// Semantic identity of the fragment selected by one spread.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SpreadTarget {
-    /// The fragment definition entity.
-    pub fragment: Entity,
+    /// Candidate entity selected from the spread site's relationship.
+    pub candidate: Entity,
+    /// Stable key shared with the candidate's navigation payload.
+    pub(crate) candidate_key: FragmentCandidateKey,
     /// Stable syntax key shared with the target fragment's semantic group.
-    pub definition_key: NodeKey,
-    /// The file holding the definition.
-    pub file: Entity,
-    /// The definition's name span within that file.
-    pub name_span: crate::facts::Span,
+    pub definition_key: SemanticDefinitionKey,
     /// The fragment's `on` target name, when it has one.
     pub on: Option<String>,
+}
+
+/// Semantic fragment candidate visible from one spread site.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub(crate) struct VisibleFragmentCandidate {
+    pub(crate) definition_key: SemanticDefinitionKey,
+    pub(crate) provider_scope: String,
+    pub(crate) on: Option<String>,
+}
+
+/// Span-independent fragment identity projected onto its semantic group.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub(crate) struct FragmentSemantics {
+    provider_scope: String,
+    on: Option<String>,
+}
+
+/// Navigation payload for a [`VisibleFragmentCandidate`].
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub(crate) struct VisibleFragmentNavigation {
+    pub(crate) file: Entity,
+    pub(crate) name_span: Span,
+}
+
+/// Stable join key shared by one candidate and its navigation payload.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub(crate) struct FragmentCandidateKey {
+    spread: NodeKey,
+    definition: SemanticDefinitionKey,
+}
+
+/// Relationship edge from a visible candidate to its spread site.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(untracked)]
+#[relationship(target = VisibleFragmentCandidates)]
+pub(crate) struct VisibleFragmentCandidateOf(pub(crate) Entity);
+
+/// Engine-maintained visible fragment candidates for one spread site.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = VisibleFragmentCandidateOf)]
+pub(crate) struct VisibleFragmentCandidates(pub(crate) Vec<Entity>);
+
+/// Definition target for a uniquely resolved spread, kept separate from its
+/// semantic resolution so span-only edits do not wake compiler consumers.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub(crate) struct ResolvedSpreadNavigation {
+    pub(crate) file: Entity,
+    pub(crate) name_span: Span,
+}
+
+type FragmentProjectionDefinition<'a> = Query<(
+    Entity,
+    &'a DefDecl,
+    &'a FragmentKey,
+    &'a ResolutionScope,
+    Option<&'a FragmentTarget>,
+    &'a SemanticDefinitionKey,
+)>;
+type CandidateSpread<'a> = Query<
+    (
+        Entity,
+        &'a SpreadDecl,
+        &'a FragmentKey,
+        &'a ResolutionScope,
+        &'a NodeKey,
+    ),
+    Where<bowl::Eq<FragmentKey>>,
+>;
+type NavigationFragment<'a> = Query<
+    (
+        Entity,
+        &'a DefDecl,
+        &'a ResolutionScope,
+        &'a BelongsToFile,
+        &'a SemanticDefinitionKey,
+    ),
+    Where<bowl::Eq<FragmentKey>>,
+>;
+type SpreadCandidateRows<'a> =
+    Related<VisibleFragmentCandidates, (&'a VisibleFragmentCandidate, &'a FragmentCandidateKey)>;
+type ResolutionSite<'a> = Query<(
+    Entity,
+    &'a SpreadSiteRoot,
+    &'a NodeKey,
+    SpreadCandidateRows<'a>,
+)>;
+
+fn scope_sees_provider(imports: &ScopeImports, consumer: &ResolutionScope, provider: &str) -> bool {
+    imports
+        .visible_from(&consumer.0)
+        .any(|visible| visible == provider)
 }
 
 /// Owns `fragment_spread`.
@@ -90,15 +210,36 @@ impl LanguageEntity for FragmentSpread {
     const NAME: &'static str = "fragment_spread";
 
     fn register(reg: &mut Registrar<'_>) {
-        // Both view lowered fragment definitions ambiently, so they sit
-        // behind the Complete phase barrier; their DefIndex/ScopeImports
-        // inputs are tracked, which exempts them from the same-phase race
-        // next to index_defs.
-        reg.system(resolve_spreads.run_during(Phase::Complete));
-        reg.system(check_unknown_fragments.run_during(Phase::Complete));
+        reg.system(project_fragment_semantics);
+        reg.system(bind_visible_fragment_candidates);
+        reg.system(bind_visible_fragment_navigation);
+        reg.system(resolve_spreads);
+        reg.system(resolve_spread_navigation);
+        reg.system(check_unknown_fragments);
         reg.system(hover_spreads);
+        // Completion enumerates candidates for an ephemeral request rather
+        // than publishing persistent semantics, so its request-time view
+        // remains behind the Complete barrier.
         reg.system(complete_spreads.run_during(bowl::Phase::Complete));
     }
+}
+
+/// Projects syntax-bearing fragment definitions into stable semantic rows.
+/// Equal projection is a fingerprint cutoff for trivia and span edits.
+async fn project_fragment_semantics(
+    definitions: FragmentProjectionDefinition<'_>,
+    mut commands: Commands<(dsql_schema::FragmentSemanticProjection,)>,
+) {
+    let (definition, _, fragment_key, scope, target, definition_key) = definitions.item();
+    commands.insert((
+        DerivedFrom::new(definition),
+        fragment_key.clone(),
+        *definition_key,
+        FragmentSemantics {
+            provider_scope: scope.0.clone(),
+            on: target.map(|target| target.name.clone()),
+        },
+    ));
 }
 
 impl LowerStage for FragmentSpread {
@@ -152,7 +293,7 @@ impl LowerStage for FragmentSpread {
                 ))
                 .untyped(),
         };
-        commands.insert((DerivedFrom::new(entity), key, CycleSiteRoot));
+        commands.insert((DerivedFrom::new(entity), key, SpreadSiteRoot));
         Some(entity)
     }
 }
@@ -198,167 +339,207 @@ fn build_binding_ref(
     })
 }
 
-/// The fragment definitions a spread in `scope` can see, per the effective
-/// resolver (docs/spec/resolution-scopes.md): the scope's own fragments
-/// plus its transitive imports'. Shared by resolution, checks, planning,
-/// variables, and services.
-pub(crate) fn visible_fragments<'a>(
-    name: &'a str,
-    scope: &'a str,
-    imports: &'a ScopeImports,
-    fragments: impl IntoIterator<Item = (Entity, &'a DefDecl, &'a ResolutionScope)> + 'a,
-) -> Vec<(Entity, &'a DefDecl, &'a ResolutionScope)> {
-    fragments
-        .into_iter()
-        .filter(|(_, decl, fragment_scope)| {
-            decl.kind == DefKind::Fragment
-                && decl.name == name
-                && imports
-                    .visible_from(scope)
-                    .any(|visible| visible == fragment_scope.0)
-        })
-        .collect()
+/// Materializes one visible same-name semantic candidate for one spread.
+///
+/// The semantic projection drives the first join. A provider edit reaches this
+/// driver directly; a spread edit reaches it through the exact fragment-name
+/// key, and the spread's [`NodeKey`] then binds its dedicated site.
+async fn bind_visible_fragment_candidates(
+    fragments: Query<(
+        Entity,
+        &FragmentKey,
+        &FragmentSemantics,
+        &SemanticDefinitionKey,
+    )>,
+    spreads: CandidateSpread<'_>,
+    sites: Query<(Entity, &SpreadSiteRoot), Where<bowl::Eq<NodeKey>>>,
+    imports: Query<(Entity, &ScopeImports)>,
+    mut commands: Commands<(dsql_schema::VisibleFragmentCandidate,)>,
+) {
+    let (fragment_projection, _, fragment, definition_key) = fragments.item();
+    let (spread, _, _, spread_scope, spread_key) = spreads.item();
+    let (site, _) = sites.item();
+    let (_, imports) = imports.item();
+    if !scope_sees_provider(imports, spread_scope, &fragment.provider_scope) {
+        return;
+    }
+
+    let candidate_key = FragmentCandidateKey {
+        spread: *spread_key,
+        definition: *definition_key,
+    };
+    commands.insert((
+        DerivedFrom::many([spread, fragment_projection]),
+        VisibleFragmentCandidateOf(site),
+        candidate_key,
+        VisibleFragmentCandidate {
+            definition_key: *definition_key,
+            provider_scope: fragment.provider_scope.clone(),
+            on: fragment.on.clone(),
+        },
+    ));
 }
 
-/// Resolves each spread to the fragment its scope sees. Exactly one
-/// visible candidate resolves; zero or several resolve nothing — the
-/// unknown/ambiguity checks report those. The tracked [`DefIndex`] and
-/// [`ScopeImports`] inputs rerun rows when the definition set or the scope
-/// graph changes.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "exact tracked joins plus legacy fragment views reach the system parameter ceiling"
-)]
-async fn resolve_spreads(
-    // Semantic ownership is required deliberately: syntax orphaned when its
-    // enclosing definition fails to lower has no semantic resolution. The
-    // cycle-site group is likewise spawned by the same lowering invocation.
-    // Both presence requirements therefore retire and recreate with the spread
-    // rather than changing independently for a surviving invocation.
+/// Materializes the source-location half of a visible candidate separately
+/// from its semantic payload.
+async fn bind_visible_fragment_navigation(
     spreads: Query<(
         Entity,
         &SpreadDecl,
+        &FragmentKey,
         &ResolutionScope,
-        &crate::facts::BelongsToFile,
-        &crate::facts::SemanticMemberOf,
         &NodeKey,
     )>,
-    sites: Query<(Entity, &CycleSiteRoot, &NodeKey), Where<bowl::Eq<NodeKey>>>,
-    _index: Query<(Entity, &DefIndex)>,
+    fragments: NavigationFragment<'_>,
     imports: Query<(Entity, &ScopeImports)>,
-    fragments: View<'_, (Entity, &DefDecl, &ResolutionScope, &NodeKey)>,
-    files: View<'_, (Entity, &DefDecl, &crate::facts::BelongsToFile)>,
-    targets: View<'_, (Entity, &crate::entities::definition::FragmentTarget)>,
-    mut commands: Commands<(dsql_schema::ResolvedSpread,)>,
+    mut commands: Commands<(dsql_schema::VisibleFragmentNavigation,)>,
 ) {
-    // This signature is at the eight-parameter system ceiling. Decompose the
-    // ambient fragment views before adding another input.
-    let (spread, decl, scope, file, semantic_group, _) = spreads.item();
-    let (cycle_site, _, _) = sites.item();
+    let (spread, _, _, spread_scope, spread_key) = spreads.item();
+    let (fragment, declaration, fragment_scope, file, definition_key) = fragments.item();
     let (_, imports) = imports.item();
+    if !scope_sees_provider(imports, spread_scope, &fragment_scope.0) {
+        return;
+    }
 
-    let candidates = visible_fragments(
-        &decl.name,
-        &scope.0,
-        imports,
-        fragments
-            .iter()
-            .map(|(entity, declaration, fragment_scope, _)| (entity, declaration, fragment_scope)),
-    );
-    let target = if let [(fragment, fragment_decl, _)] = candidates.as_slice() {
-        let fragment = *fragment;
-        files
-            .iter()
-            .find(|(entity, _, _)| *entity == fragment)
-            .and_then(|(_, _, fragment_file)| {
-                let definition_key = fragments
-                    .iter()
-                    .find_map(|(entity, _, _, key)| (entity == fragment).then_some(*key))?;
-                Some(SpreadTarget {
-                    fragment,
-                    definition_key,
-                    file: fragment_file.0,
-                    name_span: fragment_decl.name_span,
-                    on: targets
-                        .iter()
-                        .find(|(entity, _)| *entity == fragment)
-                        .map(|(_, target)| target.name.clone()),
-                })
-            })
-    } else {
-        None
+    let candidate_key = FragmentCandidateKey {
+        spread: *spread_key,
+        definition: *definition_key,
     };
-
-    let target_key = target
-        .as_ref()
-        .map(|target| SemanticDefinitionKey(target.definition_key));
-    let resolved = commands.insert((
-        DerivedFrom::new(spread),
-        crate::facts::BelongsToFile(file.0),
-        SpreadResolutionOf(semantic_group.0),
-        CycleSiteGroup(cycle_site),
-        ResolvedSpread {
-            spread,
-            name: decl.name.clone(),
-            name_span: decl.name_span,
-            target,
+    commands.insert((
+        DerivedFrom::many([spread, fragment]),
+        candidate_key,
+        VisibleFragmentNavigation {
+            file: file.0,
+            name_span: declaration.name_span,
         },
     ));
-    if let Some(target_key) = target_key {
-        commands.entity(resolved).insert(target_key);
+}
+
+/// Resolves one spread from its exact relationship-owned candidate set.
+///
+/// A site can temporarily observe no candidates before same-phase candidate
+/// binding converges. [`Related`] tracks that absence, so candidate insertion
+/// reruns this site before any settled compiler result is published.
+async fn resolve_spreads(
+    sites: ResolutionSite<'_>,
+    spreads: Query<
+        (
+            Entity,
+            &SpreadDecl,
+            &BelongsToFile,
+            &crate::facts::SemanticMemberOf,
+        ),
+        Where<bowl::Eq<NodeKey>>,
+    >,
+    mut commands: Commands<(dsql_schema::ResolvedSpread,)>,
+) {
+    let (site, _, _, candidates) = sites.item();
+    let (spread, declaration, file, semantic_group) = spreads.item();
+    let mut candidates = candidates.iter().collect::<Vec<_>>();
+    candidates.sort_by(|(left_entity, (left, _)), (right_entity, (right, _))| {
+        left.provider_scope
+            .cmp(&right.provider_scope)
+            .then_with(|| left_entity.cmp(right_entity))
+    });
+
+    let resolution = match candidates.as_slice() {
+        [] => SpreadResolution::Missing,
+        [(candidate, (target, candidate_key))] => SpreadResolution::Resolved(SpreadTarget {
+            candidate: *candidate,
+            candidate_key: **candidate_key,
+            definition_key: target.definition_key,
+            on: target.on.clone(),
+        }),
+        _ => {
+            let mut provider_scopes = candidates
+                .iter()
+                .map(|(_, (candidate, _))| candidate.provider_scope.clone())
+                .collect::<Vec<_>>();
+            provider_scopes.sort();
+            provider_scopes.dedup();
+            SpreadResolution::NonUnique { provider_scopes }
+        }
+    };
+    let target = match &resolution {
+        SpreadResolution::Resolved(target) => Some(target.clone()),
+        SpreadResolution::Missing | SpreadResolution::NonUnique { .. } => None,
+    };
+    let resolved = commands.insert((
+        DerivedFrom::new(spread),
+        BelongsToFile(file.0),
+        SpreadResolutionOf(semantic_group.0),
+        SpreadSiteGroup(site),
+        ResolvedSpread {
+            spread,
+            name: declaration.name.clone(),
+            name_span: declaration.name_span,
+            resolution,
+        },
+    ));
+    if let Some(target) = target {
+        commands.entity(resolved).insert(target.definition_key);
+        commands.entity(resolved).insert(target.candidate_key);
     }
 }
 
-/// Reports spreads that name no visible fragment, and spreads whose name
-/// is provided by more than one visible scope. The tracked [`DefIndex`]
-/// and [`ScopeImports`] inputs rerun rows when the definition set or the
-/// scope graph changes; the ambient `View` alone would never wake this
-/// check for an unrelated edit.
+/// Projects definition navigation for a uniquely resolved spread without
+/// coupling semantic consumers to definition spans.
+async fn resolve_spread_navigation(
+    resolutions: Query<(
+        Entity,
+        &ResolvedSpread,
+        &FragmentCandidateKey,
+        &BelongsToFile,
+    )>,
+    candidates: Query<
+        (Entity, &VisibleFragmentNavigation, &FragmentCandidateKey),
+        Where<bowl::Eq<FragmentCandidateKey>>,
+    >,
+    mut commands: Commands<(dsql_schema::ResolvedSpread,)>,
+) {
+    let (resolution, _, _, _) = resolutions.item();
+    let (_, navigation, _) = candidates.item();
+    commands
+        .entity(resolution)
+        .insert(ResolvedSpreadNavigation {
+            file: navigation.file,
+            name_span: navigation.name_span,
+        });
+}
+
+/// Reports missing and cross-scope ambiguous fragment spreads from the one
+/// semantic resolution outcome.
 async fn check_unknown_fragments(
     _: Query<Entity, With<DiagnosticsDemand>>,
-    query: Query<(Entity, &SpreadDecl, &BelongsToFile, &ResolutionScope)>,
-    _index: Query<(Entity, &DefIndex)>,
-    imports: Query<(Entity, &ScopeImports)>,
-    fragments: View<'_, (Entity, &DefDecl, &ResolutionScope)>,
+    resolutions: Query<(Entity, &ResolvedSpread, &BelongsToFile)>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
-    let (spread, decl, file, scope) = query.item();
-    let (_, imports) = imports.item();
-
-    let candidates = visible_fragments(&decl.name, &scope.0, imports, fragments.iter());
-    let message = match candidates.as_slice() {
-        [_] => return,
-        [] => format!("fragment `{}` not found", decl.name),
-        several => {
-            let mut scopes: Vec<&str> = several
-                .iter()
-                .map(|(_, _, fragment_scope)| fragment_scope.0.as_str())
-                .collect();
-            scopes.sort();
-            scopes.dedup();
-            if scopes.len() == 1 {
-                // Same-scope duplicates are the duplicate-definition
-                // check's report; a second message here is noise.
-                return;
-            }
-            format!(
-                "fragment `{}` is ambiguous; provided by scopes {}",
-                decl.name,
-                scopes
-                    .iter()
-                    .map(|scope| format!("`{scope}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
+    let (resolution, resolved, file) = resolutions.item();
+    let message = match &resolved.resolution {
+        SpreadResolution::Resolved(_) => return,
+        SpreadResolution::Missing => format!("fragment `{}` not found", resolved.name),
+        SpreadResolution::NonUnique { provider_scopes } if provider_scopes.len() == 1 => {
+            // Same-scope duplicates are the duplicate-definition check's
+            // report; a second message here is noise.
+            return;
         }
+        SpreadResolution::NonUnique { provider_scopes } => format!(
+            "fragment `{}` is ambiguous; provided by scopes {}",
+            resolved.name,
+            provider_scopes
+                .iter()
+                .map(|scope| format!("`{scope}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     };
 
     emit_diagnostic(
         &mut commands,
         DiagnosticFacts {
-            derived_from: DerivedFrom::new(spread),
+            derived_from: DerivedFrom::new(resolution),
             file: file.0,
-            span: decl.name_span,
+            span: resolved.name_span,
             severity: Severity::Error,
             source: DiagnosticSource::Check,
             code: DiagnosticCode::UnknownFragment,
@@ -400,11 +581,7 @@ async fn hover_spreads(
         return;
     }
 
-    let text = match resolved
-        .target
-        .as_ref()
-        .and_then(|target| target.on.as_ref())
-    {
+    let text = match resolved.target().and_then(|target| target.on.as_ref()) {
         Some(target) => format!("fragment `{}` on `{target}`", resolved.name),
         None => format!("fragment `{}`", resolved.name),
     };

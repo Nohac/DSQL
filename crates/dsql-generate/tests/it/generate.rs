@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use bowl::Bowl;
+use bowl::{Bowl, Entity, Mut, Query};
 use dsql_core::catalog::{
     Catalog, ColumnMetadata, DataType, DatabaseMetadata, EnumTypeMetadata, EnumVariantMetadata,
     ObjectType, ProviderTypeFacts, SchemaMetadata, TableMetadata, TypeKey, TypeMetadata,
@@ -10,7 +10,9 @@ use dsql_core::catalog::{
 use dsql_core::embedding::ExtractionRegistry;
 use dsql_core::input::{LanguageDocument, LanguageInputs, populate_language_bowl};
 use dsql_core::language_bowl;
-use dsql_core::source::{ResolutionScope, ScopeDocuments, ScopeImports, SourceKind};
+use dsql_core::source::{
+    FilePath, ResolutionScope, ScopeDocuments, ScopeImports, SourceKind, SourceText,
+};
 use dsql_generate::publish::MatchLockMode;
 use dsql_generate::{GenerateOptions, ProjectContract, assemble_bowl, generate_project};
 use dsql_metadata::DefinitionKind;
@@ -618,6 +620,25 @@ async fn memory_bowl(
     bowl
 }
 
+async fn set_document_text(bowl: &Bowl, path: &str, text: &str) {
+    let files = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
+    let file = files
+        .collect()
+        .into_iter()
+        .find_map(|(entity, candidate)| (candidate.0 == path).then_some(entity))
+        .expect("source document exists");
+    let sources = bowl.scoop::<Query<(Entity, Mut<SourceText>)>>().await;
+    let source = sources
+        .collect()
+        .into_iter()
+        .find_map(|(entity, source)| (entity == file).then_some(source))
+        .expect("source text exists");
+    let text = text.to_string();
+    source
+        .with_latest(move |source| source.set_text(&text))
+        .await;
+}
+
 /// Copies the dsql-project scoped fixture into a temp dir so generation
 /// can write its build/ tree without polluting the repository.
 async fn fixture_project(test: &str) -> (PathBuf, Project) {
@@ -803,6 +824,62 @@ async fn error_diagnostics_fail_generation() {
         error.to_string().contains("missing_table"),
         "unexpected error: {error}"
     );
+}
+
+#[tokio::test]
+async fn unresolved_spreads_block_artifacts_and_restore_cleanly() {
+    const QUERY: &str = "query Titles {\n  title(limit 1) {\n    ...TitleBits\n  }\n}\n";
+    const OTHER: &str = "fragment OtherBits on title {\n  id\n}\n";
+    const TARGET: &str = "fragment TitleBits on title {\n  id\n}\n";
+
+    let bowl = memory_bowl(
+        scoped_catalog(),
+        vec![
+            document("queries/frontend/query.dsql", QUERY, "frontend"),
+            document("queries/frontend/fragments.dsql", OTHER, "frontend"),
+        ],
+        BTreeMap::new(),
+    )
+    .await;
+
+    let missing = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect_err("an unresolved spread must block artifact assembly");
+    assert!(
+        missing.to_string().contains("TitleBits"),
+        "unexpected assembly error: {missing}"
+    );
+
+    set_document_text(&bowl, "queries/frontend/fragments.dsql", TARGET).await;
+
+    let resolved = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("the supplied fragment permits artifact assembly");
+    let operation = resolved
+        .snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "Titles")
+        .expect("resolved query emits an operation")
+        .serialized
+        .clone();
+
+    set_document_text(&bowl, "queries/frontend/fragments.dsql", OTHER).await;
+    assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect_err("removing the fragment must block artifact assembly again");
+
+    set_document_text(&bowl, "queries/frontend/fragments.dsql", TARGET).await;
+    let restored = assemble_bowl(&bowl, None, GenerateOptions::default())
+        .await
+        .expect("restoring the fragment permits artifact assembly again");
+    let restored_operation = restored
+        .snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "Titles")
+        .expect("restored query emits an operation");
+    assert_eq!(restored_operation.serialized, operation);
 }
 
 #[tokio::test]

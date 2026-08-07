@@ -12,7 +12,7 @@ use bowl::{
 };
 
 use crate::catalog::{Catalog, CatalogSnapshot, CatalogSupport, ColumnId, RelationId, TableId};
-use crate::entities::fragment_spread::ResolvedSpread;
+use crate::entities::fragment_spread::{ResolvedSpread, ResolvedSpreadNavigation};
 use crate::facts::{BelongsToFile, Span};
 use crate::resolution::{
     PathTerminal, ResolvedClause, ResolvedFragmentTarget, ResolvedSelection, ResolvedTableTarget,
@@ -101,32 +101,26 @@ async fn resolve_definition_requests(
 }
 
 /// Follows the spread under the cursor to its fragment definition: one
-/// tracked invocation per (request, resolution) pair, answering when the
-/// resolution's spread is the one under the cursor. Lowered spread and
-/// definition facts are viewed ambiently (Evaluate output, safe behind
-/// the Complete barrier); the Complete-derived resolutions are the tracked
-/// input.
-/// Follows the spread under the cursor to its fragment definition: one
-/// tracked invocation per (request, spread-in-file) pair, the target read
-/// off the spread's [`ResolvedSpread`] stamp.
+/// tracked invocation per (request, spread-in-file) pair. Navigation is a
+/// separate component so definition-span edits do not invalidate semantic
+/// spread consumers.
 async fn answer_spread_definitions(
     query: Query<(Entity, &BelongsToFile, &Cursor), With<DefinitionRequest>>,
-    spreads: Query<(Entity, &ResolvedSpread), Where<BowlEq<BelongsToFile>>>,
+    spreads: Query<
+        (Entity, &ResolvedSpread, &ResolvedSpreadNavigation),
+        Where<BowlEq<BelongsToFile>>,
+    >,
     mut commands: Commands<(dsql_schema::DefinitionAnswer,)>,
 ) {
     let (request, _file, cursor) = query.item();
-    let (_, resolved) = spreads.item();
+    let (_, resolved, navigation) = spreads.item();
 
     if !resolved.name_span.contains(cursor.0) {
         return;
     }
-    let Some(target) = &resolved.target else {
-        return;
-    };
-
     commands.entity(request).insert(DefinitionTarget::Source {
-        file: target.file,
-        span: target.name_span,
+        file: navigation.file,
+        span: navigation.name_span,
     });
 }
 

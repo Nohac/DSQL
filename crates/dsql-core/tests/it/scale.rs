@@ -2,8 +2,11 @@
 //! walks. Wall time is noisy; invocation counts (via the engine's
 //! profiling counters) pin the intended shape directly.
 
+use std::collections::BTreeMap;
+
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::TableRef;
+use dsql_core::entities::fragment_spread::ResolvedSpread;
 use dsql_core::facts::{DiagnosticsDemand, PlanDemand, VariablesDemand};
 use dsql_core::language_bowl;
 use dsql_core::plan::QueryPlanFact;
@@ -194,8 +197,8 @@ async fn fragment_body_materialization_wakes_only_dependent_roots() {
         "only the dependent occurrence body follows syntax and resolution convergence"
     );
     assert_eq!(
-        checks_delta, 6,
-        "the fragment root and its dependent query converge without waking twenty unrelated roots"
+        checks_delta, 5,
+        "stable semantic identity avoids a syntax-key wake while leaving unrelated roots asleep"
     );
 }
 
@@ -232,8 +235,8 @@ async fn variable_inference_wakes_only_fragment_dependents() {
         .await;
     let delta = runs_of(&bowl, "infer_variables").await - before;
     assert_eq!(
-        delta, 3,
-        "the fragment root and dependent query converge at Complete without waking twenty unrelated roots"
+        delta, 2,
+        "the fragment root and dependent query each infer once from their semantic changes"
     );
 }
 
@@ -268,7 +271,58 @@ async fn planning_wakes_only_fragment_dependents() {
     let _ = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
     let delta = runs_of(&bowl, "plan_queries").await - before;
     assert_eq!(
-        delta, 5,
-        "the fragment root and dependent query follow their exact semantic and contract revisions without waking twenty unrelated roots"
+        delta, 4,
+        "stable semantic identity removes the extra syntax-key planning wake"
     );
+}
+
+#[tokio::test]
+async fn fragment_provider_edits_wake_only_same_name_spreads() {
+    let bowl = language_bowl().await;
+    dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
+
+    // Distinct names deliberately measure unrelated-bucket isolation. The
+    // same-name multiplicative case is the language's ambiguity path.
+    const UNRELATED: u64 = 20;
+    for index in 0..UNRELATED {
+        insert_source(
+            &bowl,
+            format!("spread-provider-{index}.dsql"),
+            &format!("fragment ScaleBits{index} on title {{ id }}\n"),
+        )
+        .await;
+        insert_source(
+            &bowl,
+            format!("spread-consumer-{index}.dsql"),
+            &format!("query ScaleQuery{index} {{ title {{ ...ScaleBits{index} }} }}\n"),
+        )
+        .await;
+    }
+
+    let resolution_ids = |rows: Vec<(Entity, &ResolvedSpread)>| {
+        rows.into_iter()
+            .map(|(entity, resolved)| (resolved.name.clone(), entity))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let before_rows = bowl.scoop::<Query<(Entity, &ResolvedSpread)>>().await;
+    let before_ids = resolution_ids(before_rows.collect());
+    let before_runs = runs_of(&bowl, "resolve_spreads").await;
+
+    edit_file(&bowl, "spread-provider-7.dsql", ("on title", "on name")).await;
+    let after_rows = bowl.scoop::<Query<(Entity, &ResolvedSpread)>>().await;
+    let after_ids = resolution_ids(after_rows.collect());
+    assert_eq!(
+        runs_of(&bowl, "resolve_spreads").await - before_runs,
+        1,
+        "one provider edit reaches only its same-name spread site"
+    );
+    for (name, before) in before_ids {
+        if name != "ScaleBits7" {
+            assert_eq!(
+                after_ids.get(&name),
+                Some(&before),
+                "unrelated spread resolution identity stays stable for {name}"
+            );
+        }
+    }
 }

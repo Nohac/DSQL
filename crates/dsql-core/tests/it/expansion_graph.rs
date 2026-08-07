@@ -8,8 +8,8 @@ use dsql_core::entities::aggregate::{AggregateTransformFact, ResolvedAggregate};
 use dsql_core::entities::clause::ClauseFact;
 use dsql_core::entities::definition::DefDecl;
 use dsql_core::entities::expansion::{
-    CycleSiteRoot, ExpansionBody, ExpansionCycle, ExpansionCycles, ExpansionOccurrence,
-    ExpansionOccurrences,
+    ExpansionBody, ExpansionCycle, ExpansionCycles, ExpansionOccurrence, ExpansionOccurrences,
+    SpreadSiteRoot,
 };
 use dsql_core::entities::field_selection::FieldSel;
 use dsql_core::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
@@ -391,9 +391,9 @@ async fn expansion_depth_converges_without_a_fixed_walk_limit() {
     );
     assert!(paths.iter().all(|path| !path.ends_with("cycle")));
     assert_eq!(
-        bowl.scoop::<Query<(Entity, &CycleSiteRoot)>>().await.len(),
+        bowl.scoop::<Query<(Entity, &SpreadSiteRoot)>>().await.len(),
         17,
-        "each of the sixteen fragment spreads and one query spread owns one cycle site"
+        "each of the sixteen fragment spreads and one query spread owns one semantic site"
     );
 
     let explanation = bowl.explain("extend_expansion_occurrences").await;

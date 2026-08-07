@@ -1195,6 +1195,70 @@ async fn definition_products_keep_identity_across_fragment_content_revisits() {
     );
 }
 
+#[tokio::test]
+async fn spread_products_converge_when_a_provider_appears_and_returns() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+    insert_source(
+        &bowl,
+        "late-query.dsql",
+        "query LateProvider { title(limit 1) { ...LateBits } }\n",
+    )
+    .await;
+    assert!(
+        render_diagnostic_facts(&bowl)
+            .await
+            .contains("fragment `LateBits` not found"),
+        "the settled empty candidate set reports the missing provider"
+    );
+
+    let fragment_source = "fragment LateBits on title { id title }\n";
+    let fragment = insert_source(&bowl, "late-fragment.dsql", fragment_source).await;
+    let initial_sql = render_sql(&bowl).await;
+    assert!(initial_sql.contains("'title'"));
+    let initial_products = definition_product_ids(&bowl, "LateProvider", "provider inserted").await;
+    let initial_sql_entity = bowl
+        .scoop::<Query<(Entity, &GeneratedSqlFact)>>()
+        .await
+        .collect()
+        .into_iter()
+        .find_map(|(entity, sql)| (sql.0.operation_name == "LateProvider").then_some(entity))
+        .expect("resolved operation has generated SQL");
+
+    set_source_text(
+        &bowl,
+        fragment,
+        "fragment OtherBits on title { id title }\n",
+    )
+    .await;
+    assert!(
+        render_diagnostic_facts(&bowl)
+            .await
+            .contains("fragment `LateBits` not found"),
+        "renaming the provider retracts its candidate and resolution"
+    );
+
+    set_source_text(&bowl, fragment, fragment_source).await;
+    assert_eq!(render_sql(&bowl).await, initial_sql);
+    assert_eq!(
+        definition_product_ids(&bowl, "LateProvider", "provider restored").await,
+        initial_products,
+        "byte-exact provider restoration reuses variable and plan identities"
+    );
+    let restored_sql_entity = bowl
+        .scoop::<Query<(Entity, &GeneratedSqlFact)>>()
+        .await
+        .collect()
+        .into_iter()
+        .find_map(|(entity, sql)| (sql.0.operation_name == "LateProvider").then_some(entity))
+        .expect("restored operation has generated SQL");
+    assert_eq!(
+        restored_sql_entity, initial_sql_entity,
+        "byte-exact provider restoration reuses SQL identity"
+    );
+}
+
 /// Comparison right-hand sides that are themselves column paths: same-table
 /// columns render as plain column references, and relation-path RHS columns
 /// exercise the `OuterCurrent` scope inside the nested `EXISTS`.

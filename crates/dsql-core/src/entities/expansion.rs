@@ -20,7 +20,7 @@ use crate::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use crate::entities::variable::VariableUse;
 use crate::facts::{
     BelongsToFile, ChildOf, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand,
-    NodeKey, SemanticMembers, SemanticRoot, Severity, Span, emit_diagnostic,
+    SemanticMembers, SemanticRoot, Severity, Span, emit_diagnostic,
 };
 use crate::resolution::{
     ClauseResolutions, ResolvedClause, ResolvedSelection, SelectionResolutions,
@@ -28,15 +28,19 @@ use crate::resolution::{
 use crate::schema::dsql_schema;
 use crate::source::ResolutionScope;
 
-/// Stable join key shared by a semantic group and resolutions targeting it.
+/// Stable join key shared by a definition, its semantic group, and resolutions
+/// targeting that group.
 ///
-/// The key is the definition's syntax [`NodeKey`], not the group entity id, so
-/// lowering can stamp it while creating the group and spread resolution can
-/// copy it from the target definition. Group-side joins additionally require
-/// [`SemanticRoot`] to discriminate the shared key bucket.
+/// The key is the definition entity, whose reconciled identity survives
+/// syntax-only changes that move CST node indices. Bound queries must also
+/// require their domain's tenant component: groups use [`SemanticRoot`],
+/// syntax definitions use [`DefDecl`], and derived contracts use their own
+/// specific payload component. [`SemanticRoot`] also contains the definition
+/// entity, but remains distinct because it is a group-side discriminator
+/// rather than a join key.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[component(hash)]
-pub struct SemanticDefinitionKey(pub NodeKey);
+pub struct SemanticDefinitionKey(pub Entity);
 
 /// Relationship edge from one [`ResolvedSpread`] to its source group.
 /// Selection, clause, and aggregate resolutions use separate relationships so
@@ -129,18 +133,18 @@ pub struct ExpansionCycleOf(pub Entity);
 #[relationship_target(relationship = ExpansionCycleOf)]
 pub struct ExpansionCycles(pub Vec<Entity>);
 
-/// Dedicated relationship owner for one spread's cycle candidates.
+/// Dedicated relationship owner for one spread's semantic products.
 ///
-/// This group keeps the tracked inverse off both syntax and semantic-root
-/// entities, whose revisions anchor unrelated derived facts.
+/// This group keeps candidate and cycle inverses off both syntax and
+/// semantic-root entities, whose revisions anchor unrelated derived facts.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[component(hash)]
-pub struct CycleSiteRoot;
+pub struct SpreadSiteRoot;
 
-/// Untracked pointer copied onto a resolved spread for expansion.
+/// Untracked pointer copied onto a resolved spread for expansion and checks.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[component(untracked)]
-pub struct CycleSiteGroup(pub Entity);
+pub struct SpreadSiteGroup(pub Entity);
 
 /// Relationship edge from a cycle candidate to its dedicated closing site.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -160,7 +164,7 @@ type SpreadDependencies<'a> = Related<
         &'a DependsOnSemanticGroup,
         &'a SemanticDefinitionKey,
         &'a BelongsToFile,
-        &'a CycleSiteGroup,
+        &'a SpreadSiteGroup,
     ),
 >;
 
@@ -243,7 +247,6 @@ type ExpansionTargetGroups<'a> = Query<
     (
         Entity,
         &'a SemanticRoot,
-        &'a NodeKey,
         RawSemanticMembers<'a>,
         SelectionResolutionRows<'a>,
         ClauseResolutionRows<'a>,
@@ -268,7 +271,7 @@ type ExpansionDefinitions<'a> = Query<
         &'a ResolutionScope,
         &'a BelongsToFile,
     ),
-    Where<BowlEq<NodeKey>>,
+    Where<BowlEq<SemanticDefinitionKey>>,
 >;
 
 pub(crate) fn clone_semantic_members(members: &RawSemanticMembers<'_>) -> Vec<ExpansionMember> {
@@ -348,14 +351,11 @@ pub(crate) fn register_expansion(registrar: &mut Registrar<'_>) {
 /// Binds a successful spread result to exactly one target fragment group.
 async fn bind_spread_dependencies(
     spreads: Query<(Entity, &ResolvedSpread, &SemanticDefinitionKey)>,
-    groups: Query<
-        (Entity, &SemanticRoot, &SemanticDefinitionKey),
-        Where<BowlEq<SemanticDefinitionKey>>,
-    >,
+    groups: Query<(Entity, &SemanticRoot), Where<BowlEq<SemanticDefinitionKey>>>,
     mut commands: Commands<(dsql_schema::ResolvedSpread,)>,
 ) {
     let (spread, _, _) = spreads.item();
-    let (group, _, _) = groups.item();
+    let (group, _) = groups.item();
     commands
         .entity(spread)
         .insert(DependsOnSemanticGroup(group));
@@ -363,8 +363,13 @@ async fn bind_spread_dependencies(
 
 /// Seeds direct fragment occurrences for every query and fragment root.
 async fn seed_expansion_occurrences(
-    groups: Query<(Entity, &NodeKey, &SemanticRoot, SpreadDependencies<'_>)>,
-    definitions: Query<(Entity, &DefDecl), Where<BowlEq<NodeKey>>>,
+    groups: Query<(
+        Entity,
+        &SemanticDefinitionKey,
+        &SemanticRoot,
+        SpreadDependencies<'_>,
+    )>,
+    definitions: Query<(Entity, &DefDecl), Where<BowlEq<SemanticDefinitionKey>>>,
     mut commands: Commands<(
         dsql_schema::ExpansionOccurrence,
         dsql_schema::ExpansionCycle,
@@ -432,12 +437,7 @@ async fn seed_expansion_occurrences(
 async fn extend_expansion_occurrences(
     occurrences: Query<(Entity, &ExpansionOccurrence, &SemanticDefinitionKey)>,
     targets: Query<
-        (
-            Entity,
-            &SemanticRoot,
-            &SemanticDefinitionKey,
-            SpreadDependencies<'_>,
-        ),
+        (Entity, &SemanticRoot, SpreadDependencies<'_>),
         Where<BowlEq<SemanticDefinitionKey>>,
     >,
     mut commands: Commands<(
@@ -446,7 +446,7 @@ async fn extend_expansion_occurrences(
     )>,
 ) {
     let (occurrence_entity, occurrence, _) = occurrences.item();
-    let (_, _, _, dependencies) = targets.item();
+    let (_, _, dependencies) = targets.item();
 
     for (resolution_entity, (spread, target_group, target_key, file, cycle_site)) in
         dependencies.iter()
@@ -505,7 +505,7 @@ async fn materialize_expansion_bodies(
     mut commands: Commands<(dsql_schema::ExpansionBody,)>,
 ) {
     let (occurrence_entity, occurrence, _) = occurrences.item();
-    let (target_group, _, _, members, selections, clauses, context_uses) = groups.item();
+    let (target_group, _, members, selections, clauses, context_uses) = groups.item();
     let (_, _, aggregates, spreads) = resolution_groups.item();
     let (definition, declaration, target, scope, file) = definitions.item();
 
@@ -548,7 +548,7 @@ type ClosingSpreadCycleRows<'a> = Related<ClosingSpreadCycles, (&'a ExpansionCyc
 /// without waking on unrelated members of any root.
 async fn check_expansion_cycles(
     _: Query<Entity, bowl::With<DiagnosticsDemand>>,
-    sites: Query<(Entity, &CycleSiteRoot, ClosingSpreadCycleRows<'_>)>,
+    sites: Query<(Entity, &SpreadSiteRoot, ClosingSpreadCycleRows<'_>)>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
     let (_, _, cycles) = sites.item();

@@ -22,13 +22,17 @@ use crate::entities::definition::{DefDecl, DefIndex, FragmentKey, FragmentTarget
 use crate::entities::directive::DirectiveFact;
 use crate::entities::document::ParsedFile;
 use crate::entities::expansion::{
-    ClosingSpreadCycles, CycleSiteGroup, CycleSiteRoot, DependsOnSemanticGroup, ExpansionBodies,
-    ExpansionBody, ExpansionBodyOf, ExpansionCycle, ExpansionCycleAt, ExpansionCycleOf,
-    ExpansionCycles, ExpansionOccurrence, ExpansionOccurrenceOf, ExpansionOccurrences,
-    SemanticDefinitionKey, SemanticDependents, SpreadResolutionOf, SpreadResolutions,
+    ClosingSpreadCycles, DependsOnSemanticGroup, ExpansionBodies, ExpansionBody, ExpansionBodyOf,
+    ExpansionCycle, ExpansionCycleAt, ExpansionCycleOf, ExpansionCycles, ExpansionOccurrence,
+    ExpansionOccurrenceOf, ExpansionOccurrences, SemanticDefinitionKey, SemanticDependents,
+    SpreadResolutionOf, SpreadResolutions, SpreadSiteGroup, SpreadSiteRoot,
 };
 use crate::entities::field_selection::FieldSel;
-use crate::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
+use crate::entities::fragment_spread::{
+    FragmentCandidateKey, FragmentSemantics, ResolvedSpread, ResolvedSpreadNavigation, SpreadDecl,
+    VisibleFragmentCandidate, VisibleFragmentCandidateOf, VisibleFragmentCandidates,
+    VisibleFragmentNavigation,
+};
 use crate::entities::policy::{
     CompiledPolicyIndex, PolicyBodyIndex, PolicyDecl, PolicyIndex, PolicyPlanIndex,
 };
@@ -63,6 +67,10 @@ use crate::source::{
 };
 use crate::sql::{GeneratedSqlFact, SqlOptions};
 
+#[expect(
+    clippy::type_complexity,
+    reason = "schema tuples are the explicit fact-shape contract"
+)]
 #[derive(bowl::Schema)]
 pub struct DsqlSchema {
     // Base inputs: caller-inserted entity kinds. Base writes are not
@@ -107,6 +115,7 @@ pub struct DsqlSchema {
     // inverses.
     def: (
         NodeKey,
+        Option<SemanticDefinitionKey>,
         DefDecl,
         ResolutionScope,
         BelongsToFile,
@@ -128,8 +137,13 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
     ),
-    semantic_group: (NodeKey, SemanticDefinitionKey, SemanticRoot, DerivedFrom),
-    cycle_site: (NodeKey, CycleSiteRoot, DerivedFrom),
+    semantic_group: (
+        SemanticRoot,
+        DerivedFrom,
+        Option<NodeKey>,
+        Option<SemanticDefinitionKey>,
+    ),
+    spread_site: (NodeKey, SpreadSiteRoot, DerivedFrom),
     semantic_members: (SemanticMembers,),
     context_use_resolutions: (ContextUseResolutions,),
     spread_resolutions: (SpreadResolutions,),
@@ -137,6 +151,7 @@ pub struct DsqlSchema {
     expansion_occurrences: (ExpansionOccurrences,),
     expansion_cycles: (ExpansionCycles,),
     closing_spread_cycles: (ClosingSpreadCycles,),
+    visible_fragment_candidates: (VisibleFragmentCandidates,),
     expansion_bodies: (ExpansionBodies,),
     field_selection: (
         NodeKey,
@@ -260,12 +275,27 @@ pub struct DsqlSchema {
         DerivedFrom,
     ),
     resolved_fragment_target: (ResolvedFragmentTarget, BelongsToFile, DerivedFrom),
+    visible_fragment_candidate: (
+        VisibleFragmentCandidate,
+        FragmentCandidateKey,
+        VisibleFragmentCandidateOf,
+        DerivedFrom,
+    ),
+    fragment_semantic_projection: (
+        FragmentSemantics,
+        FragmentKey,
+        SemanticDefinitionKey,
+        DerivedFrom,
+    ),
+    visible_fragment_navigation: (VisibleFragmentNavigation, FragmentCandidateKey, DerivedFrom),
     resolved_spread: (
         ResolvedSpread,
         SpreadResolutionOf,
         BelongsToFile,
         DerivedFrom,
-        CycleSiteGroup,
+        SpreadSiteGroup,
+        Option<FragmentCandidateKey>,
+        Option<ResolvedSpreadNavigation>,
         Option<SemanticDefinitionKey>,
         Option<DependsOnSemanticGroup>,
     ),
@@ -287,6 +317,7 @@ pub struct DsqlSchema {
         DefinitionInputRewrites,
         DefinitionVariableOwner,
         NodeKey,
+        SemanticDefinitionKey,
         DefKey,
         BelongsToFile,
         DerivedFrom,
@@ -345,23 +376,32 @@ pub struct DsqlSchema {
 /// declares through its `Commands`.
 ///
 /// The six nested spawn shapes deliberately repeat their pre-edge tuples
-/// instead of using the generated schema aliases. [`SemanticMemberOf`] is an
-/// optional part of all six runtime shapes, but listing those aliases here
-/// would give the walker's untyped central edge write six valid declaration
-/// witnesses and make type inference ambiguous. Declaring the edge once keeps
-/// that write centralized. This trades away static proof that the edge targets
-/// a permitting shape; the semantic-ownership integration fixture therefore
-/// exercises every tuple below through commit-time schema conformance. Future
-/// cross-cutting optional components spanning multiple shapes require the same
-/// output-declaration split.
+/// instead of using the generated schema aliases. [`SemanticMemberOf`] is
+/// optional on all six runtime shapes, and [`SemanticDefinitionKey`] is
+/// optional on both definition and semantic-group shapes. Listing those
+/// generated aliases here would give the walker's untyped central writes
+/// several valid declaration witnesses and make type inference ambiguous. The
+/// final manual tuple declares each component once. This trades away static
+/// proof that the edge and key target permitting shapes; the semantic-ownership
+/// integration fixture therefore exercises every tuple below through
+/// commit-time schema conformance. Future cross-cutting optional components
+/// spanning multiple shapes require the same output-declaration split.
 ///
 /// [`LowerStage`]: crate::entity::LowerStage
 pub type AstFacts = (
-    dsql_schema::Def,
+    (
+        NodeKey,
+        DefDecl,
+        ResolutionScope,
+        BelongsToFile,
+        DerivedFrom,
+        Option<FragmentKey>,
+        Option<FragmentTarget>,
+    ),
     dsql_schema::PolicyDefinition,
     dsql_schema::ContextDeclaration,
-    dsql_schema::SemanticGroup,
-    dsql_schema::CycleSite,
+    (SemanticRoot, DerivedFrom, Option<NodeKey>),
+    dsql_schema::SpreadSite,
     (
         NodeKey,
         FieldSel,
@@ -409,5 +449,5 @@ pub type AstFacts = (
         DerivedFrom,
         Option<ChildOf>,
     ),
-    (SemanticMemberOf,),
+    (Option<SemanticDefinitionKey>, Option<SemanticMemberOf>),
 );

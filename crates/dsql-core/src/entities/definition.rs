@@ -58,10 +58,9 @@ pub struct DefDecl {
     pub name_span: Span,
     /// Span of the whole definition.
     pub span: Span,
-    /// Fingerprint of the definition's source slice. The variable and plan
-    /// walks still read the definition *body* through ambient views;
-    /// this hash is the tracked dependency that re-runs them on any body
-    /// edit — including same-length edits that move no span.
+    /// Fingerprint of the definition's source slice, retained for the
+    /// remaining definition-level consumers until every body contract is a
+    /// relationship-owned semantic fact.
     pub source_hash: u64,
     /// Contract refinements written in the definition header.
     pub input_refinements: Vec<InputRefinement>,

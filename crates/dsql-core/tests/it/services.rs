@@ -503,6 +503,71 @@ async fn goto_definition_follows_spreads() {
 }
 
 #[tokio::test]
+async fn spread_navigation_follows_span_changes_without_semantic_resolution() {
+    const FRAGMENT_PATH: &str = "fragments.dsql";
+    const QUERY_PATH: &str = "query.dsql";
+    const FRAGMENT: &str = "fragment TitleBits on title { id }\n";
+    const QUERY: &str = "query Titles { title(limit 1) { ...TitleBits } }\n";
+
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, imdb_catalog()).await;
+    let fragment = insert_source(&bowl, FRAGMENT_PATH, FRAGMENT).await;
+    insert_source(&bowl, QUERY_PATH, QUERY).await;
+
+    async fn definition_at(bowl: &Bowl) -> (bowl::Entity, dsql_core::facts::Span) {
+        let spread = QUERY.find("TitleBits").expect("query text");
+        let target = bowl
+            .insert((
+                DefinitionRequest,
+                FilePath(QUERY_PATH.to_string()),
+                Position { offset: spread },
+            ))
+            .await
+            .bind()
+            .take::<DefinitionTarget>()
+            .await
+            .expect("definition answered");
+        match target.as_ref() {
+            DefinitionTarget::Source { file, span } => Some((*file, *span)),
+            DefinitionTarget::Catalog(_) => None,
+        }
+        .expect("spread definition must target source")
+    }
+
+    async fn system_runs(bowl: &Bowl, suffix: &str) -> u64 {
+        bowl.profile_all()
+            .await
+            .into_iter()
+            .find(|entry| entry.name.ends_with(suffix))
+            .map(|entry| entry.runs)
+            .unwrap_or_default()
+    }
+
+    let (initial_file, initial_span) = definition_at(&bowl).await;
+    let initial_binder_runs = system_runs(&bowl, "bind_visible_fragment_candidates").await;
+    let initial_resolver_runs = system_runs(&bowl, "resolve_spreads").await;
+    assert_eq!(initial_file, fragment);
+    assert_eq!(initial_span.start, 9);
+
+    set_source_text(&bowl, fragment, format!("\n{FRAGMENT}")).await;
+
+    let (moved_file, moved_span) = definition_at(&bowl).await;
+    assert_eq!(
+        system_runs(&bowl, "bind_visible_fragment_candidates").await,
+        initial_binder_runs,
+        "navigation-only span changes must not wake candidate binding"
+    );
+    assert_eq!(
+        system_runs(&bowl, "resolve_spreads").await,
+        initial_resolver_runs,
+        "navigation-only span changes must not wake semantic spread resolution"
+    );
+    assert_eq!(moved_file, fragment);
+    assert_eq!(moved_span.start, initial_span.start + 1);
+    assert_eq!(moved_span.end, initial_span.end + 1);
+}
+
+#[tokio::test]
 async fn semantic_tokens_classify_by_resolution() {
     use dsql_core::service::semantic_tokens;
 

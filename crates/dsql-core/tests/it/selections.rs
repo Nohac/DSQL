@@ -10,6 +10,7 @@ use dsql_core::catalog::{
     table_metadata_to_yaml,
 };
 use dsql_core::entities::definition::DefDecl;
+use dsql_core::entities::expansion::SemanticDefinitionKey;
 use dsql_core::entities::field_selection::{FieldBodyKind, FieldSel};
 use dsql_core::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use dsql_core::facts::{ChildOf, DiagnosticsDemand, NodeKey};
@@ -148,18 +149,20 @@ async fn selections_lower_into_a_parent_keyed_tree() {
 /// Renders spread resolutions by name, sorted for stability.
 async fn render_resolutions(bowl: &Bowl) -> Vec<String> {
     let spreads = bowl.scoop::<Query<(Entity, &ResolvedSpread)>>().await;
-    let defs = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
+    let defs = bowl
+        .scoop::<Query<(Entity, &DefDecl, &SemanticDefinitionKey)>>()
+        .await;
     let def_rows = defs.collect();
 
     let mut lines: Vec<String> = spreads
         .collect()
         .into_iter()
         .filter_map(|(_, resolved)| {
-            let target = resolved.target.as_ref()?;
+            let target = resolved.target()?;
             let fragment = def_rows
                 .iter()
-                .find(|(entity, _)| *entity == target.fragment)
-                .map(|(_, decl)| decl.name.as_str())
+                .find(|(_, _, key)| **key == target.definition_key)
+                .map(|(_, decl, _)| decl.name.as_str())
                 .unwrap_or("<missing fragment>");
             Some(format!("...{} -> fragment {fragment}", resolved.name))
         })
