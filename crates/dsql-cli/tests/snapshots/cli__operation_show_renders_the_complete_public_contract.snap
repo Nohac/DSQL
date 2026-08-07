@@ -1,0 +1,39 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+expression: stdout(&output)
+---
+operation default::OperationContract
+
+params
+  direction: "asc" | "desc" = "asc"
+  ids: Array<int | null> = [1, 2]
+  search: predicate(selected) = {}
+    id: int [operators eq, neq, gt, gte, lt, lte, in, not_in, is_null]
+    imdb_index: text | null [operators eq, neq, like, in, not_in, is_null]
+    production_year: int | null [operators eq, neq, gt, gte, lt, lte, in, not_in, is_null]
+    title: text [operators eq, neq, like, in, not_in, is_null]
+  sort: order(selected) = []
+    id: int [directions asc, desc, asc_nulls_first, asc_nulls_last, desc_nulls_first, desc_nulls_last]
+    imdb_index: text | null [directions asc, desc, asc_nulls_first, asc_nulls_last, desc_nulls_first, desc_nulls_last]
+    production_year: int | null [directions asc, desc, asc_nulls_first, asc_nulls_last, desc_nulls_first, desc_nulls_last]
+    title: text [directions asc, desc, asc_nulls_first, asc_nulls_last, desc_nulls_first, desc_nulls_last]
+  year?: int = null
+
+input
+  title.body.kind_type.clause.where.kind.kind?: text = null
+
+context
+  minimum_year: int
+
+result
+{
+  title: Array<{
+    id: int
+    title: text
+    imdb_index: text | null
+    production_year: int | null
+    kind_type: {
+      kind: text
+    } | null
+  }>
+}

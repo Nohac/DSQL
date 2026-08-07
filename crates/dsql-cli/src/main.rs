@@ -117,6 +117,12 @@ enum OperationCommand {
         #[arg(long)]
         scope: Option<String>,
     },
+    /// Show one operation's public input, context, and result contract.
+    Show {
+        name: String,
+        #[arg(long)]
+        scope: String,
+    },
     /// Execute one compiled operation against the project database.
     Execute {
         name: String,
@@ -134,6 +140,9 @@ enum OperationCommand {
         /// Read trusted server-context JSON from this file.
         #[arg(long)]
         context_file: Option<PathBuf>,
+        /// Validate and print the exact SQL and parameter contract without connecting.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -241,6 +250,9 @@ async fn main() -> std::process::ExitCode {
             command: OperationCommand::List { scope },
         } => commands::operation_list(scope.as_deref()).await,
         Command::Operation {
+            command: OperationCommand::Show { name, scope },
+        } => commands::operation_show(&scope, &name).await,
+        Command::Operation {
             command:
                 OperationCommand::Execute {
                     name,
@@ -249,6 +261,7 @@ async fn main() -> std::process::ExitCode {
                     variables_file,
                     context,
                     context_file,
+                    dry_run,
                 },
         } => {
             commands::operation_execute(
@@ -258,6 +271,7 @@ async fn main() -> std::process::ExitCode {
                 variables_file.as_deref(),
                 context.as_deref(),
                 context_file.as_deref(),
+                dry_run,
             )
             .await
         }

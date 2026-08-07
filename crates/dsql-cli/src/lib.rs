@@ -4,4 +4,5 @@
 pub mod commands;
 #[cfg(debug_assertions)]
 pub mod debug;
+mod operation;
 pub mod render;

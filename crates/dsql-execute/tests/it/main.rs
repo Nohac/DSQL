@@ -1,6 +1,6 @@
 use dsql_execute::{
     BoundParameter, ExecuteError, ExecutionBindings, MaterializedOperation, PostgresExecutor,
-    materialize,
+    execution_sql, materialize,
 };
 use dsql_metadata::{
     ClosedValueMetadata, ClosedValueSetMetadata, DefinitionKind, DynamicInputField,
@@ -826,6 +826,15 @@ fn materialization_rejects_non_query_metadata() {
         materialize(&unsupported, &ExecutionBindings::default()),
         Err(ExecuteError::UnsupportedOperationKind(kind)) if kind == "fragment"
     ));
+}
+
+#[test]
+fn execution_sql_matches_the_database_wrapper() {
+    let materialized = MaterializedOperation {
+        sql: "\nselect $1 as value;\n".to_string(),
+        parameters: Vec::new(),
+    };
+    insta::assert_snapshot!(execution_sql(&materialized));
 }
 
 #[tokio::test]

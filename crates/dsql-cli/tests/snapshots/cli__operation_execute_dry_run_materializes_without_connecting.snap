@@ -1,0 +1,72 @@
+---
+source: crates/dsql-cli/tests/cli.rs
+expression: stdout(&dry_run)
+---
+operation default::OperationContract
+
+SQL
+select ROW_TO_JSON("result")::text from (select
+  COALESCE(
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'id',
+        "title_d4d9f554"."id",
+        'title',
+        "title_d4d9f554"."title",
+        'imdb_index',
+        "title_d4d9f554"."imdb_index",
+        'production_year',
+        "title_d4d9f554"."production_year",
+        'kind_type',
+        "kind_type_json_d78b0eec"."kind_type_result_d78b0eec"
+      )
+      order by
+        NULL::integer,
+        case
+          when 'asc' = 'asc' then "title_d4d9f554"."id"
+        end asc,
+        case
+          when 'asc' = 'desc' then "title_d4d9f554"."id"
+        end desc
+    ),
+    '[]'
+  ) as "title"
+from
+  (
+    select
+      *
+    from
+      "public"."title" as "title_d4d9f554"
+    where
+      ("title_d4d9f554"."id" = ANY($1))
+      and "title_d4d9f554"."production_year" >= ($2)
+      and (
+        "title_d4d9f554"."production_year" >= ($3)
+        or (not ($3 is not null))
+      )
+      and ((("title_d4d9f554"."id") = ANY($5)))
+    order by
+      NULL::integer,
+      "title_d4d9f554"."id" asc
+    limit
+      2
+  ) as "title_d4d9f554"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT('kind', "kind_type_d78b0eec"."kind") as "kind_type_result_d78b0eec"
+    from
+      "public"."kind_type" as "kind_type_d78b0eec"
+    where
+      "kind_type_d78b0eec"."id" = "title_d4d9f554"."kind_id"
+      and (
+        "kind_type_d78b0eec"."kind" = ($4)
+        or (not ($4 is not null))
+      )
+  ) as "kind_type_json_d78b0eec" on true) as "result"
+
+parameters
+  $1 params.ids: Array<int | null>
+  $2 context.minimum_year: int
+  $3 params.year: int | null
+  $4 input.title.body.kind_type.clause.where.kind.kind: text | null
+  $5 params.search.id.in: Array<int>

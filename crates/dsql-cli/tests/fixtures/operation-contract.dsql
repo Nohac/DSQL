@@ -1,0 +1,29 @@
+context {
+  minimum_year: int
+}
+
+query OperationContract(
+  $kind? = null
+  %direction = "asc"
+  %ids = [1, 2]
+  %year? = null
+  %search = {}
+  %sort = []
+) {
+  title(
+    where .id in %ids
+    and .production_year >= $:minimum_year
+    and .production_year >= %year
+    and %search on selected
+    order by %sort on selected, id %direction
+    limit 2
+  ) {
+    id
+    title
+    imdb_index
+    production_year
+    kind_type(where .kind == $kind) {
+      kind
+    }
+  }
+}

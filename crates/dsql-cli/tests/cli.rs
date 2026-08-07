@@ -98,6 +98,16 @@ fn scratch_copy(test: &str) -> PathBuf {
     dir
 }
 
+fn operation_contract_fixture(test: &str) -> PathBuf {
+    let dir = scratch_copy(test);
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/operation-contract.dsql"),
+        dir.join("dsql/queries/operation-contract.dsql"),
+    )
+    .expect("operation contract fixture copies");
+    dir
+}
+
 fn copy_tree(source: &Path, target: &Path) {
     std::fs::create_dir_all(target).expect("fixture dir");
     for entry in std::fs::read_dir(source).expect("fixture readable") {
@@ -141,6 +151,84 @@ fn operation_list_uses_scopes_and_the_visible_alias() {
     let scoped = dsql(&imdb_fixture(), &["op", "list", "--scope", "missing"]);
     assert!(scoped.status.success(), "stderr: {}", stderr(&scoped));
     assert!(stdout(&scoped).is_empty());
+}
+
+#[test]
+fn operation_show_renders_the_complete_public_contract() {
+    let project = operation_contract_fixture("operation-show");
+    let output = dsql(
+        &project,
+        &[
+            "operation",
+            "show",
+            "OperationContract",
+            "--scope",
+            "default",
+        ],
+    );
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    insta::assert_snapshot!(stdout(&output));
+    std::fs::remove_dir_all(project).ok();
+}
+
+#[test]
+fn operation_execute_dry_run_materializes_without_connecting() {
+    let project = operation_contract_fixture("operation-dry-run");
+    let arguments = [
+        "operation",
+        "execute",
+        "OperationContract",
+        "--scope",
+        "default",
+        "--context",
+        r#"{"minimum_year": 1990}"#,
+        "--variables",
+        r#"{"params":{"search":{"id":{"in":[1,2]}}}}"#,
+    ];
+    let invalid_database = "not-a-database-url";
+
+    let mut dry_run_arguments = arguments.to_vec();
+    dry_run_arguments.push("--dry-run");
+    let dry_run = dsql_with_database(&project, invalid_database, &dry_run_arguments);
+    assert!(
+        dry_run.status.success(),
+        "dry-run must not connect: {}",
+        stderr(&dry_run)
+    );
+    insta::assert_snapshot!(stdout(&dry_run));
+
+    let executed = dsql_with_database(&project, invalid_database, &arguments);
+    assert!(!executed.status.success(), "non-dry execution must connect");
+    assert!(
+        stderr(&executed).contains("error with configuration:"),
+        "unexpected execution error: {}",
+        stderr(&executed)
+    );
+    std::fs::remove_dir_all(project).ok();
+}
+
+#[test]
+fn operation_execute_dry_run_still_requires_trusted_context() {
+    let project = operation_contract_fixture("operation-dry-run-context");
+    let output = dsql(
+        &project,
+        &[
+            "operation",
+            "execute",
+            "OperationContract",
+            "--scope",
+            "default",
+            "--dry-run",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output)
+            .contains("required operation input `context.minimum_year` was not provided"),
+        "unexpected dry-run validation error: {}",
+        stderr(&output)
+    );
+    std::fs::remove_dir_all(project).ok();
 }
 
 #[test]

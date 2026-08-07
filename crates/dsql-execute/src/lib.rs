@@ -120,10 +120,9 @@ impl PostgresExecutor {
         &self,
         materialized: &MaterializedOperation,
     ) -> Result<Value, ExecuteError> {
-        let inner = materialized.sql.trim().trim_end_matches(';');
-        let mut query = sqlx::query_scalar::<Postgres, Option<String>>(AssertSqlSafe(format!(
-            "select ROW_TO_JSON(\"result\")::text from ({inner}) as \"result\""
-        )));
+        let mut query = sqlx::query_scalar::<Postgres, Option<String>>(AssertSqlSafe(
+            execution_sql(materialized),
+        ));
         for parameter in &materialized.parameters {
             query = bind(query, parameter)?;
         }
@@ -184,6 +183,12 @@ impl PostgresExecutor {
         }
         None
     }
+}
+
+/// Exact PostgreSQL statement executed for one materialized query operation.
+pub fn execution_sql(materialized: &MaterializedOperation) -> String {
+    let inner = materialized.sql.trim().trim_end_matches(';');
+    format!("select ROW_TO_JSON(\"result\")::text from ({inner}) as \"result\"")
 }
 
 pub fn materialize(

@@ -1,0 +1,5 @@
+---
+source: crates/dsql-execute/tests/it/main.rs
+expression: execution_sql(&materialized)
+---
+select ROW_TO_JSON("result")::text from (select $1 as value) as "result"

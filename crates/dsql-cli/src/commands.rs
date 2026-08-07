@@ -54,6 +54,8 @@ pub enum CliError {
     },
     #[error("failed to serialize metadata: {0}")]
     Metadata(String),
+    #[error("invalid operation contract: {0}")]
+    OperationContract(String),
     #[error("{0} is not a project document")]
     NotAProjectDocument(PathBuf),
     #[error("{0} is an embedding host; format the extracted dsql regions via their editor")]
@@ -293,6 +295,20 @@ pub async fn operation_list(scope: Option<&str>) -> Outcome {
     Ok(true)
 }
 
+/// Prints one generation-clean operation's public contract.
+pub async fn operation_show(scope: &str, name: &str) -> Outcome {
+    let project = Project::load().await?;
+    let Some(operation) = compiled_operation(&project, scope, name).await? else {
+        return Ok(false);
+    };
+    println!(
+        "{}",
+        crate::operation::render_contract(scope, &operation)
+            .map_err(CliError::OperationContract)?
+    );
+    Ok(true)
+}
+
 /// Executes one generation-clean operation against the configured database.
 pub async fn operation_execute(
     scope: &str,
@@ -301,28 +317,24 @@ pub async fn operation_execute(
     variables_file: Option<&Path>,
     context: Option<&str>,
     context_file: Option<&Path>,
+    dry_run: bool,
 ) -> Outcome {
     let project = Project::load().await?;
-    let Some(operations) = compiled_operations(&project).await? else {
+    let Some(operation) = compiled_operation(&project, scope, name).await? else {
         return Ok(false);
     };
-    let artifact = operations
-        .iter()
-        .find(|artifact| artifact.scope == scope && artifact.name == name)
-        .ok_or_else(|| CliError::OperationNotFound {
-            scope: scope.to_string(),
-            name: name.to_string(),
-        })?;
-    let operation: OperationMetadata =
-        facet_json::from_str(&artifact.serialized).map_err(|error| CliError::Json {
-            input: artifact.id.clone(),
-            message: error.to_string(),
-        })?;
     let bindings = dsql_execute::ExecutionBindings {
         variables: json_input(variables, variables_file, "variables").await?,
         context: json_input(context, context_file, "context").await?,
     };
     let materialized = dsql_execute::materialize(&operation, &bindings)?;
+    if dry_run {
+        print!(
+            "{}",
+            crate::operation::render_dry_run(scope, &operation, &materialized)
+        );
+        return Ok(true);
+    }
     let executor =
         dsql_execute::PostgresExecutor::connect(&effective_database_url(&project)?).await?;
     let output = executor.execute_materialized(&materialized).await?;
@@ -334,6 +346,29 @@ pub async fn operation_execute(
         })?
     );
     Ok(true)
+}
+
+async fn compiled_operation(
+    project: &Project,
+    scope: &str,
+    name: &str,
+) -> Result<Option<OperationMetadata>, CliError> {
+    let Some(operations) = compiled_operations(project).await? else {
+        return Ok(None);
+    };
+    let artifact = operations
+        .iter()
+        .find(|artifact| artifact.scope == scope && artifact.name == name)
+        .ok_or_else(|| CliError::OperationNotFound {
+            scope: scope.to_string(),
+            name: name.to_string(),
+        })?;
+    facet_json::from_str(&artifact.serialized)
+        .map(Some)
+        .map_err(|error| CliError::Json {
+            input: artifact.id.clone(),
+            message: error.to_string(),
+        })
 }
 
 async fn compiled_operations(project: &Project) -> Result<Option<Vec<SnapshotArtifact>>, CliError> {

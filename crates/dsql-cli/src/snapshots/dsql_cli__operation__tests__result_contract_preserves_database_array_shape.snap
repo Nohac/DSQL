@@ -1,0 +1,7 @@
+---
+source: crates/dsql-cli/src/operation.rs
+expression: "result_object_type(&fields, \"\", 0).expect(\"database-array contract renders\")"
+---
+{
+  values: database_array<bigint> | null
+}

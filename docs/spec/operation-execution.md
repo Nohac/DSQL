@@ -10,15 +10,29 @@ catalog fields.
 
 ```text
 dsql operation list [--scope <scope>]
+dsql operation show <name> --scope <scope>
 dsql operation execute <name> --scope <scope> \
   [--variables <json> | --variables-file <path>] \
-  [--context <json> | --context-file <path>]
+  [--context <json> | --context-file <path>] [--dry-run]
 ```
 
 `op` is a visible alias for `operation`. Listing compiles the whole project and
 prints the scope and name of each clean operation without connecting to the
 database. Execution also compiles the whole project and refuses to run while
 error diagnostics exist.
+
+`operation show` prints the compiler-produced parameter, nested input, trusted
+context, and result contracts. Nullable inputs retain the DSQL header `?`
+spelling; omission is represented by a default, never by overloading `?`.
+Bounded dynamic inputs include their public kind, surface, fields, operator
+names, and directions, but omit compiler-only SQL site data. Operand arity and
+value shape remain enforced during materialization rather than being inferred
+from those names by inspection tooling.
+
+`operation execute --dry-run` performs the same input/default/variant/dynamic
+materialization as execution, then prints the exact wrapper statement the
+PostgreSQL executor would submit plus the ordered parameter paths and logical
+types. It never prints parameter values and never opens a database connection.
 
 Variables preserve the metadata namespaces:
 
