@@ -16,15 +16,24 @@ insert mode is active when `update_in_insert = false`, but its deferred `InsertL
 buffer-local. A diagnostic published for buffer B while inserting in buffer A can therefore stay
 cached but hidden until B receives another publication.
 
-Configure the DSQL client's diagnostic namespace to update during insert mode while leaving the
-global diagnostic policy unchanged:
+Refresh the DSQL client's complete diagnostic namespace when insert mode ends. This preserves
+`update_in_insert = false` while also displaying publications Neovim received for other buffers:
 
 ```lua
 vim.lsp.config('dsql', {
   -- cmd, filetypes, root_dir, ...
   on_attach = function(client)
     local namespace = vim.lsp.diagnostic.get_namespace(client.id)
-    vim.diagnostic.config({ update_in_insert = true }, namespace)
+    local group = vim.api.nvim_create_augroup(
+      'dsql-diagnostics-' .. client.id,
+      { clear = true }
+    )
+    vim.api.nvim_create_autocmd('InsertLeave', {
+      group = group,
+      callback = function()
+        vim.diagnostic.show(namespace, nil)
+      end,
+    })
   end,
 })
 ```
