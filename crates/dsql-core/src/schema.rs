@@ -24,17 +24,17 @@ use crate::entities::context::{
     ContextDeclarationContexts, ContextDeclarationKey, ContextDeclarationNavigation,
     ContextDeclarationPeer, ContextDeclarationPeerOf, ContextDeclarationPeers,
     ContextDeclarationSemantics, ContextDeclarationSiteKey, ContextDeclarationSiteRoot,
-    ContextIndex, ContextNameKey, ContextSource, ContextUseCandidate, ContextUseCandidateOf,
+    ContextNameKey, ContextSource, ContextUseCandidate, ContextUseCandidateOf,
     ContextUseCandidates, ContextUseContext, ContextUseContextOf, ContextUseContexts,
     ContextUseResolutionOf, ContextUseResolutions, ContextUseSiteKey, ContextUseSiteRoot,
     ResolvedContextUse,
 };
 use crate::entities::definition::{
-    DefDecl, DefIndex, DefinitionNameKey, DefinitionNavigation, DefinitionPath,
-    DefinitionSemantics, DefinitionSiteContext, DefinitionSiteContextOf, DefinitionSiteContexts,
-    DefinitionSiteKey, DefinitionSiteRoot, FragmentKey, FragmentTarget, ImportedQueryPeer,
-    ImportedQueryPeerOf, ImportedQueryPeers, VisibleDefinitionCandidate,
-    VisibleDefinitionCandidateOf, VisibleDefinitionCandidates,
+    DefDecl, DefinitionNameKey, DefinitionNavigation, DefinitionPath, DefinitionSemantics,
+    DefinitionSiteContext, DefinitionSiteContextOf, DefinitionSiteContexts, DefinitionSiteKey,
+    DefinitionSiteRoot, FragmentKey, FragmentTarget, ImportedQueryPeer, ImportedQueryPeerOf,
+    ImportedQueryPeers, VisibleDefinitionCandidate, VisibleDefinitionCandidateOf,
+    VisibleDefinitionCandidates,
 };
 use crate::entities::directive::DirectiveFact;
 use crate::entities::document::ParsedFile;
@@ -51,7 +51,14 @@ use crate::entities::fragment_spread::{
     VisibleFragmentNavigation,
 };
 use crate::entities::policy::{
-    CompiledPolicyIndex, PolicyBodyIndex, PolicyDecl, PolicyIndex, PolicyPlanIndex,
+    CompiledPolicy, CompiledPolicyIndex, DefinitionPolicies, DefinitionPolicy, DefinitionPolicyOf,
+    DefinitionPolicySurface, DefinitionShapePolicies, DefinitionShapePolicy,
+    DefinitionShapePolicyOf, PolicyCompileProblems, PolicyContextCandidate,
+    PolicyContextCandidateOf, PolicyContextCandidates, PolicyContextReference, PolicyDecl,
+    PolicyIndex, PolicyNameKey, PolicyNavigation, PolicyPeer, PolicyPeerOf, PolicyPeers,
+    PolicyReference, PolicyRegistryMember, PolicyRegistryMemberOf, PolicyRegistryMembers,
+    PolicyRegistryRoot, PolicySiteContext, PolicySiteContextOf, PolicySiteContexts, PolicySiteKey,
+    PolicySiteRoot, VisiblePolicyCandidate, VisiblePolicyCandidateOf, VisiblePolicyCandidates,
 };
 use crate::entities::variable::{
     DefinitionInputRewrites, DefinitionVariableOwner, DefinitionVariables,
@@ -147,6 +154,9 @@ pub struct DsqlSchema {
     policy_definition: (
         NodeKey,
         PolicyDecl,
+        PolicyNameKey,
+        PolicyNavigation,
+        Option<PolicySiteKey>,
         ResolutionScope,
         BelongsToFile,
         DerivedFrom,
@@ -195,6 +205,7 @@ pub struct DsqlSchema {
         DerivedFrom,
         Option<NodeKey>,
         Option<SemanticDefinitionKey>,
+        Option<DefinitionPolicySurface>,
     ),
     spread_site: (NodeKey, SpreadSiteRoot, DerivedFrom),
     semantic_members: (SemanticMembers,),
@@ -342,18 +353,53 @@ pub struct DsqlSchema {
         BelongsToFile,
         DerivedFrom,
     ),
-    def_index: (
-        Singleton<DefIndex>,
-        DefIndex,
-        Option<PolicyPlanIndex>,
-        Option<ContextIndex>,
+    policy_site: (
+        PolicySiteRoot,
+        PolicySiteKey,
+        PolicyNameKey,
+        Option<CompiledPolicy>,
+        Option<PolicyCompileProblems>,
     ),
-    policy_index: (
-        Singleton<PolicyIndex>,
-        PolicyIndex,
+    policy_site_contexts: (PolicySiteContexts,),
+    policy_site_context: (
+        PolicySiteContext,
+        PolicySiteContextOf,
+        PolicyNameKey,
+        DerivedFrom,
+    ),
+    policy_reference: (PolicyReference, PolicyNameKey, PolicySiteKey, DerivedFrom),
+    policy_context_reference: (
+        PolicyContextReference,
+        ContextNameKey,
+        PolicySiteKey,
+        DerivedFrom,
+    ),
+    policy_context_candidates: (PolicyContextCandidates,),
+    policy_context_candidate: (
+        PolicyContextCandidate,
+        PolicyContextCandidateOf,
+        DerivedFrom,
+    ),
+    visible_policy_candidates: (VisiblePolicyCandidates,),
+    visible_policy_candidate: (
+        VisiblePolicyCandidate,
+        VisiblePolicyCandidateOf,
+        DerivedFrom,
+    ),
+    policy_peers: (PolicyPeers,),
+    policy_peer: (PolicyPeer, PolicyPeerOf, DerivedFrom),
+    policy_registry: (
+        Singleton<PolicyRegistryRoot>,
+        PolicyRegistryRoot,
+        Option<PolicyIndex>,
         Option<CompiledPolicyIndex>,
     ),
-    policy_body_index: (Singleton<PolicyBodyIndex>, PolicyBodyIndex),
+    policy_registry_members: (PolicyRegistryMembers,),
+    policy_registry_member: (PolicyRegistryMember, PolicyRegistryMemberOf, DerivedFrom),
+    definition_policies: (DefinitionPolicies,),
+    definition_policy: (DefinitionPolicy, DefinitionPolicyOf, DerivedFrom),
+    definition_shape_policies: (DefinitionShapePolicies,),
+    definition_shape_policy: (DefinitionShapePolicy, DefinitionShapePolicyOf, DerivedFrom),
     resolved_context_use: (
         ResolvedContextUse,
         ContextUseResolutionOf,

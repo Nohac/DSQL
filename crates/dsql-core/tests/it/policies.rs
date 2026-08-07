@@ -3,14 +3,17 @@
 
 use std::collections::BTreeMap;
 
-use bowl::{Query, Singleton};
+use bowl::{Entity, Query, Singleton};
 use dsql_core::catalog::{
     ColumnMetadata, DataType, DatabaseMetadata, ObjectType, SchemaMetadata, TableMetadata, TypeKey,
     insert_catalog,
 };
-use dsql_core::entities::policy::PolicyIndex;
+use dsql_core::entities::policy::{
+    DefinitionPolicies, DefinitionPolicySurface, DefinitionShapePolicies, PolicyIndex,
+};
 use dsql_core::facts::{PlanDemand, arm_editor_demands};
 use dsql_core::language_bowl;
+use dsql_core::plan::QueryPlanFact;
 use dsql_core::source::{
     ResolutionScope, ScopeImports, SourceKind, insert_embedding_source, insert_source,
     insert_source_scoped,
@@ -417,6 +420,120 @@ async fn structural_matches_rederive_across_source_revisits() {
 
     insta::assert_snapshot!(format!(
         "initial:\n{initial}\n\nchanged:\n{changed}\n\nrestored:\n{restored}\n\nremoved:\n{removed}"
+    ));
+}
+
+#[tokio::test]
+async fn policy_relationships_survive_removal_and_batched_replacement() {
+    async fn state(bowl: &bowl::Bowl, catalog: &dsql_core::catalog::Catalog) -> String {
+        let diagnostics = render_diagnostic_facts(bowl).await;
+        let index = render_index(bowl, catalog).await;
+        let plans = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
+        let roots = bowl
+            .scoop::<Query<(
+                Entity,
+                &DefinitionPolicySurface,
+                Option<&DefinitionPolicies>,
+                Option<&DefinitionShapePolicies>,
+            )>>()
+            .await;
+        let mut surfaces = roots
+            .collect()
+            .into_iter()
+            .map(|(_, surface, policies, shape_policies)| {
+                let mut table_names = surface
+                    .tables
+                    .iter()
+                    .filter_map(|table| catalog.table_by_id(*table))
+                    .map(|table| table.name.clone())
+                    .collect::<Vec<_>>();
+                table_names.sort();
+                format!(
+                    "scope={} tables={table_names:?} references={:?} policies={} shape={}",
+                    surface.scope,
+                    surface.references,
+                    policies.map_or(0, |policies| policies.0.len()),
+                    shape_policies.map_or(0, |policies| policies.0.len()),
+                )
+            })
+            .collect::<Vec<_>>();
+        surfaces.sort();
+        format!(
+            "diagnostics:\n{}\nindex:\n{}\nsurfaces:\n{}\nplans: {}",
+            if diagnostics.is_empty() {
+                "<none>"
+            } else {
+                &diagnostics
+            },
+            if index.is_empty() { "<none>" } else { &index },
+            if surfaces.is_empty() {
+                "<none>".to_string()
+            } else {
+                surfaces.join("\n")
+            },
+            plans.collect().len(),
+        )
+    }
+
+    let bowl = language_bowl().await;
+    let catalog = imdb_catalog();
+    insert_catalog(&bowl, catalog.clone()).await;
+    arm_editor_demands(&bowl).await;
+    bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
+        .await;
+    bowl.insert((
+        Singleton::<ScopeImports>::new(),
+        ScopeImports(BTreeMap::from([
+            ("frontend".to_string(), vec!["shared".to_string()]),
+            ("shared".to_string(), Vec::new()),
+        ])),
+    ))
+    .await;
+    let policy_source = "filter Visible on title { where .id > 0 }";
+    let policy = insert_source_scoped(
+        &bowl,
+        "shared.dsql",
+        policy_source,
+        ResolutionScope("shared".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    insert_source_scoped(
+        &bowl,
+        "query.dsql",
+        "query Q { title(filter Visible) { id } }",
+        ResolutionScope("frontend".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    let initial = state(&bowl, &catalog).await;
+
+    bowl.entity(policy).despawn().await;
+    let removed = state(&bowl, &catalog).await;
+
+    let reinserted = insert_source_scoped(
+        &bowl,
+        "shared.dsql",
+        policy_source,
+        ResolutionScope("shared".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    let restored = state(&bowl, &catalog).await;
+
+    bowl.entity(reinserted).despawn().await;
+    insert_source_scoped(
+        &bowl,
+        "shared.dsql",
+        policy_source,
+        ResolutionScope("shared".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    let replaced = state(&bowl, &catalog).await;
+
+    insta::assert_snapshot!(format!(
+        "initial:\n{initial}\n\nremoved:\n{removed}\n\nrestored:\n{restored}\n\nbatched replacement:\n{replaced}"
     ));
 }
 

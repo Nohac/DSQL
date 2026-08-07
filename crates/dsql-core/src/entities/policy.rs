@@ -1,15 +1,16 @@
 //! Reusable filter and condition declarations.
 //!
 //! Declarations lower as one self-contained fact because their rules are a
-//! closed definition body, not part of the query selection tree. The
-//! [`PolicyIndex`] resolves catalog targets once and is the tracked input used
-//! by checks, planning, metadata, and lock generation.
+//! closed definition body, not part of the query selection tree. Stable policy
+//! sites own exact visibility and trusted-context relationships; checks and
+//! plans consume definition-local policy sets. [`PolicyIndex`] is only the
+//! settled global snapshot used by generation and request-time services.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use bowl::{
-    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Registrar, Singleton,
-    SystemExt, View, Where, With,
+    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Registrar, Related,
+    SystemExt, Where, With,
 };
 
 use crate::catalog::{
@@ -17,10 +18,13 @@ use crate::catalog::{
     TableRef, TableResolution, TypeKey, WireEncoding,
 };
 use crate::entities::context::{
-    ContextIndex, ContextLookup, ContextValueContract, validate_context_use,
+    ContextDeclarationSemantics, ContextNameKey, ContextValueContract, validate_context_use,
 };
-use crate::entities::definition::DefIndex;
-use crate::entities::document::ParsedFile;
+use crate::entities::definition::FragmentTarget;
+use crate::entities::expansion::{
+    ExpansionBodies, ExpansionBody, RawSemanticMembers, SelectionResolutionRows,
+    SemanticDefinitionKey,
+};
 use crate::entities::expression::{
     BinaryOp, ExistsSource, Expr, LiteralValue, PathAnchor, PathSegment, Sigil, VariableRef,
     build_expr, expr_child,
@@ -29,7 +33,7 @@ use crate::entities::{direct_name, direct_names, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
-    Severity, Span, emit_diagnostic,
+    SemanticRoot, Severity, Span, emit_diagnostic,
 };
 use crate::format::CstFormatter;
 use crate::grammar::parser::{NodeRef, Rule};
@@ -37,6 +41,7 @@ use crate::plan::{
     ExistsKind, FilterCollection, FilterColumnScope, FilterExpr, FilterLiteral, FilterOp,
     PolicyContextRequirement, SqlParameter,
 };
+use crate::resolution::ResolvedSelection;
 use crate::schema::{AstFacts, dsql_schema};
 use crate::service::completion::{
     CompletionContext, CompletionItem, CompletionKind, CompletionRequest, CompletionSite,
@@ -46,7 +51,7 @@ use crate::service::completion::{
 use crate::service::definition::{DefinitionRequest, DefinitionTarget};
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
 use crate::service::semantic_tokens::{SemanticToken, SemanticTokenKind, TokenChunk, TokensDemand};
-use crate::source::{BelongsToHost, ResolutionScope, ScopeImports};
+use crate::source::{ResolutionScope, ScopeImports};
 
 /// Whether one policy declaration defines an applicable filter or a reusable
 /// predicate condition.
@@ -141,11 +146,9 @@ pub enum PolicyTargetProblem {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct PolicyEntry {
     pub entity: Entity,
-    pub file: Entity,
     pub scope: String,
     pub kind: PolicyKind,
     pub name: String,
-    pub name_span: Span,
     pub matches: Vec<TableId>,
     pub target_fields: Vec<(String, DataType)>,
     pub has_target: bool,
@@ -154,20 +157,117 @@ pub struct PolicyEntry {
     pub always_enforced: bool,
 }
 
+/// Exact semantic name shared by declarations and reference occurrences.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[component(hash)]
+pub struct PolicyNameKey {
+    pub kind: PolicyKind,
+    pub name: String,
+}
+
+/// Stable key shared by one policy declaration and its relationship owner.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct PolicySiteKey(pub Entity);
+
+/// Stable owner for one declaration's semantic dependencies.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct PolicySiteRoot;
+
+/// Source-only policy metadata kept out of planning fingerprints.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct PolicyNavigation {
+    pub file: Entity,
+    pub path: String,
+    pub name_span: Span,
+    pub embedded: bool,
+}
+
+/// Complete local declaration payload attached to its stable policy site.
+#[derive(Component, Debug, Clone, Hash, PartialEq)]
+#[component(hash)]
+pub struct PolicySiteContext {
+    pub declaration: PolicyDecl,
+    pub entry: PolicyEntry,
+    pub navigation: PolicyNavigation,
+}
+
+/// Relationship edge from a declaration payload to its stable site.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(untracked)]
+#[relationship(target = PolicySiteContexts)]
+pub struct PolicySiteContextOf(pub Entity);
+
+/// Engine-maintained declaration payload for one policy site.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = PolicySiteContextOf)]
+pub struct PolicySiteContexts(pub Vec<Entity>);
+
+/// One policy-name reference owned by a declaration site.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct PolicyReference {
+    pub site: Entity,
+    pub kind: PolicyKind,
+    pub name: String,
+}
+
+/// One trusted-context name referenced by a policy declaration.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct PolicyContextReference {
+    pub site: Entity,
+    pub name: String,
+}
+
+/// A visible trusted-context declaration for one policy site.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct PolicyContextCandidate {
+    pub name: String,
+    pub provider_scope: String,
+    pub contract: Option<ContextValueContract>,
+}
+
+/// Relationship edge from a context candidate to one policy site.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(untracked)]
+#[relationship(target = PolicyContextCandidates)]
+pub struct PolicyContextCandidateOf(pub Entity);
+
+/// Engine-maintained context candidates for one policy site.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = PolicyContextCandidateOf)]
+pub struct PolicyContextCandidates(pub Vec<Entity>);
+
+/// One visible policy provider and the provider's own context candidates.
+#[derive(Component, Debug, Clone, Hash, PartialEq)]
+#[component(hash)]
+pub struct VisiblePolicyCandidate {
+    pub declaration: PolicyDecl,
+    pub entry: PolicyEntry,
+    pub navigation: PolicyNavigation,
+    pub contexts: Vec<PolicyContextCandidate>,
+}
+
+/// Relationship edge from a visible provider to one policy site.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(untracked)]
+#[relationship(target = VisiblePolicyCandidates)]
+pub struct VisiblePolicyCandidateOf(pub Entity);
+
+/// Engine-maintained visible providers for one policy declaration.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = VisiblePolicyCandidateOf)]
+pub struct VisiblePolicyCandidates(pub Vec<Entity>);
+
 /// Tracked catalog and scope resolution for every filter and condition.
 #[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
 #[component(hash)]
 pub struct PolicyIndex {
     pub entries: Vec<PolicyEntry>,
-}
-
-/// Body-sensitive tracked input kept separate from [`PolicyIndex`], so edits
-/// to rule expressions wake policy compilation without invalidating consumers
-/// that only care about definition visibility and catalog matches.
-#[derive(Component, Debug, Clone, Hash, PartialEq)]
-#[component(hash)]
-pub struct PolicyBodyIndex {
-    pub declarations: Vec<(Entity, PolicyDecl)>,
 }
 
 /// One filter compiled for one concrete catalog target.
@@ -220,6 +320,116 @@ pub struct CompiledPolicyIndex {
     pub problems: Vec<PolicyCompileProblem>,
 }
 
+/// Per-filter compiled semantics, independent of diagnostic source spans.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct CompiledPolicy {
+    pub entry: CompiledPolicyEntry,
+}
+
+/// Per-declaration compilation failures retained by the declaration site.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct PolicyCompileProblems(pub Vec<PolicyCompileProblem>);
+
+/// Same-name provider peer used by import-ambiguity diagnostics.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct PolicyPeer {
+    pub peer_scope: String,
+    pub peer_path: String,
+    pub peer_name_span: Span,
+    pub consumer_scopes: Vec<String>,
+}
+
+/// Relationship edge from a same-name provider peer to one policy site.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(untracked)]
+#[relationship(target = PolicyPeers)]
+pub struct PolicyPeerOf(pub Entity);
+
+/// Engine-maintained same-name peers for one policy declaration.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = PolicyPeerOf)]
+pub struct PolicyPeers(pub Vec<Entity>);
+
+/// Stable global owner for the public policy snapshot used by generation.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct PolicyRegistryRoot;
+
+/// One resolved declaration contributed to the global policy snapshot.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct PolicyRegistryMember {
+    pub entry: PolicyEntry,
+    pub compiled: Option<CompiledPolicyEntry>,
+    pub navigation: PolicyNavigation,
+}
+
+/// Relationship edge from one declaration to the global registry owner.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(untracked)]
+#[relationship(target = PolicyRegistryMembers)]
+pub struct PolicyRegistryMemberOf(pub Entity);
+
+/// Engine-maintained declarations in the global policy registry.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = PolicyRegistryMemberOf)]
+pub struct PolicyRegistryMembers(pub Vec<Entity>);
+
+/// One compiled filter visible from a semantic definition root.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct DefinitionPolicy {
+    pub resolution: PolicyEntry,
+    pub compiled: CompiledPolicyEntry,
+    pub provider_path: String,
+    pub provider_name_span: Span,
+}
+
+/// Relationship edge from a compiled filter to a semantic definition root.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(untracked)]
+#[relationship(target = DefinitionPolicies)]
+pub struct DefinitionPolicyOf(pub Entity);
+
+/// Engine-maintained visible filters for one semantic definition root.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = DefinitionPolicyOf)]
+pub struct DefinitionPolicies(pub Vec<Entity>);
+
+/// Exact policy-relevant surface of one semantic definition root.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct DefinitionPolicySurface {
+    pub definition: Entity,
+    pub scope: String,
+    pub tables: Vec<TableId>,
+    pub references: Vec<String>,
+}
+
+/// One compiled filter whose field rules can affect a definition's public
+/// result shape, regardless of the definition's scope.
+#[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
+#[component(hash)]
+pub struct DefinitionShapePolicy {
+    pub compiled: CompiledPolicyEntry,
+    pub provider_path: String,
+    pub provider_name_span: Span,
+}
+
+/// Relationship edge from a shape-relevant filter to a semantic definition.
+#[derive(Component, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[component(untracked)]
+#[relationship(target = DefinitionShapePolicies)]
+pub struct DefinitionShapePolicyOf(pub Entity);
+
+/// Engine-maintained shape-relevant filters for one semantic definition.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = DefinitionShapePolicyOf)]
+pub struct DefinitionShapePolicies(pub Vec<Entity>);
+
 /// One policy compilation failure that must remain visible to diagnostics.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PolicyCompileProblem {
@@ -227,15 +437,6 @@ pub struct PolicyCompileProblem {
     pub span: Span,
     pub code: DiagnosticCode,
     pub message: String,
-}
-
-/// Body-sensitive policy input colocated with [`DefIndex`] so planning keeps
-/// one tracked definition join instead of adding another row driver.
-#[derive(Component, Debug, Clone, Hash, PartialEq)]
-#[component(hash)]
-pub struct PolicyPlanIndex {
-    pub resolution: PolicyIndex,
-    pub compiled: CompiledPolicyIndex,
 }
 
 impl CompiledPolicyIndex {
@@ -529,6 +730,30 @@ fn unique_visible_policy<'a>(
     Some(*entry)
 }
 
+fn unique_visible_registry_member<'a>(
+    members: &'a [&'a PolicyRegistryMember],
+    imports: &ScopeImports,
+    scope: &str,
+    kind: PolicyKind,
+    name: &str,
+) -> Option<&'a PolicyRegistryMember> {
+    let candidates = members
+        .iter()
+        .copied()
+        .filter(|member| {
+            member.entry.kind == kind
+                && member.entry.name == name
+                && imports
+                    .visible_from(scope)
+                    .any(|visible| visible == member.entry.scope)
+        })
+        .collect::<Vec<_>>();
+    let [candidate] = candidates.as_slice() else {
+        return None;
+    };
+    Some(*candidate)
+}
+
 fn policy_description(
     entry: &PolicyEntry,
     compiled: &CompiledPolicyIndex,
@@ -657,6 +882,79 @@ fn declaration_references(declaration: &PolicyDecl) -> Vec<(PolicyKind, String, 
                 .map(|(name, span)| (PolicyKind::Filter, name, span)),
         )
         .collect()
+}
+
+fn collect_expr_context_names(expr: &Expr, names: &mut BTreeSet<String>) {
+    match expr {
+        Expr::Variable { variable, .. } => {
+            if variable.sigil == Sigil::Context
+                && let Some(name) = &variable.name
+            {
+                names.insert(name.clone());
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_expr_context_names(lhs, names);
+            collect_expr_context_names(rhs, names);
+        }
+        Expr::Unary { operand, .. } | Expr::NullTest { operand, .. } => {
+            collect_expr_context_names(operand, names);
+        }
+        Expr::List { items, .. } => {
+            for item in items {
+                collect_expr_context_names(item, names);
+            }
+        }
+        Expr::Exists {
+            source,
+            filters,
+            predicate,
+            ..
+        } => {
+            if let ExistsSource::Relation(source) = source {
+                collect_expr_context_names(source, names);
+            }
+            for filter in filters {
+                if let Some(condition) = &filter.condition {
+                    collect_expr_context_names(condition, names);
+                }
+            }
+            if let Some(predicate) = predicate {
+                collect_expr_context_names(predicate, names);
+            }
+        }
+        Expr::Aggregate {
+            source, operand, ..
+        } => {
+            collect_expr_context_names(source, names);
+            if let Some(operand) = operand {
+                collect_expr_context_names(operand, names);
+            }
+        }
+        Expr::Literal { .. }
+        | Expr::Path { .. }
+        | Expr::DynamicPredicate { .. }
+        | Expr::PredicateRef { .. }
+        | Expr::Error { .. } => {}
+    }
+}
+
+fn declaration_context_names(declaration: &PolicyDecl) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    if let Some(condition) = declaration
+        .apply
+        .as_ref()
+        .and_then(|apply| apply.condition.as_ref())
+    {
+        collect_expr_context_names(condition, &mut names);
+    }
+    for expression in &declaration.row_rules {
+        collect_expr_context_names(expression, &mut names);
+    }
+    for rule in &declaration.field_rules {
+        collect_expr_context_names(&rule.condition, &mut names);
+    }
+    names.into_iter().collect()
 }
 
 fn clause_filter_references(clause: &crate::entities::clause::ClauseFact) -> Vec<(String, Span)> {
@@ -902,24 +1200,28 @@ async fn complete_policy_declarations(
 async fn define_policy_references(
     request: Query<(Entity, &BelongsToFile, &Cursor), With<DefinitionRequest>>,
     declaration: Query<(Entity, &PolicyDecl, &ResolutionScope), Where<BowlEq<BelongsToFile>>>,
-    index: Query<(Entity, &PolicyIndex)>,
+    registry: Query<(Entity, &PolicyRegistryRoot, PolicyRegistryRows<'_>)>,
     imports: Query<(Entity, &ScopeImports)>,
     mut commands: Commands<(dsql_schema::DefinitionAnswer,)>,
 ) {
     let (request, _, cursor) = request.item();
     let (_, declaration, scope) = declaration.item();
-    let (_, index) = index.item();
+    let (_, _, members) = registry.item();
     let (_, imports) = imports.item();
+    let members = members
+        .iter()
+        .map(|(_, (member,))| *member)
+        .collect::<Vec<_>>();
     let Some((kind, name, _)) = declaration_references(declaration)
         .into_iter()
         .find(|(_, _, span)| span.contains(cursor.0))
     else {
         return;
     };
-    if let Some(entry) = unique_visible_policy(index, imports, &scope.0, kind, &name) {
+    if let Some(member) = unique_visible_registry_member(&members, imports, &scope.0, kind, &name) {
         commands.entity(request).insert(DefinitionTarget::Source {
-            file: entry.file,
-            span: entry.name_span,
+            file: member.navigation.file,
+            span: member.navigation.name_span,
         });
     }
 }
@@ -934,25 +1236,30 @@ async fn define_filter_assignments(
         ),
         Where<BowlEq<BelongsToFile>>,
     >,
-    index: Query<(Entity, &PolicyIndex)>,
+    registry: Query<(Entity, &PolicyRegistryRoot, PolicyRegistryRows<'_>)>,
     imports: Query<(Entity, &ScopeImports)>,
     mut commands: Commands<(dsql_schema::DefinitionAnswer,)>,
 ) {
     let (request, _, cursor) = request.item();
     let (_, clause, scope) = clause.item();
-    let (_, index) = index.item();
+    let (_, _, members) = registry.item();
     let (_, imports) = imports.item();
+    let members = members
+        .iter()
+        .map(|(_, (member,))| *member)
+        .collect::<Vec<_>>();
     let Some((name, _)) = clause_filter_references(clause)
         .into_iter()
         .find(|(_, span)| span.contains(cursor.0))
     else {
         return;
     };
-    if let Some(entry) = unique_visible_policy(index, imports, &scope.0, PolicyKind::Filter, &name)
+    if let Some(member) =
+        unique_visible_registry_member(&members, imports, &scope.0, PolicyKind::Filter, &name)
     {
         commands.entity(request).insert(DefinitionTarget::Source {
-            file: entry.file,
-            span: entry.name_span,
+            file: member.navigation.file,
+            span: member.navigation.name_span,
         });
     }
 }
@@ -1032,9 +1339,19 @@ impl LanguageEntity for Policy {
     const NAME: &'static str = "policy";
 
     fn register(registrar: &mut Registrar<'_>) {
-        registrar.system(index_policies.run_during(Phase::Complete));
-        registrar.system(index_policy_bodies.run_during(Phase::Complete));
-        registrar.system(compile_policies.run_during(Phase::Complete));
+        registrar.system(tag_policy_site_keys);
+        registrar.system(project_policy_sites);
+        registrar.system(project_policy_contexts);
+        registrar.system(project_policy_references);
+        registrar.system(bind_policy_context_candidates);
+        registrar.system(bind_visible_policy_candidates);
+        registrar.system(bind_policy_peers);
+        registrar.system(compile_policy);
+        registrar.system(project_policy_registry_members);
+        registrar.system(assemble_policy_registry);
+        registrar.system(derive_definition_policy_surface);
+        registrar.system(bind_definition_policies);
+        registrar.system(bind_definition_shape_policies);
         registrar.system(check_policy_definitions.run_during(Phase::Complete));
         registrar.system(check_import_ambiguities.run_during(Phase::Complete));
         registrar.system(hover_policy_declarations.run_during(Phase::Complete));
@@ -1113,6 +1430,16 @@ impl LowerStage for Policy {
             row_rules,
             field_rules,
         };
+        let name_key = PolicyNameKey {
+            kind,
+            name: decl.name.clone(),
+        };
+        let navigation = PolicyNavigation {
+            file: context.file,
+            path: context.path.to_string(),
+            name_span,
+            embedded: context.embedded,
+        };
         Some(
             commands
                 .insert((
@@ -1123,6 +1450,8 @@ impl LowerStage for Policy {
                         node: node.0,
                     },
                     ResolutionScope(context.scope.to_string()),
+                    name_key,
+                    navigation,
                     decl,
                 ))
                 .untyped(),
@@ -1171,178 +1500,687 @@ fn lower_expr(context: &LowerCtx<'_>, node: NodeRef) -> Expr {
     )
 }
 
-async fn index_policies(
-    _: Query<(Entity, &ParsedFile)>,
-    catalog: Query<(Entity, &CatalogSnapshot)>,
-    // Temporary post-lowering invalidation bridge. Without this input,
-    // sequential file insertion can memoize a partial ambient policy view.
-    // Remove it with the relationship-owned PolicyIndex decomposition.
-    _defs: Query<(Entity, &DefIndex)>,
-    policies: View<'_, (Entity, &PolicyDecl, &BelongsToFile, &ResolutionScope)>,
-    mut commands: Commands<(dsql_schema::PolicyIndex,)>,
-) {
-    let (_, snapshot) = catalog.item();
-    let catalog = snapshot.catalog();
-    let mut entries = policies
+type PolicySiteContextRows<'a> = Related<PolicySiteContexts, (&'a PolicySiteContext,)>;
+type PolicyContextCandidateRows<'a> =
+    Related<PolicyContextCandidates, (&'a PolicyContextCandidate,)>;
+type VisiblePolicyCandidateRows<'a> =
+    Related<VisiblePolicyCandidates, (&'a VisiblePolicyCandidate,)>;
+type PolicyPeerRows<'a> = Related<PolicyPeers, (&'a PolicyPeer,)>;
+pub(crate) type DefinitionPolicyRows<'a> = Related<DefinitionPolicies, (&'a DefinitionPolicy,)>;
+pub(crate) type DefinitionShapePolicyRows<'a> =
+    Related<DefinitionShapePolicies, (&'a DefinitionShapePolicy,)>;
+type PolicyRegistryRows<'a> = Related<PolicyRegistryMembers, (&'a PolicyRegistryMember,)>;
+
+pub(crate) fn definition_policy_indexes(
+    rows: &DefinitionPolicyRows<'_>,
+) -> (PolicyIndex, CompiledPolicyIndex) {
+    let mut policies = rows
         .iter()
-        .map(|(entity, decl, file, scope)| resolve_entry(catalog, entity, decl, file.0, &scope.0))
+        .map(|(_, (policy,))| (*policy).clone())
         .collect::<Vec<_>>();
-    entries.sort_by(|left, right| {
-        left.scope
-            .cmp(&right.scope)
-            .then_with(|| left.kind.cmp(&right.kind))
-            .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left.entity.cmp(&right.entity))
+    policies.sort_by(|left, right| {
+        left.resolution
+            .scope
+            .cmp(&right.resolution.scope)
+            .then_with(|| left.resolution.kind.cmp(&right.resolution.kind))
+            .then_with(|| left.resolution.name.cmp(&right.resolution.name))
+            .then_with(|| left.provider_path.cmp(&right.provider_path))
+            .then_with(|| {
+                left.provider_name_span
+                    .start
+                    .cmp(&right.provider_name_span.start)
+            })
     });
-    commands.insert((Singleton::<PolicyIndex>::new(), PolicyIndex { entries }));
+    let resolution = PolicyIndex {
+        entries: policies
+            .iter()
+            .map(|policy| policy.resolution.clone())
+            .collect(),
+    };
+    let compiled = CompiledPolicyIndex {
+        entries: policies.into_iter().map(|policy| policy.compiled).collect(),
+        problems: Vec::new(),
+    };
+    (resolution, compiled)
 }
 
-async fn index_policy_bodies(
-    _: Query<(Entity, &ParsedFile)>,
-    policies: View<'_, (Entity, &PolicyDecl)>,
-    mut commands: Commands<(dsql_schema::PolicyBodyIndex,)>,
-) {
-    let mut declarations = policies
+pub(crate) fn definition_shape_policy_index(
+    rows: &DefinitionShapePolicyRows<'_>,
+) -> CompiledPolicyIndex {
+    let mut policies = rows
         .iter()
-        .map(|(entity, declaration)| (entity, declaration.clone()))
+        .map(|(_, (policy,))| (*policy).clone())
         .collect::<Vec<_>>();
-    declarations.sort_by_key(|(entity, _)| *entity);
+    policies.sort_by(|left, right| {
+        left.compiled
+            .scope
+            .cmp(&right.compiled.scope)
+            .then_with(|| left.compiled.name.cmp(&right.compiled.name))
+            .then_with(|| left.provider_path.cmp(&right.provider_path))
+            .then_with(|| {
+                left.provider_name_span
+                    .start
+                    .cmp(&right.provider_name_span.start)
+            })
+    });
+    CompiledPolicyIndex {
+        entries: policies.into_iter().map(|policy| policy.compiled).collect(),
+        problems: Vec::new(),
+    }
+}
+
+async fn tag_policy_site_keys(
+    policies: Query<(Entity, &PolicyDecl)>,
+    mut commands: Commands<(dsql_schema::PolicyDefinition,)>,
+) {
+    let (policy, _) = policies.item();
+    commands.entity(policy).insert(PolicySiteKey(policy));
+}
+
+async fn project_policy_sites(
+    policies: Query<(Entity, &PolicyDecl, &PolicySiteKey, &PolicyNameKey)>,
+    mut commands: Commands<(dsql_schema::PolicySite,)>,
+) {
+    let (_, _, site_key, name_key) = policies.item();
+    commands.insert((*site_key, name_key.clone(), PolicySiteRoot));
+}
+
+async fn project_policy_contexts(
+    policies: Query<(
+        Entity,
+        &PolicyDecl,
+        &PolicyNameKey,
+        &PolicyNavigation,
+        &PolicySiteKey,
+        &BelongsToFile,
+        &ResolutionScope,
+    )>,
+    sites: Query<(Entity, &PolicySiteRoot), Where<BowlEq<PolicySiteKey>>>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::PolicySiteContext,)>,
+) {
+    let (policy, declaration, name_key, navigation, _, _, scope) = policies.item();
+    let (site, _) = sites.item();
+    let (catalog_entity, snapshot) = catalog.item();
+    let entry = resolve_entry(snapshot.catalog(), policy, declaration, &scope.0);
     commands.insert((
-        Singleton::<PolicyBodyIndex>::new(),
-        PolicyBodyIndex { declarations },
+        DerivedFrom::many([policy, catalog_entity]),
+        PolicySiteContextOf(site),
+        name_key.clone(),
+        PolicySiteContext {
+            declaration: declaration.clone(),
+            entry,
+            navigation: navigation.clone(),
+        },
     ));
 }
 
-async fn compile_policies(
-    policy_index: Query<(Entity, &PolicyIndex)>,
-    body_index: Query<(Entity, &PolicyBodyIndex)>,
-    catalog: Query<(Entity, &CatalogSnapshot)>,
-    imports: Query<(Entity, &ScopeImports)>,
-    definitions: Query<(Entity, &DefIndex, &ContextIndex)>,
-    mut commands: Commands<(dsql_schema::PolicyIndex, dsql_schema::DefIndex)>,
+async fn project_policy_references(
+    policies: Query<(Entity, &PolicyDecl, &PolicyNameKey, &PolicySiteKey)>,
+    sites: Query<(Entity, &PolicySiteRoot), Where<BowlEq<PolicySiteKey>>>,
+    mut commands: Commands<(
+        dsql_schema::PolicyReference,
+        dsql_schema::PolicyContextReference,
+    )>,
 ) {
-    let (policy_index_entity, policy_index) = policy_index.item();
-    let (_, body_index) = body_index.item();
-    let (_, snapshot) = catalog.item();
-    let (_, imports) = imports.item();
-    let (definitions_entity, _, contexts) = definitions.item();
-    let declarations = body_index
-        .declarations
-        .iter()
-        .map(|(entity, declaration)| (*entity, declaration))
-        .collect::<BTreeMap<_, _>>();
-    let mut entries = Vec::new();
-    let mut problems = Vec::new();
+    let (policy, declaration, own_name, _) = policies.item();
+    let (site, _) = sites.item();
+    let mut policy_names = declaration_references(declaration)
+        .into_iter()
+        .map(|(kind, name, _)| PolicyNameKey { kind, name })
+        .collect::<BTreeSet<_>>();
+    policy_names.insert(own_name.clone());
+    for name in policy_names {
+        commands.insert((
+            DerivedFrom::new(policy),
+            PolicySiteKey(policy),
+            name.clone(),
+            PolicyReference {
+                site,
+                kind: name.kind,
+                name: name.name,
+            },
+        ));
+    }
+    for name in declaration_context_names(declaration) {
+        commands.insert((
+            DerivedFrom::new(policy),
+            PolicySiteKey(policy),
+            ContextNameKey(name.clone()),
+            PolicyContextReference { site, name },
+        ));
+    }
+}
 
-    for entry in policy_index
-        .entries
-        .iter()
-        .filter(|entry| entry.kind == PolicyKind::Filter)
+async fn bind_policy_context_candidates(
+    providers: Query<(Entity, &ContextDeclarationSemantics, &ContextNameKey)>,
+    references: Query<
+        (
+            Entity,
+            &PolicyContextReference,
+            &ContextNameKey,
+            &PolicySiteKey,
+        ),
+        Where<BowlEq<ContextNameKey>>,
+    >,
+    contexts: Query<
+        (
+            Entity,
+            &PolicySiteRoot,
+            &PolicySiteKey,
+            PolicySiteContextRows<'_>,
+        ),
+        Where<BowlEq<PolicySiteKey>>,
+    >,
+    imports: Query<(Entity, &ScopeImports)>,
+    mut commands: Commands<(dsql_schema::PolicyContextCandidate,)>,
+) {
+    let (provider_entity, provider, _) = providers.item();
+    let (reference_entity, reference, _, _) = references.item();
+    let (_, _, _, own_contexts) = contexts.item();
+    let Some((_, (own,))) = own_contexts.iter().next() else {
+        return;
+    };
+    let (_, imports) = imports.item();
+    if !imports
+        .visible_from(&own.entry.scope)
+        .any(|scope| scope == provider.provider_scope)
     {
-        let Some(declaration) = declarations.get(&entry.entity).copied() else {
-            continue;
+        return;
+    }
+    commands.insert((
+        DerivedFrom::many([provider_entity, reference_entity]),
+        PolicyContextCandidateOf(reference.site),
+        PolicyContextCandidate {
+            name: reference.name.clone(),
+            provider_scope: provider.provider_scope.clone(),
+            contract: provider.contract.clone(),
+        },
+    ));
+}
+
+async fn bind_visible_policy_candidates(
+    providers: Query<(
+        Entity,
+        &PolicySiteRoot,
+        &PolicyNameKey,
+        PolicySiteContextRows<'_>,
+        PolicyContextCandidateRows<'_>,
+    )>,
+    references: Query<
+        (Entity, &PolicyReference, &PolicyNameKey, &PolicySiteKey),
+        Where<BowlEq<PolicyNameKey>>,
+    >,
+    consumers: Query<
+        (
+            Entity,
+            &PolicySiteRoot,
+            &PolicySiteKey,
+            PolicySiteContextRows<'_>,
+        ),
+        Where<BowlEq<PolicySiteKey>>,
+    >,
+    imports: Query<(Entity, &ScopeImports)>,
+    mut commands: Commands<(dsql_schema::VisiblePolicyCandidate,)>,
+) {
+    // Conditions are forbidden from referencing conditions, so compilation
+    // needs exactly one provider hop. Relaxing that language rule requires a
+    // transitive relationship closure like fragment expansion, not recursion
+    // through this candidate payload.
+    let (_, _, _, provider_rows, provider_context_rows) = providers.item();
+    let (reference_entity, reference, _, _) = references.item();
+    let (_, _, _, consumer_rows) = consumers.item();
+    let Some((provider_entity, (provider,))) = provider_rows.iter().next() else {
+        return;
+    };
+    let Some((_, (consumer,))) = consumer_rows.iter().next() else {
+        return;
+    };
+    let (_, imports) = imports.item();
+    if !imports
+        .visible_from(&consumer.entry.scope)
+        .any(|scope| scope == provider.entry.scope)
+    {
+        return;
+    }
+    let mut contexts = provider_context_rows
+        .iter()
+        .map(|(_, (candidate,))| (*candidate).clone())
+        .collect::<Vec<_>>();
+    contexts.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.provider_scope.cmp(&right.provider_scope))
+    });
+    commands.insert((
+        DerivedFrom::many([provider_entity, reference_entity]),
+        VisiblePolicyCandidateOf(reference.site),
+        VisiblePolicyCandidate {
+            declaration: provider.declaration.clone(),
+            entry: provider.entry.clone(),
+            navigation: provider.navigation.clone(),
+            contexts,
+        },
+    ));
+}
+
+/// Materializes same-name imported provider pairs for ambiguity diagnostics.
+async fn bind_policy_peers(
+    providers: Query<(Entity, &PolicySiteContext, &PolicyNameKey)>,
+    consumers: Query<
+        (
+            Entity,
+            &PolicySiteContext,
+            &PolicyNameKey,
+            &PolicySiteContextOf,
+        ),
+        Where<BowlEq<PolicyNameKey>>,
+    >,
+    imports: Query<(Entity, &ScopeImports)>,
+    mut commands: Commands<(dsql_schema::PolicyPeer,)>,
+) {
+    let (provider_entity, provider, _) = providers.item();
+    let (consumer_entity, consumer, _, consumer_site) = consumers.item();
+    if provider.entry.entity == consumer.entry.entity {
+        return;
+    }
+    let (_, imports) = imports.item();
+    let consumer_scopes = imports
+        .0
+        .keys()
+        .filter(|scope| {
+            let visible = imports.imports_of(scope).collect::<BTreeSet<_>>();
+            visible.contains(provider.entry.scope.as_str())
+                && visible.contains(consumer.entry.scope.as_str())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if consumer_scopes.is_empty() {
+        return;
+    }
+    commands.insert((
+        DerivedFrom::many([provider_entity, consumer_entity]),
+        PolicyPeerOf(consumer_site.0),
+        PolicyPeer {
+            peer_scope: provider.entry.scope.clone(),
+            peer_path: provider.navigation.path.clone(),
+            peer_name_span: provider.navigation.name_span,
+            consumer_scopes,
+        },
+    ));
+}
+
+async fn compile_policy(
+    sites: Query<(
+        Entity,
+        &PolicySiteRoot,
+        PolicySiteContextRows<'_>,
+        PolicyContextCandidateRows<'_>,
+        VisiblePolicyCandidateRows<'_>,
+    )>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::PolicySite,)>,
+) {
+    let (site, _, contexts, context_candidates, visible_candidates) = sites.item();
+    let Some((_, (context,))) = contexts.iter().next() else {
+        return;
+    };
+    if context.entry.kind != PolicyKind::Filter {
+        return;
+    }
+    let (_, snapshot) = catalog.item();
+    let context_candidates = context_candidates
+        .iter()
+        .map(|(_, (candidate,))| (*candidate).clone())
+        .collect::<Vec<_>>();
+    let visible_candidates = visible_candidates
+        .iter()
+        .map(|(_, (candidate,))| (*candidate).clone())
+        .collect::<Vec<_>>();
+    let mut targets = Vec::new();
+    let mut conditions = BTreeSet::new();
+    let mut problems = Vec::new();
+    for table in &context.entry.matches {
+        let mut compiler = PolicyCompiler {
+            catalog: snapshot.catalog(),
+            candidates: &visible_candidates,
+            contexts: &context_candidates,
+            scope: &context.entry.scope,
+            context: Vec::new(),
+            conditions: BTreeSet::new(),
+            problems: Vec::new(),
+            failed: false,
         };
-        let mut targets = Vec::new();
-        let mut conditions = BTreeSet::new();
-        for table in &entry.matches {
-            let mut compiler = PolicyCompiler {
-                catalog: snapshot.catalog(),
-                index: policy_index,
-                declarations: &declarations,
-                imports,
-                contexts,
-                scope: &entry.scope,
-                context: Vec::new(),
-                conditions: BTreeSet::new(),
-                problems: Vec::new(),
-                failed: false,
-            };
-            let row = PolicyRowContext::root(*table);
-            let enforcement = declaration
-                .apply
-                .as_ref()
-                .and_then(|apply| apply.condition.as_ref())
-                .and_then(|condition| {
-                    compiler.expr(
-                        condition,
-                        Some(row),
-                        Some(PolicyExpectedType::builtin(DataType::Boolean)),
-                    )
-                });
-            let row_rule = declaration.row_rules.first().and_then(|rule| {
+        let row = PolicyRowContext::root(*table);
+        let enforcement = context
+            .declaration
+            .apply
+            .as_ref()
+            .and_then(|apply| apply.condition.as_ref())
+            .and_then(|condition| {
                 compiler.expr(
-                    rule,
+                    condition,
                     Some(row),
                     Some(PolicyExpectedType::builtin(DataType::Boolean)),
                 )
             });
-            let mut field_rules = Vec::new();
-            for rule in &declaration.field_rules {
-                let condition = compiler.expr(
-                    &rule.condition,
-                    Some(row),
-                    Some(PolicyExpectedType::builtin(DataType::Boolean)),
-                );
-                let fields = rule
-                    .fields
-                    .iter()
-                    .map(|(name, _)| compiler.field(*table, name))
-                    .collect::<Option<Vec<_>>>();
-                if let (Some(condition), Some(fields)) = (condition, fields) {
-                    field_rules.push(CompiledPolicyFieldRule { fields, condition });
-                }
+        let row_rule = context.declaration.row_rules.first().and_then(|rule| {
+            compiler.expr(
+                rule,
+                Some(row),
+                Some(PolicyExpectedType::builtin(DataType::Boolean)),
+            )
+        });
+        let mut field_rules = Vec::new();
+        for rule in &context.declaration.field_rules {
+            let condition = compiler.expr(
+                &rule.condition,
+                Some(row),
+                Some(PolicyExpectedType::builtin(DataType::Boolean)),
+            );
+            let fields = rule
+                .fields
+                .iter()
+                .map(|(name, _)| compiler.field(*table, name))
+                .collect::<Option<Vec<_>>>();
+            if let (Some(condition), Some(fields)) = (condition, fields) {
+                field_rules.push(CompiledPolicyFieldRule { fields, condition });
             }
-            problems.extend(compiler.problems.drain(..).map(|(span, code, message)| {
-                PolicyCompileProblem {
-                    entity: entry.entity,
-                    span,
-                    code,
-                    message,
-                }
-            }));
-            if compiler.failed {
-                continue;
-            }
-            compiler
-                .context
-                .sort_by(|left, right| left.path.cmp(&right.path));
-            conditions.extend(compiler.conditions);
-            targets.push(CompiledPolicyTarget {
-                table: *table,
-                enforcement,
-                row_rule,
-                field_rules,
-                context: compiler.context,
-            });
         }
-        entries.push(CompiledPolicyEntry {
-            entity: entry.entity,
-            scope: entry.scope.clone(),
-            name: entry.name.clone(),
-            default_active: entry.default_active,
-            has_field_rules: !declaration.field_rules.is_empty(),
-            conditions: conditions.into_iter().collect(),
-            targets,
+        problems.extend(compiler.problems.drain(..).map(|(span, code, message)| {
+            PolicyCompileProblem {
+                entity: context.entry.entity,
+                span,
+                code,
+                message,
+            }
+        }));
+        if compiler.failed {
+            continue;
+        }
+        compiler
+            .context
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        conditions.extend(compiler.conditions);
+        targets.push(CompiledPolicyTarget {
+            table: *table,
+            enforcement,
+            row_rule,
+            field_rules,
+            context: compiler.context,
         });
     }
     problems.sort();
     problems.dedup();
-    let compiled = CompiledPolicyIndex { entries, problems };
     commands
-        .entity(policy_index_entity)
-        .insert(compiled.clone());
-    commands.entity(definitions_entity).insert(PolicyPlanIndex {
-        resolution: policy_index.clone(),
-        compiled,
+        .entity(site)
+        .insert(PolicyCompileProblems(problems));
+    commands.entity(site).insert(CompiledPolicy {
+        entry: CompiledPolicyEntry {
+            entity: context.entry.entity,
+            scope: context.entry.scope.clone(),
+            name: context.entry.name.clone(),
+            default_active: context.entry.default_active,
+            has_field_rules: !context.declaration.field_rules.is_empty(),
+            conditions: conditions.into_iter().collect(),
+            targets,
+        },
     });
+}
+
+async fn project_policy_registry_members(
+    registry: Query<(Entity, &PolicyRegistryRoot)>,
+    sites: Query<(
+        Entity,
+        &PolicySiteRoot,
+        PolicySiteContextRows<'_>,
+        Option<&CompiledPolicy>,
+    )>,
+    mut commands: Commands<(dsql_schema::PolicyRegistryMember,)>,
+) {
+    let (registry, _) = registry.item();
+    let (_, _, contexts, compiled) = sites.item();
+    let Some((context_entity, (context,))) = contexts.iter().next() else {
+        return;
+    };
+    if context.entry.kind == PolicyKind::Filter && compiled.is_none() {
+        return;
+    }
+    commands.insert((
+        DerivedFrom::new(context_entity),
+        PolicyRegistryMemberOf(registry),
+        PolicyRegistryMember {
+            entry: context.entry.clone(),
+            compiled: compiled.map(|compiled| compiled.entry.clone()),
+            navigation: context.navigation.clone(),
+        },
+    ));
+}
+
+/// Builds the public all-policy snapshot from one relationship owner.
+///
+/// During settling this owner may briefly observe only part of the registry.
+/// Persistent semantic consumers never read it: generation reads after the
+/// bowl settles, and completion requests are ephemeral settled-state queries.
+async fn assemble_policy_registry(
+    registry: Query<(Entity, &PolicyRegistryRoot, PolicyRegistryRows<'_>)>,
+    mut commands: Commands<(dsql_schema::PolicyRegistry,)>,
+) {
+    let (registry, _, members) = registry.item();
+    let mut members = members
+        .iter()
+        .map(|(_, (member,))| (*member).clone())
+        .collect::<Vec<_>>();
+    members.sort_by(|left, right| {
+        left.entry
+            .scope
+            .cmp(&right.entry.scope)
+            .then_with(|| left.entry.kind.cmp(&right.entry.kind))
+            .then_with(|| left.entry.name.cmp(&right.entry.name))
+            .then_with(|| left.navigation.path.cmp(&right.navigation.path))
+            .then_with(|| {
+                left.navigation
+                    .name_span
+                    .start
+                    .cmp(&right.navigation.name_span.start)
+            })
+    });
+    let entries = members.iter().map(|member| member.entry.clone()).collect();
+    let compiled = members
+        .into_iter()
+        .filter_map(|member| member.compiled)
+        .collect();
+    commands.entity(registry).insert(PolicyIndex { entries });
+    commands.entity(registry).insert(CompiledPolicyIndex {
+        entries: compiled,
+        problems: Vec::new(),
+    });
+}
+
+type DefinitionPolicySurfaceRoot<'a> = Query<(
+    Entity,
+    &'a SemanticRoot,
+    &'a SemanticDefinitionKey,
+    RawSemanticMembers<'a>,
+    SelectionResolutionRows<'a>,
+    Related<ExpansionBodies, (&'a ExpansionBody,)>,
+)>;
+type DefinitionPolicySurfaceDefinition<'a> = Query<
+    (Entity, Option<&'a FragmentTarget>, &'a ResolutionScope),
+    Where<BowlEq<SemanticDefinitionKey>>,
+>;
+
+/// Projects the exact tables and named filter uses that can make a policy
+/// semantically relevant to one definition.
+async fn derive_definition_policy_surface(
+    roots: DefinitionPolicySurfaceRoot<'_>,
+    definitions: DefinitionPolicySurfaceDefinition<'_>,
+    catalog: Query<(Entity, &CatalogSnapshot)>,
+    mut commands: Commands<(dsql_schema::SemanticGroup,)>,
+) {
+    let (root, _, _, members, selections, bodies) = roots.item();
+    let (definition, fragment_target, scope) = definitions.item();
+    let (_, snapshot) = catalog.item();
+    let catalog = snapshot.catalog();
+    let mut tables = Vec::new();
+    let mut references = BTreeSet::new();
+
+    collect_policy_surface_selections(
+        selections.iter().map(|(_, (selection,))| *selection),
+        &mut tables,
+    );
+    collect_fragment_target_table(catalog, fragment_target, &mut tables);
+    for (_, (_, _, _, clause, _, _, _, _)) in members.iter() {
+        if let Some(clause) = clause {
+            references.extend(
+                clause_filter_references(clause)
+                    .into_iter()
+                    .map(|(name, _)| name),
+            );
+        }
+    }
+
+    for (_, (body,)) in bodies.iter() {
+        collect_policy_surface_selections(body.selections.iter(), &mut tables);
+        collect_fragment_target_table(catalog, body.target.as_ref(), &mut tables);
+        for member in &body.members {
+            if let Some(clause) = &member.clause {
+                references.extend(
+                    clause_filter_references(clause)
+                        .into_iter()
+                        .map(|(name, _)| name),
+                );
+            }
+        }
+    }
+
+    tables.sort_by_key(|table| table.0);
+    tables.dedup();
+    commands.entity(root).insert(DefinitionPolicySurface {
+        definition,
+        scope: scope.0.clone(),
+        tables,
+        references: references.into_iter().collect(),
+    });
+}
+
+fn collect_policy_surface_selections<'a>(
+    selections: impl IntoIterator<Item = &'a ResolvedSelection>,
+    tables: &mut Vec<TableId>,
+) {
+    tables.extend(
+        selections
+            .into_iter()
+            .filter_map(|selection| selection.target.child_context()),
+    );
+}
+
+fn collect_fragment_target_table(
+    catalog: &Catalog,
+    target: Option<&FragmentTarget>,
+    tables: &mut Vec<TableId>,
+) {
+    let Some(target) = target else {
+        return;
+    };
+    if let Some(table) = catalog.table_ref_for(TableRef::parse(&target.name)) {
+        tables.push(table.id);
+    }
+}
+
+/// Relates every visible compiled filter to each semantic definition root.
+///
+/// Automatic filters are relevant only when their target table occurs in the
+/// definition closure. Explicit assignments additionally retain their named
+/// filter even when the target is invalid so checks can diagnose that mismatch.
+/// Scope reachability is not an equality key, so this remains a bounded
+/// definitions x filters product; issue dab86061 tracks its budget.
+async fn bind_definition_policies(
+    providers: Query<(
+        Entity,
+        &PolicySiteRoot,
+        PolicySiteContextRows<'_>,
+        &CompiledPolicy,
+    )>,
+    roots: Query<(Entity, &SemanticRoot, &DefinitionPolicySurface)>,
+    imports: Query<(Entity, &ScopeImports)>,
+    mut commands: Commands<(dsql_schema::DefinitionPolicy,)>,
+) {
+    let (_, _, contexts, compiled) = providers.item();
+    let (root, _, surface) = roots.item();
+    let Some((context_entity, (context,))) = contexts.iter().next() else {
+        return;
+    };
+    let (_, imports) = imports.item();
+    let provider_visible = imports
+        .visible_from(&surface.scope)
+        .any(|visible| visible == context.entry.scope);
+    let matches_table = context
+        .entry
+        .matches
+        .iter()
+        .any(|table| surface.tables.contains(table));
+    let matches_reference = surface.references.contains(&context.entry.name);
+    if !provider_visible {
+        return;
+    }
+    if !matches_table && !matches_reference {
+        return;
+    }
+    commands.insert((
+        DerivedFrom::many([context_entity, surface.definition]),
+        DefinitionPolicyOf(root),
+        DefinitionPolicy {
+            resolution: context.entry.clone(),
+            compiled: compiled.entry.clone(),
+            provider_path: context.navigation.path.clone(),
+            provider_name_span: context.navigation.name_span,
+        },
+    ));
+}
+
+/// Relates field-policy shape effects by table overlap, without scope
+/// filtering. Shared fragment result types must remain conservative for every
+/// scope that can consume them, so a matching policy intentionally wakes all
+/// definitions whose semantic closure touches its table.
+async fn bind_definition_shape_policies(
+    providers: Query<(
+        Entity,
+        &PolicySiteRoot,
+        PolicySiteContextRows<'_>,
+        &CompiledPolicy,
+    )>,
+    roots: Query<(Entity, &SemanticRoot, &DefinitionPolicySurface)>,
+    mut commands: Commands<(dsql_schema::DefinitionShapePolicy,)>,
+) {
+    let (_, _, contexts, compiled) = providers.item();
+    let (root, _, surface) = roots.item();
+    let Some((context_entity, (context,))) = contexts.iter().next() else {
+        return;
+    };
+    if !compiled
+        .entry
+        .targets
+        .iter()
+        .any(|target| surface.tables.contains(&target.table))
+    {
+        return;
+    }
+    commands.insert((
+        DerivedFrom::many([context_entity, surface.definition]),
+        DefinitionShapePolicyOf(root),
+        DefinitionShapePolicy {
+            compiled: compiled.entry.clone(),
+            provider_path: context.navigation.path.clone(),
+            provider_name_span: context.navigation.name_span,
+        },
+    ));
 }
 
 struct PolicyCompiler<'a> {
     catalog: &'a Catalog,
-    index: &'a PolicyIndex,
-    declarations: &'a BTreeMap<Entity, &'a PolicyDecl>,
-    imports: &'a ScopeImports,
-    contexts: &'a ContextIndex,
+    candidates: &'a [VisiblePolicyCandidate],
+    contexts: &'a [PolicyContextCandidate],
     scope: &'a str,
     context: Vec<PolicyContextRequirement>,
     conditions: BTreeSet<CompiledPolicyReference>,
@@ -1415,30 +2253,35 @@ impl PolicyCompiler<'_> {
                 self.fail()
             }
             Expr::PredicateRef { name, .. } => {
-                let candidates =
-                    self.index
-                        .visible(self.scope, PolicyKind::Condition, name, self.imports);
+                let candidates = self
+                    .candidates
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.entry.kind == PolicyKind::Condition
+                            && candidate.entry.name == *name
+                    })
+                    .collect::<Vec<_>>();
                 let [condition] = candidates.as_slice() else {
                     return self.fail();
                 };
                 self.conditions.insert(CompiledPolicyReference {
-                    scope: condition.scope.clone(),
-                    name: condition.name.clone(),
+                    scope: condition.entry.scope.clone(),
+                    name: condition.entry.name.clone(),
                 });
-                let Some(declaration) = self.declarations.get(&condition.entity).copied() else {
-                    return self.fail();
-                };
-                let Some(rule) = declaration.row_rules.first() else {
+                let Some(rule) = condition.declaration.row_rules.first() else {
                     return self.fail();
                 };
                 let previous_scope = self.scope;
-                self.scope = &condition.scope;
+                let previous_contexts = self.contexts;
+                self.scope = &condition.entry.scope;
+                self.contexts = &condition.contexts;
                 let compiled = self.expr(
                     rule,
                     row,
                     Some(PolicyExpectedType::builtin(DataType::Boolean)),
                 );
                 self.scope = previous_scope;
+                self.contexts = previous_contexts;
                 compiled
             }
             Expr::Variable { variable, .. } => self.context_parameter(
@@ -1783,9 +2626,15 @@ impl PolicyCompiler<'_> {
         }
         let name = variable.name.as_deref()?;
         let path = format!("context.{name}");
-        let ContextLookup::Resolved(declared) =
-            self.contexts.lookup(self.scope, name, self.imports)
-        else {
+        let candidates = self
+            .contexts
+            .iter()
+            .filter(|candidate| candidate.name == name)
+            .collect::<Vec<_>>();
+        let [candidate] = candidates.as_slice() else {
+            return self.fail();
+        };
+        let Some(declared) = candidate.contract.as_ref() else {
             return self.fail();
         };
         let expected_contract = ContextValueContract {
@@ -1828,13 +2677,7 @@ impl PolicyCompiler<'_> {
     }
 }
 
-fn resolve_entry(
-    catalog: &Catalog,
-    entity: Entity,
-    decl: &PolicyDecl,
-    file: Entity,
-    scope: &str,
-) -> PolicyEntry {
+fn resolve_entry(catalog: &Catalog, entity: Entity, decl: &PolicyDecl, scope: &str) -> PolicyEntry {
     let (matches, target_fields, target_problem) = match &decl.target {
         None if decl.kind == PolicyKind::Condition => (Vec::new(), Vec::new(), None),
         None => (Vec::new(), Vec::new(), Some(PolicyTargetProblem::Missing)),
@@ -1881,11 +2724,9 @@ fn resolve_entry(
     });
     PolicyEntry {
         entity,
-        file,
         scope: scope.to_string(),
         kind: decl.kind,
         name: decl.name.clone(),
-        name_span: decl.name_span,
         matches,
         target_fields,
         has_target: decl.target.is_some(),
@@ -1954,30 +2795,40 @@ fn resolve_shape_target(
 
 async fn check_policy_definitions(
     _: Query<Entity, With<DiagnosticsDemand>>,
-    policies: Query<(Entity, &PolicyDecl, &BelongsToFile, &ResolutionScope)>,
-    index: Query<(Entity, &PolicyIndex, &CompiledPolicyIndex)>,
-    imports: Query<(Entity, &ScopeImports)>,
+    sites: Query<(
+        Entity,
+        &PolicySiteRoot,
+        PolicySiteContextRows<'_>,
+        VisiblePolicyCandidateRows<'_>,
+        Option<&PolicyCompileProblems>,
+    )>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    embedded: View<'_, (Entity, &BelongsToHost)>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
-    let (entity, decl, file, scope) = policies.item();
-    let (index_entity, index, compiled) = index.item();
-    let (_, imports) = imports.item();
-    let (catalog_entity, snapshot) = catalog.item();
-    let Some(entry) = index.entry(entity) else {
+    let (_, _, contexts, visible_candidates, compile_problems) = sites.item();
+    let Some((context_entity, (context,))) = contexts.iter().next() else {
         return;
     };
-    for problem in compiled
-        .problems
+    let decl = &context.declaration;
+    let entry = &context.entry;
+    let entity = entry.entity;
+    let file = context.navigation.file;
+    let scope = &entry.scope;
+    let visible_candidates = visible_candidates
         .iter()
+        .map(|(_, (candidate,))| *candidate)
+        .collect::<Vec<_>>();
+    let (catalog_entity, snapshot) = catalog.item();
+    for problem in compile_problems
+        .into_iter()
+        .flat_map(|problems| &problems.0)
         .filter(|problem| problem.entity == entity)
     {
         emit_diagnostic(
             &mut commands,
             DiagnosticFacts {
-                derived_from: DerivedFrom::many([entity, index_entity, catalog_entity]),
-                file: file.0,
+                derived_from: DerivedFrom::many([context_entity, catalog_entity]),
+                file,
                 span: problem.span,
                 severity: Severity::Error,
                 source: DiagnosticSource::Check,
@@ -1990,8 +2841,8 @@ async fn check_policy_definitions(
         emit_diagnostic(
             &mut commands,
             DiagnosticFacts {
-                derived_from: DerivedFrom::many([entity, index_entity, catalog_entity]),
-                file: file.0,
+                derived_from: DerivedFrom::many([context_entity, catalog_entity]),
+                file,
                 span,
                 severity: Severity::Error,
                 source: DiagnosticSource::Check,
@@ -2001,7 +2852,7 @@ async fn check_policy_definitions(
         );
     };
 
-    if embedded.iter().any(|(document, _)| document == file.0) {
+    if context.navigation.embedded {
         emit(
             decl.name_span,
             format!(
@@ -2048,13 +2899,16 @@ async fn check_policy_definitions(
         );
     }
 
-    let same_name = index.visible(&scope.0, decl.kind, &decl.name, imports);
-    if same_name.len() > 1 {
+    let same_name = visible_candidates
+        .iter()
+        .filter(|candidate| candidate.entry.kind == decl.kind && candidate.entry.name == decl.name)
+        .count();
+    if same_name > 1 {
         emit(
             decl.name_span,
             format!(
                 "{} `{}` is ambiguous in scope `{}`",
-                decl.kind, decl.name, scope.0
+                decl.kind, decl.name, scope
             ),
         );
     }
@@ -2066,10 +2920,8 @@ async fn check_policy_definitions(
         PolicyValidation {
             decl,
             entry,
-            index,
-            imports,
+            candidates: &visible_candidates,
             catalog,
-            scope: &scope.0,
             emit: &mut emit,
         }
         .expr(expr, false, row);
@@ -2082,10 +2934,8 @@ async fn check_policy_definitions(
         PolicyValidation {
             decl,
             entry,
-            index,
-            imports,
+            candidates: &visible_candidates,
             catalog,
-            scope: &scope.0,
             emit: &mut emit,
         }
         .expr(&field_rule.condition, false, row);
@@ -2099,10 +2949,8 @@ async fn check_policy_definitions(
         PolicyValidation {
             decl,
             entry,
-            index,
-            imports,
+            candidates: &visible_candidates,
             catalog,
-            scope: &scope.0,
             emit: &mut emit,
         }
         .expr(condition, true, None);
@@ -2212,10 +3060,8 @@ impl PolicyRowContext {
 struct PolicyValidation<'a, Emit> {
     decl: &'a PolicyDecl,
     entry: &'a PolicyEntry,
-    index: &'a PolicyIndex,
-    imports: &'a ScopeImports,
+    candidates: &'a [&'a VisiblePolicyCandidate],
     catalog: &'a Catalog,
-    scope: &'a str,
     emit: &'a mut Emit,
 }
 
@@ -2298,12 +3144,16 @@ impl<Emit: FnMut(Span, String)> PolicyValidation<'_, Emit> {
             return;
         }
         let candidates = self
-            .index
-            .visible(self.scope, PolicyKind::Condition, name, self.imports);
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.entry.kind == PolicyKind::Condition && candidate.entry.name == name
+            })
+            .collect::<Vec<_>>();
         match candidates.as_slice() {
             [] => (self.emit)(span, format!("condition `{name}` not found")),
             [condition] => {
-                if context_only && condition.has_target {
+                if context_only && condition.entry.has_target {
                     (self.emit)(
                         span,
                         format!(
@@ -2312,12 +3162,12 @@ impl<Emit: FnMut(Span, String)> PolicyValidation<'_, Emit> {
                     );
                 }
                 if !context_only
-                    && !condition.matches.is_empty()
+                    && !condition.entry.matches.is_empty()
                     && self
                         .entry
                         .matches
                         .iter()
-                        .any(|table| !condition.matches.contains(table))
+                        .any(|table| !condition.entry.matches.contains(table))
                 {
                     (self.emit)(
                         span,
@@ -2596,51 +3446,71 @@ fn validate_declared_field(
 
 async fn check_import_ambiguities(
     _: Query<Entity, With<DiagnosticsDemand>>,
-    index: Query<(Entity, &PolicyIndex)>,
-    imports: Query<(Entity, &ScopeImports)>,
+    sites: Query<(
+        Entity,
+        &PolicySiteRoot,
+        PolicySiteContextRows<'_>,
+        PolicyPeerRows<'_>,
+    )>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
-    let (index_entity, index) = index.item();
-    let (_, imports) = imports.item();
-    for consumer in imports.0.keys() {
-        let mut groups: BTreeMap<(PolicyKind, &str), Vec<&PolicyEntry>> = BTreeMap::new();
-        for entry in &index.entries {
-            if imports
-                .imports_of(consumer)
-                .any(|provider| provider == entry.scope)
-            {
-                groups
-                    .entry((entry.kind, entry.name.as_str()))
-                    .or_default()
-                    .push(entry);
-            }
+    let (_, _, contexts, peers) = sites.item();
+    let Some((context_entity, (context,))) = contexts.iter().next() else {
+        return;
+    };
+    let peers = peers
+        .iter()
+        .map(|(entity, (peer,))| (entity, peer))
+        .collect::<Vec<_>>();
+    let consumer_scopes = peers
+        .iter()
+        .flat_map(|(_, peer)| &peer.consumer_scopes)
+        .collect::<BTreeSet<_>>();
+    for consumer in consumer_scopes {
+        let relevant = peers
+            .iter()
+            .filter(|(_, peer)| peer.consumer_scopes.contains(consumer))
+            .collect::<Vec<_>>();
+        let mut providers = relevant
+            .iter()
+            .map(|(_, peer)| peer.peer_scope.as_str())
+            .collect::<BTreeSet<_>>();
+        providers.insert(context.entry.scope.as_str());
+        if providers.len() < 2 {
+            continue;
         }
-        for ((kind, name), mut entries) in groups {
-            let providers = entries
-                .iter()
-                .map(|entry| entry.scope.as_str())
-                .collect::<BTreeSet<_>>();
-            if providers.len() < 2 {
-                continue;
-            }
-            entries.sort_by_key(|entry| (entry.scope.as_str(), entry.name_span.start));
-            let first = entries[0];
-            emit_diagnostic(
-                &mut commands,
-                DiagnosticFacts {
-                    derived_from: DerivedFrom::new(index_entity),
-                    file: first.file,
-                    span: first.name_span,
-                    severity: Severity::Error,
-                    source: DiagnosticSource::Check,
-                    code: DiagnosticCode::InvalidPolicyDefinition,
-                    message: format!(
-                        "{kind} `{name}` is provided to scope `{consumer}` by scopes `{}`",
-                        providers.into_iter().collect::<Vec<_>>().join("`, `")
-                    ),
-                },
-            );
+        let current_order = (
+            context.navigation.path.as_str(),
+            context.navigation.name_span.start,
+        );
+        if relevant
+            .iter()
+            .any(|(_, peer)| (peer.peer_path.as_str(), peer.peer_name_span.start) < current_order)
+        {
+            continue;
         }
+        let anchors = relevant
+            .iter()
+            .map(|(entity, _)| *entity)
+            .chain(std::iter::once(context_entity))
+            .collect::<Vec<_>>();
+        emit_diagnostic(
+            &mut commands,
+            DiagnosticFacts {
+                derived_from: DerivedFrom::many(anchors),
+                file: context.navigation.file,
+                span: context.navigation.name_span,
+                severity: Severity::Error,
+                source: DiagnosticSource::Check,
+                code: DiagnosticCode::InvalidPolicyDefinition,
+                message: format!(
+                    "{} `{}` is provided to scope `{consumer}` by scopes `{}`",
+                    context.entry.kind,
+                    context.entry.name,
+                    providers.into_iter().collect::<Vec<_>>().join("`, `")
+                ),
+            },
+        );
     }
 }
 

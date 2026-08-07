@@ -36,6 +36,87 @@ async fn edit_file(bowl: &Bowl, path: &str, replace: (&str, &str)) {
     let _ = bowl.scoop::<Query<(Entity, &FilePath)>>().await;
 }
 
+#[tokio::test]
+async fn context_navigation_moves_do_not_wake_policy_semantics() {
+    let bowl = language_bowl().await;
+    dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
+    bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
+        .await;
+    insert_source(&bowl, "context.dsql", "context { minimum_id: int }\n").await;
+    insert_source(
+        &bowl,
+        "policy.dsql",
+        "filter Positive on title { apply where true where .id > $:minimum_id }\n",
+    )
+    .await;
+    insert_source(
+        &bowl,
+        "query.dsql",
+        "query Titles { title(limit 1) { id } }\n",
+    )
+    .await;
+    let plans = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
+    assert_eq!(plans.collect().len(), 1);
+
+    let compile_before = runs_of(&bowl, "compile_policy").await;
+    let plan_before = runs_of(&bowl, "plan_queries").await;
+    edit_file(&bowl, "context.dsql", ("context", "\ncontext")).await;
+    let plans = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
+    assert_eq!(plans.collect().len(), 1);
+
+    assert_eq!(
+        runs_of(&bowl, "compile_policy").await - compile_before,
+        0,
+        "source-only context movement must not wake policy compilation"
+    );
+    assert_eq!(
+        runs_of(&bowl, "plan_queries").await - plan_before,
+        0,
+        "source-only context movement must not wake query planning"
+    );
+}
+
+#[tokio::test]
+async fn unrelated_policy_tables_do_not_wake_query_planning() {
+    let bowl = language_bowl().await;
+    dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
+    bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
+        .await;
+    insert_source(
+        &bowl,
+        "unrelated-policy.dsql",
+        "filter NamesOnly on name { field name where true }\n",
+    )
+    .await;
+    insert_source(
+        &bowl,
+        "unrelated-query.dsql",
+        "query Titles { title(limit 1) { id } }\n",
+    )
+    .await;
+    let plans = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
+    assert_eq!(plans.collect().len(), 1);
+
+    let before = runs_of(&bowl, "plan_queries").await;
+    edit_file(
+        &bowl,
+        "unrelated-policy.dsql",
+        ("field name where true", "field name where false"),
+    )
+    .await;
+    let plans = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
+    assert_eq!(plans.collect().len(), 1);
+    assert_eq!(
+        runs_of(&bowl, "plan_queries").await - before,
+        0,
+        "a policy edit cannot wake definitions whose semantic closure never touches its table"
+    );
+}
+
 /// Exact field-resolution checks follow changed fields, not definition-wide
 /// ambient invalidation. A fragment body is checked under its own declared
 /// target; callers retain separate spread-site compatibility checks.

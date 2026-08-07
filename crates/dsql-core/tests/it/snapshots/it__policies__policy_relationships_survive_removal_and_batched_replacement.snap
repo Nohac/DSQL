@@ -1,0 +1,39 @@
+---
+source: crates/dsql-core/tests/it/policies.rs
+expression: "format!(\"initial:\\n{initial}\\n\\nremoved:\\n{removed}\\n\\nrestored:\\n{restored}\\n\\nbatched replacement:\\n{replaced}\")"
+---
+initial:
+diagnostics:
+<none>
+index:
+filter Visible [public::title] default=false enforced=false
+surfaces:
+scope=frontend tables=["title"] references=["Visible"] policies=1 shape=1
+plans: 1
+
+removed:
+diagnostics:
+Error[23..30]: filter `Visible` not found
+index:
+<none>
+surfaces:
+scope=frontend tables=["title"] references=["Visible"] policies=0 shape=0
+plans: 1
+
+restored:
+diagnostics:
+<none>
+index:
+filter Visible [public::title] default=false enforced=false
+surfaces:
+scope=frontend tables=["title"] references=["Visible"] policies=1 shape=1
+plans: 1
+
+batched replacement:
+diagnostics:
+<none>
+index:
+filter Visible [public::title] default=false enforced=false
+surfaces:
+scope=frontend tables=["title"] references=["Visible"] policies=1 shape=1
+plans: 1

@@ -624,6 +624,7 @@ type ResidualRootInput<'a> = Query<(
     SelectionResolutionRows<'a>,
     ClauseResolutionRows<'a>,
     SpreadResolutionRows<'a>,
+    crate::entities::policy::DefinitionPolicyRows<'a>,
 )>;
 type ResidualDefinition<'a> = Query<
     (
@@ -644,32 +645,25 @@ type ResidualExpansions<'a> = Query<
     Where<BowlEq<SemanticDefinitionKey>>,
 >;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "system parameters are exact tracked joins, not an API surface"
-)]
 async fn residual_definition_checks(
     _: Query<Entity, With<DiagnosticsDemand>>,
     root_input: ResidualRootInput<'_>,
     definition: ResidualDefinition<'_>,
     expansions: ResidualExpansions<'_>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    policies: Query<(
-        Entity,
-        &crate::entities::policy::PolicyIndex,
-        &crate::entities::policy::CompiledPolicyIndex,
-    )>,
     imports: Query<(Entity, &ScopeImports)>,
     mut commands: Commands<(dsql_schema::Diagnostic,)>,
 ) {
-    let (root_group, root, _, members, selections, clauses, spread_resolutions) = root_input.item();
+    let (root_group, root, _, members, selections, clauses, spread_resolutions, policies) =
+        root_input.item();
     let (def_entity, decl, fragment_target, file, scope) = definition.item();
     let (expansion_group, _, bodies) = expansions.item();
     debug_assert_eq!(root.0, def_entity);
     debug_assert_eq!(root_group, expansion_group);
     let (catalog_entity, snapshot) = catalog.item();
     let (_, imports) = imports.item();
-    let (policy_index_entity, policy_index, compiled_policies) = policies.item();
+    let (policy_index, compiled_policies) =
+        crate::entities::policy::definition_policy_indexes(&policies);
     let catalog = snapshot.catalog();
 
     let tree = DefinitionClosure::build(
@@ -692,9 +686,8 @@ async fn residual_definition_checks(
         tree: &tree,
         catalog,
         catalog_entity,
-        policy_index,
-        compiled_policies,
-        policy_index_entity,
+        policy_index: &policy_index,
+        compiled_policies: &compiled_policies,
         file: file.0,
         scope: &scope.0,
         observed_tables: std::collections::HashSet::new(),
@@ -723,7 +716,6 @@ pub(crate) struct CheckCtx<'a> {
     pub(crate) catalog_entity: Entity,
     pub(crate) policy_index: &'a crate::entities::policy::PolicyIndex,
     pub(crate) compiled_policies: &'a crate::entities::policy::CompiledPolicyIndex,
-    pub(crate) policy_index_entity: Entity,
     pub(crate) file: Entity,
     /// Resolution scope of the definition being checked.
     pub(crate) scope: &'a str,
@@ -780,11 +772,7 @@ impl CheckCtx<'_> {
         emit_diagnostic(
             self.commands,
             DiagnosticFacts {
-                derived_from: DerivedFrom::many([
-                    anchor,
-                    self.catalog_entity,
-                    self.policy_index_entity,
-                ]),
+                derived_from: DerivedFrom::many([anchor, self.catalog_entity]),
                 file: self.file,
                 span,
                 severity,

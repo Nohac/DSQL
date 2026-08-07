@@ -2,19 +2,17 @@
 //!
 //! Declaration projections and exact use-site relationships are the source of
 //! trusted-context types for language semantics and editor services.
-//! [`ContextIndex`] remains temporarily as a policy-compiler bridge; the policy
-//! registry slice removes that final persistent aggregation.
+//! Policy compilation consumes the same declaration-semantic relationships as
+//! ordinary context uses; no project-wide context index is maintained.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
 
 use bowl::{
     Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Registrar, Related,
-    SystemExt, TrackedView, View, Where, With,
+    SystemExt, View, Where, With,
 };
 
 use crate::catalog::{Catalog, CatalogSnapshot, CatalogTypeShape, DataType, TypeKey, WireEncoding};
-use crate::entities::definition::DefIndex;
 use crate::entities::expression::Sigil;
 use crate::entities::variable::VariableUse;
 use crate::entities::{direct_name, direct_rule, node_span, text};
@@ -33,7 +31,7 @@ use crate::service::completion::{
 };
 use crate::service::definition::{DefinitionRequest, DefinitionTarget};
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
-use crate::source::{BelongsToHost, FilePath, ResolutionScope, ScopeImports};
+use crate::source::{ResolutionScope, ScopeImports};
 
 /// One entry lowered from a scope-level `context` declaration block.
 #[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
@@ -170,99 +168,6 @@ pub enum ContextTypeProblem {
     UnknownProvider { key: TypeKey },
     ProviderArray { key: TypeKey },
     UnsupportedWire { name: String },
-}
-
-/// One context entry after catalog resolution, including its source target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContextEntry {
-    pub declaration: Entity,
-    pub file: Entity,
-    pub file_path: String,
-    pub scope: String,
-    pub name: String,
-    pub name_span: Span,
-    pub type_span: Span,
-    pub contract: Option<ContextValueContract>,
-    pub problem: Option<ContextTypeProblem>,
-    pub embedded: bool,
-}
-
-/// Temporary policy-only index of every trusted-context declaration.
-///
-/// [`crate::entities::policy::compile_policies`] is the sole remaining
-/// consumer. The policy registry slice removes this aggregate and its
-/// [`DefIndex`] host.
-#[derive(Component, Debug, Clone, PartialEq, Eq)]
-#[component(hash)]
-pub struct ContextIndex {
-    pub entries: Vec<ContextEntry>,
-}
-
-impl Hash for ContextIndex {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        for entry in &self.entries {
-            // The source entity is stable across text edits but changes when a
-            // document is replaced, so it keeps navigation targets current.
-            // The lowered declaration entity is deliberately omitted: it is
-            // re-minted on any re-lowering and would invalidate every context
-            // consumer after unrelated edits in the declaring file.
-            entry.file.hash(state);
-            entry.file_path.hash(state);
-            entry.scope.hash(state);
-            entry.name.hash(state);
-            entry.name_span.hash(state);
-            entry.type_span.hash(state);
-            entry.contract.hash(state);
-            entry.problem.hash(state);
-            entry.embedded.hash(state);
-        }
-    }
-}
-
-/// Result of resolving one context name in an effective scope.
-pub(crate) enum ContextLookup<'a> {
-    Resolved(&'a ContextValueContract),
-    Unknown,
-    Ambiguous,
-    Invalid,
-}
-
-impl ContextIndex {
-    /// All declarations visible from `scope` with exactly `name`.
-    pub fn visible<'a>(
-        &'a self,
-        scope: &str,
-        name: &str,
-        imports: &'a ScopeImports,
-    ) -> Vec<&'a ContextEntry> {
-        self.entries
-            .iter()
-            .filter(|entry| {
-                entry.name == name
-                    && imports
-                        .visible_from(scope)
-                        .any(|visible| visible == entry.scope)
-            })
-            .collect()
-    }
-
-    /// Resolves one name only when the effective scope supplies one valid entry.
-    pub(crate) fn lookup<'a>(
-        &'a self,
-        scope: &str,
-        name: &str,
-        imports: &'a ScopeImports,
-    ) -> ContextLookup<'a> {
-        let visible = self.visible(scope, name, imports);
-        match visible.as_slice() {
-            [] => ContextLookup::Unknown,
-            [entry] => entry
-                .contract
-                .as_ref()
-                .map_or(ContextLookup::Invalid, ContextLookup::Resolved),
-            _ => ContextLookup::Ambiguous,
-        }
-    }
 }
 
 /// Source navigation and declaration contract for one context occurrence.
@@ -417,9 +322,6 @@ impl LanguageEntity for Context {
         registrar.system(project_context_use_sites);
         registrar.system(enrich_context_use_sites);
         registrar.system(bind_context_use_candidates);
-        // Temporary policy-only bridge. The policy registry slice removes
-        // this final persistent context aggregation and its DefIndex host.
-        registrar.system(index_contexts.run_during(Phase::Complete));
         registrar.system(resolve_context_uses);
         registrar.system(check_context_declarations);
         registrar.system(check_context_uses);
@@ -782,57 +684,6 @@ async fn bind_context_use_candidates(
             contract: provider.contract.clone(),
         },
     ));
-}
-
-async fn index_contexts(
-    catalog: Query<(Entity, &CatalogSnapshot)>,
-    definitions: Query<(Entity, &DefIndex)>,
-    declarations: TrackedView<'_, (Entity, &ContextDecl, &BelongsToFile, &ResolutionScope)>,
-    files: TrackedView<'_, (Entity, &FilePath)>,
-    embedded: TrackedView<'_, (Entity, &BelongsToHost)>,
-    mut commands: Commands<(dsql_schema::DefIndex,)>,
-) {
-    let (_, snapshot) = catalog.item();
-    let file_paths = files
-        .iter()
-        .map(|(entity, path)| (entity, path.0.as_str()))
-        .collect::<BTreeMap<_, _>>();
-    let embedded_files = embedded
-        .iter()
-        .map(|(entity, _)| entity)
-        .collect::<BTreeSet<_>>();
-    let mut entries = declarations
-        .iter()
-        .map(|(entity, declaration, file, scope)| {
-            let (contract, problem) = resolve_contract(snapshot.catalog(), declaration);
-            ContextEntry {
-                declaration: entity,
-                file: file.0,
-                file_path: file_paths
-                    .get(&file.0)
-                    .copied()
-                    .unwrap_or_default()
-                    .to_string(),
-                scope: scope.0.clone(),
-                name: declaration.name.clone(),
-                name_span: declaration.name_span,
-                type_span: declaration.type_span,
-                contract,
-                problem,
-                embedded: embedded_files.contains(&file.0),
-            }
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| {
-        left.scope
-            .cmp(&right.scope)
-            .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left.file_path.cmp(&right.file_path))
-            .then_with(|| left.name_span.start.cmp(&right.name_span.start))
-    });
-    commands
-        .entity(definitions.item().0)
-        .insert(ContextIndex { entries });
 }
 
 fn resolve_contract(

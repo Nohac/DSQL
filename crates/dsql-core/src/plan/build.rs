@@ -42,8 +42,9 @@ use crate::entities::expression::{
 };
 use crate::entities::field_selection::{DefinitionClosure, DefinitionRoot, FieldSel, InstanceNode};
 use crate::entities::policy::{
-    CompiledPolicyField, CompiledPolicyIndex, CompiledPolicyTarget, PolicyIndex, PolicyKind,
-    PolicyPlanIndex,
+    CompiledPolicyField, CompiledPolicyIndex, CompiledPolicyTarget, DefinitionPolicyRows,
+    DefinitionShapePolicyRows, PolicyIndex, PolicyKind, definition_policy_indexes,
+    definition_shape_policy_index,
 };
 use crate::entities::variable::{
     DefinitionInputRewrites, DefinitionVariableOwner, DefinitionVariables, InputDefault,
@@ -79,6 +80,7 @@ type PlanRootStructure<'a> = Query<(
     SelectionResolutionRows<'a>,
     ClauseResolutionRows<'a>,
     ContextUseResolutionRows<'a>,
+    DefinitionPolicyRows<'a>,
 )>;
 type PlanRootResolution<'a> = Query<
     (
@@ -88,6 +90,7 @@ type PlanRootResolution<'a> = Query<
         SpreadResolutionRows<'a>,
         Related<ExpansionCycles, (&'a ExpansionCycle,)>,
         Related<ExpansionBodies, (&'a ExpansionBody,)>,
+        DefinitionShapePolicyRows<'a>,
     ),
     Where<BowlEq<SemanticDefinitionKey>>,
 >;
@@ -104,17 +107,12 @@ type PlanDefinition<'a> = Query<
     Where<BowlEq<SemanticDefinitionKey>>,
 >;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each parameter is an independently tracked planning dependency"
-)]
 async fn plan_queries(
     _: Query<Entity, With<PlanDemand>>,
     root_structure: PlanRootStructure<'_>,
     root_resolution: PlanRootResolution<'_>,
     definition: PlanDefinition<'_>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    planning_index: Query<(Entity, &PolicyPlanIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     mut commands: Commands<(
         dsql_schema::QueryPlan,
@@ -122,8 +120,10 @@ async fn plan_queries(
         dsql_schema::Diagnostic,
     )>,
 ) {
-    let (root_group, root, _, members, selections, clauses, contexts) = root_structure.item();
-    let (resolution_group, _, aggregates, spreads, cycles, bodies) = root_resolution.item();
+    let (root_group, root, _, members, selections, clauses, contexts, policies) =
+        root_structure.item();
+    let (resolution_group, _, aggregates, spreads, cycles, bodies, shape_policies) =
+        root_resolution.item();
     let (_, definition_variables, input_rewrites, owner, node_key, file, def_key) =
         definition.item();
     let def_entity = owner.definition;
@@ -133,9 +133,8 @@ async fn plan_queries(
         return;
     }
     let (catalog_entity, snapshot) = catalog.item();
-    let (_, planning_index) = planning_index.item();
-    let policy_index = &planning_index.resolution;
-    let compiled_policies = &planning_index.compiled;
+    let (policy_index, compiled_policies) = definition_policy_indexes(&policies);
+    let shape_policies = definition_shape_policy_index(&shape_policies);
     let (_, imports) = imports.item();
 
     let mut tree = DefinitionClosure::build(
@@ -166,8 +165,9 @@ async fn plan_queries(
         catalog: snapshot.catalog(),
         scope: &scope.0,
         imports,
-        policy_index,
-        compiled_policies,
+        policy_index: &policy_index,
+        compiled_policies: &compiled_policies,
+        shape_policies: &shape_policies,
         variables: &definition_variables.bindings,
         spread_input_rewrites: &input_rewrites.0,
         operation_assignments: Vec::new(),
@@ -471,6 +471,7 @@ struct Planner<'a> {
     imports: &'a ScopeImports,
     policy_index: &'a PolicyIndex,
     compiled_policies: &'a CompiledPolicyIndex,
+    shape_policies: &'a CompiledPolicyIndex,
     variables: &'a [VariableBinding],
     spread_input_rewrites:
         &'a BTreeMap<Entity, BTreeMap<String, crate::entities::variable::SpreadInputValue>>,
@@ -531,7 +532,7 @@ impl Planner<'_> {
     fn policy_nullable_fields(&self, table: TableId) -> Vec<PolicyFieldTarget> {
         let mut fields = Vec::new();
         for field in self
-            .compiled_policies
+            .shape_policies
             .entries
             .iter()
             .flat_map(|entry| &entry.targets)
@@ -553,7 +554,7 @@ impl Planner<'_> {
     fn policy_field_access(&self, table: TableId) -> Vec<PolicyFieldAccess> {
         let mut fields = Vec::<PolicyFieldAccess>::new();
         for rule in self
-            .compiled_policies
+            .shape_policies
             .entries
             .iter()
             .flat_map(|entry| &entry.targets)

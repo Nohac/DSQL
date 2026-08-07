@@ -1271,9 +1271,8 @@ async fn rhs_same_table_sql() {
 async fn rhs_relation_path_sql() {
     insta::assert_snapshot!(fixture_sql("valid/imdb-rhs-relation-path.dsql").await);
 }
-/// Fragment bodies are expanded by walks in *other* files; the DefIndex
-/// fragment fingerprint is the tracked dependency that keeps dependents
-/// fresh across files.
+/// Fragment bodies are relationship-owned semantic inputs, so edits in a
+/// provider file rederive plans in dependent files without a global index.
 #[tokio::test]
 async fn cross_file_fragment_body_edits_rederive_sql() {
     let bowl = sql_bowl(imdb_catalog()).await;

@@ -9,8 +9,7 @@ use crate::schema::{AstFacts, dsql_schema};
 use std::{collections::BTreeMap, fmt};
 
 use bowl::{
-    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Phase, Query, Registrar, Related,
-    Singleton, SystemExt, TrackedView, Where, With,
+    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, Registrar, Related, Where, With,
 };
 
 use crate::entities::variable::{
@@ -30,7 +29,7 @@ use crate::plan::{
 };
 use crate::resolution::{ResolvedFragmentTarget, ResolvedTableTarget};
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
-use crate::source::{ResolutionScope, ScopeImports, SourceText};
+use crate::source::{ResolutionScope, ScopeImports};
 
 /// What kind of definition a [`DefDecl`] fact describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -188,22 +187,6 @@ pub struct ImportedQueryPeerOf(pub Entity);
 #[relationship_target(relationship = ImportedQueryPeerOf)]
 pub struct ImportedQueryPeers(pub Vec<Entity>);
 
-/// Fingerprint of the full definition set (scope, kind, name), maintained
-/// by [`index_defs`]. Checks that must react to *other* definitions
-/// appearing, disappearing, or changing scope take this singleton as a
-/// tracked input: its revision moves only when the set actually changes,
-/// so idempotent reruns invalidate nothing. Fragment entries carry their
-/// defining file's content fingerprint: fragment *bodies* are expanded
-/// ambiently by the check/variable/plan walks, and this fingerprint is
-/// the tracked dependency that re-runs dependents when a fragment's
-/// content — not just its name — changes. Query entries stay name-only,
-/// so ordinary query edits never invalidate unrelated definitions. The
-/// residual checker consumes relationship-scoped expansion bodies and does
-/// not depend on this aggregate fingerprint.
-#[derive(Component, Hash)]
-#[component(hash)]
-pub struct DefIndex(Vec<(String, DefKind, String, Option<u64>)>);
-
 /// Owns `query_def` and `fragment_def`.
 pub struct Definition;
 
@@ -211,8 +194,6 @@ impl LanguageEntity for Definition {
     const NAME: &'static str = "definition";
 
     fn register(reg: &mut Registrar<'_>) {
-        // Retained only until context and policy consumers move off DefIndex.
-        reg.system(index_defs.run_during(Phase::Complete));
         reg.system(project_definition_sites);
         reg.system(project_definition_facts);
         reg.system(enrich_definition_sites);
@@ -474,35 +455,6 @@ async fn enrich_definition_sites(
             file_path: navigation.file_path.clone(),
         },
     ));
-}
-
-/// Temporary definition-set bridge retained for context and policy consumers.
-/// The final cleanup slice removes it after those consumers own explicit
-/// relationship inputs.
-async fn index_defs(
-    defs: TrackedView<'_, (Entity, &DefDecl, &ResolutionScope, &BelongsToFile)>,
-    files: TrackedView<'_, (Entity, &SourceText)>,
-    mut commands: Commands<(dsql_schema::DefIndex,)>,
-) {
-    let file_hashes = files
-        .iter()
-        .map(|(entity, text)| (entity, text.content_hash()))
-        .collect::<std::collections::HashMap<_, _>>();
-    let mut entries = defs
-        .iter()
-        .map(|(_, declaration, scope, file)| {
-            let body = (declaration.kind == DefKind::Fragment)
-                .then(|| file_hashes.get(&file.0).copied().unwrap_or_default());
-            (
-                scope.0.clone(),
-                declaration.kind,
-                declaration.name.clone(),
-                body,
-            )
-        })
-        .collect::<Vec<_>>();
-    entries.sort();
-    commands.insert((Singleton::<DefIndex>::new(), DefIndex(entries)));
 }
 
 /// Materializes one visible same-name provider for one definition site.

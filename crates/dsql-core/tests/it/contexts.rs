@@ -5,10 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::entities::context::{
-    ContextDecl, ContextDeclarationNavigation, ContextDeclarationPeer, ContextIndex,
+    ContextDecl, ContextDeclarationNavigation, ContextDeclarationPeer, ContextDeclarationSemantics,
     ContextUseCandidate, ContextUseResolution, ResolvedContextUse,
 };
-use dsql_core::entities::definition::DefIndex;
 use dsql_core::entities::document::ParsedFile;
 use dsql_core::entities::expression::Sigil;
 use dsql_core::entities::variable::{VariableBinding, VariableProblem, VariableUse};
@@ -124,7 +123,9 @@ async fn render_context_pipeline(bowl: &Bowl) -> String {
     let declarations = bowl
         .scoop::<Query<(Entity, &ContextDecl, &BelongsToFile)>>()
         .await;
-    for (_, declaration, file) in declarations.collect() {
+    let mut declaration_names = BTreeMap::new();
+    for (entity, declaration, file) in declarations.collect() {
+        declaration_names.insert(entity, declaration.name.clone());
         lines.push(format!(
             "declaration {} {} name=[{}..{}] type=[{}..{}]",
             path_of(file.0),
@@ -136,35 +137,44 @@ async fn render_context_pipeline(bowl: &Bowl) -> String {
         ));
     }
 
-    let indices = bowl.scoop::<Query<(Entity, &ContextIndex)>>().await;
-    let indices = indices.collect();
-    lines.push(format!("indices {}", indices.len()));
-    for (_, index) in indices {
-        for entry in &index.entries {
-            let contract = entry.contract.as_ref().map_or_else(
-                || "invalid".to_string(),
-                |contract| {
-                    format!(
-                        "{}{}",
-                        contract.data_type.as_str(),
-                        if contract.collection { "[]" } else { "" }
-                    )
-                },
-            );
-            lines.push(format!(
-                "index {}:{} {} name=[{}..{}] type=[{}..{}] contract={contract}",
-                entry.scope,
-                entry.name,
-                entry.file_path,
-                entry.name_span.start,
-                entry.name_span.end,
-                entry.type_span.start,
-                entry.type_span.end,
-            ));
-        }
+    let semantics = bowl
+        .scoop::<Query<(Entity, &ContextDeclarationSemantics)>>()
+        .await;
+    let semantics = semantics
+        .collect()
+        .into_iter()
+        .map(|(_, semantics)| (semantics.declaration, semantics))
+        .collect::<BTreeMap<_, _>>();
+    let navigation = bowl
+        .scoop::<Query<(Entity, &ContextDeclarationNavigation)>>()
+        .await;
+    for (_, navigation) in navigation.collect() {
+        let Some(semantics) = semantics.get(&navigation.declaration) else {
+            continue;
+        };
+        let contract = semantics.contract.as_ref().map_or_else(
+            || "invalid".to_string(),
+            |contract| {
+                format!(
+                    "{}{}",
+                    contract.data_type.as_str(),
+                    if contract.collection { "[]" } else { "" }
+                )
+            },
+        );
+        lines.push(format!(
+            "declaration-semantics {}:{} {} name=[{}..{}] type=[{}..{}] contract={contract}",
+            semantics.provider_scope,
+            declaration_names
+                .get(&navigation.declaration)
+                .map_or("<missing>", String::as_str),
+            navigation.file_path,
+            navigation.name_span.start,
+            navigation.name_span.end,
+            navigation.type_span.start,
+            navigation.type_span.end,
+        ));
     }
-    let definition_indices = bowl.scoop::<Query<(Entity, &DefIndex)>>().await;
-    lines.push(format!("definition-indices {}", definition_indices.len()));
 
     let uses = bowl
         .scoop::<Query<(Entity, &VariableUse, &BelongsToFile)>>()
@@ -278,8 +288,10 @@ async fn declarations_drive_bindings_hover_definition_and_completion() {
 
     let declarations = bowl.scoop::<Query<(Entity, &ContextDecl)>>().await;
     assert_eq!(declarations.collect().len(), 4);
-    let indices = bowl.scoop::<Query<(Entity, &ContextIndex)>>().await;
-    assert_eq!(indices.collect().len(), 1);
+    let semantics = bowl
+        .scoop::<Query<(Entity, &ContextDeclarationSemantics)>>()
+        .await;
+    assert_eq!(semantics.collect().len(), 4);
     assert_eq!(render_diagnostic_facts(&bowl).await, "");
 
     insta::assert_snapshot!(render_bindings(&bowl).await);
@@ -818,8 +830,9 @@ async fn context_pipeline_tracks_multifile_moves_removal_and_reinsertion() {
     set_source_text(&bowl, declaration_file, format!("\n{declaration_source}")).await;
     let declaration_moved = render_context_pipeline(&bowl).await;
     assert!(
-        declaration_moved.contains("index shared:tenant_id definitions.dsql name=[11..20]"),
-        "the index must carry the moved declaration span:\n{declaration_moved}"
+        declaration_moved
+            .contains("declaration-semantics shared:tenant_id definitions.dsql name=[11..20]"),
+        "the navigation projection must carry the moved declaration span:\n{declaration_moved}"
     );
 
     let use_file = bowl
@@ -844,7 +857,7 @@ async fn context_pipeline_tracks_multifile_moves_removal_and_reinsertion() {
     set_source_text(&bowl, declaration_file, "\ncontext { tenant_id: uuid }\n").await;
     let repaired = render_context_pipeline(&bowl).await;
     assert!(
-        repaired.contains("index shared:tenant_id definitions.dsql")
+        repaired.contains("declaration-semantics shared:tenant_id definitions.dsql")
             && !repaired.contains("variable-problem")
             && !repaired.contains("diagnostic"),
         "repairing the declaration contract must clear the mismatch:\n{repaired}"
@@ -857,8 +870,8 @@ async fn context_pipeline_tracks_multifile_moves_removal_and_reinsertion() {
         "emptying the declaration file must make the use unknown:\n{emptied}"
     );
     assert!(
-        !emptied.contains("index shared:tenant_id"),
-        "the singleton index must drop declarations removed by text edit:\n{emptied}"
+        !emptied.contains("declaration-semantics shared:tenant_id"),
+        "the semantic projection must retire declarations removed by text edit:\n{emptied}"
     );
 
     set_source_text(&bowl, declaration_file, declaration_source).await;
@@ -875,10 +888,8 @@ async fn context_pipeline_tracks_multifile_moves_removal_and_reinsertion() {
         "despawning the declaration file must make the use unknown:\n{despawned}"
     );
     assert!(
-        despawned.lines().any(|line| line == "definition-indices 1")
-            && despawned.lines().any(|line| line == "indices 1")
-            && !despawned.contains("index shared:tenant_id"),
-        "the shared singleton index must survive with no stale entry:\n{despawned}"
+        !despawned.contains("declaration-semantics shared:tenant_id"),
+        "despawning the source must retire its semantic projection:\n{despawned}"
     );
 
     let reinserted_file = insert_source_scoped(
@@ -896,8 +907,8 @@ async fn context_pipeline_tracks_multifile_moves_removal_and_reinsertion() {
     );
 
     // Queue removal and replacement before the next settle. The semantic
-    // index contents are identical, but the navigation target must move to
-    // the replacement source entity.
+    // contract is identical, but the navigation target must move to the
+    // replacement source entity.
     bowl.entity(reinserted_file).despawn().await;
     let replacement_file = insert_source_scoped(
         &bowl,
@@ -909,9 +920,8 @@ async fn context_pipeline_tracks_multifile_moves_removal_and_reinsertion() {
     .await;
     let replaced = render_context_pipeline(&bowl).await;
     assert!(
-        replaced.lines().any(|line| line == "definition-indices 1")
-            && replaced.lines().any(|line| line == "indices 1"),
-        "batched source replacement must preserve both global indices:\n{replaced}"
+        replaced.contains("declaration-semantics shared:tenant_id definitions.dsql"),
+        "batched source replacement must restore the declaration projections:\n{replaced}"
     );
     let target = bowl
         .insert((

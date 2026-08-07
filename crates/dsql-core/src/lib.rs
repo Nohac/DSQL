@@ -107,4 +107,9 @@ pub async fn install_default_singletons(bowl: &Bowl) {
         sql::SqlOptions::default(),
     ))
     .await;
+    bowl.insert((
+        Singleton::<entities::policy::PolicyRegistryRoot>::new(),
+        entities::policy::PolicyRegistryRoot,
+    ))
+    .await;
 }

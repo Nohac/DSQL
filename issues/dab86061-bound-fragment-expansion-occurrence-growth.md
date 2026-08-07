@@ -16,6 +16,18 @@ number of same-name spread sites rather than every spread in the project.
 Each occurrence body also clones and hashes its context-use resolutions; all
 1,515 bodies in the depth fixture currently carry an empty context vector.
 
+Policy dependencies add two other deliberate bounded products. Every compiled
+filter is paired with every semantic definition root, but a stable per-root
+surface emits enforcement edges only for scope-visible filters that match a
+table in the semantic closure or are referenced explicitly. A second,
+scope-agnostic edge is emitted only when a compiled field policy overlaps a
+closure table; this preserves conservative shared-fragment result types across
+all consumer scopes. An unrelated-table policy edit therefore leaves a root's
+relationship sets unchanged and does not wake its checks or plan. Equality
+keys cannot express either the transitive scope graph or table-set overlap, so
+the invocation budget remains definitions times filters and should be measured
+alongside occurrence and spread-site growth before accepting untrusted input.
+
 Before accepting untrusted project input, define and enforce a deterministic
 per-root occurrence budget. Exceeding it should emit one stable diagnostic at
 the spread frontier and stop extending that root without affecting unrelated
