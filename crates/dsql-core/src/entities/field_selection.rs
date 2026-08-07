@@ -326,100 +326,23 @@ fn selection_shape_syntax(ctx: &LowerCtx<'_>, suffix: Option<NodeRef>) -> Select
     }
 }
 
-/// Everything the check walk sees of one definition's file, gathered from
-/// the ambient views and shared with the spread checks. Tree edges are the
-/// engine-maintained [`ChildOf`] relationships; entities orphaned by error
-/// recovery carry no edge and stay out of every walk.
+/// Completion lookup over lowered field rows. Semantic consumers use
+/// [`DefinitionClosure`] instead.
 pub(crate) struct SelectionTree<'a> {
-    /// (entity, fact, CST node key, parent entity), indexed by parent.
-    pub(crate) fields: HashMap<Entity, Vec<(Entity, &'a FieldSel, NodeKey, Entity)>>,
-    /// The same field rows, indexed by their own entity.
     pub(crate) fields_by_entity: HashMap<Entity, (Entity, &'a FieldSel, NodeKey, Entity)>,
-    pub(crate) spreads: HashMap<Entity, Vec<(Entity, &'a SpreadDecl, Entity)>>,
-    pub(crate) fragments: Vec<(Entity, &'a DefDecl, &'a FragmentTarget, &'a ResolutionScope)>,
-    pub(crate) clauses: HashMap<Entity, Vec<(Entity, &'a ClauseFact, Span, Entity)>>,
 }
 
 impl SelectionTree<'_> {
-    pub(crate) fn fields_under(
-        &self,
-        parent: Entity,
-    ) -> impl Iterator<Item = &(Entity, &FieldSel, NodeKey, Entity)> {
-        self.fields.get(&parent).into_iter().flatten()
-    }
-
-    pub(crate) fn spreads_under(
-        &self,
-        parent: Entity,
-    ) -> impl Iterator<Item = &(Entity, &SpreadDecl, Entity)> {
-        self.spreads.get(&parent).into_iter().flatten()
-    }
-
-    /// Gathers the lowered selection facts out of the ambient views,
-    /// indexed by parent entity so tree descent is a lookup, not a linear
-    /// scan over every fact in the project. The tree spans every file:
-    /// edges are entity links so they never cross files, while fragments
-    /// resolve across files by scope.
+    /// Indexes lowered selections by entity for truncated-CST completion
+    /// correlation.
     pub(crate) fn collect<'a>(views: &'a TreeViews<'_>) -> SelectionTree<'a> {
-        let mut fields: HashMap<Entity, Vec<(Entity, &FieldSel, NodeKey, Entity)>> = HashMap::new();
-        for (entity, field, key, parent) in views.fields.iter() {
-            fields
-                .entry(parent.0)
-                .or_default()
-                .push((entity, field, *key, parent.0));
-        }
-        let mut spreads: HashMap<Entity, Vec<(Entity, &SpreadDecl, Entity)>> = HashMap::new();
-        for (entity, spread, parent) in views.spreads.iter() {
-            spreads
-                .entry(parent.0)
-                .or_default()
-                .push((entity, spread, parent.0));
-        }
-        let mut clauses: HashMap<Entity, Vec<(Entity, &ClauseFact, Span, Entity)>> = HashMap::new();
-        for (entity, clause, span, parent) in views.clauses.iter() {
-            clauses
-                .entry(parent.0)
-                .or_default()
-                .push((entity, clause, *span, parent.0));
-        }
-        let fields_by_entity = fields.values().flatten().map(|row| (row.0, *row)).collect();
         SelectionTree {
-            fields,
-            fields_by_entity,
-            spreads,
-            fragments: views.fragments.iter().collect(),
-            clauses,
+            fields_by_entity: views
+                .fields
+                .iter()
+                .map(|(entity, field, key, parent)| (entity, (entity, field, *key, parent.0)))
+                .collect(),
         }
-    }
-
-    /// The uniquely visible fragment `name` from `scope`, per the effective
-    /// resolver. Zero or several candidates resolve to `None`; the spread
-    /// checks report those cases.
-    pub(crate) fn resolve_fragment(
-        &self,
-        name: &str,
-        scope: &str,
-        imports: &ScopeImports,
-    ) -> Option<&(Entity, &DefDecl, &FragmentTarget, &ResolutionScope)> {
-        let mut candidates = self
-            .fragments
-            .iter()
-            .filter(|(_, decl, _, fragment_scope)| {
-                decl.kind == DefKind::Fragment
-                    && decl.name == name
-                    && imports
-                        .visible_from(scope)
-                        .any(|visible| visible == fragment_scope.0)
-            });
-        let first = candidates.next()?;
-        candidates.next().is_none().then_some(first)
-    }
-
-    pub(crate) fn clauses_under(
-        &self,
-        parent: Entity,
-    ) -> impl Iterator<Item = &(Entity, &ClauseFact, Span, Entity)> {
-        self.clauses.get(&parent).into_iter().flatten()
     }
 }
 
@@ -431,15 +354,10 @@ impl SelectionTree<'_> {
 ///
 /// Spread-site compatibility remains a per-site check, while intrinsic cycle
 /// errors are emitted from the materialized expansion graph.
-/// The ambient views planning and completion still read, bundled to keep
-/// system signatures within porridge's parameter arity. Checks and variable
-/// inference consume relationship-scoped expansion bodies instead.
+/// The lowered field view used only for truncated-CST completion correlation.
 #[derive(SystemParam)]
 pub(crate) struct TreeViews<'a> {
     fields: View<'a, (Entity, &'a FieldSel, &'a NodeKey, &'a ChildOf)>,
-    spreads: View<'a, (Entity, &'a SpreadDecl, &'a ChildOf)>,
-    fragments: View<'a, (Entity, &'a DefDecl, &'a FragmentTarget, &'a ResolutionScope)>,
-    clauses: View<'a, (Entity, &'a ClauseFact, &'a Span, &'a ChildOf)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -455,6 +373,7 @@ pub(crate) struct DefinitionClosure {
     clauses: HashMap<InstanceNode, Vec<(InstanceNode, ClauseFact, Span)>>,
     selections: HashMap<InstanceNode, ResolvedSelection>,
     clause_resolutions: HashMap<InstanceNode, ResolvedClause>,
+    aggregate_resolutions: HashMap<InstanceNode, crate::entities::aggregate::ResolvedAggregate>,
     spread_resolutions: HashMap<InstanceNode, crate::entities::fragment_spread::ResolvedSpread>,
     context_resolutions: HashMap<InstanceNode, ResolvedContextUse>,
     variable_nodes: HashMap<(Option<Entity>, Span), InstanceNode>,
@@ -561,6 +480,13 @@ impl DefinitionClosure {
         self.clause_resolutions.get(&node)
     }
 
+    pub(crate) fn resolved_aggregate(
+        &self,
+        node: InstanceNode,
+    ) -> Option<&crate::entities::aggregate::ResolvedAggregate> {
+        self.aggregate_resolutions.get(&node)
+    }
+
     pub(crate) fn spread_resolution(
         &self,
         node: InstanceNode,
@@ -588,6 +514,16 @@ impl DefinitionClosure {
         for context in contexts {
             self.context_resolutions
                 .insert(Self::node(None, context.source_use), context);
+        }
+    }
+
+    pub(crate) fn add_root_aggregates(
+        &mut self,
+        aggregates: impl IntoIterator<Item = crate::entities::aggregate::ResolvedAggregate>,
+    ) {
+        for aggregate in aggregates {
+            self.aggregate_resolutions
+                .insert(Self::node(None, aggregate.source), aggregate);
         }
     }
 
@@ -649,6 +585,11 @@ impl DefinitionClosure {
                 closure
                     .clause_resolutions
                     .insert(Self::node(instance, resolved.clause), resolved);
+            }
+            for resolved in body.aggregates {
+                closure
+                    .aggregate_resolutions
+                    .insert(Self::node(instance, resolved.source), resolved);
             }
             for resolved in body.spreads {
                 closure

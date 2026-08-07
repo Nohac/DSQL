@@ -1,0 +1,21 @@
+---
+source: crates/dsql-core/tests/it/sql.rs
+expression: "format!(\"{diagnostics}\\n--- sql ---\\n{sql}\")"
+---
+Error[124..133]: trusted context `context.enabled` is declared as `int` but this use requires `boolean`
+--- sql ---
+-- InvalidContext
+select
+  "root"."users" as "users"
+from
+  (
+    select
+      1) as "singleton"
+  left join LATERAL (
+    select
+      JSON_BUILD_OBJECT('id', "users_99fc7350"."id") as "users"
+    from
+      "public"."users" as "users_99fc7350"
+    limit
+      1
+  ) as "root" on true

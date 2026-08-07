@@ -7,14 +7,20 @@
 //! paths the variables stage infers. Runs per definition, gated on
 //! [`PlanDemand`].
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::entities::expansion::{ExpandedSpread, SpreadExpansion};
-use crate::resolution::{
-    PathTerminal, ResolvedClause, ResolvedSelection, ResolvedSelectionShape, index_resolved_clauses,
+use crate::entities::expansion::{
+    AggregateResolutionRows, ClauseResolutionRows, ContextUseResolutionRows, ExpansionBodies,
+    ExpansionBody, ExpansionCycle, ExpansionCycles, RawSemanticMembers, SelectionResolutionRows,
+    SemanticDefinitionKey, SpreadResolutionRows, clone_aggregate_resolutions,
+    clone_clause_resolutions, clone_context_use_resolutions, clone_selection_resolutions,
+    clone_semantic_members, clone_spread_resolutions,
 };
+use crate::resolution::{PathTerminal, ResolvedClause, ResolvedSelectionShape, SelectionTarget};
 use crate::schema::dsql_schema;
-use bowl::{Commands, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View, With};
+use bowl::{
+    Commands, DerivedFrom, Entity, Eq as BowlEq, Query, Registrar, Related, SystemExt, Where, With,
+};
 
 use super::types::{
     AggregateGroupProjection, AggregatePlan, AggregateProjection, CollectionPlan,
@@ -27,20 +33,14 @@ use super::types::{
     QueryRootPlan, SelectionClauses, SelectionPlan, SelectionPlanItem, SortDirectionPlan,
     SpreadUse, SqlParameter, SqlValue, SqlVariantCase,
 };
-use crate::catalog::{
-    Catalog, CatalogSnapshot, FieldCheckResult, FieldRef, TableId, TableRef, TableResolution,
-    TypeKey, WireEncoding,
-};
-use crate::entities::aggregate::ResolvedAggregate;
+use crate::catalog::{Catalog, CatalogSnapshot, TableId, TableRef, TypeKey, WireEncoding};
 use crate::entities::clause::{ClauseFact, OrderDirection, OrderTerm, parse_pagination_value};
-use crate::entities::context::{
-    ContextIndex, ContextLookup, ContextValueContract, validate_context_use,
-};
+use crate::entities::context::{ContextUseResolution, ContextValueContract, validate_context_use};
 use crate::entities::definition::{DefDecl, DefKind};
 use crate::entities::expression::{
     BinaryOp, DynamicInputSurface, Expr, LiteralValue, PathAnchor, VariableRef,
 };
-use crate::entities::field_selection::{FieldSel, SelectionTree, TreeViews};
+use crate::entities::field_selection::{DefinitionClosure, DefinitionRoot, FieldSel, InstanceNode};
 use crate::entities::policy::{
     CompiledPolicyField, CompiledPolicyIndex, CompiledPolicyTarget, PolicyIndex, PolicyKind,
     PolicyPlanIndex,
@@ -55,14 +55,15 @@ use crate::entities::variable_path::{
 };
 use crate::facts::{
     BelongsToFile, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource, NodeKey, PlanDemand,
-    PlanKey, Severity, Span, emit_diagnostic,
+    PlanKey, SemanticRoot, Severity, Span, emit_diagnostic,
 };
 use crate::source::ScopeImports;
 
-/// Registers the planning stage. A cross-entity stage system like
-/// `lower_syntax_facts`: it walks the whole checked fact tree per definition.
+/// Registers the planning stage. Exact semantic ownership relationships
+/// drive one memoized plan computation per definition.
 pub fn register_planning(reg: &mut Registrar<'_>) {
-    // Views lowered facts ambiently: behind the Complete barrier.
+    // Exact relationship inputs drive invalidation. Complete prevents plan
+    // publication while independently derived semantic rows are converging.
     reg.system(plan_queries.run_during(bowl::Phase::Complete));
 }
 
@@ -70,68 +71,107 @@ pub fn register_planning(reg: &mut Registrar<'_>) {
 /// skipped, unresolved
 /// roots produce plan diagnostics, and fragment spreads below the root
 /// splice the fragment's items in with an enveloped variable scope.
+type PlanRootStructure<'a> = Query<(
+    Entity,
+    &'a SemanticRoot,
+    &'a SemanticDefinitionKey,
+    &'a NodeKey,
+    RawSemanticMembers<'a>,
+    SelectionResolutionRows<'a>,
+    ClauseResolutionRows<'a>,
+    ContextUseResolutionRows<'a>,
+)>;
+type PlanRootResolution<'a> = Query<
+    (
+        Entity,
+        &'a SemanticRoot,
+        AggregateResolutionRows<'a>,
+        SpreadResolutionRows<'a>,
+        Related<ExpansionCycles, (&'a ExpansionCycle,)>,
+        Related<ExpansionBodies, (&'a ExpansionBody,)>,
+    ),
+    Where<BowlEq<SemanticDefinitionKey>>,
+>;
+type PlanDefinition<'a> = Query<
+    (
+        Entity,
+        &'a DefinitionVariables,
+        &'a DefinitionInputRewrites,
+        &'a DefinitionVariableOwner,
+        &'a NodeKey,
+        &'a BelongsToFile,
+        &'a DefKey,
+    ),
+    Where<BowlEq<NodeKey>>,
+>;
+
 #[expect(
     clippy::too_many_arguments,
-    reason = "system parameters are the tracked join, not an API surface"
+    reason = "each parameter is an independently tracked planning dependency"
 )]
 async fn plan_queries(
     _: Query<Entity, With<PlanDemand>>,
-    defs: Query<(
-        Entity,
-        &DefinitionVariables,
-        &DefinitionInputRewrites,
-        &DefinitionVariableOwner,
-        &NodeKey,
-        &BelongsToFile,
-    )>,
+    root_structure: PlanRootStructure<'_>,
+    root_resolution: PlanRootResolution<'_>,
+    definition: PlanDefinition<'_>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    planning_index: Query<(
-        Entity,
-        &crate::entities::definition::DefIndex,
-        &PolicyPlanIndex,
-        &ContextIndex,
-    )>,
+    planning_index: Query<(Entity, &PolicyPlanIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
-    views: TreeViews<'_>,
-    semantic_views: PlanSemanticViews<'_>,
     mut commands: Commands<(
         dsql_schema::QueryPlan,
         dsql_schema::FragmentPlan,
         dsql_schema::Diagnostic,
     )>,
 ) {
-    let (_, definition_variables, input_rewrites, owner, node_key, file) = defs.item();
+    let (root_group, root, _, root_key, members, selections, clauses, contexts) =
+        root_structure.item();
+    let (resolution_group, _, aggregates, spreads, cycles, bodies) = root_resolution.item();
+    let (_, definition_variables, input_rewrites, owner, node_key, file, def_key) =
+        definition.item();
     let def_entity = owner.definition;
     let decl = &owner.declaration;
     let scope = &owner.scope;
+    if root_group != resolution_group
+        || root.0 != def_entity
+        || root_key != node_key
+        || def_key.0 != def_entity
+    {
+        return;
+    }
     let (catalog_entity, snapshot) = catalog.item();
-    let (_, _, planning_index, contexts) = planning_index.item();
+    let (_, planning_index) = planning_index.item();
     let policy_index = &planning_index.resolution;
     let compiled_policies = &planning_index.compiled;
     let (_, imports) = imports.item();
 
-    let tree = SelectionTree::collect(&views);
-    let resolved_clauses =
-        index_resolved_clauses(semantic_views.clauses.iter().map(|(_, resolved)| resolved));
-    let resolved_aggregates = semantic_views
-        .aggregates
-        .iter()
-        .map(|(_, aggregate)| (aggregate.source, aggregate))
-        .collect();
-    let resolved_selections = semantic_views
-        .selections
-        .iter()
-        .map(|(_, selection)| (selection.field, selection))
-        .collect();
+    let mut tree = DefinitionClosure::build(
+        DefinitionRoot {
+            scope: scope.0.clone(),
+            declaration: decl.clone(),
+            target: owner.target.clone(),
+            members: clone_semantic_members(&members),
+            selections: clone_selection_resolutions(&selections),
+            clauses: clone_clause_resolutions(&clauses),
+            spreads: clone_spread_resolutions(&spreads),
+        },
+        bodies
+            .iter()
+            .map(|(_, (body,))| (*body).clone())
+            .collect::<Vec<_>>(),
+    );
+    tree.add_root_contexts(clone_context_use_resolutions(&contexts));
+    tree.add_root_aggregates(clone_aggregate_resolutions(&aggregates));
+    tree.add_cycles(
+        cycles
+            .iter()
+            .map(|(_, (cycle,))| (*cycle).clone())
+            .collect::<Vec<_>>(),
+    );
     let mut planner = Planner {
         tree: &tree,
-        resolved_clauses: &resolved_clauses,
-        resolved_aggregates: &resolved_aggregates,
-        resolved_selections: &resolved_selections,
         catalog: snapshot.catalog(),
         scope: &scope.0,
         imports,
-        contexts,
         policy_index,
         compiled_policies,
         variables: &definition_variables.bindings,
@@ -139,11 +179,12 @@ async fn plan_queries(
         operation_assignments: Vec::new(),
     };
     let mut diagnostics = Vec::new();
+    let definition_root = DefinitionClosure::node(None, def_entity);
 
     if decl.kind == DefKind::Fragment {
         plan_fragment_body(
             &planner,
-            def_entity,
+            definition_root,
             decl,
             file.0,
             &scope.0,
@@ -161,27 +202,36 @@ async fn plan_queries(
         return;
     }
 
-    planner.operation_assignments =
-        planner.plan_assignments(def_entity, &[], &VariablePathScope::operation(), &scope.0);
+    planner.operation_assignments = planner.plan_assignments(
+        definition_root,
+        &[],
+        &VariablePathScope::operation(),
+        &scope.0,
+    );
 
     let roots: Vec<_> = tree
-        .fields_under(def_entity)
-        .map(|(entity, field, _, _)| (*entity, *field))
+        .fields_under(definition_root)
+        .map(|(entity, field)| (*entity, field.clone()))
         .collect();
     let mut planned_roots = Vec::new();
     let mut operation_spreads = Vec::new();
     let mut operation_policy_context = Vec::new();
     let mut operation_dynamic_inputs = Vec::new();
+    let mut incomplete_frontier = false;
     for (root_entity, field) in roots {
         match planner
-            .catalog
-            .resolve_table_ref_for(TableRef::parse(&field.name))
+            .tree
+            .selection(root_entity)
+            .map(|resolved| &resolved.target)
         {
-            TableResolution::Found(table) => {
+            Some(SelectionTarget::Table(table_id)) => {
                 let Some(shape) = planner.selection_shape(root_entity) else {
                     continue;
                 };
-                let table_id = table.id;
+                let Some(table) = planner.catalog.table_by_id(*table_id) else {
+                    continue;
+                };
+                let table_id = *table_id;
                 let output_name = field.alias.clone().unwrap_or_else(|| table.name.clone());
                 let mut selection_path = vec![field.output_key()];
                 if field.flattened && field.has_transform() {
@@ -197,11 +247,7 @@ async fn plan_queries(
                         vec![output_name.clone()]
                     },
                     spreads: &mut spreads,
-                    expansion: &mut SpreadExpansion::new(
-                        planner.tree,
-                        planner.scope,
-                        planner.imports,
-                    ),
+                    incomplete_frontier: &mut incomplete_frontier,
                     diagnostics: &mut diagnostics,
                     policy_context: &mut policy_context,
                     dynamic_inputs: &mut operation_dynamic_inputs,
@@ -209,6 +255,7 @@ async fn plan_queries(
                 let policies = planner.plan_source_policies(
                     table_id,
                     Some(root_entity),
+                    root_entity.instance,
                     &selection_path,
                     &variable_scope,
                     &scope.0,
@@ -221,9 +268,8 @@ async fn plan_queries(
                     SelectionPath::body(selection_path.clone()),
                     &variable_scope,
                     CollectionSource {
-                        table: table_id,
                         entity: root_entity,
-                        field,
+                        field: &field,
                     },
                     &scope.0,
                 ) {
@@ -263,8 +309,17 @@ async fn plan_queries(
             // Root resolution failures are semantic check diagnostics; there
             // is no plan to build and the planning stage must not duplicate
             // or cascade from them.
-            TableResolution::NotFound { .. } | TableResolution::Ambiguous { .. } => continue,
+            Some(
+                SelectionTarget::Column(_)
+                | SelectionTarget::Relation { .. }
+                | SelectionTarget::Unresolved,
+            )
+            | None => continue,
         }
+    }
+
+    if incomplete_frontier {
+        return;
     }
 
     if !planned_roots.is_empty() {
@@ -303,15 +358,6 @@ async fn plan_queries(
     );
 }
 
-/// Semantic facts consumed ambiently by the per-definition plan walk,
-/// bundled to stay within porridge's system-parameter arity.
-#[derive(SystemParam)]
-struct PlanSemanticViews<'a> {
-    selections: View<'a, (Entity, &'a ResolvedSelection)>,
-    clauses: View<'a, (Entity, &'a ResolvedClause)>,
-    aggregates: View<'a, (Entity, &'a ResolvedAggregate)>,
-}
-
 fn emit_plan_diagnostics(
     diagnostics: PlanDiagnostics,
     def_entity: Entity,
@@ -345,7 +391,7 @@ fn emit_plan_diagnostics(
 #[expect(clippy::too_many_arguments, reason = "one emission site, all context")]
 fn plan_fragment_body(
     planner: &Planner<'_>,
-    def_entity: Entity,
+    definition: InstanceNode,
     decl: &DefDecl,
     file: Entity,
     scope: &str,
@@ -357,12 +403,7 @@ fn plan_fragment_body(
     )>,
     diagnostics: &mut PlanDiagnostics,
 ) {
-    let Some((_, _, target, _)) = planner
-        .tree
-        .fragments
-        .iter()
-        .find(|(entity, _, _, _)| *entity == def_entity)
-    else {
+    let Some(target) = planner.tree.fragment_target(definition) else {
         return;
     };
     let Some(table) = planner.catalog.table_ref_for(TableRef::parse(&target.name)) else {
@@ -376,23 +417,27 @@ fn plan_fragment_body(
     let mut spreads = Vec::new();
     let mut policy_context = Vec::new();
     let mut dynamic_inputs = Vec::new();
+    let mut incomplete_frontier = false;
     let Some(selections) = planner.plan_selection_set(
         &mut PlanWalk {
             result_path: Vec::new(),
             spreads: &mut spreads,
-            expansion: &mut SpreadExpansion::new(planner.tree, planner.scope, planner.imports),
+            incomplete_frontier: &mut incomplete_frontier,
             diagnostics,
             policy_context: &mut policy_context,
             dynamic_inputs: &mut dynamic_inputs,
         },
-        table_id,
         SelectionPath::fragment_root(),
         &VariablePathScope::fragment(),
-        def_entity,
+        definition,
         scope,
     ) else {
         return;
     };
+    if incomplete_frontier {
+        return;
+    }
+    let def_entity = definition.source;
     commands.insert((
         DerivedFrom::many([def_entity, catalog_entity]),
         BelongsToFile(file),
@@ -414,25 +459,22 @@ type PlanDiagnostics = Vec<(crate::facts::Span, DiagnosticCode, String)>;
 
 /// Mutable state threaded through one plan walk. `result_path` follows
 /// output keys (unchanged across spread expansion, extended per relation);
-/// The shared [`SpreadExpansion`] resolves spreads and guards cycles.
+/// `incomplete_frontier` suppresses partial plans while occurrence bodies
+/// converge.
 struct PlanWalk<'a> {
     result_path: Vec<String>,
     spreads: &'a mut Vec<SpreadUse>,
-    expansion: &'a mut SpreadExpansion<'a, 'a>,
+    incomplete_frontier: &'a mut bool,
     diagnostics: &'a mut PlanDiagnostics,
     policy_context: &'a mut Vec<PolicyContextRequirement>,
     dynamic_inputs: &'a mut Vec<DynamicInputContract>,
 }
 
 struct Planner<'a> {
-    tree: &'a SelectionTree<'a>,
-    resolved_clauses: &'a HashMap<Entity, &'a ResolvedClause>,
-    resolved_aggregates: &'a HashMap<Entity, &'a ResolvedAggregate>,
-    resolved_selections: &'a HashMap<Entity, &'a ResolvedSelection>,
+    tree: &'a DefinitionClosure,
     catalog: &'a Catalog,
     scope: &'a str,
     imports: &'a ScopeImports,
-    contexts: &'a ContextIndex,
     policy_index: &'a PolicyIndex,
     compiled_policies: &'a CompiledPolicyIndex,
     variables: &'a [VariableBinding],
@@ -475,13 +517,13 @@ struct SourcePolicyPlan {
 
 struct PolicyPlanningContext<'a> {
     definition_scope: &'a str,
+    instance: Option<Entity>,
     context: &'a mut Vec<PolicyContextRequirement>,
     applications: &'a mut Vec<PolicyApplicationPlan>,
 }
 
 struct CollectionSource<'a> {
-    table: TableId,
-    entity: Entity,
+    entity: InstanceNode,
     field: &'a FieldSel,
 }
 
@@ -545,28 +587,20 @@ impl Planner<'_> {
         fields
     }
 
-    fn selection_shape(&self, field: Entity) -> Option<ResolvedSelectionShape> {
-        self.resolved_selections.get(&field)?.shape.clone()
-    }
-
-    fn fragment_scope(&self, fragment: Entity) -> Option<&str> {
-        self.tree
-            .fragments
-            .iter()
-            .find(|(entity, _, _, _)| *entity == fragment)
-            .map(|(_, _, _, scope)| scope.0.as_str())
+    fn selection_shape(&self, field: InstanceNode) -> Option<ResolvedSelectionShape> {
+        self.tree.selection(field)?.shape.clone()
     }
 
     fn plan_assignments(
         &self,
-        parent: Entity,
+        parent: InstanceNode,
         selection_path: &[String],
         variable_scope: &VariablePathScope,
         definition_scope: &str,
     ) -> Vec<PlannedPolicyAssignment> {
         self.tree
             .clauses_under(parent)
-            .filter_map(|(_, clause, _, _)| {
+            .filter_map(|(_, clause, _)| {
                 let ClauseFact::FilterAssignment {
                     name, condition, ..
                 } = clause
@@ -574,6 +608,7 @@ impl Planner<'_> {
                     return None;
                 };
                 self.plan_assignment(
+                    parent.instance,
                     name,
                     condition.as_ref(),
                     selection_path,
@@ -586,6 +621,7 @@ impl Planner<'_> {
 
     fn plan_assignment(
         &self,
+        instance: Option<Entity>,
         name: &str,
         condition: Option<&Expr>,
         selection_path: &[String],
@@ -603,11 +639,11 @@ impl Planner<'_> {
             || Some(boolean_filter(true)),
             |condition| {
                 self.plan_assignment_expr(
+                    instance,
                     condition,
                     name,
                     selection_path,
                     variable_scope,
-                    definition_scope,
                     &mut context,
                 )
             },
@@ -621,11 +657,11 @@ impl Planner<'_> {
 
     fn plan_assignment_expr(
         &self,
+        instance: Option<Entity>,
         expr: &Expr,
         filter_name: &str,
         selection_path: &[String],
         variable_scope: &VariablePathScope,
-        definition_scope: &str,
         context: &mut Vec<PolicyContextRequirement>,
     ) -> Option<FilterExpr> {
         match expr {
@@ -634,8 +670,10 @@ impl Planner<'_> {
                     let name = variable.name.as_deref()?;
                     // Fragment-authored assignments resolve their context in
                     // the fragment's scope, matching inference and services.
-                    let ContextLookup::Resolved(_, declared) =
-                        self.contexts.lookup(definition_scope, name, self.imports)
+                    let resolved = self.tree.context_resolution_at(instance, variable.span)?;
+                    let ContextUseResolution::Resolved {
+                        contract: declared, ..
+                    } = &resolved.resolution
                     else {
                         return None;
                     };
@@ -686,29 +724,29 @@ impl Planner<'_> {
             } => Some(boolean_filter(*value)),
             Expr::Unary { operand, .. } => self
                 .plan_assignment_expr(
+                    instance,
                     operand,
                     filter_name,
                     selection_path,
                     variable_scope,
-                    definition_scope,
                     context,
                 )
                 .map(not_filter),
             Expr::Binary { op, lhs, rhs, .. } => {
                 let left = self.plan_assignment_expr(
+                    instance,
                     lhs,
                     filter_name,
                     selection_path,
                     variable_scope,
-                    definition_scope,
                     context,
                 )?;
                 let right = self.plan_assignment_expr(
+                    instance,
                     rhs,
                     filter_name,
                     selection_path,
                     variable_scope,
-                    definition_scope,
                     context,
                 )?;
                 let op = match op {
@@ -727,11 +765,11 @@ impl Planner<'_> {
                 operand, negated, ..
             } => Some(FilterExpr::NullTest {
                 operand: Box::new(self.plan_assignment_expr(
+                    instance,
                     operand,
                     filter_name,
                     selection_path,
                     variable_scope,
-                    definition_scope,
                     context,
                 )?),
                 negated: *negated,
@@ -754,7 +792,8 @@ impl Planner<'_> {
     fn plan_source_policies(
         &self,
         table: TableId,
-        source: Option<Entity>,
+        source: Option<InstanceNode>,
+        context_instance: Option<Entity>,
         selection_path: &[String],
         variable_scope: &VariablePathScope,
         definition_scope: &str,
@@ -776,6 +815,7 @@ impl Planner<'_> {
         }
         for assignment in explicit {
             if let Some(planned) = self.plan_assignment(
+                context_instance,
                 &assignment.name,
                 assignment.condition.as_deref(),
                 selection_path,
@@ -949,7 +989,6 @@ impl Planner<'_> {
             return self
                 .plan_selection_set(
                     walk,
-                    source.table,
                     selection_path,
                     variable_scope,
                     source.entity,
@@ -965,8 +1004,8 @@ impl Planner<'_> {
         None
     }
 
-    fn plan_aggregate(&self, source: Entity) -> Option<AggregatePlan> {
-        let aggregate = self.resolved_aggregates.get(&source)?;
+    fn plan_aggregate(&self, source: InstanceNode) -> Option<AggregatePlan> {
+        let aggregate = self.tree.resolved_aggregate(source)?;
         if !aggregate.is_valid() {
             return None;
         }
@@ -1003,10 +1042,9 @@ impl Planner<'_> {
     fn plan_selection_set(
         &self,
         walk: &mut PlanWalk<'_>,
-        table: TableId,
         selection_path: SelectionPath,
         variable_scope: &VariablePathScope,
-        parent: Entity,
+        parent: InstanceNode,
         definition_scope: &str,
     ) -> Option<SelectionPlan> {
         let mut items = Vec::new();
@@ -1014,18 +1052,21 @@ impl Planner<'_> {
         // Facts carry no sibling order between fields and spreads beyond
         // their spans, so source order is restored by merging on span order.
         enum Child<'a> {
-            Field(&'a FieldSel, Entity),
-            Spread(Entity, &'a crate::entities::fragment_spread::SpreadDecl),
+            Field(&'a FieldSel, InstanceNode),
+            Spread(
+                InstanceNode,
+                &'a crate::entities::fragment_spread::SpreadDecl,
+            ),
         }
         let mut children: Vec<(usize, Child<'_>)> = self
             .tree
             .fields_under(parent)
-            .map(|(entity, field, _, _)| (field.span.start, Child::Field(field, *entity)))
+            .map(|(entity, field)| (field.span.start, Child::Field(field, *entity)))
             .collect();
         children.extend(
             self.tree
                 .spreads_under(parent)
-                .map(|(entity, spread, _)| (spread.span.start, Child::Spread(*entity, spread))),
+                .map(|(entity, spread)| (spread.span.start, Child::Spread(*entity, spread))),
         );
         children.sort_by_key(|(start, _)| *start);
 
@@ -1037,55 +1078,53 @@ impl Planner<'_> {
                         path: walk.result_path.join("."),
                         fragment: name.clone(),
                     });
-                    // Planning is demand-driven and runs regardless of
-                    // check status, so the shared expansion's cycle cutoff
-                    // guards cyclic spreads here rather than trusting
-                    // checks to have rejected them.
-                    let ExpandedSpread::Fragment {
-                        entity: fragment_entity,
-                        ..
-                    } = walk.expansion.enter(name)
-                    else {
-                        continue;
-                    };
-                    if !self
+                    if self
                         .tree
-                        .fragments
-                        .iter()
-                        .any(|(entity, _, _, _)| *entity == fragment_entity)
+                        .spread_resolution(spread_entity)
+                        .and_then(|resolved| resolved.target.as_ref())
+                        .is_none()
                     {
-                        walk.expansion.leave();
                         continue;
                     }
-                    let Some(rewrite) = self.spread_input_rewrites.get(&spread_entity) else {
+                    let Some(fragment_root) = self.tree.child_root(spread_entity) else {
+                        if self.tree.is_cycle(spread_entity) {
+                            continue;
+                        }
+                        *walk.incomplete_frontier = true;
+                        return None;
+                    };
+                    let Some(fragment_scope) = self.tree.scope_for(fragment_root) else {
+                        *walk.incomplete_frontier = true;
+                        return None;
+                    };
+                    let Some(rewrite) = self.spread_input_rewrites.get(&spread_entity.source)
+                    else {
                         // Contract inference omits rewrites only for unresolved or
                         // ambiguous spreads. Generation is diagnostics-gated, and
                         // planning the subtree without validated inputs would be
                         // unsound, so invalid programs fail closed here.
-                        walk.expansion.leave();
                         continue;
                     };
                     let spread_scope = variable_scope.for_spread_map(rewrite.clone());
                     if let Some(fragment_plan) = self.plan_selection_set(
                         walk,
-                        table,
                         SelectionPath::fragment_root(),
                         &spread_scope,
-                        fragment_entity,
-                        self.fragment_scope(fragment_entity)
-                            .unwrap_or(definition_scope),
+                        fragment_root,
+                        fragment_scope,
                     ) {
                         items.extend(fragment_plan.items);
                     }
-                    walk.expansion.leave();
                 }
                 Child::Field(field, field_entity) => {
-                    let reference = FieldRef {
-                        target: TableRef::parse(&field.name),
-                        selector: field.relation_path.as_deref(),
+                    let Some(resolved) = self.tree.selection(field_entity) else {
+                        continue;
                     };
-                    match self.catalog.check_field_ref(table, reference) {
-                        FieldCheckResult::Column(column) => {
+                    match &resolved.target {
+                        SelectionTarget::Column(column_id) => {
+                            let Some(column) = self.catalog.column_by_id(*column_id) else {
+                                continue;
+                            };
                             if field.body == crate::entities::field_selection::FieldBodyKind::None {
                                 items.push(SelectionPlanItem::Projection(Projection {
                                     column: column.id,
@@ -1096,13 +1135,20 @@ impl Planner<'_> {
                                 }));
                             }
                         }
-                        FieldCheckResult::Relation(relation) => {
+                        SelectionTarget::Relation {
+                            table: relation_table,
+                            relation: relation_id,
+                            ..
+                        } => {
+                            let relation_table = *relation_table;
+                            let relation_id = *relation_id;
                             let Some(shape) = self.selection_shape(field_entity) else {
                                 continue;
                             };
-                            let relation_table = relation.table.id;
-                            let relation_name = relation.name.to_string();
-                            let relation_id = relation.relation.id;
+                            let Some(relation) = self.catalog.relation_by_id(relation_id) else {
+                                continue;
+                            };
+                            let relation_name = relation.name.clone();
                             let mut child_path = selection_path.relation_child_path(
                                 field.alias.clone().unwrap_or_else(|| relation_name.clone()),
                             );
@@ -1112,6 +1158,7 @@ impl Planner<'_> {
                             let child_policies = self.plan_source_policies(
                                 relation_table,
                                 Some(field_entity),
+                                field_entity.instance,
                                 &child_path,
                                 variable_scope,
                                 definition_scope,
@@ -1129,7 +1176,6 @@ impl Planner<'_> {
                                 SelectionPath::body(child_path.clone()),
                                 variable_scope,
                                 CollectionSource {
-                                    table: relation_table,
                                     entity: field_entity,
                                     field,
                                 },
@@ -1153,7 +1199,7 @@ impl Planner<'_> {
                                     walk.diagnostics,
                                 );
                                 items.push(SelectionPlanItem::Relation(NestedRelation {
-                                    relation_name: reference.display_text(),
+                                    relation_name: resolved.written.clone(),
                                     output_name: field.alias.clone().unwrap_or(relation_name),
                                     flattened: field.flattened,
                                     relation: relation_id,
@@ -1176,8 +1222,7 @@ impl Planner<'_> {
                         // Resolution checks own missing and ambiguous relation
                         // diagnostics. Planning skips both so enabling plans in
                         // editor bowls cannot duplicate the semantic error.
-                        FieldCheckResult::NotFound | FieldCheckResult::AmbiguousRelation { .. } => {
-                        }
+                        SelectionTarget::Table(_) | SelectionTarget::Unresolved => {}
                     }
                 }
             }
@@ -1195,7 +1240,7 @@ impl Planner<'_> {
         table: TableId,
         selection_path: &[String],
         variable_scope: &VariablePathScope,
-        field_entity: Entity,
+        field_entity: InstanceNode,
         definition_scope: &str,
         result: &CollectionResultPlan,
         field_filters: &[PolicyFieldFilter],
@@ -1233,17 +1278,14 @@ impl Planner<'_> {
         };
         let mut policy = PolicyPlanningContext {
             definition_scope,
+            instance: field_entity.instance,
             context: policy_context,
             applications: policy_applications,
         };
-        let mut clause_rows = self
-            .tree
-            .clauses_under(field_entity)
-            .copied()
-            .collect::<Vec<_>>();
-        clause_rows.sort_by_key(|(_, _, span, _)| span.start);
-        for (clause_entity, clause, _, _) in clause_rows {
-            let resolved = self.resolved_clauses.get(&clause_entity).copied();
+        let mut clause_rows = self.tree.clauses_under(field_entity).collect::<Vec<_>>();
+        clause_rows.sort_by_key(|(_, _, span)| span.start);
+        for (clause_entity, clause, _) in clause_rows {
+            let resolved = self.tree.resolved_clause(*clause_entity);
             match clause {
                 ClauseFact::FilterAssignment { .. } => {}
                 ClauseFact::Where { expr } => {
@@ -1825,6 +1867,7 @@ impl Planner<'_> {
                 let policies = self.plan_source_policies(
                     exists_table,
                     None,
+                    policy.instance,
                     selection_path,
                     variable_scope,
                     policy.definition_scope,
@@ -2321,6 +2364,7 @@ impl Planner<'_> {
         let policies = self.plan_source_policies(
             relation.table,
             None,
+            policy.instance,
             selection_path,
             variable_scope,
             policy.definition_scope,
@@ -2463,6 +2507,7 @@ impl Planner<'_> {
                     let policies = self.plan_source_policies(
                         relation.table,
                         None,
+                        policy.instance,
                         &[],
                         &VariablePathScope::operation(),
                         policy.definition_scope,

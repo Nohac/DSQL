@@ -348,6 +348,7 @@ pub(crate) struct DefinitionInputRewrites(
 pub(crate) struct DefinitionVariableOwner {
     pub(crate) definition: Entity,
     pub(crate) declaration: DefDecl,
+    pub(crate) target: Option<FragmentTarget>,
     pub(crate) scope: ResolutionScope,
 }
 
@@ -472,6 +473,7 @@ async fn infer_variables(
         DefinitionVariableOwner {
             definition: def_entity,
             declaration: decl.clone(),
+            target: fragment_target.cloned(),
             scope: scope.clone(),
         },
         *key,

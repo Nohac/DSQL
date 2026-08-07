@@ -407,20 +407,6 @@ impl ResolvedPredicateAggregate {
     }
 }
 
-/// Indexes clause resolutions by the clause entity they resolve.
-///
-/// Spans are only unique within one file, while fragment expansion walks
-/// clauses across files. Consumers use this entity-keyed index to keep the
-/// semantic fact paired with its owning clause without re-resolving names.
-pub(crate) fn index_resolved_clauses<'a>(
-    resolutions: impl IntoIterator<Item = &'a ResolvedClause>,
-) -> HashMap<Entity, &'a ResolvedClause> {
-    resolutions
-        .into_iter()
-        .map(|resolution| (resolution.clause, resolution))
-        .collect()
-}
-
 /// One predicate path resolved segment by segment against its clause
 /// context.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

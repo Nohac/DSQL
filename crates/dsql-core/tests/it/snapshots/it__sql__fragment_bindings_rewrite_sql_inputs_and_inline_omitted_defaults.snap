@@ -206,3 +206,90 @@ from
       ) as "posts_9b3bd304"
   ) as "posts_json_9b3bd304" on true
 -- parameters: params.outer
+
+-- RepeatedNested
+select
+  "root_0"."left" as "left",
+  "root_1"."right" as "right"
+from
+  (
+    select
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'posts',
+            "posts_json_86088e6f"."posts_result_86088e6f"
+          )
+        ),
+        '[]'
+      ) as "left"
+    from
+      (
+        select
+          *
+        from
+          "public"."users" as "left_85c861a1"
+        limit
+          10
+      ) as "left_85c861a1"
+      left join LATERAL (
+        select
+          COALESCE(
+            JSON_AGG(JSON_BUILD_OBJECT('id', "posts_86088e6f"."id")),
+            '[]'
+          ) as "posts_result_86088e6f"
+        from
+          (
+            select
+              *
+            from
+              "public"."posts" as "posts_86088e6f"
+            where
+              "posts_86088e6f"."user_id" = "left_85c861a1"."id"
+              and "posts_86088e6f"."title" >= ($1)
+            limit
+              5
+          ) as "posts_86088e6f"
+      ) as "posts_json_86088e6f" on true
+  ) as "root_0"
+  cross join (
+    select
+      COALESCE(
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'posts',
+            "posts_json_d6dfa07e"."posts_result_d6dfa07e"
+          )
+        ),
+        '[]'
+      ) as "right"
+    from
+      (
+        select
+          *
+        from
+          "public"."users" as "right_5666ec82"
+        limit
+          10
+      ) as "right_5666ec82"
+      left join LATERAL (
+        select
+          COALESCE(
+            JSON_AGG(JSON_BUILD_OBJECT('id', "posts_d6dfa07e"."id")),
+            '[]'
+          ) as "posts_result_d6dfa07e"
+        from
+          (
+            select
+              *
+            from
+              "public"."posts" as "posts_d6dfa07e"
+            where
+              "posts_d6dfa07e"."user_id" = "right_5666ec82"."id"
+              and "posts_d6dfa07e"."title" >= ($2)
+            limit
+              5
+          ) as "posts_d6dfa07e"
+      ) as "posts_json_d6dfa07e" on true
+  ) as "root_1"
+-- parameters: params.left, params.right

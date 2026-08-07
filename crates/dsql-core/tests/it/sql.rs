@@ -531,11 +531,38 @@ async fn fragment_bindings_rewrite_sql_inputs_and_inline_omitted_defaults() {
             query DeepContained {
               public::users { ...ParentWindow }
             }
+            query RepeatedNested(%left = "L" %right = "R") {
+              left: public::users { ...ParentWindow(%minimum <- %left) }
+              right: public::users { ...ParentWindow(%minimum <- %right) }
+            }
         "#},
     )
     .await;
 
     insta::assert_snapshot!(render_sql(&bowl).await);
+}
+
+#[tokio::test]
+async fn invalid_context_assignments_do_not_suppress_plans() {
+    let bowl = sql_bowl(Catalog::hardcoded()).await;
+    bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
+        .await;
+    insert_source(
+        &bowl,
+        "invalid-context-plan.dsql",
+        indoc::indoc! {r#"
+            context { enabled: int }
+            filter PositiveIds on public::users { where .id > 0 }
+            query InvalidContext(filter PositiveIds when $:enabled) {
+              public::users(limit 1) { id }
+            }
+        "#},
+    )
+    .await;
+
+    let diagnostics = render_diagnostic_facts(&bowl).await;
+    let sql = render_sql(&bowl).await;
+    insta::assert_snapshot!(format!("{diagnostics}\n--- sql ---\n{sql}"));
 }
 
 #[tokio::test]

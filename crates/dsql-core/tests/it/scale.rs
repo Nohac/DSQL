@@ -4,8 +4,9 @@
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::TableRef;
-use dsql_core::facts::{DiagnosticsDemand, VariablesDemand};
+use dsql_core::facts::{DiagnosticsDemand, PlanDemand, VariablesDemand};
 use dsql_core::language_bowl;
+use dsql_core::plan::QueryPlanFact;
 use dsql_core::source::{FilePath, insert_source};
 
 use crate::{imdb_catalog, replace_source_text};
@@ -233,5 +234,41 @@ async fn variable_inference_wakes_only_fragment_dependents() {
     assert_eq!(
         delta, 3,
         "the fragment root and dependent query converge at Complete without waking twenty unrelated roots"
+    );
+}
+
+#[tokio::test]
+async fn planning_wakes_only_fragment_dependents() {
+    let bowl = language_bowl().await;
+    dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
+    bowl.insert((Singleton::<PlanDemand>::new(), PlanDemand))
+        .await;
+
+    const UNRELATED: u64 = 20;
+    for index in 0..UNRELATED {
+        insert_source(
+            &bowl,
+            format!("plan-unrelated-{index}.dsql"),
+            &format!("query PlanUnrelated{index} {{ title(limit 1) {{ id }} }}\n"),
+        )
+        .await;
+    }
+    insert_source(
+        &bowl,
+        "plan-dependent.dsql",
+        "fragment PlanBits on title { movie_info_idx(limit %first) { id } }\nquery PlanDependent { title(limit 1) { ...PlanBits(%) } }\n",
+    )
+    .await;
+    let _ = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
+
+    let before = runs_of(&bowl, "plan_queries").await;
+    edit_file(&bowl, "plan-dependent.dsql", ("%first", "%second")).await;
+    let _ = bowl.scoop::<Query<(Entity, &QueryPlanFact)>>().await;
+    let delta = runs_of(&bowl, "plan_queries").await - before;
+    assert_eq!(
+        delta, 5,
+        "the fragment root and dependent query follow their exact semantic and contract revisions without waking twenty unrelated roots"
     );
 }

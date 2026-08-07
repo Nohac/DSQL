@@ -15,7 +15,7 @@ use crate::entities::clause::ClauseFact;
 use crate::entities::context::{ContextUseResolutions, ResolvedContextUse};
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
 use crate::entities::directive::DirectiveFact;
-use crate::entities::field_selection::{FieldSel, SelectionTree};
+use crate::entities::field_selection::FieldSel;
 use crate::entities::fragment_spread::{ResolvedSpread, SpreadDecl};
 use crate::entities::variable::VariableUse;
 use crate::facts::{
@@ -26,7 +26,7 @@ use crate::resolution::{
     ClauseResolutions, ResolvedClause, ResolvedSelection, SelectionResolutions,
 };
 use crate::schema::dsql_schema;
-use crate::source::{ResolutionScope, ScopeImports};
+use crate::source::ResolutionScope;
 
 /// Stable join key shared by a semantic group and resolutions targeting it.
 ///
@@ -310,6 +310,15 @@ pub(crate) fn clone_clause_resolutions(
         .collect()
 }
 
+pub(crate) fn clone_aggregate_resolutions(
+    resolutions: &AggregateResolutionRows<'_>,
+) -> Vec<ResolvedAggregate> {
+    resolutions
+        .iter()
+        .map(|(_, (resolved,))| (*resolved).clone())
+        .collect()
+}
+
 pub(crate) fn clone_spread_resolutions(
     resolutions: &SpreadResolutionRows<'_>,
 ) -> Vec<ResolvedSpread> {
@@ -504,10 +513,7 @@ async fn materialize_expansion_bodies(
     let selections = clone_selection_resolutions(&selections);
     let clauses = clone_clause_resolutions(&clauses);
     let context_uses = clone_context_use_resolutions(&context_uses);
-    let aggregates = aggregates
-        .iter()
-        .map(|(_, (resolved,))| (*resolved).clone())
-        .collect();
+    let aggregates = clone_aggregate_resolutions(&aggregates);
     let spreads = clone_spread_resolutions(&spreads);
 
     commands.insert((
@@ -585,64 +591,4 @@ fn cycle_semantic_key(cycle: &ExpansionCycle) -> (usize, Vec<&str>) {
             .map(|step| step.fragment.as_str())
             .collect(),
     )
-}
-
-/// One expansion walk: resolves spread names through the effective
-/// resolver and tracks the fragment path for cycle cutoff. Callers pair
-/// every [`SpreadExpansion::enter`] that returned a fragment with one
-/// [`SpreadExpansion::leave`].
-pub(crate) struct SpreadExpansion<'t, 'v> {
-    tree: &'t SelectionTree<'v>,
-    scope: &'t str,
-    imports: &'t ScopeImports,
-    visiting: Vec<String>,
-}
-
-/// What one spread name expands to.
-pub(crate) enum ExpandedSpread {
-    /// The fragment is already on the expansion path: a cycle. Not
-    /// entered; do not `leave`.
-    Cycle,
-    /// No unique visible fragment; the spread checks report why. Not
-    /// entered; do not `leave`.
-    Unresolved,
-    /// The unique visible fragment; entered onto the path.
-    Fragment { entity: Entity },
-}
-
-impl<'t, 'v> SpreadExpansion<'t, 'v> {
-    pub(crate) fn new(
-        tree: &'t SelectionTree<'v>,
-        scope: &'t str,
-        imports: &'t ScopeImports,
-    ) -> Self {
-        Self {
-            tree,
-            scope,
-            imports,
-            visiting: Vec::new(),
-        }
-    }
-
-    /// Resolves `name` for expansion and pushes it onto the path when it
-    /// yields a fragment.
-    pub(crate) fn enter(&mut self, name: &str) -> ExpandedSpread {
-        if self.visiting.iter().any(|visited| visited == name) {
-            return ExpandedSpread::Cycle;
-        }
-        let Some((entity, _, _, _)) = self
-            .tree
-            .resolve_fragment(name, self.scope, self.imports)
-            .copied()
-        else {
-            return ExpandedSpread::Unresolved;
-        };
-        self.visiting.push(name.to_string());
-        ExpandedSpread::Fragment { entity }
-    }
-
-    /// Pops the most recent fragment off the expansion path.
-    pub(crate) fn leave(&mut self) {
-        self.visiting.pop();
-    }
 }
