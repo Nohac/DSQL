@@ -48,6 +48,9 @@ pub struct LowerCtx<'a> {
     /// Stable source path used only by navigation and deterministic diagnostic
     /// ordering.
     pub path: &'a str,
+    /// Whether this syntax belongs to an extracted embedded document rather
+    /// than a standalone DSQL file.
+    pub embedded: bool,
     /// The file's resolution scope; definition and spread facts carry it
     /// as their resolution join key.
     pub scope: &'a str,

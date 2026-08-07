@@ -1783,7 +1783,7 @@ impl PolicyCompiler<'_> {
         }
         let name = variable.name.as_deref()?;
         let path = format!("context.{name}");
-        let ContextLookup::Resolved(_, declared) =
+        let ContextLookup::Resolved(declared) =
             self.contexts.lookup(self.scope, name, self.imports)
         else {
             return self.fail();

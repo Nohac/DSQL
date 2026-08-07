@@ -1,11 +1,12 @@
 //! Explicit trusted-context declarations, resolution, and editor services.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::entities::context::{
-    ContextDecl, ContextIndex, ContextUseResolution, ResolvedContextUse,
+    ContextDecl, ContextDeclarationNavigation, ContextDeclarationPeer, ContextIndex,
+    ContextUseCandidate, ContextUseResolution, ResolvedContextUse,
 };
 use dsql_core::entities::definition::DefIndex;
 use dsql_core::entities::document::ParsedFile;
@@ -33,6 +34,67 @@ async fn context_bowl(source: &str) -> Bowl {
     arm_editor_demands(&bowl).await;
     insert_source(&bowl, PATH, source).await;
     bowl
+}
+
+async fn runs_of(bowl: &Bowl, suffix: &str) -> u64 {
+    bowl.profile_all()
+        .await
+        .into_iter()
+        .find(|entry| entry.name.ends_with(suffix))
+        .map_or(0, |entry| entry.runs)
+}
+
+async fn context_use_graph(bowl: &Bowl) -> (BTreeSet<Entity>, BTreeSet<Entity>) {
+    let candidates = bowl.scoop::<Query<(Entity, &ContextUseCandidate)>>().await;
+    let resolved = bowl.scoop::<Query<(Entity, &ResolvedContextUse)>>().await;
+    (
+        candidates
+            .collect()
+            .into_iter()
+            .map(|(entity, _)| entity)
+            .collect(),
+        resolved
+            .collect()
+            .into_iter()
+            .map(|(entity, _)| entity)
+            .collect(),
+    )
+}
+
+async fn context_peer_graph(
+    bowl: &Bowl,
+) -> (
+    BTreeMap<String, BTreeSet<Entity>>,
+    BTreeMap<String, (Entity, String)>,
+) {
+    let peers = bowl
+        .scoop::<Query<(Entity, &ContextDeclarationPeer)>>()
+        .await;
+    let mut peers_by_consumer = BTreeMap::<String, BTreeSet<Entity>>::new();
+    for (entity, peer) in peers.collect() {
+        for consumer in &peer.consumer_scopes {
+            peers_by_consumer
+                .entry(consumer.clone())
+                .or_default()
+                .insert(entity);
+        }
+    }
+    let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await;
+    let diagnostics_by_consumer = diagnostics
+        .collect()
+        .into_iter()
+        .filter_map(|(entity, diagnostic)| {
+            let consumer = diagnostic
+                .0
+                .strip_prefix("context entry `")?
+                .split_once(" is provided to scope `")?
+                .1
+                .split_once('`')?
+                .0;
+            Some((consumer.to_string(), (entity, diagnostic.0.clone())))
+        })
+        .collect();
+    (peers_by_consumer, diagnostics_by_consumer)
 }
 
 async fn render_context_pipeline(bowl: &Bowl) -> String {
@@ -122,17 +184,30 @@ async fn render_context_pipeline(bowl: &Bowl) -> String {
     let resolved = bowl
         .scoop::<Query<(Entity, &ResolvedContextUse, &BelongsToFile)>>()
         .await;
+    let navigation = bowl
+        .scoop::<Query<(Entity, &ContextDeclarationNavigation)>>()
+        .await;
+    let navigation = navigation
+        .collect()
+        .into_iter()
+        .map(|(_, navigation)| (navigation.declaration, navigation.name_span))
+        .collect::<BTreeMap<_, _>>();
     for (_, resolved, file) in resolved.collect() {
         let outcome = match &resolved.resolution {
             ContextUseResolution::Resolved {
-                name_span,
+                declaration,
                 contract,
                 ..
-            } => format!(
-                "resolved declaration=[{}..{}] contract={}",
-                name_span.start,
-                name_span.end,
-                contract.data_type.as_str(),
+            } => navigation.get(declaration).map_or_else(
+                || "resolved declaration=<missing>".to_string(),
+                |name_span| {
+                    format!(
+                        "resolved declaration=[{}..{}] contract={}",
+                        name_span.start,
+                        name_span.end,
+                        contract.data_type.as_str(),
+                    )
+                },
             ),
             ContextUseResolution::Unknown => "unknown".to_string(),
             ContextUseResolution::Ambiguous { providers } => {
@@ -409,6 +484,219 @@ async fn context_declaration_collision_rules_are_reported() {
     }
 
     insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+#[tokio::test]
+async fn context_use_resolution_is_name_granular_and_navigation_independent() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, Catalog::hardcoded()).await;
+    arm_editor_demands(&bowl).await;
+    bowl.insert((
+        Singleton::<ScopeImports>::new(),
+        ScopeImports(BTreeMap::from([
+            ("frontend".to_string(), vec!["shared".to_string()]),
+            ("shared".to_string(), Vec::new()),
+        ])),
+    ))
+    .await;
+
+    let mut target_declaration = None;
+    for index in 0..20 {
+        let declaration = insert_source_scoped(
+            &bowl,
+            format!("declaration-{index}.dsql"),
+            &format!("context {{ key{index}: uuid }}\n"),
+            ResolutionScope("shared".to_string()),
+            SourceKind::Dsql,
+        )
+        .await;
+        if index == 7 {
+            target_declaration = Some(declaration);
+        }
+        insert_source_scoped(
+            &bowl,
+            format!("use-{index}.dsql"),
+            &format!("query Q{index} {{ public::users(where .id == $:key{index}) {{ id }} }}\n"),
+            ResolutionScope("frontend".to_string()),
+            SourceKind::Dsql,
+        )
+        .await;
+    }
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
+    let initial_graph = context_use_graph(&bowl).await;
+    assert_eq!(initial_graph.0.len(), 20);
+    assert_eq!(initial_graph.1.len(), 20);
+
+    let candidate_runs = runs_of(&bowl, "bind_context_use_candidates").await;
+    let resolution_runs = runs_of(&bowl, "resolve_context_uses").await;
+    let declaration = target_declaration.expect("target declaration exists");
+    set_source_text(&bowl, declaration, "\ncontext { key7: uuid }\n").await;
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
+    assert_eq!(
+        runs_of(&bowl, "bind_context_use_candidates").await - candidate_runs,
+        0,
+        "span-only declaration edits never reach semantic candidates"
+    );
+    assert_eq!(
+        runs_of(&bowl, "resolve_context_uses").await - resolution_runs,
+        0,
+        "span-only declaration edits never reach resolved uses"
+    );
+    assert_eq!(context_use_graph(&bowl).await, initial_graph);
+
+    let use_source = "query Q7 { public::users(where .id == $:key7) { id } }\n";
+    let target = bowl
+        .insert((
+            DefinitionRequest,
+            FilePath("use-7.dsql".to_string()),
+            Position {
+                offset: use_source.find("$:key7").expect("context use") + 2,
+            },
+        ))
+        .await
+        .bind()
+        .take::<DefinitionTarget>()
+        .await
+        .expect("definition answered after declaration movement");
+    assert!(matches!(
+        target.as_ref(),
+        DefinitionTarget::Source { span, .. } if *span == Span { start: 11, end: 15 }
+    ));
+
+    let candidate_runs = runs_of(&bowl, "bind_context_use_candidates").await;
+    let resolution_runs = runs_of(&bowl, "resolve_context_uses").await;
+    set_source_text(&bowl, declaration, "\ncontext { key7: text }\n").await;
+    let diagnostics = render_diagnostic_facts(&bowl).await;
+    assert!(diagnostics.contains("declared as `text`"));
+    assert_eq!(
+        runs_of(&bowl, "bind_context_use_candidates").await - candidate_runs,
+        1,
+        "one contract edit reaches only its same-name use candidate"
+    );
+    assert_eq!(
+        runs_of(&bowl, "resolve_context_uses").await - resolution_runs,
+        1,
+        "one changed candidate reaches only its use resolution"
+    );
+    assert_eq!(context_use_graph(&bowl).await, initial_graph);
+
+    set_source_text(&bowl, declaration, "\ncontext { key7: uuid }\n").await;
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
+    assert_eq!(
+        context_use_graph(&bowl).await,
+        initial_graph,
+        "A-B-A restores the exact use graph identities"
+    );
+}
+
+#[tokio::test]
+async fn transitive_context_visibility_and_collisions_use_effective_imports() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, Catalog::hardcoded()).await;
+    arm_editor_demands(&bowl).await;
+    bowl.insert((
+        Singleton::<ScopeImports>::new(),
+        ScopeImports(BTreeMap::from([
+            ("frontend".to_string(), vec!["middle".to_string()]),
+            ("middle".to_string(), vec!["shared".to_string()]),
+            ("shared".to_string(), Vec::new()),
+        ])),
+    ))
+    .await;
+    insert_source_scoped(
+        &bowl,
+        "shared.dsql",
+        "context { remote_key: uuid transitive_collision: uuid }\n",
+        ResolutionScope("shared".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    insert_source_scoped(
+        &bowl,
+        "frontend.dsql",
+        "context { transitive_collision: uuid }\nquery Q { public::users(where .id == $:remote_key) { id } }\n",
+        ResolutionScope("frontend".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+
+    let diagnostics = render_diagnostic_facts(&bowl).await;
+    assert!(diagnostics.contains(
+        "context entry `transitive_collision` collides with a declaration imported from scope `shared`"
+    ));
+    let resolutions = bowl.scoop::<Query<&ResolvedContextUse>>().await;
+    assert!(resolutions.collect().iter().any(|resolved| {
+        resolved.name == "remote_key"
+            && matches!(resolved.resolution, ContextUseResolution::Resolved { .. })
+    }));
+}
+
+#[tokio::test]
+async fn context_ambiguity_graph_is_consumer_granular() {
+    let bowl = language_bowl().await;
+    insert_catalog(&bowl, Catalog::hardcoded()).await;
+    arm_editor_demands(&bowl).await;
+    let imports = |frontend: Vec<String>| {
+        ScopeImports(BTreeMap::from([
+            ("frontend".to_string(), frontend),
+            (
+                "dashboard".to_string(),
+                vec!["c".to_string(), "d".to_string()],
+            ),
+            ("a".to_string(), Vec::new()),
+            ("b".to_string(), Vec::new()),
+            ("c".to_string(), Vec::new()),
+            ("d".to_string(), Vec::new()),
+            ("unrelated".to_string(), Vec::new()),
+        ]))
+    };
+    bowl.insert((
+        Singleton::<ScopeImports>::new(),
+        imports(vec!["a".to_string(), "b".to_string()]),
+    ))
+    .await;
+    for (path, scope, name) in [
+        ("a.dsql", "a", "tenant"),
+        ("b.dsql", "b", "tenant"),
+        ("c.dsql", "c", "viewer"),
+        ("d.dsql", "d", "viewer"),
+    ] {
+        insert_source_scoped(
+            &bowl,
+            path,
+            &format!("context {{ {name}: uuid }}\n"),
+            ResolutionScope(scope.to_string()),
+            SourceKind::Dsql,
+        )
+        .await;
+    }
+    let unrelated = (0..20)
+        .map(|index| format!("key{index}: uuid "))
+        .collect::<String>();
+    insert_source_scoped(
+        &bowl,
+        "unrelated.dsql",
+        &format!("context {{ {unrelated}}}\n"),
+        ResolutionScope("unrelated".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+
+    let initial = context_peer_graph(&bowl).await;
+    assert_eq!(initial.0["frontend"].len(), 2);
+    assert_eq!(initial.0["dashboard"].len(), 2);
+    assert_eq!(initial.1.len(), 2);
+
+    bowl.insert((
+        Singleton::<ScopeImports>::new(),
+        imports(vec!["a".to_string()]),
+    ))
+    .await;
+    let narrowed = context_peer_graph(&bowl).await;
+    assert!(!narrowed.0.contains_key("frontend"));
+    assert_eq!(narrowed.0["dashboard"], initial.0["dashboard"]);
+    assert!(!narrowed.1.contains_key("frontend"));
+    assert_eq!(narrowed.1["dashboard"], initial.1["dashboard"]);
 }
 
 #[tokio::test]

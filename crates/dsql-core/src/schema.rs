@@ -20,7 +20,14 @@ use crate::entities::aggregate::{
 };
 use crate::entities::clause::ClauseFact;
 use crate::entities::context::{
-    ContextDecl, ContextIndex, ContextUseResolutionOf, ContextUseResolutions, ResolvedContextUse,
+    ContextDecl, ContextDeclarationContext, ContextDeclarationContextOf,
+    ContextDeclarationContexts, ContextDeclarationKey, ContextDeclarationNavigation,
+    ContextDeclarationPeer, ContextDeclarationPeerOf, ContextDeclarationPeers,
+    ContextDeclarationSemantics, ContextDeclarationSiteKey, ContextDeclarationSiteRoot,
+    ContextIndex, ContextNameKey, ContextSource, ContextUseCandidate, ContextUseCandidateOf,
+    ContextUseCandidates, ContextUseContext, ContextUseContextOf, ContextUseContexts,
+    ContextUseResolutionOf, ContextUseResolutions, ContextUseSiteKey, ContextUseSiteRoot,
+    ResolvedContextUse,
 };
 use crate::entities::definition::{
     DefDecl, DefIndex, DefinitionNameKey, DefinitionNavigation, DefinitionPath,
@@ -147,8 +154,40 @@ pub struct DsqlSchema {
     context_declaration: (
         NodeKey,
         ContextDecl,
+        Option<ContextDeclarationKey>,
+        ContextNameKey,
+        ContextSource,
         ResolutionScope,
         BelongsToFile,
+        DerivedFrom,
+    ),
+    context_declaration_semantic_projection: (
+        ContextDeclarationSemantics,
+        ContextDeclarationKey,
+        ContextNameKey,
+        ContextDeclarationSiteKey,
+        DerivedFrom,
+    ),
+    context_declaration_navigation_projection: (
+        ContextDeclarationNavigation,
+        ContextDeclarationKey,
+        ContextNameKey,
+        ContextDeclarationSiteKey,
+        DerivedFrom,
+    ),
+    context_declaration_site: (ContextDeclarationSiteRoot, ContextDeclarationSiteKey),
+    context_declaration_contexts: (ContextDeclarationContexts,),
+    context_declaration_context: (
+        ContextDeclarationContext,
+        ContextDeclarationContextOf,
+        ContextDeclarationKey,
+        ContextNameKey,
+        DerivedFrom,
+    ),
+    context_declaration_peers: (ContextDeclarationPeers,),
+    context_declaration_peer: (
+        ContextDeclarationPeer,
+        ContextDeclarationPeerOf,
         DerivedFrom,
     ),
     semantic_group: (
@@ -160,6 +199,17 @@ pub struct DsqlSchema {
     spread_site: (NodeKey, SpreadSiteRoot, DerivedFrom),
     semantic_members: (SemanticMembers,),
     context_use_resolutions: (ContextUseResolutions,),
+    context_use_site: (ContextUseSiteRoot, ContextUseSiteKey),
+    context_use_contexts: (ContextUseContexts,),
+    context_use_context: (
+        ContextUseContext,
+        ContextUseContextOf,
+        ContextUseSiteKey,
+        ContextNameKey,
+        DerivedFrom,
+    ),
+    context_use_candidates: (ContextUseCandidates,),
+    context_use_candidate: (ContextUseCandidate, ContextUseCandidateOf, DerivedFrom),
     spread_resolutions: (SpreadResolutions,),
     semantic_dependents: (SemanticDependents,),
     expansion_occurrences: (ExpansionOccurrences,),
@@ -226,6 +276,7 @@ pub struct DsqlSchema {
         DerivedFrom,
         Option<ChildOf>,
         Option<SemanticMemberOf>,
+        Option<ContextUseSiteKey>,
     ),
     // Derived analysis facts.
     region: (
@@ -307,7 +358,7 @@ pub struct DsqlSchema {
         ResolvedContextUse,
         ContextUseResolutionOf,
         BelongsToFile,
-        DerivedFrom,
+        Option<ContextDeclarationKey>,
     ),
     resolved_selection: (
         ResolvedSelection,
@@ -505,6 +556,7 @@ pub type AstFacts = (
         BelongsToFile,
         DerivedFrom,
         Option<ChildOf>,
+        Option<ContextUseSiteKey>,
     ),
     (Option<SemanticDefinitionKey>, Option<SemanticMemberOf>),
 );
