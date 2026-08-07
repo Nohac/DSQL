@@ -12,6 +12,7 @@ use bowl::{
 
 use crate::entities::aggregate::{AggregateResolutions, AggregateTransformFact, ResolvedAggregate};
 use crate::entities::clause::ClauseFact;
+use crate::entities::context::{ContextUseResolutions, ResolvedContextUse};
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
 use crate::entities::directive::DirectiveFact;
 use crate::entities::field_selection::{FieldSel, SelectionTree};
@@ -197,6 +198,7 @@ pub struct ExpansionBody {
     pub members: Vec<ExpansionMember>,
     pub selections: Vec<ResolvedSelection>,
     pub clauses: Vec<ResolvedClause>,
+    pub context_uses: Vec<ResolvedContextUse>,
     pub aggregates: Vec<ResolvedAggregate>,
     pub spreads: Vec<ResolvedSpread>,
 }
@@ -231,6 +233,8 @@ pub(crate) type RawSemanticMembers<'a> = Related<
 pub(crate) type SelectionResolutionRows<'a> =
     Related<SelectionResolutions, (&'a ResolvedSelection,)>;
 pub(crate) type ClauseResolutionRows<'a> = Related<ClauseResolutions, (&'a ResolvedClause,)>;
+pub(crate) type ContextUseResolutionRows<'a> =
+    Related<ContextUseResolutions, (&'a ResolvedContextUse,)>;
 pub(crate) type AggregateResolutionRows<'a> =
     Related<AggregateResolutions, (&'a ResolvedAggregate,)>;
 pub(crate) type SpreadResolutionRows<'a> = Related<SpreadResolutions, (&'a ResolvedSpread,)>;
@@ -243,6 +247,7 @@ type ExpansionTargetGroups<'a> = Query<
         RawSemanticMembers<'a>,
         SelectionResolutionRows<'a>,
         ClauseResolutionRows<'a>,
+        ContextUseResolutionRows<'a>,
     ),
     Where<BowlEq<SemanticDefinitionKey>>,
 >;
@@ -308,6 +313,15 @@ pub(crate) fn clone_clause_resolutions(
 pub(crate) fn clone_spread_resolutions(
     resolutions: &SpreadResolutionRows<'_>,
 ) -> Vec<ResolvedSpread> {
+    resolutions
+        .iter()
+        .map(|(_, (resolved,))| (*resolved).clone())
+        .collect()
+}
+
+pub(crate) fn clone_context_use_resolutions(
+    resolutions: &ContextUseResolutionRows<'_>,
+) -> Vec<ResolvedContextUse> {
     resolutions
         .iter()
         .map(|(_, (resolved,))| (*resolved).clone())
@@ -482,13 +496,14 @@ async fn materialize_expansion_bodies(
     mut commands: Commands<(dsql_schema::ExpansionBody,)>,
 ) {
     let (occurrence_entity, occurrence, _) = occurrences.item();
-    let (target_group, _, _, members, selections, clauses) = groups.item();
+    let (target_group, _, _, members, selections, clauses, context_uses) = groups.item();
     let (_, _, aggregates, spreads) = resolution_groups.item();
     let (definition, declaration, target, scope, file) = definitions.item();
 
     let members = clone_semantic_members(&members);
     let selections = clone_selection_resolutions(&selections);
     let clauses = clone_clause_resolutions(&clauses);
+    let context_uses = clone_context_use_resolutions(&context_uses);
     let aggregates = aggregates
         .iter()
         .map(|(_, (resolved,))| (*resolved).clone())
@@ -510,6 +525,7 @@ async fn materialize_expansion_bodies(
             members,
             selections,
             clauses,
+            context_uses,
             aggregates,
             spreads,
         },

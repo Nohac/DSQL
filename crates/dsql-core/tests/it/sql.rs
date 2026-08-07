@@ -3,7 +3,9 @@
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
-use dsql_core::facts::{DiagnosticsDemand, PlanDemand, SqlDemand, VariablesDemand};
+use dsql_core::entities::definition::DefDecl;
+use dsql_core::entities::variable::DefinitionVariables;
+use dsql_core::facts::{DefKey, DiagnosticsDemand, PlanDemand, SqlDemand, VariablesDemand};
 use dsql_core::language_bowl;
 use dsql_core::plan::QueryPlanFact;
 use dsql_core::source::{insert_embedding_source, insert_source};
@@ -72,6 +74,36 @@ async fn render_sql(bowl: &Bowl) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+async fn definition_product_ids(bowl: &Bowl, name: &str, stage: &str) -> (Entity, Entity) {
+    let definitions = bowl.scoop::<Query<(Entity, &DefDecl)>>().await;
+    let definition = definitions
+        .collect()
+        .into_iter()
+        .find_map(|(entity, declaration)| (declaration.name == name).then_some(entity))
+        .expect("named definition exists");
+    let variables = bowl
+        .scoop::<Query<(Entity, &DefinitionVariables, &DefKey)>>()
+        .await
+        .collect()
+        .into_iter()
+        .filter_map(|(entity, _, key)| (key.0 == definition).then_some(entity))
+        .collect::<Vec<_>>();
+    let plans = bowl
+        .scoop::<Query<(Entity, &QueryPlanFact, &DefKey)>>()
+        .await
+        .collect()
+        .into_iter()
+        .filter_map(|(entity, _, key)| (key.0 == definition).then_some(entity))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        variables.len(),
+        1,
+        "one variable contract per definition at {stage}"
+    );
+    assert_eq!(plans.len(), 1, "one query plan per definition at {stage}");
+    (variables[0], plans[0])
 }
 
 async fn render_sql_forms(bowl: &Bowl) -> String {
@@ -1086,6 +1118,53 @@ async fn plans_retire_when_demand_is_removed_sources_change() {
         names,
         vec!["Q".to_string()],
         "stale SQL must retire with the edit"
+    );
+}
+
+#[tokio::test]
+async fn definition_products_keep_identity_across_fragment_content_revisits() {
+    let bowl = sql_bowl(imdb_catalog()).await;
+    let initial = indoc::indoc! {r#"
+        fragment VariableBits on title {
+          id
+          title
+        }
+
+        fragment RatingBits on title {
+          ratings: movie_info_idx(where .info_type_id == 101 order by id asc limit 1) {
+            info
+          }
+        }
+    "#};
+    let changed = initial.replace("  id\n", "  id\n  probe_year: production_year\n");
+    let file = insert_source(&bowl, "variable-fragment.dsql", initial).await;
+    insert_embedding_source(
+        &bowl,
+        "VariablePanel.ts",
+        "export const variableQuery = dsql`\nquery VariableDependent { title(limit 1) { ...VariableBits } }\n`;\n",
+        "typescript",
+    )
+    .await;
+    let initial_ids = definition_product_ids(&bowl, "VariableDependent", "initial").await;
+
+    set_source_text(&bowl, file, &changed).await;
+    let changed_ids = definition_product_ids(&bowl, "VariableDependent", "changed").await;
+    set_source_text(&bowl, file, initial).await;
+    let restored_ids = definition_product_ids(&bowl, "VariableDependent", "restored").await;
+    set_source_text(&bowl, file, &changed).await;
+    let revisited_ids = definition_product_ids(&bowl, "VariableDependent", "revisited").await;
+
+    assert_eq!(
+        changed_ids, initial_ids,
+        "the first edit keeps product identity"
+    );
+    assert_eq!(
+        restored_ids, initial_ids,
+        "restoration keeps product identity"
+    );
+    assert_eq!(
+        revisited_ids, initial_ids,
+        "revisiting edited content keeps product identity"
     );
 }
 

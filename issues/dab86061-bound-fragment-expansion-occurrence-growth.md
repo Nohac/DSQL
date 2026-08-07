@@ -10,6 +10,8 @@ produces 511 occurrences for its query root and 1,515 across all roots.
 Cycle diagnostics additionally use one dedicated relationship-owner group per
 lowered spread so tracked inverses never land on syntax entities; the same
 fixture has 17 such groups (16 fragment spreads and one query spread).
+Each occurrence body also clones and hashes its context-use resolutions; all
+1,515 bodies in the depth fixture currently carry an empty context vector.
 
 Before accepting untrusted project input, define and enforce a deterministic
 per-root occurrence budget. Exceeding it should emit one stable diagnostic at

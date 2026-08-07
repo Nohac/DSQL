@@ -1,0 +1,13 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+assertion_line: 355
+expression: render_definition_bindings(&bowl).await
+---
+Leaf
+  params.leaf_limit TopLevel Limit Int required=true nullable=false default=None
+
+Parent
+  params.leaf_limit TopLevel Limit Int required=true nullable=false default=None
+
+Root
+  params.leaf_limit TopLevel Limit Int required=true nullable=false default=None

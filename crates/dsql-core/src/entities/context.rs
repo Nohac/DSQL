@@ -20,7 +20,7 @@ use crate::entities::{direct_name, direct_rule, node_span, text};
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, DiagnosticCode, DiagnosticFacts, DiagnosticSource, DiagnosticsDemand, NodeKey,
-    Severity, Span, emit_diagnostic,
+    SemanticMemberOf, Severity, Span, emit_diagnostic,
 };
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
@@ -166,10 +166,23 @@ impl ContextIndex {
 #[derive(Component, Debug, Clone, Hash, PartialEq, Eq)]
 #[component(hash)]
 pub struct ResolvedContextUse {
+    /// Source [`VariableUse`] this resolution describes.
+    pub source_use: Entity,
     pub name: String,
     pub span: Span,
     pub resolution: ContextUseResolution,
 }
+
+/// Relationship edge from a context-use resolution to its semantic group.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(untracked)]
+#[relationship(target = ContextUseResolutions)]
+pub struct ContextUseResolutionOf(pub Entity);
+
+/// Engine-maintained context-use resolutions owned by one semantic group.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = ContextUseResolutionOf)]
+pub struct ContextUseResolutions(pub Vec<Entity>);
 
 /// Scope lookup outcome for one [`ResolvedContextUse`].
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -438,12 +451,18 @@ fn resolve_contract(
 }
 
 async fn resolve_context_uses(
-    uses: Query<(Entity, &VariableUse, &BelongsToFile, &ResolutionScope)>,
+    uses: Query<(
+        Entity,
+        &VariableUse,
+        &BelongsToFile,
+        &ResolutionScope,
+        &SemanticMemberOf,
+    )>,
     index: Query<(Entity, &ContextIndex)>,
     imports: Query<(Entity, &ScopeImports)>,
     mut commands: Commands<(dsql_schema::ResolvedContextUse,)>,
 ) {
-    let (use_entity, variable, file, scope) = uses.item();
+    let (use_entity, variable, file, scope, semantic_group) = uses.item();
     if variable.sigil() != Sigil::Context {
         return;
     }
@@ -476,7 +495,9 @@ async fn resolve_context_uses(
         // outputs from unrelated producers and is not a valid lifetime anchor.
         DerivedFrom::new(use_entity),
         BelongsToFile(file.0),
+        ContextUseResolutionOf(semantic_group.0),
         ResolvedContextUse {
+            source_use: use_entity,
             name: name.to_string(),
             span: variable.0.span,
             resolution,

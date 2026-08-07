@@ -15,7 +15,9 @@ use crate::entities::aggregate::{
     AggregateResolutionOf, AggregateResolutions, AggregateTransformFact, ResolvedAggregate,
 };
 use crate::entities::clause::ClauseFact;
-use crate::entities::context::{ContextDecl, ContextIndex, ResolvedContextUse};
+use crate::entities::context::{
+    ContextDecl, ContextIndex, ContextUseResolutionOf, ContextUseResolutions, ResolvedContextUse,
+};
 use crate::entities::definition::{DefDecl, DefIndex, FragmentKey, FragmentTarget};
 use crate::entities::directive::DirectiveFact;
 use crate::entities::document::ParsedFile;
@@ -129,6 +131,7 @@ pub struct DsqlSchema {
     semantic_group: (NodeKey, SemanticDefinitionKey, SemanticRoot, DerivedFrom),
     cycle_site: (NodeKey, CycleSiteRoot, DerivedFrom),
     semantic_members: (SemanticMembers,),
+    context_use_resolutions: (ContextUseResolutions,),
     spread_resolutions: (SpreadResolutions,),
     semantic_dependents: (SemanticDependents,),
     expansion_occurrences: (ExpansionOccurrences,),
@@ -230,7 +233,12 @@ pub struct DsqlSchema {
         Option<CompiledPolicyIndex>,
     ),
     policy_body_index: (Singleton<PolicyBodyIndex>, PolicyBodyIndex),
-    resolved_context_use: (ResolvedContextUse, BelongsToFile, DerivedFrom),
+    resolved_context_use: (
+        ResolvedContextUse,
+        ContextUseResolutionOf,
+        BelongsToFile,
+        DerivedFrom,
+    ),
     resolved_selection: (
         ResolvedSelection,
         ResolutionOf,

@@ -2,7 +2,7 @@
 //! selection set, with its alias and relation-path selector — plus the
 //! catalog check walk that validates every selection tree top-down.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bowl::{
     Commands, Component, DerivedFrom, Entity, Eq as BowlEq, In, Query, Registrar, Related,
@@ -12,9 +12,10 @@ use bowl::{
 use crate::catalog::{CatalogSnapshot, TableRef};
 use crate::entities::aggregate::aggregate_output_keys;
 use crate::entities::clause::{ClauseFact, clause_expr};
+use crate::entities::context::ResolvedContextUse;
 use crate::entities::definition::{DefDecl, DefKind, FragmentTarget};
 use crate::entities::expansion::{
-    ClauseResolutionRows, ExpansionBodies, ExpansionBody, RawSemanticMembers,
+    ClauseResolutionRows, ExpansionBodies, ExpansionBody, ExpansionCycle, RawSemanticMembers,
     SelectionResolutionRows, SemanticDefinitionKey, SpreadResolutionRows, clone_clause_resolutions,
     clone_selection_resolutions, clone_semantic_members, clone_spread_resolutions,
 };
@@ -430,9 +431,9 @@ impl SelectionTree<'_> {
 ///
 /// Spread-site compatibility remains a per-site check, while intrinsic cycle
 /// errors are emitted from the materialized expansion graph.
-/// The ambient views variable inference, planning, and completion still read,
-/// bundled to keep system signatures within porridge's parameter arity. The
-/// residual checker consumes relationship-scoped expansion bodies instead.
+/// The ambient views planning and completion still read, bundled to keep
+/// system signatures within porridge's parameter arity. Checks and variable
+/// inference consume relationship-scoped expansion bodies instead.
 #[derive(SystemParam)]
 pub(crate) struct TreeViews<'a> {
     fields: View<'a, (Entity, &'a FieldSel, &'a NodeKey, &'a ChildOf)>,
@@ -448,20 +449,35 @@ pub(crate) struct InstanceNode {
 }
 
 #[derive(Default)]
-struct DefinitionClosure {
+pub(crate) struct DefinitionClosure {
     fields: HashMap<InstanceNode, Vec<(InstanceNode, FieldSel)>>,
     spreads: HashMap<InstanceNode, Vec<(InstanceNode, SpreadDecl)>>,
     clauses: HashMap<InstanceNode, Vec<(InstanceNode, ClauseFact, Span)>>,
     selections: HashMap<InstanceNode, ResolvedSelection>,
     clause_resolutions: HashMap<InstanceNode, ResolvedClause>,
     spread_resolutions: HashMap<InstanceNode, crate::entities::fragment_spread::ResolvedSpread>,
+    context_resolutions: HashMap<InstanceNode, ResolvedContextUse>,
+    variable_nodes: HashMap<(Option<Entity>, Span), InstanceNode>,
+    cycles: HashSet<InstanceNode>,
     child_occurrences: HashMap<InstanceNode, Entity>,
     body_roots: HashMap<Entity, Entity>,
     scopes: HashMap<Option<Entity>, String>,
+    declarations: HashMap<Option<Entity>, DefDecl>,
+    fragment_targets: HashMap<Option<Entity>, FragmentTarget>,
+}
+
+pub(crate) struct DefinitionRoot {
+    pub(crate) scope: String,
+    pub(crate) declaration: DefDecl,
+    pub(crate) target: Option<FragmentTarget>,
+    pub(crate) members: Vec<crate::entities::expansion::ExpansionMember>,
+    pub(crate) selections: Vec<ResolvedSelection>,
+    pub(crate) clauses: Vec<ResolvedClause>,
+    pub(crate) spreads: Vec<crate::entities::fragment_spread::ResolvedSpread>,
 }
 
 impl DefinitionClosure {
-    fn node(instance: Option<Entity>, source: Entity) -> InstanceNode {
+    pub(crate) fn node(instance: Option<Entity>, source: Entity) -> InstanceNode {
         InstanceNode { instance, source }
     }
 
@@ -490,63 +506,120 @@ impl DefinitionClosure {
                     .or_default()
                     .push((node, clause, span));
             }
+            if let Some(variable) = member.variable {
+                self.variable_nodes
+                    .insert((instance, variable.0.span), node);
+            }
         }
     }
 
-    fn fields_under(
+    pub(crate) fn fields_under(
         &self,
         parent: InstanceNode,
     ) -> impl Iterator<Item = &(InstanceNode, FieldSel)> {
         self.fields.get(&parent).into_iter().flatten()
     }
 
-    fn spreads_under(
+    pub(crate) fn spreads_under(
         &self,
         parent: InstanceNode,
     ) -> impl Iterator<Item = &(InstanceNode, SpreadDecl)> {
         self.spreads.get(&parent).into_iter().flatten()
     }
 
-    fn clauses_under(
+    pub(crate) fn clauses_under(
         &self,
         parent: InstanceNode,
     ) -> impl Iterator<Item = &(InstanceNode, ClauseFact, Span)> {
         self.clauses.get(&parent).into_iter().flatten()
     }
 
-    fn child_root(&self, spread: InstanceNode) -> Option<InstanceNode> {
+    pub(crate) fn child_root(&self, spread: InstanceNode) -> Option<InstanceNode> {
         let occurrence = self.child_occurrences.get(&spread)?;
         self.body_roots
             .get(occurrence)
             .map(|source| Self::node(Some(*occurrence), *source))
     }
 
-    fn scope_for(&self, node: InstanceNode) -> Option<&str> {
+    pub(crate) fn scope_for(&self, node: InstanceNode) -> Option<&str> {
         self.scopes.get(&node.instance).map(String::as_str)
     }
 
-    fn build(
-        root_scope: &str,
-        root_members: Vec<crate::entities::expansion::ExpansionMember>,
-        root_selections: Vec<ResolvedSelection>,
-        root_clauses: Vec<ResolvedClause>,
-        root_spreads: Vec<crate::entities::fragment_spread::ResolvedSpread>,
+    pub(crate) fn declaration(&self, node: InstanceNode) -> Option<&DefDecl> {
+        self.declarations.get(&node.instance)
+    }
+
+    pub(crate) fn fragment_target(&self, node: InstanceNode) -> Option<&FragmentTarget> {
+        self.fragment_targets.get(&node.instance)
+    }
+
+    pub(crate) fn selection(&self, node: InstanceNode) -> Option<&ResolvedSelection> {
+        self.selections.get(&node)
+    }
+
+    pub(crate) fn resolved_clause(&self, node: InstanceNode) -> Option<&ResolvedClause> {
+        self.clause_resolutions.get(&node)
+    }
+
+    pub(crate) fn spread_resolution(
+        &self,
+        node: InstanceNode,
+    ) -> Option<&crate::entities::fragment_spread::ResolvedSpread> {
+        self.spread_resolutions.get(&node)
+    }
+
+    pub(crate) fn context_resolution_at(
+        &self,
+        instance: Option<Entity>,
+        span: Span,
+    ) -> Option<&ResolvedContextUse> {
+        let node = self.variable_nodes.get(&(instance, span))?;
+        self.context_resolutions.get(node)
+    }
+
+    pub(crate) fn is_cycle(&self, spread: InstanceNode) -> bool {
+        self.cycles.contains(&spread)
+    }
+
+    pub(crate) fn add_root_contexts(
+        &mut self,
+        contexts: impl IntoIterator<Item = ResolvedContextUse>,
+    ) {
+        for context in contexts {
+            self.context_resolutions
+                .insert(Self::node(None, context.source_use), context);
+        }
+    }
+
+    pub(crate) fn add_cycles(&mut self, cycles: impl IntoIterator<Item = ExpansionCycle>) {
+        for cycle in cycles {
+            self.cycles
+                .insert(Self::node(cycle.parent, cycle.closing_spread));
+        }
+    }
+
+    pub(crate) fn build(
+        root: DefinitionRoot,
         bodies: impl IntoIterator<Item = ExpansionBody>,
     ) -> Self {
         let mut closure = Self::default();
-        closure.scopes.insert(None, root_scope.to_string());
-        closure.add_members(None, root_members);
-        for resolved in root_selections {
+        closure.scopes.insert(None, root.scope);
+        closure.declarations.insert(None, root.declaration);
+        if let Some(target) = root.target {
+            closure.fragment_targets.insert(None, target);
+        }
+        closure.add_members(None, root.members);
+        for resolved in root.selections {
             closure
                 .selections
                 .insert(Self::node(None, resolved.field), resolved);
         }
-        for resolved in root_clauses {
+        for resolved in root.clauses {
             closure
                 .clause_resolutions
                 .insert(Self::node(None, resolved.clause), resolved);
         }
-        for resolved in root_spreads {
+        for resolved in root.spreads {
             closure
                 .spread_resolutions
                 .insert(Self::node(None, resolved.spread), resolved);
@@ -560,6 +633,12 @@ impl DefinitionClosure {
             );
             closure.body_roots.insert(body.occurrence, body.definition);
             closure.scopes.insert(instance, body.scope.0.clone());
+            closure
+                .declarations
+                .insert(instance, body.declaration.clone());
+            if let Some(target) = body.target.clone() {
+                closure.fragment_targets.insert(instance, target);
+            }
             closure.add_members(instance, body.members);
             for resolved in body.selections {
                 closure
@@ -575,6 +654,11 @@ impl DefinitionClosure {
                 closure
                     .spread_resolutions
                     .insert(Self::node(instance, resolved.spread), resolved);
+            }
+            for resolved in body.context_uses {
+                closure
+                    .context_resolutions
+                    .insert(Self::node(instance, resolved.source_use), resolved);
             }
         }
 
@@ -650,11 +734,15 @@ async fn residual_definition_checks(
     let catalog = snapshot.catalog();
 
     let tree = DefinitionClosure::build(
-        &scope.0,
-        clone_semantic_members(&members),
-        clone_selection_resolutions(&selections),
-        clone_clause_resolutions(&clauses),
-        clone_spread_resolutions(&spread_resolutions),
+        DefinitionRoot {
+            scope: scope.0.clone(),
+            declaration: decl.clone(),
+            target: fragment_target.cloned(),
+            members: clone_semantic_members(&members),
+            selections: clone_selection_resolutions(&selections),
+            clauses: clone_clause_resolutions(&clauses),
+            spreads: clone_spread_resolutions(&spread_resolutions),
+        },
         bodies
             .iter()
             .map(|(_, (body,))| (*body).clone())

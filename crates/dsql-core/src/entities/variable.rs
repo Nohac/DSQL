@@ -10,28 +10,31 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::entities::{direct_name, direct_rule, node_span, text};
-use crate::resolution::{ResolvedClause, index_resolved_clauses};
+use crate::resolution::{ResolvedClause, SelectionTarget};
 use crate::schema::{AstFacts, dsql_schema};
 use bowl::{
-    Commands, Component, DerivedFrom, Entity, Query, Registrar, SystemExt, SystemParam, View,
+    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, Query, Registrar, Related, SystemExt,
     Where, With,
 };
 
 use crate::catalog::{
-    Catalog, CatalogSnapshot, DataType, FieldCheckResult, FieldRef, LiteralKind, MAX_SAFE_INTEGER,
-    MIN_SAFE_INTEGER, ScalarValidation, TableRef, TableResolution, TypeCapabilities, TypeKey,
-    WireEncoding,
+    Catalog, CatalogSnapshot, DataType, LiteralKind, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER,
+    ScalarValidation, TableRef, TypeCapabilities, TypeKey, WireEncoding,
 };
 use crate::entities::clause::{ClauseFact, OrderDirection, OrderTerm};
-use crate::entities::context::{
-    ContextIndex, ContextLookup, ContextValueContract, validate_context_use,
+use crate::entities::context::{ContextUseResolution, ContextValueContract, validate_context_use};
+use crate::entities::definition::{DefDecl, DefKind, FragmentTarget, describe_dynamic_variable};
+use crate::entities::expansion::{
+    ClauseResolutionRows, ContextUseResolutionRows, ExpansionBodies, ExpansionBody, ExpansionCycle,
+    ExpansionCycles, RawSemanticMembers, SelectionResolutionRows, SemanticDefinitionKey,
+    SpreadResolutionRows, clone_clause_resolutions, clone_context_use_resolutions,
+    clone_selection_resolutions, clone_semantic_members, clone_spread_resolutions,
 };
-use crate::entities::definition::{DefDecl, DefKind, describe_dynamic_variable};
 use crate::entities::expression::{
     BinaryOp, ComparisonOp, Expr, Sigil, VariableRef, build_variable_ref,
 };
-use crate::entities::field_selection::{SelectionTree, TreeViews};
-use crate::entities::fragment_spread::{SpreadBindingRef, SpreadDecl, visible_fragments};
+use crate::entities::field_selection::{DefinitionClosure, DefinitionRoot, InstanceNode};
+use crate::entities::fragment_spread::{SpreadBindingRef, SpreadDecl};
 use crate::entities::variable_path::{
     InputPathSegment, SelectionPath, VariablePathContext, VariablePathScope,
     predicate_anonymous_key, variable_path,
@@ -39,7 +42,7 @@ use crate::entities::variable_path::{
 use crate::entity::{FormatStage, LanguageEntity, LowerCtx, LowerStage};
 use crate::facts::{
     BelongsToFile, ChildOf, DefKey, DiagnosticCode, DiagnosticFacts, DiagnosticSource,
-    DiagnosticsDemand, NodeKey, Severity, Span, VariablesDemand, emit_diagnostic,
+    DiagnosticsDemand, NodeKey, SemanticRoot, Severity, Span, VariablesDemand, emit_diagnostic,
 };
 use crate::format::CstFormatter;
 use crate::grammar::lexer::Token;
@@ -50,7 +53,7 @@ use crate::service::completion::{
     emit_completion_candidate,
 };
 use crate::service::hover::{Cursor, HoverEnriched, emit_hover_candidate, priority};
-use crate::source::{ResolutionScope, ScopeImports};
+use crate::source::ResolutionScope;
 
 /// One variable occurrence, lowered from `value_variable` or
 /// `operator_variable`. The inference stage (phase 7) groups these by name
@@ -72,7 +75,9 @@ impl LanguageEntity for Variable {
     const NAME: &'static str = "variable";
 
     fn register(reg: &mut Registrar<'_>) {
-        // Views lowered facts ambiently: behind the Complete barrier.
+        // Exact relationship inputs drive invalidation; Complete prevents a
+        // downstream consumer from observing a transiently incomplete closure
+        // while those independently derived inputs converge.
         reg.system(infer_variables.run_during(bowl::Phase::Complete));
         reg.system(diagnose_variable_problems);
         // Fully tracked on the duplicate facts: the engine replans the pair
@@ -363,16 +368,59 @@ pub struct DuplicateAnonymousBinding {
 /// Infers physical variable occurrences and each definition's effective
 /// public contract after recursively applying fragment-spread bindings.
 /// Gated on [`VariablesDemand`].
+type VariableRootInput<'a> = Query<(
+    Entity,
+    &'a SemanticRoot,
+    &'a SemanticDefinitionKey,
+    &'a NodeKey,
+    RawSemanticMembers<'a>,
+    SelectionResolutionRows<'a>,
+    ClauseResolutionRows<'a>,
+    SpreadResolutionRows<'a>,
+)>;
+type VariableRootContexts<'a> = Query<
+    (Entity, &'a SemanticRoot, ContextUseResolutionRows<'a>),
+    Where<BowlEq<SemanticDefinitionKey>>,
+>;
+type VariableRootCycles<'a> = Query<
+    (
+        Entity,
+        &'a SemanticRoot,
+        Related<ExpansionCycles, (&'a ExpansionCycle,)>,
+    ),
+    Where<BowlEq<SemanticDefinitionKey>>,
+>;
+type VariableExpansions<'a> = Query<
+    (
+        Entity,
+        &'a SemanticRoot,
+        Related<ExpansionBodies, (&'a ExpansionBody,)>,
+    ),
+    Where<BowlEq<SemanticDefinitionKey>>,
+>;
+type VariableDefinition<'a> = Query<
+    (
+        Entity,
+        &'a DefDecl,
+        Option<&'a FragmentTarget>,
+        &'a BelongsToFile,
+        &'a ResolutionScope,
+    ),
+    Where<BowlEq<NodeKey>>,
+>;
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "exact relationship-scoped inputs reach the system parameter ceiling"
+)]
 async fn infer_variables(
     _: Query<Entity, With<VariablesDemand>>,
-    defs: Query<(Entity, &DefDecl, &NodeKey, &BelongsToFile, &ResolutionScope)>,
+    root_input: VariableRootInput<'_>,
+    root_contexts: VariableRootContexts<'_>,
+    root_cycles: VariableRootCycles<'_>,
+    expansions: VariableExpansions<'_>,
+    definition: VariableDefinition<'_>,
     catalog: Query<(Entity, &CatalogSnapshot)>,
-    index: Query<(
-        Entity,
-        &crate::entities::definition::DefIndex,
-        &ContextIndex,
-    )>,
-    views: VariableSemanticViews<'_>,
     mut commands: Commands<(
         dsql_schema::DefinitionVariables,
         dsql_schema::VariableBinding,
@@ -380,22 +428,43 @@ async fn infer_variables(
         dsql_schema::VariableProblem,
     )>,
 ) {
-    let (def_entity, decl, key, file, scope) = defs.item();
+    let (_, root, _, key, members, selections, clauses, spreads) = root_input.item();
+    let (_, _, contexts) = root_contexts.item();
+    let (_, _, cycles) = root_cycles.item();
+    let (_, _, bodies) = expansions.item();
+    let (def_entity, decl, fragment_target, file, scope) = definition.item();
     let (catalog_entity, snapshot) = catalog.item();
 
-    let tree = SelectionTree::collect(&views.tree);
-    let resolved_clauses =
-        index_resolved_clauses(views.resolutions.iter().map(|(_, resolved)| resolved));
+    let mut tree = DefinitionClosure::build(
+        DefinitionRoot {
+            scope: scope.0.clone(),
+            declaration: decl.clone(),
+            target: fragment_target.cloned(),
+            members: clone_semantic_members(&members),
+            selections: clone_selection_resolutions(&selections),
+            clauses: clone_clause_resolutions(&clauses),
+            spreads: clone_spread_resolutions(&spreads),
+        },
+        bodies
+            .iter()
+            .map(|(_, (body,))| (*body).clone())
+            .collect::<Vec<_>>(),
+    );
+    tree.add_root_contexts(clone_context_use_resolutions(&contexts));
+    tree.add_cycles(
+        cycles
+            .iter()
+            .map(|(_, (cycle,))| (*cycle).clone())
+            .collect::<Vec<_>>(),
+    );
     let mut context = ContractContext {
         tree: &tree,
-        resolved_clauses: &resolved_clauses,
         catalog: snapshot.catalog(),
-        imports: views.imports.item().1,
-        contexts: index.item().2,
-        stack: Vec::new(),
         completed: HashMap::new(),
     };
-    let contract = context.definition_contract(def_entity, decl, &scope.0);
+    let Some(contract) = context.definition_contract(DefinitionClosure::node(None, root.0)) else {
+        return;
+    };
     commands.insert((
         DerivedFrom::many([def_entity, catalog_entity]),
         BelongsToFile(file.0),
@@ -444,20 +513,9 @@ async fn infer_variables(
     }
 }
 
-#[derive(SystemParam)]
-struct VariableSemanticViews<'a> {
-    imports: Query<(Entity, &'a ScopeImports)>,
-    tree: TreeViews<'a>,
-    resolutions: View<'a, (Entity, &'a ResolvedClause)>,
-}
-
 struct ContractContext<'a> {
-    tree: &'a SelectionTree<'a>,
-    resolved_clauses: &'a HashMap<Entity, &'a ResolvedClause>,
+    tree: &'a DefinitionClosure,
     catalog: &'a Catalog,
-    imports: &'a ScopeImports,
-    contexts: &'a ContextIndex,
-    stack: Vec<Entity>,
     completed: HashMap<Entity, DefinitionContract>,
 }
 
@@ -471,33 +529,20 @@ struct DefinitionContract {
 }
 
 impl ContractContext<'_> {
-    fn definition_contract(
-        &mut self,
-        definition: Entity,
-        decl: &DefDecl,
-        scope: &str,
-    ) -> DefinitionContract {
-        if let Some(contract) = self.completed.get(&definition) {
-            return contract.clone();
+    fn definition_contract(&mut self, definition: InstanceNode) -> Option<DefinitionContract> {
+        if let Some(contract) = self.completed.get(&definition.source) {
+            return Some(contract.clone());
         }
-        if self.stack.contains(&definition) {
-            return DefinitionContract {
-                cycle_cut: true,
-                ..DefinitionContract::default()
-            };
-        }
-        self.stack.push(definition);
+        let decl = self.tree.declaration(definition)?.clone();
+        self.tree.scope_for(definition)?;
         let mut inference = Inference {
             tree: self.tree,
-            resolved_clauses: self.resolved_clauses,
             catalog: self.catalog,
-            imports: self.imports,
-            contexts: self.contexts,
-            definition_scope: scope,
+            instance: definition.instance,
             bindings: Vec::new(),
             problems: Vec::new(),
         };
-        collect_local_definition(&mut inference, definition, decl);
+        collect_local_definition(&mut inference, definition, &decl);
         inference
             .bindings
             .sort_by_key(|(span, _)| (span.start, span.end));
@@ -506,23 +551,25 @@ impl ContractContext<'_> {
         let mut problems = inference.problems;
         let mut rewrites = BTreeMap::new();
         let mut cycle_cut = false;
-        for (spread_entity, spread, path) in spread_sites(definition, decl, self.tree, self.catalog)
+        for (spread_entity, spread, path) in
+            spread_sites(definition, &decl, self.tree, self.catalog)
         {
-            let candidates = visible_fragments(
-                &spread.name,
-                scope,
-                self.imports,
-                self.tree
-                    .fragments
-                    .iter()
-                    .map(|(entity, target_decl, _, target_scope)| {
-                        (*entity, *target_decl, *target_scope)
-                    }),
-            );
-            let [(target_entity, target_decl, target_scope)] = candidates.as_slice() else {
+            if self
+                .tree
+                .spread_resolution(spread_entity)
+                .and_then(|resolved| resolved.target.as_ref())
+                .is_none()
+            {
                 continue;
+            }
+            let Some(target_root) = self.tree.child_root(spread_entity) else {
+                if self.tree.is_cycle(spread_entity) {
+                    cycle_cut = true;
+                    continue;
+                }
+                return None;
             };
-            let target = self.definition_contract(*target_entity, target_decl, &target_scope.0);
+            let target = self.definition_contract(target_root)?;
             cycle_cut |= target.cycle_cut;
             rewrites.extend(target.rewrites.clone());
             let mut binding_problems = Vec::new();
@@ -534,18 +581,17 @@ impl ContractContext<'_> {
                     .into_iter()
                     .map(|binding| (spread.span, binding)),
             );
-            rewrites.insert(spread_entity, input_map.values);
+            rewrites.insert(spread_entity.source, input_map.values);
             problems.extend(binding_problems);
         }
         inference
             .bindings
             .sort_by_key(|(span, _)| (span.start, span.end));
-        let refinement_problems = refine_bindings(decl, &mut inference.bindings, self.catalog);
+        let refinement_problems = refine_bindings(&decl, &mut inference.bindings, self.catalog);
         problems.extend(refinement_problems);
         let mut merge_problems = Vec::new();
-        let effective = merge_bindings(&inference.bindings, decl, &mut merge_problems);
+        let effective = merge_bindings(&inference.bindings, &decl, &mut merge_problems);
         problems.extend(merge_problems);
-        self.stack.pop();
         let contract = DefinitionContract {
             local_bindings,
             bindings: effective,
@@ -553,25 +599,34 @@ impl ContractContext<'_> {
             problems,
             cycle_cut,
         };
+        // A fragment contract is occurrence-independent: its fields resolve
+        // against its own declared target and context resolutions attach to
+        // source syntax, never to caller context. Cycle-cut subtrees are the
+        // exception because their materialized frontier depends on ancestry.
         if !cycle_cut {
-            self.completed.insert(definition, contract.clone());
+            self.completed.insert(definition.source, contract.clone());
         }
-        contract
+        Some(contract)
     }
 }
 
-fn collect_local_definition(inference: &mut Inference<'_>, definition: Entity, decl: &DefDecl) {
+fn collect_local_definition(
+    inference: &mut Inference<'_>,
+    definition: InstanceNode,
+    decl: &DefDecl,
+) {
     if decl.kind == DefKind::Query {
         inference.collect_filter_assignments(definition, &[], &VariablePathScope::operation());
         let roots = inference
             .tree
             .fields_under(definition)
-            .map(|(entity, field, _, _)| (*entity, *field))
+            .map(|(entity, field)| (*entity, field.clone()))
             .collect::<Vec<_>>();
         for (entity, field) in roots {
-            let TableResolution::Found(table) = inference
-                .catalog
-                .resolve_table_ref_for(TableRef::parse(&field.name))
+            let Some(SelectionTarget::Table(table)) = inference
+                .tree
+                .selection(entity)
+                .map(|resolved| &resolved.target)
             else {
                 continue;
             };
@@ -580,7 +635,7 @@ fn collect_local_definition(inference: &mut Inference<'_>, definition: Entity, d
                 path.push(InputPathSegment::Aggregate.as_ref().to_string());
             }
             inference.collect_selection(
-                table.id,
+                *table,
                 entity,
                 SelectionPath::body(path),
                 &VariablePathScope::operation(),
@@ -589,11 +644,7 @@ fn collect_local_definition(inference: &mut Inference<'_>, definition: Entity, d
         return;
     }
 
-    if let Some((_, _, target, _)) = inference
-        .tree
-        .fragments
-        .iter()
-        .find(|(entity, _, _, _)| *entity == definition)
+    if let Some(target) = inference.tree.fragment_target(definition)
         && let Some(table) = inference
             .catalog
             .table_ref_for(TableRef::parse(&target.name))
@@ -608,17 +659,17 @@ fn collect_local_definition(inference: &mut Inference<'_>, definition: Entity, d
 }
 
 fn spread_sites<'a>(
-    definition: Entity,
+    definition: InstanceNode,
     decl: &DefDecl,
-    tree: &'a SelectionTree<'a>,
+    tree: &'a DefinitionClosure,
     catalog: &Catalog,
-) -> Vec<(Entity, &'a SpreadDecl, SelectionPath)> {
+) -> Vec<(InstanceNode, &'a SpreadDecl, SelectionPath)> {
     let mut sites = Vec::new();
     match decl.kind {
         DefKind::Query => {
-            for (entity, field, _, _) in tree.fields_under(definition) {
-                let TableResolution::Found(table) =
-                    catalog.resolve_table_ref_for(TableRef::parse(&field.name))
+            for (entity, field) in tree.fields_under(definition) {
+                let Some(SelectionTarget::Table(_)) =
+                    tree.selection(*entity).map(|resolved| &resolved.target)
                 else {
                     continue;
                 };
@@ -630,24 +681,21 @@ fn spread_sites<'a>(
                     tree,
                     catalog,
                     *entity,
-                    table.id,
                     SelectionPath::body(parts),
                     &mut sites,
                 );
             }
         }
         DefKind::Fragment => {
-            if let Some((_, _, target, _)) = tree
-                .fragments
-                .iter()
-                .find(|(entity, _, _, _)| *entity == definition)
-                && let Some(table) = catalog.table_ref_for(TableRef::parse(&target.name))
+            if let Some(target) = tree.fragment_target(definition)
+                && catalog
+                    .table_ref_for(TableRef::parse(&target.name))
+                    .is_some()
             {
                 collect_spread_sites(
                     tree,
                     catalog,
                     definition,
-                    table.id,
                     SelectionPath::fragment_root(),
                     &mut sites,
                 );
@@ -658,37 +706,33 @@ fn spread_sites<'a>(
 }
 
 fn collect_spread_sites<'a>(
-    tree: &'a SelectionTree<'a>,
+    tree: &'a DefinitionClosure,
     catalog: &Catalog,
-    parent: Entity,
-    table: crate::catalog::TableId,
+    parent: InstanceNode,
     path: SelectionPath,
-    sites: &mut Vec<(Entity, &'a SpreadDecl, SelectionPath)>,
+    sites: &mut Vec<(InstanceNode, &'a SpreadDecl, SelectionPath)>,
 ) {
     sites.extend(
         tree.spreads_under(parent)
-            .map(|(entity, spread, _)| (*entity, *spread, path.clone())),
+            .map(|(entity, spread)| (*entity, spread, path.clone())),
     );
-    for (entity, field, _, _) in tree.fields_under(parent) {
-        let reference = FieldRef {
-            target: TableRef::parse(&field.name),
-            selector: field.relation_path.as_deref(),
-        };
-        let FieldCheckResult::Relation(relation) = catalog.check_field_ref(table, reference) else {
+    for (entity, field) in tree.fields_under(parent) {
+        let Some(SelectionTarget::Relation { relation, .. }) =
+            tree.selection(*entity).map(|resolved| &resolved.target)
+        else {
             continue;
         };
-        let mut child = path.relation_child_path(field.output_key());
+        let output_name = field.alias.clone().unwrap_or_else(|| {
+            catalog
+                .relation_by_id(*relation)
+                .map(|relation| relation.name.clone())
+                .unwrap_or_else(|| field.output_key())
+        });
+        let mut child = path.relation_child_path(output_name);
         if field.flattened && field.has_transform() {
             child.push(InputPathSegment::Aggregate.as_ref().to_string());
         }
-        collect_spread_sites(
-            tree,
-            catalog,
-            *entity,
-            relation.table.id,
-            SelectionPath::body(child),
-            sites,
-        );
+        collect_spread_sites(tree, catalog, *entity, SelectionPath::body(child), sites);
     }
 }
 
@@ -1478,12 +1522,9 @@ struct ResolvedPredicateValue {
 }
 
 struct Inference<'a> {
-    resolved_clauses: &'a HashMap<Entity, &'a ResolvedClause>,
-    tree: &'a SelectionTree<'a>,
+    tree: &'a DefinitionClosure,
     catalog: &'a Catalog,
-    imports: &'a ScopeImports,
-    contexts: &'a ContextIndex,
-    definition_scope: &'a str,
+    instance: Option<Entity>,
     bindings: Vec<(Span, VariableBinding)>,
     problems: Vec<VariableProblem>,
 }
@@ -1494,17 +1535,17 @@ impl Inference<'_> {
     fn collect_selection(
         &mut self,
         table: crate::catalog::TableId,
-        key: Entity,
+        key: InstanceNode,
         path: SelectionPath,
         scope: &VariablePathScope,
     ) {
         let clauses: Vec<_> = self
             .tree
             .clauses_under(key)
-            .map(|(entity, clause, _, _)| (*entity, (*clause).clone()))
+            .map(|(entity, clause, _)| (*entity, clause.clone()))
             .collect();
         for (clause_entity, clause) in clauses {
-            let resolved = self.resolved_clauses.get(&clause_entity).copied();
+            let resolved = self.tree.resolved_clause(clause_entity);
             match clause {
                 ClauseFact::FilterAssignment {
                     name, condition, ..
@@ -1600,14 +1641,14 @@ impl Inference<'_> {
 
     fn collect_filter_assignments(
         &mut self,
-        parent: Entity,
+        parent: InstanceNode,
         selection_path: &[String],
         scope: &VariablePathScope,
     ) {
         let assignments = self
             .tree
             .clauses_under(parent)
-            .filter_map(|(_, clause, _, _)| match clause {
+            .filter_map(|(_, clause, _)| match clause {
                 ClauseFact::FilterAssignment {
                     name,
                     condition: Some(condition),
@@ -1692,37 +1733,40 @@ impl Inference<'_> {
 
     fn collect_selection_set(
         &mut self,
-        table: crate::catalog::TableId,
-        parent: Entity,
+        _table: crate::catalog::TableId,
+        parent: InstanceNode,
         path: SelectionPath,
         scope: &VariablePathScope,
     ) {
         let children: Vec<_> = self
             .tree
             .fields_under(parent)
-            .map(|(entity, field, _, _)| (*entity, *field))
+            .map(|(entity, field)| (*entity, field.clone()))
             .collect();
         for (entity, field) in children {
-            let reference = FieldRef {
-                target: TableRef::parse(&field.name),
-                selector: field.relation_path.as_deref(),
-            };
-            let FieldCheckResult::Relation(relation) =
-                self.catalog.check_field_ref(table, reference)
+            let Some(SelectionTarget::Relation {
+                table: relation_table,
+                relation,
+                ..
+            }) = self.tree.selection(entity).map(|resolved| &resolved.target)
             else {
                 continue;
             };
-            let relation_table = relation.table.id;
             let output_name = field
                 .alias
                 .clone()
-                .unwrap_or_else(|| relation.name.to_string());
+                .or_else(|| {
+                    self.catalog
+                        .relation_by_id(*relation)
+                        .map(|relation| relation.name.clone())
+                })
+                .unwrap_or_else(|| field.output_key());
             let mut child_path = path.relation_child_path(output_name);
             if field.flattened && field.has_transform() {
                 child_path.push(InputPathSegment::Aggregate.as_ref().to_string());
             }
             self.collect_selection(
-                relation_table,
+                *relation_table,
                 entity,
                 SelectionPath::body(child_path),
                 scope,
@@ -1985,9 +2029,15 @@ impl Inference<'_> {
             let Some(name) = name else {
                 return;
             };
-            let ContextLookup::Resolved(_, declared) =
-                self.contexts
-                    .lookup(self.definition_scope, &name, self.imports)
+            let Some(resolved) = self
+                .tree
+                .context_resolution_at(self.instance, variable.span)
+            else {
+                return;
+            };
+            let ContextUseResolution::Resolved {
+                contract: declared, ..
+            } = &resolved.resolution
             else {
                 return;
             };

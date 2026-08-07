@@ -12,3 +12,8 @@ index. Compiler consumers should depend only on scope, name, resolved type, and
 validity; diagnostics and editor navigation should additionally depend on file,
 entity, and span payloads. Preserve cross-file target freshness while making
 span-only edits semantically fingerprint-neutral.
+
+Variable inference now consumes context-use resolutions through each semantic
+group rather than joining `ContextIndex` globally. The resolution component
+still hashes declaration navigation spans together with its semantic contract,
+so the fact split above remains required.

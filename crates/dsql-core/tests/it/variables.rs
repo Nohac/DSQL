@@ -273,31 +273,86 @@ async fn fragment_inputs_are_contained_lifted_namespaced_and_defaulted() {
 #[tokio::test]
 async fn nested_fragment_contracts_rederive_after_cross_file_edits() {
     let bowl = variables_bowl().await;
-    let fragment = insert_source(
-        &bowl,
-        "window.dsql",
-        indoc::indoc! {r#"
-            fragment Window on public::users {
-              posts(limit %first) { id }
-            }
-            fragment Parent on public::users {
-              ...Window(%)
-            }
-        "#},
-    )
-    .await;
-    insert_source(
-        &bowl,
-        "query.dsql",
-        "query Nested { public::users { ...Parent(%) } }\n",
-    )
-    .await;
+    let initial_fragment = indoc::indoc! {r#"
+        fragment Window on public::users {
+          posts(limit %first) { id }
+        }
+        fragment Parent on public::users {
+          ...Window(%)
+        }
+    "#};
+    let query = "query Nested { public::users { ...Parent(%) } }\n";
+    let fragment = insert_source(&bowl, "window.dsql", initial_fragment).await;
+    insert_source(&bowl, "query.dsql", query).await;
     let before = render_definition_bindings(&bowl).await;
 
     crate::replace_source_text(&bowl, fragment, "%first", "%second").await;
     let after = render_definition_bindings(&bowl).await;
 
+    crate::replace_source_text(&bowl, fragment, "%second", "%first").await;
+    let restored = render_definition_bindings(&bowl).await;
+    assert_eq!(restored, before, "A-B-A restores every effective contract");
+
+    let cold = variables_bowl().await;
+    insert_source(&cold, "window.dsql", initial_fragment).await;
+    insert_source(&cold, "query.dsql", query).await;
+    assert_eq!(
+        render_definition_bindings(&cold).await,
+        restored,
+        "cold and incrementally restored contracts agree"
+    );
+
     insta::assert_snapshot!(format!("before:\n{before}\n\nafter:\n{after}"));
+}
+
+#[tokio::test]
+async fn fragment_context_contracts_compose_into_callers() {
+    let bowl = variables_bowl().await;
+    insert_source(
+        &bowl,
+        "fragment-context.dsql",
+        indoc::indoc! {r#"
+            context { allow_posts: bool }
+            fragment VisiblePosts on public::users {
+              posts(where $:allow_posts) { id }
+            }
+            query Users {
+              public::users { ...VisiblePosts }
+            }
+        "#},
+    )
+    .await;
+
+    insta::assert_snapshot!(render_definition_bindings(&bowl).await);
+}
+
+#[tokio::test]
+async fn resolved_spreads_settle_before_effective_contracts_publish() {
+    let bowl = variables_bowl().await;
+    insert_source(
+        &bowl,
+        "settled-contracts.dsql",
+        indoc::indoc! {r#"
+            fragment Leaf on public::users {
+              posts(limit %leaf_limit) { id }
+            }
+            fragment Parent on public::users {
+              ...Leaf(%)
+            }
+            query Root {
+              public::users { ...Parent(%) }
+            }
+        "#},
+    )
+    .await;
+
+    let contracts = bowl.scoop::<Query<(Entity, &DefinitionVariables)>>().await;
+    assert_eq!(
+        contracts.len(),
+        3,
+        "no definition publishes a truncated contract while bodies settle"
+    );
+    insta::assert_snapshot!(render_definition_bindings(&bowl).await);
 }
 
 #[tokio::test]

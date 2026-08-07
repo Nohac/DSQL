@@ -4,7 +4,7 @@
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::TableRef;
-use dsql_core::facts::DiagnosticsDemand;
+use dsql_core::facts::{DiagnosticsDemand, VariablesDemand};
 use dsql_core::language_bowl;
 use dsql_core::source::{FilePath, insert_source};
 
@@ -195,5 +195,43 @@ async fn fragment_body_materialization_wakes_only_dependent_roots() {
     assert_eq!(
         checks_delta, 6,
         "the fragment root and its dependent query converge without waking twenty unrelated roots"
+    );
+}
+
+#[tokio::test]
+async fn variable_inference_wakes_only_fragment_dependents() {
+    let bowl = language_bowl().await;
+    dsql_core::catalog::insert_catalog(&bowl, imdb_catalog()).await;
+    bowl.insert((Singleton::<VariablesDemand>::new(), VariablesDemand))
+        .await;
+
+    const UNRELATED: u64 = 20;
+    for index in 0..UNRELATED {
+        insert_source(
+            &bowl,
+            format!("variable-unrelated-{index}.dsql"),
+            &format!("query VariableUnrelated{index} {{ title(limit 1) {{ id }} }}\n"),
+        )
+        .await;
+    }
+    insert_source(
+        &bowl,
+        "variable-dependent.dsql",
+        "fragment VariableBits on title { movie_info_idx(limit %first) { id } }\nquery VariableDependent { title(limit 1) { ...VariableBits(%) } }\n",
+    )
+    .await;
+    let _ = bowl
+        .scoop::<Query<(Entity, &dsql_core::entities::variable::DefinitionVariables)>>()
+        .await;
+
+    let before = runs_of(&bowl, "infer_variables").await;
+    edit_file(&bowl, "variable-dependent.dsql", ("%first", "%second")).await;
+    let _ = bowl
+        .scoop::<Query<(Entity, &dsql_core::entities::variable::DefinitionVariables)>>()
+        .await;
+    let delta = runs_of(&bowl, "infer_variables").await - before;
+    assert_eq!(
+        delta, 3,
+        "the fragment root and dependent query converge at Complete without waking twenty unrelated roots"
     );
 }

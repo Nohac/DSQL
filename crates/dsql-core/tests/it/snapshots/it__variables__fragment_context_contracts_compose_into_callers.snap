@@ -1,0 +1,10 @@
+---
+source: crates/dsql-core/tests/it/variables.rs
+assertion_line: 326
+expression: render_definition_bindings(&bowl).await
+---
+Users
+  context.allow_posts Context WhereValue Boolean required=true nullable=false default=None
+
+VisiblePosts
+  context.allow_posts Context WhereValue Boolean required=true nullable=false default=None
