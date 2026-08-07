@@ -2,11 +2,16 @@
 //! schema; invalid fixtures and inline sources produce check diagnostics,
 //! demand-gated and catalog-reactive.
 
-use bowl::{Bowl, Entity, Query};
+use std::collections::BTreeMap;
+
+use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::{Catalog, insert_catalog};
 use dsql_core::facts::{Diagnostic, arm_editor_demands};
 use dsql_core::language_bowl;
-use dsql_core::source::{insert_embedding_source, insert_source};
+use dsql_core::source::{
+    ResolutionScope, ScopeImports, SourceKind, insert_embedding_source, insert_source,
+    insert_source_scoped,
+};
 
 use crate::{
     fixture, imdb_catalog, native_enum_catalog, numeric_catalog, provider_scalar_catalog,
@@ -1050,6 +1055,121 @@ async fn duplicate_output_keys_through_spreads_are_reported() {
         .await;
 
     insta::assert_snapshot!(render_diagnostic_facts(&bowl).await);
+}
+
+/// Imported fragment output edits recheck every consuming definition, while
+/// consumer edits continue to use the same duplicate-key rule.
+#[tokio::test]
+async fn fragment_output_key_edits_recheck_in_both_directions() {
+    async fn scoped_bowl() -> Bowl {
+        let bowl = checked_bowl(Catalog::hardcoded()).await;
+        bowl.insert((
+            Singleton::<ScopeImports>::new(),
+            ScopeImports(BTreeMap::from([
+                ("api".to_string(), vec!["shared".to_string()]),
+                ("shared".to_string(), Vec::new()),
+            ])),
+        ))
+        .await;
+        bowl
+    }
+
+    async fn state(bowl: &Bowl) -> String {
+        // Snapshot the complete diagnostic set so each transition pins both
+        // the expected collision and the absence of unrelated residue.
+        let diagnostics = render_diagnostic_facts(bowl).await;
+        if diagnostics.is_empty() {
+            "<none>".to_string()
+        } else {
+            diagnostics
+        }
+    }
+
+    let provider_after_consumer = scoped_bowl().await;
+    let fragment = insert_source_scoped(
+        &provider_after_consumer,
+        "fragment.dsql",
+        "fragment Bits(%post_limit? = 2) on public::users { posts(limit %post_limit) { id } }\n",
+        ResolutionScope("shared".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    insert_source_scoped(
+        &provider_after_consumer,
+        "query.dsql",
+        indoc::indoc! {"
+            query Contained { public::users(limit 1) { ...Bits } }
+            query Lifted { public::users(limit 1) { name ...Bits(%) } }
+            query Namespaced(%window_limit = 2) {
+              public::users(limit 1) { ...Bits(%post_limit <- %window_limit) }
+            }
+        "},
+        ResolutionScope("api".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    let initial = state(&provider_after_consumer).await;
+    replace_source_text(
+        &provider_after_consumer,
+        fragment,
+        "{ posts",
+        "{ name posts",
+    )
+    .await;
+    let provider_edit = state(&provider_after_consumer).await;
+    replace_source_text(
+        &provider_after_consumer,
+        fragment,
+        "{ name posts",
+        "{ posts",
+    )
+    .await;
+    let provider_healed = state(&provider_after_consumer).await;
+
+    let consumer_after_provider = scoped_bowl().await;
+    insert_source_scoped(
+        &consumer_after_provider,
+        "fragment.dsql",
+        "fragment Bits(%post_limit? = 2) on public::users { name posts(limit %post_limit) { id } }\n",
+        ResolutionScope("shared".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    let query = insert_source_scoped(
+        &consumer_after_provider,
+        "query.dsql",
+        indoc::indoc! {"
+            query Contained { public::users(limit 1) { ...Bits } }
+            query Lifted { public::users(limit 1) { ...Bits(%) } }
+            query Namespaced(%window_limit = 2) {
+              public::users(limit 1) { ...Bits(%post_limit <- %window_limit) }
+            }
+        "},
+        ResolutionScope("api".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    let reverse_initial = state(&consumer_after_provider).await;
+    replace_source_text(
+        &consumer_after_provider,
+        query,
+        "{ ...Bits(%) }",
+        "{ name ...Bits(%) }",
+    )
+    .await;
+    let consumer_edit = state(&consumer_after_provider).await;
+    replace_source_text(
+        &consumer_after_provider,
+        query,
+        "{ name ...Bits(%) }",
+        "{ ...Bits(%) }",
+    )
+    .await;
+    let consumer_healed = state(&consumer_after_provider).await;
+
+    insta::assert_snapshot!(format!(
+        "provider after consumer\ninitial:\n{initial}\n\nafter provider edit:\n{provider_edit}\n\nafter provider heal:\n{provider_healed}\n\nconsumer after provider\ninitial:\n{reverse_initial}\n\nafter consumer edit:\n{consumer_edit}\n\nafter consumer heal:\n{consumer_healed}"
+    ));
 }
 
 #[tokio::test]

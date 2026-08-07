@@ -479,6 +479,89 @@ async fn diagnostics_follow_edits() {
     );
 }
 
+/// Duplicate output diagnostics follow both sides of an imported spread:
+/// changing the provider must republish the unchanged consumer just as
+/// changing the consumer does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spread_output_collisions_follow_provider_and_consumer_edits() {
+    fn assert_duplicate(diagnostics: &Value) {
+        assert_eq!(
+            diagnostics,
+            &json!([{
+                "range": {
+                    "start": {"line": 6, "character": 7},
+                    "end": {"line": 6, "character": 16}
+                },
+                "severity": 1,
+                "source": "dsql",
+                "message": "spread `TitleBits` introduces duplicate output key `title`; use an alias"
+            }])
+        );
+    }
+
+    let mut session = Session::start("spread-output-provider-edits").await;
+    let fragment_uri = session.uri("queries/shared/fragments.dsql");
+    let query_uri = session.uri("queries/frontend/titles.dsql");
+    let fragment_without_title = indoc::indoc! {"
+        fragment TitleBits(%minimum_kind? = 1) on title {
+          id
+          kind_type(where .id >= %minimum_kind) { id }
+        }
+    "};
+    let fragment_with_title = indoc::indoc! {"
+        fragment TitleBits(%minimum_kind? = 1) on title {
+          id
+          title
+          kind_type(where .id >= %minimum_kind) { id }
+        }
+    "};
+    let query_without_title = indoc::indoc! {"
+        query Other {
+          title(limit 1) { ...TitleBits }
+        }
+        query Titles {
+          title(limit 2) {
+            ...TitleBits(%)
+          }
+        }
+    "};
+    let query_with_title = indoc::indoc! {"
+        query Other {
+          title(limit 1) { ...TitleBits }
+        }
+        query Titles {
+          title(limit 2) {
+            title
+            ...TitleBits(%)
+          }
+        }
+    "};
+
+    session
+        .open(&fragment_uri, "dsql", fragment_without_title)
+        .await;
+    let fragment_clean = session.diagnostics_for(&fragment_uri).await;
+    assert_eq!(fragment_clean, json!([]));
+    session.open(&query_uri, "dsql", query_with_title).await;
+    let initial = session.diagnostics_for(&query_uri).await;
+    assert_eq!(initial, json!([]));
+
+    session.replace(&fragment_uri, 2, fragment_with_title).await;
+    assert_duplicate(&session.diagnostics_for(&query_uri).await);
+
+    session
+        .replace(&fragment_uri, 3, fragment_without_title)
+        .await;
+    assert_eq!(session.diagnostics_for(&query_uri).await, json!([]));
+    session.replace(&query_uri, 2, query_without_title).await;
+    assert_eq!(session.diagnostics_for(&query_uri).await, json!([]));
+    session.replace(&fragment_uri, 4, fragment_with_title).await;
+    assert_eq!(session.diagnostics_for(&query_uri).await, json!([]));
+
+    session.replace(&query_uri, 3, query_with_title).await;
+    assert_duplicate(&session.diagnostics_for(&query_uri).await);
+}
+
 /// Trusted-context diagnostics follow ranged edits to both the use and its
 /// declaration instead of retaining the spans from an earlier settle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

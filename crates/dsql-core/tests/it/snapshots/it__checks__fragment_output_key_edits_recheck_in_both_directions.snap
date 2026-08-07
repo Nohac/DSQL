@@ -1,0 +1,23 @@
+---
+source: crates/dsql-core/tests/it/checks.rs
+expression: "format!(\"provider after consumer\\ninitial:\\n{initial}\\n\\nafter provider edit:\\n{provider_edit}\\n\\nafter provider heal:\\n{provider_healed}\\n\\nconsumer after provider\\ninitial:\\n{reverse_initial}\\n\\nafter consumer edit:\\n{consumer_edit}\\n\\nafter consumer heal:\\n{consumer_healed}\")"
+---
+provider after consumer
+initial:
+<none>
+
+after provider edit:
+Error[103..107]: spread `Bits` introduces duplicate output key `name`; use an alias
+
+after provider heal:
+<none>
+
+consumer after provider
+initial:
+<none>
+
+after consumer edit:
+Error[103..107]: spread `Bits` introduces duplicate output key `name`; use an alias
+
+after consumer heal:
+<none>
