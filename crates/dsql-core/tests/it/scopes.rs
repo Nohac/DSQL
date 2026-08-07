@@ -2,12 +2,15 @@
 //! through imports; independent scopes stay independent; collisions and
 //! ambiguities are diagnostics (docs/spec/resolution-scopes.md).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bowl::{Bowl, Entity, Query, Singleton};
 use dsql_core::catalog::insert_catalog;
+use dsql_core::entities::definition::{
+    DefinitionSiteRoot, ImportedQueryPeer, VisibleDefinitionCandidate,
+};
 use dsql_core::entities::fragment_spread::ResolvedSpread;
-use dsql_core::facts::DiagnosticsDemand;
+use dsql_core::facts::{Diagnostic, DiagnosticsDemand};
 use dsql_core::language_bowl;
 use dsql_core::source::{
     ResolutionScope, ScopeDocument, ScopeDocuments, ScopeImports, ScopeOwnership, SourceAssignment,
@@ -15,6 +18,69 @@ use dsql_core::source::{
 };
 
 use crate::{imdb_catalog, render_diagnostic_facts, set_source_text};
+
+async fn definition_graph(bowl: &Bowl) -> (BTreeSet<Entity>, BTreeSet<Entity>) {
+    let sites = bowl.scoop::<Query<(Entity, &DefinitionSiteRoot)>>().await;
+    let candidates = bowl
+        .scoop::<Query<(Entity, &VisibleDefinitionCandidate)>>()
+        .await;
+    (
+        sites
+            .collect()
+            .into_iter()
+            .map(|(entity, _)| entity)
+            .collect(),
+        candidates
+            .collect()
+            .into_iter()
+            .map(|(entity, _)| entity)
+            .collect(),
+    )
+}
+
+async fn imported_query_graph(
+    bowl: &Bowl,
+) -> (
+    BTreeMap<String, BTreeSet<Entity>>,
+    BTreeMap<String, (Entity, String)>,
+) {
+    let peers = bowl.scoop::<Query<(Entity, &ImportedQueryPeer)>>().await;
+    let mut peers_by_consumer = BTreeMap::<String, BTreeSet<Entity>>::new();
+    for (entity, peer) in peers.collect() {
+        for consumer in &peer.consumer_scopes {
+            peers_by_consumer
+                .entry(consumer.clone())
+                .or_default()
+                .insert(entity);
+        }
+    }
+
+    let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await;
+    let diagnostics_by_consumer = diagnostics
+        .collect()
+        .into_iter()
+        .filter_map(|(entity, diagnostic)| {
+            let consumer = diagnostic
+                .0
+                .strip_prefix("query `")?
+                .split_once(" is provided to scope `")?
+                .1
+                .split_once('`')?
+                .0;
+            Some((consumer.to_string(), (entity, diagnostic.0.clone())))
+        })
+        .collect();
+    (peers_by_consumer, diagnostics_by_consumer)
+}
+
+async fn diagnostic_entities(bowl: &Bowl) -> BTreeMap<String, Entity> {
+    let diagnostics = bowl.scoop::<Query<(Entity, &Diagnostic)>>().await;
+    diagnostics
+        .collect()
+        .into_iter()
+        .map(|(entity, diagnostic)| (diagnostic.0.clone(), entity))
+        .collect()
+}
 
 async fn scoped_bowl(imports: &[(&str, &[&str])]) -> Bowl {
     let bowl = language_bowl().await;
@@ -60,6 +126,99 @@ async fn resolutions(bowl: &Bowl) -> usize {
 
 const FRAGMENT: &str = "fragment TitleBits on title {\n  id\n}\n";
 const SPREAD: &str = "query Q {\n  title {\n    ...TitleBits\n  }\n}\n";
+
+#[tokio::test]
+async fn definition_conflict_resolution_is_name_granular() {
+    let bowl = scoped_bowl(&[]).await;
+    let provider = insert_source_scoped(
+        &bowl,
+        "provider.dsql",
+        "query Shared { title { id } }\n",
+        ResolutionScope("default".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    insert(
+        &bowl,
+        "consumer.dsql",
+        "default",
+        "query Shared { title { title } }\n",
+    )
+    .await;
+    let unrelated = (0..20)
+        .map(|index| format!("query Unrelated{index} {{ title {{ id }} }}\n"))
+        .collect::<String>();
+    insert(&bowl, "unrelated.dsql", "default", &unrelated).await;
+    assert!(
+        render_diagnostic_facts(&bowl)
+            .await
+            .contains("duplicate operation `Shared`")
+    );
+
+    let initial_graph = definition_graph(&bowl).await;
+    let initial_diagnostics = diagnostic_entities(&bowl).await;
+    assert_eq!(initial_graph.0.len(), 22);
+    assert_eq!(initial_graph.1.len(), 2);
+    set_source_text(&bowl, provider, "query Shared { title { id title } }\n").await;
+    assert_eq!(
+        definition_graph(&bowl).await,
+        initial_graph,
+        "body-only edits preserve every site and candidate product"
+    );
+    assert_eq!(
+        diagnostic_entities(&bowl).await,
+        initial_diagnostics,
+        "body-only edits preserve diagnostics driven by unchanged semantic inputs"
+    );
+
+    set_source_text(&bowl, provider, "query Renamed { title { id title } }\n").await;
+    let renamed_graph = definition_graph(&bowl).await;
+    assert_eq!(
+        renamed_graph.0, initial_graph.0,
+        "definition sites stay stable"
+    );
+    assert!(renamed_graph.1.is_empty(), "only same-name edges retire");
+    assert_eq!(render_diagnostic_facts(&bowl).await, "");
+
+    set_source_text(&bowl, provider, "query Shared { title { id title } }\n").await;
+    assert_eq!(
+        definition_graph(&bowl).await,
+        initial_graph,
+        "A-B-A restores the exact candidate product identities"
+    );
+    assert!(
+        render_diagnostic_facts(&bowl)
+            .await
+            .contains("duplicate operation `Shared`")
+    );
+
+    insert(
+        &bowl,
+        "third.dsql",
+        "default",
+        "query Shared { title { production_year } }\n",
+    )
+    .await;
+    let expanded_graph = definition_graph(&bowl).await;
+    assert_eq!(
+        expanded_graph.0.len(),
+        initial_graph.0.len() + 1,
+        "the fresh definition owns one new site"
+    );
+    assert!(
+        initial_graph.0.is_subset(&expanded_graph.0),
+        "unrelated and existing same-name sites keep identity"
+    );
+    assert_eq!(
+        expanded_graph.1.len(),
+        initial_graph.1.len() + 4,
+        "the third provider adds only four directed same-name edges"
+    );
+    assert!(
+        initial_graph.1.is_subset(&expanded_graph.1),
+        "existing candidate products keep identity"
+    );
+}
 
 #[tokio::test]
 async fn fragments_resolve_across_files_within_a_scope() {
@@ -289,6 +448,107 @@ async fn import_ambiguities_follow_edits() {
         "",
         "renaming away retires the ambiguity"
     );
+}
+
+#[tokio::test]
+async fn imported_query_peer_graph_is_scope_granular() {
+    let bowl = scoped_bowl(&[
+        ("frontend", &["a", "b"]),
+        ("dashboard", &["c", "d"]),
+        ("a", &[]),
+        ("b", &[]),
+        ("c", &[]),
+        ("d", &[]),
+        ("unrelated", &[]),
+    ])
+    .await;
+    insert(&bowl, "a.dsql", "a", QUERY).await;
+    insert(&bowl, "b.dsql", "b", QUERY).await;
+    let c_provider = insert_source_scoped(
+        &bowl,
+        "c.dsql",
+        "query Other { title(limit 1) { id } }\n",
+        ResolutionScope("c".to_string()),
+        SourceKind::Dsql,
+    )
+    .await;
+    insert(
+        &bowl,
+        "d.dsql",
+        "d",
+        "query Other { title(limit 1) { id } }\n",
+    )
+    .await;
+    let unrelated = (0..20)
+        .map(|index| format!("query Unrelated{index} {{ title {{ id }} }}\n"))
+        .collect::<String>();
+    insert(&bowl, "unrelated.dsql", "unrelated", &unrelated).await;
+
+    let initial = imported_query_graph(&bowl).await;
+    assert_eq!(initial.0["frontend"].len(), 2);
+    assert_eq!(initial.0["dashboard"].len(), 2);
+    assert_eq!(initial.1.len(), 2);
+
+    set_source_text(
+        &bowl,
+        c_provider,
+        "query Other { title(limit 1) { id title } }\n",
+    )
+    .await;
+    assert_eq!(
+        imported_query_graph(&bowl).await,
+        initial,
+        "provider body edits preserve peer and diagnostic identities"
+    );
+
+    bowl.insert((
+        Singleton::<ScopeImports>::new(),
+        ScopeImports(BTreeMap::from([
+            ("aardvark".to_string(), Vec::new()),
+            (
+                "frontend".to_string(),
+                vec!["a".to_string(), "b".to_string()],
+            ),
+            (
+                "dashboard".to_string(),
+                vec!["c".to_string(), "d".to_string()],
+            ),
+            ("a".to_string(), Vec::new()),
+            ("b".to_string(), Vec::new()),
+            ("c".to_string(), Vec::new()),
+            ("d".to_string(), Vec::new()),
+            ("unrelated".to_string(), Vec::new()),
+        ])),
+    ))
+    .await;
+    assert_eq!(
+        imported_query_graph(&bowl).await,
+        initial,
+        "an unrelated earlier scope preserves peer and diagnostic identities"
+    );
+
+    bowl.insert((
+        Singleton::<ScopeImports>::new(),
+        ScopeImports(BTreeMap::from([
+            ("aardvark".to_string(), Vec::new()),
+            ("frontend".to_string(), vec!["a".to_string()]),
+            (
+                "dashboard".to_string(),
+                vec!["c".to_string(), "d".to_string()],
+            ),
+            ("a".to_string(), Vec::new()),
+            ("b".to_string(), Vec::new()),
+            ("c".to_string(), Vec::new()),
+            ("d".to_string(), Vec::new()),
+            ("unrelated".to_string(), Vec::new()),
+        ])),
+    ))
+    .await;
+    let narrowed = imported_query_graph(&bowl).await;
+    assert!(!narrowed.0.contains_key("frontend"));
+    assert_eq!(narrowed.0["dashboard"], initial.0["dashboard"]);
+    assert!(!narrowed.1.contains_key("frontend"));
+    assert_eq!(narrowed.1["dashboard"], initial.1["dashboard"]);
 }
 
 /// Scope ownership preserves its outcomes: unmatched and overlapping

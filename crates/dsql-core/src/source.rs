@@ -35,6 +35,15 @@ use ropey::Rope;
 #[component(hash)]
 pub struct FilePath(pub String);
 
+/// Stable path-like identity for one parsed document.
+///
+/// Plain files use their physical path. Embedded regions append their stable
+/// extraction ordinal so two expressions in one host have deterministic
+/// ordering without making preceding length changes semantic.
+#[derive(Component, Hash, PartialEq, Eq, Debug, Clone)]
+#[component(hash)]
+pub struct DocumentPath(pub String);
+
 /// Byte offset of a document's text inside its host file: zero for plain
 /// `.dsql` files, the embedded region's start for documents extracted from
 /// another language's source. Spans stay document-relative everywhere;
@@ -581,7 +590,8 @@ pub async fn insert_source_scoped(
     let inserted = match kind {
         SourceKind::Embedded(resolver) => {
             bowl.insert((
-                FilePath(path),
+                FilePath(path.clone()),
+                DocumentPath(path),
                 EmbeddingHost,
                 ExtractionResolver(resolver),
                 SourceText::from_text(text),
@@ -591,7 +601,8 @@ pub async fn insert_source_scoped(
         }
         SourceKind::Dsql => {
             bowl.insert((
-                FilePath(path),
+                FilePath(path.clone()),
+                DocumentPath(path),
                 SourceOffset(0),
                 DsqlDocument,
                 SourceText::from_text(text),

@@ -45,6 +45,9 @@ pub struct LowerCtx<'a> {
     /// The file entity the tree was parsed from; fact components emitted by
     /// lowering anchor to it.
     pub file: Entity,
+    /// Stable source path used only by navigation and deterministic diagnostic
+    /// ordering.
+    pub path: &'a str,
     /// The file's resolution scope; definition and spread facts carry it
     /// as their resolution join key.
     pub scope: &'a str,

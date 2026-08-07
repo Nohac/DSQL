@@ -87,6 +87,14 @@ async fn regions_of(bowl: &Bowl, host: Entity) -> Vec<(Entity, usize, String)> {
     regions
 }
 
+async fn system_runs(bowl: &Bowl, suffix: &str) -> u64 {
+    bowl.profile_all()
+        .await
+        .into_iter()
+        .find(|entry| entry.name.ends_with(suffix))
+        .map_or(0, |entry| entry.runs)
+}
+
 #[tokio::test]
 async fn host_sources_derive_regions_that_compile() {
     let (bowl, host) = host_bowl().await;
@@ -567,13 +575,17 @@ async fn embedded_regions_require_a_terminal_generation_scope() {
 async fn embedded_expression_shapes_follow_edits() {
     let bowl = language_bowl().await;
     insert_catalog(&bowl, imdb_catalog()).await;
-    let host = insert_embedding_source(
-        &bowl,
-        "src/single.ts",
-        "export const q = dsql`\nquery Titles {\n  title(limit 1) {\n    id\n  }\n}\n`;\n",
-        "typescript",
-    )
-    .await;
+    let unrelated = (0..20)
+        .map(|index| {
+            format!(
+                "export const unrelated{index} = dsql`query Unrelated{index} {{ title(limit 1) {{ id }} }}`;\n"
+            )
+        })
+        .collect::<String>();
+    let source = format!(
+        "{unrelated}export const q = dsql`\nquery Titles {{\n  title(limit 1) {{\n    id\n  }}\n}}\n`;\n"
+    );
+    let host = insert_embedding_source(&bowl, "src/single.ts", &source, "typescript").await;
     bowl.insert((Singleton::<DiagnosticsDemand>::new(), DiagnosticsDemand))
         .await;
     assert_eq!(
@@ -581,6 +593,7 @@ async fn embedded_expression_shapes_follow_edits() {
         "",
         "the fixture host starts clean"
     );
+    let resolution_runs = system_runs(&bowl, "resolve_embedded_expressions").await;
 
     // Grow the first region to two queries.
     replace_source_text(
@@ -594,6 +607,11 @@ async fn embedded_expression_shapes_follow_edits() {
     assert!(
         reported.contains("defines 2 top-level definitions"),
         "the shape check follows the edit, got: {reported:?}"
+    );
+    assert_eq!(
+        system_runs(&bowl, "resolve_embedded_expressions").await - resolution_runs,
+        3,
+        "one region's fixed-point cardinality transition stays constant with 20 unrelated sites"
     );
 
     // Shrink back: the diagnostic retires.

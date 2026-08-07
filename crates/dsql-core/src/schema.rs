@@ -10,7 +10,11 @@
 use bowl::{DerivedFrom, Singleton};
 
 use crate::catalog::{CatalogSnapshot, CatalogSourceRoot};
-use crate::embedding::{ExtractionRegistry, ResolvedEmbeddedExpression};
+use crate::embedding::{
+    EmbeddedDefinitionCandidate, EmbeddedDefinitionCandidateOf, EmbeddedDefinitionCandidates,
+    EmbeddedExpressionSiteKey, EmbeddedExpressionSiteRoot, ExtractionRegistry,
+    ResolvedEmbeddedExpression,
+};
 use crate::entities::aggregate::{
     AggregateResolutionOf, AggregateResolutions, AggregateTransformFact, ResolvedAggregate,
 };
@@ -18,7 +22,13 @@ use crate::entities::clause::ClauseFact;
 use crate::entities::context::{
     ContextDecl, ContextIndex, ContextUseResolutionOf, ContextUseResolutions, ResolvedContextUse,
 };
-use crate::entities::definition::{DefDecl, DefIndex, FragmentKey, FragmentTarget};
+use crate::entities::definition::{
+    DefDecl, DefIndex, DefinitionNameKey, DefinitionNavigation, DefinitionPath,
+    DefinitionSemantics, DefinitionSiteContext, DefinitionSiteContextOf, DefinitionSiteContexts,
+    DefinitionSiteKey, DefinitionSiteRoot, FragmentKey, FragmentTarget, ImportedQueryPeer,
+    ImportedQueryPeerOf, ImportedQueryPeers, VisibleDefinitionCandidate,
+    VisibleDefinitionCandidateOf, VisibleDefinitionCandidates,
+};
 use crate::entities::directive::DirectiveFact;
 use crate::entities::document::ParsedFile;
 use crate::entities::expansion::{
@@ -61,9 +71,9 @@ use crate::service::hover::{
 };
 use crate::service::semantic_tokens::{TokenChunk, TokensDemand};
 use crate::source::{
-    AnalysisResidency, BelongsToHost, CallsiteSpan, ContentSpan, DsqlDocument, EmbeddingHost,
-    ExtractionResolver, FilePath, OpenBuffer, ResolutionScope, ScopeDocuments, ScopeImports,
-    SourceOffset, SourceText,
+    AnalysisResidency, BelongsToHost, CallsiteSpan, ContentSpan, DocumentPath, DsqlDocument,
+    EmbeddingHost, ExtractionResolver, FilePath, OpenBuffer, ResolutionScope, ScopeDocuments,
+    ScopeImports, SourceOffset, SourceText,
 };
 use crate::sql::{GeneratedSqlFact, SqlOptions};
 
@@ -79,6 +89,7 @@ pub struct DsqlSchema {
     // bitmaps and registration analyses are laid out over.
     dsql_file: (
         FilePath,
+        DocumentPath,
         SourceText,
         DsqlDocument,
         SourceOffset,
@@ -86,6 +97,7 @@ pub struct DsqlSchema {
     ),
     host_file: (
         FilePath,
+        DocumentPath,
         SourceText,
         EmbeddingHost,
         ExtractionResolver,
@@ -116,6 +128,8 @@ pub struct DsqlSchema {
     def: (
         NodeKey,
         Option<SemanticDefinitionKey>,
+        DefinitionNameKey,
+        DefinitionPath,
         DefDecl,
         ResolutionScope,
         BelongsToFile,
@@ -220,13 +234,54 @@ pub struct DsqlSchema {
         SourceOffset,
         CallsiteSpan,
         ContentSpan,
+        DocumentPath,
         DsqlDocument,
         ResolutionScope,
         DerivedFrom,
     ),
     /// Stamped onto the document entity by the parse system.
     parsed_file: (ParsedFile,),
-    resolved_embedded_expression: (ResolvedEmbeddedExpression, BelongsToFile, DerivedFrom),
+    definition_semantic_projection: (
+        DefinitionSemantics,
+        DefinitionNameKey,
+        DefinitionSiteKey,
+        SemanticDefinitionKey,
+        BelongsToFile,
+        DerivedFrom,
+    ),
+    definition_navigation_projection: (
+        DefinitionNavigation,
+        DefinitionNameKey,
+        DefinitionSiteKey,
+        SemanticDefinitionKey,
+        DerivedFrom,
+    ),
+    // Stable relationship owners deliberately omit DerivedFrom. Their
+    // producing invocations retire them; candidate/context children carry
+    // revision-sensitive lifetime anchors.
+    definition_site: (DefinitionSiteRoot, DefinitionSiteKey, SemanticDefinitionKey),
+    definition_site_contexts: (DefinitionSiteContexts,),
+    definition_site_context: (DefinitionSiteContext, DefinitionSiteContextOf, DerivedFrom),
+    visible_definition_candidates: (VisibleDefinitionCandidates,),
+    visible_definition_candidate: (
+        VisibleDefinitionCandidate,
+        VisibleDefinitionCandidateOf,
+        DerivedFrom,
+    ),
+    imported_query_peers: (ImportedQueryPeers,),
+    imported_query_peer: (ImportedQueryPeer, ImportedQueryPeerOf, DerivedFrom),
+    embedded_expression_site: (
+        EmbeddedExpressionSiteRoot,
+        EmbeddedExpressionSiteKey,
+        BelongsToFile,
+    ),
+    embedded_definition_candidates: (EmbeddedDefinitionCandidates,),
+    embedded_definition_candidate: (
+        EmbeddedDefinitionCandidate,
+        EmbeddedDefinitionCandidateOf,
+        DerivedFrom,
+    ),
+    resolved_embedded_expression: (ResolvedEmbeddedExpression, BelongsToFile),
     diagnostic: (
         Diagnostic,
         Span,
@@ -392,6 +447,8 @@ pub type AstFacts = (
     (
         NodeKey,
         DefDecl,
+        DefinitionNameKey,
+        DefinitionPath,
         ResolutionScope,
         BelongsToFile,
         DerivedFrom,

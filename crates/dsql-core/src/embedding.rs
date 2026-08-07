@@ -18,16 +18,17 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use bowl::{
-    Commands, Component, DerivedFrom, Entity, MutRef, Phase, Query, Registrar, SystemExt, View,
-    With,
+    Commands, Component, DerivedFrom, Entity, Eq as BowlEq, MutRef, Query, Registrar, Related,
+    SystemExt, View, Where, With,
 };
 use regex::Regex;
 
 use crate::entities::document::ParsedFile;
 use crate::schema::dsql_schema;
 use crate::source::{
-    AnalysisResidency, BelongsToHost, CallsiteSpan, ContentSpan, DsqlDocument, EmbeddingHost,
-    ExtractionResolver, OpenBuffer, ResolutionScope, ScopeImports, SourceOffset, SourceText,
+    AnalysisResidency, BelongsToHost, CallsiteSpan, ContentSpan, DocumentPath, DsqlDocument,
+    EmbeddingHost, ExtractionResolver, FilePath, OpenBuffer, ResolutionScope, ScopeImports,
+    SourceOffset, SourceText,
 };
 
 /// One embedded-document extraction provider. Regex is implemented now;
@@ -63,6 +64,36 @@ pub enum EmbeddedExpressionResolution {
     MultipleDefinitions(usize),
 }
 
+/// Stable key shared by one embedded region and its cardinality site.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(hash)]
+pub struct EmbeddedExpressionSiteKey(pub Entity);
+
+/// Dedicated owner for one embedded expression's definition candidates.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(hash)]
+pub struct EmbeddedExpressionSiteRoot {
+    region: Entity,
+}
+
+/// One top-level definition contained by an embedded expression.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(hash)]
+pub struct EmbeddedDefinitionCandidate {
+    definition: Entity,
+}
+
+/// Relationship edge from a definition candidate to its embedded site.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[component(untracked)]
+#[relationship(target = EmbeddedDefinitionCandidates)]
+pub struct EmbeddedDefinitionCandidateOf(pub Entity);
+
+/// Engine-maintained top-level definitions contained by one embedded region.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[relationship_target(relationship = EmbeddedDefinitionCandidateOf)]
+pub struct EmbeddedDefinitionCandidates(pub Vec<Entity>);
+
 impl Default for ExtractionRegistry {
     fn default() -> Self {
         Self(BTreeMap::from([(
@@ -95,45 +126,74 @@ pub fn compile_embedding_pattern(pattern: &str) -> Result<Regex, String> {
 /// loading install the provider registry singleton.
 pub(crate) fn register_embedding(reg: &mut Registrar<'_>) {
     reg.system(extract_embedded_documents);
-    reg.system(resolve_embedded_expressions.run_during(Phase::Complete));
+    reg.system(project_embedded_expression_sites);
+    reg.system(bind_embedded_definition_candidates);
+    reg.system(resolve_embedded_expressions);
     reg.system(check_embedded_expressions.run_during(bowl::Phase::Complete));
+}
+
+type EmbeddedDefinitionRows<'a> =
+    Related<EmbeddedDefinitionCandidates, (&'a EmbeddedDefinitionCandidate,)>;
+
+/// Creates one relationship owner per embedded region. The region is the sole
+/// driver, so removal reaps exactly its site and descendants.
+async fn project_embedded_expression_sites(
+    regions: Query<(Entity, &CallsiteSpan, &SourceText), With<DsqlDocument>>,
+    mut commands: Commands<(dsql_schema::EmbeddedExpressionSite,)>,
+) {
+    let (region, _, _) = regions.item();
+    commands.insert((
+        EmbeddedExpressionSiteKey(region),
+        crate::facts::BelongsToFile(region),
+        EmbeddedExpressionSiteRoot { region },
+    ));
+}
+
+/// Relates a projected definition to the embedded region that contains it.
+/// The definition projection drives the exact file join in one hint hop.
+async fn bind_embedded_definition_candidates(
+    definitions: Query<(
+        Entity,
+        &crate::entities::definition::DefinitionSemantics,
+        &crate::facts::BelongsToFile,
+    )>,
+    sites: Query<(Entity, &EmbeddedExpressionSiteRoot), Where<BowlEq<crate::facts::BelongsToFile>>>,
+    mut commands: Commands<(dsql_schema::EmbeddedDefinitionCandidate,)>,
+) {
+    let (projection, definition, _) = definitions.item();
+    let (site, _) = sites.item();
+    commands.insert((
+        DerivedFrom::new(projection),
+        EmbeddedDefinitionCandidateOf(site),
+        EmbeddedDefinitionCandidate {
+            definition: definition.definition,
+        },
+    ));
 }
 
 /// Resolves an embedded expression to its sole top-level definition.
 async fn resolve_embedded_expressions(
-    regions: Query<(Entity, &CallsiteSpan, &SourceText), With<DsqlDocument>>,
-    // The index moves when definitions appear, change kind/name, or vanish.
-    _index: Query<(Entity, &crate::entities::definition::DefIndex)>,
-    defs: View<
-        '_,
-        (
-            Entity,
-            &crate::entities::definition::DefDecl,
-            &crate::facts::BelongsToFile,
-        ),
-    >,
+    sites: Query<(
+        Entity,
+        &EmbeddedExpressionSiteRoot,
+        EmbeddedDefinitionRows<'_>,
+    )>,
     mut commands: Commands<(crate::schema::dsql_schema::ResolvedEmbeddedExpression,)>,
 ) {
-    let (region, _callsite, _source) = regions.item();
-    let definitions: Vec<Entity> = defs
+    let (_, site, candidates) = sites.item();
+    let region = site.region;
+    let definitions = candidates
         .iter()
-        .filter(|(_, _, file)| file.0 == region)
-        .map(|(definition, _, _)| definition)
-        .collect();
+        .map(|(_, (candidate,))| candidate.definition)
+        .collect::<Vec<_>>();
     let resolution = match definitions.as_slice() {
         [] => EmbeddedExpressionResolution::Empty,
         [definition] => EmbeddedExpressionResolution::Target(*definition),
         definitions => EmbeddedExpressionResolution::MultipleDefinitions(definitions.len()),
     };
-    let derived_from = match resolution {
-        EmbeddedExpressionResolution::Target(definition) => DerivedFrom::many([region, definition]),
-        EmbeddedExpressionResolution::Empty
-        | EmbeddedExpressionResolution::MultipleDefinitions(_) => DerivedFrom::new(region),
-    };
     commands.insert((
         ResolvedEmbeddedExpression(resolution),
         crate::facts::BelongsToFile(region),
-        derived_from,
     ));
 }
 
@@ -218,6 +278,7 @@ type EvictableHost<'a> = Query<
     (
         Entity,
         MutRef<'a, SourceText>,
+        &'a FilePath,
         &'a ResolutionScope,
         &'a ExtractionResolver,
         Option<&'a OpenBuffer>,
@@ -234,7 +295,7 @@ async fn extract_embedded_documents(
     residency: View<'_, (Entity, &AnalysisResidency)>,
     mut commands: Commands<(dsql_schema::Region,)>,
 ) {
-    let (host, mut text, scope, resolver, open_buffer) = hosts.item();
+    let (host, mut text, path, scope, resolver, open_buffer) = hosts.item();
     let (registry_entity, registry) = registry.item();
 
     let Some(strategy) = registry.0.get(&resolver.0) else {
@@ -254,7 +315,7 @@ async fn extract_embedded_documents(
     let Some(source) = text.to_text() else {
         return;
     };
-    for captures in regex.captures_iter(&source) {
+    for (ordinal, captures) in regex.captures_iter(&source).enumerate() {
         let Some(content) = captures.name("content") else {
             continue;
         };
@@ -280,6 +341,7 @@ async fn extract_embedded_documents(
                 start: content.start(),
                 end: content.end(),
             }),
+            DocumentPath(format!("{}#embedded:{ordinal}", path.0)),
             scope.clone(),
             SourceText::from_text(content.as_str()),
         ));
