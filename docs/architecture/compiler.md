@@ -298,6 +298,15 @@ ambient-vs-tracked discipline throughout.
 - `vendor/lelwel`, `vendor/logos` — vendored via git subtree; every local
   change is ledgered in `/vendor/PATCHES.md`.
 
+## Planned fragment composition
+
+Explicit fragment composition is specified but not implemented. Its
+[language contract](../spec/fragment-composition.md) and
+[implementation plan](../plans/fragment-composition.md) add a checked composition
+boundary after operand binding resolution. They preserve the existing semantic
+ownership model; the current compiler still diagnoses overlapping ordinary
+spread output keys.
+
 ## Testing
 
 Integration over unit: each crate has one `tests/it` harness; insta

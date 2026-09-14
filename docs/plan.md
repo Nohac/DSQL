@@ -52,6 +52,13 @@ loader merges and validates authored overlays against generated YAML before
 that boundary, so downstream compiler systems continue to read exactly one
 catalog source.
 
+## Active implementation plans
+
+- [Explicit fragment composition](plans/fragment-composition.md): implement the
+  proposed [`...(A and B)` / `...(A or B)` contract](spec/fragment-composition.md)
+  through shared checked selections, preserving input identity and policy
+  enforcement. Specification and planning only; implementation has not started.
+
 ## Historical port record
 
 The remaining goals, sketches, phases, and open questions record how the port

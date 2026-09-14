@@ -202,6 +202,31 @@ query Users {
 }
 ```
 
+## Explicit Fragment Composition
+
+Status: proposed; not implemented.
+
+```dsql
+query Users {
+  users {
+    ...(PublishedPosts and RecentPosts(%since))
+  }
+}
+```
+
+An explicit composition spread combines compatible overlapping fields from its
+fragment operands. `and` intersects matching relation result windows by row
+identity; `or` unions them with left-to-right priority and no duplicate rows.
+Without windows, membership may reduce to conjunctive/disjunctive predicates.
+Both combine requested output fields. Binding resolution precedes composition,
+and query logic is combined independently at
+each matching output path. Ordinary adjacent spreads retain their existing
+collision rules.
+
+[Explicit Fragment Composition](fragment-composition.md) owns the complete
+contract: grouping, missing versus unfiltered selections, optional predicates,
+policies, independent pagination, result ordering/cardinality, and deferred overlaps.
+
 ## Flattened Relation Selections
 
 A leading `...` merges an object-valued relation selection into its parent
@@ -272,6 +297,7 @@ Ellipsis syntax is classified by what follows the name:
 
 ```text
 ...Name                         fragment spread
+...(A and B)                    explicit fragment composition (proposed)
 ...relation { ... }             flattened relation selection
 ...relation | aggregate { ... } flattened object-producing transform
 ```
@@ -475,6 +501,9 @@ aliases and must be at most 63 bytes. This limit applies to explicit aliases and
 to inferred output keys.
 
 Aliases are used when two selections would produce the same output key.
+The proposed [composition spread](fragment-composition.md) provides an explicit
+merge boundary for compatible fragment contributions. It does not merge that
+boundary with neighboring selections or relax incompatible-source collisions.
 
 ```dsql
 query Users {

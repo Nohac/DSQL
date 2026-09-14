@@ -177,6 +177,24 @@ Retaining bounded dynamic capability surfaces is part of the eventual fragment
 extension; the initial bounded-dynamic slice rejects dynamic inputs owned by
 fragments.
 
+### Composed Fragment Contracts
+
+Status: proposed with [Explicit Fragment Composition](fragment-composition.md);
+not implemented.
+
+Composition can change a relation's cardinality and nullability, so a generator
+must use the final checked artifact result shape rather than infer its type by
+combining standalone fragment types. The initial renderer will avoid standalone
+fragment result-type substitution for any artifact containing composition,
+including composition inherited through an ordinary spread. Input paths remain
+owned by the checked operand bindings.
+
+The [composition metadata contract](fragment-composition.md#metadata-and-versioning)
+defines required operator-tree provenance and source maps, and requires a manifest
+version bump when implementation lands. Current artifacts and generated schemas
+remain on their existing version until that coordinated change. Runtimes execute
+the compiled SQL contract; they do not perform fragment composition themselves.
+
 ### Host Scalar Representations
 
 Host renderers may map an exact compiler-owned logical scalar name to a

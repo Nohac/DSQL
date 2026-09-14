@@ -22,3 +22,8 @@ Two caveats when reading:
 - **Tooling contracts also live here.** For example,
   [TypeScript Distribution And Project Wiring](typescript-distribution.md)
   specifies package and scaffold boundaries rather than DSQL syntax.
+
+[Explicit Fragment Composition](fragment-composition.md) specifies the proposed
+`...(A and B)` / `...(A or B)` extension, including binding, policy, pagination,
+and metadata contracts. It is not implemented; ordinary spread collision rules
+remain in effect until the linked implementation plan lands.

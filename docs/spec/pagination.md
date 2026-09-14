@@ -11,6 +11,15 @@ defined by
 limit remains collection-valued unless the relationship or predicates provide
 an independent at-most-one proof.
 
+The proposed [fragment composition](fragment-composition.md#row-identity-ordering-and-pagination)
+extension combines independently paginated windows by proven source-row identity.
+Each operand keeps its own filtering, ordering, offset, and effective limit.
+`and` retains shared rows in the left operand's order; `or` returns the left
+window followed by right-only rows. Identity-key tie-breakers stabilize composed
+windows, and generator caps apply to each operand without an extra final cap.
+Non-overlapping selections keep their ordinary behavior. This contract is not
+implemented and introduces no cursor or post-composition window syntax.
+
 ## Cursor Pagination
 
 ```dsql

@@ -795,6 +795,23 @@ Missing target variables are diagnostics at the reference site only for roots
 that are in explicit binding mode. Roots not mentioned in the binding list keep
 their default contained input shape.
 
+### Composition Operand Bindings
+
+Status: proposed with [Explicit Fragment Composition](fragment-composition.md);
+not implemented.
+
+An operand in `...(A and B)` or `...(A or B)` uses the ordinary fragment binding
+rules above. Resolve each occurrence's containment/lifting/mapping before
+composing its selections. The operator tree adds no public namespace, and
+merging result paths does not merge independent input identities. Repeated
+operands that need independent values use distinct named roots or leaf bindings.
+
+Optional predicates retain a complete-selection boundary: when one operand's
+whole `where` is pruned, that selected relation contributes an unfiltered
+candidate before its own ordering and pagination. This is distinct from an absent
+atom inside one ordinary `where`. The [composition spec](fragment-composition.md#unfiltered-optional-and-null-predicates)
+defines that boundary and its required conformance cases.
+
 ### Bound Query References
 
 The same binding model applies when a directive or future metadata feature

@@ -301,6 +301,21 @@ Recursive operation state never enters filter-authored predicates. Filter rules
 evaluate against raw catalog rows and relationships under the separate rule
 evaluation boundary below.
 
+## Explicit Fragment Composition
+
+Status: proposed with [Explicit Fragment Composition](fragment-composition.md);
+not implemented.
+
+Composition operators combine query-authored predicates over a compatible
+readable view. They do not combine grants or weaken enforced filters. Matching
+selections must have compatible effective policy contexts after binding
+resolution; otherwise composition is a diagnostic. Operation-wide assignment
+inheritance and source-local overrides retain their existing meaning.
+
+The [composition policy contract](fragment-composition.md#policies-cardinality-and-result-types)
+requires row-policy guards outside a query-predicate `or`, preserves field and
+relation masking, and retains the existing filter match-lock rules.
+
 ## Row Rules
 
 A `where` rule filters rows from its target:
