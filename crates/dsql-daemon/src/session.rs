@@ -232,7 +232,7 @@ impl Daemon {
             Method::Compile => BatchPlan::FullReload(None),
             Method::FilesChanged => match session.classify_batch(&request).await {
                 Ok(plan) => plan,
-                Err(response) => return respond_error_for(id, response),
+                Err(response) => return respond_error_for(id, *response),
             },
             _ => unreachable!(),
         };
@@ -337,14 +337,14 @@ impl Session {
     async fn classify_batch(
         &self,
         request: &Request,
-    ) -> Result<BatchPlan, (WireErrorKind, String)> {
+    ) -> Result<BatchPlan, Box<(WireErrorKind, String)>> {
         let Some(paths) = request.params.paths.as_ref() else {
-            return Err((
+            return Err(Box::new((
                 WireErrorKind::InvalidRequestMethod {
                     method: RequestMethod::Known(Method::FilesChanged),
                 },
                 "filesChanged requires params.paths".into(),
-            ));
+            )));
         };
         if self.bowl.is_none() {
             return Ok(BatchPlan::FullReload(None));
@@ -356,12 +356,12 @@ impl Session {
             let relative = match self.normalize(raw) {
                 Ok(relative) => relative,
                 Err(problem) => {
-                    return Err((
+                    return Err(Box::new((
                         WireErrorKind::InvalidPath {
                             path: raw.to_string(),
                         },
                         problem,
-                    ));
+                    )));
                 }
             };
             let text = relative.to_string_lossy().replace('\\', "/");
@@ -371,12 +371,12 @@ impl Session {
                     Ok(bytes) => Some(sha256_hex(&bytes)),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => {
-                        return Err((
+                        return Err(Box::new((
                             WireErrorKind::IoPath {
                                 path: raw.to_string(),
                             },
                             format!("failed to read {}: {error}", absolute.display()),
-                        ));
+                        )));
                     }
                 };
                 if observed != self.filter_match_lock_hash {
@@ -408,12 +408,12 @@ impl Session {
                         Ok((_, true)) => reload = true,
                         Ok((changed, false)) => upserts.extend(changed),
                         Err(problem) => {
-                            return Err((
+                            return Err(Box::new((
                                 WireErrorKind::IoPath {
                                     path: raw.to_string(),
                                 },
                                 problem,
-                            ));
+                            )));
                         }
                     }
                 }
@@ -431,12 +431,12 @@ impl Session {
                     Ok(FileChange::Unchanged) => {}
                     Ok(FileChange::Fresh(content)) => upserts.push((absolute, content)),
                     Err(problem) => {
-                        return Err((
+                        return Err(Box::new((
                             WireErrorKind::IoPath {
                                 path: raw.to_string(),
                             },
                             problem,
-                        ));
+                        )));
                     }
                 }
             } else {

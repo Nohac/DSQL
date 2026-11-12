@@ -24,13 +24,13 @@ logos = { path = "vendor/logos" }
 clap = { version = "4.5", features = ["derive"] }
 codespan-reporting = "0.13"
 dotenvy = "0.15.7"
-facet = "0.50.0-rc.1"
-facet-json = "0.50.0-rc.1"
-facet-json-schema = "0.50.0-rc.1"
-facet-toml = "0.50.0-rc.1"
-facet-typescript = "0.50.0-rc.1"
-facet-value = "0.50.0-rc.1"
-facet-yaml = "0.50.0-rc.1"
+facet = "0.50.0-rc.7"
+facet-json = "0.50.0-rc.7"
+facet-json-schema = "0.50.0-rc.7"
+facet-toml = "0.50.0-rc.7"
+facet-typescript = "0.50.0-rc.7"
+facet-value = "0.50.0-rc.7"
+facet-yaml = "0.50.0-rc.7"
 fd-lock = "4"
 glob = "0.3"
 indoc = "2"
@@ -39,7 +39,7 @@ insta = "1.48"
 ropey = { version = "2.0.0-beta.1", features = ["metric_utf16"] }
 sea-query = { version = "1.0.1", default-features = false, features = ["backend-postgres"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11.1"
 sqlformat = "0.5"
 sqlx = { version = "0.9", default-features = false }
 sqlx-postgres = { version = "0.9", default-features = false }
