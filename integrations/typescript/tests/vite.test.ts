@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test } from "bun:test";
+import { createServer } from "vite";
 import { DsqlDaemonError } from "../src/daemon";
 import { sha256Hex, type DsqlRenderer, type DsqlRendererContext } from "../src/node";
 import { DsqlRewriteError } from "../src/rewrite";
@@ -368,6 +369,29 @@ const lockSteps = (base: string) => [
   initializeStep(base),
   { expectMethod: "compile", response: { result: resultFor(HOST) } },
 ];
+
+test("the real Vite server loads rewritten operations from generated modules", async () => {
+  const h = harness(lockSteps);
+  const server = await createServer({
+    root: h.base,
+    configFile: false,
+    plugins: [h.plugin],
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, watch: null },
+  });
+  try {
+    const host = await server.ssrLoadModule(`/${HOST_PATH}`);
+    const generated = await server.ssrLoadModule(
+      "/src/generated/dsql/queries/TitlePanel.ts",
+    );
+    expect(generated.TitlePanelOperation).toEqual({});
+    expect(host.TitlePanelQuery).toBe(generated.TitlePanelOperation);
+    expect(h.renders).toHaveLength(1);
+  } finally {
+    await server.close();
+  }
+}, 30_000);
 
 test("development does not enforce the match lock by default", async () => {
   const development = harness(lockSteps);

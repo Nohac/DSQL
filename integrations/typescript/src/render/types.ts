@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import ts from "typescript";
+import { ts } from "ts-morph";
 import type {
   ClosedValueSetMetadata,
   DynamicInputMetadata,

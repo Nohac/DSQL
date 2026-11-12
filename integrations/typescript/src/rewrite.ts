@@ -1,4 +1,4 @@
-import ts from "typescript";
+import { ts } from "ts-morph";
 import type { DsqlCallsite } from "./daemon.ts";
 import type { DsqlRenderModule } from "./node.ts";
 

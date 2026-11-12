@@ -270,13 +270,12 @@ const executed: Promise<{ readonly released: DateValue }> = executeQuery(
 
   const project = new Project({
     compilerOptions: {
-      baseUrl: root,
       exactOptionalPropertyTypes: true,
       module: ModuleKind.ESNext,
       moduleResolution: ModuleResolutionKind.Bundler,
       paths: {
-        "@dsql/typescript/runtime": ["runtime.ts"],
-        "@tanstack/react-query": ["react-query.d.ts"],
+        "@dsql/typescript/runtime": [join(root, "runtime.ts")],
+        "@tanstack/react-query": [join(root, "react-query.d.ts")],
       },
       strict: true,
       target: ScriptTarget.ES2022,

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "bun:test";
-import ts from "typescript";
+import { Project, ts } from "ts-morph";
 import {
   projectRelative,
   reconcileDsqlOutputs,
@@ -2526,10 +2526,8 @@ function assertGeneratedFilesTypeCheck(
       "utf8",
     ),
   );
-  const program = ts.createProgram(
-    [...files],
-    {
-      baseUrl: root,
+  const project = new Project({
+    compilerOptions: {
       exactOptionalPropertyTypes: true,
       module: ts.ModuleKind.ESNext,
       moduleResolution: ts.ModuleResolutionKind.Bundler,
@@ -2537,19 +2535,17 @@ function assertGeneratedFilesTypeCheck(
       noEmit: true,
       noUnusedLocals: true,
       paths: {
-        "@dsql/typescript/runtime": ["runtime.ts"],
+        "@dsql/typescript/runtime": [join(root, "runtime.ts")],
       },
       skipLibCheck: true,
       strict: true,
       target: ts.ScriptTarget.ES2022,
     },
-  );
+    skipAddingFilesFromTsConfig: true,
+  });
+  project.addSourceFilesAtPaths([...files]);
   expect(
-    ts
-      .getPreEmitDiagnostics(program)
-      .map((diagnostic) =>
-        ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
-      ),
+    project.getPreEmitDiagnostics().map((diagnostic) => diagnostic.getMessageText()),
   ).toEqual([]);
 }
 
